@@ -1,0 +1,36 @@
+# Example production stack on a VPS using GitLab Container Registry (same host as your GitLab project).
+#
+# 1. Replace the image prefix registry.gitlab.com/YOUR_GROUP/YOUR_PROJECT with your project’s
+#    registry path (GitLab → Build → Container Registry, or the value of CI_REGISTRY_IMAGE in CI).
+# 2. Create a `.env.production` next to this file (merge values from apps/*/.env.example).
+# 3. On the server: docker compose -f compose.deploy.example.yml --env-file .env.production pull
+#    && docker compose -f compose.deploy.example.yml --env-file .env.production up -d
+# 4. Apply database migrations against production Postgres from a trusted environment (for example
+#    the same host with the repo checked out: `pnpm db:migrate:deploy` with production URLs in env),
+#    or add a dedicated migration job to `.gitlab-ci.yml`. Production images omit the Prisma CLI.
+#
+# Rename or copy this file to `docker-compose.yml` on the VPS if you prefer the default compose filename.
+
+name: aimess-apps
+
+services:
+  api-gateway:
+    image: registry.gitlab.com/YOUR_GROUP/YOUR_PROJECT/aimess-api-gateway:latest
+    restart: unless-stopped
+    env_file: .env.production
+    ports:
+      - "3000:3000"
+
+  auth-service:
+    image: registry.gitlab.com/YOUR_GROUP/YOUR_PROJECT/aimess-auth-service:latest
+    restart: unless-stopped
+    env_file: .env.production
+    ports:
+      - "3001:3001"
+
+  user-service:
+    image: registry.gitlab.com/YOUR_GROUP/YOUR_PROJECT/aimess-user-service:latest
+    restart: unless-stopped
+    env_file: .env.production
+    ports:
+      - "3002:3002"

@@ -1,0 +1,79 @@
+import dotenv from "dotenv";
+import { z } from "zod";
+
+dotenv.config();
+
+const envSchema = z
+  .object({
+    NODE_ENV: z.enum(["development", "production", "test"]),
+    USER_SERVICE_PORT: z.coerce.number().positive(),
+
+    USER_DATABASE_URL: z.string(),
+
+    REDIS_HOST: z.string(),
+    REDIS_PORT: z.coerce.number(),
+    REDIS_CACHE_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((value) => value === "true"),
+    /** Username availability (validate) cache TTL when available. */
+    REDIS_CACHE_USERNAME_AVAIL_TTL_SEC: z.coerce
+      .number()
+      .positive()
+      .default(60),
+    /** Username taken / unavailable cache TTL. */
+    REDIS_CACHE_USERNAME_TAKEN_TTL_SEC: z.coerce
+      .number()
+      .positive()
+      .default(86_400),
+    /** GET /profiles/me DB record cache TTL (avatar presign is always fresh). */
+    REDIS_CACHE_PROFILE_TTL_SEC: z.coerce.number().positive().default(120),
+    /** Cached auth account summary when auth-service is slow or down. */
+    REDIS_CACHE_ACCOUNT_TTL_SEC: z.coerce.number().positive().default(300),
+
+    RABBITMQ_URL: z.string().min(1),
+
+    /** Same secret as auth-service — used to verify access tokens. */
+    JWT_ACCESS_SECRET: z.string().min(1),
+
+    /** Internal base URL for auth-service (e.g. http://127.0.0.1:3001). */
+    AUTH_SERVICE_URL: z.string().url(),
+    /** Timeout for auth-service internal HTTP calls (ms). */
+    AUTH_SERVICE_TIMEOUT_MS: z.coerce.number().positive().default(3000),
+
+    MINIO_ENDPOINT: z.string().url(),
+    MINIO_ACCESS_KEY: z.string().min(1),
+    MINIO_SECRET_KEY: z.string().min(1),
+    /** @deprecated Use MINIO_BUCKET_AVATARS. Kept for existing .env files. */
+    MINIO_BUCKET: z.string().min(1).optional(),
+    MINIO_BUCKET_AVATARS: z.string().min(1).optional(),
+    MINIO_REGION: z.string().default("us-east-1"),
+    MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(900),
+    /** Presigned GET lifetime for avatar display URLs (seconds). */
+    MINIO_AVATAR_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
+    /** Max avatar file size in bytes (default 5 MB). */
+    AVATAR_MAX_UPLOAD_BYTES: z.coerce
+      .number()
+      .positive()
+      .max(20 * 1024 * 1024)
+      .default(5 * 1024 * 1024),
+  })
+  .refine((data) => Boolean(data.MINIO_BUCKET_AVATARS ?? data.MINIO_BUCKET), {
+    message: "Set MINIO_BUCKET_AVATARS or MINIO_BUCKET",
+    path: ["MINIO_BUCKET_AVATARS"],
+  });
+
+const parsed = envSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  console.error("Invalid environment variables");
+  console.error(parsed.error.format());
+  process.exit(1);
+}
+
+const raw = parsed.data;
+
+export const env = {
+  ...raw,
+  MINIO_BUCKET_AVATARS: raw.MINIO_BUCKET_AVATARS ?? raw.MINIO_BUCKET!,
+};

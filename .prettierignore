@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+.next
+pnpm-lock.yaml
+
+# Prisma client (generated; do not format)
+**/src/generated/prisma

@@ -1,0 +1,18 @@
+# Mute pnpm's post-install summary for deprecated transitive deps (Firebase/Google SDK, fetch-blob).
+allowedDeprecatedVersions:
+  node-domexception: "*"
+  uuid: "*"
+
+allowBuilds:
+  "@firebase/util": false
+  "@prisma/client": false
+  "@prisma/engines": false
+  "@scarf/scarf": false
+  bcrypt: false
+  esbuild: true
+  prisma: false
+  protobufjs: false
+packages:
+  - apps/*
+  - packages/*
+  - tooling/service-template

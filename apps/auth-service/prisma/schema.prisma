@@ -1,0 +1,254 @@
+// =============================================================================
+// auth-service  ·  PostgreSQL  ·  auth_db
+// Owns: user identity, login, OTP, password reset, social OAuth links,
+//       sessions, refresh tokens, login attempts, account deletion grace.
+// Does NOT own: profile data, avatars, bio, friendships, settings.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// -----------------------------------------------------------------------------
+// AuthUser — the canonical identity record. Its id is the userId every other
+// service references.
+// -----------------------------------------------------------------------------
+model AuthUser {
+  id                   String               @id @default(uuid()) @db.Uuid
+  // Login handles (one of these is required at registration)
+  account              String               @unique // username/account for login
+  email                String?              @unique
+  phone                String?              @unique // future-proofing; SOW Phase 1 is email-first
+  // Credentials
+  passwordHash         String? // nullable: pure-social accounts have no password
+  // Verification
+  emailVerified        Boolean              @default(false)
+  phoneVerified        Boolean              @default(false)
+  ageVerified          Boolean              @default(false)
+  dateOfBirth          DateTime?            @db.Date // collected later (profile / compliance)
+  // Legal acceptance — collected when user accepts terms (not required at minimal signup)
+  termsAcceptedAt      DateTime?
+  privacyAcceptedAt    DateTime?
+  termsVersion         String?
+  privacyVersion       String?
+  // Account lifecycle
+  status               AccountStatus        @default(ACTIVE)
+  suspendedAt          DateTime?
+  suspendedReason      String?
+  suspendedBy          String?              @db.Uuid // ops user id
+  // Soft delete with 30-day grace period (SOW §4)
+  deletionRequestedAt  DateTime?
+  scheduledDeletionAt  DateTime?
+  deletedAt            DateTime?
+  // Security state
+  failedLoginAttempts  Int                  @default(0)
+  lockedUntil          DateTime?
+  lastLoginAt          DateTime?
+  lastPasswordChangeAt DateTime?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  linkedAccounts       LinkedAccount[]
+  refreshTokens        RefreshToken[]
+  sessions             Session[]
+  otpCodes             OtpCode[]
+  passwordResetTokens  PasswordResetToken[]
+
+  @@index([status, deletedAt])
+  @@index([scheduledDeletionAt]) // for grace-period cleanup job
+  @@map("auth_users")
+}
+
+// -----------------------------------------------------------------------------
+// LinkedAccount — Apple / Google / Email linked to a single AuthUser
+// SOW §1.1: "Link multiple sign-in methods... must maintain at least 1 method"
+// -----------------------------------------------------------------------------
+model LinkedAccount {
+  id             String       @id @default(uuid()) @db.Uuid
+  userId         String       @db.Uuid
+  user           AuthUser     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider       AuthProvider
+  providerUserId String // Google `sub`, Apple `sub`, or "email"
+  email          String? // email reported by the provider (may differ from primary)
+  displayName    String?
+  linkedAt       DateTime     @default(now())
+
+  @@unique([provider, providerUserId])
+  @@unique([userId, provider]) // one provider link per user max
+  @@index([userId])
+  @@map("linked_accounts")
+}
+
+// -----------------------------------------------------------------------------
+// OtpCode — registration, password reset, email change, etc.
+// -----------------------------------------------------------------------------
+model OtpCode {
+  id          String     @id @default(uuid()) @db.Uuid
+  // Anchor — either a known userId (for change flows) OR an identifier (for registration / forgot password)
+  userId      String?    @db.Uuid
+  user        AuthUser?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  identifier  String // email or phone the OTP was sent to
+  channel     OtpChannel
+  purpose     OtpPurpose
+  codeHash    String // bcrypt hash of the OTP, NEVER plaintext
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  ipAddress   String? // for abuse tracking
+  createdAt   DateTime   @default(now())
+
+  @@index([identifier, purpose, consumedAt])
+  @@index([userId, purpose])
+  @@index([expiresAt]) // cleanup job
+  @@map("otp_codes")
+}
+
+// -----------------------------------------------------------------------------
+// PasswordResetToken — one-time-use token issued after OTP verification 
+// -----------------------------------------------------------------------------
+model PasswordResetToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  user       AuthUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+// -----------------------------------------------------------------------------
+// Session — one row per device. SOW §1.1 "View connected devices and remote sign-out"
+// -----------------------------------------------------------------------------
+model Session {
+  id            String               @id @default(uuid()) @db.Uuid
+  userId        String               @db.Uuid
+  user          AuthUser             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId      String // client-generated stable device identifier
+  deviceName    String? // "Pixel 8 — Hanoi"
+  deviceType    DeviceType
+  osVersion     String?
+  appVersion    String?
+  ipAddress     String?
+  userAgent     String?
+  countryCode   String? // GeoIP
+  lastActiveAt  DateTime             @default(now())
+  revokedAt     DateTime?
+  revokedReason SessionRevokeReason?
+  createdAt     DateTime             @default(now())
+
+  refreshTokens RefreshToken[]
+
+  @@unique([userId, deviceId])
+  @@index([userId, revokedAt])
+  @@index([lastActiveAt])
+  @@map("sessions")
+}
+
+// -----------------------------------------------------------------------------
+// RefreshToken — rotated on every use. Short access token (15m), long refresh (7d).
+// `rotatedToId` lets you detect refresh-token reuse attacks.
+// -----------------------------------------------------------------------------
+model RefreshToken {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  user        AuthUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId   String    @db.Uuid
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  tokenHash   String    @unique // SHA-256 of the refresh token
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  rotatedToId String?   @db.Uuid // points to the successor token after refresh
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+// -----------------------------------------------------------------------------
+// LoginAttempt — security audit, drives lockout logic
+// -----------------------------------------------------------------------------
+model LoginAttempt {
+  id            String              @id @default(uuid()) @db.Uuid
+  identifier    String // account or email used to attempt login
+  userId        String?             @db.Uuid // populated if identifier matched a user
+  ipAddress     String?
+  userAgent     String?
+  success       Boolean
+  failureReason LoginFailureReason?
+  attemptedAt   DateTime            @default(now())
+
+  @@index([identifier, attemptedAt])
+  @@index([ipAddress, attemptedAt])
+  @@index([userId, attemptedAt])
+  @@map("login_attempts")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED // by ops team — temporary
+  BANNED // permanent
+  PENDING_DELETION // 30-day grace
+  DELETED // tombstone
+}
+
+enum AuthProvider {
+  EMAIL
+  APPLE
+  GOOGLE
+}
+
+enum OtpChannel {
+  EMAIL
+  SMS
+}
+
+enum OtpPurpose {
+  REGISTRATION
+  LOGIN_2FA
+  PASSWORD_RESET
+  EMAIL_VERIFY
+  EMAIL_CHANGE
+  PHONE_CHANGE
+  ACCOUNT_DELETION_CONFIRM
+}
+
+enum DeviceType {
+  IOS
+  ANDROID
+  WEB
+  DESKTOP
+}
+
+enum SessionRevokeReason {
+  USER_SIGNED_OUT
+  PASSWORD_CHANGED
+  REMOTE_SIGNOUT
+  ADMIN_REVOKED
+  SUSPICIOUS_ACTIVITY
+  TOKEN_REUSE_DETECTED
+}
+
+enum LoginFailureReason {
+  INVALID_CREDENTIALS
+  ACCOUNT_NOT_FOUND
+  ACCOUNT_LOCKED
+  ACCOUNT_SUSPENDED
+  ACCOUNT_DELETED
+  EMAIL_NOT_VERIFIED
+  OAUTH_FAILURE
+}

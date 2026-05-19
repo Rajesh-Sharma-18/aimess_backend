@@ -1,0 +1,21 @@
+# ENV FILES
+.env
+.env.*
+!.env.example
+
+# NODE
+node_modules
+
+# BUILD
+dist
+.next
+.turbo
+_deploy-*
+
+# LOGS
+logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

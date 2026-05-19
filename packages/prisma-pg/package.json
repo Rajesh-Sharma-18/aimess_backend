@@ -1,0 +1,25 @@
+{
+  "name": "@aimess/prisma-pg",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node -e \"process.exit(0)\""
+  },
+  "dependencies": {
+    "@aimess/logger": "workspace:*",
+    "@prisma/adapter-pg": "^7.8.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

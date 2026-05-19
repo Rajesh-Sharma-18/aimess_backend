@@ -1,0 +1,4 @@
+export enum NotificationEvents {
+  USER_REGISTERED = "USER_REGISTERED",
+  MESSAGE_RECEIVED = "MESSAGE_RECEIVED",
+}

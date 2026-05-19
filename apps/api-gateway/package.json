@@ -1,0 +1,44 @@
+{
+  "name": "@aimess/api-gateway",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx watch --include ./src --clear-screen=false src/server.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.js",
+    "lint": "eslint .",
+    "test": "node -e \"process.exit(0)\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@aimess/errors": "workspace:*",
+    "@aimess/logger": "workspace:*",
+    "@aimess/utils": "workspace:*",
+    "@aimess/constants": "workspace:*",
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.1",
+    "helmet": "^8.1.0",
+    "http-proxy-middleware": "^3.0.5",
+    "lodash": "^4.18.1",
+    "swagger-ui-express": "^5.0.1",
+    "uuid": "^14.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.2",
+    "@types/swagger-ui-express": "^4.1.8",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

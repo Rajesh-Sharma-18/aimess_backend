@@ -1,0 +1,73 @@
+import { createHash, randomBytes } from "node:crypto";
+
+import { signAccessToken } from "@aimess/auth-jwt";
+
+import { env } from "../config/env.js";
+import { markSessionActive } from "./session-active-cache.js";
+import type { SessionContext } from "./session-context.js";
+import { authRepository } from "../repositories/auth.repository.js";
+
+export type AuthTokens = {
+  accessToken: string;
+  refreshToken: string;
+  accessTokenExpiresIn: number;
+  refreshTokenExpiresIn: number;
+};
+
+function parseExpiresInSeconds(value: string): number {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`Invalid JWT expiry value: ${value}`);
+  }
+  return Math.floor(seconds);
+}
+
+export function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+export function createRefreshTokenValue(): string {
+  return randomBytes(48).toString("base64url");
+}
+
+export async function issueAuthTokens(
+  userId: string,
+  session: SessionContext
+): Promise<AuthTokens> {
+  const accessTokenExpiresIn = parseExpiresInSeconds(env.JWT_ACCESS_EXPIRES_IN);
+  const refreshTokenExpiresIn = parseExpiresInSeconds(
+    env.JWT_REFRESH_EXPIRES_IN
+  );
+
+  const refreshToken = createRefreshTokenValue();
+  const refreshExpiresAt = new Date(Date.now() + refreshTokenExpiresIn * 1000);
+
+  const createdSession = await authRepository.createSessionWithRefreshToken({
+    userId,
+    deviceId: session.deviceId,
+    deviceType: session.deviceType,
+    deviceName: session.deviceName,
+    osVersion: session.osVersion,
+    appVersion: session.appVersion,
+    ipAddress: session.ipAddress,
+    userAgent: session.userAgent,
+    refreshTokenHash: hashToken(refreshToken),
+    refreshExpiresAt,
+  });
+
+  const accessToken = signAccessToken({
+    userId,
+    sessionId: createdSession.id,
+    secret: env.JWT_ACCESS_SECRET,
+    expiresInSeconds: accessTokenExpiresIn,
+  });
+
+  await markSessionActive(createdSession.id);
+
+  return {
+    accessToken,
+    refreshToken,
+    accessTokenExpiresIn,
+    refreshTokenExpiresIn,
+  };
+}
