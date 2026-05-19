@@ -9,6 +9,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "dev": "tsc -w",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "node -e \"process.exit(0)\""

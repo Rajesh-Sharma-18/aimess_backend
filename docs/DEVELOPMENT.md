@@ -8,9 +8,14 @@ How to run AiMess locally, configure environment variables, work with Prisma, an
 git clone <your-repo-url>
 cd AIMess   # or your checkout folder name
 pnpm install
+pnpm build:packages   # required once after clone (dist/ is not in git)
 ```
 
 Use **pnpm** only; the repo is not set up for npm or yarn workspaces.
+
+**Why `build:packages`?** Shared libraries under `packages/` (`@aimess/constants`, `@aimess/utils`, …) expose compiled output from `dist/`. That folder is gitignored, so a fresh clone has no `dist/index.js` until TypeScript builds them. Without this step, `pnpm dev` fails with `Cannot find package …/dist/index.js`.
+
+`pnpm dev` (Turborepo) also runs `build` on workspace dependencies first (`dependsOn: ["^build"]` in `turbo.json`), but an explicit `pnpm build:packages` after install is the safest first-time setup.
 
 ## 2. Environment variables
 
@@ -94,10 +99,11 @@ More context: **[docker/README.md](../docker/README.md)**.
 ### All dev tasks (Turborepo)
 
 ```bash
+pnpm build:packages   # if you skipped this after install
 pnpm dev
 ```
 
-This runs every workspace that defines a `dev` script (gateway, auth, user, and any others you add). Ensure each app’s `.env` is valid; missing vars will fail Zod validation on startup where applicable.
+This runs every workspace that defines a `dev` script (gateway, auth, user, shared packages, and any others you add). Turborepo builds dependency packages (`^build`) before starting apps. Ensure each app’s `.env` is valid; missing vars will fail Zod validation on startup where applicable.
 
 ### One workspace
 
