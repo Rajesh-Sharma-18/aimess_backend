@@ -27,5 +27,7 @@ export default {
       nodeTask("scripts/lint-staged-prettier.mjs", batch),
     ]),
   "*.{json,md,yml,yaml}": (files) =>
-    chunk(files).map((batch) => nodeTask("scripts/lint-staged-prettier.mjs", batch)),
+    chunk(files).map((batch) =>
+      nodeTask("scripts/lint-staged-prettier.mjs", batch)
+    ),
 };

@@ -16,5 +16,5 @@ await Promise.all(
     if (output !== input) {
       await writeFile(file, output);
     }
-  }),
+  })
 );
