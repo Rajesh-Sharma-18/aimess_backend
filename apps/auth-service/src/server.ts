@@ -15,12 +15,23 @@ const startServer = async () => {
     await prisma.$connect();
     logger.info("PostgreSQL connected");
 
+    // Bounded so a hung/misconfigured Redis can never block app.listen (e.g. a
+    // port collision where another process holds 6379). Redis-backed features
+    // (OTP throttle, device-link, session cache) recover once Redis is reachable.
     try {
-      await connectAuthRedis();
+      await Promise.race([
+        connectAuthRedis(),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Redis connect timed out after 5s")),
+            5000
+          )
+        ),
+      ]);
       logger.info("Redis connected");
     } catch (error) {
       logger.warn(
-        "Redis unavailable — auth-service will run without Redis (not used yet)"
+        "Redis unavailable/timed out — auth-service is starting anyway; Redis-backed features (OTP throttle, device-link, session cache) will fail until Redis is reachable"
       );
       logger.warn(error);
     }

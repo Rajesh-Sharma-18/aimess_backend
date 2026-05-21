@@ -15,12 +15,18 @@ export type ResolvedAuthAccount = {
 
 /**
  * Loads sign-in provider data from auth-service when possible.
- * On auth outage: serves a recent Redis copy, or omits account without failing profile GET.
+ * On auth outage: serves a recent Redis copy, or omits account without failing the request.
  */
 export async function resolveAuthAccountSummary(
   userId: string,
   accessToken: string
 ): Promise<ResolvedAuthAccount> {
+  // Cache-first: serve a recent Redis copy and skip the auth-service hop.
+  const cachedSummary = await userCache.getAccountSummary(userId);
+  if (cachedSummary) {
+    return { account: cachedSummary, accountStatus: "cached" };
+  }
+
   try {
     const summary = await fetchAuthAccountSummary(accessToken);
     await userCache.setAccountSummary(userId, summary);
@@ -34,13 +40,13 @@ export async function resolveAuthAccountSummary(
     const cached = await userCache.getAccountSummary(userId);
     if (cached) {
       logger.warn(
-        "Auth service unavailable; serving cached account summary for profile"
+        "Auth service unavailable; serving cached account summary for connected accounts"
       );
       return { account: cached, accountStatus: "cached" };
     }
 
     logger.warn(
-      "Auth service unavailable; profile returned without account section"
+      "Auth service unavailable; connected accounts returned without providers"
     );
     return { account: null, accountStatus: "unavailable" };
   }

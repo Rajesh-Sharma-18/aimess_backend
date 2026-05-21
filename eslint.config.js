@@ -8,6 +8,7 @@ export default [
       "**/node_modules/**",
       "**/.turbo/**",
       "**/coverage/**",
+      "**/generated/**",
       "**/prisma.config.ts",
     ],
   },
@@ -27,6 +28,8 @@ export default [
         "error",
         {
           argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          ignoreRestSiblings: true,
         },
       ],
     },
@@ -35,6 +38,16 @@ export default [
     files: ["scripts/**/*.ts"],
     rules: {
       "no-console": "off",
+    },
+  },
+  {
+    // Prisma seed scripts live under prisma/ (outside each service's tsconfig
+    // `src` rootDir), so type-aware linting cannot resolve them to a project.
+    files: ["**/prisma/seed/**/*.ts"],
+    languageOptions: {
+      parserOptions: {
+        project: false,
+      },
     },
   },
   {

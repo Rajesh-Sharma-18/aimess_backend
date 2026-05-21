@@ -10,6 +10,30 @@ export const USER_MESSAGES = {
     vi: "Lấy hồ sơ thành công",
     en: "Profile fetched successfully",
   },
+  USER_FRIENDS_FETCHED: {
+    vi: "Lấy danh sách bạn bè thành công",
+    en: "Friends list fetched successfully",
+  },
+  USER_CONNECTED_ACCOUNTS_FETCHED: {
+    vi: "Lấy tài khoản liên kết thành công",
+    en: "Connected accounts fetched successfully",
+  },
+  USER_SETTINGS_FETCHED: {
+    vi: "Lấy cài đặt thành công",
+    en: "Settings fetched successfully",
+  },
+  USER_SETTINGS_UPDATED: {
+    vi: "Cập nhật cài đặt thành công",
+    en: "Settings updated successfully",
+  },
+  USER_SETTINGS_NOT_FOUND: {
+    vi: "Không tìm thấy cài đặt người dùng",
+    en: "User settings not found",
+  },
+  USER_SETTINGS_INVALID_CALL_ALLOW_LIST: {
+    vi: "Danh sách bạn bè được phép gọi không hợp lệ",
+    en: "Invalid call allow list",
+  },
   USER_AUTH_SERVICE_UNAVAILABLE: {
     vi: "Dịch vụ xác thực tạm thời không khả dụng",
     en: "Authentication service is temporarily unavailable",

@@ -1,11 +1,14 @@
 import { logger } from "@aimess/logger";
 
+import { ensureBuckets } from "@aimess/storage";
+
 import { app } from "./app.js";
 import { env } from "./config/env.js";
-import { ensureStorageBuckets } from "./config/minio.js";
+import { storageClient } from "./config/storage.js";
 import { prisma } from "./config/prisma.js";
 import { connectUserRedis, disableUserCache } from "./config/redis.js";
 import { startUserCreatedConsumer } from "./consumers/user-created.consumer.js";
+import { startUserDeletedConsumer } from "./consumers/user-deleted.consumer.js";
 
 async function start() {
   try {
@@ -26,7 +29,7 @@ async function start() {
     }
 
     try {
-      await ensureStorageBuckets();
+      await ensureBuckets(storageClient, [env.MINIO_BUCKET_AVATARS]);
       logger.info(`MinIO buckets ready: ${env.MINIO_BUCKET_AVATARS}`);
     } catch (error) {
       logger.warn(
@@ -36,6 +39,7 @@ async function start() {
     }
 
     await startUserCreatedConsumer();
+    await startUserDeletedConsumer();
 
     app.listen(env.USER_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(

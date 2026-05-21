@@ -1,6 +1,12 @@
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 32;
-const USERNAME_PATTERN = /^[a-zA-Z0-9_]+$/;
+/** Canonical usernames are stored lowercase so uniqueness matches user expectations. */
+const USERNAME_PATTERN = /^[a-z0-9_]+$/;
+
+/** Trim + lowercase — call before format checks and DB lookups. */
+export function normalizeUsername(username: string): string {
+  return username.trim().toLowerCase();
+}
 
 /** Normalize auth `account` into a valid username base (lowercase, safe chars). */
 export function usernameBaseFromAccount(account: string): string {
@@ -19,10 +25,11 @@ export function usernameBaseFromAccount(account: string): string {
 }
 
 export function isValidUsernameFormat(username: string): boolean {
+  const normalized = normalizeUsername(username);
   return (
-    username.length >= USERNAME_MIN_LENGTH &&
-    username.length <= USERNAME_MAX_LENGTH &&
-    USERNAME_PATTERN.test(username)
+    normalized.length >= USERNAME_MIN_LENGTH &&
+    normalized.length <= USERNAME_MAX_LENGTH &&
+    USERNAME_PATTERN.test(normalized)
   );
 }
 

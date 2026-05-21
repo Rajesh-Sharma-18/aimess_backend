@@ -10,7 +10,7 @@ New developers should read this file once, then **[Architecture](./docs/ARCHITEC
 - **`apps/auth-service`** — Identity and auth (Prisma on PostgreSQL database **`aimess_auth`**). Uses shared **`@aimess/redis`** and JWT-related config.
 - **`apps/user-service`** — Profiles and social graph (Prisma on PostgreSQL database **`aimess_users`**). **`userId`** matches **`AuthUser.id`** from auth-service (no cross-database foreign keys).
 
-Shared libraries live under **`packages/`** (logger, errors, Prisma helpers, Redis, types, and so on). See [Architecture](./docs/ARCHITECTURE.md) for a full map.
+Shared libraries live under **`packages/`** (logger, errors, Prisma helpers, Redis, types, and so on). See **[Architecture](./docs/ARCHITECTURE.md)** for the full platform map (9 microservices, ports, databases, gRPC, monorepo, and Turborepo).
 
 ## Prerequisites
 
@@ -36,10 +36,11 @@ Shared libraries live under **`packages/`** (logger, errors, Prisma helpers, Red
 
    Or: `docker compose --env-file .env up -d` from the repo root.
 
-4. **Install dependencies**
+4. **Install dependencies and build shared packages**
 
    ```bash
    pnpm install
+   pnpm build:packages
    ```
 
 5. **Apply database migrations** (each Prisma app has its own schema)

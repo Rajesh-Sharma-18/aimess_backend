@@ -3,7 +3,6 @@ import type { Request, Response } from "express";
 import { HTTP_STATUS, t } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
-import { sessionApiMessage } from "../../lib/session-api-messages.js";
 import type { RefreshTokenInput } from "../validators/session.validator.js";
 import { sessionService } from "../../services/session.service.js";
 
@@ -35,12 +34,7 @@ export const listSessions = asyncHandler(
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          result,
-          sessionApiMessage("AUTH_SESSIONS_LISTED", req.locale)
-        )
-      );
+      .json(new ApiResponse(result, t("AUTH_SESSIONS_LISTED", req.locale)));
   }
 );
 
@@ -57,27 +51,22 @@ export const revokeSession = asyncHandler(
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          null,
-          sessionApiMessage("AUTH_SESSION_REVOKED", req.locale)
-        )
-      );
+      .json(new ApiResponse(null, t("AUTH_SESSION_REVOKED", req.locale)));
   }
 );
 
 /** Revoke every active session (all devices). */
 export const revokeAllSessions = asyncHandler(
   async (req: Request, res: Response) => {
-    const result = await sessionService.revokeAllSessions(req.auth.userId);
+    const result = await sessionService.revokeAllSessions(
+      req.auth.userId,
+      req.auth.sessionId
+    );
 
     return res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse(
-          result,
-          sessionApiMessage("AUTH_SESSIONS_ALL_REVOKED", req.locale)
-        )
+        new ApiResponse(result, t("AUTH_SESSIONS_ALL_REVOKED", req.locale))
       );
   }
 );

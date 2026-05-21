@@ -2,12 +2,20 @@ import dotenv from "dotenv";
 import type { Request } from "express";
 import { z } from "zod";
 
+import type { AppVersionConfig } from "../app-version/types.js";
+
 dotenv.config();
+
+const semverLike = z
+  .string()
+  .trim()
+  .regex(/^\d+(\.\d+){0,2}$/);
 
 const envSchema = z.object({
   API_GATEWAY_PORT: z.coerce.number().positive(),
   AUTH_SERVICE_URL: z.string().url(),
   USER_SERVICE_URL: z.string().url().optional(),
+  COMMUNITY_SERVICE_URL: z.string().url().optional(),
   AUTH_GRPC_URL: z.string().optional(),
   USER_GRPC_URL: z.string().optional(),
   REDIS_URL: z.string(),
@@ -20,6 +28,14 @@ const envSchema = z.object({
    * Use 1 behind nginx/ALB. Do not use `true` — express-rate-limit rejects it.
    */
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+  /** Optional JSON policy file (default: apps/api-gateway/config/app-versions.json). */
+  APP_VERSION_CONFIG_PATH: z.string().min(1).optional(),
+  APP_VERSION_ANDROID_MANDATORY: semverLike.default("1.0.0"),
+  APP_VERSION_ANDROID_OPTIONAL: semverLike.default("1.2.0"),
+  APP_VERSION_ANDROID_STORE_URL: z.string().url().optional(),
+  APP_VERSION_IOS_MANDATORY: semverLike.default("1.0.0"),
+  APP_VERSION_IOS_OPTIONAL: semverLike.default("1.2.0"),
+  APP_VERSION_IOS_STORE_URL: z.string().url().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -31,6 +47,22 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+
+export function getDefaultAppVersionConfig(): AppVersionConfig {
+  return {
+    android: {
+      mandatoryUpdate: env.APP_VERSION_ANDROID_MANDATORY,
+      optionalUpdate: env.APP_VERSION_ANDROID_OPTIONAL,
+      storeUrl: env.APP_VERSION_ANDROID_STORE_URL,
+    },
+    ios: {
+      mandatoryUpdate: env.APP_VERSION_IOS_MANDATORY,
+      optionalUpdate: env.APP_VERSION_IOS_OPTIONAL,
+      storeUrl: env.APP_VERSION_IOS_STORE_URL,
+    },
+    updatedAt: new Date(0).toISOString(),
+  };
+}
 
 /** Origins for `cors` — comma-separated list from env. */
 export function getCorsAllowedOrigins(): string[] {

@@ -1,5 +1,9 @@
-import type { ProfileGender } from "../generated/prisma/client.js";
+import {
+  ProfileStatus,
+  type ProfileGender,
+} from "../generated/prisma/client.js";
 import { prisma } from "../config/prisma.js";
+import { normalizeUsername } from "../lib/username.util.js";
 
 const PLACEHOLDER_DATE_OF_BIRTH = new Date("2000-01-01");
 
@@ -8,8 +12,14 @@ export const userProfileRepository = {
     return prisma.userProfile.findUnique({ where: { userId } });
   },
 
+  /** Case-insensitive — canonical storage is lowercase; legacy rows may differ in casing. */
   findByUsername(username: string) {
-    return prisma.userProfile.findUnique({ where: { username } });
+    const normalized = normalizeUsername(username);
+    return prisma.userProfile.findFirst({
+      where: {
+        username: { equals: normalized, mode: "insensitive" },
+      },
+    });
   },
 
   updateProfile(
@@ -42,6 +52,16 @@ export const userProfileRepository = {
     });
   },
 
+  softDelete(userId: string, deletedAt: Date) {
+    return prisma.userProfile.update({
+      where: { userId },
+      data: {
+        status: ProfileStatus.DELETED,
+        deletedAt,
+      },
+    });
+  },
+
   createFromRegistration(params: {
     userId: string;
     username: string;
@@ -63,6 +83,8 @@ export const userProfileRepository = {
       await tx.privacySettings.create({ data: { userId } });
       await tx.chatSettings.create({ data: { userId } });
       await tx.appSettings.create({ data: { userId } });
+      await tx.notificationSettings.create({ data: { userId } });
+      await tx.liveStreamSettings.create({ data: { userId } });
 
       return profile;
     });

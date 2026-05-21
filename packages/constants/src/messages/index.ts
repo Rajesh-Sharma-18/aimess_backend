@@ -1,5 +1,7 @@
 import { AUTH_MESSAGES } from "./auth.messages.js";
 import { COMMON_MESSAGES } from "./common.messages.js";
+import { COMMUNITY_MESSAGES } from "./community.messages.js";
+import { UPLOAD_MESSAGES } from "./upload.messages.js";
 import { USER_MESSAGES } from "./user.messages.js";
 import type { MessageCatalog } from "./types.js";
 
@@ -16,6 +18,8 @@ import type { MessageCatalog } from "./types.js";
 export const MESSAGES = {
   ...AUTH_MESSAGES,
   ...USER_MESSAGES,
+  ...COMMUNITY_MESSAGES,
+  ...UPLOAD_MESSAGES,
   ...COMMON_MESSAGES,
 } as const satisfies MessageCatalog;
 
@@ -23,5 +27,10 @@ export type MessageKey = keyof typeof MESSAGES;
 
 export { AUTH_MESSAGES, type AuthMessageKey } from "./auth.messages.js";
 export { COMMON_MESSAGES, type CommonMessageKey } from "./common.messages.js";
+export {
+  COMMUNITY_MESSAGES,
+  type CommunityMessageKey,
+} from "./community.messages.js";
+export { UPLOAD_MESSAGES, type UploadMessageKey } from "./upload.messages.js";
 export { USER_MESSAGES, type UserMessageKey } from "./user.messages.js";
 export type { LocalizedText, MessageCatalog } from "./types.js";

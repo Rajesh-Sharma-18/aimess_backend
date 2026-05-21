@@ -25,10 +25,9 @@ export const openApiSchemas = {
     properties: {
       userId: { type: "string", format: "uuid" },
       account: { type: "string", example: "johndoe" },
-      email: { type: "string", format: "email", example: "john@example.com" },
       createdAt: { type: "string", format: "date-time" },
     },
-    required: ["userId", "account", "email"],
+    required: ["userId", "account"],
   },
   AuthTokens: {
     type: "object",
@@ -55,14 +54,9 @@ export const openApiSchemas = {
         pattern: "^[a-zA-Z0-9_]+$",
         example: "johndoe",
       },
-      email: {
-        type: "string",
-        format: "email",
-        example: "john@example.com",
-      },
       password: { type: "string", minLength: 8, maxLength: 128 },
     },
-    required: ["account", "email", "password"],
+    required: ["account", "password"],
   },
   ValidateAccountRequest: {
     type: "object",
@@ -224,7 +218,8 @@ export const openApiSchemas = {
     properties: {
       idToken: {
         type: "string",
-        description: "Google ID token from Sign-In SDK",
+        description:
+          "Firebase ID token obtained after Google sign-in via the Firebase Auth client SDK.",
       },
     },
     required: ["idToken"],
@@ -234,12 +229,14 @@ export const openApiSchemas = {
     properties: {
       identityToken: {
         type: "string",
-        description: "Apple identity token (JWT) from Sign in with Apple",
+        description:
+          "Firebase ID token obtained after Apple sign-in via the Firebase Auth client SDK.",
       },
       email: {
         type: "string",
         format: "email",
-        description: "Required on first Apple sign-in when not in the token",
+        description:
+          "Optional fallback display email; never trusted as verified",
       },
       fullName: { type: "string", maxLength: 100 },
     },
@@ -304,16 +301,24 @@ export const openApiSchemas = {
   LinkGoogleRequest: {
     type: "object",
     properties: {
-      idToken: { type: "string" },
+      idToken: {
+        type: "string",
+        description:
+          "Firebase ID token from a Google sign-in (Firebase Auth client SDK).",
+      },
     },
     required: ["idToken"],
   },
   LinkAppleRequest: {
     type: "object",
     properties: {
-      identityToken: { type: "string" },
+      identityToken: {
+        type: "string",
+        description:
+          "Firebase ID token from an Apple sign-in (Firebase Auth client SDK).",
+      },
       email: { type: "string", format: "email" },
-      fullName: { type: "string" },
+      fullName: { type: "string", maxLength: 100 },
     },
     required: ["identityToken"],
   },
@@ -359,6 +364,8 @@ export const openApiSchemas = {
         minLength: 3,
         maxLength: 32,
         pattern: "^[a-zA-Z0-9_]+$",
+        description:
+          "Normalized to lowercase for storage; uniqueness is case-insensitive.",
       },
       bio: {
         type: "string",
@@ -413,6 +420,8 @@ export const openApiSchemas = {
         minLength: 3,
         maxLength: 32,
         pattern: "^[a-zA-Z0-9_]+$",
+        description:
+          "Letters are normalized to lowercase; stored usernames are lowercase.",
         example: "john_doe",
       },
     },
@@ -421,14 +430,27 @@ export const openApiSchemas = {
   ValidateUsernameResponseData: {
     type: "object",
     properties: {
-      username: { type: "string" },
-      available: { type: "boolean" },
+      username: {
+        type: "string",
+        description:
+          "Canonical lowercase username used for storage and lookup.",
+      },
+      available: {
+        type: "boolean",
+        description:
+          "True if the handle is free, or it is already your username (same user id from the token).",
+      },
     },
     required: ["username", "available"],
   },
-  AvatarUploadUrlRequest: {
+  UserUploadUrlRequest: {
     type: "object",
     properties: {
+      type: {
+        type: "string",
+        enum: ["AVATAR"],
+        description: "Upload type registered in the user-service.",
+      },
       contentType: {
         type: "string",
         enum: ["image/jpeg", "image/png", "image/webp"],
@@ -436,15 +458,14 @@ export const openApiSchemas = {
       contentLength: {
         type: "integer",
         minimum: 1,
-        maximum: 5242880,
         description:
-          "Exact file size in bytes (max 5 MB by default). Must match the PUT body.",
+          "Exact file size in bytes. Must match the PUT body and not exceed the server max.",
         example: 245678,
       },
     },
-    required: ["contentType", "contentLength"],
+    required: ["type", "contentType", "contentLength"],
   },
-  AvatarUploadUrlResponseData: {
+  UploadUrlResponseData: {
     type: "object",
     properties: {
       uploadUrl: { type: "string", format: "uri" },
@@ -457,7 +478,7 @@ export const openApiSchemas = {
       maxBytes: {
         type: "integer",
         example: 5242880,
-        description: "Server max avatar size in bytes",
+        description: "Server max file size in bytes for this upload type",
       },
       headers: {
         type: "object",
@@ -532,13 +553,19 @@ export const openApiSchemas = {
   },
   UserProfileData: {
     type: "object",
-    description: "Profile fields (PATCH /profiles/me response).",
+    description: "Profile fields (GET/PATCH /profiles/me response).",
     properties: {
       userId: { type: "string", format: "uuid" },
       username: { type: "string" },
       firstName: { type: "string" },
       lastName: { type: "string" },
       bio: { type: "string", nullable: true },
+      email: {
+        type: "string",
+        format: "email",
+        nullable: true,
+        description: "Primary account email from auth-service.",
+      },
       dateOfBirth: { type: "string", format: "date" },
       gender: {
         type: "string",
@@ -565,6 +592,7 @@ export const openApiSchemas = {
       "firstName",
       "lastName",
       "bio",
+      "email",
       "dateOfBirth",
       "gender",
       "avatarUrl",
@@ -576,23 +604,637 @@ export const openApiSchemas = {
     type: "string",
     enum: ["live", "cached", "unavailable"],
     description:
-      "live = from auth-service; cached = auth down, stale Redis copy; unavailable = auth down, no cache (account is null).",
+      "live = from auth-service; cached = auth down, stale Redis copy; unavailable = auth down, no cache (providers is null).",
   },
-  UserProfileResponse: {
-    allOf: [
-      { $ref: "#/components/schemas/UserProfileData" },
-      {
-        type: "object",
-        description: "GET /profiles/me — includes connected sign-in providers.",
-        properties: {
-          account: {
-            allOf: [{ $ref: "#/components/schemas/AuthAccountSummary" }],
-            nullable: true,
-          },
-          accountStatus: { $ref: "#/components/schemas/AccountLoadStatus" },
-        },
-        required: ["account", "accountStatus"],
+  ConnectedAccountsResponse: {
+    type: "object",
+    description:
+      "GET /accounts/me — linked sign-in providers (EMAIL, GOOGLE, APPLE).",
+    properties: {
+      providers: {
+        type: "array",
+        nullable: true,
+        items: { $ref: "#/components/schemas/ConnectedProviderInfo" },
       },
+      accountStatus: { $ref: "#/components/schemas/AccountLoadStatus" },
+    },
+    required: ["providers", "accountStatus"],
+  },
+  PrivacyScope: {
+    type: "string",
+    enum: ["EVERYONE", "FRIENDS_OF_FRIENDS", "FRIENDS", "NO_ONE"],
+  },
+  CallPrivacyScope: {
+    type: "string",
+    enum: ["FRIENDS", "SELECTED_FRIENDS", "NO_ONE"],
+  },
+  AutoDeleteTimer: {
+    type: "string",
+    enum: ["OFF", "DAYS_7", "DAYS_15", "DAYS_30"],
+  },
+  AppTheme: {
+    type: "string",
+    enum: ["LIGHT", "DARK", "AUTO"],
+    description: '`AUTO` is shown as "System" in the UI.',
+  },
+  LiveStreamQuality: {
+    type: "string",
+    enum: ["AUTO", "HIGH_1080P", "STANDARD_720P", "DATA_SAVER_480P"],
+    description: "`AUTO` adapts to connection speed (Recommended).",
+  },
+  UserPrivacySettings: {
+    type: "object",
+    properties: {
+      whoCanFindMe: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanSendFriendRequests: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanSeeOnlineStatus: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanViewProfile: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanCallMe: { $ref: "#/components/schemas/CallPrivacyScope" },
+      callAllowedFriendIds: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
+        description:
+          "Friends allowed to call when `whoCanCallMe` is `SELECTED_FRIENDS`.",
+      },
+    },
+    required: [
+      "whoCanFindMe",
+      "whoCanSendFriendRequests",
+      "whoCanSeeOnlineStatus",
+      "whoCanViewProfile",
+      "whoCanCallMe",
+      "callAllowedFriendIds",
     ],
+  },
+  UserChatSettings: {
+    type: "object",
+    properties: {
+      autoDeleteTimer: { $ref: "#/components/schemas/AutoDeleteTimer" },
+      typingIndicators: { type: "boolean" },
+      readReceipts: { type: "boolean" },
+    },
+    required: ["autoDeleteTimer", "typingIndicators", "readReceipts"],
+  },
+  UserAppSettings: {
+    type: "object",
+    properties: {
+      language: {
+        type: "string",
+        enum: ["en", "vi", "th"],
+        example: "en",
+        description: "Supported app language (ISO 639-1).",
+      },
+      theme: { $ref: "#/components/schemas/AppTheme" },
+    },
+    required: ["language", "theme"],
+  },
+  QuietHoursSettings: {
+    type: "object",
+    properties: {
+      enabled: { type: "boolean" },
+      start: {
+        type: "string",
+        nullable: true,
+        example: "22:00",
+        description: "HH:mm 24-hour, or null when unset.",
+      },
+      end: {
+        type: "string",
+        nullable: true,
+        example: "07:00",
+        description: "HH:mm 24-hour, or null when unset.",
+      },
+      days: {
+        type: "array",
+        items: { type: "integer", minimum: 0, maximum: 6 },
+        description:
+          "Days the quiet window applies to; 0=Sunday .. 6=Saturday.",
+      },
+    },
+    required: ["enabled", "start", "end", "days"],
+  },
+  UserNotificationSettings: {
+    type: "object",
+    properties: {
+      chat: { type: "boolean" },
+      call: { type: "boolean" },
+      friendRequest: { type: "boolean" },
+      system: { type: "boolean" },
+      community: { type: "boolean" },
+      liveStream: { type: "boolean" },
+      quietHours: { $ref: "#/components/schemas/QuietHoursSettings" },
+    },
+    required: [
+      "chat",
+      "call",
+      "friendRequest",
+      "system",
+      "community",
+      "liveStream",
+      "quietHours",
+    ],
+  },
+  UserLiveStreamSettings: {
+    type: "object",
+    properties: {
+      defaultVideoQuality: { $ref: "#/components/schemas/LiveStreamQuality" },
+    },
+    required: ["defaultVideoQuality"],
+  },
+  UserSettingsResponse: {
+    type: "object",
+    description:
+      "GET/PATCH /settings/me — privacy, chat, app, notification, and livestream preferences.",
+    properties: {
+      privacy: { $ref: "#/components/schemas/UserPrivacySettings" },
+      chat: { $ref: "#/components/schemas/UserChatSettings" },
+      app: { $ref: "#/components/schemas/UserAppSettings" },
+      notifications: { $ref: "#/components/schemas/UserNotificationSettings" },
+      liveStream: { $ref: "#/components/schemas/UserLiveStreamSettings" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "privacy",
+      "chat",
+      "app",
+      "notifications",
+      "liveStream",
+      "updatedAt",
+    ],
+  },
+  UpdateUserPrivacySettingsRequest: {
+    type: "object",
+    properties: {
+      whoCanFindMe: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanSendFriendRequests: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanSeeOnlineStatus: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanViewProfile: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanCallMe: { $ref: "#/components/schemas/CallPrivacyScope" },
+      callAllowedFriendIds: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
+        maxItems: 500,
+      },
+    },
+  },
+  UpdateUserChatSettingsRequest: {
+    type: "object",
+    properties: {
+      autoDeleteTimer: { $ref: "#/components/schemas/AutoDeleteTimer" },
+      typingIndicators: { type: "boolean" },
+      readReceipts: { type: "boolean" },
+    },
+  },
+  UpdateUserAppSettingsRequest: {
+    type: "object",
+    properties: {
+      language: { type: "string", enum: ["en", "vi", "th"], example: "en" },
+      theme: { $ref: "#/components/schemas/AppTheme" },
+    },
+  },
+  UpdateQuietHoursRequest: {
+    type: "object",
+    properties: {
+      enabled: { type: "boolean" },
+      start: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+      end: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+      days: {
+        type: "array",
+        maxItems: 7,
+        items: { type: "integer", minimum: 0, maximum: 6 },
+      },
+    },
+  },
+  UpdateUserNotificationSettingsRequest: {
+    type: "object",
+    properties: {
+      chat: { type: "boolean" },
+      call: { type: "boolean" },
+      friendRequest: { type: "boolean" },
+      system: { type: "boolean" },
+      community: { type: "boolean" },
+      liveStream: { type: "boolean" },
+      quietHours: { $ref: "#/components/schemas/UpdateQuietHoursRequest" },
+    },
+  },
+  UpdateUserLiveStreamSettingsRequest: {
+    type: "object",
+    properties: {
+      defaultVideoQuality: { $ref: "#/components/schemas/LiveStreamQuality" },
+    },
+  },
+  UpdateUserSettingsRequest: {
+    type: "object",
+    description:
+      "Partial update — include one or more groups (`privacy`, `chat`, `app`, `notifications`, `liveStream`).",
+    properties: {
+      privacy: {
+        $ref: "#/components/schemas/UpdateUserPrivacySettingsRequest",
+      },
+      chat: { $ref: "#/components/schemas/UpdateUserChatSettingsRequest" },
+      app: { $ref: "#/components/schemas/UpdateUserAppSettingsRequest" },
+      notifications: {
+        $ref: "#/components/schemas/UpdateUserNotificationSettingsRequest",
+      },
+      liveStream: {
+        $ref: "#/components/schemas/UpdateUserLiveStreamSettingsRequest",
+      },
+    },
+  },
+  AppVersionCheckRequest: {
+    type: "object",
+    properties: {
+      platform: {
+        type: "string",
+        enum: ["android", "ios"],
+        example: "android",
+      },
+      version: {
+        type: "string",
+        pattern: "^\\d{1,5}\\.\\d{1,5}\\.\\d{1,5}$",
+        example: "1.0.5",
+        description: "App build version: major.minor.patch",
+      },
+    },
+    required: ["platform", "version"],
+  },
+  AppVersionCheckResponseData: {
+    type: "object",
+    properties: {
+      platform: { type: "string", enum: ["android", "ios"] },
+      clientVersion: { type: "string", example: "1.0.5" },
+      minimumRequiredVersion: {
+        type: "string",
+        example: "1.0.0",
+        description: "Below this → force update.",
+      },
+      latestRecommendedVersion: {
+        type: "string",
+        example: "1.2.0",
+        description: "Below this (but ≥ minimum) → optional update.",
+      },
+      forceUpdate: {
+        type: "boolean",
+        example: false,
+        description: "If true, block the app and show force-update UI.",
+      },
+      optionalUpdate: {
+        type: "boolean",
+        example: true,
+        description: "If true, show optional (dismissible) update UI.",
+      },
+      isUpToDate: {
+        type: "boolean",
+        example: false,
+        description: "If true, continue without update UI.",
+      },
+      storeUrl: { type: "string", format: "uri", nullable: true },
+    },
+    required: [
+      "platform",
+      "clientVersion",
+      "minimumRequiredVersion",
+      "latestRecommendedVersion",
+      "forceUpdate",
+      "optionalUpdate",
+      "isUpToDate",
+    ],
+  },
+  DeviceLinkInitiateRequest: {
+    type: "object",
+    description:
+      "Optional device descriptors from the new (unauthenticated) device.",
+    properties: {
+      deviceName: {
+        type: "string",
+        maxLength: 100,
+        example: "Chrome on macOS",
+      },
+      deviceType: {
+        type: "string",
+        maxLength: 100,
+        example: "DESKTOP",
+        description: "One of IOS, ANDROID, DESKTOP, WEB (free-text).",
+      },
+      os: { type: "string", maxLength: 100, example: "macOS 14" },
+      appVersion: { type: "string", maxLength: 100, example: "1.4.0" },
+    },
+  },
+  DeviceLinkInitiateResponseData: {
+    type: "object",
+    properties: {
+      linkToken: {
+        type: "string",
+        description: "Embed in the QR code shown to the authenticated device.",
+      },
+      pollSecret: {
+        type: "string",
+        description:
+          "Secret held only by the new device; required to poll status.",
+      },
+      expiresAt: { type: "string", format: "date-time" },
+    },
+    required: ["linkToken", "pollSecret", "expiresAt"],
+  },
+  DeviceLinkStatusResponseData: {
+    type: "object",
+    properties: {
+      state: {
+        type: "string",
+        enum: ["PENDING", "APPROVED", "CONSUMED", "EXPIRED"],
+      },
+      approvedDeviceLabel: { type: "string", nullable: true },
+      tokens: {
+        nullable: true,
+        allOf: [{ $ref: "#/components/schemas/AuthTokens" }],
+        description: "Returned exactly once when the session is approved.",
+      },
+    },
+    required: ["state", "approvedDeviceLabel", "tokens"],
+  },
+  DeviceLinkApproveRequest: {
+    type: "object",
+    properties: {
+      linkToken: { type: "string" },
+      deviceLabel: { type: "string", maxLength: 100, example: "My laptop" },
+    },
+    required: ["linkToken"],
+  },
+  DeviceLinkApproveResponseData: {
+    type: "object",
+    properties: {
+      linkedAt: { type: "string", format: "date-time" },
+      sessionId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "Session id of the newly-linked device; revoke it via DELETE /auth/sessions/{sessionId} to undo the link.",
+      },
+    },
+    required: ["linkedAt", "sessionId"],
+  },
+  DeleteAccountRequest: {
+    type: "object",
+    description:
+      "Provide currentPassword for password accounts, or otp for passwordless accounts.",
+    properties: {
+      currentPassword: { type: "string", minLength: 1 },
+      otp: { type: "string", pattern: "^\\d{6}$", example: "123456" },
+    },
+  },
+  DeleteAccountResponseData: {
+    type: "object",
+    properties: {
+      deletedAt: { type: "string", format: "date-time" },
+    },
+    required: ["deletedAt"],
+  },
+
+  // ===========================================================================
+  // user-service · friends
+  // ===========================================================================
+  FriendListItem: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Presigned GET URL (private MinIO); null if no avatar.",
+      },
+      section: {
+        type: "string",
+        description:
+          "Uppercased first letter of firstName, or '#' for non-alphabetic names.",
+        example: "A",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "firstName",
+      "lastName",
+      "avatarUrl",
+      "section",
+    ],
+  },
+  FriendsListResponseData: {
+    type: "object",
+    properties: {
+      friends: {
+        type: "array",
+        items: { $ref: "#/components/schemas/FriendListItem" },
+      },
+      nextCursor: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description: "userId cursor for the next page; null when no more.",
+      },
+    },
+    required: ["friends", "nextCursor"],
+  },
+
+  // ===========================================================================
+  // community-service
+  // ===========================================================================
+  CommunityData: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      handle: { type: "string" },
+      description: { type: "string", nullable: true },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      category: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+        },
+        required: ["id", "name"],
+      },
+      creatorId: { type: "string", format: "uuid" },
+      adminId: { type: "string", format: "uuid" },
+      memberCount: { type: "integer", example: 1 },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Presigned GET URL (private MinIO).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true, example: 3600 },
+      coverUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Presigned GET URL (private MinIO).",
+      },
+      coverUrlExpiresIn: { type: "integer", nullable: true, example: 3600 },
+      myRole: {
+        type: "string",
+        nullable: true,
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        description: "Caller's membership role; null if not a member.",
+      },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "name",
+      "handle",
+      "description",
+      "type",
+      "category",
+      "creatorId",
+      "adminId",
+      "memberCount",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "coverUrl",
+      "coverUrlExpiresIn",
+      "myRole",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  CreateCommunityRequest: {
+    type: "object",
+    properties: {
+      name: { type: "string", minLength: 3, maxLength: 50 },
+      handle: {
+        type: "string",
+        minLength: 3,
+        maxLength: 32,
+        description: "Lowercase letters, numbers, underscores. Unique @-slug.",
+      },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      categoryId: {
+        type: "string",
+        description: "24-char hex ObjectId of an active category.",
+      },
+      description: { type: "string", maxLength: 500 },
+      avatarObjectKey: {
+        type: "string",
+        description: "Object key from /communities/uploads/url.",
+      },
+      memberIds: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
+        description: "Optional initial members (deduped, creator excluded).",
+        default: [],
+      },
+    },
+    required: ["name", "handle", "type", "categoryId"],
+  },
+  UpdateCommunityRequest: {
+    type: "object",
+    description: "Partial update; at least one field required. Admin only.",
+    properties: {
+      name: { type: "string", minLength: 3, maxLength: 50 },
+      handle: { type: "string", minLength: 3, maxLength: 32 },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      categoryId: { type: "string" },
+      description: { type: "string", maxLength: 500, nullable: true },
+      avatarObjectKey: { type: "string", nullable: true },
+    },
+  },
+  CommunityNameAvailabilityData: {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      available: { type: "boolean" },
+    },
+    required: ["name", "available"],
+  },
+  CommunityHandleAvailabilityData: {
+    type: "object",
+    properties: {
+      handle: { type: "string" },
+      available: { type: "boolean" },
+    },
+    required: ["handle", "available"],
+  },
+  CommunityCategoryData: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      slug: { type: "string" },
+    },
+    required: ["id", "name", "slug"],
+  },
+  CategoryListResponseData: {
+    type: "object",
+    properties: {
+      categories: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityCategoryData" },
+      },
+    },
+    required: ["categories"],
+  },
+  CommunityListItem: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      handle: { type: "string" },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      memberCount: { type: "integer" },
+      avatarUrl: { type: "string", format: "uri", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      myRole: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+    },
+    required: [
+      "id",
+      "name",
+      "handle",
+      "type",
+      "memberCount",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "myRole",
+    ],
+  },
+  MyCommunitiesResponseData: {
+    type: "object",
+    properties: {
+      communities: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityListItem" },
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description: "Community id cursor; null when no more.",
+      },
+    },
+    required: ["communities", "nextCursor"],
+  },
+  CommunityUploadUrlRequest: {
+    type: "object",
+    properties: {
+      type: {
+        type: "string",
+        enum: ["COMMUNITY_AVATAR"],
+        description: "Upload type registered in the community-service.",
+      },
+      contentType: {
+        type: "string",
+        enum: ["image/jpeg", "image/png", "image/webp"],
+      },
+      contentLength: {
+        type: "integer",
+        minimum: 1,
+        description: "File size in bytes (must not exceed server max).",
+      },
+    },
+    required: ["type", "contentType", "contentLength"],
   },
 } as const;

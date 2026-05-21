@@ -28,6 +28,19 @@ if (env.USER_SERVICE_URL) {
   });
 }
 
+if (env.COMMUNITY_SERVICE_URL) {
+  v1Services.push({
+    segment: "communities",
+    target: env.COMMUNITY_SERVICE_URL,
+    // community-service serves its routes under /api/v1/communities/* (matches
+    // its OpenAPI + direct testability), so keep the segment in the downstream
+    // path. The gateway strips the /api/v1/communities mount, then this prefix
+    // restores it. (Differs from `users`, whose service mounts at /api/v1 root.)
+    downstreamPrefix: "/api/v1/communities",
+    swaggerTag: "Communities",
+  });
+}
+
 const servicesByVersion: Record<ApiVersion, VersionedServiceConfig[]> = {
   v1: v1Services,
 };

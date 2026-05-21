@@ -1,7 +1,6 @@
 export type AuthUserResponse = {
   userId: string;
   account: string;
-  email: string;
 };
 
 export type AuthTokensResponse = {

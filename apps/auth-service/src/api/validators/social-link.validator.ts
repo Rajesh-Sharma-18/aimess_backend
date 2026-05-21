@@ -14,7 +14,7 @@ export const linkAppleSchema = z.object({
     .toLowerCase()
     .email("Invalid email address")
     .optional(),
-  fullName: z.string().trim().max(120).optional(),
+  fullName: z.string().trim().max(100).optional(),
 });
 
 export type LinkAppleInput = z.infer<typeof linkAppleSchema>;

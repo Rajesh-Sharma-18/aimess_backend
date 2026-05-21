@@ -5,9 +5,25 @@ import type {
   LinkGoogleInput,
   UnlinkSocialInput,
 } from "../api/validators/social-link.validator.js";
-import { AuthProvider } from "../generated/prisma/client.js";
-import { verifyAppleIdentityToken } from "../lib/apple-identity-token.js";
-import { verifyGoogleIdToken } from "../lib/google-id-token.js";
+import { AuthProvider, Prisma } from "../generated/prisma/client.js";
+import { verifyFirebaseIdToken } from "../lib/firebase-id-token.js";
+
+function isUniqueConstraintError(
+  error: unknown
+): error is Prisma.PrismaClientKnownRequestError {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
+  );
+}
+
+/** Was the unique violation on the (provider, providerUserId) index? */
+function isProviderAccountConflict(
+  error: Prisma.PrismaClientKnownRequestError
+): boolean {
+  const target = error.meta?.target;
+  return JSON.stringify(target ?? "").includes("providerUserId");
+}
 import { loadActiveAuthUser } from "../lib/account-guard.js";
 import {
   countSignInMethods,
@@ -52,13 +68,25 @@ async function linkProvider(
     throw new BadRequestError("AUTH_PROVIDER_ALREADY_LINKED");
   }
 
-  await linkedAccountRepository.create({
-    userId,
-    provider,
-    providerUserId: profile.sub,
-    email: profile.email,
-    displayName: profile.displayName,
-  });
+  try {
+    await linkedAccountRepository.create({
+      userId,
+      provider,
+      providerUserId: profile.sub,
+      email: profile.email,
+      displayName: profile.displayName,
+    });
+  } catch (error) {
+    // A concurrent link request won the race between the checks above and this
+    // insert; the unique constraint is the source of truth.
+    if (isUniqueConstraintError(error)) {
+      if (isProviderAccountConflict(error)) {
+        throw new ConflictError("AUTH_SOCIAL_ACCOUNT_LINKED_ELSEWHERE");
+      }
+      throw new BadRequestError("AUTH_PROVIDER_ALREADY_LINKED");
+    }
+    throw error;
+  }
 
   return { provider: socialProvider };
 }
@@ -94,7 +122,7 @@ export const socialLinkService = {
     userId: string,
     input: LinkGoogleInput
   ): Promise<SocialLinkResult> {
-    const profile = await verifyGoogleIdToken(input.idToken);
+    const profile = await verifyFirebaseIdToken(input.idToken, "google.com");
 
     return linkProvider(userId, AuthProvider.GOOGLE, {
       sub: profile.sub,
@@ -107,7 +135,10 @@ export const socialLinkService = {
     userId: string,
     input: LinkAppleInput
   ): Promise<SocialLinkResult> {
-    const tokenProfile = await verifyAppleIdentityToken(input.identityToken);
+    const tokenProfile = await verifyFirebaseIdToken(
+      input.identityToken,
+      "apple.com"
+    );
 
     const email =
       tokenProfile.email ?? input.email?.trim().toLowerCase() ?? null;
@@ -115,7 +146,7 @@ export const socialLinkService = {
     return linkProvider(userId, AuthProvider.APPLE, {
       sub: tokenProfile.sub,
       email,
-      displayName: input.fullName?.trim() ?? null,
+      displayName: tokenProfile.displayName ?? input.fullName?.trim() ?? null,
     });
   },
 

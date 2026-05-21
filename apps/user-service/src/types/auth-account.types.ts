@@ -1,6 +1,6 @@
 export type SignInProvider = "EMAIL" | "GOOGLE" | "APPLE";
 
-/** How sign-in provider data was loaded on GET /profiles/me. */
+/** How sign-in provider data was loaded on GET /accounts/me. */
 export type AccountLoadStatus = "live" | "cached" | "unavailable";
 
 export type ConnectedProviderInfo = {

@@ -1,0 +1,241 @@
+import type {
+  AppTheme,
+  AutoDeleteTimer,
+  CallPrivacyScope,
+  LiveStreamQuality,
+  PrivacyScope,
+} from "../generated/prisma/client.js";
+import { prisma } from "../config/prisma.js";
+
+export type SettingsBundle = {
+  deletedAt: Date | null;
+  privacySettings: {
+    whoCanFindMe: PrivacyScope;
+    whoCanSendFriendRequests: PrivacyScope;
+    whoCanSeeOnlineStatus: PrivacyScope;
+    whoCanViewProfile: PrivacyScope;
+    whoCanCallMe: CallPrivacyScope;
+    updatedAt: Date;
+  } | null;
+  chatSettings: {
+    autoDeleteTimer: AutoDeleteTimer;
+    typingIndicators: boolean;
+    readReceipts: boolean;
+    updatedAt: Date;
+  } | null;
+  appSettings: {
+    language: string;
+    theme: AppTheme;
+    updatedAt: Date;
+  } | null;
+  notificationSettings: {
+    chatEnabled: boolean;
+    callEnabled: boolean;
+    friendRequestEnabled: boolean;
+    systemEnabled: boolean;
+    communityEnabled: boolean;
+    liveStreamEnabled: boolean;
+    quietHoursEnabled: boolean;
+    quietHoursStart: string | null;
+    quietHoursEnd: string | null;
+    quietHoursDays: number[];
+    updatedAt: Date;
+  } | null;
+  liveStreamSettings: {
+    defaultVideoQuality: LiveStreamQuality;
+    updatedAt: Date;
+  } | null;
+  callPrivacyAllowList: { allowedUserId: string }[];
+};
+
+export type PrivacySettingsUpdate = {
+  whoCanFindMe?: PrivacyScope;
+  whoCanSendFriendRequests?: PrivacyScope;
+  whoCanSeeOnlineStatus?: PrivacyScope;
+  whoCanViewProfile?: PrivacyScope;
+  whoCanCallMe?: CallPrivacyScope;
+};
+
+export type ChatSettingsUpdate = {
+  autoDeleteTimer?: AutoDeleteTimer;
+  typingIndicators?: boolean;
+  readReceipts?: boolean;
+};
+
+export type AppSettingsUpdate = {
+  language?: string;
+  theme?: AppTheme;
+};
+
+export type NotificationSettingsUpdate = {
+  chatEnabled?: boolean;
+  callEnabled?: boolean;
+  friendRequestEnabled?: boolean;
+  systemEnabled?: boolean;
+  communityEnabled?: boolean;
+  liveStreamEnabled?: boolean;
+  quietHoursEnabled?: boolean;
+  quietHoursStart?: string;
+  quietHoursEnd?: string;
+  quietHoursDays?: number[];
+};
+
+export type LiveStreamSettingsUpdate = {
+  defaultVideoQuality?: LiveStreamQuality;
+};
+
+const notificationSelect = {
+  chatEnabled: true,
+  callEnabled: true,
+  friendRequestEnabled: true,
+  systemEnabled: true,
+  communityEnabled: true,
+  liveStreamEnabled: true,
+  quietHoursEnabled: true,
+  quietHoursStart: true,
+  quietHoursEnd: true,
+  quietHoursDays: true,
+  updatedAt: true,
+} as const;
+
+export const userSettingsRepository = {
+  findSettingsBundle(userId: string): Promise<SettingsBundle | null> {
+    return prisma.userProfile.findUnique({
+      where: { userId },
+      select: {
+        deletedAt: true,
+        privacySettings: {
+          select: {
+            whoCanFindMe: true,
+            whoCanSendFriendRequests: true,
+            whoCanSeeOnlineStatus: true,
+            whoCanViewProfile: true,
+            whoCanCallMe: true,
+            updatedAt: true,
+          },
+        },
+        chatSettings: {
+          select: {
+            autoDeleteTimer: true,
+            typingIndicators: true,
+            readReceipts: true,
+            updatedAt: true,
+          },
+        },
+        appSettings: {
+          select: {
+            language: true,
+            theme: true,
+            updatedAt: true,
+          },
+        },
+        notificationSettings: { select: notificationSelect },
+        liveStreamSettings: {
+          select: { defaultVideoQuality: true, updatedAt: true },
+        },
+        callPrivacyAllowList: {
+          select: { allowedUserId: true },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+  },
+
+  ensureDefaultSettings(userId: string): Promise<void> {
+    return prisma.$transaction(async (tx) => {
+      await tx.privacySettings.upsert({
+        where: { userId },
+        create: { userId },
+        update: {},
+      });
+      await tx.chatSettings.upsert({
+        where: { userId },
+        create: { userId },
+        update: {},
+      });
+      await tx.appSettings.upsert({
+        where: { userId },
+        create: { userId },
+        update: {},
+      });
+      await tx.notificationSettings.upsert({
+        where: { userId },
+        create: { userId },
+        update: {},
+      });
+      await tx.liveStreamSettings.upsert({
+        where: { userId },
+        create: { userId },
+        update: {},
+      });
+    });
+  },
+
+  updateSettings(
+    userId: string,
+    data: {
+      privacy?: PrivacySettingsUpdate;
+      chat?: ChatSettingsUpdate;
+      app?: AppSettingsUpdate;
+      notifications?: NotificationSettingsUpdate;
+      liveStream?: LiveStreamSettingsUpdate;
+      callAllowedFriendIds?: string[];
+    }
+  ): Promise<void> {
+    return prisma.$transaction(async (tx) => {
+      if (data.privacy && Object.keys(data.privacy).length > 0) {
+        await tx.privacySettings.upsert({
+          where: { userId },
+          create: { userId, ...data.privacy },
+          update: data.privacy,
+        });
+      }
+
+      if (data.chat && Object.keys(data.chat).length > 0) {
+        await tx.chatSettings.upsert({
+          where: { userId },
+          create: { userId, ...data.chat },
+          update: data.chat,
+        });
+      }
+
+      if (data.app && Object.keys(data.app).length > 0) {
+        await tx.appSettings.upsert({
+          where: { userId },
+          create: { userId, ...data.app },
+          update: data.app,
+        });
+      }
+
+      if (data.notifications && Object.keys(data.notifications).length > 0) {
+        await tx.notificationSettings.upsert({
+          where: { userId },
+          create: { userId, ...data.notifications },
+          update: data.notifications,
+        });
+      }
+
+      if (data.liveStream && Object.keys(data.liveStream).length > 0) {
+        await tx.liveStreamSettings.upsert({
+          where: { userId },
+          create: { userId, ...data.liveStream },
+          update: data.liveStream,
+        });
+      }
+
+      if (data.callAllowedFriendIds !== undefined) {
+        await tx.callAllowedFriend.deleteMany({ where: { ownerId: userId } });
+
+        if (data.callAllowedFriendIds.length > 0) {
+          await tx.callAllowedFriend.createMany({
+            data: data.callAllowedFriendIds.map((allowedUserId) => ({
+              ownerId: userId,
+              allowedUserId,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }
+    });
+  },
+};

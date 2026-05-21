@@ -4,9 +4,11 @@ import helmet from "helmet";
 import { localeMiddleware } from "@aimess/utils";
 
 import { accountRoutes } from "./api/routes/account.routes.js";
+import { accountDeletionRoutes } from "./api/routes/account-deletion.routes.js";
 import { authRoutes } from "./api/routes/auth.routes.js";
 import { changeEmailRoutes } from "./api/routes/change-email.routes.js";
 import { changePasswordRoutes } from "./api/routes/change-password.routes.js";
+import { deviceLinkRoutes } from "./api/routes/device-link.routes.js";
 import { emailLinkRoutes } from "./api/routes/email-link.routes.js";
 import { sessionRoutes } from "./api/routes/session.routes.js";
 import { socialLinkRoutes } from "./api/routes/social-link.routes.js";
@@ -36,6 +38,8 @@ app.use("/api/auth", changeEmailRoutes);
 app.use("/api/auth", changePasswordRoutes);
 app.use("/api/auth", sessionRoutes);
 app.use("/api/auth", socialLinkRoutes);
+app.use("/api/auth", deviceLinkRoutes);
+app.use("/api/auth", accountDeletionRoutes);
 
 app.use(errorHandler);
 

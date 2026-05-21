@@ -23,7 +23,6 @@ export const passwordSchema = z
 
 export const registerSchema = z.object({
   account: accountSchema,
-  email: z.string().trim().toLowerCase().email("Invalid email address"),
   password: passwordSchema,
 });
 

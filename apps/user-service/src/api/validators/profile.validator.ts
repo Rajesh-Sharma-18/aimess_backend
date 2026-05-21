@@ -4,15 +4,21 @@ import {
   isValidProfileDateOfBirth,
   PROFILE_GENDER_VALUES,
 } from "../../lib/profile-fields.util.js";
+import { normalizeUsername } from "../../lib/username.util.js";
 
 const usernameSchema = z
   .string()
   .trim()
-  .min(3, "Username must be at least 3 characters")
-  .max(32, "Username must be at most 32 characters")
-  .regex(
-    /^[a-zA-Z0-9_]+$/,
-    "Username may only contain letters, numbers, and underscores"
+  .transform((s) => normalizeUsername(s))
+  .pipe(
+    z
+      .string()
+      .min(3, "Username must be at least 3 characters")
+      .max(32, "Username must be at most 32 characters")
+      .regex(
+        /^[a-z0-9_]+$/,
+        "Username may only contain lowercase letters, numbers, and underscores"
+      )
   );
 
 const dateOfBirthSchema = z

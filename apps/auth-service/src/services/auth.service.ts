@@ -8,6 +8,7 @@ import type {
   RegisterInput,
 } from "../api/validators/auth.validator.js";
 import { AccountStatus } from "../generated/prisma/client.js";
+import { env } from "../config/env.js";
 import {
   isEmailLoginIdentifier,
   normalizeLoginIdentifier,
@@ -20,17 +21,9 @@ import type { LoginResult, RegisterResult } from "../types/index.js";
 
 export const authService = {
   async register(req: Request, input: RegisterInput): Promise<RegisterResult> {
-    const email = input.email;
     const account = input.account;
 
-    const [existingEmail, existingAccount] = await Promise.all([
-      authRepository.findByEmail(email),
-      authRepository.findByAccount(account),
-    ]);
-
-    if (existingEmail) {
-      throw new ConflictError("AUTH_EMAIL_EXISTS");
-    }
+    const existingAccount = await authRepository.findByAccount(account);
 
     if (existingAccount) {
       throw new ConflictError("AUTH_ACCOUNT_TAKEN");
@@ -40,19 +33,16 @@ export const authService = {
 
     const user = await authRepository.createUser({
       account,
-      email,
       passwordHash,
-      emailVerified: false,
       lastPasswordChangeAt: new Date(),
     });
 
     const session = buildSessionContext(req);
-    const tokens = await issueAuthTokens(user.id, session);
+    const { tokens } = await issueAuthTokens(user.id, session);
 
     publishUserCreatedSafe({
       userId: user.id,
       account: user.account,
-      email: user.email ?? email,
       createdAt: user.createdAt.toISOString(),
     });
 
@@ -60,7 +50,6 @@ export const authService = {
       user: {
         userId: user.id,
         account: user.account,
-        email: user.email ?? email,
         createdAt: user.createdAt.toISOString(),
       },
       tokens,
@@ -98,13 +87,18 @@ export const authService = {
       user.passwordHash
     );
     if (!passwordValid) {
+      await authRepository.recordFailedLogin(
+        user.id,
+        env.AUTH_MAX_FAILED_LOGINS,
+        env.AUTH_LOCKOUT_MINUTES
+      );
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
     }
 
     await authRepository.recordSuccessfulLogin(user.id);
 
     const session = buildSessionContext(req);
-    const tokens = await issueAuthTokens(user.id, session);
+    const { tokens } = await issueAuthTokens(user.id, session);
 
     return {
       tokens,

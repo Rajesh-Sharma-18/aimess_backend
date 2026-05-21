@@ -47,6 +47,8 @@ model UserProfile {
   privacySettings        PrivacySettings?
   chatSettings           ChatSettings?
   appSettings            AppSettings?
+  notificationSettings   NotificationSettings?
+  liveStreamSettings     LiveStreamSettings?
   sentFriendRequests     Friendship[]        @relation("RequesterFriendships")
   receivedFriendRequests Friendship[]        @relation("AddresseeFriendships")
   blocksMade             Block[]             @relation("BlockerBlocks")
@@ -147,18 +149,52 @@ model ChatSettings {
 }
 
 // -----------------------------------------------------------------------------
-// AppSettings
+// AppSettings — General screen: Language + Theme.
 // -----------------------------------------------------------------------------
 model AppSettings {
-  userId         String       @id @db.Uuid
-  user           UserProfile  @relation(fields: [userId], references: [userId], onDelete: Cascade)
-  language       String       @default("vi") // ISO 639-1; vi = Vietnamese
-  theme          AppTheme     @default(AUTO)
-  dataSaverMode  Boolean      @default(false)
-  autoplayVideos AutoplayMode @default(WIFI_ONLY)
-  updatedAt      DateTime     @updatedAt
+  userId    String      @id @db.Uuid
+  user      UserProfile @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  language  String      @default("en") // ISO 639-1; supported: en, vi, th
+  theme     AppTheme    @default(AUTO) // AUTO = "System" in the UI
+  updatedAt DateTime    @updatedAt
 
   @@map("app_settings")
+}
+
+// -----------------------------------------------------------------------------
+// NotificationSettings — Notification Preferences screen.
+// Per-category toggles + Quiet Hours (silence alerts on selected days/window).
+// -----------------------------------------------------------------------------
+model NotificationSettings {
+  userId               String      @id @db.Uuid
+  user                 UserProfile @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  // Category toggles
+  chatEnabled          Boolean     @default(true)
+  callEnabled          Boolean     @default(true)
+  friendRequestEnabled Boolean     @default(true)
+  systemEnabled        Boolean     @default(true)
+  communityEnabled     Boolean     @default(true)
+  liveStreamEnabled    Boolean     @default(true)
+  // Quiet Hours
+  quietHoursEnabled    Boolean     @default(false)
+  quietHoursStart      String? // "HH:mm" 24h, e.g. "22:00"
+  quietHoursEnd        String? // "HH:mm" 24h, e.g. "07:00"
+  quietHoursDays       Int[]       @default([]) // 0=Sunday .. 6=Saturday
+  updatedAt            DateTime    @updatedAt
+
+  @@map("notification_settings")
+}
+
+// -----------------------------------------------------------------------------
+// LiveStreamSettings — Livestream screen: default playback video quality.
+// -----------------------------------------------------------------------------
+model LiveStreamSettings {
+  userId             String           @id @db.Uuid
+  user               UserProfile      @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  defaultVideoQuality LiveStreamQuality @default(AUTO)
+  updatedAt          DateTime         @updatedAt
+
+  @@map("livestream_settings")
 }
 
 // -----------------------------------------------------------------------------
@@ -217,19 +253,20 @@ enum CallPrivacyScope {
 
 enum AutoDeleteTimer {
   OFF
-  HOURS_24
-  WEEK_1
-  MONTH_1
+  DAYS_7
+  DAYS_15
+  DAYS_30
 }
 
 enum AppTheme {
   LIGHT
   DARK
-  AUTO
+  AUTO // "System" in the UI
 }
 
-enum AutoplayMode {
-  ALWAYS
-  WIFI_ONLY
-  NEVER
+enum LiveStreamQuality {
+  AUTO // Recommended — adapts to connection speed
+  HIGH_1080P
+  STANDARD_720P
+  DATA_SAVER_480P
 }

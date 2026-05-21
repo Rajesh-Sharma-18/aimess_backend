@@ -4,4 +4,6 @@ export type ApiSuccess<T> = {
   data: T;
 };
 
-export type { UserProfileResponse } from "./user-profile.types.js";
+export type { ConnectedAccountsResponse } from "./connected-accounts.types.js";
+export type { UserProfileData } from "./user-profile.types.js";
+export type { UserSettingsResponse } from "./user-settings.types.js";

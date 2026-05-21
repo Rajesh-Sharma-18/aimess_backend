@@ -1,13 +1,19 @@
 import { BadRequestError } from "@aimess/errors";
 
-import { prisma } from "../config/prisma.js";
+import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userCache } from "../lib/user-cache.js";
 import {
   isValidUsernameFormat,
+  normalizeUsername,
   usernameBaseFromAccount,
   usernameWithSuffix,
 } from "../lib/username.util.js";
-import { logger } from "@aimess/logger";
+
+export type UsernameAvailabilityResult = {
+  username: string;
+  /** True if nobody else uses this handle, or it is already yours (same `excludeUserId`). */
+  available: boolean;
+};
 
 export class UsernameService {
   async generateFromAccount(account: string): Promise<{ username: string }> {
@@ -24,55 +30,67 @@ export class UsernameService {
   async validateAvailability(
     username: string,
     excludeUserId?: string
-  ): Promise<{ username: string; available: boolean }> {
-    if (!isValidUsernameFormat(username)) {
+  ): Promise<UsernameAvailabilityResult> {
+    const canonical = normalizeUsername(username);
+    if (!isValidUsernameFormat(canonical)) {
       throw new BadRequestError("INVALID_USERNAME_FORMAT");
     }
 
     const cached = await userCache.getUsernameAvailability(
-      username,
+      canonical,
       excludeUserId
     );
-    logger.info(`Cached: ${cached}`);
     if (cached !== null) {
-      return { username, available: cached.available };
+      return {
+        username: canonical,
+        available: cached.available,
+      };
     }
 
-    const available = await this.isUsernameAvailable(username, excludeUserId);
-    logger.info(`Available: ${available}`);
-    await userCache.setUsernameAvailability(username, excludeUserId, available);
+    const result = await this.resolveUsernameAvailability(
+      canonical,
+      excludeUserId
+    );
+    await userCache.setUsernameAvailability(
+      canonical,
+      excludeUserId,
+      result.available
+    );
 
-    return { username, available };
+    return result;
   }
 
-  private async isUsernameAvailable(
+  private async resolveUsernameAvailability(
     username: string,
     excludeUserId?: string
-  ): Promise<boolean> {
+  ): Promise<UsernameAvailabilityResult> {
     const existing = await this.findProfileByUsername(username);
 
-    return (
-      !existing ||
-      (excludeUserId !== undefined && existing.userId === excludeUserId)
-    );
+    if (!existing) {
+      return { username, available: true };
+    }
+
+    if (excludeUserId !== undefined && existing.userId === excludeUserId) {
+      return { username, available: true };
+    }
+
+    return { username, available: false };
   }
 
   private async findProfileByUsername(username: string) {
-    return prisma.userProfile.findUnique({
-      where: { username },
-      select: { userId: true },
-    });
+    return userProfileRepository.findByUsername(username);
   }
 
   private async isUsernameTaken(username: string): Promise<boolean> {
-    const cachedTaken = await userCache.getUsernameTaken(username);
+    const canonical = normalizeUsername(username);
+    const cachedTaken = await userCache.getUsernameTaken(canonical);
     if (cachedTaken === true) {
       return true;
     }
 
-    const existing = await this.findProfileByUsername(username);
+    const existing = await this.findProfileByUsername(canonical);
     if (existing) {
-      await userCache.markUsernameTaken(username);
+      await userCache.markUsernameTaken(canonical);
       return true;
     }
 
@@ -80,12 +98,13 @@ export class UsernameService {
   }
 
   private async findAvailableUsername(base: string): Promise<string> {
-    if (!(await this.isUsernameTaken(base))) {
-      return base;
+    const canonicalBase = normalizeUsername(base);
+    if (!(await this.isUsernameTaken(canonicalBase))) {
+      return canonicalBase;
     }
 
     for (let suffix = 2; suffix <= 9999; suffix += 1) {
-      const candidate = usernameWithSuffix(base, suffix);
+      const candidate = usernameWithSuffix(canonicalBase, suffix);
       if (!isValidUsernameFormat(candidate)) {
         continue;
       }

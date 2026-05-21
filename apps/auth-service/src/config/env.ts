@@ -25,13 +25,30 @@ const envSchema = z.object({
   OTP_TTL_SECONDS: z.coerce.number().positive().default(600),
   OTP_MAX_ATTEMPTS: z.coerce.number().positive().default(5),
   PASSWORD_RESET_TOKEN_TTL_SECONDS: z.coerce.number().positive().default(900),
+
+  /** Failed-login attempts before the account is temporarily locked. */
+  AUTH_MAX_FAILED_LOGINS: z.coerce.number().int().positive().default(5),
+  /** Lockout window (minutes) applied once the failed-login threshold is hit. */
+  AUTH_LOCKOUT_MINUTES: z.coerce.number().int().positive().default(15),
+
+  /** Max OTP issuance requests per identifier within the window below. */
+  OTP_REQUEST_MAX: z.coerce.number().int().positive().default(5),
+  /** Sliding window (seconds) for the OTP issuance throttle. */
+  OTP_REQUEST_WINDOW_SEC: z.coerce.number().int().positive().default(900),
   /** Dev only: fixed OTP (e.g. 123456). Logged in terminal until email is wired up. */
   OTP_DEV_FIXED_CODE: z.string().optional(),
 
-  /** Comma-separated Google OAuth client IDs (Web / iOS / Android). */
-  GOOGLE_CLIENT_IDS: z.string().default(""),
-  /** Comma-separated Apple client IDs (bundle id / service id). */
-  APPLE_CLIENT_IDS: z.string().default(""),
+  /**
+   * Firebase Admin service-account credentials (Project Settings →
+   * Service accounts → Generate new private key). Used to verify the
+   * Firebase ID tokens sent by the Google / Apple sign-in clients.
+   *
+   * Optional so the service still boots without them — only Google/Apple
+   * login is disabled until all three are set (see config/firebase.ts).
+   */
+  FIREBASE_PROJECT_ID: z.string().min(1).optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().min(1).optional(),
+  FIREBASE_PRIVATE_KEY: z.string().min(1).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -42,17 +59,4 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-function parseCsvIds(value: string): string[] {
-  return value
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
-}
-
-const raw = parsed.data;
-
-export const env = {
-  ...raw,
-  GOOGLE_CLIENT_IDS: parseCsvIds(raw.GOOGLE_CLIENT_IDS),
-  APPLE_CLIENT_IDS: parseCsvIds(raw.APPLE_CLIENT_IDS),
-};
+export const env = parsed.data;

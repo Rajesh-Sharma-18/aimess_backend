@@ -1,5 +1,6 @@
 import { prisma } from "../config/prisma.js";
 import {
+  AccountStatus,
   AuthProvider,
   SessionRevokeReason,
   type DeviceType,
@@ -163,6 +164,50 @@ export const authRepository = {
     });
   },
 
+  /**
+   * Soft-delete the account: tombstone the user, revoke every active session
+   * (reason ACCOUNT_DELETED) and revoke outstanding refresh tokens — all in one
+   * transaction. Returns the revoked session ids so the caller can flush the
+   * Redis active-session cache.
+   */
+  softDeleteUser(userId: string) {
+    return prisma.$transaction(async (tx) => {
+      const now = new Date();
+
+      const activeSessions = await tx.session.findMany({
+        where: { userId, revokedAt: null },
+        select: { id: true },
+      });
+
+      await tx.authUser.update({
+        where: { id: userId },
+        data: {
+          status: AccountStatus.DELETED,
+          deletedAt: now,
+          deletionRequestedAt: now,
+        },
+      });
+
+      await tx.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: {
+          revokedAt: now,
+          revokedReason: SessionRevokeReason.ACCOUNT_DELETED,
+        },
+      });
+
+      await tx.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+
+      return {
+        deletedAt: now,
+        revokedSessionIds: activeSessions.map((session) => session.id),
+      };
+    });
+  },
+
   findByAccount(account: string) {
     return prisma.authUser.findUnique({ where: { account } });
   },
@@ -178,6 +223,34 @@ export const authRepository = {
     return prisma.authUser.findUnique({
       where: { email },
       select: loginUserSelect,
+    });
+  },
+
+  /**
+   * Atomically increment failed-login attempts; once `maxAttempts` is reached,
+   * lock the account for `lockoutMinutes`. Runs in a transaction so concurrent
+   * bad-password attempts cannot race past the threshold.
+   */
+  recordFailedLogin(
+    userId: string,
+    maxAttempts: number,
+    lockoutMinutes: number
+  ) {
+    return prisma.$transaction(async (tx) => {
+      const updated = await tx.authUser.update({
+        where: { id: userId },
+        data: { failedLoginAttempts: { increment: 1 } },
+        select: { failedLoginAttempts: true },
+      });
+
+      if (updated.failedLoginAttempts >= maxAttempts) {
+        await tx.authUser.update({
+          where: { id: userId },
+          data: {
+            lockedUntil: new Date(Date.now() + lockoutMinutes * 60 * 1000),
+          },
+        });
+      }
     });
   },
 

@@ -114,6 +114,10 @@ export const AUTH_MESSAGES = {
     vi: "Đã vượt quá số lần nhập OTP, vui lòng yêu cầu mã mới",
     en: "Too many OTP attempts, please request a new code",
   },
+  AUTH_OTP_REQUEST_THROTTLED: {
+    vi: "Bạn đã yêu cầu mã OTP quá nhiều lần, vui lòng thử lại sau",
+    en: "Too many OTP requests, please try again later",
+  },
   AUTH_RESET_TOKEN_INVALID: {
     vi: "Liên kết đặt lại mật khẩu không hợp lệ",
     en: "Invalid password reset token",
@@ -209,6 +213,38 @@ export const AUTH_MESSAGES = {
   AUTH_ACCOUNT_FETCHED: {
     vi: "Lấy thông tin tài khoản thành công",
     en: "Account information fetched successfully",
+  },
+  AUTH_DEVICE_LINK_INITIATED: {
+    vi: "Đã tạo phiên liên kết thiết bị",
+    en: "Device link session created",
+  },
+  AUTH_DEVICE_LINK_STATUS: {
+    vi: "Lấy trạng thái liên kết thiết bị thành công",
+    en: "Device link status retrieved",
+  },
+  AUTH_DEVICE_LINK_APPROVED: {
+    vi: "Đã phê duyệt liên kết thiết bị",
+    en: "Device linked successfully",
+  },
+  AUTH_DEVICE_LINK_NOT_FOUND: {
+    vi: "Phiên liên kết thiết bị không tồn tại hoặc đã hết hạn",
+    en: "Device link session not found or expired",
+  },
+  AUTH_DEVICE_LINK_ALREADY_APPROVED: {
+    vi: "Phiên liên kết thiết bị này đã được phê duyệt",
+    en: "This device link session has already been approved",
+  },
+  AUTH_ACCOUNT_DELETE_OTP_SENT: {
+    vi: "Mã OTP xác nhận xóa tài khoản đã được gửi tới email của bạn",
+    en: "An account deletion OTP has been sent to your email",
+  },
+  AUTH_ACCOUNT_DELETED: {
+    vi: "Tài khoản đã được xóa",
+    en: "Account deleted successfully",
+  },
+  AUTH_DELETE_CONFIRMATION_REQUIRED: {
+    vi: "Vui lòng nhập mật khẩu hiện tại để xác nhận xóa tài khoản",
+    en: "Current password is required to confirm account deletion",
   },
 } as const satisfies MessageCatalog;
 

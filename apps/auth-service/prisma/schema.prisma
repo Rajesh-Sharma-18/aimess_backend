@@ -241,6 +241,7 @@ enum SessionRevokeReason {
   ADMIN_REVOKED
   SUSPICIOUS_ACTIVITY
   TOKEN_REUSE_DETECTED
+  ACCOUNT_DELETED
 }
 
 enum LoginFailureReason {

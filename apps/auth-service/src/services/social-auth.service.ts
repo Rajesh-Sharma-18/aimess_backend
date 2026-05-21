@@ -2,9 +2,12 @@ import type { Request } from "express";
 
 import { ConflictError, UnauthorizedError } from "@aimess/errors";
 
-import { AccountStatus, AuthProvider } from "../generated/prisma/client.js";
-import { verifyAppleIdentityToken } from "../lib/apple-identity-token.js";
-import { verifyGoogleIdToken } from "../lib/google-id-token.js";
+import {
+  AccountStatus,
+  AuthProvider,
+  Prisma,
+} from "../generated/prisma/client.js";
+import { verifyFirebaseIdToken } from "../lib/firebase-id-token.js";
 import {
   buildSocialAccountBase,
   generateUniqueAccount,
@@ -30,6 +33,13 @@ type AuthUserRow = {
   deletedAt: Date | null;
 };
 
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
+  );
+}
+
 function assertUserCanLogin(user: AuthUserRow): void {
   if (user.deletedAt) {
     throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
@@ -50,7 +60,28 @@ async function issueTokensForUser(
 ): Promise<SocialLoginResult["tokens"]> {
   await authRepository.recordSuccessfulLogin(user.id);
   const session = buildSessionContext(req);
-  return issueAuthTokens(user.id, session);
+  const { tokens } = await issueAuthTokens(user.id, session);
+  return tokens;
+}
+
+async function loginExistingLinkedUser(
+  req: Request,
+  provider: SocialAuthProvider,
+  user: AuthUserRow
+): Promise<SocialLoginResult> {
+  assertUserCanLogin(user);
+  const tokens = await issueTokensForUser(req, user);
+
+  return {
+    isNewUser: false,
+    user: {
+      userId: user.id,
+      account: user.account,
+      email: user.email,
+      provider,
+    },
+    tokens,
+  };
 }
 
 async function signInWithProvider(
@@ -72,31 +103,20 @@ async function signInWithProvider(
   );
 
   if (existingLink?.user) {
-    assertUserCanLogin(existingLink.user);
-    const tokens = await issueTokensForUser(req, existingLink.user);
-
-    return {
-      isNewUser: false,
-      user: {
-        userId: existingLink.user.id,
-        account: existingLink.user.account,
-        email: existingLink.user.email,
-        provider,
-      },
-      tokens,
-    };
+    return loginExistingLinkedUser(req, provider, existingLink.user);
   }
 
-  if (profile.email) {
+  // Auto-link to an existing account by email ONLY when the email was verified
+  // by the provider's cryptographically-signed token. A client-supplied or
+  // unverified email must never merge into an existing account (takeover risk).
+  if (profile.email && profile.emailVerified) {
     const existingUser = await authRepository.findByEmail(profile.email);
     if (existingUser) {
       assertUserCanLogin(existingUser);
 
-      const alreadyLinked = await linkedAccountRepository.findByProvider(
-        authProvider,
-        profile.sub
-      );
-      if (!alreadyLinked) {
+      // Rely on the unique constraint instead of a redundant pre-check: a
+      // concurrent login may create the same link, which surfaces as P2002.
+      try {
         await linkedAccountRepository.create({
           userId: existingUser.id,
           provider: authProvider,
@@ -104,6 +124,10 @@ async function signInWithProvider(
           email: profile.email,
           displayName: profile.displayName,
         });
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) {
+          throw error;
+        }
       }
 
       const tokens = await issueTokensForUser(req, existingUser);
@@ -150,7 +174,7 @@ async function signInWithProvider(
   });
 
   const session = buildSessionContext(req);
-  const tokens = await issueAuthTokens(user.id, session);
+  const { tokens } = await issueAuthTokens(user.id, session);
 
   return {
     isNewUser: true,
@@ -169,7 +193,7 @@ export const socialAuthService = {
     req: Request,
     input: GoogleLoginInput
   ): Promise<SocialLoginResult> {
-    const profile = await verifyGoogleIdToken(input.idToken);
+    const profile = await verifyFirebaseIdToken(input.idToken, "google.com");
 
     return signInWithProvider(req, "GOOGLE", {
       sub: profile.sub,
@@ -183,19 +207,25 @@ export const socialAuthService = {
     req: Request,
     input: AppleLoginInput
   ): Promise<SocialLoginResult> {
-    const tokenProfile = await verifyAppleIdentityToken(input.identityToken);
+    const tokenProfile = await verifyFirebaseIdToken(
+      input.identityToken,
+      "apple.com"
+    );
 
+    // Only the email from the verified Firebase token may be trusted as
+    // verified. A client-supplied `input.email` is never treated as verified
+    // (prevents account-takeover by claiming someone else's email).
     const email =
       tokenProfile.email ?? input.email?.trim().toLowerCase() ?? null;
     const emailVerified = tokenProfile.email
       ? tokenProfile.emailVerified
-      : Boolean(input.email);
+      : false;
 
     return signInWithProvider(req, "APPLE", {
       sub: tokenProfile.sub,
       email,
       emailVerified,
-      displayName: input.fullName?.trim() ?? null,
+      displayName: tokenProfile.displayName ?? input.fullName?.trim() ?? null,
     });
   },
 };

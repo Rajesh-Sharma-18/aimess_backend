@@ -14,6 +14,12 @@ export type AuthTokens = {
   refreshTokenExpiresIn: number;
 };
 
+/** Tokens plus the id of the session row they belong to (needed e.g. to undo a device link). */
+export type IssuedAuthTokens = {
+  tokens: AuthTokens;
+  sessionId: string;
+};
+
 function parseExpiresInSeconds(value: string): number {
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -33,7 +39,7 @@ export function createRefreshTokenValue(): string {
 export async function issueAuthTokens(
   userId: string,
   session: SessionContext
-): Promise<AuthTokens> {
+): Promise<IssuedAuthTokens> {
   const accessTokenExpiresIn = parseExpiresInSeconds(env.JWT_ACCESS_EXPIRES_IN);
   const refreshTokenExpiresIn = parseExpiresInSeconds(
     env.JWT_REFRESH_EXPIRES_IN
@@ -65,9 +71,12 @@ export async function issueAuthTokens(
   await markSessionActive(createdSession.id);
 
   return {
-    accessToken,
-    refreshToken,
-    accessTokenExpiresIn,
-    refreshTokenExpiresIn,
+    tokens: {
+      accessToken,
+      refreshToken,
+      accessTokenExpiresIn,
+      refreshTokenExpiresIn,
+    },
+    sessionId: createdSession.id,
   };
 }

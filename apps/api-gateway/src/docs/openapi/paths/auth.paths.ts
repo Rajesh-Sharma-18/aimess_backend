@@ -115,7 +115,7 @@ export const authPaths = {
       tags: ["Auth"],
       summary: "Sign in with Google",
       description:
-        "Verify a Google ID token from the client SDK, then create or link the user and return AIMess tokens.",
+        "Verify the Firebase ID token from a Google sign-in (Firebase Auth client SDK), then create or link the user and return AIMess tokens.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
@@ -178,7 +178,7 @@ export const authPaths = {
       tags: ["Auth"],
       summary: "Sign in with Apple",
       description:
-        "Verify an Apple identity token from the client SDK. Pass `email` on first sign-in if Apple does not include it in the token.",
+        "Verify the Firebase ID token from an Apple sign-in (Firebase Auth client SDK), then create or link the user and return AIMess tokens.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
@@ -399,7 +399,7 @@ export const authPaths = {
       tags: ["Auth"],
       summary: "List active sessions (devices)",
       description:
-        "Returns **all** active devices/sessions for the user. The current device is marked `isCurrent: true`. Revoke one device with DELETE /sessions/{sessionId}, or all devices with POST /sessions/revoke-all.",
+        "Returns **all** active devices/sessions for the user. The current device is marked `isCurrent: true`. Revoke one device with DELETE /sessions/{sessionId}, or all other devices with POST /sessions/revoke-all.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
@@ -445,9 +445,9 @@ export const authPaths = {
   "/auth/sessions/revoke-all": {
     post: {
       tags: ["Auth"],
-      summary: "Sign out on all devices",
+      summary: "Sign out from all other devices",
       description:
-        "Revokes every active session including the current one. The access token used for this call stops working immediately.",
+        "Revokes every active session EXCEPT the caller's current one (the device making this call stays signed in). `revokedCount` is the number of other devices signed out.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
@@ -1111,6 +1111,243 @@ export const authPaths = {
         },
         "401": {
           description: "Unauthorized",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/auth/devices/link/initiate": {
+    post: {
+      tags: ["Auth"],
+      summary: "Start a QR device-link session",
+      description:
+        "Called by a new, unauthenticated device (web/desktop). Returns a `linkToken` and a `pollSecret`; the session expires in 120s.\n\n" +
+        "**Client responsibilities (QR is entirely client-side — the backend never generates or scans it):**\n" +
+        '- Encode **only the `linkToken`** into the QR (e.g. as `aimess://device-link?token=<linkToken>` or `{"t":"device-link","token":"<linkToken>"}`). NEVER put `pollSecret` in the QR — keep it in memory on this device; it is what authorizes token retrieval, so a photographed QR alone cannot steal the session.\n' +
+        "- Poll `GET /auth/devices/link/status` with `linkToken` + `pollSecret` until `APPROVED`, then store the returned tokens (delivered once).\n" +
+        "- When the 120s TTL lapses, regenerate by calling this endpoint again and refresh the QR.\n\n" +
+        "The already-signed-in device scans the QR, extracts the `linkToken`, and calls `POST /auth/devices/link/approve`.",
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/DeviceLinkInitiateRequest" },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Link session created",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/DeviceLinkInitiateResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/auth/devices/link/status": {
+    get: {
+      tags: ["Auth"],
+      summary: "Poll a QR device-link session",
+      description:
+        "Called by the new device with its linkToken + pollSecret. Returns PENDING until approved, then APPROVED with tokens exactly once (subsequent polls return CONSUMED). A missing session or wrong pollSecret returns EXPIRED.",
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "linkToken",
+          in: "query",
+          required: true,
+          schema: { type: "string" },
+        },
+        {
+          name: "pollSecret",
+          in: "query",
+          required: true,
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Current link status",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/DeviceLinkStatusResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/auth/devices/link/approve": {
+    post: {
+      tags: ["Auth"],
+      summary: "Approve a QR device-link",
+      description:
+        "Called by an already-signed-in device after scanning the QR. The client decodes the QR locally and sends the extracted `linkToken` here. Issues a fresh session for the new device and marks the link approved. Returns the new device's `sessionId` so this device can immediately undo the link via DELETE /auth/sessions/{sessionId}.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/DeviceLinkApproveRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Device linked",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/DeviceLinkApproveResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": {
+          description: "Unauthorized",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Link session not found or expired",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "409": {
+          description: "Link session already approved",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/auth/account/delete/request-otp": {
+    post: {
+      tags: ["Auth"],
+      summary: "Request an account-deletion OTP",
+      description:
+        "Sends a deletion-confirmation OTP to the account email. Used by passwordless accounts before DELETE /auth/account.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "OTP sent",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Unauthorized",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/auth/account": {
+    delete: {
+      tags: ["Auth"],
+      summary: "Delete account (soft)",
+      description:
+        "Soft-deletes the account and revokes all sessions. Password accounts confirm with currentPassword; passwordless accounts confirm with an OTP from /auth/account/delete/request-otp.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/DeleteAccountRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Account deleted",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/DeleteAccountResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Confirmation required or OTP attempts exceeded",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Invalid password/OTP or unauthorized",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },

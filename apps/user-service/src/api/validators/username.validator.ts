@@ -1,11 +1,18 @@
 import { z } from "zod";
 
+import { normalizeUsername } from "../../lib/username.util.js";
+
 const usernameSchema = z
   .string()
   .trim()
-  .min(3)
-  .max(32)
-  .regex(/^[a-zA-Z0-9_]+$/);
+  .transform((s) => normalizeUsername(s))
+  .pipe(
+    z
+      .string()
+      .min(3)
+      .max(32)
+      .regex(/^[a-z0-9_]+$/)
+  );
 
 export const generateUsernameSchema = z.object({
   account: z.string().trim().min(1).max(128),

@@ -4,16 +4,8 @@ import { HTTP_STATUS, t } from "@aimess/constants";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import type { UpdateProfileInput } from "../validators/profile.validator.js";
+import { extractBearerToken } from "../../lib/extract-bearer-token.js";
 import { userProfileService } from "../../services/user-profile.service.js";
-
-function extractBearerToken(req: Request): string {
-  const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) {
-    return "";
-  }
-
-  return header.slice("Bearer ".length).trim();
-}
 
 export const getMyProfile = asyncHandler(
   async (req: Request, res: Response) => {
@@ -34,6 +26,7 @@ export const updateProfile = asyncHandler(
 
     const profile = await userProfileService.updateProfile(
       req.auth.userId,
+      extractBearerToken(req),
       body
     );
 

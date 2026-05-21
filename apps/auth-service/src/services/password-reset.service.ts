@@ -16,6 +16,7 @@ import {
   normalizeEmail,
   verifyOtpCode,
 } from "../lib/otp.js";
+import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
 import {
   createPasswordResetToken,
   hashPasswordResetToken,
@@ -47,6 +48,10 @@ export const passwordResetService = {
     input: RequestPasswordResetOtpInput
   ): Promise<void> {
     const email = normalizeEmail(input.email);
+    const session = buildSessionContext(req);
+
+    await assertOtpRequestAllowed(email, session.ipAddress);
+
     const user = await authRepository.findByEmailForPasswordReset(email);
 
     if (!user || !canResetPassword(user)) {
@@ -56,7 +61,6 @@ export const passwordResetService = {
     const plainCode = generateOtpCode();
     const codeHash = await hashOtpCode(plainCode);
     const expiresAt = new Date(Date.now() + env.OTP_TTL_SECONDS * 1000);
-    const session = buildSessionContext(req);
 
     await otpRepository.consumeActiveForIdentifier(
       email,

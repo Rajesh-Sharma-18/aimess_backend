@@ -1,24 +1,6 @@
-import { ObjectKeyPrefix, StorageBuckets } from "./storage-buckets.js";
+import { env } from "../config/env.js";
 
-const AVATAR_KEY_PREFIX = ObjectKeyPrefix.avatars;
-
-/** Object key: avatars/{userId}/{fileId}.{ext} */
-export function buildAvatarObjectKey(
-  userId: string,
-  fileId: string,
-  extension: string
-): string {
-  const safeExt = extension.replace(/^\./, "").toLowerCase();
-  return `${AVATAR_KEY_PREFIX}/${userId}/${fileId}.${safeExt}`;
-}
-
-export function isAvatarObjectKeyOwnedByUser(
-  objectKey: string,
-  userId: string
-): boolean {
-  const prefix = `${AVATAR_KEY_PREFIX}/${userId}/`;
-  return objectKey.startsWith(prefix) && !objectKey.includes("..");
-}
+const AVATAR_KEY_PREFIX = "avatars";
 
 /** DB may store object key or legacy full MinIO URL. */
 export function parseAvatarObjectKeyFromStored(
@@ -34,7 +16,7 @@ export function parseAvatarObjectKeyFromStored(
 
   try {
     const pathname = new URL(stored).pathname;
-    const bucketPrefix = `/${StorageBuckets.avatars}/`;
+    const bucketPrefix = `/${env.MINIO_BUCKET_AVATARS}/`;
     if (pathname.startsWith(bucketPrefix)) {
       return pathname.slice(bucketPrefix.length);
     }
@@ -50,12 +32,3 @@ export function parseAvatarObjectKeyFromStored(
 
   return null;
 }
-
-export const ALLOWED_AVATAR_CONTENT_TYPES = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-} as const;
-
-export type AllowedAvatarContentType =
-  keyof typeof ALLOWED_AVATAR_CONTENT_TYPES;

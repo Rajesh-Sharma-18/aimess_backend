@@ -1,20 +1,18 @@
+import {
+  assertObjectKeyOwnedBy,
+  createPresignedViewUrl,
+  deleteObject,
+  headObject,
+} from "@aimess/storage";
 import { BadRequestError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
-import {
-  createAvatarUploadPresignedUrl,
-  createAvatarViewUrl,
-  deleteAvatarObject,
-  getAvatarViewUrlExpiresIn,
-  headAvatarObject,
-} from "../config/minio.js";
-import {
-  isAvatarObjectKeyOwnedByUser,
-  parseAvatarObjectKeyFromStored,
-} from "../lib/avatar-storage.js";
-import type { AllowedAvatarContentType } from "../lib/avatar-storage.js";
-import { assertAvatarFileSize } from "../lib/media-limits.js";
+import { storageClient } from "../config/storage.js";
+import { parseAvatarObjectKeyFromStored } from "../lib/avatar-storage.js";
 import { env } from "../config/env.js";
+
+const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
+const AVATAR_KEY_PREFIX = "avatars";
 
 export type AvatarViewUrl = {
   url: string;
@@ -22,36 +20,26 @@ export type AvatarViewUrl = {
 };
 
 export class AvatarService {
-  async createUploadUrl(params: {
-    userId: string;
-    contentType: AllowedAvatarContentType;
-    contentLength: number;
-  }) {
-    try {
-      assertAvatarFileSize(params.contentLength);
-    } catch {
-      throw new BadRequestError("AVATAR_FILE_TOO_LARGE");
-    }
-
-    return createAvatarUploadPresignedUrl(params);
-  }
-
   /** Validates upload; returns object key to persist (never a public URL). */
   async resolveAvatarObjectKeyForProfile(
     userId: string,
     avatarObjectKey: string
   ): Promise<string> {
-    if (!isAvatarObjectKeyOwnedByUser(avatarObjectKey, userId)) {
+    if (!assertObjectKeyOwnedBy(avatarObjectKey, AVATAR_KEY_PREFIX, userId)) {
       throw new BadRequestError("INVALID_AVATAR_OBJECT_KEY");
     }
 
-    const head = await headAvatarObject(avatarObjectKey);
+    const head = await headObject(
+      storageClient,
+      AVATAR_BUCKET,
+      avatarObjectKey
+    );
     if (!head.exists || head.contentLength === undefined) {
       throw new BadRequestError("AVATAR_NOT_UPLOADED");
     }
 
     if (head.contentLength > env.AVATAR_MAX_UPLOAD_BYTES) {
-      await deleteAvatarObject(avatarObjectKey);
+      await deleteObject(storageClient, AVATAR_BUCKET, avatarObjectKey);
       throw new BadRequestError("AVATAR_FILE_TOO_LARGE");
     }
 
@@ -68,13 +56,18 @@ export class AvatarService {
     }
 
     try {
-      const head = await headAvatarObject(objectKey);
+      const head = await headObject(storageClient, AVATAR_BUCKET, objectKey);
       if (!head.exists) {
         return null;
       }
 
-      const expiresIn = getAvatarViewUrlExpiresIn();
-      const url = await createAvatarViewUrl(objectKey);
+      const expiresIn = env.MINIO_AVATAR_VIEW_EXPIRES_IN;
+      const url = await createPresignedViewUrl({
+        client: storageClient,
+        bucket: AVATAR_BUCKET,
+        objectKey,
+        expiresIn,
+      });
 
       return { url, expiresIn };
     } catch (error) {

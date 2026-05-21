@@ -16,8 +16,9 @@ import {
   hashOtpCode,
   logDevOtp,
   normalizeEmail,
-  verifyOtpCode,
+  verifyAndConsumeOtp,
 } from "../lib/otp.js";
+import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { env } from "../config/env.js";
 import { authRepository } from "../repositories/auth.repository.js";
@@ -51,10 +52,13 @@ async function sendLinkEmailOtp(
   userId: string,
   email: string
 ): Promise<void> {
+  const session = buildSessionContext(req);
+
+  await assertOtpRequestAllowed(email, session.ipAddress);
+
   const plainCode = generateOtpCode();
   const codeHash = await hashOtpCode(plainCode);
   const expiresAt = new Date(Date.now() + env.OTP_TTL_SECONDS * 1000);
-  const session = buildSessionContext(req);
 
   await otpRepository.consumeActiveForIdentifier(
     email,
@@ -115,26 +119,12 @@ export const emailLinkService = {
       throw new ConflictError("AUTH_EMAIL_EXISTS");
     }
 
-    const otp = await otpRepository.findLatestActive(
-      email,
-      OtpPurpose.EMAIL_VERIFY
-    );
-
-    if (!otp || otp.userId !== userId) {
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
-    }
-
-    if (otp.attempts >= otp.maxAttempts) {
-      throw new BadRequestError("AUTH_OTP_MAX_ATTEMPTS");
-    }
-
-    const codeValid = await verifyOtpCode(input.code, otp.codeHash);
-    if (!codeValid) {
-      await otpRepository.incrementAttempts(otp.id);
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
-    }
-
-    await otpRepository.markConsumed(otp.id);
+    await verifyAndConsumeOtp({
+      identifier: email,
+      purpose: OtpPurpose.EMAIL_VERIFY,
+      userId,
+      code: input.code,
+    });
 
     const updated = await authRepository.linkVerifiedEmail(userId, email);
 

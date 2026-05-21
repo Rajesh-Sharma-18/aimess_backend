@@ -38,12 +38,15 @@ services:
     container_name: aimess-mongodb
     restart: unless-stopped
 
+    # Single-node replica set (rs0) — REQUIRED by Prisma's MongoDB connector,
+    # which wraps writes to @unique-indexed models in transactions (a replica
+    # set is mandatory). Local dev runs WITHOUT auth so no internal-auth keyfile
+    # is needed (auth + replSet would require a mounted keyfile, painful on
+    # Windows). Production uses a managed MongoDB (Atlas) with RS + auth.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+
     ports:
       - "${MONGODB_PORT}:27017"
-
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
 
     volumes:
       - mongodb_data:/data/db
@@ -52,12 +55,12 @@ services:
       test:
         [
           "CMD-SHELL",
-          'mongosh -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "db.adminCommand(''ping'')"',
+          'mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate(); }"',
         ]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 40s
+      retries: 10
+      start_period: 30s
 
     networks:
       - aimess-network
