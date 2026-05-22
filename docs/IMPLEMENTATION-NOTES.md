@@ -1,8 +1,8 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-05-21**.
-> Scope of this record: **auth-service**, **user-service**, **community-service** (auth + user + community-create flow).
+> Update this whenever you ship or change a feature. Last reviewed: **2026-05-22**.
+> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**).
 
 ---
 
@@ -14,11 +14,53 @@ New service (port 3003). Verified: boot reaches "listening on 3003" (Mongo+Redis
 - **Mongo MUST be a replica set** (Prisma wraps `@unique`-model writes in transactions → `P2031` without one). Local `mongodb` container now runs `--replSet rs0 --bind_ip_all`, **no auth** (auth+replSet needs a keyfile, painful on Windows). Connection: `mongodb://localhost:27018/community_db?directConnection=true`. Production = managed Mongo (Atlas) with RS+auth. See aimess-dev-setup.
 - **Endpoints** (all bearer-auth, mounted so downstream = `/api/v1/communities/...`): `POST /communities` (create — creator=ADMIN, selected friends → ACTIVE members, sequential writes + `createMany` + compensating cleanup, NO `$transaction`), `PATCH /communities/:id` (edit — **ACTIVE ADMIN only**), `GET /communities/:id` (+ `myRole`, ACTIVE membership only), `GET /communities/mine` (cursor), `GET /communities/categories`, `GET /communities/name-available`, `GET /communities/handle-available` (Redis dual-TTL cache), `POST /communities/images/upload-url` (MinIO presign, mirrors avatars). Routes ordered specific-before-`/:id`. Categories seeded (10) via `db:seed`.
 - **Decisions:** Community has `name @unique` + `handle @unique` (the `@Community Name`), `type PUBLIC|PRIVATE`, category ref, avatar/cover. Selected members added directly as ACTIVE. `ForbiddenError` (403) added to `@aimess/errors`.
-- **Known gaps:** `memberIds` are NOT server-validated as the creator's friends (trusts client selection — TODO before GA). Members management/chat/invites/join-requests/moderation/reports DEFERRED. Community events (RabbitMQ) deferred. Full HTTP-through-gateway + presigned-upload round-trip not runtime-tested.
+- **Known gaps:** `memberIds` (create) and `userIds` (add-members) are NOT server-validated as the caller's friends (trusts client selection — TODO before GA). **Member management + moderation now DONE** (see next subsection); **chat / invites / join-requests / reports / livestreams still DEFERRED**. Community events (RabbitMQ) still deferred — member-mgmt emits **nothing** yet. Full HTTP-through-gateway + presigned-upload round-trip not runtime-tested.
+
+### community-service — user snapshot denormalization (shipped 2026-05-22)
+
+`CommunityMember` now stores a user profile snapshot at write time so `GET /:id/members` requires zero cross-service reads.
+
+- **Schema:** three new fields on `CommunityMember` — `snapshotUsername String`, `snapshotDisplayName String`, `snapshotAvatarKey String?` (the raw MinIO object key, stored in DB).
+- **Avatar URL:** the member DTO exposes `snapshotAvatarUrl` (presigned GET) + `snapshotAvatarUrlExpiresIn`, NOT the raw key. `toMemberData` is **async** and resolves the URL via `member-avatar.service.ts`, which presigns the key against user-service's avatars bucket (`MINIO_BUCKET_AVATARS=aimess-avatars`, shared MinIO). It presigns **without** a HEAD check — a roster resolves many avatars and per-row HEADs would dominate; the key is validated at upload + kept fresh via events. Mirrors `CommunityData.avatarUrl`/`avatarUrlExpiresIn`.
+- **Join-time fetch:** when `addMembers()` or `create()` writes a member row, community-service calls `GET /api/v1/users/internal/bulk-snapshot?userIds=...` on user-service (HTTP, same pattern as user-service → auth-service). On failure, a fallback snapshot (`username=userId, displayName="Unknown"`) is stored so the write always succeeds.
+- **Sync on profile update:** user-service publishes `user.profile_updated` (queue `user.profile_updated.queue`, DLX pair) fire-and-forget after `updateProfile` succeeds. Community-service consumes it and runs `updateMany` on all `CommunityMember` rows for that `userId`.
+- **Internal endpoint added to user-service:** `GET /api/v1/users/internal/bulk-snapshot` — no auth, internal only. Returns `{ users: [{ userId, username, displayName, avatarObjectKey }] }`.
+- **`buildDisplayName` helper:** extracted to `user-service/src/lib/profile-fields.util.ts` — computes `(firstName + " " + lastName).trim()`. Used by both the internal controller and the profile-updated publisher.
+- **`softDelete` restored** to `user-profile.repository.ts` (was accidentally missing).
+- **RabbitMQ topology:** `user.profile_updated.queue` / DLX `user.profile_updated.queue.dlx` / routing key `user.profile_updated.queue.dead`. Community-service consumer starts at boot with warn-and-continue if RabbitMQ is unavailable.
+- **Verification (2026-05-22):** `pnpm --filter @aimess/user-service typecheck` — PASS; `pnpm --filter @aimess/user-service lint` — 0 errors; `npx tsc --noEmit` (community-service) — PASS; `pnpm --filter @aimess/community-service lint` — 0 errors.
+- **Before using:** run `pnpm db:push:community` then `pnpm db:seed:community` to reset Mongo with the new schema.
+
+### community-service — member management & moderation (shipped 2026-05-21)
+
+Built on the existing `CommunityMember` model (`role ADMIN|MODERATOR|MEMBER`, `status ACTIVE|PENDING|BANNED|LEFT`) — **no schema change** (the `MODERATOR` enum value already existed, previously unused/unassigned). All bearer-auth, mounted under `/api/v1/communities`. Authz is centralised in **`lib/community-authz.ts`**: `COMMUNITY_ROLE_RANK = { MEMBER:0, MODERATOR:1, ADMIN:2 }` + `assertCommunityRole(membership, minRole)` (throws `ForbiddenError("COMMUNITY_FORBIDDEN")` when membership is missing / not ACTIVE / below rank). The pre-existing `update` (edit community) was refactored to use it. Member rows → API DTO via the `toMemberData` mapper; cursor pagination via `lib/cursor-pagination.ts` `paginateByCursor(rows, limit)`.
+
+- `GET /:id/members?status=&limit=&cursor=` — list members (any **ACTIVE member** may view), cursor on member `id`. Returns `{ members:[{userId,role,status,joinedAt}], nextCursor }`.
+- `PUT /:id/members/:userId/role` `{ role: MODERATOR|MEMBER }` — **ADMIN only** promote/demote. Can't target self; can't touch the admin (by `adminId` or role ADMIN); the request enum **excludes ADMIN** (ownership transfer is a separate, unbuilt flow); idempotent on same role.
+- `DELETE /:id/members/:userId` — **kick** (MODERATOR+ADMIN). **Strict rank**: caller must outrank target (`RANK[caller] > RANK[target]`), so a mod can't kick a peer mod or the admin. Can't target self/admin; target must be ACTIVE. status → LEFT.
+- `POST /:id/members/:userId/ban` — **ban** (**ADMIN only**). Target must exist, not admin/self; idempotent if already BANNED. status → BANNED.
+- `POST /:id/members` `{ userIds:[] }` (≤100, deduped) — **add members** (MODERATOR+ADMIN). One read partitions the ids: ACTIVE→skip `ALREADY_MEMBER`, BANNED→skip `BANNED`, LEFT→reactivate (→ACTIVE/MEMBER via `reactivateMembers` updateMany, guarded `status:LEFT`), missing→`createMany` (only truly-missing ids, no unique-constraint risk). Returns `{ added:[...], skipped:[{userId,reason}] }`. **Direct add (no consent)** — mirrors create-time `memberIds` seeding.
+- `POST /:id/leave` — **leave** (any ACTIVE member). status → LEFT. The admin is **BLOCKED** (`COMMUNITY_ADMIN_CANNOT_LEAVE`) until ownership-transfer exists.
+- `DELETE /:id/members/:userId/ban` — **unban** (**ADMIN only**). Target must be currently BANNED (else `COMMUNITY_MEMBER_NOT_BANNED`). status BANNED → LEFT (NOT auto-re-added — must be re-added or rejoin).
+
+**`memberCount` is always RECOMPUTED** (`countActiveMembers` → `setMemberCount`) after any status change — never a blind ±1 — and there is **NO `$transaction`** (standalone-Mongo rule still applies; sequential single-collection writes). New message keys (vi+en): `COMMUNITY_MEMBERS_FETCHED / MEMBER_ROLE_UPDATED / MEMBER_NOT_FOUND / MEMBER_CANNOT_MODIFY_SELF / MEMBER_CANNOT_MODIFY_ADMIN / MEMBER_KICKED / MEMBER_BANNED / MEMBERS_ADDED / LEFT / MEMBER_UNBANNED / ADMIN_CANNOT_LEAVE / MEMBER_NOT_BANNED`. Gateway OpenAPI paths + component schemas added (`api-gateway/.../paths/community.paths.ts` + `components/schemas.ts`). Shipped via the `docs/` agent pipeline (implementer → reviewer → optimiser → tester → READY); typecheck + lint clean.
 
 ### user-service — friends list
 
-- `GET /users/friends?search=&cursor=&limit=` — accepted friends only (both requester/addressee sides), alphabetical (`firstName,lastName,userId`), each item has a `section` letter for the A/B/C "Select Members" UI, presigned avatar. Cursor on `userId`. **Returns `[]` (not error) until friendships exist — the friend-request feature isn't built yet.**
+- `GET /users/friends?search=&cursor=&limit=` — accepted friends only (both requester/addressee sides), alphabetical (`firstName,lastName,userId`), each item has a `section` letter for the A/B/C "Select Members" UI, presigned avatar. Cursor on `userId`. This is the cursor-based **"Select Members" roster** (`friendsRoutes`) — **distinct** from the `/users` discovery feed in the friendship subsection below. (It now returns real data, since friendships exist.)
+
+### user-service — friendship / social graph (shipped 2026-05-21)
+
+The friend-request feature (previously "not built") is now implemented on the existing Postgres `Friendship` model: **one row per pair** keyed `(requesterId, addresseeId)`, status `PENDING|ACCEPTED|REJECTED|CANCELLED|UNFRIENDED`, per-transition timestamps + `unfriendedBy`, denormalized `UserProfile.friendsCount`. All bearer-auth, mounted under `/api/v1`. `friendship.repository.ts` is the only Prisma layer; `friendship.service.ts` holds the rules; `friendship.controller.ts`/`.routes.ts`/`.validator.ts` are thin.
+
+- `POST /friends/requests` `{ addresseeId }` — send. Pre-flight in order: not self (`FRIEND_CANNOT_ADD_SELF`); both profiles exist; **block check** either direction (`FRIEND_BLOCKED`). Then on the existing pair-row: ACCEPTED → `FRIEND_ALREADY_FRIENDS`; my own PENDING → `FRIEND_REQUEST_ALREADY_SENT`; **their PENDING → AUTO-ACCEPT** (mutual request becomes a friendship, emits `friend.accepted`); a prior REJECTED/CANCELLED/UNFRIENDED row → **recycled** (reset to PENDING with the new direction, timestamps cleared) so re-sending is allowed immediately. No row → create PENDING.
+- `POST /friends/requests/:id/accept` — addressee only, PENDING only. → ACCEPTED + `acceptedAt`; **bumps `friendsCount` on BOTH profiles inside `prisma.$transaction`**.
+- `POST /friends/requests/:id/reject` — addressee only, PENDING only. → REJECTED.
+- `DELETE /friends/requests/:id` — requester cancels their own outgoing PENDING. → CANCELLED.
+- `DELETE /friends/:userId` — unfriend an ACCEPTED pair (either side). → UNFRIENDED + `unfriendedBy`; **decrements `friendsCount` on both (transactional)**.
+- `GET /users?section=friends|others&q=&page=&limit=` — **user discovery** (`user-discovery.service.ts`). `friends` = my ACCEPTED friends; `others` = everyone else excluding me, my accepted friends, and anyone blocked (either direction). Each row carries `relationshipStatus FRIEND|PENDING_IN|PENDING_OUT|NONE` + `friendshipId`. **page/limit** pagination (NOT cursor — this is the search screen); `q` matches username + firstName + lastName (case-insensitive). The profile-search queries live in `user-profile.repository.ts` (`findUsersInList` / `findUsersNotInList` + count variants).
+
+**Decisions (v1):** the privacy gate (`PrivacySettings.whoCanSendFriendRequests`) is **deliberately skipped** for v1 (TODO before GA). Events `friend.requested` / `friend.accepted` / `friend.unfriended` publish **fire-and-forget** to a new durable **`friendship.queue`** (`messaging/publish-friendship.ts`; payload types in `@aimess/shared-types` `events/friendship.ts`) — but **nothing consumes it yet** (notifications wiring deferred, same pattern as `user.created`; messages currently accumulate unconsumed). **Two routers share the `/friends` mount**: the pre-existing `friendsRoutes` (`GET /friends` roster) and the new `friendshipRoutes` (the request endpoints) — they coexist because their method+path combos are disjoint (Express falls through).
 
 ### Shared `@aimess/storage` + generic uploads (cross-service)
 
@@ -108,6 +150,10 @@ Implemented and verified (compiles + lints; **not** runtime/integration-tested):
 - **OTP/email delivery:** still a **dev stub** — OTPs are logged, not emailed. Real delivery waits on notifications-service wiring. `OTP_DEV_FIXED_CODE` can pin a code in dev.
 - **Rate limiting:** in-memory stores (per process). Move to a Redis store (`rate-limit-redis`) before horizontal scaling.
 - **Layering is clean** in both services: controllers thin, repositories own all Prisma, services hold logic, multi-write ops use `$transaction`. Keep it that way.
+- **Community authz primitive:** ALL community member-management/moderation goes through `assertCommunityRole(membership, minRole)` + the `COMMUNITY_ROLE_RANK` map (`community-service/src/lib/community-authz.ts`). Never re-implement role/status checks inline. Future moderator powers (join-request approve, etc.) MUST reuse this gate. Role hierarchy: ADMIN > MODERATOR > MEMBER; the admin role is immutable via the member endpoints (can't be demoted/kicked/banned, and the admin can't leave) until a separate ownership-transfer flow exists.
+- **`memberCount` is recomputed, not deltaed:** every community membership status change recomputes via `countActiveMembers` → `setMemberCount`. Robust against drift and safe without a transaction. Do NOT switch to blind ±1.
+- **`$transaction` is per-store:** Postgres services (auth, user) DO use `prisma.$transaction` for multi-row writes — e.g. friendship accept/unfriend bumping `friendsCount`. **community-service (standalone Mongo) does NOT** — Prisma interactive transactions fail there, so it uses sequential writes + recompute / compensating cleanup.
+- **Friendship = one row per pair, recycled:** re-sending after reject/cancel/unfriend updates the existing `Friendship` row (resets status + direction + clears timestamps) rather than inserting a new one; a mutual pending request auto-accepts. Friendship/discovery queries respect two-way blocks.
 
 ---
 
@@ -125,6 +171,11 @@ Implemented and verified (compiles + lints; **not** runtime/integration-tested):
 - [ ] **No circuit breakers (opossum):** architecture mandates opossum on outbound cross-service calls, but it isn't used anywhere (e.g. `user-service/src/lib/auth-client.ts` HTTP hop has a timeout + cache fallback but no breaker).
 - [ ] **`resolve-auth-account` cache staleness:** the cache-first read serves a recent Redis copy even when auth-service is healthy, so connected-accounts/email can be stale up to the TTL right after a link/unlink or email change. Decide: invalidate on change (event from auth-service) vs live-first for the connected-accounts path vs accept the TTL window.
 - [ ] **`extractBearerToken`** (user-service `lib/`) is a generic helper that should live in `@aimess/utils`/`@aimess/auth-jwt` to avoid re-copying per service.
+- [ ] **Friendship events have NO consumer.** `friendship.queue` (`friend.requested/accepted/unfriended`) is published but unconsumed. notifications-service wiring is the natural next step.
+- [x] **Community member user snapshots** — shipped 2026-05-22 (see §0 subsection below).
+- [ ] **Friend-request privacy gate skipped (v1):** `PrivacySettings.whoCanSendFriendRequests` is not enforced on `POST /friends/requests`. Add before GA.
+- [ ] **Community member input not validated as friends:** create `memberIds` and add-members `userIds` trust the client (no friendship/consent check).
+- [ ] **Community features still unbuilt:** join-requests, invites, ownership transfer, soft-delete endpoint, discovery/search, cover image, reports. The `CommunityJoinRequest` / `CommunityInvite` / `CommunityReport` models exist as `/// FUTURE` (defined but unwired — no repo/service/routes). Join-requests need a "request to join" flow first (today members are only added at create time or directly by admin/mod — there is no join/invite path).
 
 ---
 
@@ -136,3 +187,19 @@ Implemented and verified (compiles + lints; **not** runtime/integration-tested):
 - `lint` (auth, user, gateway) — **0 errors** (2 warnings each = intentional `console.error` in env validation)
 - `prisma migrate status` (user-service) — **up to date**; `username` column present.
 - Runtime / integration — **NOT done.**
+
+---
+
+## 6. Verification status (2026-05-21 — friendship + community member management)
+
+- `pnpm --filter @aimess/shared-types build` / `@aimess/constants build` — **PASS**.
+- `pnpm --filter @aimess/user-service typecheck` — **PASS** (friendship + user discovery).
+- community-service `npx tsc --noEmit` — **PASS** (member mgmt / moderation / lifecycle). Run **directly**, not via the `typecheck` script: the running `pnpm dev` holds a Windows file lock on the `prisma generate` engine DLL → the script's pre-`generate` step throws `EPERM`. `tsc` against the already-generated client is the workaround.
+- `pnpm --filter @aimess/api-gateway typecheck` — **PASS** (OpenAPI path additions).
+- `lint` (user, community, constants) — **0 errors** (only the pre-existing `no-console` warnings in each `config/env.ts`).
+- Runtime / integration — **NOT done** (no test runner in repo; verified by typecheck + lint + multi-agent review/tester code-reading).
+- **Infra incident (resolved):** a stale RabbitMQ `user.queue` (declared before the dead-letter topology was added) caused boot-time `406 PRECONDITION_FAILED — inequivalent arg 'x-dead-letter-exchange'`, which crashed auth- and user-service on the first publish (cascading to `ECONNREFUSED` on 3001). **RabbitMQ queue args are immutable** — fixed by `rabbitmqctl delete_queue user.queue` so it's recreated with the DLX args. **Prod implication:** deploying a queue-arg change to an env that already has the old queue needs a drain+recreate (or a versioned queue name) — see the DLQ note in §3.
+
+### Postman
+
+A ready-to-import collection + environment live at `postman/` (`aimess-friends.postman_collection.json`, `aimess-local.postman_environment.json`): auth (register/login/refresh, two users), the friend-request lifecycle, and user discovery — with test scripts that auto-capture tokens, `userId` (decoded from the JWT `sub`), and `friendshipId`. Defaults hit services directly (auth `:3001/api/auth`, user `:3002/api/v1`); switch the two base-URL env vars to the gateway to route through `:3000`.

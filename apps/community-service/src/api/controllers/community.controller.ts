@@ -5,12 +5,18 @@ import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import { communityService } from "../../services/community.service.js";
 import type {
+  AddMembersInput,
+  AuditLogsQuery,
   CommunityIdParams,
+  CommunityMemberParams,
   CreateCommunityInput,
   HandleAvailableQuery,
+  ListMembersQuery,
+  ModerationReasonInput,
   MyCommunitiesQuery,
   NameAvailableQuery,
   UpdateCommunityInput,
+  UpdateMemberRoleInput,
 } from "../validators/community.validator.js";
 
 export const createCommunity = asyncHandler(
@@ -100,5 +106,145 @@ export const listMyCommunities = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
+  }
+);
+
+export const listCommunityMembers = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const { cursor, limit, status } = req.query as unknown as ListMembersQuery;
+
+    const result = await communityService.listMembers(id, req.auth.userId, {
+      cursor,
+      limit,
+      status,
+    });
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(result, t("COMMUNITY_MEMBERS_FETCHED", req.locale))
+      );
+  }
+);
+
+export const listCommunityAuditLogs = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const { cursor, limit } = req.query as unknown as AuditLogsQuery;
+
+    const result = await communityService.listAuditLogs(id, req.auth.userId, {
+      cursor,
+      limit,
+    });
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(result, t("COMMUNITY_AUDIT_LOGS_FETCHED", req.locale))
+      );
+  }
+);
+
+export const updateCommunityMemberRole = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, userId } = req.params as CommunityMemberParams;
+    const { role } = req.body as UpdateMemberRoleInput;
+
+    const member = await communityService.updateMemberRole(
+      id,
+      req.auth.userId,
+      userId,
+      role
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(member, t("COMMUNITY_MEMBER_ROLE_UPDATED", req.locale))
+      );
+  }
+);
+
+export const kickCommunityMember = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, userId } = req.params as CommunityMemberParams;
+    const { reason } = req.body as ModerationReasonInput;
+
+    const member = await communityService.kickMember(
+      id,
+      req.auth.userId,
+      userId,
+      reason
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(member, t("COMMUNITY_MEMBER_KICKED", req.locale)));
+  }
+);
+
+export const banCommunityMember = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, userId } = req.params as CommunityMemberParams;
+    const { reason } = req.body as ModerationReasonInput;
+
+    const member = await communityService.banMember(
+      id,
+      req.auth.userId,
+      userId,
+      reason
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(member, t("COMMUNITY_MEMBER_BANNED", req.locale)));
+  }
+);
+
+export const addCommunityMembers = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const { userIds } = req.body as AddMembersInput;
+
+    const result = await communityService.addMembers(
+      id,
+      req.auth.userId,
+      userIds
+    );
+
+    return res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(result, t("COMMUNITY_MEMBERS_ADDED", req.locale)));
+  }
+);
+
+export const leaveCommunity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+
+    const member = await communityService.leaveCommunity(id, req.auth.userId);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(member, t("COMMUNITY_LEFT", req.locale)));
+  }
+);
+
+export const unbanCommunityMember = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, userId } = req.params as CommunityMemberParams;
+
+    const member = await communityService.unbanMember(
+      id,
+      req.auth.userId,
+      userId
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(member, t("COMMUNITY_MEMBER_UNBANNED", req.locale))
+      );
   }
 );

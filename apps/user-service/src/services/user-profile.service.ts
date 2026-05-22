@@ -12,6 +12,7 @@ import {
   type ProfileGender,
 } from "../generated/prisma/client.js";
 import {
+  buildDisplayName,
   dateOfBirthToUtcDate,
   formatDateOfBirth,
 } from "../lib/profile-fields.util.js";
@@ -26,6 +27,7 @@ import { userProfileRepository } from "../repositories/user-profile.repository.j
 import type { UserProfileData } from "../types/user-profile.types.js";
 import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
+import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -315,6 +317,14 @@ export const userProfileService = {
     );
 
     await userCache.invalidateProfile(userId);
+
+    publishProfileUpdatedSafe({
+      userId,
+      username: updated.username,
+      displayName: buildDisplayName(updated.firstName, updated.lastName),
+      avatarObjectKey: updated.avatarUrl ?? null,
+      updatedAt: updated.updatedAt.toISOString(),
+    });
 
     if (updateData.username && updateData.username !== previousUsername) {
       await userCache.onUsernameReleased(previousUsername);

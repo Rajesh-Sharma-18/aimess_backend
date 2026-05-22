@@ -66,6 +66,58 @@ export const COMMUNITY_MESSAGES = {
     vi: "Ảnh cộng đồng vượt quá kích thước cho phép",
     en: "Community image exceeds the maximum allowed size",
   },
+  COMMUNITY_MEMBERS_FETCHED: {
+    vi: "Lấy danh sách thành viên thành công",
+    en: "Community members fetched successfully",
+  },
+  COMMUNITY_MEMBER_ROLE_UPDATED: {
+    vi: "Cập nhật vai trò thành viên thành công",
+    en: "Member role updated successfully",
+  },
+  COMMUNITY_MEMBER_NOT_FOUND: {
+    vi: "Không tìm thấy thành viên",
+    en: "Community member not found",
+  },
+  COMMUNITY_MEMBER_CANNOT_MODIFY_SELF: {
+    vi: "Bạn không thể thay đổi vai trò của chính mình",
+    en: "You cannot change your own role",
+  },
+  COMMUNITY_MEMBER_CANNOT_MODIFY_ADMIN: {
+    vi: "Không thể thay đổi vai trò của quản trị viên cộng đồng",
+    en: "Cannot change the role of the community admin",
+  },
+  COMMUNITY_MEMBER_KICKED: {
+    vi: "Đã xóa thành viên khỏi cộng đồng",
+    en: "Member removed from the community",
+  },
+  COMMUNITY_MEMBER_BANNED: {
+    vi: "Đã cấm thành viên khỏi cộng đồng",
+    en: "Member banned from the community",
+  },
+  COMMUNITY_MEMBERS_ADDED: {
+    vi: "Đã thêm thành viên vào cộng đồng",
+    en: "Members added to the community",
+  },
+  COMMUNITY_LEFT: {
+    vi: "Đã rời khỏi cộng đồng",
+    en: "Left the community",
+  },
+  COMMUNITY_MEMBER_UNBANNED: {
+    vi: "Đã bỏ cấm thành viên",
+    en: "Member unbanned",
+  },
+  COMMUNITY_ADMIN_CANNOT_LEAVE: {
+    vi: "Quản trị viên không thể rời khỏi cộng đồng",
+    en: "The community admin cannot leave the community",
+  },
+  COMMUNITY_MEMBER_NOT_BANNED: {
+    vi: "Thành viên này hiện không bị cấm",
+    en: "This member is not banned",
+  },
+  COMMUNITY_AUDIT_LOGS_FETCHED: {
+    vi: "Lấy nhật ký kiểm duyệt thành công",
+    en: "Community audit logs fetched successfully",
+  },
 } as const satisfies MessageCatalog;
 
 export type CommunityMessageKey = keyof typeof COMMUNITY_MESSAGES;

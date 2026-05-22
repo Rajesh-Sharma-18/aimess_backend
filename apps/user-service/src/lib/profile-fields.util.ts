@@ -72,3 +72,7 @@ export function dateOfBirthToUtcDate(isoDate: string): Date {
 export function formatDateOfBirth(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
+
+export function buildDisplayName(firstName: string, lastName: string): string {
+  return (firstName + " " + lastName).trim();
+}

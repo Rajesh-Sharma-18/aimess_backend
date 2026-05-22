@@ -1237,4 +1237,161 @@ export const openApiSchemas = {
     },
     required: ["type", "contentType", "contentLength"],
   },
+  CommunityMemberData: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      role: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "PENDING", "BANNED", "LEFT"],
+      },
+      joinedAt: { type: "string", format: "date-time" },
+      snapshotUsername: { type: "string" },
+      snapshotDisplayName: { type: "string" },
+      snapshotAvatarUrl: { type: "string", nullable: true },
+      snapshotAvatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "userId",
+      "role",
+      "status",
+      "joinedAt",
+      "snapshotUsername",
+      "snapshotDisplayName",
+      "snapshotAvatarUrl",
+      "snapshotAvatarUrlExpiresIn",
+    ],
+  },
+  CommunityMembersResponseData: {
+    type: "object",
+    properties: {
+      members: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityMemberData" },
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description: "Member id cursor; null when no more.",
+      },
+    },
+    required: ["members", "nextCursor"],
+  },
+  UpdateMemberRoleRequest: {
+    type: "object",
+    properties: {
+      role: {
+        type: "string",
+        enum: ["MODERATOR", "MEMBER"],
+        description: "Target role. ADMIN cannot be assigned via this endpoint.",
+      },
+    },
+    required: ["role"],
+  },
+  AddMembersRequest: {
+    type: "object",
+    properties: {
+      userIds: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
+        minItems: 1,
+        maxItems: 100,
+        description: "User ids to add (deduped). 1–100 per request.",
+      },
+    },
+    required: ["userIds"],
+  },
+  AddMembersResponseData: {
+    type: "object",
+    properties: {
+      added: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityMemberData" },
+        description: "Members newly created or reactivated as ACTIVE.",
+      },
+      skipped: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            userId: { type: "string", format: "uuid" },
+            reason: {
+              type: "string",
+              enum: ["ALREADY_MEMBER", "BANNED"],
+            },
+          },
+          required: ["userId", "reason"],
+        },
+        description:
+          "User ids not added: already ACTIVE members, or BANNED (must be unbanned first).",
+      },
+    },
+    required: ["added", "skipped"],
+  },
+  CommunityAuditLogData: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      communityId: { type: "string" },
+      actorId: {
+        type: "string",
+        format: "uuid",
+        description: "User who performed the action.",
+      },
+      action: {
+        type: "string",
+        enum: [
+          "MEMBER_PROMOTED",
+          "MEMBER_DEMOTED",
+          "MEMBER_KICKED",
+          "MEMBER_BANNED",
+          "MEMBER_UNBANNED",
+          "ADMIN_TRANSFERRED",
+        ],
+      },
+      targetUserId: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description: "Member the action targeted, if any.",
+      },
+      reason: {
+        type: "string",
+        nullable: true,
+        description: "Operator-supplied moderation reason, if any.",
+      },
+      metadata: {
+        type: "object",
+        nullable: true,
+        description: "Action-specific structured context (e.g. `{ role }`).",
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "communityId",
+      "actorId",
+      "action",
+      "targetUserId",
+      "reason",
+      "metadata",
+      "createdAt",
+    ],
+  },
+  CommunityAuditLogsResponseData: {
+    type: "object",
+    properties: {
+      logs: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityAuditLogData" },
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description: "Audit-log id cursor; null when no more.",
+      },
+    },
+    required: ["logs", "nextCursor"],
+  },
 } as const;

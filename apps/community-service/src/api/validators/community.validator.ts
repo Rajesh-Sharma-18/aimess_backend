@@ -103,3 +103,55 @@ export const myCommunitiesQuerySchema = z.object({
 });
 
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
+
+export const communityMemberParamsSchema = z.object({
+  id: z
+    .string()
+    .trim()
+    .regex(OBJECT_ID_REGEX, "id must be a 24-character hex ObjectId"),
+  userId: z.string().trim().uuid("userId must be a UUID"),
+});
+
+export type CommunityMemberParams = z.infer<typeof communityMemberParamsSchema>;
+
+export const updateMemberRoleSchema = z.object({
+  role: z.enum(["MODERATOR", "MEMBER"]),
+});
+
+export type UpdateMemberRoleInput = z.infer<typeof updateMemberRoleSchema>;
+
+/** Optional reason for a moderation action (kick / ban). The body may be empty. */
+export const moderationReasonSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .max(500, "Reason must be at most 500 characters")
+    .optional(),
+});
+
+export type ModerationReasonInput = z.infer<typeof moderationReasonSchema>;
+
+export const addMembersSchema = z.object({
+  userIds: z
+    .array(z.string().uuid("userIds must be UUIDs"))
+    .min(1, "At least one userId is required")
+    .max(100, "Too many members")
+    .transform((ids) => [...new Set(ids)]),
+});
+
+export type AddMembersInput = z.infer<typeof addMembersSchema>;
+
+export const listMembersQuerySchema = z.object({
+  cursor: z.string().trim().regex(OBJECT_ID_REGEX).optional(),
+  limit: z.coerce.number().int().positive().max(50).default(20),
+  status: z.enum(["ACTIVE", "PENDING", "BANNED", "LEFT"]).optional(),
+});
+
+export type ListMembersQuery = z.infer<typeof listMembersQuerySchema>;
+
+export const auditLogsQuerySchema = z.object({
+  cursor: z.string().trim().regex(OBJECT_ID_REGEX).optional(),
+  limit: z.coerce.number().int().positive().max(50).default(20),
+});
+
+export type AuditLogsQuery = z.infer<typeof auditLogsQuerySchema>;

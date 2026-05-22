@@ -2,6 +2,7 @@
 export const UserEvents = {
   USER_CREATED: "user.created",
   USER_DELETED: "user.deleted",
+  USER_PROFILE_UPDATED: "user.profile_updated",
 } as const;
 
 export type UserEventType = (typeof UserEvents)[keyof typeof UserEvents];
@@ -17,4 +18,12 @@ export type UserCreatedPayload = {
 export type UserDeletedPayload = {
   userId: string;
   deletedAt: string;
+};
+
+export type UserProfileUpdatedPayload = {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarObjectKey: string | null;
+  updatedAt: string;
 };

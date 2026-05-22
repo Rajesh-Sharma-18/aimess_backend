@@ -10,6 +10,7 @@ import {
   connectCommunityRedis,
   disableCommunityCache,
 } from "./config/redis.js";
+import { startUserProfileUpdatedConsumer } from "./consumers/user-profile-updated.consumer.js";
 
 async function start() {
   try {
@@ -35,6 +36,16 @@ async function start() {
     } catch (error) {
       logger.warn(
         "MinIO unavailable — community image APIs will fail until credentials/MinIO are fixed"
+      );
+      logger.warn(error);
+    }
+
+    try {
+      await startUserProfileUpdatedConsumer();
+      logger.info("RabbitMQ consumer ready (user.profile_updated.queue)");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable on boot — user profile snapshot sync will not run until reconnected"
       );
       logger.warn(error);
     }

@@ -23,6 +23,9 @@ const envSchema = z.object({
   /** Reserved for future community events (publish/consume). */
   RABBITMQ_URL: z.string().min(1),
 
+  USER_SERVICE_URL: z.string().url(),
+  USER_SERVICE_TIMEOUT_MS: z.coerce.number().positive().default(3000),
+
   /** Same secret as auth-service — used to verify access tokens. */
   JWT_ACCESS_SECRET: z.string().min(1),
 
@@ -35,10 +38,14 @@ const envSchema = z.object({
   MINIO_ACCESS_KEY: z.string().min(1),
   MINIO_SECRET_KEY: z.string().min(1),
   MINIO_BUCKET_COMMUNITY: z.string().min(1),
+  /** user-service's avatars bucket (shared MinIO) — used to presign member avatar GET URLs. */
+  MINIO_BUCKET_AVATARS: z.string().min(1).default("aimess-avatars"),
   MINIO_REGION: z.string().default("us-east-1"),
   MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(900),
   /** Presigned GET lifetime for community image display URLs (seconds). */
   MINIO_IMAGE_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
+  /** Presigned GET lifetime for member avatar display URLs (seconds). */
+  MINIO_AVATAR_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
   /** Max community image (avatar/cover) file size in bytes (default 5 MB). */
   COMMUNITY_IMAGE_MAX_UPLOAD_BYTES: z.coerce
     .number()

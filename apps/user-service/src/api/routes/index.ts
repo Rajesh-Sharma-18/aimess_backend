@@ -2,10 +2,13 @@ import { Router, type IRouter } from "express";
 
 import { accountRoutes } from "./account.routes.js";
 import { friendsRoutes } from "./friends.routes.js";
+import { friendshipRoutes } from "./friendship.routes.js";
+import { internalRoutes } from "./internal.routes.js";
 import { profileRoutes } from "./profile.routes.js";
 import { settingsRoutes } from "./settings.routes.js";
 import { uploadRoutes } from "./upload.routes.js";
 import { usernameRoutes } from "./username.routes.js";
+import { usersRoutes } from "./users.routes.js";
 
 /** API v1 routes — mounted at `/api/v1` (same idea as `authRoutes` at `/api/auth`). */
 export const userRoutes: IRouter = Router();
@@ -16,3 +19,6 @@ userRoutes.use("/settings", settingsRoutes);
 userRoutes.use("/uploads", uploadRoutes);
 userRoutes.use("/usernames", usernameRoutes);
 userRoutes.use("/profiles", profileRoutes);
+userRoutes.use("/friends", friendshipRoutes);
+userRoutes.use("/users", usersRoutes);
+userRoutes.use("/users/internal", internalRoutes);

@@ -90,6 +90,50 @@ export const USER_MESSAGES = {
     vi: "Ảnh đại diện vượt quá kích thước cho phép",
     en: "Avatar file exceeds the maximum allowed size",
   },
+  FRIEND_REQUEST_SENT: {
+    vi: "Đã gửi lời mời kết bạn",
+    en: "Friend request sent",
+  },
+  FRIEND_REQUEST_ACCEPTED: {
+    vi: "Đã chấp nhận lời mời kết bạn",
+    en: "Friend request accepted",
+  },
+  FRIEND_REQUEST_REJECTED: {
+    vi: "Đã từ chối lời mời kết bạn",
+    en: "Friend request declined",
+  },
+  FRIEND_REQUEST_CANCELLED: {
+    vi: "Đã thu hồi lời mời kết bạn",
+    en: "Friend request cancelled",
+  },
+  FRIEND_REMOVED: {
+    vi: "Đã xóa bạn bè",
+    en: "Friend removed",
+  },
+  FRIEND_REQUEST_NOT_FOUND: {
+    vi: "Không tìm thấy lời mời kết bạn",
+    en: "Friend request not found",
+  },
+  FRIEND_REQUEST_ALREADY_SENT: {
+    vi: "Bạn đã gửi lời mời kết bạn cho người dùng này",
+    en: "You have already sent a friend request to this user",
+  },
+  FRIEND_ALREADY_FRIENDS: {
+    vi: "Bạn đã là bạn bè với người dùng này",
+    en: "You are already friends with this user",
+  },
+  FRIEND_CANNOT_ADD_SELF: {
+    vi: "Bạn không thể kết bạn với chính mình",
+    en: "You cannot send a friend request to yourself",
+  },
+  FRIEND_BLOCKED: {
+    vi: "Không thể gửi lời mời kết bạn cho người dùng này",
+    en: "Cannot send a friend request to this user",
+  },
+  USERS_FETCHED: {
+    vi: "Lấy danh sách người dùng thành công",
+    en: "Users fetched successfully",
+  },
 } as const satisfies MessageCatalog;
 
 export type UserMessageKey = keyof typeof USER_MESSAGES;

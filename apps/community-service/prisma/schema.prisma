@@ -17,6 +17,7 @@ generator client {
 
 datasource db {
   provider = "mongodb"
+  url      = env("COMMUNITY_DATABASE_URL")
 }
 
 // -----------------------------------------------------------------------------
@@ -71,7 +72,10 @@ model CommunityMember {
   id          String                @id @default(auto()) @map("_id") @db.ObjectId
   communityId String                @db.ObjectId
   community   Community             @relation(fields: [communityId], references: [id])
-  userId      String // AuthUser.id
+  userId              String // AuthUser.id
+  snapshotUsername    String
+  snapshotDisplayName String
+  snapshotAvatarKey   String?
   role        CommunityMemberRole   @default(MEMBER)
   status      CommunityMemberStatus @default(ACTIVE)
   joinedAt    DateTime              @default(now())
@@ -82,6 +86,29 @@ model CommunityMember {
   @@index([userId, status])
   @@index([communityId, status])
   @@map("community_members")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityAuditLog — append-only moderation trail (promote/demote, kick, ban,
+// unban, admin transfer). `communityId` is a plain ObjectId scalar (no relation
+// field needed); actorId / targetUserId = AuthUser.id. ObjectId is time-ordered,
+// so newest-first ordering uses `id` desc and cursor pagination keys on `id`.
+// -----------------------------------------------------------------------------
+model CommunityAuditLog {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  communityId  String   @db.ObjectId
+  actorId      String // AuthUser.id who performed the action
+  action       String // see CommunityAuditAction union in code
+  targetUserId String? // member acted upon (if any)
+  reason       String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  // Query filters by communityId and orders by `id` desc (ObjectId is
+  // time-ordered) with cursor pagination on `id` — so a plain communityId index
+  // backs the filter and the PK `_id` index serves the sort.
+  @@index([communityId])
+  @@map("community_audit_logs")
 }
 
 // -----------------------------------------------------------------------------
