@@ -28,6 +28,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "firebase-admin": "^13.9.0",
+    "google-auth-library": "^10.6.2",
     "helmet": "^8.1.0",
     "ioredis": "^5.10.1",
     "mongoose": "^9.6.1",

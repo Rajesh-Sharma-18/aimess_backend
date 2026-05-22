@@ -26,6 +26,8 @@ model AuthUser {
   phone                String?              @unique // future-proofing; SOW Phase 1 is email-first
   // Credentials
   passwordHash         String? // nullable: pure-social accounts have no password
+  // Push: FCM registration tokens captured on register/login (one per device)
+  fcmTokens            String[]             @default([])
   // Verification
   emailVerified        Boolean              @default(false)
   phoneVerified        Boolean              @default(false)

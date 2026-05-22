@@ -9,9 +9,12 @@ const usernameSchema = z
   .pipe(
     z
       .string()
-      .min(3)
-      .max(32)
-      .regex(/^[a-z0-9_]+$/)
+      .min(3, "Username must be at least 3 characters long")
+      .max(32, "Username cannot be longer than 32 characters")
+      .regex(
+        /^[a-z0-9_]+$/,
+        "Username can only contain letters, numbers, and underscores"
+      )
   );
 
 export const generateUsernameSchema = z.object({

@@ -35,6 +35,7 @@ export const authService = {
       account,
       passwordHash,
       lastPasswordChangeAt: new Date(),
+      fcmTokens: input.fcmTokens,
     });
 
     const session = buildSessionContext(req);
@@ -96,6 +97,7 @@ export const authService = {
     }
 
     await authRepository.recordSuccessfulLogin(user.id);
+    await authRepository.mergeFcmTokens(user.id, input.fcmTokens);
 
     const session = buildSessionContext(req);
     const { tokens } = await issueAuthTokens(user.id, session);

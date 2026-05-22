@@ -115,7 +115,7 @@ export const authPaths = {
       tags: ["Auth"],
       summary: "Sign in with Google",
       description:
-        "Verify the Firebase ID token from a Google sign-in (Firebase Auth client SDK), then create or link the user and return AIMess tokens.",
+        "Verify the Google ID token from the client's Google Sign-In flow (validated against the configured Google OAuth client id), then create or link the user and return AIMess tokens.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,

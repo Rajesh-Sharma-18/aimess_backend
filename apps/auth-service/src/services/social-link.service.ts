@@ -7,6 +7,7 @@ import type {
 } from "../api/validators/social-link.validator.js";
 import { AuthProvider, Prisma } from "../generated/prisma/client.js";
 import { verifyFirebaseIdToken } from "../lib/firebase-id-token.js";
+import { verifyGoogleIdToken } from "../lib/google-id-token.js";
 
 function isUniqueConstraintError(
   error: unknown
@@ -122,7 +123,7 @@ export const socialLinkService = {
     userId: string,
     input: LinkGoogleInput
   ): Promise<SocialLinkResult> {
-    const profile = await verifyFirebaseIdToken(input.idToken, "google.com");
+    const profile = await verifyGoogleIdToken(input.idToken);
 
     return linkProvider(userId, AuthProvider.GOOGLE, {
       sub: profile.sub,

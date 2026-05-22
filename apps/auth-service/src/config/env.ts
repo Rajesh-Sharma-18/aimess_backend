@@ -49,6 +49,16 @@ const envSchema = z.object({
   FIREBASE_PROJECT_ID: z.string().min(1).optional(),
   FIREBASE_CLIENT_EMAIL: z.string().min(1).optional(),
   FIREBASE_PRIVATE_KEY: z.string().min(1).optional(),
+
+  /**
+   * Google OAuth 2.0 Web client ID (Google Cloud Console → Credentials).
+   * Used as the expected `aud` when verifying Google ID tokens sent by the
+   * sign-in clients via `google-auth-library`.
+   *
+   * Optional so the service still boots without it — only Google login/link
+   * is disabled until it is set (see lib/google-id-token.ts).
+   */
+  GOOGLE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

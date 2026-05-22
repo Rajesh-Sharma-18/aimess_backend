@@ -14,13 +14,9 @@ export const AUTH_MESSAGES = {
     vi: "Tên tài khoản này đã được sử dụng",
     en: "This account name is already taken",
   },
-  AUTH_ACCOUNT_VALIDATED: {
-    vi: "Đã kiểm tra tên tài khoản",
-    en: "Account name availability checked",
-  },
-  INVALID_ACCOUNT_FORMAT: {
-    vi: "Tên tài khoản không hợp lệ",
-    en: "Invalid account name format",
+  AUTH_ACCOUNT_AVAILABLE: {
+    vi: "Tên tài khoản có thể sử dụng",
+    en: "This account name is available",
   },
   AUTH_LOGIN_SUCCESS: {
     vi: "Đăng nhập thành công",
@@ -91,8 +87,12 @@ export const AUTH_MESSAGES = {
     en: "Signed out on all devices",
   },
   AUTH_PASSWORD_RESET_OTP_SENT: {
-    vi: "Nếu email tồn tại, mã OTP đã được gửi",
-    en: "If the email exists, an OTP has been sent",
+    vi: "Email chứa mã OTP đã được gửi",
+    en: "Email with OTP has been sent",
+  },
+  AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND: {
+    vi: "Email không tồn tại trong hệ thống",
+    en: "This email is not registered",
   },
   AUTH_PASSWORD_RESET_OTP_VERIFIED: {
     vi: "Xác minh OTP thành công",

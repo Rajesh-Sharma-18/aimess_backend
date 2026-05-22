@@ -44,6 +44,13 @@ export const openApiSchemas = {
       "refreshTokenExpiresIn",
     ],
   },
+  FcmTokens: {
+    type: "array",
+    items: { type: "string", minLength: 1 },
+    minItems: 1,
+    description: "FCM device push tokens (one or more).",
+    example: ["fcm-token-abc123"],
+  },
   RegisterRequest: {
     type: "object",
     properties: {
@@ -51,12 +58,13 @@ export const openApiSchemas = {
         type: "string",
         minLength: 3,
         maxLength: 32,
-        pattern: "^[a-zA-Z0-9_]+$",
+        pattern: "^[a-z0-9_]+$",
         example: "johndoe",
       },
       password: { type: "string", minLength: 8, maxLength: 128 },
+      fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["account", "password"],
+    required: ["account", "password", "fcmTokens"],
   },
   ValidateAccountRequest: {
     type: "object",
@@ -65,7 +73,7 @@ export const openApiSchemas = {
         type: "string",
         minLength: 3,
         maxLength: 32,
-        pattern: "^[a-zA-Z0-9_]+$",
+        pattern: "^[a-z0-9_]+$",
         example: "johndoe",
       },
     },
@@ -89,8 +97,9 @@ export const openApiSchemas = {
         example: "johndoe",
       },
       password: { type: "string", minLength: 8, maxLength: 128 },
+      fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["account", "password"],
+    required: ["account", "password", "fcmTokens"],
   },
   RegisterResponseData: {
     type: "object",
@@ -219,10 +228,11 @@ export const openApiSchemas = {
       idToken: {
         type: "string",
         description:
-          "Firebase ID token obtained after Google sign-in via the Firebase Auth client SDK.",
+          "Google ID token obtained from the client's Google Sign-In flow (verified server-side against the configured Google OAuth client id).",
       },
+      fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["idToken"],
+    required: ["idToken", "fcmTokens"],
   },
   AppleLoginRequest: {
     type: "object",
@@ -304,7 +314,7 @@ export const openApiSchemas = {
       idToken: {
         type: "string",
         description:
-          "Firebase ID token from a Google sign-in (Firebase Auth client SDK).",
+          "Google ID token from the client's Google Sign-In flow (verified server-side against the configured Google OAuth client id).",
       },
     },
     required: ["idToken"],

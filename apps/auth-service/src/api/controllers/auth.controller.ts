@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 
 import { HTTP_STATUS, t } from "@aimess/constants";
+import { ConflictError } from "@aimess/errors";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 
 import type {
@@ -17,9 +18,13 @@ export const validateAccount = asyncHandler(
     const result =
       await accountAvailabilityService.validateAvailability(account);
 
+    if (!result.available) {
+      throw new ConflictError("AUTH_ACCOUNT_TAKEN");
+    }
+
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("AUTH_ACCOUNT_VALIDATED", req.locale)));
+      .json(new ApiResponse(result, t("AUTH_ACCOUNT_AVAILABLE", req.locale)));
   }
 );
 

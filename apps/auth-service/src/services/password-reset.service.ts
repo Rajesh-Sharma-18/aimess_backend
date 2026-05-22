@@ -1,6 +1,10 @@
 import type { Request } from "express";
 
-import { BadRequestError, UnauthorizedError } from "@aimess/errors";
+import {
+  BadRequestError,
+  NotFoundError,
+  UnauthorizedError,
+} from "@aimess/errors";
 import bcrypt from "bcryptjs";
 
 import type {
@@ -55,7 +59,7 @@ export const passwordResetService = {
     const user = await authRepository.findByEmailForPasswordReset(email);
 
     if (!user || !canResetPassword(user)) {
-      return;
+      throw new NotFoundError("AUTH_PASSWORD_RESET_EMAIL_NOT_FOUND");
     }
 
     const plainCode = generateOtpCode();

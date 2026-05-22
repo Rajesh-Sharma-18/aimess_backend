@@ -8,6 +8,7 @@ import {
   Prisma,
 } from "../generated/prisma/client.js";
 import { verifyFirebaseIdToken } from "../lib/firebase-id-token.js";
+import { verifyGoogleIdToken } from "../lib/google-id-token.js";
 import {
   buildSocialAccountBase,
   generateUniqueAccount,
@@ -92,7 +93,8 @@ async function signInWithProvider(
     email: string | null;
     emailVerified: boolean;
     displayName: string | null;
-  }
+  },
+  fcmTokens: string[] = []
 ): Promise<SocialLoginResult> {
   const authProvider =
     provider === "GOOGLE" ? AuthProvider.GOOGLE : AuthProvider.APPLE;
@@ -103,6 +105,7 @@ async function signInWithProvider(
   );
 
   if (existingLink?.user) {
+    await authRepository.mergeFcmTokens(existingLink.user.id, fcmTokens);
     return loginExistingLinkedUser(req, provider, existingLink.user);
   }
 
@@ -130,6 +133,7 @@ async function signInWithProvider(
         }
       }
 
+      await authRepository.mergeFcmTokens(existingUser.id, fcmTokens);
       const tokens = await issueTokensForUser(req, existingUser);
 
       return {
@@ -164,6 +168,7 @@ async function signInWithProvider(
     providerUserId: profile.sub,
     displayName: profile.displayName,
     providerEmail: profile.email,
+    fcmTokens,
   });
 
   publishUserCreatedSafe({
@@ -193,14 +198,19 @@ export const socialAuthService = {
     req: Request,
     input: GoogleLoginInput
   ): Promise<SocialLoginResult> {
-    const profile = await verifyFirebaseIdToken(input.idToken, "google.com");
+    const profile = await verifyGoogleIdToken(input.idToken);
 
-    return signInWithProvider(req, "GOOGLE", {
-      sub: profile.sub,
-      email: profile.email,
-      emailVerified: profile.emailVerified,
-      displayName: profile.displayName,
-    });
+    return signInWithProvider(
+      req,
+      "GOOGLE",
+      {
+        sub: profile.sub,
+        email: profile.email,
+        emailVerified: profile.emailVerified,
+        displayName: profile.displayName,
+      },
+      input.fcmTokens
+    );
   },
 
   async loginWithApple(

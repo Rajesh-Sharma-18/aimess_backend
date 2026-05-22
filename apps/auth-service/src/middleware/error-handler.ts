@@ -65,7 +65,12 @@ export function errorHandler(
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === "P2002") {
-      const conflict = new ConflictError("AUTH_EMAIL_EXISTS");
+      const collidedOnAccount = String(error.meta?.target ?? "")
+        .toLowerCase()
+        .includes("account");
+      const conflict = new ConflictError(
+        collidedOnAccount ? "AUTH_ACCOUNT_TAKEN" : "AUTH_EMAIL_EXISTS"
+      );
       res.status(conflict.statusCode).json({
         success: false,
         message: localizedMessage(req, conflict.messageKey, conflict.message),
