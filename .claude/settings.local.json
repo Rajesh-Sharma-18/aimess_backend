@@ -73,7 +73,10 @@
       "PowerShell(pnpm --filter @aimess/storage --filter @aimess/errors --filter @aimess/constants --filter user-service --filter community-service --filter api-gateway typecheck)",
       "Bash(pnpm exec *)",
       "Bash(node -e \"const s=require\\('./apps/community-service/package.json'\\).scripts; for\\(const k in s\\) if\\(/db|seed/.test\\(k\\)\\) console.log\\('  '+k+': '+s[k]\\)\")",
-      "Bash(node -e \"const s=require\\('./package.json'\\).scripts; for\\(const k in s\\) if\\(/db|seed|setup|create-service/.test\\(k\\)\\) console.log\\('  '+k+': '+s[k]\\)\")"
+      "Bash(node -e \"const s=require\\('./package.json'\\).scripts; for\\(const k in s\\) if\\(/db|seed|setup|create-service/.test\\(k\\)\\) console.log\\('  '+k+': '+s[k]\\)\")",
+      "Bash(pnpm --filter user-service exec tsc --noEmit)",
+      "PowerShell(Remove-Item -Force \"D:\\\\AIMess\\\\aimess_backend\\\\apps\\\\user-service\\\\src\\\\__presign-proof.ts\"; if \\(-not \\(Test-Path \"D:\\\\AIMess\\\\aimess_backend\\\\apps\\\\user-service\\\\src\\\\__presign-proof.ts\"\\)\\) { \"DELETED\" })",
+      "Bash(powershell.exe -Command 'Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like '\\\\''192.168.*'\\\\'' -or $_.IPAddress -like '\\\\''10.*'\\\\'' -or $_.IPAddress -like '\\\\''172.*'\\\\'' } | Select-Object IPAddress, InterfaceAlias | Format-Table -AutoSize')"
     ]
   }
 }

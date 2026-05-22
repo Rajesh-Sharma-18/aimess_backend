@@ -1,0 +1,28 @@
+# ngrok tunnels for local AIMess dev — expose the API gateway (and MinIO for
+# image uploads) to a remote frontend dev until a real server exists.
+# NO secrets in this file (safe to commit). The authtoken lives in your GLOBAL
+# ngrok config via `ngrok config add-authtoken <YOUR_TOKEN>`.
+#
+# Two ways to run:
+#   A) one tunnel at a time (simplest, always works on free tier):
+#        ngrok http 3000     # gateway → API + Swagger
+#        ngrok http 9000     # MinIO   → uploads (separate terminal)
+#      or the npm shortcuts:  pnpm tunnel:gateway   /   pnpm tunnel:minio
+#
+#   B) both at once — add the `tunnels:` block below to your GLOBAL ngrok.yml
+#      (the one holding your authtoken), then:  ngrok start --all
+#      (`--config` overrides the default file, so it would drop your token;
+#       merging both files is fiddly — copying these tunnels into the global
+#       config is the reliable path.)
+#
+# Free-tier caveat: simultaneous-tunnel limits may apply; if you can only run
+# one, prioritise the gateway. Each restart gives NEW random URLs — re-share the
+# gateway URL and update MINIO_PUBLIC_ENDPOINT with the new MinIO URL each time.
+version: "2"
+tunnels:
+  gateway:
+    proto: http
+    addr: 3000 # API_GATEWAY_PORT — all REST APIs + /docs (Swagger)
+  minio:
+    proto: http
+    addr: 9000 # MinIO API — presigned image upload/view URLs

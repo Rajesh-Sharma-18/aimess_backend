@@ -1,7 +1,7 @@
 import { createUploadUrl, StorageValidationError } from "@aimess/storage";
 import { BadRequestError, UnsupportedMediaTypeError } from "@aimess/errors";
 
-import { storageClient } from "../config/storage.js";
+import { presignClient } from "../config/storage.js";
 import { UPLOAD_TYPES, type UploadType } from "../config/uploads.js";
 import { env } from "../config/env.js";
 
@@ -26,7 +26,7 @@ export const uploadService = {
   ): Promise<CreateUploadUrlResult> {
     try {
       return await createUploadUrl({
-        client: storageClient,
+        client: presignClient,
         def: UPLOAD_TYPES[params.type],
         contentType: params.contentType,
         contentLength: params.contentLength,

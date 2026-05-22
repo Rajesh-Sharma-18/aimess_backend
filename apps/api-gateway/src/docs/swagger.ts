@@ -17,6 +17,14 @@ const swaggerUiOptions: swaggerUi.SwaggerUiOptions = {
   swaggerOptions: {
     persistAuthorization: true,
     displayRequestDuration: true,
+    // ngrok's free tier returns an HTML interstitial for browser-originated
+    // requests unless this header is present. Inject it so "Try it out" reaches
+    // the gateway when the docs are served through an ngrok tunnel. (Self-
+    // contained — swagger-ui-express serializes this function into the page.)
+    requestInterceptor: (request: { headers: Record<string, string> }) => {
+      request.headers["ngrok-skip-browser-warning"] = "true";
+      return request;
+    },
   },
 };
 

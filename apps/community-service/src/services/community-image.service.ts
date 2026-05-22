@@ -7,7 +7,7 @@ import {
 import { BadRequestError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
-import { storageClient } from "../config/storage.js";
+import { presignClient, storageClient } from "../config/storage.js";
 import { env } from "../config/env.js";
 import { parseCommunityImageObjectKeyFromStored } from "../lib/community-image-storage.js";
 import type { CommunityImageView } from "../types/community.types.js";
@@ -55,7 +55,7 @@ export class CommunityImageService {
 
       const expiresIn = env.MINIO_IMAGE_VIEW_EXPIRES_IN;
       const url = await createPresignedViewUrl({
-        client: storageClient,
+        client: presignClient,
         bucket: COMMUNITY_BUCKET,
         objectKey,
         expiresIn,

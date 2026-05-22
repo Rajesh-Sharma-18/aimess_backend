@@ -17,7 +17,6 @@ generator client {
 
 datasource db {
   provider = "mongodb"
-  url      = env("COMMUNITY_DATABASE_URL")
 }
 
 // -----------------------------------------------------------------------------
@@ -43,22 +42,22 @@ model CommunityCategory {
 // `handle` is the @Community-Name slug (unique); `name` is the display name.
 // -----------------------------------------------------------------------------
 model Community {
-  id           String            @id @default(auto()) @map("_id") @db.ObjectId
-  name         String            @unique
-  handle       String            @unique
-  description  String?
-  type         CommunityType     @default(PUBLIC)
-  categoryId   String            @db.ObjectId
-  category     CommunityCategory @relation(fields: [categoryId], references: [id])
-  creatorId    String // AuthUser.id of the original creator
-  adminId      String // AuthUser.id of the current admin/owner
-  avatarUrl    String? // MinIO object key (community/avatar/{userId}/{uuid}.ext)
-  coverUrl     String? // MinIO object key (community/cover/{userId}/{uuid}.ext)
-  memberCount  Int               @default(1)
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  deletedAt    DateTime?
-  members      CommunityMember[]
+  id          String            @id @default(auto()) @map("_id") @db.ObjectId
+  name        String            @unique
+  handle      String            @unique
+  description String?
+  type        CommunityType     @default(PUBLIC)
+  categoryId  String            @db.ObjectId
+  category    CommunityCategory @relation(fields: [categoryId], references: [id])
+  creatorId   String // AuthUser.id of the original creator
+  adminId     String // AuthUser.id of the current admin/owner
+  avatarUrl   String? // MinIO object key (community/avatar/{userId}/{uuid}.ext)
+  coverUrl    String? // MinIO object key (community/cover/{userId}/{uuid}.ext)
+  memberCount Int               @default(1)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+  members     CommunityMember[]
 
   @@index([categoryId])
   @@index([creatorId])
@@ -90,15 +89,15 @@ model CommunityMember {
 // -----------------------------------------------------------------------------
 /// FUTURE
 model CommunityJoinRequest {
-  id          String                  @id @default(auto()) @map("_id") @db.ObjectId
-  communityId String                  @db.ObjectId
+  id          String                 @id @default(auto()) @map("_id") @db.ObjectId
+  communityId String                 @db.ObjectId
   userId      String
-  status      CommunityJoinReqStatus  @default(PENDING)
+  status      CommunityJoinReqStatus @default(PENDING)
   message     String?
   decidedBy   String?
   decidedAt   DateTime?
-  createdAt   DateTime                @default(now())
-  updatedAt   DateTime                @updatedAt
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
 
   @@unique([communityId, userId])
   @@index([communityId, status])
@@ -107,13 +106,13 @@ model CommunityJoinRequest {
 
 /// FUTURE
 model CommunityInvite {
-  id          String              @id @default(auto()) @map("_id") @db.ObjectId
-  communityId String              @db.ObjectId
+  id          String                @id @default(auto()) @map("_id") @db.ObjectId
+  communityId String                @db.ObjectId
   inviterId   String
   inviteeId   String
   status      CommunityInviteStatus @default(PENDING)
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
 
   @@unique([communityId, inviteeId])
   @@index([inviteeId, status])
@@ -125,14 +124,14 @@ model CommunityInvite {
 // -----------------------------------------------------------------------------
 /// FUTURE
 model CommunityReport {
-  id           String               @id @default(auto()) @map("_id") @db.ObjectId
-  communityId  String               @db.ObjectId
+  id           String                @id @default(auto()) @map("_id") @db.ObjectId
+  communityId  String                @db.ObjectId
   reporterId   String
   targetUserId String?
   reason       String
   status       CommunityReportStatus @default(OPEN)
-  createdAt    DateTime             @default(now())
-  updatedAt    DateTime             @updatedAt
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
 
   @@index([communityId, status])
   @@map("community_reports")

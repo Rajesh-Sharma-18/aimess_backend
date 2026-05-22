@@ -7,7 +7,7 @@ import {
 import { BadRequestError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
-import { storageClient } from "../config/storage.js";
+import { presignClient, storageClient } from "../config/storage.js";
 import { parseAvatarObjectKeyFromStored } from "../lib/avatar-storage.js";
 import { env } from "../config/env.js";
 
@@ -63,7 +63,7 @@ export class AvatarService {
 
       const expiresIn = env.MINIO_AVATAR_VIEW_EXPIRES_IN;
       const url = await createPresignedViewUrl({
-        client: storageClient,
+        client: presignClient,
         bucket: AVATAR_BUCKET,
         objectKey,
         expiresIn,

@@ -27,6 +27,11 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(1),
 
   MINIO_ENDPOINT: z.string().url(),
+  /**
+   * Client-facing MinIO host used ONLY to sign upload/view URLs.
+   * Falls back to MINIO_ENDPOINT when unset (same-machine setups).
+   */
+  MINIO_PUBLIC_ENDPOINT: z.string().url().optional(),
   MINIO_ACCESS_KEY: z.string().min(1),
   MINIO_SECRET_KEY: z.string().min(1),
   MINIO_BUCKET_COMMUNITY: z.string().min(1),

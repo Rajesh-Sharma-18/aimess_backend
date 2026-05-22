@@ -41,7 +41,9 @@
     "docker:build:apps": "docker build -f apps/api-gateway/Dockerfile -t aimess-api-gateway:local . && docker build -f apps/auth-service/Dockerfile -t aimess-auth-service:local . && docker build -f apps/user-service/Dockerfile -t aimess-user-service:local .",
     "docker:rebuild": "docker compose --env-file .env down && docker compose --env-file .env build && docker compose --env-file .env up -d",
     "docker:ps": "docker compose --env-file .env ps",
-    "docker:logs": "docker compose --env-file .env logs -f"
+    "docker:logs": "docker compose --env-file .env logs -f",
+    "tunnel:gateway": "ngrok http 3000",
+    "tunnel:minio": "ngrok http 9000"
   },
   "keywords": [],
   "author": "",
