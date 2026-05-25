@@ -76,7 +76,9 @@
       "Bash(node -e \"const s=require\\('./package.json'\\).scripts; for\\(const k in s\\) if\\(/db|seed|setup|create-service/.test\\(k\\)\\) console.log\\('  '+k+': '+s[k]\\)\")",
       "Bash(pnpm --filter user-service exec tsc --noEmit)",
       "PowerShell(Remove-Item -Force \"D:\\\\AIMess\\\\aimess_backend\\\\apps\\\\user-service\\\\src\\\\__presign-proof.ts\"; if \\(-not \\(Test-Path \"D:\\\\AIMess\\\\aimess_backend\\\\apps\\\\user-service\\\\src\\\\__presign-proof.ts\"\\)\\) { \"DELETED\" })",
-      "Bash(powershell.exe -Command 'Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like '\\\\''192.168.*'\\\\'' -or $_.IPAddress -like '\\\\''10.*'\\\\'' -or $_.IPAddress -like '\\\\''172.*'\\\\'' } | Select-Object IPAddress, InterfaceAlias | Format-Table -AutoSize')"
+      "Bash(powershell.exe -Command 'Get-NetIPAddress -AdressFamily IPv4 | Where-Object { $_.IPAddress -like '\\\\''192.168.*'\\\\'' -or $_.IPAddress -like '\\\\''10.*'\\\\'' -or $_.IPAddress -like '\\\\''172.*'\\\\'' } | Select-Object IPAddress, InterfaceAlias | Format-Table -AutoSize')",
+      "Bash(cp /tmp/schema.bak prisma/schema.prisma)",
+      "Read(//c/c/Users/Windows/Documents/Rajesh/aimess_backend/apps/chat-service/prisma/**)"
     ]
   }
 }

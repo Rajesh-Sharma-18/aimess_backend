@@ -16,6 +16,7 @@ const envSchema = z.object({
   AUTH_SERVICE_URL: z.string().url(),
   USER_SERVICE_URL: z.string().url().optional(),
   COMMUNITY_SERVICE_URL: z.string().url().optional(),
+  CHAT_SERVICE_URL: z.string().url().optional(),
   AUTH_GRPC_URL: z.string().optional(),
   USER_GRPC_URL: z.string().optional(),
   REDIS_URL: z.string(),

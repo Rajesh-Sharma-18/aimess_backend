@@ -41,6 +41,15 @@ if (env.COMMUNITY_SERVICE_URL) {
   });
 }
 
+if (env.CHAT_SERVICE_URL) {
+  v1Services.push({
+    segment: "chat",
+    target: env.CHAT_SERVICE_URL,
+    downstreamPrefix: "/api/chat",
+    swaggerTag: "Chat",
+  });
+}
+
 const servicesByVersion: Record<ApiVersion, VersionedServiceConfig[]> = {
   v1: v1Services,
 };

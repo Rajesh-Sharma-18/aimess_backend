@@ -34,6 +34,21 @@ export const userProfileRepository = {
   },
 
   /** Case-insensitive — canonical storage is lowercase; legacy rows may differ in casing. */
+  findByUserIds(userIds: string[]) {
+    return prisma.userProfile.findMany({
+      where: { userId: { in: userIds }, deletedAt: null },
+      select: {
+        userId: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        avatarUrl: true,
+        isOnline: true,
+      },
+    });
+  },
+
+  /** Case-insensitive — canonical storage is lowercase; legacy rows may differ in casing. */
   findByUsername(username: string) {
     const normalized = normalizeUsername(username);
     return prisma.userProfile.findFirst({

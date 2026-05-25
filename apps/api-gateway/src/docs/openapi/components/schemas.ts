@@ -1404,4 +1404,468 @@ export const openApiSchemas = {
     },
     required: ["logs", "nextCursor"],
   },
+
+  // ===========================================================================
+  // chat-service
+  // ===========================================================================
+
+  // --- Private rooms & messages ---
+  ChatPrivateRoom: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      participants: {
+        type: "array",
+        items: { type: "string" },
+      },
+      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      lastMessage: { type: "object", nullable: true },
+      pinnedCount: { type: "integer" },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "participants", "createdAt", "updatedAt"],
+  },
+  ChatPrivateRoomList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatPrivateRoom" },
+  },
+  ChatMessage: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      senderId: { type: "string", nullable: true },
+      receiverId: { type: "string", nullable: true },
+      content: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          urls: { type: "array", items: { type: "string" } },
+          files: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                url: { type: "string", format: "uri" },
+                name: { type: "string" },
+                size: { type: "number" },
+                mime: { type: "string" },
+              },
+            },
+          },
+          location: { $ref: "#/components/schemas/ChatLocationAttachment" },
+          contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+        },
+      },
+      messageType: {
+        type: "string",
+        enum: [
+          "TEXT",
+          "IMAGE",
+          "DOCUMENT",
+          "VIDEO",
+          "SYSTEM",
+          "LOCATION",
+          "CONTACT",
+        ],
+      },
+      reactions: { type: "object" },
+      parentMessageId: { type: "string", nullable: true },
+      quoteData: { type: "object", nullable: true },
+      isDeleted: { type: "boolean" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "messageType", "createdAt"],
+  },
+  ChatMessageList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatMessage" },
+  },
+  ChatDeletePrivateMessageRequest: {
+    type: "object",
+    properties: {
+      messageId: { type: "string", minLength: 4 },
+      type: { type: "string", enum: ["forMe", "forEveryone"] },
+    },
+    required: ["messageId", "type"],
+  },
+  ChatPin: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      messageId: { type: "string" },
+      pinnedBy: { type: "string" },
+      pinnedAt: { type: "string", format: "date-time" },
+      senderId: { type: "string" },
+      senderDisplayName: { type: "string" },
+      contentPinned: { type: "object" },
+      messageCreatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "messageId", "pinnedBy", "pinnedAt"],
+  },
+  ChatPinList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatPin" },
+  },
+
+  // --- Group rooms ---
+  ChatGroupRoom: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      name: { type: "string" },
+      description: { type: "string" },
+      avatar: { type: "string" },
+      type: { type: "string" },
+      createdBy: { type: "string" },
+      status: { type: "string", enum: ["ACTIVE", "DISBANDED"] },
+      memberLimit: { type: "integer" },
+      memberCount: { type: "integer" },
+      settings: { type: "object" },
+      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      pinnedCount: { type: "integer" },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "name", "createdBy", "status", "createdAt"],
+  },
+  ChatGroupRoomList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatGroupRoom" },
+  },
+  ChatCreateGroupRequest: {
+    type: "object",
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 100 },
+      description: { type: "string", maxLength: 1000 },
+      avatar: { type: "string" },
+      memberLimit: { type: "integer", minimum: 2, maximum: 5000, default: 50 },
+    },
+    required: ["name"],
+  },
+  ChatUpdateGroupRequest: {
+    type: "object",
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 100 },
+      description: { type: "string", maxLength: 1000 },
+      avatar: { type: "string" },
+      memberLimit: { type: "integer", minimum: 2, maximum: 5000 },
+    },
+  },
+
+  // --- Group members ---
+  ChatGroupMember: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      userId: { type: "string" },
+      role: {
+        type: "string",
+        enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+      },
+      status: { type: "string", enum: ["ACTIVE", "KICKED", "LEFT", "BANNED"] },
+      joinedAt: { type: "string", format: "date-time" },
+      unreadCount: { type: "integer" },
+    },
+    required: ["id", "roomId", "userId", "role", "status", "joinedAt"],
+  },
+  ChatGroupMemberList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatGroupMember" },
+  },
+  ChatAddMemberRequest: {
+    type: "object",
+    properties: {
+      roomId: { type: "string", minLength: 5 },
+      userId: { type: "string", minLength: 5 },
+    },
+    required: ["roomId", "userId"],
+  },
+  ChatKickMemberRequest: {
+    type: "object",
+    properties: {
+      roomId: { type: "string", minLength: 5 },
+      userId: { type: "string", minLength: 5 },
+      reason: { type: "string", maxLength: 1000 },
+    },
+    required: ["roomId", "userId"],
+  },
+  ChatUpdateRoleRequest: {
+    type: "object",
+    properties: {
+      roomId: { type: "string", minLength: 5 },
+      userId: { type: "string", minLength: 5 },
+      role: {
+        type: "string",
+        enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+      },
+    },
+    required: ["roomId", "userId", "role"],
+  },
+  ChatDeleteGroupMessageRequest: {
+    type: "object",
+    properties: {
+      messageId: { type: "string", minLength: 4 },
+      roomId: { type: "string", minLength: 4 },
+    },
+    required: ["messageId", "roomId"],
+  },
+
+  // --- Group invite links ---
+  ChatInviteLink: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      token: { type: "string" },
+      createdBy: { type: "string" },
+      status: { type: "string", enum: ["ACTIVE", "REVOKED", "EXPIRED"] },
+      expiresAt: { type: "string", format: "date-time", nullable: true },
+      maxUses: { type: "integer", nullable: true },
+      usedCount: { type: "integer" },
+      shareName: { type: "string" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "token", "createdBy", "status", "createdAt"],
+  },
+  ChatInviteLinkList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatInviteLink" },
+  },
+  ChatInviteLinkPreview: {
+    type: "object",
+    description: "Public preview of a group invite link.",
+    properties: {
+      token: { type: "string" },
+      groupName: { type: "string" },
+      groupAvatar: { type: "string" },
+      memberCount: { type: "integer" },
+      shareName: { type: "string" },
+    },
+    required: ["token", "groupName", "memberCount"],
+  },
+  ChatCreateInviteLinkRequest: {
+    type: "object",
+    properties: {
+      roomId: { type: "string", minLength: 5 },
+      expiresAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "Optional expiry (ISO 8601).",
+      },
+      maxUses: {
+        type: "integer",
+        minimum: 1,
+        nullable: true,
+        description: "Optional maximum number of uses.",
+      },
+      shareName: { type: "string", maxLength: 200 },
+    },
+    required: ["roomId"],
+  },
+  ChatRevokeInviteLinkRequest: {
+    type: "object",
+    properties: {
+      token: { type: "string", minLength: 10 },
+    },
+    required: ["token"],
+  },
+  ChatJoinByInviteLinkRequest: {
+    type: "object",
+    properties: {
+      token: { type: "string", minLength: 10 },
+    },
+    required: ["token"],
+  },
+
+  // --- Notifications ---
+  ChatNotification: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      userId: { type: "string" },
+      actorId: { type: "string" },
+      type: { type: "string" },
+      entity: { type: "object" },
+      actorSnapshot: { type: "object" },
+      payload: { type: "object" },
+      isRead: { type: "boolean" },
+      readAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "userId", "actorId", "type", "isRead", "createdAt"],
+  },
+  ChatNotificationList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatNotification" },
+  },
+  ChatMarkReadRequest: {
+    type: "object",
+    properties: {
+      notificationId: { type: "string", minLength: 5 },
+    },
+    required: ["notificationId"],
+  },
+  ChatUnreadCountData: {
+    type: "object",
+    properties: {
+      count: { type: "integer", example: 5 },
+    },
+    required: ["count"],
+  },
+
+  // --- Community rooms & messages ---
+  ChatCommunityRoom: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      owner: { type: "string", nullable: true },
+      logo: { type: "string", nullable: true },
+      title: { type: "string", nullable: true },
+      desc: { type: "string", nullable: true },
+      memberNumber: { type: "integer" },
+      onlineNember: { type: "integer" },
+      isLive: { type: "boolean" },
+      tags: { type: "array", items: { type: "string" } },
+      status: { type: "string" },
+      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "name", "status", "createdAt"],
+  },
+  ChatCommunityRoomList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatCommunityRoom" },
+  },
+  ChatCommunityMessage: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      sentBy: { type: "string" },
+      senderName: { type: "string", nullable: true },
+      senderAvatar: { type: "string", nullable: true },
+      message: { type: "string", nullable: true },
+      reactions: { type: "object" },
+      parentMessageId: { type: "string", nullable: true },
+      messageType: { type: "string" },
+      attachments: { type: "array", items: { type: "object" } },
+      deletedForAll: { type: "boolean" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "sentBy", "createdAt"],
+  },
+  ChatCommunityMessageList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+  },
+
+  // --- Attachments: location & contact ---
+  ChatLocationAttachment: {
+    type: "object",
+    description:
+      "Location share. Lives in message content (private/group) or attachments[] (community).",
+    properties: {
+      lat: { type: "number", minimum: -90, maximum: 90, example: 21.0285 },
+      lng: { type: "number", minimum: -180, maximum: 180, example: 105.8542 },
+      placeName: { type: "string", maxLength: 200, example: "Hoan Kiem Lake" },
+      placeAddress: {
+        type: "string",
+        maxLength: 500,
+        example: "Hanoi, Vietnam",
+      },
+    },
+    required: ["lat", "lng"],
+  },
+  ChatContactAttachment: {
+    type: "object",
+    description:
+      "Contact share. Lives in message content (private/group) or attachments[] (community).",
+    properties: {
+      name: {
+        type: "string",
+        minLength: 1,
+        maxLength: 200,
+        example: "Emily Cooper",
+      },
+      phone: {
+        type: "string",
+        minLength: 1,
+        maxLength: 50,
+        example: "+12345 67890",
+      },
+      avatar: { type: "string", maxLength: 3000, nullable: true },
+      userId: { type: "string", maxLength: 100, nullable: true },
+    },
+    required: ["name", "phone"],
+  },
+
+  // --- Media upload/download ---
+  ChatDownloadUrlRequest: {
+    type: "object",
+    properties: {
+      objectKey: {
+        type: "string",
+        minLength: 1,
+        maxLength: 500,
+        description:
+          "Object key returned by /chat/media/upload-url (must start with chat-uploads/).",
+        example: "chat-uploads/<userId>/<uuid>.mp3",
+      },
+    },
+    required: ["objectKey"],
+  },
+  ChatDownloadUrlData: {
+    type: "object",
+    properties: {
+      objectKey: { type: "string" },
+      downloadUrl: {
+        type: "string",
+        format: "uri",
+        description:
+          "Short-lived presigned GET URL for playing/downloading the object.",
+      },
+    },
+    required: ["objectKey", "downloadUrl"],
+  },
+  ChatUploadUrlRequest: {
+    type: "object",
+    properties: {
+      filename: { type: "string", minLength: 1, maxLength: 255 },
+      contentType: {
+        type: "string",
+        enum: [
+          "image/jpeg",
+          "image/png",
+          "image/webp",
+          "image/gif",
+          "video/mp4",
+          "video/quicktime",
+          "audio/mpeg",
+          "audio/ogg",
+          "audio/wav",
+          "application/pdf",
+          "application/msword",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ],
+      },
+    },
+    required: ["filename", "contentType"],
+  },
+  ChatUploadUrlData: {
+    type: "object",
+    properties: {
+      objectKey: { type: "string", example: "chat-uploads/user123/abc.jpg" },
+      uploadUrl: { type: "string", format: "uri" },
+      contentType: { type: "string", example: "image/jpeg" },
+    },
+    required: ["objectKey", "uploadUrl", "contentType"],
+  },
 } as const;

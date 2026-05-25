@@ -1,4 +1,5 @@
 import { AUTH_MESSAGES } from "./auth.messages.js";
+import { CHAT_MESSAGES } from "./chat.messages.js";
 import { COMMON_MESSAGES } from "./common.messages.js";
 import { COMMUNITY_MESSAGES } from "./community.messages.js";
 import { UPLOAD_MESSAGES } from "./upload.messages.js";
@@ -19,6 +20,7 @@ export const MESSAGES = {
   ...AUTH_MESSAGES,
   ...USER_MESSAGES,
   ...COMMUNITY_MESSAGES,
+  ...CHAT_MESSAGES,
   ...UPLOAD_MESSAGES,
   ...COMMON_MESSAGES,
 } as const satisfies MessageCatalog;
@@ -26,6 +28,7 @@ export const MESSAGES = {
 export type MessageKey = keyof typeof MESSAGES;
 
 export { AUTH_MESSAGES, type AuthMessageKey } from "./auth.messages.js";
+export { CHAT_MESSAGES, type ChatMessageKey } from "./chat.messages.js";
 export { COMMON_MESSAGES, type CommonMessageKey } from "./common.messages.js";
 export {
   COMMUNITY_MESSAGES,

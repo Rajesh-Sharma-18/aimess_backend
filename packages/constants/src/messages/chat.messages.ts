@@ -1,0 +1,286 @@
+import type { MessageCatalog } from "./types.js";
+
+/** Chat-service API messages (private, group, community, media, friendship gate). */
+export const CHAT_MESSAGES = {
+  // --- GET success ---
+  CHAT_CONVERSATIONS_FETCHED: {
+    vi: "Lấy danh sách cuộc trò chuyện thành công",
+    en: "Conversations fetched successfully",
+  },
+  CHAT_MESSAGES_FETCHED: {
+    vi: "Lấy tin nhắn thành công",
+    en: "Messages fetched successfully",
+  },
+  CHAT_MESSAGES_SEARCHED: {
+    vi: "Tìm kiếm tin nhắn thành công",
+    en: "Messages searched successfully",
+  },
+  CHAT_PINS_FETCHED: {
+    vi: "Lấy danh sách ghim thành công",
+    en: "Pins fetched successfully",
+  },
+  CHAT_GROUPS_FETCHED: {
+    vi: "Lấy danh sách nhóm thành công",
+    en: "Groups fetched successfully",
+  },
+  CHAT_GROUP_FETCHED: {
+    vi: "Lấy thông tin nhóm thành công",
+    en: "Group fetched successfully",
+  },
+  CHAT_MEMBERS_FETCHED: {
+    vi: "Lấy danh sách thành viên thành công",
+    en: "Members fetched successfully",
+  },
+  CHAT_INVITE_LINK_PREVIEW_FETCHED: {
+    vi: "Lấy thông tin liên kết mời thành công",
+    en: "Invite link preview fetched successfully",
+  },
+  CHAT_INVITE_LINKS_FETCHED: {
+    vi: "Lấy danh sách liên kết mời thành công",
+    en: "Invite links fetched successfully",
+  },
+  CHAT_NOTIFICATIONS_FETCHED: {
+    vi: "Lấy thông báo thành công",
+    en: "Notifications fetched successfully",
+  },
+  CHAT_UNREAD_COUNT_FETCHED: {
+    vi: "Lấy số lượng chưa đọc thành công",
+    en: "Unread count fetched successfully",
+  },
+  CHAT_COMMUNITY_ROOMS_FETCHED: {
+    vi: "Lấy danh sách phòng cộng đồng thành công",
+    en: "Community rooms fetched successfully",
+  },
+  CHAT_COMMUNITY_ROOMS_SEARCHED: {
+    vi: "Tìm kiếm phòng cộng đồng thành công",
+    en: "Community rooms searched successfully",
+  },
+  CHAT_COMMUNITY_MESSAGES_FETCHED: {
+    vi: "Lấy tin nhắn cộng đồng thành công",
+    en: "Community messages fetched successfully",
+  },
+
+  // --- GET empty data ---
+  CHAT_NO_CONVERSATIONS_FOUND: {
+    vi: "Không tìm thấy cuộc trò chuyện nào",
+    en: "No conversations found",
+  },
+  CHAT_NO_MESSAGES_FOUND: {
+    vi: "Không tìm thấy tin nhắn nào",
+    en: "No messages found",
+  },
+  CHAT_NO_PINS_FOUND: {
+    vi: "Không tìm thấy ghim nào",
+    en: "No pins found",
+  },
+  CHAT_NO_GROUPS_FOUND: {
+    vi: "Không tìm thấy nhóm nào",
+    en: "No groups found",
+  },
+  CHAT_NO_MEMBERS_FOUND: {
+    vi: "Không tìm thấy thành viên nào",
+    en: "No members found",
+  },
+  CHAT_NO_COMMUNITY_ROOMS_FOUND: {
+    vi: "Không tìm thấy phòng cộng đồng nào",
+    en: "No community rooms found",
+  },
+  CHAT_NO_COMMUNITY_MESSAGES_FOUND: {
+    vi: "Không tìm thấy tin nhắn cộng đồng nào",
+    en: "No community messages found",
+  },
+  CHAT_NO_INVITE_LINKS_FOUND: {
+    vi: "Không tìm thấy liên kết mời nào",
+    en: "No invite links found",
+  },
+  CHAT_NO_NOTIFICATIONS_FOUND: {
+    vi: "Không tìm thấy thông báo nào",
+    en: "No notifications found",
+  },
+
+  // --- Mutation success ---
+  CHAT_CONVERSATION_DELETED: {
+    vi: "Đã xóa cuộc trò chuyện",
+    en: "Conversation deleted",
+  },
+  CHAT_MESSAGE_DELETED_FOR_YOU: {
+    vi: "Đã xóa tin nhắn cho bạn",
+    en: "Message deleted for you",
+  },
+  CHAT_NOTIFICATIONS_ALL_READ: {
+    vi: "Đã đánh dấu tất cả là đã đọc",
+    en: "All notifications marked as read",
+  },
+  CHAT_GROUP_DISBANDED: {
+    vi: "Đã giải tán nhóm",
+    en: "Group disbanded",
+  },
+  CHAT_GROUP_LEFT: {
+    vi: "Đã rời nhóm",
+    en: "Left the group",
+  },
+  CHAT_ROOM_JOINED: {
+    vi: "Đã tham gia phòng",
+    en: "Joined the room",
+  },
+  CHAT_ROOM_LEFT: {
+    vi: "Đã rời phòng",
+    en: "Left the room",
+  },
+
+  // --- Rooms / messages ---
+  CHAT_ROOM_NOT_FOUND: {
+    vi: "Không tìm thấy phòng",
+    en: "Room not found",
+  },
+  CHAT_MESSAGE_NOT_FOUND: {
+    vi: "Không tìm thấy tin nhắn",
+    en: "Message not found",
+  },
+  CHAT_DELETE_OWN_MESSAGES_ONLY: {
+    vi: "Bạn chỉ có thể xóa tin nhắn của mình",
+    en: "You can only delete your own messages",
+  },
+  CHAT_MESSAGE_ALREADY_DELETED: {
+    vi: "Tin nhắn đã bị xóa",
+    en: "Message already deleted",
+  },
+  CHAT_NOT_A_PARTICIPANT: {
+    vi: "Bạn không phải là thành viên của cuộc trò chuyện này",
+    en: "You are not a participant in this conversation",
+  },
+  CHAT_BANNED_FROM_ROOM: {
+    vi: "Bạn đã bị cấm khỏi phòng này",
+    en: "You are banned from this room",
+  },
+
+  // --- Friendship gate ---
+  CHAT_FRIENDSHIP_REQUIRED: {
+    vi: "Bạn phải là bạn bè để nhắn tin cho người dùng này",
+    en: "You must be friends to message this user",
+  },
+
+  // --- Pins ---
+  CHAT_PIN_LIMIT_REACHED: {
+    vi: "Đã đạt giới hạn ghim cho phòng này",
+    en: "Pin limit reached for this room",
+  },
+  CHAT_PIN_NOT_FOUND: {
+    vi: "Không tìm thấy ghim",
+    en: "Pin not found",
+  },
+  CHAT_UNPIN_OWN_ONLY: {
+    vi: "Bạn chỉ có thể bỏ ghim các ghim do bạn tạo",
+    en: "You can only unpin pins created by you",
+  },
+
+  // --- Groups ---
+  CHAT_GROUP_NOT_FOUND: {
+    vi: "Không tìm thấy nhóm",
+    en: "Group not found",
+  },
+  CHAT_GROUP_NO_LONGER_EXISTS: {
+    vi: "Nhóm không còn tồn tại",
+    en: "Group no longer exists",
+  },
+  CHAT_NOT_A_MEMBER: {
+    vi: "Bạn không phải là thành viên của nhóm này",
+    en: "You are not a member of this group",
+  },
+  CHAT_ALREADY_MEMBER: {
+    vi: "Đã là thành viên",
+    en: "Already a member",
+  },
+  CHAT_GROUP_MEMBER_LIMIT_REACHED: {
+    vi: "Đã đạt giới hạn thành viên của nhóm",
+    en: "Group member limit reached",
+  },
+  CHAT_OWNER_CANNOT_LEAVE: {
+    vi: "Chủ nhóm không thể rời đi. Hãy chuyển quyền hoặc giải tán nhóm.",
+    en: "Owner cannot leave. Transfer ownership or disband the group.",
+  },
+  CHAT_CANNOT_KICK_HIGHER_ROLE: {
+    vi: "Không thể loại thành viên có vai trò bằng hoặc cao hơn",
+    en: "Cannot remove a member with an equal or higher role",
+  },
+  CHAT_INSUFFICIENT_PERMISSIONS: {
+    vi: "Bạn không có đủ quyền để thực hiện hành động này",
+    en: "Insufficient permissions to perform this action",
+  },
+  CHAT_ONLY_OWNER_ADMIN_UPDATE: {
+    vi: "Chỉ chủ nhóm hoặc quản trị viên mới có thể cập nhật nhóm",
+    en: "Only the owner or an admin can update the group",
+  },
+  CHAT_ONLY_OWNER_DISBAND: {
+    vi: "Chỉ chủ nhóm mới có thể giải tán nhóm",
+    en: "Only the owner can disband the group",
+  },
+
+  // --- Invite links ---
+  CHAT_INVITE_LINK_NOT_FOUND: {
+    vi: "Không tìm thấy liên kết mời hoặc đã hết hạn",
+    en: "Invite link not found or expired",
+  },
+  CHAT_INVITE_LINK_EXPIRED: {
+    vi: "Liên kết mời đã hết hạn",
+    en: "Invite link has expired",
+  },
+  CHAT_INVITE_LINK_USAGE_LIMIT: {
+    vi: "Liên kết mời đã đạt giới hạn sử dụng",
+    en: "Invite link usage limit reached",
+  },
+  CHAT_MEMBERS_CANNOT_CREATE_LINKS: {
+    vi: "Thành viên không được phép tạo liên kết mời",
+    en: "Members are not allowed to create invite links",
+  },
+
+  // --- Media ---
+  CHAT_UPLOAD_REQUEST_INVALID: {
+    vi: "Yêu cầu không hợp lệ: cần filename (chuỗi) và contentType (loại MIME được phép)",
+    en: "Invalid request: filename (string) and contentType (allowed MIME type) are required",
+  },
+  CHAT_DOWNLOAD_REQUEST_INVALID: {
+    vi: "Yêu cầu không hợp lệ: cần objectKey (chuỗi)",
+    en: "Invalid request: objectKey (string) is required",
+  },
+  CHAT_INVALID_OBJECT_KEY: {
+    vi: "Khóa đối tượng không hợp lệ",
+    en: "Invalid object key",
+  },
+
+  // --- Generic / error-handler ---
+  CHAT_INVALID_ID_FORMAT: {
+    vi: "Định dạng ID không hợp lệ",
+    en: "Invalid ID format",
+  },
+  CHAT_INVALID_REFERENCE: {
+    vi: "Tài nguyên được tham chiếu không tồn tại",
+    en: "Referenced resource does not exist",
+  },
+  CHAT_RESOURCE_CONFLICT: {
+    vi: "Đã tồn tại bản ghi với thông tin này",
+    en: "A record with these details already exists",
+  },
+  CHAT_NOT_FOUND: {
+    vi: "Không tìm thấy tài nguyên yêu cầu",
+    en: "Requested resource was not found",
+  },
+  CHAT_REQUEST_FAILED: {
+    vi: "Không thể xử lý yêu cầu",
+    en: "The request could not be processed",
+  },
+  CHAT_INVALID_REQUEST: {
+    vi: "Dữ liệu yêu cầu không hợp lệ",
+    en: "Invalid request data",
+  },
+  CHAT_INVALID_JSON_BODY: {
+    vi: "Nội dung JSON không hợp lệ",
+    en: "Invalid JSON body",
+  },
+  CHAT_INTERNAL_ERROR: {
+    vi: "Lỗi máy chủ nội bộ",
+    en: "Internal server error",
+  },
+} as const satisfies MessageCatalog;
+
+export type ChatMessageKey = keyof typeof CHAT_MESSAGES;

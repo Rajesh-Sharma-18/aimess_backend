@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIMess Dual Socket Tester</title>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<style>
+  :root { --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a; --text: #e1e4ed; --muted: #6b7280; --accent: #6366f1; --green: #22c55e; --red: #ef4444; --orange: #f59e0b; --blue: #3b82f6; --cyan: #06b6d4; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; background: var(--bg); color: var(--text); font-size: 13px; }
+
+  .top-bar { padding: 10px 20px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .top-bar h1 { font-size: 14px; color: var(--accent); letter-spacing: 0.5px; }
+  .server-input, .room-input { padding: 5px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; font-size: 12px; }
+  .server-input { width: 220px; } .room-input { width: 260px; }
+  .server-input:focus, .room-input:focus { outline: none; border-color: var(--accent); }
+  .top-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .main { display: grid; grid-template-columns: 1fr 1fr; height: calc(100vh - 50px); }
+
+  .user-panel { display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+  .user-panel:last-child { border-right: none; }
+  .user-header { padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .user-tag { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 4px; white-space: nowrap; }
+  .user-tag.sender { background: rgba(99,102,241,0.2); color: var(--accent); }
+  .user-tag.receiver { background: rgba(6,182,212,0.2); color: var(--cyan); }
+  .token-input { flex: 1; min-width: 200px; padding: 5px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; font-size: 11px; }
+  .token-input:focus { outline: none; border-color: var(--accent); }
+  .btn { padding: 5px 12px; border: none; border-radius: 6px; font-family: inherit; font-size: 11px; cursor: pointer; font-weight: 600; transition: all 0.15s; white-space: nowrap; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-connect { background: var(--green); color: #000; }
+  .btn-disconnect { background: var(--red); color: #fff; }
+  .btn-send { background: var(--accent); color: #fff; }
+  .btn-setup { background: var(--orange); color: #000; }
+  .btn-create-room { background: var(--blue); color: #fff; }
+  .status { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .status-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.off { background: var(--red); }
+  .user-id-display { font-size: 10px; color: var(--muted); width: 100%; }
+
+  .actions-bar { padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .act-btn { padding: 4px 8px; font-size: 10px; background: rgba(99,102,241,0.08); border: 1px solid var(--border); border-radius: 4px; color: var(--text); cursor: pointer; font-family: inherit; transition: all 0.1s; }
+  .act-btn:hover { background: rgba(99,102,241,0.2); border-color: var(--accent); }
+  .sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; }
+
+  .chat-area { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .msg { padding: 8px 12px; border-radius: 8px; max-width: 85%; font-size: 12px; line-height: 1.5; }
+  .msg.sent { background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.2); align-self: flex-end; }
+  .msg.received { background: rgba(6,182,212,0.1); border: 1px solid rgba(6,182,212,0.15); align-self: flex-start; }
+  .msg.system { background: rgba(107,114,128,0.1); border: 1px solid var(--border); align-self: center; color: var(--muted); font-size: 11px; text-align: center; }
+  .msg.error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); align-self: center; color: var(--red); font-size: 11px; }
+  .msg-meta { font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+
+  .date-tag { align-self: center; padding: 4px 14px; border-radius: 12px; background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.15); color: var(--accent); font-size: 10px; font-weight: 600; letter-spacing: 0.3px; margin: 8px 0; }
+
+  .compose { padding: 10px 16px; background: var(--surface); border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
+  .compose textarea { flex: 1; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-family: inherit; font-size: 12px; resize: none; min-height: 38px; max-height: 100px; }
+  .compose textarea:focus { outline: none; border-color: var(--accent); }
+  .compose select { padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; font-size: 11px; }
+
+  .log-toggle { padding: 6px 16px; background: var(--surface); border-top: 1px solid var(--border); }
+  .log-toggle summary { font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; }
+  .raw-log { max-height: 200px; overflow-y: auto; padding: 8px; font-size: 11px; }
+  .raw-entry { padding: 3px 8px; margin: 1px 0; border-radius: 3px; }
+  .raw-entry.out { background: rgba(99,102,241,0.05); border-left: 2px solid var(--accent); }
+  .raw-entry.in { background: rgba(34,197,94,0.05); border-left: 2px solid var(--green); }
+  .raw-entry.ack { background: rgba(245,158,11,0.05); border-left: 2px solid var(--orange); }
+  .raw-entry.sys { color: var(--muted); border-left: 2px solid var(--border); }
+  .raw-time { color: var(--muted); font-size: 9px; margin-right: 4px; }
+
+  .guide { padding: 8px 20px; background: rgba(99,102,241,0.06); border-bottom: 1px solid var(--border); font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 12px; }
+  .guide-step { display: inline-flex; align-items: center; gap: 4px; }
+  .guide-step .num { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; }
+  .guide-step.done .num { background: var(--green); }
+  .guide-arrow { color: var(--border); }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <h1>AIMess Dual Tester</h1>
+  <span class="top-label">Server</span>
+  <input class="server-input" id="serverUrl" value="http://localhost:3004" placeholder="http://localhost:3004">
+  <span class="top-label">Room ID</span>
+  <input class="room-input" id="roomId" placeholder="Click 'Create Room' or paste ID">
+  <button class="btn btn-create-room" onclick="createRoom()">Create Room</button>
+  <button class="btn btn-setup" onclick="autoSetup()">Auto Setup</button>
+</div>
+
+<div class="guide" id="guide">
+  <span class="guide-step" id="gs1"><span class="num">1</span> Paste tokens + Connect both</span>
+  <span class="guide-arrow">-></span>
+  <span class="guide-step" id="gs2"><span class="num">2</span> Create Room</span>
+  <span class="guide-arrow">-></span>
+  <span class="guide-step" id="gs3"><span class="num">3</span> Join Room (both)</span>
+  <span class="guide-arrow">-></span>
+  <span class="guide-step" id="gs4"><span class="num">4</span> Send messages!</span>
+</div>
+
+<div class="main">
+  <div class="user-panel" id="panelA">
+    <div class="user-header">
+      <span class="user-tag sender">SENDER (User A)</span>
+      <input class="token-input" id="tokenA" placeholder="Paste JWT (with or without 'Bearer ')">
+      <button class="btn btn-connect" id="connBtnA" onclick="toggle('A')">Connect</button>
+      <span class="status"><span class="status-dot off" id="dotA"></span><span id="statusA">Off</span></span>
+      <span class="user-id-display" id="uidA"></span>
+    </div>
+    <div class="actions-bar">
+      <span style="font-size:10px;color:var(--muted);margin-right:4px">Quick:</span>
+      <button class="act-btn" onclick="doAction('A','home_join')">Join Home</button>
+      <button class="act-btn" onclick="doAction('A','home_leave')">Leave Home</button>
+      <button class="act-btn" onclick="doAction('A','initiation')">Initiation</button>
+      <button class="act-btn" onclick="doAction('A','join_room')">Join Room</button>
+      <button class="act-btn" onclick="doAction('A','heartbeat')">Heartbeat</button>
+      <span class="sep"></span>
+      <button class="act-btn" onclick="doAction('A','grp_home_join')">Grp Home</button>
+      <button class="act-btn" onclick="doAction('A','grp_join_room')">Grp Join</button>
+      <span class="sep"></span>
+      <button class="act-btn" onclick="doAction('A','comm_home_join')">Comm Home</button>
+      <button class="act-btn" onclick="doAction('A','comm_join_room')">Comm Join</button>
+    </div>
+    <div class="chat-area" id="chatA"></div>
+    <div class="compose">
+      <select id="modeA"><option value="private">Private</option><option value="group">Group</option><option value="community">Community</option></select>
+      <textarea id="inputA" placeholder="Type a message... (Enter to send)" rows="1"></textarea>
+      <button class="btn btn-send" onclick="sendMsg('A')" id="sendBtnA" disabled>Send</button>
+    </div>
+    <details class="log-toggle"><summary>Raw Event Log (<span id="countA">0</span>)</summary><div class="raw-log" id="logA"></div></details>
+  </div>
+
+  <div class="user-panel" id="panelB">
+    <div class="user-header">
+      <span class="user-tag receiver">RECEIVER (User B)</span>
+      <input class="token-input" id="tokenB" placeholder="Paste JWT (with or without 'Bearer ')">
+      <button class="btn btn-connect" id="connBtnB" onclick="toggle('B')">Connect</button>
+      <span class="status"><span class="status-dot off" id="dotB"></span><span id="statusB">Off</span></span>
+      <span class="user-id-display" id="uidB"></span>
+    </div>
+    <div class="actions-bar">
+      <span style="font-size:10px;color:var(--muted);margin-right:4px">Quick:</span>
+      <button class="act-btn" onclick="doAction('B','home_join')">Join Home</button>
+      <button class="act-btn" onclick="doAction('B','home_leave')">Leave Home</button>
+      <button class="act-btn" onclick="doAction('B','initiation')">Initiation</button>
+      <button class="act-btn" onclick="doAction('B','join_room')">Join Room</button>
+      <button class="act-btn" onclick="doAction('B','heartbeat')">Heartbeat</button>
+      <span class="sep"></span>
+      <button class="act-btn" onclick="doAction('B','grp_home_join')">Grp Home</button>
+      <button class="act-btn" onclick="doAction('B','grp_join_room')">Grp Join</button>
+      <span class="sep"></span>
+      <button class="act-btn" onclick="doAction('B','comm_home_join')">Comm Home</button>
+      <button class="act-btn" onclick="doAction('B','comm_join_room')">Comm Join</button>
+    </div>
+    <div class="chat-area" id="chatB"></div>
+    <div class="compose">
+      <select id="modeB"><option value="private">Private</option><option value="group">Group</option><option value="community">Community</option></select>
+      <textarea id="inputB" placeholder="Type a message... (Enter to send)" rows="1"></textarea>
+      <button class="btn btn-send" onclick="sendMsg('B')" id="sendBtnB" disabled>Send</button>
+    </div>
+    <details class="log-toggle"><summary>Raw Event Log (<span id="countB">0</span>)</summary><div class="raw-log" id="logB"></div></details>
+  </div>
+</div>
+
+<script>
+const users = {
+  A: { socket: null, userId: null, displayName: null, count: 0, joinedRooms: new Set() },
+  B: { socket: null, userId: null, displayName: null, count: 0, joinedRooms: new Set() },
+};
+
+const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+function getServerUrl() {
+  return document.getElementById('serverUrl').value.trim().replace(/\/z-product\/?$/, '').replace(/\/+$/, '');
+}
+function getRoomId() { return document.getElementById('roomId').value.trim(); }
+function getOtherSide(s) { return s === 'A' ? 'B' : 'A'; }
+
+function stripBearer(v) {
+  v = v.trim();
+  return v.replace(/^[Bb]earer\s+/, '');
+}
+function getRawToken(side) { return stripBearer(document.getElementById('token' + side).value); }
+
+function decodeJwt(token) {
+  try {
+    token = stripBearer(token);
+    const p = token.split('.')[1];
+    return JSON.parse(atob(p.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch { return null; }
+}
+
+function markGuide(n) {
+  const el = document.getElementById('gs' + n);
+  if (el) el.classList.add('done');
+}
+
+// ── Date grouping helpers ──
+function getDateLabel(dateStr) {
+  const d = new Date(dateStr);
+  if (isNaN(d)) return '';
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((today - msgDay) / 86400000);
+
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return DAY_NAMES[d.getDay()];
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function formatTime(dateStr) {
+  const d = new Date(dateStr);
+  if (isNaN(d)) return '';
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
+function getSenderName(msg, side) {
+  const senderId = msg?.senderId || msg?.authorId || '';
+  if (senderId === users[side].userId) return 'You';
+  const name = msg?.senderDisplayName || msg?.displayname || msg?.senderName || '';
+  if (name) return name;
+  const otherSide = getOtherSide(side);
+  if (senderId === users[otherSide].userId && users[otherSide].displayName) return users[otherSide].displayName;
+  return senderId ? senderId.substring(0, 8) + '...' : 'Unknown';
+}
+
+function getMsgText(msg) {
+  const content = typeof msg?.content === 'string' ? JSON.parse(msg.content) : msg?.content;
+  return content?.text || msg?.message || msg?.text || '[media]';
+}
+
+// ── Add a date tag to chat ──
+function addDateTag(side, label) {
+  const area = document.getElementById('chat' + side);
+  const div = document.createElement('div');
+  div.className = 'date-tag';
+  div.textContent = label;
+  area.appendChild(div);
+}
+
+// ── Show message history (sorted ascending, grouped by date) ──
+function showHistory(side, msgs) {
+  if (!msgs.length) return;
+
+  const sorted = [...msgs].sort((a, b) => {
+    const ta = new Date(a.createdAt || 0).getTime();
+    const tb = new Date(b.createdAt || 0).getTime();
+    return ta - tb;
+  });
+
+  let lastDateLabel = '';
+
+  sorted.forEach(m => {
+    const dateLabel = getDateLabel(m.createdAt);
+    if (dateLabel && dateLabel !== lastDateLabel) {
+      addDateTag(side, dateLabel);
+      lastDateLabel = dateLabel;
+    }
+
+    const text = getMsgText(m);
+    const senderId = m?.senderId || m?.authorId || '';
+    const isMine = senderId === users[side].userId;
+    const name = getSenderName(m, side);
+    const time = formatTime(m.createdAt);
+
+    addChat(side, isMine ? 'sent' : 'received', text, { senderName: name, time });
+  });
+}
+
+// ── Connect / Disconnect ──
+function toggle(side) {
+  const u = users[side];
+  if (u.socket && u.socket.connected) { u.socket.disconnect(); return; }
+  connect(side);
+}
+
+function connect(side) {
+  const url = getServerUrl();
+  const token = getRawToken(side);
+  if (!url) return addChat(side, 'error', 'Server URL required');
+  if (!token) return addChat(side, 'error', 'JWT token required');
+
+  const claims = decodeJwt(token);
+  if (!claims?.sub) return addChat(side, 'error', 'Could not decode JWT');
+
+  users[side].userId = claims.sub;
+  users[side].displayName = claims.displayname || claims.username || claims.name || null;
+  document.getElementById('uid' + side).textContent = 'userId: ' + claims.sub;
+
+  addChat(side, 'system', 'Connecting...');
+  rawLog(side, 'sys', 'Connecting to ' + url + '/z-product');
+
+  const s = io(url + '/z-product', {
+    path: '/z-socket/',
+    transports: ['websocket'],
+    auth: { token, displayname: users[side].displayName || '', username: claims.username || '' },
+    reconnection: false,
+  });
+  users[side].socket = s;
+
+  s.on('connect', () => {
+    setConn(side, true);
+    addChat(side, 'system', 'Connected! (socket: ' + s.id + ')');
+    rawLog(side, 'sys', 'Connected — socket.id=' + s.id);
+    document.getElementById('sendBtn' + side).disabled = false;
+    listenAll(side);
+    if (users.A.socket?.connected && users.B.socket?.connected) markGuide(1);
+  });
+
+  s.on('disconnect', (reason) => {
+    setConn(side, false);
+    users[side].joinedRooms.clear();
+    addChat(side, 'system', 'Disconnected: ' + reason);
+    rawLog(side, 'sys', 'Disconnected: ' + reason);
+    document.getElementById('sendBtn' + side).disabled = true;
+  });
+
+  s.on('connect_error', (err) => {
+    setConn(side, false);
+    addChat(side, 'error', 'Connection error: ' + err.message);
+    rawLog(side, 'sys', 'connect_error: ' + err.message);
+    document.getElementById('sendBtn' + side).disabled = true;
+  });
+}
+
+function listenAll(side) {
+  const s = users[side].socket;
+  s.onAny((eventName, ...args) => {
+    if (eventName === 'connect' || eventName === 'disconnect') return;
+    const data = args.length === 1 ? args[0] : args;
+    rawLog(side, 'in', eventName + ' -> ' + JSON.stringify(data));
+
+    if (eventName.includes(':message:add:new') || eventName.includes(':comment:new')) {
+      const msg = data;
+      const senderId = msg?.senderId || msg?.authorId || msg?.userId || '';
+      if (senderId === users[side].userId) return;
+      const text = getMsgText(msg);
+      const name = getSenderName(msg, side);
+      const time = formatTime(msg?.createdAt || new Date().toISOString());
+      addChat(side, 'received', text, { senderName: name, time });
+    } else if (eventName.includes(':message:react:new')) {
+      addChat(side, 'system', 'Reaction update');
+    } else if (eventName.includes(':message:read')) {
+      addChat(side, 'system', 'Read receipt');
+    } else if (eventName.includes(':message:pin:new')) {
+      addChat(side, 'system', 'Pin update');
+    } else if (eventName.includes(':message:delete:new')) {
+      addChat(side, 'system', 'Message deleted');
+    }
+  });
+}
+
+// ── Create Room (REST API) ──
+async function createRoom() {
+  const url = getServerUrl();
+  const tokenA = getRawToken('A');
+  const tokenB = getRawToken('B');
+  if (!tokenA || !tokenB) return addChat('A', 'error', 'Paste both JWT tokens first');
+
+  const claimsB = decodeJwt(tokenB);
+  if (!claimsB?.sub) return addChat('A', 'error', 'Could not decode User B token');
+
+  addChat('A', 'system', 'Creating private room...');
+  try {
+    const resp = await fetch(url + '/api/chat/private/rooms/' + claimsB.sub, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tokenA },
+    });
+    const body = await resp.json();
+    const roomId = body?.data?.roomId || body?.data?.room?.roomId;
+    if (roomId) {
+      document.getElementById('roomId').value = roomId;
+      addChat('A', 'system', 'Room ready: ' + roomId);
+      addChat('B', 'system', 'Room ready: ' + roomId);
+      markGuide(2);
+    } else {
+      addChat('A', 'error', 'Failed to create room. Are the users friends?');
+      addChat('A', 'system', 'Response: ' + JSON.stringify(body));
+    }
+  } catch (err) {
+    addChat('A', 'error', 'REST call failed: ' + err.message);
+  }
+}
+
+// ── Auto Setup ──
+async function autoSetup() {
+  if (!getRawToken('A') || !getRawToken('B')) return addChat('A', 'error', 'Paste both JWT tokens first');
+
+  addChat('A', 'system', 'Auto Setup starting...');
+  addChat('B', 'system', 'Auto Setup starting...');
+
+  if (!users.A.socket?.connected) { connect('A'); await waitFor(() => users.A.socket?.connected, 5000); }
+  if (!users.B.socket?.connected) { connect('B'); await waitFor(() => users.B.socket?.connected, 5000); }
+  if (!users.A.socket?.connected || !users.B.socket?.connected) return addChat('A', 'error', 'Could not connect both users');
+  markGuide(1);
+
+  if (!getRoomId()) await createRoom();
+  if (!getRoomId()) return addChat('A', 'error', 'Could not create room. Are they friends?');
+
+  const roomId = getRoomId();
+  await emitAndWait('A', 'room:private:home:join', {});
+  await emitAndWait('B', 'room:private:home:join', {});
+  await emitAndWait('A', 'room:private:user:join', { roomId });
+  await emitAndWait('B', 'room:private:user:join', { roomId });
+  markGuide(3);
+
+  addChat('A', 'system', 'Ready! Send a message.');
+  addChat('B', 'system', 'Ready! Send a message.');
+  markGuide(4);
+}
+
+function waitFor(fn, ms) {
+  return new Promise(resolve => {
+    if (fn()) return resolve();
+    const t = Date.now();
+    const iv = setInterval(() => { if (fn() || Date.now() - t > ms) { clearInterval(iv); resolve(); } }, 100);
+  });
+}
+
+function emitAndWait(side, event, payload) {
+  return new Promise(resolve => {
+    const s = users[side].socket;
+    if (!s?.connected) return resolve();
+    rawLog(side, 'out', event + ' -> ' + JSON.stringify(payload));
+
+    s.emit(event, payload, (resp) => {
+      rawLog(side, 'ack', event + ' ACK -> ' + JSON.stringify(resp));
+      if (resp?.return_code === 'SUCCESS') {
+        const d = resp.data;
+        if (event.includes(':home:join')) {
+          const items = Array.isArray(d) ? d : d?.items || d?.conversations || [];
+          addChat(side, 'system', 'Home: ' + items.length + ' conversation(s)');
+        } else if (event.includes(':user:join')) {
+          users[side].joinedRooms.add(payload.roomId || '');
+          const msgs = Array.isArray(d) ? d : d?.messages || d?.items || [];
+          showHistory(side, msgs);
+        }
+      } else {
+        addChat(side, 'error', (resp?.message || resp?.return_code || 'Failed'));
+      }
+      resolve();
+    });
+    setTimeout(resolve, 5000);
+  });
+}
+
+// ── Quick Actions ──
+function doAction(side, action) {
+  const s = users[side].socket;
+  if (!s?.connected) return addChat(side, 'error', 'Not connected');
+
+  const roomId = getRoomId();
+  let event, payload;
+  switch (action) {
+    case 'home_join': event = 'room:private:home:join'; payload = {}; break;
+    case 'home_leave': event = 'room:private:home:leave'; payload = {}; break;
+    case 'initiation': event = 'room:private:initiation:join'; payload = {}; break;
+    case 'join_room':
+      if (!roomId) return addChat(side, 'error', 'Enter Room ID first');
+      event = 'room:private:user:join'; payload = { roomId }; break;
+    case 'heartbeat': event = 'room:private:presence:heartbeat'; payload = {}; break;
+    case 'grp_home_join': event = 'room:group:home:join'; payload = {}; break;
+    case 'grp_join_room':
+      if (!roomId) return addChat(side, 'error', 'Enter Group Room ID');
+      event = 'room:group:user:join'; payload = { roomId }; break;
+    case 'comm_home_join': event = 'room:general:home:join'; payload = {}; break;
+    case 'comm_join_room':
+      if (!roomId) return addChat(side, 'error', 'Enter Community Room ID');
+      event = 'room:general:user:join'; payload = { roomId }; break;
+    default: return;
+  }
+
+  rawLog(side, 'out', event + ' -> ' + JSON.stringify(payload));
+  s.emit(event, payload, (resp) => {
+    rawLog(side, 'ack', event + ' ACK -> ' + JSON.stringify(resp));
+    if (resp?.return_code === 'SUCCESS') {
+      const d = resp.data;
+      if (action === 'home_join' || action === 'grp_home_join') {
+        const items = Array.isArray(d) ? d : d?.items || d?.conversations || [];
+        addChat(side, 'system', 'Home: ' + items.length + ' conversation(s)');
+      } else if (action === 'join_room' || action === 'grp_join_room' || action === 'comm_join_room') {
+        users[side].joinedRooms.add(roomId);
+        markGuide(3);
+        const msgs = Array.isArray(d) ? d : d?.messages || d?.items || [];
+        showHistory(side, msgs);
+      } else {
+        addChat(side, 'system', action + ': OK');
+      }
+    } else {
+      addChat(side, 'error', (resp?.message || resp?.return_code || 'Failed'));
+    }
+  });
+}
+
+// ── Ensure room joined ──
+async function ensureRoomJoined(side, roomId, mode) {
+  const joinEvent = mode === 'group' ? 'room:group:user:join' : mode === 'community' ? 'room:general:user:join' : 'room:private:user:join';
+  if (!users[side].joinedRooms.has(roomId)) {
+    addChat(side, 'system', 'Joining room...');
+    await emitAndWait(side, joinEvent, { roomId });
+  }
+  const other = getOtherSide(side);
+  if (users[other].socket?.connected && !users[other].joinedRooms.has(roomId)) {
+    addChat(other, 'system', 'Joining room...');
+    await emitAndWait(other, joinEvent, { roomId });
+  }
+}
+
+// ── Send Message ──
+async function sendMsg(side) {
+  const s = users[side].socket;
+  if (!s?.connected) return;
+  const text = document.getElementById('input' + side).value.trim();
+  if (!text) return;
+  const roomId = getRoomId();
+  if (!roomId) return addChat(side, 'error', 'Enter Room ID first');
+
+  const mode = document.getElementById('mode' + side).value;
+  const otherSide = getOtherSide(side);
+  const receiverId = users[otherSide]?.userId || '';
+
+  await ensureRoomJoined(side, roomId, mode);
+
+  let event, payload;
+  if (mode === 'private') {
+    if (!receiverId) return addChat(side, 'error', 'Connect both users first');
+    event = 'room:private:message:add';
+    payload = { roomId, receiverId, content: { text, urls: [], files: [] }, messageType: 'TEXT', parentMessageId: null };
+  } else if (mode === 'group') {
+    event = 'room:group:message:add';
+    payload = { roomId, content: { text, urls: [], files: [] }, messageType: 'TEXT', parentMessageId: null, clientMessageId: null };
+  } else {
+    event = 'room:general:message:add';
+    payload = { roomId, message: text, messageType: 'text', username: users[side].userId?.substring(0, 10) || '', displayname: side === 'A' ? 'User A' : 'User B', avatar: '', parentMessageId: null, clientMessageId: null };
+  }
+
+  rawLog(side, 'out', event + ' -> ' + JSON.stringify(payload));
+  const now = new Date().toISOString();
+  addChat(side, 'sent', text, { senderName: 'You', time: formatTime(now) });
+
+  s.emit(event, payload, (resp) => {
+    rawLog(side, 'ack', event + ' ACK -> ' + JSON.stringify(resp));
+    if (resp?.return_code !== 'SUCCESS') {
+      addChat(side, 'error', 'Send failed: ' + (resp?.message || resp?.return_code || 'Unknown'));
+    }
+  });
+  document.getElementById('input' + side).value = '';
+}
+
+// ── UI ──
+function setConn(side, on) {
+  document.getElementById('dot' + side).className = 'status-dot ' + (on ? 'on' : 'off');
+  document.getElementById('status' + side).textContent = on ? 'On' : 'Off';
+  const btn = document.getElementById('connBtn' + side);
+  btn.textContent = on ? 'Disconnect' : 'Connect';
+  btn.className = 'btn ' + (on ? 'btn-disconnect' : 'btn-connect');
+}
+
+function addChat(side, type, text, meta) {
+  const area = document.getElementById('chat' + side);
+  const div = document.createElement('div');
+  div.className = 'msg ' + type;
+  let html = '';
+
+  if (type === 'sent' || type === 'received') {
+    const name = meta?.senderName || '';
+    const time = meta?.time || '';
+    if (name || time) html += '<div class="msg-meta">' + esc(name) + (time ? ' &middot; ' + time : '') + '</div>';
+  }
+
+  html += esc(text);
+  div.innerHTML = html;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+}
+
+function rawLog(side, type, text) {
+  const log = document.getElementById('log' + side);
+  const time = new Date().toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 3 });
+  const arrow = type === 'out' ? '>' : type === 'in' ? '<' : type === 'ack' ? '<-' : '*';
+  const div = document.createElement('div');
+  div.className = 'raw-entry ' + type;
+  div.innerHTML = '<span class="raw-time">' + time + '</span>' + arrow + ' ' + esc(text);
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  users[side].count++;
+  document.getElementById('count' + side).textContent = users[side].count;
+}
+
+function esc(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
+
+document.querySelectorAll('.compose textarea').forEach(ta => {
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(ta.id.replace('input', '')); }
+  });
+});
+</script>
+</body>
+</html>

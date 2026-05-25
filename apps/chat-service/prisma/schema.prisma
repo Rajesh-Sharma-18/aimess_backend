@@ -1,0 +1,408 @@
+// =============================================================================
+// chat-service  ·  MongoDB  ·  chat_db
+// Owns: private messaging, group messaging, community rooms, friendships,
+//       notifications, livestream comments, pins.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+
+datasource db {
+  provider = "mongodb"
+  // Required by the Prisma v6 CLI. Runtime PrismaClient overrides this via
+  // datasourceUrl (composed from MONGO_* parts in src/config/env.ts), and
+  // prisma.config.ts composes it for CLI commands.
+  url      = env("MONGO_DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// PrivateRoom
+// -----------------------------------------------------------------------------
+model PrivateRoom {
+  id                        String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomId                    String   @unique
+  participants              String[]
+  participantsKey           String   @unique
+  lastMessageId             String?  @db.ObjectId
+  lastMessageAt             DateTime?
+  lastMessage               Json?
+  unreadCountByUser         Json     @default("{}")
+  lastReadAtByUser          Json     @default("{}")
+  lastReadMessageIdByUser   Json     @default("{}")
+  hasUnreadByUser           Json     @default("{}")
+  firstUnreadMessageIdByUser Json    @default("{}")
+  lastUnreadMessageIdByUser Json     @default("{}")
+  lastUnreadPreviewByUser   Json     @default("{}")
+  blockedBy                 Json     @default("[]")
+  deletedFor                Json     @default("{}")
+  pinnedCount               Int      @default(0)
+  lastPinnedAt              DateTime?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  @@index([participants])
+  @@index([lastMessageAt(sort: Desc)])
+  @@map("private_rooms")
+}
+
+// -----------------------------------------------------------------------------
+// PrivateMessage
+// -----------------------------------------------------------------------------
+model PrivateMessage {
+  id               String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId           String
+  senderId         String?
+  receiverId       String?
+  content          Json      @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+  messageType      String    @default("TEXT")
+  systemEvent      String?
+  systemData       Json?
+  readBy           Json      @default("[]")
+  reactions        Json      @default("{}")
+  inviteLinkData   Json?
+  parentMessageId  String?   @db.ObjectId
+  quoteData        Json?
+  clientInfo      Json?
+  deletedFor       Json      @default("{}")
+  isDeleted        Boolean   @default(false)
+  deletedAt        DateTime?
+  deletedBy        String?
+  createdAt        DateTime  @default(now())
+
+  @@index([roomId, createdAt(sort: Desc)])
+  @@index([roomId, isDeleted, createdAt(sort: Desc)])
+  @@index([roomId, parentMessageId, createdAt(sort: Desc)])
+  @@index([systemEvent])
+  @@map("private_messages")
+}
+
+// -----------------------------------------------------------------------------
+// PrivateMessagePin
+// -----------------------------------------------------------------------------
+model PrivateMessagePin {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomId            String
+  messageId         String   @db.ObjectId
+  pinnedBy          String
+  pinnedAt          DateTime @default(now())
+  messageCreatedAt  DateTime
+  senderId          String
+  senderDisplayName String   @default("")
+  senderAvatar      String   @default("")
+  contentPinned     Json     @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+  deletedFor        Json     @default("{}")
+
+  @@unique([roomId, messageId, pinnedBy])
+  @@index([roomId, pinnedAt(sort: Desc)])
+  @@index([roomId, messageCreatedAt(sort: Desc), pinnedAt(sort: Desc)])
+  @@map("private_message_pins")
+}
+
+// -----------------------------------------------------------------------------
+// GroupRoom
+// -----------------------------------------------------------------------------
+model GroupRoom {
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId             String    @unique
+  type               String    @default("GROUP")
+  name               String
+  avatar             String    @default("")
+  description        String    @default("")
+  createdBy          String
+  status             String    @default("ACTIVE")
+  memberLimit        Int       @default(50)
+  memberCount        Int       @default(1)
+  settings           Json      @default("{\"allowMemberInviteLink\": true, \"allowMemberSendInviteLink\": true, \"allowReply\": true, \"allowPin\": true}")
+  lastMessageId      String?   @db.ObjectId
+  lastMessageAt      DateTime?
+  lastMessagePreview Json?
+  pinnedCount        Int       @default(0)
+  lastPinnedAt       DateTime?
+  disbandedAt        DateTime?
+  disbandedBy        String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([type])
+  @@index([createdBy])
+  @@index([status])
+  @@index([memberCount])
+  @@index([status, lastMessageAt(sort: Desc)])
+  @@index([createdBy, createdAt(sort: Desc)])
+  @@map("group_rooms")
+}
+
+// -----------------------------------------------------------------------------
+// GroupMessage
+// -----------------------------------------------------------------------------
+model GroupMessage {
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId             String
+  clientMessageId    String?
+  senderId           String?
+  senderName         String    @default("")
+  senderAvatar       String    @default("")
+  messageType        String    @default("TEXT")
+  content            Json      @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+  systemEvent        String?
+  systemData         Json?
+  inviteLinkData     Json?
+  parentMessageId    String?   @db.ObjectId
+  quoteData          Json?
+  reactions          Json      @default("{}")
+  isDeleted          Boolean   @default(false)
+  deletedType        String?
+  deletedPlaceholder String    @default("")
+  deletedAt          DateTime?
+  deletedBy          String?
+  createdAt          DateTime  @default(now())
+
+  @@index([roomId, createdAt(sort: Desc)])
+  @@index([roomId, isDeleted, createdAt(sort: Desc)])
+  @@index([roomId, parentMessageId, createdAt(sort: Desc)])
+  @@index([clientMessageId])
+  @@index([senderId])
+  @@index([messageType])
+  @@index([systemEvent])
+  @@index([isDeleted])
+  @@index([deletedType])
+  @@index([deletedAt])
+  @@map("group_messages")
+}
+
+// -----------------------------------------------------------------------------
+// GroupMember
+// -----------------------------------------------------------------------------
+model GroupMember {
+  id                   String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId               String
+  userId               String
+  role                 String    @default("MEMBER")
+  status               String    @default("ACTIVE")
+  joinedAt             DateTime  @default(now())
+  invitedBy            String?
+  leftAt               DateTime?
+  kickedAt             DateTime?
+  kickedBy             String?
+  kickReason           String?
+  bannedAt             DateTime?
+  bannedBy             String?
+  lastReadMessageId    String?   @db.ObjectId
+  lastReadAt           DateTime?
+  unreadCount          Int       @default(0)
+  notificationSettings Json      @default("{\"mute\": false, \"muteUntil\": null}")
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([roomId, userId])
+  @@index([userId, status, updatedAt(sort: Desc)])
+  @@index([roomId, status, role])
+  @@index([role])
+  @@map("group_members")
+}
+
+// -----------------------------------------------------------------------------
+// GroupInviteLink
+// -----------------------------------------------------------------------------
+model GroupInviteLink {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId    String
+  token     String    @unique
+  createdBy String
+  status    String    @default("ACTIVE")
+  expiresAt DateTime?
+  revokedAt DateTime?
+  revokedBy String?
+  maxUses   Int?
+  usedCount Int       @default(0)
+  shareName String    @default("")
+  createdAt DateTime  @default(now())
+
+  @@index([roomId, status, createdAt(sort: Desc)])
+  @@map("group_invite_links")
+}
+
+// -----------------------------------------------------------------------------
+// GroupMessagePin
+// -----------------------------------------------------------------------------
+model GroupMessagePin {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomId            String
+  messageId         String   @db.ObjectId
+  pinnedBy          String
+  pinnedAt          DateTime @default(now())
+  messageCreatedAt  DateTime
+  senderId          String
+  senderDisplayName String   @default("")
+  senderAvatar      String   @default("")
+  contentPinned     Json     @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+
+  @@unique([roomId, messageId])
+  @@index([roomId, pinnedAt(sort: Desc)])
+  @@map("group_message_pins")
+}
+
+// -----------------------------------------------------------------------------
+// Friendship
+// -----------------------------------------------------------------------------
+model Friendship {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  requesterId       String
+  users             String[]
+  pairKey           String   @unique
+  status            String   @default("PENDING")
+  lastInteractionAt DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([users, status])
+  @@map("friendships")
+}
+
+// -----------------------------------------------------------------------------
+// GeneralRoom
+// -----------------------------------------------------------------------------
+model GeneralRoom {
+  id               String    @id @default(auto()) @map("_id") @db.ObjectId
+  name             String
+  owner            String?
+  logo             String?
+  title            String?
+  desc             String?
+  displayOrder     Int       @default(0)
+  memberNumber     Int       @default(0)
+  onlineNember     Int       @default(0)
+  memberLimit      Int       @default(0)
+  isLive           Boolean   @default(false)
+  link             String?
+  tags             String[]
+  status           String    @default("active")
+  lastMessageId    String?   @db.ObjectId
+  lastMessageAt    DateTime?
+  lastMessage      Json?
+  listPinedMessage Json      @default("[]")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status])
+  @@index([tags])
+  @@map("general_rooms")
+}
+
+// -----------------------------------------------------------------------------
+// GeneralRoomMessage
+// -----------------------------------------------------------------------------
+model GeneralRoomMessage {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomId          String   @db.ObjectId
+  sentBy          String
+  senderName      String?
+  senderAvatar    String?
+  message         String?
+  reactions       Json     @default("{}")
+  parentMessageId String?  @db.ObjectId
+  quoteData       Json?
+  messageType     String   @default("text")
+  attachments     Json     @default("[]")
+  clientMessageId String?
+  deletedBy       Json     @default("[]")
+  deletedForAll   Boolean  @default(false)
+  reports         Json     @default("[]")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([roomId])
+  @@index([roomId, sentBy])
+  @@index([deletedForAll])
+  @@map("general_room_messages")
+}
+
+// -----------------------------------------------------------------------------
+// RoomMember (general/community rooms)
+// -----------------------------------------------------------------------------
+model RoomMember {
+  id       String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId   String
+  userId   String
+  status   String    @default("active")
+  role     String    @default("member")
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+  bannedAt DateTime?
+  banInfo  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([roomId, userId])
+  @@index([roomId, status])
+  @@map("room_members")
+}
+
+// -----------------------------------------------------------------------------
+// Notification
+// -----------------------------------------------------------------------------
+model Notification {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId        String
+  actorId       String
+  type          String
+  entity        Json
+  actorSnapshot Json
+  payload       Json
+  isRead        Boolean   @default(false)
+  readAt        DateTime?
+  isDeleted     Boolean   @default(false)
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, type])
+  @@index([isRead])
+  @@index([isDeleted])
+  @@map("notifications")
+}
+
+// -----------------------------------------------------------------------------
+// Livestream
+// -----------------------------------------------------------------------------
+model Livestream {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  roomId      String    @db.ObjectId
+  title       String
+  description String    @default("")
+  thumbnail   String?
+  scheduledAt DateTime?
+  status      String    @default("SCHEDULED")
+  livedAt     DateTime?
+  tags        String[]
+  servers     Json      @default("[]")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([roomId])
+  @@map("livestreams")
+}
+
+// -----------------------------------------------------------------------------
+// LivestreamComment
+// -----------------------------------------------------------------------------
+model LivestreamComment {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  livestreamId    String
+  roomId          String
+  sentBy          String
+  senderName      String   @default("")
+  senderAvatar    String   @default("")
+  message         String
+  clientCommentId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([livestreamId, createdAt(sort: Desc)])
+  @@index([livestreamId, sentBy, clientCommentId])
+  @@map("chat_livestream_comments")
+}
