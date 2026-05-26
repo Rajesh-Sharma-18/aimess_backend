@@ -23,6 +23,9 @@ const envSchema = z.object({
   /** Reserved for future community events (publish/consume). */
   RABBITMQ_URL: z.string().min(1),
 
+  /** Optional base URL used to build shareable community invite links. */
+  INVITE_LINK_BASE_URL: z.string().url().optional(),
+
   USER_SERVICE_URL: z.string().url(),
   USER_SERVICE_TIMEOUT_MS: z.coerce.number().positive().default(3000),
 

@@ -12,6 +12,8 @@ import { deviceLinkRoutes } from "./api/routes/device-link.routes.js";
 import { emailLinkRoutes } from "./api/routes/email-link.routes.js";
 import { sessionRoutes } from "./api/routes/session.routes.js";
 import { socialLinkRoutes } from "./api/routes/social-link.routes.js";
+import { testPushRoutes } from "./api/routes/test-push.routes.js";
+import { env } from "./config/env.js";
 import { errorHandler } from "./middleware/error-handler.js";
 
 const app: Express = express();
@@ -40,6 +42,11 @@ app.use("/api/auth", sessionRoutes);
 app.use("/api/auth", socialLinkRoutes);
 app.use("/api/auth", deviceLinkRoutes);
 app.use("/api/auth", accountDeletionRoutes);
+
+// Dev-only test endpoint for FCM push. Remove once normal push is wired.
+if (env.NODE_ENV === "development") {
+  app.use("/api/auth", testPushRoutes);
+}
 
 app.use(errorHandler);
 

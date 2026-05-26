@@ -39,26 +39,30 @@ const envSchema = z.object({
   OTP_DEV_FIXED_CODE: z.string().optional(),
 
   /**
-   * Firebase Admin service-account credentials (Project Settings →
-   * Service accounts → Generate new private key). Used to verify the
-   * Firebase ID tokens sent by the Google / Apple sign-in clients.
+   * Google OAuth 2.0 client IDs (Google Cloud Console → Credentials), one per
+   * mobile platform. Both are passed to `google-auth-library` as the accepted
+   * `aud` array — the token is accepted if its `aud` claim matches either —
+   * so the backend serves both apps without the client declaring its platform.
    *
-   * Optional so the service still boots without them — only Google/Apple
-   * login is disabled until all three are set (see config/firebase.ts).
+   * Both optional; if BOTH are unset, Google login/link is disabled
+   * (see lib/google-id-token.ts).
    */
-  FIREBASE_PROJECT_ID: z.string().min(1).optional(),
-  FIREBASE_CLIENT_EMAIL: z.string().min(1).optional(),
-  FIREBASE_PRIVATE_KEY: z.string().min(1).optional(),
+  GOOGLE_OAUTH_APPLE_CLIENT_ID: z.string().min(1).optional(),
+  GOOGLE_OAUTH_ANDROID_CLIENT_ID: z.string().min(1).optional(),
 
   /**
-   * Google OAuth 2.0 Web client ID (Google Cloud Console → Credentials).
-   * Used as the expected `aud` when verifying Google ID tokens sent by the
-   * sign-in clients via `google-auth-library`.
-   *
-   * Optional so the service still boots without it — only Google login/link
-   * is disabled until it is set (see lib/google-id-token.ts).
+   * Comma-separated list of accepted Apple `aud` values — the Bundle ID(s)
+   * (native Sign in with Apple) and/or Service ID(s) (web). Apple ID tokens
+   * are verified against Apple's JWKS directly (see lib/apple-id-token.ts);
+   * Firebase is not in the path.
    */
-  GOOGLE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
+  APPLE_CLIENT_IDS: z.string().min(1).optional(),
+
+  /**
+   * Base URL of notifications-service. Used by the dev-only test push endpoint
+   * to forward FCM token lists for delivery. Defaults to local dev.
+   */
+  NOTIFICATIONS_SERVICE_URL: z.string().url().default("http://localhost:3006"),
 });
 
 const parsed = envSchema.safeParse(process.env);

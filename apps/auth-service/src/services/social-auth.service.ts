@@ -7,7 +7,7 @@ import {
   AuthProvider,
   Prisma,
 } from "../generated/prisma/client.js";
-import { verifyFirebaseIdToken } from "../lib/firebase-id-token.js";
+import { verifyAppleIdToken } from "../lib/apple-id-token.js";
 import { verifyGoogleIdToken } from "../lib/google-id-token.js";
 import {
   buildSocialAccountBase,
@@ -217,25 +217,27 @@ export const socialAuthService = {
     req: Request,
     input: AppleLoginInput
   ): Promise<SocialLoginResult> {
-    const tokenProfile = await verifyFirebaseIdToken(
-      input.identityToken,
-      "apple.com"
-    );
+    const tokenProfile = await verifyAppleIdToken(input.identityToken);
 
-    // Only the email from the verified Firebase token may be trusted as
-    // verified. A client-supplied `input.email` is never treated as verified
-    // (prevents account-takeover by claiming someone else's email).
+    // Only the email from the verified Apple token may be trusted as verified.
+    // A client-supplied `input.email` is never treated as verified (prevents
+    // account-takeover by claiming someone else's email).
     const email =
       tokenProfile.email ?? input.email?.trim().toLowerCase() ?? null;
     const emailVerified = tokenProfile.email
       ? tokenProfile.emailVerified
       : false;
 
-    return signInWithProvider(req, "APPLE", {
-      sub: tokenProfile.sub,
-      email,
-      emailVerified,
-      displayName: tokenProfile.displayName ?? input.fullName?.trim() ?? null,
-    });
+    return signInWithProvider(
+      req,
+      "APPLE",
+      {
+        sub: tokenProfile.sub,
+        email,
+        emailVerified,
+        displayName: tokenProfile.displayName ?? input.fullName?.trim() ?? null,
+      },
+      input.fcmTokens
+    );
   },
 };

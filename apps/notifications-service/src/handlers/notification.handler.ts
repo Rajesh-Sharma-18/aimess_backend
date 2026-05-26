@@ -1,4 +1,10 @@
-import type { UserCreatedPayload } from "@aimess/shared-types";
+import type {
+  PasswordResetOtpRequestedPayload,
+  UserCreatedPayload,
+} from "@aimess/shared-types";
+
+import { sendMail } from "../providers/mail/sendMail.js";
+import { passwordResetOtpEmail } from "../providers/mail/templates/password-reset-otp.js";
 
 export async function handleUserRegistered(_data: UserCreatedPayload) {
   //   await sendMail({
@@ -13,4 +19,14 @@ export async function handleUserRegistered(_data: UserCreatedPayload) {
   //       body: "Welcome to AIMess",
   //     });
   //   }
+}
+
+export async function handlePasswordResetOtpRequested(
+  data: PasswordResetOtpRequestedPayload
+): Promise<void> {
+  const { subject, html } = passwordResetOtpEmail({
+    code: data.code,
+    ttlSeconds: data.ttlSeconds,
+  });
+  await sendMail({ to: data.email, subject, html });
 }

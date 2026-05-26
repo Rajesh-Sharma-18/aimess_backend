@@ -178,7 +178,7 @@ export const authPaths = {
       tags: ["Auth"],
       summary: "Sign in with Apple",
       description:
-        "Verify the Firebase ID token from an Apple sign-in (Firebase Auth client SDK), then create or link the user and return AIMess tokens.",
+        "Verify the Apple identity token (from ASAuthorizationAppleIDCredential on iOS / Sign in with Apple JS on web) directly against Apple's JWKS, then create or link the user and return AIMess tokens.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
@@ -1273,47 +1273,28 @@ export const authPaths = {
       },
     },
   },
-  "/auth/account/delete/request-otp": {
-    post: {
-      tags: ["Auth"],
-      summary: "Request an account-deletion OTP",
-      description:
-        "Sends a deletion-confirmation OTP to the account email. Used by passwordless accounts before DELETE /auth/account.",
-      security: [{ bearerAuth: [] }],
-      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
-      responses: {
-        "200": {
-          description: "OTP sent",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
-            },
-          },
-        },
-        "401": {
-          description: "Unauthorized",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
-      },
-    },
-  },
   "/auth/account": {
     delete: {
       tags: ["Auth"],
-      summary: "Delete account (soft)",
+      summary: "Delete account by email (testing)",
       description:
-        "Soft-deletes the account and revokes all sessions. Password accounts confirm with currentPassword; passwordless accounts confirm with an OTP from /auth/account/delete/request-otp.",
-      security: [{ bearerAuth: [] }],
+        "Hard-deletes the account matching the given email and revokes all sessions. No authentication required. Same email can be re-registered immediately after.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
-            schema: { $ref: "#/components/schemas/DeleteAccountRequest" },
+            schema: {
+              type: "object",
+              properties: {
+                email: {
+                  type: "string",
+                  format: "email",
+                  example: "user@example.com",
+                },
+              },
+              required: ["email"],
+            },
           },
         },
       },
@@ -1338,16 +1319,8 @@ export const authPaths = {
             },
           },
         },
-        "400": {
-          description: "Confirmation required or OTP attempts exceeded",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
-        "401": {
-          description: "Invalid password/OTP or unauthorized",
+        "404": {
+          description: "No account found with that email",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },

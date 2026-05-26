@@ -30,6 +30,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Lấy danh sách cộng đồng thành công",
     en: "Communities fetched successfully",
   },
+  COMMUNITY_DISCOVER_FETCHED: {
+    vi: "Khám phá cộng đồng thành công",
+    en: "Communities discovered successfully",
+  },
   COMMUNITY_IMAGE_UPLOAD_URL_CREATED: {
     vi: "Đã tạo URL tải ảnh cộng đồng",
     en: "Community image upload URL created",
@@ -117,6 +121,206 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_AUDIT_LOGS_FETCHED: {
     vi: "Lấy nhật ký kiểm duyệt thành công",
     en: "Community audit logs fetched successfully",
+  },
+  COMMUNITY_JOINED: {
+    vi: "Đã tham gia cộng đồng",
+    en: "Joined the community",
+  },
+  COMMUNITY_JOIN_REQUIRES_INVITE: {
+    vi: "Cộng đồng riêng tư yêu cầu lời mời",
+    en: "This community is private and requires an invite",
+  },
+  COMMUNITY_JOIN_BANNED: {
+    vi: "Bạn đã bị cấm khỏi cộng đồng này",
+    en: "You are banned from this community",
+  },
+  COMMUNITY_ADMIN_TRANSFERRED: {
+    vi: "Đã chuyển quyền quản trị viên",
+    en: "Community admin transferred",
+  },
+  COMMUNITY_DELETED: {
+    vi: "Đã xóa cộng đồng",
+    en: "Community deleted",
+  },
+  COMMUNITY_JOIN_REQUEST_CREATED: {
+    vi: "Đã gửi yêu cầu tham gia",
+    en: "Join request submitted",
+  },
+  COMMUNITY_JOIN_REQUESTS_FETCHED: {
+    vi: "Lấy danh sách yêu cầu tham gia thành công",
+    en: "Join requests fetched successfully",
+  },
+  COMMUNITY_MY_JOIN_REQUESTS_FETCHED: {
+    vi: "Lấy yêu cầu tham gia của bạn thành công",
+    en: "Your join requests fetched successfully",
+  },
+  COMMUNITY_JOIN_REQUEST_APPROVED: {
+    vi: "Đã duyệt yêu cầu tham gia",
+    en: "Join request approved",
+  },
+  COMMUNITY_JOIN_REQUEST_REJECTED: {
+    vi: "Đã từ chối yêu cầu tham gia",
+    en: "Join request rejected",
+  },
+  COMMUNITY_JOIN_REQUEST_CANCELLED: {
+    vi: "Đã hủy yêu cầu tham gia",
+    en: "Join request cancelled",
+  },
+  COMMUNITY_JOIN_REQUEST_NOT_FOUND: {
+    vi: "Không tìm thấy yêu cầu tham gia",
+    en: "Join request not found",
+  },
+  COMMUNITY_JOIN_REQUEST_NOT_PENDING: {
+    vi: "Yêu cầu tham gia không còn ở trạng thái chờ",
+    en: "Join request is not pending",
+  },
+  COMMUNITY_JOIN_REQUEST_PUBLIC_NOT_ALLOWED: {
+    vi: "Cộng đồng công khai không yêu cầu duyệt tham gia",
+    en: "Public communities do not require join requests",
+  },
+  COMMUNITY_JOIN_REQUEST_NOT_OWNER: {
+    vi: "Bạn không thể hủy yêu cầu của người khác",
+    en: "You cannot cancel another user's join request",
+  },
+  COMMUNITY_ALREADY_MEMBER: {
+    vi: "Người dùng đã là thành viên của cộng đồng",
+    en: "User is already a member of the community",
+  },
+  COMMUNITY_INVITE_CREATED: {
+    vi: "Đã gửi lời mời",
+    en: "Invite sent",
+  },
+  COMMUNITY_INVITES_FETCHED: {
+    vi: "Lấy danh sách lời mời thành công",
+    en: "Invites fetched successfully",
+  },
+  COMMUNITY_MY_INVITES_FETCHED: {
+    vi: "Lấy lời mời của bạn thành công",
+    en: "Your invites fetched successfully",
+  },
+  COMMUNITY_INVITE_ACCEPTED: {
+    vi: "Đã chấp nhận lời mời",
+    en: "Invite accepted",
+  },
+  COMMUNITY_INVITE_DECLINED: {
+    vi: "Đã từ chối lời mời",
+    en: "Invite declined",
+  },
+  COMMUNITY_INVITE_NOT_FOUND: {
+    vi: "Không tìm thấy lời mời",
+    en: "Invite not found",
+  },
+  COMMUNITY_INVITE_NOT_PENDING: {
+    vi: "Lời mời không còn ở trạng thái chờ",
+    en: "Invite is not pending",
+  },
+  COMMUNITY_INVITE_USER_BANNED: {
+    vi: "Không thể mời người dùng đã bị cấm",
+    en: "Cannot invite a banned user",
+  },
+  COMMUNITY_INVITE_NOT_INVITEE: {
+    vi: "Bạn không phải là người được mời",
+    en: "You are not the invitee",
+  },
+  COMMUNITY_REPORT_CREATED: {
+    vi: "Đã gửi báo cáo",
+    en: "Report submitted",
+  },
+  COMMUNITY_REPORTS_FETCHED: {
+    vi: "Lấy danh sách báo cáo thành công",
+    en: "Reports fetched successfully",
+  },
+  COMMUNITY_MY_REPORTS_FETCHED: {
+    vi: "Lấy báo cáo của bạn thành công",
+    en: "Your reports fetched successfully",
+  },
+  COMMUNITY_REPORT_REVIEWED: {
+    vi: "Đã đánh dấu báo cáo là đã xem xét",
+    en: "Report marked as reviewed",
+  },
+  COMMUNITY_REPORT_ACTIONED: {
+    vi: "Đã xử lý báo cáo",
+    en: "Report actioned",
+  },
+  COMMUNITY_REPORT_DISMISSED: {
+    vi: "Đã bỏ qua báo cáo",
+    en: "Report dismissed",
+  },
+  COMMUNITY_REPORT_WITHDRAWN: {
+    vi: "Đã rút báo cáo",
+    en: "Report withdrawn",
+  },
+  COMMUNITY_REPORT_NOT_FOUND: {
+    vi: "Không tìm thấy báo cáo",
+    en: "Report not found",
+  },
+  COMMUNITY_REPORT_NOT_OPEN: {
+    vi: "Báo cáo không còn ở trạng thái mở",
+    en: "Report is no longer open",
+  },
+  COMMUNITY_REPORT_NOT_OWNER: {
+    vi: "Bạn không thể rút báo cáo của người khác",
+    en: "You cannot withdraw another user's report",
+  },
+  COMMUNITY_REPORT_CANNOT_TARGET_SELF: {
+    vi: "Bạn không thể báo cáo chính mình",
+    en: "You cannot report yourself",
+  },
+  COMMUNITY_REPORT_INVALID_TRANSITION: {
+    vi: "Không thể chuyển trạng thái báo cáo này",
+    en: "Invalid report status transition",
+  },
+
+  // --- Mute ---------------------------------------------------------------
+  COMMUNITY_MUTE_UPDATED: {
+    vi: "Đã cập nhật cài đặt tắt thông báo",
+    en: "Mute setting updated",
+  },
+  COMMUNITY_MUTE_CLEARED: {
+    vi: "Đã bật lại thông báo",
+    en: "Mute cleared",
+  },
+  COMMUNITY_MUTE_FETCHED: {
+    vi: "Lấy cài đặt tắt thông báo thành công",
+    en: "Mute setting fetched",
+  },
+  COMMUNITY_NOT_MUTED: {
+    vi: "Cộng đồng này hiện không bị tắt thông báo",
+    en: "Community is not muted",
+  },
+
+  // --- Invite links --------------------------------------------------------
+  COMMUNITY_INVITE_LINK_CREATED: {
+    vi: "Đã tạo liên kết mời",
+    en: "Invite link created",
+  },
+  COMMUNITY_INVITE_LINKS_FETCHED: {
+    vi: "Lấy danh sách liên kết mời thành công",
+    en: "Invite links fetched",
+  },
+  COMMUNITY_INVITE_LINK_REVOKED: {
+    vi: "Đã thu hồi liên kết mời",
+    en: "Invite link revoked",
+  },
+  COMMUNITY_INVITE_LINK_REDEEMED: {
+    vi: "Đã tham gia cộng đồng qua liên kết mời",
+    en: "Joined community via invite link",
+  },
+  COMMUNITY_INVITE_LINK_NOT_FOUND: {
+    vi: "Không tìm thấy liên kết mời",
+    en: "Invite link not found",
+  },
+  COMMUNITY_INVITE_LINK_REVOKED_ERROR: {
+    vi: "Liên kết mời này đã bị thu hồi",
+    en: "This invite link has been revoked",
+  },
+  COMMUNITY_INVITE_LINK_EXPIRED: {
+    vi: "Liên kết mời đã hết hạn",
+    en: "Invite link has expired",
+  },
+  COMMUNITY_INVITE_LINK_EXHAUSTED: {
+    vi: "Liên kết mời đã đạt giới hạn sử dụng",
+    en: "Invite link usage limit reached",
   },
 } as const satisfies MessageCatalog;
 

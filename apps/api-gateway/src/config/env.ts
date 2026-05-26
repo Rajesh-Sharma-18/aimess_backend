@@ -32,10 +32,10 @@ const envSchema = z.object({
   /** Optional JSON policy file (default: apps/api-gateway/config/app-versions.json). */
   APP_VERSION_CONFIG_PATH: z.string().min(1).optional(),
   APP_VERSION_ANDROID_MANDATORY: semverLike.default("1.0.0"),
-  APP_VERSION_ANDROID_OPTIONAL: semverLike.default("1.2.0"),
+  APP_VERSION_ANDROID_OPTIONAL: semverLike.default("1.0.0"),
   APP_VERSION_ANDROID_STORE_URL: z.string().url().optional(),
   APP_VERSION_IOS_MANDATORY: semverLike.default("1.0.0"),
-  APP_VERSION_IOS_OPTIONAL: semverLike.default("1.2.0"),
+  APP_VERSION_IOS_OPTIONAL: semverLike.default("1.0.0"),
   APP_VERSION_IOS_STORE_URL: z.string().url().optional(),
 });
 

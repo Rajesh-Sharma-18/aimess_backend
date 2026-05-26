@@ -240,13 +240,13 @@ export const openApiSchemas = {
       identityToken: {
         type: "string",
         description:
-          "Firebase ID token obtained after Apple sign-in via the Firebase Auth client SDK.",
+          "Apple identity token (`identityToken` from ASAuthorizationAppleIDCredential on iOS, or `id_token` from Sign in with Apple JS on web). Verified directly against Apple's JWKS at https://appleid.apple.com/auth/keys.",
       },
       email: {
         type: "string",
         format: "email",
         description:
-          "Optional fallback display email; never trusted as verified",
+          "Optional. Apple only includes `email` in the identity token on the FIRST authorization; clients should cache it and resend on subsequent logins. Never trusted as verified — used only as a display fallback.",
       },
       fullName: { type: "string", maxLength: 100 },
     },
@@ -325,7 +325,7 @@ export const openApiSchemas = {
       identityToken: {
         type: "string",
         description:
-          "Firebase ID token from an Apple sign-in (Firebase Auth client SDK).",
+          "Apple identity token from Sign in with Apple. Verified directly against Apple's JWKS.",
       },
       email: { type: "string", format: "email" },
       fullName: { type: "string", maxLength: 100 },
@@ -983,15 +983,6 @@ export const openApiSchemas = {
     },
     required: ["linkedAt", "sessionId"],
   },
-  DeleteAccountRequest: {
-    type: "object",
-    description:
-      "Provide currentPassword for password accounts, or otp for passwordless accounts.",
-    properties: {
-      currentPassword: { type: "string", minLength: 1 },
-      otp: { type: "string", pattern: "^\\d{6}$", example: "123456" },
-    },
-  },
   DeleteAccountResponseData: {
     type: "object",
     properties: {
@@ -1091,6 +1082,17 @@ export const openApiSchemas = {
         enum: ["ADMIN", "MODERATOR", "MEMBER"],
         description: "Caller's membership role; null if not a member.",
       },
+      myIsMuted: {
+        type: "boolean",
+        description: "True if the caller has any mute row for this community.",
+      },
+      myMuteUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the caller's mute expires; null = not muted OR muted indefinitely (use myIsMuted to disambiguate).",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
@@ -1109,6 +1111,8 @@ export const openApiSchemas = {
       "coverUrl",
       "coverUrlExpiresIn",
       "myRole",
+      "myIsMuted",
+      "myMuteUntil",
       "createdAt",
       "updatedAt",
     ],
@@ -1212,20 +1216,91 @@ export const openApiSchemas = {
       "myRole",
     ],
   },
-  MyCommunitiesResponseData: {
+  PaginationMeta: {
     type: "object",
+    description: "Offset/page pagination metadata.",
     properties: {
-      communities: {
-        type: "array",
-        items: { $ref: "#/components/schemas/CommunityListItem" },
+      totalData: { type: "integer", description: "Total matching records." },
+      totalPage: { type: "integer", description: "Total number of pages." },
+      currentPage: {
+        type: "integer",
+        description: "The requested page (1-based).",
       },
+      limit: { type: "integer", description: "Page size." },
       nextCursor: {
         type: "string",
         nullable: true,
-        description: "Community id cursor; null when no more.",
+        description: "Always null for offset pagination (reserved field).",
+      },
+      hasMore: {
+        type: "boolean",
+        description: "True when currentPage < totalPage.",
       },
     },
-    required: ["communities", "nextCursor"],
+    required: [
+      "totalData",
+      "totalPage",
+      "currentPage",
+      "limit",
+      "nextCursor",
+      "hasMore",
+    ],
+  },
+  MyCommunitiesResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityListItem" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  CommunityDiscoverItem: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      handle: { type: "string" },
+      description: { type: "string", nullable: true },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      category: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+        },
+        required: ["id", "name"],
+      },
+      memberCount: { type: "integer" },
+      avatarUrl: { type: "string", format: "uri", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "name",
+      "handle",
+      "description",
+      "type",
+      "category",
+      "memberCount",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "createdAt",
+    ],
+  },
+  CommunityDiscoverResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityDiscoverItem" },
+      },
+    },
+    required: ["pagination", "data"],
   },
   CommunityUploadUrlRequest: {
     type: "object",
@@ -1276,17 +1351,13 @@ export const openApiSchemas = {
   CommunityMembersResponseData: {
     type: "object",
     properties: {
-      members: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
         type: "array",
         items: { $ref: "#/components/schemas/CommunityMemberData" },
       },
-      nextCursor: {
-        type: "string",
-        nullable: true,
-        description: "Member id cursor; null when no more.",
-      },
     },
-    required: ["members", "nextCursor"],
+    required: ["pagination", "data"],
   },
   UpdateMemberRoleRequest: {
     type: "object",
@@ -1312,6 +1383,18 @@ export const openApiSchemas = {
     },
     required: ["userIds"],
   },
+  TransferAdminRequest: {
+    type: "object",
+    properties: {
+      userId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "Target user id — must be an ACTIVE member of the community and not the current admin.",
+      },
+    },
+    required: ["userId"],
+  },
   AddMembersResponseData: {
     type: "object",
     properties: {
@@ -1328,13 +1411,13 @@ export const openApiSchemas = {
             userId: { type: "string", format: "uuid" },
             reason: {
               type: "string",
-              enum: ["ALREADY_MEMBER", "BANNED"],
+              enum: ["ALREADY_MEMBER", "BANNED", "NOT_FRIEND"],
             },
           },
           required: ["userId", "reason"],
         },
         description:
-          "User ids not added: already ACTIVE members, or BANNED (must be unbanned first).",
+          "User ids not added: already ACTIVE members, BANNED (must be unbanned first), or NOT_FRIEND with the caller (must be an accepted friend or invited via /invites).",
       },
     },
     required: ["added", "skipped"],
@@ -1358,6 +1441,20 @@ export const openApiSchemas = {
           "MEMBER_BANNED",
           "MEMBER_UNBANNED",
           "ADMIN_TRANSFERRED",
+          "COMMUNITY_JOINED",
+          "COMMUNITY_DELETED",
+          "JOIN_REQUEST_APPROVED",
+          "JOIN_REQUEST_REJECTED",
+          "MEMBER_INVITED",
+          "INVITE_ACCEPTED",
+          "INVITE_DECLINED",
+          "COMMUNITY_REPORT_REVIEWED",
+          "COMMUNITY_REPORT_ACTIONED",
+          "COMMUNITY_REPORT_DISMISSED",
+          "MEMBER_LEFT",
+          "INVITE_LINK_CREATED",
+          "INVITE_LINK_REVOKED",
+          "INVITE_LINK_REDEEMED",
         ],
       },
       targetUserId: {
@@ -1392,17 +1489,507 @@ export const openApiSchemas = {
   CommunityAuditLogsResponseData: {
     type: "object",
     properties: {
-      logs: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
         type: "array",
         items: { $ref: "#/components/schemas/CommunityAuditLogData" },
       },
-      nextCursor: {
+    },
+    required: ["pagination", "data"],
+  },
+  // --- Join requests ------------------------------------------------------
+  CreateJoinRequestRequest: {
+    type: "object",
+    properties: {
+      message: {
         type: "string",
-        nullable: true,
-        description: "Audit-log id cursor; null when no more.",
+        maxLength: 500,
+        description: "Optional message included with the join request.",
       },
     },
-    required: ["logs", "nextCursor"],
+  },
+  JoinRequestData: {
+    type: "object",
+    properties: {
+      requestId: { type: "string" },
+      communityId: { type: "string" },
+      userId: { type: "string", format: "uuid" },
+      status: {
+        type: "string",
+        enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED"],
+      },
+      message: { type: "string", nullable: true },
+      decidedBy: { type: "string", format: "uuid", nullable: true },
+      decidedAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "requestId",
+      "communityId",
+      "userId",
+      "status",
+      "message",
+      "decidedBy",
+      "decidedAt",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  JoinRequestUserSummary: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+    ],
+  },
+  JoinRequestWithUserData: {
+    allOf: [
+      { $ref: "#/components/schemas/JoinRequestData" },
+      {
+        type: "object",
+        properties: {
+          user: { $ref: "#/components/schemas/JoinRequestUserSummary" },
+        },
+        required: ["user"],
+      },
+    ],
+  },
+  EmbeddedCommunitySummary: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      handle: { type: "string" },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      memberCount: { type: "integer" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "id",
+      "name",
+      "handle",
+      "type",
+      "memberCount",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+    ],
+  },
+  MyJoinRequestData: {
+    allOf: [
+      { $ref: "#/components/schemas/JoinRequestData" },
+      {
+        type: "object",
+        properties: {
+          community: { $ref: "#/components/schemas/EmbeddedCommunitySummary" },
+        },
+        required: ["community"],
+      },
+    ],
+  },
+  JoinRequestApprovedData: {
+    type: "object",
+    properties: {
+      request: { $ref: "#/components/schemas/JoinRequestData" },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+    required: ["request", "member"],
+  },
+  AutoJoinedInviteData: {
+    type: "object",
+    properties: {
+      autoJoined: { type: "boolean", enum: [true] },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+      inviteId: { type: "string" },
+    },
+    required: ["autoJoined", "member", "inviteId"],
+  },
+  JoinRequestPage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/JoinRequestWithUserData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  MyJoinRequestPage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MyJoinRequestData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  // --- Invites ------------------------------------------------------------
+  CreateInviteRequest: {
+    type: "object",
+    properties: {
+      inviteeId: { type: "string", format: "uuid" },
+    },
+    required: ["inviteeId"],
+  },
+  InviteData: {
+    type: "object",
+    properties: {
+      inviteId: { type: "string" },
+      communityId: { type: "string" },
+      inviterId: { type: "string", format: "uuid" },
+      inviteeId: { type: "string", format: "uuid" },
+      status: {
+        type: "string",
+        enum: ["PENDING", "ACCEPTED", "DECLINED", "EXPIRED"],
+      },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "inviteId",
+      "communityId",
+      "inviterId",
+      "inviteeId",
+      "status",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  InviteUserSummary: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+    ],
+  },
+  InviteWithUserData: {
+    allOf: [
+      { $ref: "#/components/schemas/InviteData" },
+      {
+        type: "object",
+        properties: {
+          invitee: { $ref: "#/components/schemas/InviteUserSummary" },
+        },
+        required: ["invitee"],
+      },
+    ],
+  },
+  MyInviteData: {
+    allOf: [
+      { $ref: "#/components/schemas/InviteData" },
+      {
+        type: "object",
+        properties: {
+          community: { $ref: "#/components/schemas/EmbeddedCommunitySummary" },
+        },
+        required: ["community"],
+      },
+    ],
+  },
+  InviteAcceptedData: {
+    type: "object",
+    properties: {
+      invite: { $ref: "#/components/schemas/InviteData" },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+    required: ["invite", "member"],
+  },
+  AutoApprovedJoinRequestData: {
+    type: "object",
+    properties: {
+      autoApproved: { type: "boolean", enum: [true] },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+      requestId: { type: "string" },
+    },
+    required: ["autoApproved", "member", "requestId"],
+  },
+  InvitePage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/InviteWithUserData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  MyInvitePage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MyInviteData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  // --- Reports ------------------------------------------------------------
+  CreateReportRequest: {
+    type: "object",
+    properties: {
+      targetUserId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "User id being reported. Omit (null) to report the community itself. Must currently have a member row in the community (any status).",
+      },
+      reason: {
+        type: "string",
+        minLength: 3,
+        maxLength: 1000,
+        description: "Reporter-supplied reason text.",
+      },
+    },
+    required: ["reason"],
+  },
+  ReportResolutionRequest: {
+    type: "object",
+    properties: {
+      resolution: {
+        type: "string",
+        maxLength: 1000,
+        description: "Optional moderator note describing the resolution.",
+      },
+    },
+  },
+  ReportData: {
+    type: "object",
+    properties: {
+      reportId: { type: "string" },
+      communityId: { type: "string" },
+      reporterId: { type: "string", format: "uuid" },
+      targetUserId: { type: "string", format: "uuid", nullable: true },
+      reason: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["OPEN", "REVIEWED", "ACTIONED", "DISMISSED", "WITHDRAWN"],
+      },
+      reviewedBy: { type: "string", format: "uuid", nullable: true },
+      reviewedAt: { type: "string", format: "date-time", nullable: true },
+      resolution: { type: "string", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "reportId",
+      "communityId",
+      "reporterId",
+      "targetUserId",
+      "reason",
+      "status",
+      "reviewedBy",
+      "reviewedAt",
+      "resolution",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ReportUserSummary: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+    ],
+  },
+  ReportWithUsersData: {
+    allOf: [
+      { $ref: "#/components/schemas/ReportData" },
+      {
+        type: "object",
+        properties: {
+          reporter: { $ref: "#/components/schemas/ReportUserSummary" },
+          target: {
+            allOf: [{ $ref: "#/components/schemas/ReportUserSummary" }],
+            nullable: true,
+          },
+        },
+        required: ["reporter", "target"],
+      },
+    ],
+  },
+  MyReportData: {
+    allOf: [
+      { $ref: "#/components/schemas/ReportData" },
+      {
+        type: "object",
+        properties: {
+          community: { $ref: "#/components/schemas/EmbeddedCommunitySummary" },
+        },
+        required: ["community"],
+      },
+    ],
+  },
+  ReportPage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ReportWithUsersData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  MyReportPage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MyReportData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+
+  // --- Leave reason -------------------------------------------------------
+  LeaveCommunityRequest: {
+    type: "object",
+    description:
+      "Optional leave-reason body. When `reason` is `OTHER`, `reasonText` is required.",
+    properties: {
+      reason: {
+        type: "string",
+        enum: [
+          "UNINTERESTED",
+          "TOO_NOISY",
+          "INAPPROPRIATE_CONTENT",
+          "PRIVACY_CONCERN",
+          "OTHER",
+        ],
+      },
+      reasonText: { type: "string", maxLength: 500 },
+    },
+  },
+
+  // --- Mute settings ------------------------------------------------------
+  CommunityMuteData: {
+    type: "object",
+    properties: {
+      communityId: { type: "string" },
+      mutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "null = muted indefinitely.",
+      },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["communityId", "mutedUntil", "createdAt", "updatedAt"],
+  },
+  SetMuteRequest: {
+    type: "object",
+    description:
+      "null or omitted → indefinite mute; positive integer → mute for N minutes.",
+    properties: {
+      durationMinutes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 525600,
+        nullable: true,
+      },
+    },
+  },
+
+  // --- Invite links -------------------------------------------------------
+  CommunityInviteLinkData: {
+    type: "object",
+    properties: {
+      linkId: { type: "string" },
+      code: { type: "string" },
+      url: {
+        type: "string",
+        description:
+          "Built from INVITE_LINK_BASE_URL when set, else just the code.",
+      },
+      communityId: { type: "string" },
+      createdBy: { type: "string", format: "uuid" },
+      maxUses: { type: "integer", nullable: true },
+      usedCount: { type: "integer" },
+      expiresAt: { type: "string", format: "date-time", nullable: true },
+      revokedAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      isActive: {
+        type: "boolean",
+        description: "Computed: not revoked, not expired, not exhausted.",
+      },
+    },
+    required: [
+      "linkId",
+      "code",
+      "url",
+      "communityId",
+      "createdBy",
+      "maxUses",
+      "usedCount",
+      "expiresAt",
+      "revokedAt",
+      "createdAt",
+      "isActive",
+    ],
+  },
+  CreateInviteLinkRequest: {
+    type: "object",
+    properties: {
+      maxUses: { type: "integer", minimum: 1, maximum: 1000 },
+      expiresInMinutes: { type: "integer", minimum: 1, maximum: 525600 },
+    },
+  },
+  InviteLinkListResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityInviteLinkData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  RedeemInviteLinkResponseData: {
+    type: "object",
+    properties: {
+      link: { $ref: "#/components/schemas/CommunityInviteLinkData" },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+    required: ["link", "member"],
   },
 
   // ===========================================================================

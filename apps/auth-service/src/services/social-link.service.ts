@@ -6,7 +6,7 @@ import type {
   UnlinkSocialInput,
 } from "../api/validators/social-link.validator.js";
 import { AuthProvider, Prisma } from "../generated/prisma/client.js";
-import { verifyFirebaseIdToken } from "../lib/firebase-id-token.js";
+import { verifyAppleIdToken } from "../lib/apple-id-token.js";
 import { verifyGoogleIdToken } from "../lib/google-id-token.js";
 
 function isUniqueConstraintError(
@@ -136,10 +136,7 @@ export const socialLinkService = {
     userId: string,
     input: LinkAppleInput
   ): Promise<SocialLinkResult> {
-    const tokenProfile = await verifyFirebaseIdToken(
-      input.identityToken,
-      "apple.com"
-    );
+    const tokenProfile = await verifyAppleIdToken(input.identityToken);
 
     const email =
       tokenProfile.email ?? input.email?.trim().toLowerCase() ?? null;

@@ -28,6 +28,7 @@ import {
 import { markSessionsRevoked } from "../lib/session-active-cache.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { env } from "../config/env.js";
+import { publishPasswordResetOtpSafe } from "../messaging/publish-password-reset-otp.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { otpRepository } from "../repositories/otp.repository.js";
 import { passwordResetRepository } from "../repositories/password-reset.repository.js";
@@ -82,6 +83,13 @@ export const passwordResetService = {
     });
 
     logDevOtp(email, plainCode);
+
+    publishPasswordResetOtpSafe({
+      email,
+      code: plainCode,
+      ttlSeconds: env.OTP_TTL_SECONDS,
+      requestedAt: new Date().toISOString(),
+    });
   },
 
   async verifyOtp(

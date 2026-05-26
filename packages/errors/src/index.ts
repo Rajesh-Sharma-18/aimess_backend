@@ -6,5 +6,6 @@ export * from "./UnauthorizedError";
 export * from "./ForbiddenError";
 export * from "./NotFoundError";
 export * from "./ConflictError";
+export * from "./GoneError";
 export * from "./TooManyRequestsError";
 export * from "./UnsupportedMediaTypeError";
