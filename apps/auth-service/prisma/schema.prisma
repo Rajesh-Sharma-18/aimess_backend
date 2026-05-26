@@ -50,6 +50,8 @@ model AuthUser {
   lockedUntil          DateTime?
   lastLoginAt          DateTime?
   lastPasswordChangeAt DateTime?
+  // Push notifications
+  fcmTokens            String[]             @default([])
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   linkedAccounts       LinkedAccount[]

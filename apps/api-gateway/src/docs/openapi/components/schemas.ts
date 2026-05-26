@@ -1041,6 +1041,69 @@ export const openApiSchemas = {
   },
 
   // ===========================================================================
+  // user-service · user discovery
+  // ===========================================================================
+  UserDiscoveryItem: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      bio: { type: "string", nullable: true },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Presigned GET URL; null if no avatar.",
+      },
+      avatarUrlExpiresIn: {
+        type: "integer",
+        nullable: true,
+        description: "Seconds until avatarUrl expires; null if no avatar.",
+      },
+      isOnline: { type: "boolean" },
+      relationshipStatus: {
+        type: "string",
+        enum: ["FRIEND", "PENDING_IN", "PENDING_OUT", "NONE"],
+        nullable: true,
+        description:
+          "Omitted when section=all. PENDING_IN = they sent the request to you.",
+      },
+      friendshipId: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description: "Present when relationshipStatus is FRIEND or PENDING_*.",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "firstName",
+      "lastName",
+      "bio",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "isOnline",
+    ],
+  },
+  UserDiscoveryResponseData: {
+    type: "object",
+    properties: {
+      users: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserDiscoveryItem" },
+      },
+      total: {
+        type: "integer",
+        description: "Total matching users (across all pages).",
+      },
+    },
+    required: ["users", "total"],
+  },
+
+  // ===========================================================================
   // community-service
   // ===========================================================================
   CommunityData: {

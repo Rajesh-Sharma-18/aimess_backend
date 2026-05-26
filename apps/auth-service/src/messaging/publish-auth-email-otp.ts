@@ -3,7 +3,8 @@ import amqp from "amqplib";
 
 import {
   AuthEvents,
-  type PasswordResetOtpRequestedPayload,
+  type ChangeEmailOtpRequestedPayload,
+  type LinkEmailOtpRequestedPayload,
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
@@ -26,25 +27,28 @@ async function getChannel(): Promise<amqp.Channel> {
   return channelPromise;
 }
 
-export async function publishPasswordResetOtp(
-  data: PasswordResetOtpRequestedPayload
-): Promise<void> {
+async function publish(type: string, data: object): Promise<void> {
   const channel = await getChannel();
-  const payload = JSON.stringify({
-    type: AuthEvents.PASSWORD_RESET_OTP_REQUESTED,
-    data,
-  });
+  const payload = JSON.stringify({ type, data });
   channel.sendToQueue(NOTIFICATION_QUEUE, Buffer.from(payload), {
     persistent: true,
   });
 }
 
-/** Fire-and-forget; OTP request must not fail if the broker is down. */
-export function publishPasswordResetOtpSafe(
-  data: PasswordResetOtpRequestedPayload
+export function publishLinkEmailOtpSafe(
+  data: LinkEmailOtpRequestedPayload
 ): void {
-  void publishPasswordResetOtp(data).catch((error) => {
-    logger.error("Failed to publish auth.password_reset_otp_requested event");
+  void publish(AuthEvents.LINK_EMAIL_OTP_REQUESTED, data).catch((error) => {
+    logger.error("Failed to publish auth.link_email_otp_requested event");
+    logger.error(error);
+  });
+}
+
+export function publishChangeEmailOtpSafe(
+  data: ChangeEmailOtpRequestedPayload
+): void {
+  void publish(AuthEvents.CHANGE_EMAIL_OTP_REQUESTED, data).catch((error) => {
+    logger.error("Failed to publish auth.change_email_otp_requested event");
     logger.error(error);
   });
 }

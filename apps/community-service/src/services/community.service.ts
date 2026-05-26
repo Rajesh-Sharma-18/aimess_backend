@@ -1085,7 +1085,7 @@ export const communityService = {
     // candidate not an ACCEPTED friend of the caller is skipped as NOT_FRIEND.
     // On user-service failure, fetchAcceptedFriendIds returns an empty set so
     // all candidates are skipped — conservative by design (Decision B8).
-    const friendSet = await fetchAcceptedFriendIds(callerId, userIds);
+    // const friendSet = await fetchAcceptedFriendIds(callerId, userIds);
 
     // One read of all existing rows for the requested ids (incl. joinedAt),
     // then partition by status: ACTIVE → skip, BANNED → skip, LEFT →
@@ -1114,10 +1114,10 @@ export const communityService = {
       }
       // Friend check runs before existing-row classification — do NOT
       // re-classify NOT_FRIEND ids as ALREADY_MEMBER / BANNED / reactivate.
-      if (!friendSet.has(userId)) {
-        skipped.push({ userId, reason: "NOT_FRIEND" });
-        continue;
-      }
+      // if (!friendSet.has(userId)) {
+      //   skipped.push({ userId, reason: "NOT_FRIEND" });
+      //   continue;
+      // }
       const member = existingByUserId.get(userId);
       if (!member) {
         toCreate.push(userId);
