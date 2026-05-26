@@ -58,7 +58,7 @@ export const loginIdentifierSchema = z
 export const loginSchema = z.object({
   account: loginIdentifierSchema,
   password: passwordSchema,
-  fcmTokens: fcmTokensSchema,
+  fcmTokens: fcmTokensSchema.optional().default([]),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

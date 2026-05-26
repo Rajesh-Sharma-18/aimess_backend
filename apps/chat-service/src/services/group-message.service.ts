@@ -1,4 +1,5 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
+import { logger } from "@aimess/logger";
 
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -35,12 +36,23 @@ export class GroupMessageService {
 
     // Check idempotency
     if (params.clientMessageId) {
+      const idemKey = `${params.roomId}:${params.senderId}:${params.clientMessageId}`;
+      const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
+      if (cachedId) {
+        const cached = await this.messageRepo.findById(cachedId);
+        if (cached) return cached;
+      }
       const existing = await this.messageRepo.findByClientMessageId(
         params.roomId,
         params.senderId,
         params.clientMessageId
       );
-      if (existing) return existing;
+      if (existing) {
+        this.cacheRepo
+          .setMessageIdempotency(idemKey, existing.id)
+          .catch(() => {});
+        return existing;
+      }
     }
 
     const entity: Record<string, unknown> = {
@@ -74,29 +86,61 @@ export class GroupMessageService {
       }
     }
 
-    const message = await this.messageRepo.create(
-      entity as Parameters<typeof this.messageRepo.create>[0]
-    );
+    let message: GroupMessage;
+    try {
+      message = await this.messageRepo.create(
+        entity as Parameters<typeof this.messageRepo.create>[0]
+      );
+    } catch (err) {
+      // P2002 = unique constraint violation from the sparse idempotency index
+      const pe = err as { code?: string };
+      if (pe?.code === "P2002" && params.clientMessageId) {
+        const dup = await this.messageRepo.findByClientMessageId(
+          params.roomId,
+          params.senderId,
+          params.clientMessageId
+        );
+        if (dup) return dup;
+      }
+      throw err;
+    }
+
+    if (params.clientMessageId) {
+      const idemKey = `${params.roomId}:${params.senderId}:${params.clientMessageId}`;
+      this.cacheRepo.setMessageIdempotency(idemKey, message.id).catch(() => {});
+    }
 
     // Update room last message
     const messageContent = (message.content ?? {}) as Record<string, unknown>;
-    await this.roomRepo.updateLastMessage(params.roomId, {
-      _id: message.id,
-      senderId: message.senderId ?? null,
-      senderName: message.senderName,
-      messageType: message.messageType,
-      content: { text: (messageContent.text as string) || "" },
-      createdAt: message.createdAt,
-    });
+    this.roomRepo
+      .updateLastMessage(params.roomId, {
+        _id: message.id,
+        senderId: message.senderId ?? null,
+        senderName: message.senderName,
+        messageType: message.messageType,
+        content: { text: (messageContent.text as string) || "" },
+        createdAt: message.createdAt,
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          `GroupMessageService|updateLastMessage failed: ${String(err)}`
+        );
+      });
 
     // Increment unread for all other members
-    await this.memberRepo.incUnreadForRoom(params.roomId, params.senderId);
-
+    this.memberRepo
+      .incUnreadForRoom(params.roomId, params.senderId)
+      .catch((err: unknown) => {
+        logger.warn(
+          `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
+        );
+      });
     return message;
   }
 
   async getMessages(params: {
     roomId: string;
+    userId: string;
     cursor?: string | null;
     limit: number;
   }): Promise<GroupMessage[]> {
@@ -104,7 +148,8 @@ export class GroupMessageService {
     return this.messageRepo.findByRoomIdWithTime(
       params.roomId,
       beforeTimestamp,
-      params.limit
+      params.limit,
+      params.userId
     );
   }
 
@@ -126,6 +171,23 @@ export class GroupMessageService {
 
   async countSearchResults(roomId: string, query: string): Promise<number> {
     return this.messageRepo.countSearchResults(roomId, query);
+  }
+
+  async deleteForMe(
+    messageId: string,
+    userId: string,
+    roomId: string
+  ): Promise<GroupMessage | null> {
+    const message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+
+    return this.messageRepo.deleteForMe(messageId, userId);
   }
 
   async deleteMessage(

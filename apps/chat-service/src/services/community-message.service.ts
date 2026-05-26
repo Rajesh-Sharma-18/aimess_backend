@@ -1,4 +1,7 @@
-﻿import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
+﻿import { logger } from "@aimess/logger";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
+
+import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
@@ -27,12 +30,23 @@ export class CommunityMessageService {
   }): Promise<GeneralRoomMessage> {
     // Check idempotency
     if (params.clientMessageId) {
+      const idemKey = `${params.roomId}:${params.sentBy}:${params.clientMessageId}`;
+      const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
+      if (cachedId) {
+        const cached = await this.messageRepo.findById(cachedId);
+        if (cached) return cached;
+      }
       const existing = await this.messageRepo.findOne({
         roomId: params.roomId,
         sentBy: params.sentBy,
         clientMessageId: params.clientMessageId,
       });
-      if (existing) return existing;
+      if (existing) {
+        this.cacheRepo
+          .setMessageIdempotency(idemKey, existing.id)
+          .catch(() => {});
+        return existing;
+      }
     }
 
     const entity: Record<string, unknown> = {
@@ -63,20 +77,45 @@ export class CommunityMessageService {
       }
     }
 
-    const message = await this.messageRepo.save(
-      entity as Parameters<typeof this.messageRepo.save>[0]
-    );
+    let message: GeneralRoomMessage;
+    try {
+      message = await this.messageRepo.save(
+        entity as Parameters<typeof this.messageRepo.save>[0]
+      );
+    } catch (err) {
+      // P2002 = unique constraint violation from the sparse idempotency index
+      const pe = err as { code?: string };
+      if (pe?.code === "P2002" && params.clientMessageId) {
+        const dup = await this.messageRepo.findOne({
+          roomId: params.roomId,
+          sentBy: params.sentBy,
+          clientMessageId: params.clientMessageId,
+        });
+        if (dup) return dup;
+      }
+      throw err;
+    }
+
+    if (params.clientMessageId) {
+      const idemKey = `${params.roomId}:${params.sentBy}:${params.clientMessageId}`;
+      this.cacheRepo.setMessageIdempotency(idemKey, message.id).catch(() => {});
+    }
 
     // Update room last message
-    await this.roomRepo.addLastestMessageToRoom(params.roomId, {
-      _id: message.id,
-      sentBy: message.sentBy,
-      senderName: message.senderName || "",
-      message: message.message || "",
-      messageType: message.messageType,
-      createdAt: message.createdAt,
-    });
-
+    this.roomRepo
+      .addLastestMessageToRoom(params.roomId, {
+        _id: message.id,
+        sentBy: message.sentBy,
+        senderName: message.senderName || "",
+        message: message.message || "",
+        messageType: message.messageType,
+        createdAt: message.createdAt,
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          `CommunityMessageService|addLastestMessageToRoom failed: ${String(err)}`
+        );
+      });
     return message;
   }
 
@@ -125,7 +164,36 @@ export class CommunityMessageService {
     return this.messageRepo.updateById("", messageId, reactions);
   }
 
-  async deleteForAll(messageId: string): Promise<GeneralRoomMessage | null> {
+  async deleteForMe(
+    messageId: string,
+    userId: string
+  ): Promise<GeneralRoomMessage | null> {
+    const message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    await this.messageRepo.deleteForUser(messageId, userId);
+    return this.messageRepo.findById(messageId);
+  }
+
+  async deleteForAll(
+    messageId: string,
+    userId: string
+  ): Promise<GeneralRoomMessage | null> {
+    const message = await this.messageRepo.findById(messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    // Sender can always delete their own message for everyone.
+    // Others need admin or moderator role.
+    if (message.sentBy !== userId) {
+      const member = await this.memberRepo.findByRoomAndUser(
+        message.roomId,
+        userId
+      );
+      if (!member || !["admin", "moderator"].includes(member.role)) {
+        throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+      }
+    }
+
     return this.messageRepo.deleteForAll(messageId);
   }
 

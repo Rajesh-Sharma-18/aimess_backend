@@ -17,12 +17,13 @@ export class GroupMessageController {
   ) {}
 
   getMessages = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const cursor = req.query.cursor as string | undefined;
     const limit = Number(req.query.limit) || 30;
     const page = Number(req.query.page) || 1;
     const [messages, totalCount] = await Promise.all([
-      this.messageService.getMessages({ roomId, cursor, limit }),
+      this.messageService.getMessages({ roomId, userId, cursor, limit }),
       this.messageService.countMessages(roomId),
     ]);
     const paginated = buildPaginatedResponse(

@@ -100,6 +100,7 @@ export function registerGroupHandler(
 
       const messages = await groupMessageService.getMessages({
         roomId,
+        userId: socket.user.userId,
         limit: 30,
       });
       formatSocketResponse(callback, messages);
@@ -115,6 +116,7 @@ export function registerGroupHandler(
       const cursor = payload.lastMessageDate as string;
       const messages = await groupMessageService.getMessages({
         roomId,
+        userId: socket.user.userId,
         cursor,
         limit: 30,
       });
@@ -146,8 +148,13 @@ export function registerGroupHandler(
       const message = await groupMessageService.sendMessage({
         roomId: value.roomId,
         senderId: userId,
+        // Priority: displayName (full name) → memberId (account/username) → socket auth displayname
         senderName:
-          (snap.displayName as string) || socket.user.displayname || "",
+          (snap.displayName as string) ||
+          (snap.memberId as string) ||
+          socket.user.displayname ||
+          socket.user.username ||
+          "",
         senderAvatar: (snap.avatar as string) || "",
         content: value.content,
         messageType: value.messageType,
@@ -258,7 +265,43 @@ export function registerGroupHandler(
       );
 
       const roomName = `${GROUP_PREFIX}:${value.roomId}`;
-      io.to(roomName).emit(`${roomName}:message:delete:new`, message);
+      io.to(roomName).emit(`${roomName}:message:delete:new`, {
+        ...message,
+        type: "forEveryone",
+        deletedBy: socket.user.userId,
+      });
+      formatSocketResponse(callback, message);
+    }, callback);
+  };
+
+  const deleteMessageForMe = async (
+    payload: Record<string, unknown>,
+    callback: SocketCallback
+  ) => {
+    await handleSocketAction(async () => {
+      SocketGuard.requireLoggedIn(socket);
+
+      const value = validateSocketPayload(
+        deleteGroupMessageSchema,
+        payload,
+        callback
+      );
+      if (!value) return;
+
+      const message = await groupMessageService.deleteForMe(
+        value.messageId,
+        socket.user.userId,
+        value.roomId
+      );
+
+      // Emit to the whole room so the user's other devices hide it too.
+      // Clients must only act on this if deletedBy === their own userId.
+      const roomName = `${GROUP_PREFIX}:${value.roomId}`;
+      io.to(roomName).emit(`${roomName}:message:delete:new`, {
+        messageId: value.messageId,
+        type: "forMe",
+        deletedBy: socket.user.userId,
+      });
       formatSocketResponse(callback, message);
     }, callback);
   };
@@ -293,5 +336,6 @@ export function registerGroupHandler(
   socket.on(GROUP_EVENTS.MESSAGE_PIN, pinMessage);
   socket.on(GROUP_EVENTS.MESSAGE_UNPIN, unpinMessage);
   socket.on(GROUP_EVENTS.MESSAGE_DELETE, deleteMessage);
+  socket.on(GROUP_EVENTS.MESSAGE_DELETE_FOR_ME, deleteMessageForMe);
   socket.on(GROUP_EVENTS.CONVERSATION_READ, markRead);
 }

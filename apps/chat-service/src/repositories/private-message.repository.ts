@@ -65,41 +65,30 @@ export class PrivateMessageRepository {
 
   async findByRoomIdWithTime(
     userId: string,
-    room: { roomId: string; deletedFor?: Record<string, unknown> | null },
+    room: { roomId: string },
     beforeTimestamp: string,
     limit: number
   ): Promise<PrivateMessage[]> {
-    // Build time constraint
     const ltDate = new Date(beforeTimestamp);
-    let gtDate: Date | undefined;
 
-    const deletedFor = room.deletedFor;
-    if (deletedFor) {
-      const deletedAt = deletedFor[userId];
-      if (deletedAt) {
-        gtDate = new Date(deletedAt as string);
-      }
-    }
-
-    // Prisma doesn't support filtering "key not in JSON map" directly for MongoDB.
-    // We fetch and filter in memory for the deletedFor check on the message level.
+    // isDeleted: true means "deleted for everyone" — exclude at DB level.
+    // "deleted for me" messages keep isDeleted: false and are caught below.
     const messages = await this.prisma.privateMessage.findMany({
       where: {
         roomId: room.roomId,
-        createdAt: {
-          lt: ltDate,
-          ...(gtDate ? { gt: gtDate } : {}),
-        },
+        isDeleted: false,
+        createdAt: { lt: ltDate },
       },
       orderBy: { createdAt: "desc" },
-      take: limit + 10, // fetch extra to account for filtering
+      take: limit + 10,
     });
 
-    // Filter out messages deleted for this user
+    // Filter out messages where this user has done "delete for me".
+    // deletedFor shape: { [userId]: ISO-timestamp, ... }
     return messages
       .filter((msg) => {
-        const msgDeletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
-        return !(userId in msgDeletedFor);
+        const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
+        return !(userId in deletedFor);
       })
       .slice(0, limit);
   }
@@ -147,13 +136,19 @@ export class PrivateMessageRepository {
     messageId: string,
     userId: string
   ): Promise<PrivateMessage> {
+    // Read existing deletedFor so both users can independently delete for themselves.
+    // Shape: { [userId]: ISO-timestamp }  — the fetch filter checks `userId in deletedFor`.
+    const existing = await this.prisma.privateMessage.findUnique({
+      where: { id: messageId },
+    });
+    const current = (existing?.deletedFor ?? {}) as Record<string, unknown>;
+    const updated = { ...current, [userId]: new Date().toISOString() };
+
     return this.prisma.privateMessage.update({
       where: { id: messageId },
       data: {
-        isDeleted: true,
-        deletedAt: new Date(),
-        deletedBy: userId,
-        deletedFor: { type: "forMe" } as unknown as Prisma.InputJsonValue,
+        // isDeleted stays false — message still exists for the other participant
+        deletedFor: updated as unknown as Prisma.InputJsonValue,
       },
     });
   }

@@ -158,6 +158,7 @@ model GroupMessage {
   deletedPlaceholder String    @default("")
   deletedAt          DateTime?
   deletedBy          String?
+  deletedForUserIds  Json      @default("[]")
   createdAt          DateTime  @default(now())
 
   @@index([roomId, createdAt(sort: Desc)])

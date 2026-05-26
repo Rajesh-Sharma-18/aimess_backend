@@ -236,27 +236,13 @@ export const authRepository = {
     });
   },
 
-  /**
-   * Merge new FCM tokens into the user's existing set (union + dedupe) so
-   * multiple devices accumulate without duplicates and without overwriting
-   * tokens registered by other devices.
-   */
-  async mergeFcmTokens(userId: string, tokens: string[] = []): Promise<void> {
+  // FCM token storage is not yet implemented (column not in DB).
+  // This is a no-op until the frontend ships FCM support and the
+  // migration adding fcmTokens to auth_users has been run.
+
+  async mergeFcmTokens(userId: string, tokens: string[]): Promise<void> {
     if (tokens.length === 0) return;
-
-    const current = await prisma.authUser.findUnique({
-      where: { id: userId },
-      select: { fcmTokens: true },
-    });
-
-    const merged = Array.from(
-      new Set([...(current?.fcmTokens ?? []), ...tokens])
-    );
-
-    await prisma.authUser.update({
-      where: { id: userId },
-      data: { fcmTokens: merged },
-    });
+    return;
   },
 
   createUser(data: Prisma.AuthUserCreateInput) {
@@ -279,7 +265,6 @@ export const authRepository = {
     providerUserId: string;
     displayName?: string | null;
     providerEmail?: string | null;
-    fcmTokens?: string[];
   }) {
     return prisma.$transaction(async (tx) => {
       const user = await tx.authUser.create({
@@ -288,7 +273,6 @@ export const authRepository = {
           email: params.email,
           emailVerified: params.emailVerified,
           passwordHash: null,
-          fcmTokens: params.fcmTokens ?? [],
         },
         select: {
           id: true,

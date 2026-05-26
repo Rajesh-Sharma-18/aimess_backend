@@ -1,11 +1,19 @@
-import type { Redis } from "ioredis";
+import type { Redis, Cluster } from "ioredis";
 
 /**
  * Redis-based cache repository for presence, user snapshots, and session management.
  * Mirrors the reference JS CacheRepository pattern.
+ *
+ * Accepts both a single Redis instance and a Cluster instance so the
+ * repository works without changes in both local-dev (single node) and
+ * production (Redis Cluster) environments.
+ *
+ * Key naming: device-session keys use a Redis hash tag `{userId}` so all
+ * sessions for one user are guaranteed to land on the same cluster slot.
+ * This makes the SCAN-then-pipeline pattern reliable in cluster mode.
  */
 export class CacheRepository {
-  constructor(private readonly redis: Redis) {}
+  constructor(private readonly redis: Redis | Cluster) {}
 
   // === Presence ===
 
@@ -19,7 +27,7 @@ export class CacheRepository {
     appState: string;
     now: number;
   }): Promise<void> {
-    const key = `presence:device:${params.userId}:${params.deviceId}`;
+    const key = `presence:device:{${params.userId}}:${params.deviceId}`;
     await this.redis.hmset(key, {
       socketId: params.socketId,
       platform: params.platform,
@@ -38,7 +46,7 @@ export class CacheRepository {
     deviceId: string;
     now: number;
   }): Promise<void> {
-    const key = `presence:device:${params.userId}:${params.deviceId}`;
+    const key = `presence:device:{${params.userId}}:${params.deviceId}`;
     await this.redis.hset(key, "lastActiveAt", String(params.now));
     await this.redis.expire(key, 600);
   }
@@ -49,7 +57,7 @@ export class CacheRepository {
     state: string,
     now: number
   ): Promise<void> {
-    const key = `presence:device:${userId}:${deviceId}`;
+    const key = `presence:device:{${userId}}:${deviceId}`;
     await this.redis.hmset(key, {
       appState: state,
       lastActiveAt: String(now),
@@ -62,7 +70,7 @@ export class CacheRepository {
     deviceId: string;
     nowMs: number;
   }): Promise<void> {
-    const key = `presence:device:${params.userId}:${params.deviceId}`;
+    const key = `presence:device:{${params.userId}}:${params.deviceId}`;
     await this.redis.hmset(key, {
       realtimeConnected: "0",
       disconnectedAt: String(params.nowMs),
@@ -74,15 +82,60 @@ export class CacheRepository {
   async getDeviceSessions(
     userId: string
   ): Promise<Array<Record<string, string>>> {
-    const pattern = `presence:device:${userId}:*`;
-    const keys = await this.redis.keys(pattern);
+    // All device-session keys for this user share the hash tag {userId} so they
+    // all live on the same cluster slot. In cluster mode we still scan every
+    // master to be safe; most will return empty immediately.
+    const pattern = `presence:device:{${userId}}:*`;
+    const keys: string[] = [];
+
+    if ((this.redis as { isCluster?: boolean }).isCluster) {
+      const cluster = this.redis as Cluster;
+      for (const node of cluster.nodes("master")) {
+        let cursor = "0";
+        do {
+          const [nextCursor, batch] = await node.scan(
+            cursor,
+            "MATCH",
+            pattern,
+            "COUNT",
+            100
+          );
+          cursor = nextCursor;
+          keys.push(...batch);
+        } while (cursor !== "0");
+      }
+    } else {
+      let cursor = "0";
+      do {
+        const [nextCursor, batch] = await (this.redis as Redis).scan(
+          cursor,
+          "MATCH",
+          pattern,
+          "COUNT",
+          100
+        );
+        cursor = nextCursor;
+        keys.push(...batch);
+      } while (cursor !== "0");
+    }
+
     if (!keys.length) return [];
 
     const sessions: Array<Record<string, string>> = [];
+    const pipeline = this.redis.pipeline();
     for (const key of keys) {
-      const data = await this.redis.hgetall(key);
-      if (data && Object.keys(data).length > 0) {
-        sessions.push(data);
+      pipeline.hgetall(key);
+    }
+    const results = await pipeline.exec();
+    if (results) {
+      for (const result of results) {
+        const [err, data] = result as [
+          Error | null,
+          Record<string, string> | null,
+        ];
+        if (!err && data && Object.keys(data).length > 0) {
+          sessions.push(data);
+        }
       }
     }
     return sessions;
@@ -171,5 +224,16 @@ export class CacheRepository {
     userId: string
   ): Promise<Record<string, string>> {
     return this.redis.hgetall(`general:read:${userId}`);
+  }
+
+  async setMessageIdempotency(
+    cacheKey: string,
+    messageId: string
+  ): Promise<void> {
+    await this.redis.set(`chat:idem:${cacheKey}`, messageId, "EX", 300);
+  }
+
+  async getMessageIdempotency(cacheKey: string): Promise<string | null> {
+    return this.redis.get(`chat:idem:${cacheKey}`);
   }
 }

@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import type { Server } from "socket.io";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
@@ -7,6 +8,7 @@ import {
   buildPaginatedResponse,
   buildListResponse,
 } from "../../lib/pagination.js";
+import { GENERAL_EMIT, GENERAL_PREFIX } from "../../types/socket-events.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 
 export class CommunityMessageController {
@@ -35,9 +37,30 @@ export class CommunityMessageController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
   });
 
-  deleteForAll = asyncHandler(async (req: Request, res: Response) => {
+  deleteMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const result = await this.service.deleteForAll(messageId);
+    const type = req.query.type as string;
+
+    const result =
+      type === "forEveryone"
+        ? await this.service.deleteForAll(messageId, userId)
+        : await this.service.deleteForMe(messageId, userId);
+
+    // Emit real-time deletion event to the community room.
+    // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
+    const io = req.app.get("io") as Server | undefined;
+    if (io && result?.roomId) {
+      io.to(`${GENERAL_PREFIX}:${result.roomId}`).emit(
+        GENERAL_EMIT.MESSAGE_DELETE_NEW(result.roomId),
+        {
+          messageId: result.id,
+          type: type === "forEveryone" ? "forEveryone" : "forMe",
+          deletedBy: userId,
+        }
+      );
+    }
+
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
