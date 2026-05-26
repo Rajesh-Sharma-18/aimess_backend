@@ -17,7 +17,7 @@ const NOTIFICATION_QUEUE = "notification.queue";
  * PRECONDITION_FAILED.
  */
 const NOTIFICATION_DLX = "notification.queue.dlx";
-// const NOTIFICATION_DLQ_ROUTING_KEY = "notification.queue.dead";
+const NOTIFICATION_DLQ_ROUTING_KEY = "notification.queue.dead";
 
 function isPreconditionFailed(error: unknown): boolean {
   return (
@@ -80,6 +80,8 @@ async function getChannel(): Promise<amqp.Channel> {
       });
       await assertQueueWithRecovery(channel, NOTIFICATION_QUEUE, {
         durable: true,
+        deadLetterExchange: NOTIFICATION_DLX,
+        deadLetterRoutingKey: NOTIFICATION_DLQ_ROUTING_KEY,
       });
       return channel;
     })();

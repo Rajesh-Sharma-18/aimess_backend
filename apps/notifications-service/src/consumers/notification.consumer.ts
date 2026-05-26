@@ -19,7 +19,8 @@ const QUEUE_NAME = "notification.queue";
  * args or RabbitMQ throws PRECONDITION_FAILED.
  */
 const NOTIFICATION_DLX = "notification.queue.dlx";
-// const NOTIFICATION_DLQ_ROUTING_KEY = "notification.queue.dead";
+const NOTIFICATION_DLQ = "notification.queue.dlq";
+const NOTIFICATION_DLQ_ROUTING_KEY = "notification.queue.dead";
 
 function isPreconditionFailed(error: unknown): boolean {
   return (
@@ -102,8 +103,19 @@ export async function startConsumer() {
   await assertExchangeWithRecovery(channel, NOTIFICATION_DLX, "direct", {
     durable: true,
   });
+  await assertQueueWithRecovery(channel, NOTIFICATION_DLQ, {
+    durable: true,
+  });
+  await channel.bindQueue(
+    NOTIFICATION_DLQ,
+    NOTIFICATION_DLX,
+    NOTIFICATION_DLQ_ROUTING_KEY
+  );
+
   await assertQueueWithRecovery(channel, QUEUE_NAME, {
     durable: true,
+    deadLetterExchange: NOTIFICATION_DLX,
+    deadLetterRoutingKey: NOTIFICATION_DLQ_ROUTING_KEY,
   });
   await channel.prefetch(10);
 
