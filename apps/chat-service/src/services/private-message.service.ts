@@ -1,4 +1,5 @@
 import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import { logger } from "@aimess/logger";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -61,7 +62,10 @@ export class PrivateMessageService {
           message:
             (originalMsg.content as unknown as Record<string, unknown>)?.text ||
             "",
-          senderName: (senderSnap as Record<string, unknown>).displayName || "",
+          senderName:
+            ((senderSnap as Record<string, unknown>).displayName as string) ||
+            ((senderSnap as Record<string, unknown>).memberId as string) ||
+            "",
         };
       }
     }
@@ -71,20 +75,23 @@ export class PrivateMessageService {
     );
 
     // Update room with last message
-    await this.roomRepo.updateRoomOnNewMessage({
-      roomId: params.roomId,
-      message: {
-        _id: message.id,
-        content: message.content,
-        senderId: message.senderId || "",
-        messageType: message.messageType,
-        systemEvent: message.systemEvent,
-        systemData: message.systemData,
-        createdAt: message.createdAt,
-      },
-      receiverId: params.receiverId,
-    });
-
+    this.roomRepo
+      .updateRoomOnNewMessage({
+        roomId: params.roomId,
+        message: {
+          _id: message.id,
+          content: message.content,
+          senderId: message.senderId || "",
+          messageType: message.messageType,
+          systemEvent: message.systemEvent,
+          systemData: message.systemData,
+          createdAt: message.createdAt,
+        },
+        receiverId: params.receiverId,
+      })
+      .catch((err: unknown) => {
+        logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
+      });
     return message;
   }
 
@@ -102,10 +109,7 @@ export class PrivateMessageService {
     const beforeTimestamp = params.cursor || new Date().toISOString();
     return this.messageRepo.findByRoomIdWithTime(
       params.userId,
-      {
-        roomId: room.roomId,
-        deletedFor: room.deletedFor as Record<string, unknown> | null,
-      },
+      { roomId: room.roomId },
       beforeTimestamp,
       params.limit
     );
@@ -146,7 +150,12 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // isDeleted=true means already deleted for everyone — can't delete for me again
     if (message.isDeleted)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    // Check if this user already deleted it for themselves
+    const deletedFor = (message.deletedFor ?? {}) as Record<string, unknown>;
+    if (userId in deletedFor)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     return this.messageRepo.deleteForMe(messageId, userId);
   }

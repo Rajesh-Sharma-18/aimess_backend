@@ -67,6 +67,79 @@ const startServer = async () => {
   try {
     // 1. Connect databases + infra
     await connectDatabase();
+
+    // Ensure MongoDB text indexes for full-text search (idempotent; skip on error)
+    const textIndexes = [
+      {
+        collection: "private_messages",
+        key: { "content.text": "text" },
+        name: "private_messages_content_text_idx",
+      },
+      {
+        collection: "group_messages",
+        key: { "content.text": "text" },
+        name: "group_messages_content_text_idx",
+      },
+      {
+        collection: "general_room_messages",
+        key: { message: "text" },
+        name: "general_room_messages_message_idx",
+      },
+    ];
+    for (const idx of textIndexes) {
+      try {
+        await prisma.$runCommandRaw({
+          createIndexes: idx.collection,
+          indexes: [{ key: idx.key, name: idx.name }],
+        });
+        logger.info(`Text index ensured: ${idx.name}`);
+      } catch (err) {
+        logger.warn(`Failed to create text index ${idx.name} — continuing`);
+        logger.warn(err);
+      }
+    }
+
+    // Partial unique indexes for clientMessageId idempotency.
+    // partialFilterExpression limits the index to documents where clientMessageId
+    // is a non-null string, so rows with clientMessageId: null are never indexed
+    // and never trigger a duplicate-key error (unlike sparse:true, which only
+    // skips documents where the field is entirely absent — not where it is null).
+    const idemIndexes = [
+      {
+        collection: "group_messages",
+        key: { roomId: 1, senderId: 1, clientMessageId: 1 },
+        name: "group_messages_idempotency_idx",
+        partialFilterExpression: { clientMessageId: { $type: "string" } },
+      },
+      {
+        collection: "general_room_messages",
+        key: { roomId: 1, sentBy: 1, clientMessageId: 1 },
+        name: "general_room_messages_idempotency_idx",
+        partialFilterExpression: { clientMessageId: { $type: "string" } },
+      },
+    ];
+    for (const idx of idemIndexes) {
+      try {
+        await prisma.$runCommandRaw({
+          createIndexes: idx.collection,
+          indexes: [
+            {
+              key: idx.key,
+              name: idx.name,
+              unique: true,
+              partialFilterExpression: idx.partialFilterExpression,
+            },
+          ],
+        });
+        logger.info(`Idempotency index ensured: ${idx.name}`);
+      } catch (err) {
+        logger.warn(
+          `Failed to create idempotency index ${idx.name} — continuing`
+        );
+        logger.warn(err);
+      }
+    }
+
     await connectChatRedis();
 
     try {
@@ -202,6 +275,8 @@ const startServer = async () => {
 
     // 6. Attach Socket.IO
     const io = createSocketServer(httpServer);
+    // Expose io so REST controllers can emit real-time events
+    app.set("io", io);
 
     registerSocketHandlers(io, {
       cacheRepo,

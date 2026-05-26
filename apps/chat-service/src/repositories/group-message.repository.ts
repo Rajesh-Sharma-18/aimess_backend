@@ -43,15 +43,23 @@ export class GroupMessageRepository {
   async findByRoomIdWithTime(
     roomId: string,
     beforeTimestamp: string,
-    limit: number
+    limit: number,
+    userId?: string
   ): Promise<GroupMessage[]> {
-    return this.prisma.groupMessage.findMany({
+    const messages = await this.prisma.groupMessage.findMany({
       where: {
         roomId,
         createdAt: { lt: new Date(beforeTimestamp) },
       },
       orderBy: { createdAt: "desc" },
       take: limit,
+    });
+
+    if (!userId) return messages;
+    return messages.filter((msg) => {
+      const raw = msg as unknown as { deletedForUserIds?: unknown };
+      const deletedFor = (raw.deletedForUserIds ?? []) as string[];
+      return !deletedFor.includes(userId);
     });
   }
 
@@ -117,6 +125,29 @@ export class GroupMessageRepository {
         deletedType,
         deletedPlaceholder: "This message was deleted",
       },
+    });
+  }
+
+  async deleteForMe(
+    messageId: string,
+    userId: string
+  ): Promise<GroupMessage | null> {
+    const message = await this.prisma.groupMessage.findUnique({
+      where: { id: messageId },
+    });
+    if (!message) return null;
+
+    const raw = message as unknown as { deletedForUserIds?: unknown };
+    const existing = (raw.deletedForUserIds ?? []) as string[];
+    if (existing.includes(userId)) return message;
+
+    return this.prisma.groupMessage.update({
+      where: { id: messageId },
+      // deletedForUserIds will be in the generated types after `prisma generate`
+      data: { deletedForUserIds: [...existing, userId] } as unknown as Record<
+        string,
+        unknown
+      >,
     });
   }
 

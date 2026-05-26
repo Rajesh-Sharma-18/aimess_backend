@@ -4,7 +4,7 @@ import { fcmTokensSchema } from "./auth.validator.js";
 
 export const googleLoginSchema = z.object({
   idToken: z.string().trim().min(1, "Google ID token is required"),
-  fcmTokens: fcmTokensSchema,
+  fcmTokens: fcmTokensSchema.optional().default([]),
 });
 
 export type GoogleLoginInput = z.infer<typeof googleLoginSchema>;

@@ -19,6 +19,8 @@ export function createSocketServer(httpServer: HttpServer): SocketIOServer {
     connectionStateRecovery: {
       maxDisconnectionDuration: 2 * 60 * 1000,
     },
+    perMessageDeflate: false,
+    maxHttpBufferSize: 1e6,
   });
 
   io.engine.on("connection_error", (err) => {

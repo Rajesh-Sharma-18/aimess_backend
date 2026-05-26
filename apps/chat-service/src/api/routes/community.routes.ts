@@ -43,7 +43,7 @@ export function createCommunityRoutes(
     "/messages/:messageId",
     authenticate,
     messageLimit,
-    messageCtrl.deleteForAll
+    messageCtrl.deleteMessage
   );
 
   return router;

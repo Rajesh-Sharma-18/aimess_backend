@@ -1,0 +1,109 @@
+# Chat-service horizontal scale overlay
+#
+# Spins up 3 chat-service pods (built from the monorepo Dockerfile) backed by
+# the Redis Cluster and MongoDB already defined in docker-compose.yml.
+# nginx is overridden to route to the pods instead of host.docker.internal.
+#
+# First-time build (uses the shared Turborepo build cache):
+#   docker build -f apps/chat-service/Dockerfile -t aimess/chat-service:latest .
+#
+# Run the full scaled stack:
+#   docker compose -f docker-compose.yml -f docker/compose.scale.yml up
+#
+# Scale down to dev mode (pnpm dev) anytime — just drop the overlay:
+#   docker compose up   (default docker-compose.yml only)
+
+name: aimess
+
+services:
+  # ── 3 chat-service pods ────────────────────────────────────────────────────────
+  # All pods share the same image. Override MONGO_HOST and REDIS_* so the
+  # containers use Docker-internal service names instead of localhost.
+  # REDIS_CLUSTER_NODES uses container-internal addresses (port 6379, not 700x)
+  # to avoid the host-bridge round-trip that the host-announced ports require.
+
+  chat-service-1:
+    build:
+      context: .
+      dockerfile: apps/chat-service/Dockerfile
+    image: aimess/chat-service:latest
+    container_name: aimess-chat-service-1
+    restart: unless-stopped
+    env_file: apps/chat-service/.env
+    environment:
+      MONGO_HOST: mongodb
+      REDIS_HOST: redis
+      REDIS_CLUSTER_NODES: "redis-node-1:6379,redis-node-2:6379,redis-node-3:6379"
+    depends_on:
+      - mongodb
+      - redis-cluster-init
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - aimess-network
+
+  chat-service-2:
+    build:
+      context: .
+      dockerfile: apps/chat-service/Dockerfile
+    image: aimess/chat-service:latest
+    container_name: aimess-chat-service-2
+    restart: unless-stopped
+    env_file: apps/chat-service/.env
+    environment:
+      MONGO_HOST: mongodb
+      REDIS_HOST: redis
+      REDIS_CLUSTER_NODES: "redis-node-1:6379,redis-node-2:6379,redis-node-3:6379"
+    depends_on:
+      - mongodb
+      - redis-cluster-init
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - aimess-network
+
+  chat-service-3:
+    build:
+      context: .
+      dockerfile: apps/chat-service/Dockerfile
+    image: aimess/chat-service:latest
+    container_name: aimess-chat-service-3
+    restart: unless-stopped
+    env_file: apps/chat-service/.env
+    environment:
+      MONGO_HOST: mongodb
+      REDIS_HOST: redis
+      REDIS_CLUSTER_NODES: "redis-node-1:6379,redis-node-2:6379,redis-node-3:6379"
+    depends_on:
+      - mongodb
+      - redis-cluster-init
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - aimess-network
+
+  # ── nginx override — use container names, not host.docker.internal ─────────────
+  # condition: service_healthy means nginx only starts after all 3 pods are
+  # accepting connections — prevents the "host not found in upstream" crash.
+  nginx:
+    depends_on:
+      chat-service-1:
+        condition: service_healthy
+      chat-service-2:
+        condition: service_healthy
+      chat-service-3:
+        condition: service_healthy
+    volumes:
+      - ./docker/nginx/nginx.scale.conf:/etc/nginx/nginx.conf:ro

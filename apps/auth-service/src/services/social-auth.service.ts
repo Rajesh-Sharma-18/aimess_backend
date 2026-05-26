@@ -168,7 +168,6 @@ async function signInWithProvider(
     providerUserId: profile.sub,
     displayName: profile.displayName,
     providerEmail: profile.email,
-    fcmTokens,
   });
 
   publishUserCreatedSafe({

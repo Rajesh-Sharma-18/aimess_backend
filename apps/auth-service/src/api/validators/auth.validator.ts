@@ -22,10 +22,11 @@ export const passwordSchema = z
   .min(8, "Password must be at least 8 characters")
   .max(128, "Password must be at most 128 characters");
 
-/** FCM device push tokens — one or more, captured on register/login. */
+/** FCM device push tokens — accepted but not yet persisted (column pending migration). */
 export const fcmTokensSchema = z
   .array(z.string().trim().min(1, "FCM token cannot be empty"))
-  .min(1, "At least one FCM token is required");
+  .optional()
+  .default([]);
 
 export const registerSchema = z.object({
   account: accountSchema,
@@ -53,7 +54,7 @@ export const loginIdentifierSchema = z
 export const loginSchema = z.object({
   account: loginIdentifierSchema,
   password: passwordSchema,
-  fcmTokens: fcmTokensSchema,
+  fcmTokens: fcmTokensSchema.optional().default([]),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

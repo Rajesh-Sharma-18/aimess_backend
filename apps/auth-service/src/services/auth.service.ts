@@ -35,7 +35,6 @@ export const authService = {
       account,
       passwordHash,
       lastPasswordChangeAt: new Date(),
-      fcmTokens: input.fcmTokens,
     });
 
     const session = buildSessionContext(req);

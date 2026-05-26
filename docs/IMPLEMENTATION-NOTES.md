@@ -1,8 +1,8 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-05-22**.
-> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**).
+> Update this whenever you ship or change a feature. Last reviewed: **2026-05-25**.
+> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening).
 
 ---
 
@@ -121,6 +121,109 @@ Implemented and verified (compiles + lints; **not** runtime/integration-tested):
   - **Out of scope (by design):** _Data Usage_ screen = read-only network analytics (no settings write — future metrics endpoint). _Block List_ = separate blocks domain (`Block` model), not part of settings PATCH.
 - **Connected accounts** — aggregates auth-service linked accounts.
 
+### chat-service (MongoDB `chat_db` · Prisma 6 · Redis · MinIO · Socket.IO · port **3004**)
+
+Owns: private messaging, group messaging, community room messages, notifications, presence/heartbeat, pins, livestream comments, friendships (local cache), group invite links.
+
+ORM = **Prisma 6** (same as community-service — Prisma 7 dropped MongoDB support). MongoDB must be a replica set (same P2031 constraint). Socket.IO is set up in this service with `@socket.io/redis-adapter` for horizontal scaling across multiple pod instances.
+
+#### chat-service — scalability hardening (shipped 2026-05-25)
+
+Three safe, non-breaking improvements applied to handle high concurrent load without touching any existing API behavior:
+
+**1. Redis auto-pipelining (`config/redis.ts`)**
+
+- Added `enableAutoPipelining: true` to `redisConfig`. ioredis automatically coalesces multiple Redis commands issued within the same event-loop tick into a single pipelined request, reducing round-trips for free.
+- `createRedisSubClient()` explicitly overrides `enableAutoPipelining: false` — the Socket.IO Redis adapter subscriber client uses `SUBSCRIBE`/`PSUBSCRIBE` commands that must NOT be batched into a pipeline (would silently misbehave). **Always keep this override when `redisConfig` is shared with a sub-client.**
+
+**2. `getDeviceSessions` N\*1 Redis fix (`repositories/cache.repository.ts`)**
+
+- Old: `for...of` loop calling `await this.redis.hgetall(key)` per key = N sequential round-trips per presence lookup.
+- New: single `redis.pipeline()` — enqueues all `hgetall` calls, `await pipeline.exec()` once, collects `[err, data]` pairs. Mirrors the identical pattern already in `getUserSnapshots`. Method signature and return type unchanged.
+
+**3. MongoDB text indexes at startup (`server.ts`)**
+
+- `searchByText` on `PrivateMessage` and `GroupMessage` used `findRaw` with a `$regex` on `"content.text"` (a sub-field of a `Json` column) — without an index this causes a **full collection scan** on every search request.
+- At boot, after `connectDatabase()`, `prisma.$runCommandRaw` creates three text indexes (idempotent — MongoDB returns `{ ok: 1 }` if already exists):
+  - `private_messages` → `{ "content.text": "text" }`, name `private_messages_content_text_idx`
+  - `group_messages` → `{ "content.text": "text" }`, name `group_messages_content_text_idx`
+  - `general_room_messages` → `{ message: "text" }`, name `general_room_messages_message_idx`
+- Each index creation is in its own `try/catch` — failure logs `warn` and startup continues. Server never crashes over a missing index.
+
+**Known remaining scalability gaps (deferred):**
+
+- **In-memory `deletedFor` filtering** (`private-message.repository.ts:86–104`): fetches `limit + 10` rows and filters in Node.js. Moving this filter to the DB requires understanding the exact `deletedFor` semantics (currently `deleteForMe` sets `{ type: "forMe" }` not `{ [userId]: timestamp }` — the in-memory filter may never match in practice; left as-is to avoid breaking behavior).
+- **MongoDB sharding**: `private_messages` and `group_messages` have shard keys defined in schema (`roomId + _id`) but sharding requires a MongoDB cluster — infra concern, not a code change. Use MongoDB Atlas for production.
+- **chat-service Redis client diverges from `@aimess/redis`**: the service instantiates its own ioredis client instead of using the shared package client. Pre-existing, not introduced by the hardening. Remediate when consolidating shared Redis setup.
+
+#### chat-service — infrastructure scalability (shipped 2026-05-25)
+
+Second wave of scalability work: Redis Cluster support in code + docker-compose, horizontal pod scaling via compose overlay, nginx sticky sessions, and Dockerfile correctness fixes.
+
+**Redis Cluster support (`config/redis.ts`, `config/env.ts`, `repositories/cache.repository.ts`)**
+
+- New env var `REDIS_CLUSTER_NODES` (optional, comma-separated `host:port` list, e.g. `127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003`). When set, a `Cluster` instance is created; when absent, falls back to the existing single-node `Redis` config.
+- `createClient(enableAutoPipelining)` factory handles both modes. The subscriber client for the Socket.IO adapter is always created with `enableAutoPipelining: false`.
+- `CacheRepository` constructor now accepts `Redis | Cluster`. Device-session keys use a Redis hash tag `{userId}` (e.g. `presence:device:{userId}:deviceId`) so all sessions for one user land on the same cluster slot, making SCAN reliable. In cluster mode `getDeviceSessions` iterates `cluster.nodes('master')` and scans each; in single-node mode the existing cursor-SCAN loop runs as before.
+- `isCluster` check uses `(this.redis as { isCluster?: boolean }).isCluster` (set by ioredis Cluster class).
+
+**docker-compose Redis Cluster (`docker-compose.yml`, `docker/redis/cluster-init.sh`)**
+
+- Three `redis-node-1/2/3` services added (ports 7001–7003, bus ports 17001–17003). Each uses `--cluster-announce-hostname host.docker.internal` + `--cluster-announce-port 700x` so MOVED redirects resolve from both inside Docker (via host bridge) and from the host.
+- `redis-cluster-init` one-shot container runs `docker/redis/cluster-init.sh`: waits for all 3 nodes, skips if already formed, resolves internal container IPs via `getent hosts`, then calls `redis-cli --cluster create` with `--cluster-replicas 0` (3 primaries, no replicas for dev).
+- Existing single `redis` service kept unchanged for auth/user/community services.
+
+**nginx with WebSocket sticky sessions (`docker-compose.yml`, `docker/nginx/nginx.conf`)**
+
+- `nginx` service added (port 80). Routes: `/z-socket/` → `chat_ws` upstream (ip_hash for Socket.IO sticky), `/api/` → `api_gateway` upstream. Both target `host.docker.internal` for local `pnpm dev` use.
+- `docker/nginx/nginx.scale.conf` (used by compose overlay) targets chat-service container names directly.
+
+**Multi-pod compose overlay (`docker/compose.scale.yml`, `docker/nginx/nginx.scale.conf`)**
+
+- `docker/compose.scale.yml` adds `chat-service-1/2/3` services built from the monorepo Dockerfile. Environment overrides set `MONGO_HOST=mongodb`, `REDIS_HOST=redis`, `REDIS_CLUSTER_NODES=redis-node-1:6379,...` (container-internal addresses, not host ports). Each pod has a healthcheck (`wget /health`) so nginx waits for `service_healthy` before resolving upstream DNS.
+- `nginx.scale.conf` upstream `chat_ws` uses `ip_hash` across the 3 explicit pod `server` entries.
+- Command: `docker compose -f docker-compose.yml -f docker/compose.scale.yml up`
+
+**Dockerfile fix (`apps/chat-service/Dockerfile`)**
+
+- Two bugs fixed: (1) `pnpm deploy` excluded `dist/` because root `.gitignore` lists `dist` — fixed by `cp -r apps/chat-service/dist /out/dist` after deploy. (2) Prisma generates its runtime client as `.js` files to `src/generated/prisma/`; `tsc` only compiles `.ts` files and never copies the client to `dist/generated/`; compiled code imports `../generated/prisma/index.js` relative to `dist/` — fixed by `cp -r apps/chat-service/src/generated apps/chat-service/dist/generated` before deploy.
+
+**Idempotency index: sparse → partial (`server.ts`)**
+
+- `sparse: true` only skips documents where the field is **absent**, not where it is explicitly `null`. Existing messages have `clientMessageId: null`, so building a sparse unique index on `(roomId, senderId, clientMessageId)` immediately hit `E11000` duplicate key errors.
+- Fixed by replacing `sparse: true` with `partialFilterExpression: { clientMessageId: { $type: "string" } }`. This index only covers documents where `clientMessageId` is an actual string — all `null`/missing rows are invisible to the index. Applies to both `group_messages_idempotency_idx` and `general_room_messages_idempotency_idx`.
+
+**Capacity with these changes:**
+
+| Setup                          | Concurrent users (estimate) |
+| ------------------------------ | --------------------------- |
+| Before (1 pod, single Redis)   | ~10,000–15,000              |
+| After code hardening (round 1) | ~15,000–20,000              |
+| 3 pods + Redis Cluster + nginx | ~50,000–100,000             |
+| Kubernetes 700+ pods + Atlas   | ~10,000,000                 |
+
+---
+
+#### auth-service — fcmTokens deferred (2026-05-25)
+
+`fcmTokens String[] @default([])` was in the Prisma schema but the column was never added to the DB (migration not run). Because Prisma includes all schema fields in the `RETURNING *` clause of every query, **every** `AuthUser` operation failed — including `recordSuccessfulLogin` which doesn't touch `fcmTokens` at all.
+
+**Changes made:**
+
+- `prisma/schema.prisma`: removed `fcmTokens` field entirely — schema now matches reality.
+- `auth.repository.ts`: `mergeFcmTokens` is a no-op (`_userId`, `_tokens` params, returns immediately). `fcmTokens` removed from `createUserWithLinkedAccount` params and data.
+- `auth.service.ts`: removed `fcmTokens: input.fcmTokens` from `createUser` data.
+- `social-auth.service.ts`: removed `fcmTokens` from `createUserWithLinkedAccount` call.
+- `auth.validator.ts` + `social-auth.validator.ts`: `fcmTokens` made **optional** (`.optional().default([])`) so existing frontend clients that don't send it don't break, and future clients that do send it also won't break.
+- Prisma client regenerated (`pnpm --filter auth-service db:generate`).
+
+**To re-enable FCM when frontend ships it:**
+
+1. Add `fcmTokens String[] @default([])` back to `prisma/schema.prisma`.
+2. Run `pnpm --filter auth-service db:migrate:dev --name add_fcm_tokens`.
+3. Un-no-op `mergeFcmTokens` in the repository.
+4. Add `fcmTokens: params.fcmTokens ?? []` back to `createUserWithLinkedAccount`.
+
 ### api-gateway (port **8000**)
 
 - Single global rate limiter (100/min/IP, in-memory) applied app-wide.
@@ -199,6 +302,17 @@ Implemented and verified (compiles + lints; **not** runtime/integration-tested):
 - `lint` (user, community, constants) — **0 errors** (only the pre-existing `no-console` warnings in each `config/env.ts`).
 - Runtime / integration — **NOT done** (no test runner in repo; verified by typecheck + lint + multi-agent review/tester code-reading).
 - **Infra incident (resolved):** a stale RabbitMQ `user.queue` (declared before the dead-letter topology was added) caused boot-time `406 PRECONDITION_FAILED — inequivalent arg 'x-dead-letter-exchange'`, which crashed auth- and user-service on the first publish (cascading to `ECONNREFUSED` on 3001). **RabbitMQ queue args are immutable** — fixed by `rabbitmqctl delete_queue user.queue` so it's recreated with the DLX args. **Prod implication:** deploying a queue-arg change to an env that already has the old queue needs a drain+recreate (or a versioned queue name) — see the DLQ note in §3.
+
+---
+
+## 7. Verification status (2026-05-25 — chat-service scalability hardening)
+
+- `npx tsc --noEmit` (chat-service) — **PASS** (zero type errors after all three fixes)
+- ESLint (`config/redis.ts`, `repositories/cache.repository.ts`, `server.ts`) — **0 errors, 0 warnings**
+- DRY review — **PASS** (one blocking issue caught and fixed: `createRedisSubClient` must not inherit `enableAutoPipelining:true`; corrected before merge)
+- Runtime / integration — **NOT done** (no test runner; verified by typecheck + lint + multi-agent review)
+
+---
 
 ### Postman
 

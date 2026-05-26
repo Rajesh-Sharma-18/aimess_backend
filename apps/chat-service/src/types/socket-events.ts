@@ -40,6 +40,8 @@ export const PRIVATE_EMIT = {
   MESSAGE_REACT_NEW: `${PRIVATE_PREFIX}:message:react:new`,
   MESSAGE_PIN_NEW: (roomId: string) =>
     `${PRIVATE_PREFIX}:${roomId}:message:pin:new`,
+  MESSAGE_DELETE_NEW: (roomId: string) =>
+    `${PRIVATE_PREFIX}:${roomId}:message:delete:new`,
   MESSAGE_READ: (roomId: string) => `${PRIVATE_PREFIX}:${roomId}:message:read`,
   CONVERSATION_READ_UPDATED: `${PRIVATE_HOME_LOBBY}:conversation:read:updated`,
 } as const;
@@ -63,6 +65,8 @@ export const GENERAL_EVENTS = {
 export const GENERAL_EMIT = {
   MESSAGE_ADD_NEW: (roomId: string) =>
     `${GENERAL_PREFIX}:${roomId}:message:add:new`,
+  MESSAGE_DELETE_NEW: (roomId: string) =>
+    `${GENERAL_PREFIX}:${roomId}:message:delete:new`,
   MESSAGE_REACT_NEW: `${GENERAL_PREFIX}:message:react:new`,
   NOTIFY_JOIN: `${GENERAL_PREFIX}:nofify:join`,
   STATE_UPDATE: `${GENERAL_PREFIX}:state:update`,
@@ -85,6 +89,7 @@ export const GROUP_EVENTS = {
   MESSAGE_PIN: `${GROUP_PREFIX}:message:pin`,
   MESSAGE_UNPIN: `${GROUP_PREFIX}:message:unpin`,
   MESSAGE_DELETE: `${GROUP_PREFIX}:message:delete`,
+  MESSAGE_DELETE_FOR_ME: `${GROUP_PREFIX}:message:delete:me`,
 
   CONVERSATION_READ: `${GROUP_PREFIX}:conversation:read`,
 } as const;

@@ -17,8 +17,14 @@ function createChatPrismaClient(): PrismaClient {
 
   const isDev = env.NODE_ENV === "development";
 
+  const mongoUrl = env.MONGO_DATABASE_URL.includes("maxPoolSize")
+    ? env.MONGO_DATABASE_URL
+    : env.MONGO_DATABASE_URL +
+      (env.MONGO_DATABASE_URL.includes("?") ? "&" : "?") +
+      "maxPoolSize=20";
+
   const client = new PrismaClient({
-    datasourceUrl: env.MONGO_DATABASE_URL,
+    datasourceUrl: mongoUrl,
     log: isDev
       ? [
           { emit: "event", level: "query" },

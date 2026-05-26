@@ -1,7 +1,10 @@
 import { logger } from "@aimess/logger";
 
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import { fetchUsersBatch } from "../lib/user-service-client.js";
+import {
+  fetchUsersBatch,
+  fetchAccountsBatch,
+} from "../lib/user-service-client.js";
 
 export interface UserSnapshot {
   userId: string;
@@ -47,6 +50,25 @@ export class UserSnapshotService {
           };
           cached.set(user.userId, snapshot);
           cacheRepo.setUserSnapshot(user.userId, snapshot).catch(() => {});
+        }
+      }
+
+      // Still missing after user-service? Fall back to auth-service account name.
+      // This happens when user-service has no profile yet (user.registered event not consumed).
+      const stillMissingIds = uniqueIds.filter((id) => !cached.has(id));
+      if (stillMissingIds.length > 0) {
+        const accounts = await fetchAccountsBatch(stillMissingIds);
+        for (const entry of accounts) {
+          const snapshot: Record<string, unknown> = {
+            userId: entry.userId,
+            displayName: "", // no full name yet
+            avatar: "",
+            memberId: entry.account, // account = the login username
+            isDeletedUser: false,
+            isOnline: false,
+          };
+          cached.set(entry.userId, snapshot);
+          cacheRepo.setUserSnapshot(entry.userId, snapshot).catch(() => {});
         }
       }
 

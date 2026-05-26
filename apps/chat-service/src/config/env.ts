@@ -21,6 +21,10 @@ const envSchema = z.object({
 
   REDIS_HOST: z.string(),
   REDIS_PORT: z.coerce.number(),
+  // Comma-separated "host:port" pairs to enable Redis Cluster mode.
+  // Example: 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003
+  // Leave unset to use a single Redis node (REDIS_HOST / REDIS_PORT).
+  REDIS_CLUSTER_NODES: z.string().optional(),
 
   JWT_ACCESS_SECRET: z.string(),
 
@@ -44,6 +48,7 @@ const envSchema = z.object({
   PIN_LIMIT_PER_ROOM: z.coerce.number().positive().default(50),
 
   USER_SERVICE_URL: z.string().url().optional(),
+  AUTH_SERVICE_URL: z.string().url().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
