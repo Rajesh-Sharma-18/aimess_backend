@@ -11,6 +11,7 @@ import {
   disableCommunityCache,
 } from "./config/redis.js";
 import { startUserProfileUpdatedConsumer } from "./consumers/user-profile-updated.consumer.js";
+import { startGrpcServer } from "./grpc/server.js";
 
 async function start() {
   try {
@@ -49,6 +50,9 @@ async function start() {
       );
       logger.warn(error);
     }
+
+    // Start gRPC server (stub implementations — real logic wired in later)
+    startGrpcServer(env.COMMUNITY_GRPC_PORT);
 
     app.listen(env.COMMUNITY_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(

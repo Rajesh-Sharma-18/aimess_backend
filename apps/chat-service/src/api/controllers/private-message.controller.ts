@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import type { Server } from "socket.io";
+import type { Redis, Cluster } from "ioredis";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
@@ -8,14 +8,14 @@ import {
   buildPaginatedResponse,
   buildListResponse,
 } from "../../lib/pagination.js";
-import { PRIVATE_EMIT, PRIVATE_PREFIX } from "../../types/socket-events.js";
 import type { PrivateMessageService } from "../../services/private-message.service.js";
 import type { PrivatePinService } from "../../services/private-pin.service.js";
 
 export class PrivateMessageController {
   constructor(
     private readonly messageService: PrivateMessageService,
-    private readonly pinService: PrivatePinService
+    private readonly pinService: PrivatePinService,
+    private readonly redis: Redis | Cluster
   ) {}
 
   getMessages = asyncHandler(async (req: Request, res: Response) => {
@@ -54,15 +54,17 @@ export class PrivateMessageController {
 
     // Emit real-time deletion event so all participants update immediately.
     // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
-    const io = req.app.get("io") as Server | undefined;
-    if (io && result.roomId) {
-      io.to(`${PRIVATE_PREFIX}:${result.roomId}`).emit(
-        PRIVATE_EMIT.MESSAGE_DELETE_NEW(result.roomId),
-        {
-          messageId: result.id,
-          type: type === "forEveryone" ? "forEveryone" : "forMe",
-          deletedBy: userId,
-        }
+    if (result.roomId) {
+      await this.redis.publish(
+        `conv:${result.roomId}`,
+        JSON.stringify({
+          event: "message:delete",
+          data: {
+            messageId: result.id,
+            type: type === "forEveryone" ? "forEveryone" : "forMe",
+            deletedBy: userId,
+          },
+        })
       );
     }
 

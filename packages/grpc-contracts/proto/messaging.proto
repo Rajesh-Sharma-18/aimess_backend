@@ -1,0 +1,81 @@
+syntax = "proto3";
+package messaging;
+
+enum ConversationType {
+  PRIVATE = 0;
+  GROUP   = 1;
+}
+
+service MessagingService {
+  rpc SendMessage             (SendMessageRequest)             returns (SendMessageResponse);
+  rpc GetConversationMessages (GetConversationMessagesRequest) returns (GetConversationMessagesResponse);
+  rpc MarkMessagesRead        (MarkMessagesReadRequest)        returns (MarkMessagesReadResponse);
+  rpc SendReaction            (SendReactionRequest)            returns (SendReactionResponse);
+}
+
+message SendMessageRequest {
+  string           conversation_id    = 1;
+  string           sender_id          = 2;
+  string           client_message_id  = 3;
+  string           content_type       = 4;
+  string           content_text       = 5;
+  string           media_key          = 6;
+  string           replied_to_id      = 7;
+  string           receiver_id        = 8;
+  ConversationType conversation_type  = 9;
+  string           sender_name        = 10;
+  string           sender_avatar      = 11;
+}
+message SendMessageResponse {
+  string message_id      = 1;
+  string conversation_id = 2;
+  int64  sent_at         = 3;
+}
+message GetConversationMessagesRequest {
+  string           conversation_id    = 1;
+  string           requester_id       = 2;
+  string           cursor             = 3;
+  int32            limit              = 4;
+  ConversationType conversation_type  = 5;
+}
+message GetConversationMessagesResponse {
+  repeated MessageDto messages   = 1;
+  string              next_cursor = 2;
+  bool                has_more   = 3;
+}
+message MessageDto {
+  string message_id      = 1;
+  string conversation_id = 2;
+  string sender_id       = 3;
+  string content_type    = 4;
+  string content_text    = 5;
+  string media_key       = 6;
+  string replied_to_id   = 7;
+  int64  sent_at         = 8;
+  repeated ReactionDto reactions = 9;
+  bool   is_read         = 10;
+}
+message ReactionDto {
+  string user_id = 1;
+  string emoji   = 2;
+}
+message MarkMessagesReadRequest {
+  string           conversation_id    = 1;
+  string           reader_id          = 2;
+  string           up_to_message_id   = 3;
+  ConversationType conversation_type  = 4;
+}
+message MarkMessagesReadResponse {
+  int32 updated_count = 1;
+}
+message SendReactionRequest {
+  string           message_id         = 1;
+  string           conversation_id    = 2;
+  string           user_id            = 3;
+  string           emoji              = 4;
+  ConversationType conversation_type  = 5;
+}
+message SendReactionResponse {
+  string message_id        = 1;
+  repeated ReactionDto reactions = 2;
+}

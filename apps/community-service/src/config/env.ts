@@ -6,6 +6,7 @@ dotenv.config();
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]),
   COMMUNITY_SERVICE_PORT: z.coerce.number().positive(),
+  COMMUNITY_GRPC_PORT: z.coerce.number().positive().default(4003),
 
   COMMUNITY_DATABASE_URL: z.string(),
 

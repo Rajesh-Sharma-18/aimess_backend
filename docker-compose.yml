@@ -52,10 +52,12 @@ services:
       - mongodb_data:/data/db
 
     healthcheck:
-      test:
-        [
+      test: [
           "CMD-SHELL",
-          'mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate(); }"',
+          # Initiate with explicit localhost:27017 so the RS config is stable
+          # across container restarts (ephemeral Docker hostnames break rs.status
+          # on every restart — localhost is always valid inside the container).
+          'mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({ _id: \"rs0\", members: [{ _id: 0, host: \"localhost:27017\" }] }); }"',
         ]
       interval: 10s
       timeout: 5s

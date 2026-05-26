@@ -7,7 +7,6 @@ import { env } from "./config/env.js";
 import { connectDatabase, disconnectDatabase } from "./config/db.js";
 import { prisma } from "./config/prisma.js";
 import { connectChatRedis, redis } from "./config/redis.js";
-import { createSocketServer } from "./config/socket.js";
 import { storageClient } from "./config/storage.js";
 import { createApp } from "./app.js";
 
@@ -26,7 +25,6 @@ import { GeneralRoomMessageRepository } from "./repositories/general-room-messag
 import { RoomMemberRepository } from "./repositories/room-member.repository.js";
 import { NotificationRepository } from "./repositories/notification.repository.js";
 import { CacheRepository } from "./repositories/cache.repository.js";
-import { LivestreamCommentRepository } from "./repositories/livestream-comment.repository.js";
 
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
@@ -38,11 +36,9 @@ import { GroupMemberService } from "./services/group-member.service.js";
 import { GroupInviteLinkService } from "./services/group-invite-link.service.js";
 import { GroupPinService } from "./services/group-pin.service.js";
 import { NotificationService } from "./services/notification.service.js";
-import { PresenceService } from "./services/presence.service.js";
 import { CommunityRoomService } from "./services/community-room.service.js";
 import { CommunityMessageService } from "./services/community-message.service.js";
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
-import { LivestreamCommentService } from "./services/livestream-comment.service.js";
 
 // -- Controllers --
 import { PrivateRoomController } from "./api/controllers/private-room.controller.js";
@@ -56,8 +52,8 @@ import { CommunityController } from "./api/controllers/community.controller.js";
 import { CommunityMessageController } from "./api/controllers/community-message.controller.js";
 import { MediaController } from "./api/controllers/media.controller.js";
 
-// -- Socket.IO --
-import { registerSocketHandlers } from "./sockets/index.js";
+// -- gRPC --
+import { startGrpcServer } from "./grpc/server.js";
 
 let httpServer: Server | undefined;
 
@@ -68,70 +64,149 @@ const startServer = async () => {
     // 1. Connect databases + infra
     await connectDatabase();
 
-    // Ensure MongoDB text indexes for full-text search (idempotent; skip on error)
+    async function waitForMongoWritablePrimary(): Promise<void> {
+      const maxAttempts = 30;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const result = await prisma.$runCommandRaw({ hello: 1 } as any);
+          const hello = result as {
+            isWritablePrimary?: boolean;
+            ismaster?: boolean;
+            isMaster?: boolean;
+            secondary?: boolean;
+            hidden?: boolean;
+          };
+
+          const isWritablePrimary =
+            hello.isWritablePrimary === true ||
+            hello.ismaster === true ||
+            hello.isMaster === true;
+
+          if (isWritablePrimary) {
+            logger.info("MongoDB writable primary confirmed");
+            return;
+          }
+
+          logger.warn(
+            `MongoDB not writable primary yet (hello result); retrying in 1000ms...`
+          );
+        } catch (error) {
+          logger.warn(
+            "MongoDB hello check failed; retrying in 1000ms...",
+            error
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      logger.warn(
+        "MongoDB did not become writable primary within the expected time. Index creation may still fail."
+      );
+    }
+
+    await waitForMongoWritablePrimary();
+
+    function isMongoNotPrimaryError(error: unknown): boolean {
+      return (
+        typeof error === "object" &&
+        error !== null &&
+        "message" in error &&
+        typeof (error as { message?: string }).message === "string" &&
+        /not primary|not writable primary/i.test(
+          (error as { message: string }).message
+        )
+      );
+    }
+
+    async function ensureIndex(
+      collection: string,
+      indexBody: Record<string, unknown>,
+      indexName: string
+    ) {
+      const maxAttempts = 5;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await prisma.$runCommandRaw({
+            createIndexes: collection,
+            indexes: [indexBody],
+          } as any);
+          logger.info(`Index ensured: ${indexName}`);
+          return;
+        } catch (err) {
+          if (isMongoNotPrimaryError(err) && attempt < maxAttempts) {
+            const delay = 1000 * attempt;
+            logger.warn(
+              `MongoDB not primary yet for ${indexName}, retrying in ${delay}ms...`
+            );
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
+
     const textIndexes = [
       {
         collection: "private_messages",
-        key: { "content.text": "text" },
+        body: {
+          key: { "content.text": "text" },
+          name: "private_messages_content_text_idx",
+        },
         name: "private_messages_content_text_idx",
       },
       {
         collection: "group_messages",
-        key: { "content.text": "text" },
+        body: {
+          key: { "content.text": "text" },
+          name: "group_messages_content_text_idx",
+        },
         name: "group_messages_content_text_idx",
       },
       {
         collection: "general_room_messages",
-        key: { message: "text" },
+        body: {
+          key: { message: "text" },
+          name: "general_room_messages_message_idx",
+        },
         name: "general_room_messages_message_idx",
       },
     ];
     for (const idx of textIndexes) {
       try {
-        await prisma.$runCommandRaw({
-          createIndexes: idx.collection,
-          indexes: [{ key: idx.key, name: idx.name }],
-        });
-        logger.info(`Text index ensured: ${idx.name}`);
+        await ensureIndex(idx.collection, idx.body, idx.name);
       } catch (err) {
         logger.warn(`Failed to create text index ${idx.name} — continuing`);
         logger.warn(err);
       }
     }
 
-    // Partial unique indexes for clientMessageId idempotency.
-    // partialFilterExpression limits the index to documents where clientMessageId
-    // is a non-null string, so rows with clientMessageId: null are never indexed
-    // and never trigger a duplicate-key error (unlike sparse:true, which only
-    // skips documents where the field is entirely absent — not where it is null).
     const idemIndexes = [
       {
         collection: "group_messages",
-        key: { roomId: 1, senderId: 1, clientMessageId: 1 },
+        body: {
+          key: { roomId: 1, senderId: 1, clientMessageId: 1 },
+          name: "group_messages_idempotency_idx",
+          unique: true,
+          partialFilterExpression: { clientMessageId: { $type: "string" } },
+        },
         name: "group_messages_idempotency_idx",
-        partialFilterExpression: { clientMessageId: { $type: "string" } },
       },
       {
         collection: "general_room_messages",
-        key: { roomId: 1, sentBy: 1, clientMessageId: 1 },
+        body: {
+          key: { roomId: 1, sentBy: 1, clientMessageId: 1 },
+          name: "general_room_messages_idempotency_idx",
+          unique: true,
+          partialFilterExpression: { clientMessageId: { $type: "string" } },
+        },
         name: "general_room_messages_idempotency_idx",
-        partialFilterExpression: { clientMessageId: { $type: "string" } },
       },
     ];
     for (const idx of idemIndexes) {
       try {
-        await prisma.$runCommandRaw({
-          createIndexes: idx.collection,
-          indexes: [
-            {
-              key: idx.key,
-              name: idx.name,
-              unique: true,
-              partialFilterExpression: idx.partialFilterExpression,
-            },
-          ],
-        });
-        logger.info(`Idempotency index ensured: ${idx.name}`);
+        await ensureIndex(idx.collection, idx.body, idx.name);
       } catch (err) {
         logger.warn(
           `Failed to create idempotency index ${idx.name} — continuing`
@@ -166,7 +241,6 @@ const startServer = async () => {
     const generalRoomMessageRepo = new GeneralRoomMessageRepository(prisma);
     const roomMemberRepo = new RoomMemberRepository(prisma);
     const notificationRepo = new NotificationRepository(prisma);
-    const livestreamCommentRepo = new LivestreamCommentRepository(prisma);
 
     // 3. Instantiate services
     const userSnapshotService = new UserSnapshotService();
@@ -224,16 +298,10 @@ const startServer = async () => {
 
     const notificationService = new NotificationService(notificationRepo);
 
-    // Presence gets namespace later after Socket.IO setup
-    const presenceService = new PresenceService(cacheRepo, null);
-
     const communityRoomService = new CommunityRoomService(
       generalRoomRepo,
       roomMemberRepo,
       cacheRepo
-    );
-    const livestreamCommentService = new LivestreamCommentService(
-      livestreamCommentRepo
     );
 
     const communityMessageService = new CommunityMessageService(
@@ -244,12 +312,21 @@ const startServer = async () => {
       userSnapshotService
     );
 
+    // Start gRPC server with real service delegates
+    startGrpcServer(env.CHAT_GRPC_PORT, {
+      privateMessageService,
+      groupMessageService,
+      cacheRepo,
+      userSnapshotService,
+    });
+
     // 4. Instantiate controllers
     const controllers = {
       privateRoomCtrl: new PrivateRoomController(privateRoomService),
       privateMessageCtrl: new PrivateMessageController(
         privateMessageService,
-        privatePinService
+        privatePinService,
+        redis
       ),
       groupRoomCtrl: new GroupRoomController(groupRoomService),
       groupMessageCtrl: new GroupMessageController(
@@ -264,7 +341,8 @@ const startServer = async () => {
       notificationCtrl: new NotificationController(notificationService),
       communityCtrl: new CommunityController(communityRoomService),
       communityMessageCtrl: new CommunityMessageController(
-        communityMessageService
+        communityMessageService,
+        redis
       ),
       mediaCtrl: new MediaController(),
     };
@@ -273,30 +351,7 @@ const startServer = async () => {
     const app = createApp(controllers);
     httpServer = createServer(app);
 
-    // 6. Attach Socket.IO
-    const io = createSocketServer(httpServer);
-    // Expose io so REST controllers can emit real-time events
-    app.set("io", io);
-
-    registerSocketHandlers(io, {
-      cacheRepo,
-      generalRoomRepo,
-      roomMemberRepo,
-      presenceService,
-      privateRoomService,
-      privateMessageService,
-      privatePinService,
-      communityMessageService,
-      communityRoomService,
-      groupMessageService,
-      groupRoomService,
-      groupMemberService,
-      groupPinService,
-      userSnapshotService,
-      livestreamCommentService,
-    });
-
-    // 7. Listen
+    // 6. Listen
     httpServer.listen(env.CHAT_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(
         `Chat service listening on port ${String(env.CHAT_SERVICE_PORT)}`
@@ -304,7 +359,6 @@ const startServer = async () => {
       logger.info(
         "HTTP routes: /api/chat/private, /api/chat/groups, /api/chat/group-members, /api/chat/invite-links, /api/chat/notifications, /api/chat/community, /api/chat/media"
       );
-      logger.info("Socket.IO namespace: /z-product");
     });
   } catch (error) {
     logger.error("Chat service startup failed");

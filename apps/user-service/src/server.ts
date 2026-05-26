@@ -38,8 +38,15 @@ async function start() {
       logger.warn(error);
     }
 
-    await startUserCreatedConsumer();
-    await startUserDeletedConsumer();
+    try {
+      await startUserCreatedConsumer();
+      await startUserDeletedConsumer();
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable after retries — user event consumers will not run until service restarts"
+      );
+      logger.warn(error);
+    }
 
     app.listen(env.USER_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(

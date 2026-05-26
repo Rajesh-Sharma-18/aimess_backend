@@ -35,14 +35,16 @@ testPushRoutes.post(
       throw new NotFoundError("USER_NOT_FOUND");
     }
 
-    const tokens = user.fcmTokens ?? [];
+    // FCM token storage is not implemented in auth-service yet, so there are
+    // no registered tokens available on the user record.
+    const tokens: string[] = [];
     if (tokens.length === 0) {
       return res
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
             { userId: user.id, deviceCount: 0, results: [] },
-            "User has no FCM tokens registered."
+            "FCM push support is not configured yet."
           )
         );
     }

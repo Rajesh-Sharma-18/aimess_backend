@@ -1,4 +1,4 @@
-import type { Namespace } from "socket.io";
+import type { Redis, Cluster } from "ioredis";
 
 import { logger } from "@aimess/logger";
 
@@ -9,7 +9,7 @@ export class PresenceService {
 
   constructor(
     private readonly cacheRepo: CacheRepository,
-    private readonly namespace: Namespace | null,
+    private readonly redis: Redis | Cluster | null,
     options?: { backgroundTimeoutMs?: number }
   ) {
     this.backgroundTimeoutMs = options?.backgroundTimeoutMs || 5 * 60 * 1000;
@@ -40,15 +40,20 @@ export class PresenceService {
 
       // Emit presence change if status changed
       const prevOnline = previousStatus === "online";
-      if (prevOnline !== isOnline && this.namespace) {
-        const watchRoom = `watch:${userId}`;
-        this.namespace.to(watchRoom).emit("presence:status", {
-          userId,
-          isOnline,
-          lastActiveAt: isOnline
-            ? now
-            : Number(sessions[0]?.lastActiveAt || now),
-        });
+      if (prevOnline !== isOnline && this.redis) {
+        await this.redis.publish(
+          `user:${userId}`,
+          JSON.stringify({
+            event: "presence:status",
+            data: {
+              userId,
+              isOnline,
+              lastActiveAt: isOnline
+                ? now
+                : Number(sessions[0]?.lastActiveAt ?? now),
+            },
+          })
+        );
       }
     } catch (error) {
       logger.error(`PresenceService|recompute|userId=${userId}|error=${error}`);

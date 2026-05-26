@@ -7,6 +7,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]),
 
   CHAT_SERVICE_PORT: z.coerce.number().positive(),
+  CHAT_GRPC_PORT: z.coerce.number().positive().default(4004),
 
   // MongoDB connection. Provide EITHER a complete MONGO_DATABASE_URL, OR the
   // MONGO_* parts below (the URL is then composed from them). The parts match
