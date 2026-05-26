@@ -17,7 +17,7 @@ import { validateBody } from "../middleware/validate-body.js";
 export const testPushRoutes: IRouter = Router();
 
 const testPushSchema = z.object({
-  email: z.string().trim().toLowerCase().email(),
+  account: z.string().trim().min(1),
   title: z.string().trim().min(1).max(120).optional(),
   body: z.string().trim().min(1).max(500).optional(),
 });
@@ -28,9 +28,9 @@ testPushRoutes.post(
   "/test/push",
   validateBody(testPushSchema),
   asyncHandler(async (req: Request, res: Response) => {
-    const { email, title, body } = req.body as TestPushInput;
+    const { account, title, body } = req.body as TestPushInput;
 
-    const user = await authRepository.findByEmail(email);
+    const user = await authRepository.findByAccount(account);
     if (!user) {
       throw new NotFoundError("USER_NOT_FOUND");
     }

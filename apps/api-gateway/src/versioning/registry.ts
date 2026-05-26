@@ -23,7 +23,7 @@ if (env.USER_SERVICE_URL) {
   v1Services.push({
     segment: "users",
     target: env.USER_SERVICE_URL,
-    downstreamPrefix: "/api/v1",
+    downstreamPrefix: "/api/v1/users",
     swaggerTag: "Users",
   });
 }

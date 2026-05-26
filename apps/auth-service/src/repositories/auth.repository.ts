@@ -236,13 +236,15 @@ export const authRepository = {
     });
   },
 
-  // FCM token storage is not yet implemented (column not in DB).
-  // This is a no-op until the frontend ships FCM support and the
-  // migration adding fcmTokens to auth_users has been run.
-
   async mergeFcmTokens(userId: string, tokens: string[]): Promise<void> {
     if (tokens.length === 0) return;
-    return;
+    await prisma.$executeRaw`
+      UPDATE auth_users
+      SET "fcmTokens" = (
+        SELECT array_agg(DISTINCT t) FROM unnest("fcmTokens" || ${tokens}::text[]) AS t
+      )
+      WHERE id = ${userId}::uuid
+    `;
   },
 
   createUser(data: Prisma.AuthUserCreateInput) {

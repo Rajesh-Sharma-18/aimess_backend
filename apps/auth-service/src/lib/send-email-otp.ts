@@ -15,7 +15,7 @@ export async function sendEmailOtp(
     purpose: OtpPurpose;
     logContext: string;
   }
-): Promise<void> {
+): Promise<{ code: string }> {
   const session = buildSessionContext(req);
 
   await assertOtpRequestAllowed(params.identifier, session.ipAddress);
@@ -40,4 +40,5 @@ export async function sendEmailOtp(
   });
 
   logDevOtp(params.identifier, plainCode, params.logContext);
+  return { code: plainCode };
 }

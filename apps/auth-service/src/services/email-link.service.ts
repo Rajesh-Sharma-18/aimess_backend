@@ -21,6 +21,7 @@ import {
 import { assertOtpRequestAllowed } from "../lib/otp-rate-limit.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { env } from "../config/env.js";
+import { publishLinkEmailOtpSafe } from "../messaging/publish-auth-email-otp.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { otpRepository } from "../repositories/otp.repository.js";
 
@@ -76,6 +77,12 @@ async function sendLinkEmailOtp(
   });
 
   logDevOtp(email, plainCode, "Link email OTP");
+  publishLinkEmailOtpSafe({
+    email,
+    code: plainCode,
+    ttlSeconds: env.OTP_TTL_SECONDS,
+    requestedAt: new Date().toISOString(),
+  });
 }
 
 export const emailLinkService = {

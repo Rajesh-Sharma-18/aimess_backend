@@ -2,6 +2,8 @@ import amqp from "amqplib";
 import { AuthEvents } from "@aimess/shared-types";
 import { NotificationEvents } from "../events/notification.events.js";
 import {
+  handleChangeEmailOtpRequested,
+  handleLinkEmailOtpRequested,
   handlePasswordResetOtpRequested,
   handleUserRegistered,
 } from "../handlers/notification.handler.js";
@@ -17,7 +19,7 @@ const QUEUE_NAME = "notification.queue";
  * args or RabbitMQ throws PRECONDITION_FAILED.
  */
 const NOTIFICATION_DLX = "notification.queue.dlx";
-const NOTIFICATION_DLQ_ROUTING_KEY = "notification.queue.dead";
+// const NOTIFICATION_DLQ_ROUTING_KEY = "notification.queue.dead";
 
 function isPreconditionFailed(error: unknown): boolean {
   return (
@@ -102,8 +104,6 @@ export async function startConsumer() {
   });
   await assertQueueWithRecovery(channel, QUEUE_NAME, {
     durable: true,
-    deadLetterExchange: NOTIFICATION_DLX,
-    deadLetterRoutingKey: NOTIFICATION_DLQ_ROUTING_KEY,
   });
   await channel.prefetch(10);
 
@@ -123,6 +123,12 @@ export async function startConsumer() {
         case AuthEvents.PASSWORD_RESET_OTP_REQUESTED:
           await handlePasswordResetOtpRequested(parsed.data);
           break;
+        case AuthEvents.LINK_EMAIL_OTP_REQUESTED:
+          await handleLinkEmailOtpRequested(parsed.data);
+          break;
+        case AuthEvents.CHANGE_EMAIL_OTP_REQUESTED:
+          await handleChangeEmailOtpRequested(parsed.data);
+          break;
 
         default:
           logger.error(`Unknown notification event type: ${parsed.type}`);
@@ -131,8 +137,7 @@ export async function startConsumer() {
       channel.ack(message);
     } catch (error) {
       logger.error(error);
-      // requeue=false so the message goes straight to the DLX instead of
-      // infinite-looping on deterministic errors (bad payload, SMTP auth, etc.)
+      // Avoid infinite loops on deterministic errors (bad payload, SMTP auth, etc.).
       channel.nack(message, false, false);
     }
   });

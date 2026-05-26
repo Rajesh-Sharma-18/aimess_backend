@@ -18,8 +18,8 @@ export type UserDiscoveryResult = {
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   isOnline: boolean;
-  relationshipStatus: RelationshipStatus;
-  friendshipId: string | null;
+  relationshipStatus?: RelationshipStatus;
+  friendshipId?: string | null;
 };
 
 async function resolveAvatarUrl(
@@ -39,6 +39,9 @@ export const userDiscoveryService = {
 
     if (section === "friends") {
       return userDiscoveryService._queryFriends(viewerId, q, skip, limit);
+    }
+    if (section === "all") {
+      return userDiscoveryService._queryAll(viewerId, q, skip, limit);
     }
 
     return userDiscoveryService._queryOthers(viewerId, q, skip, limit);
@@ -163,6 +166,44 @@ export const userDiscoveryService = {
           isOnline: p.isOnline,
           relationshipStatus,
           friendshipId,
+        };
+      })
+    );
+
+    return { users, total };
+  },
+  async _queryAll(
+    viewerId: string,
+    q: string | undefined,
+    skip: number,
+    limit: number
+  ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
+    const allBlocks = await friendshipRepository.findAllBlocks(viewerId);
+    const blockedUserIds = new Set<string>();
+
+    for (const b of allBlocks) {
+      blockedUserIds.add(b.blockerId);
+    }
+
+    const excludeIds = [viewerId, ...Array.from(blockedUserIds)];
+
+    const [profiles, total] = await Promise.all([
+      userProfileRepository.findUsersNotInList(excludeIds, q, skip, limit),
+      userProfileRepository.countUsersNotInList(excludeIds, q),
+    ]);
+
+    const users = await Promise.all(
+      profiles.map(async (p) => {
+        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
+        return {
+          userId: p.userId,
+          username: p.username,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          bio: p.bio,
+          avatarUrl: url,
+          avatarUrlExpiresIn: expiresIn,
+          isOnline: p.isOnline,
         };
       })
     );

@@ -14,6 +14,8 @@ import { OtpPurpose } from "../generated/prisma/client.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
 import { normalizeEmail, verifyOtpCode } from "../lib/otp.js";
 import { sendEmailOtp } from "../lib/send-email-otp.js";
+import { env } from "../config/env.js";
+import { publishChangeEmailOtpSafe } from "../messaging/publish-auth-email-otp.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { otpRepository } from "../repositories/otp.repository.js";
 
@@ -52,11 +54,17 @@ export const changeEmailService = {
       throw new ConflictError("AUTH_EMAIL_EXISTS");
     }
 
-    await sendEmailOtp(req, {
+    const { code } = await sendEmailOtp(req, {
       userId,
       identifier: newEmail,
       purpose: OtpPurpose.EMAIL_CHANGE,
       logContext: "Change email OTP",
+    });
+    publishChangeEmailOtpSafe({
+      email: newEmail,
+      code,
+      ttlSeconds: env.OTP_TTL_SECONDS,
+      requestedAt: new Date().toISOString(),
     });
   },
 

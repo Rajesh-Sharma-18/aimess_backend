@@ -1,4 +1,90 @@
 export const userPaths = {
+  "/users": {
+    get: {
+      tags: ["Users", "Communities"],
+      summary: "Discover / search users",
+      description:
+        "Returns a paginated list of users filtered by `section`.\n\n" +
+        "- **`others`** (default) — everyone except yourself, accepted friends, and blocked users. Includes `relationshipStatus` (NONE / PENDING_IN / PENDING_OUT) and `friendshipId`.\n" +
+        "- **`friends`** — your accepted friends only. `relationshipStatus` is always `FRIEND`.\n" +
+        "- **`all`** — every user except yourself and anyone who blocked you (or whom you blocked). No `relationshipStatus` returned — useful for admin / search-all flows.\n\n" +
+        "Optionally filter by `q` (searches username, firstName, lastName). Results are offset-paginated; use `page` + `limit`.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "section",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["friends", "others", "all"],
+            default: "others",
+          },
+          description:
+            "`others` = non-friends (excludes you + friends + blocked). `friends` = accepted friends only. `all` = everyone except you + blocked.",
+        },
+        {
+          name: "q",
+          in: "query",
+          required: false,
+          schema: { type: "string", maxLength: 100 },
+          description:
+            "Search term matched against username, firstName, lastName.",
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "User list + total count",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/UserDiscoveryResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Invalid query params",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Missing or invalid access token",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/users/usernames/generate": {
     post: {
       tags: ["Users"],
