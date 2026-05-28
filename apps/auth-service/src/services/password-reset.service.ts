@@ -35,9 +35,12 @@ function canResetPassword(user: {
   passwordHash: string | null;
   status: AccountStatus;
   deletedAt: Date | null;
+  linkedAccounts: { id: string }[];
 }): boolean {
+  const isSocialUser = user.linkedAccounts.length > 0;
   return (
-    Boolean(user.passwordHash) &&
+    // Boolean(user.passwordHash) &&
+    (isSocialUser || Boolean(user.passwordHash)) &&
     !user.deletedAt &&
     user.status === AccountStatus.ACTIVE
   );
@@ -152,20 +155,29 @@ export const passwordResetService = {
     const account = await authRepository.findPasswordHashByUserId(
       record.userId
     );
+    console.log("account", account);
+    console.log("record", record);
+
+    // const isSocialUser = user.linkedAccounts.length > 0;
 
     if (
       !account ||
       account.deletedAt ||
       account.status !== AccountStatus.ACTIVE ||
-      !account.passwordHash
+      (!account.linkedAccounts?.length && !account.passwordHash)
     ) {
       throw new BadRequestError("AUTH_RESET_TOKEN_INVALID");
     }
 
-    const sameAsCurrent = await bcrypt.compare(
-      input.password,
-      account.passwordHash
-    );
+    let sameAsCurrent = null;
+
+    if (!account.linkedAccounts?.length && account.passwordHash) {
+      sameAsCurrent = await bcrypt.compare(
+        input.password,
+        account.passwordHash
+      );
+    }
+
     if (sameAsCurrent) {
       throw new BadRequestError("AUTH_PASSWORD_SAME_AS_CURRENT");
     }
