@@ -22,6 +22,48 @@ export interface GrpcDeps {
   userSnapshotService: UserSnapshotService;
 }
 
+function parseMessageContent(req: {
+  contentJson?: string;
+  contentText?: string;
+  mediaKey?: string;
+}): {
+  text: string;
+  urls: string[];
+  files: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+} {
+  const fallback = {
+    text: req.contentText || "",
+    urls: [] as string[],
+    files: req.mediaKey ? [{ objectKey: req.mediaKey }] : [],
+  };
+
+  if (!req.contentJson) return fallback;
+
+  try {
+    const parsed = JSON.parse(req.contentJson) as Record<string, unknown>;
+    return {
+      text: typeof parsed.text === "string" ? parsed.text : fallback.text,
+      urls: Array.isArray(parsed.urls) ? (parsed.urls as string[]) : [],
+      files: Array.isArray(parsed.files)
+        ? (parsed.files as Array<Record<string, unknown>>)
+        : fallback.files,
+      ...(parsed.location ? { location: parsed.location } : {}),
+      ...(parsed.contact ? { contact: parsed.contact } : {}),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function stringifyContent(content: unknown): string {
+  try {
+    return JSON.stringify(content ?? {});
+  } catch {
+    return "{}";
+  }
+}
+
 export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
   const pkgDef = protoLoader.loadSync(PROTO_PATH, {
     keepCase: false,
@@ -48,6 +90,8 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             receiverId: string;
             contentText: string;
             contentType: string;
+            mediaKey: string;
+            contentJson: string;
             repliedToId: string;
             clientMessageId: string;
             conversationType: string;
@@ -65,13 +109,14 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
           const conversationType = String(
             req.conversationType ?? ""
           ).toUpperCase();
+          const content = parseMessageContent(req);
           if (conversationType === "GROUP") {
             msg = await deps.groupMessageService.sendMessage({
               roomId: req.conversationId,
               senderId: req.senderId,
               senderName: req.senderName || "",
               senderAvatar: req.senderAvatar || "",
-              content: { text: req.contentText || "" },
+              content,
               messageType: req.contentType || "TEXT",
               parentMessageId: req.repliedToId || null,
               clientMessageId: req.clientMessageId || null,
@@ -81,7 +126,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               roomId: req.conversationId,
               senderId: req.senderId,
               receiverId: req.receiverId,
-              content: { text: req.contentText || "" },
+              content,
               messageType: req.contentType || "TEXT",
               parentMessageId: req.repliedToId || null,
             });
@@ -99,6 +144,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                 contentText:
                   ((msg.content as Record<string, unknown>)?.text as string) ??
                   "",
+                contentJson: stringifyContent(msg.content),
                 sentAt:
                   msg.createdAt instanceof Date
                     ? msg.createdAt.getTime()
@@ -136,11 +182,51 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             conversationType: string;
           };
 
+          const conversationType = String(
+            req.conversationType ?? ""
+          ).toUpperCase();
+          const limit = req.limit || 30;
+
+          if (conversationType === "GROUP") {
+            const messages = await deps.groupMessageService.getMessages({
+              roomId: req.conversationId,
+              userId: req.requesterId,
+              cursor: req.cursor || undefined,
+              limit,
+            });
+
+            callback(null, {
+              messages: messages.map((m) => ({
+                messageId: m.id,
+                conversationId: req.conversationId,
+                senderId: m.senderId,
+                contentType: m.messageType,
+                contentText:
+                  ((m.content as Record<string, unknown>)?.text as string) ??
+                  "",
+                contentJson: stringifyContent(m.content),
+                sentAt: m.createdAt instanceof Date ? m.createdAt.getTime() : 0,
+                reactions: [],
+                isRead: false,
+              })),
+              nextCursor:
+                messages.length > 0
+                  ? messages[messages.length - 1]!.createdAt instanceof Date
+                    ? (
+                        messages[messages.length - 1]!.createdAt as Date
+                      ).toISOString()
+                    : ""
+                  : "",
+              hasMore: messages.length >= limit,
+            });
+            return;
+          }
+
           const messages = await deps.privateMessageService.getMessages({
             roomId: req.conversationId,
             userId: req.requesterId,
             cursor: req.cursor || undefined,
-            limit: req.limit || 30,
+            limit,
           });
           const enriched =
             await deps.privateMessageService.enrichMessages(messages);
@@ -153,6 +239,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               contentType: m.messageType,
               contentText:
                 ((m.content as Record<string, unknown>)?.text as string) ?? "",
+              contentJson: stringifyContent(m.content),
               sentAt: m.createdAt instanceof Date ? m.createdAt.getTime() : 0,
               reactions: [],
               isRead: false,
@@ -165,7 +252,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                     ).toISOString()
                   : ""
                 : "",
-            hasMore: messages.length >= (req.limit || 30),
+            hasMore: messages.length >= limit,
           });
         } catch (err) {
           logger.error(`gRPC getConversationMessages error: ${String(err)}`);

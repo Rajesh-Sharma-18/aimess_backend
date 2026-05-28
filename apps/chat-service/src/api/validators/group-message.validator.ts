@@ -10,12 +10,14 @@ export const sendGroupMessageSchema = z.object({
     files: z
       .array(
         z.object({
-          url: z.string().url(),
+          objectKey: z.string().min(1).max(500).optional(),
+          url: z.string().url().optional(),
           name: z.string().default(""),
           size: z.number().default(0),
           mime: z.string().default(""),
           width: z.number().nullish(),
           height: z.number().nullish(),
+          durationMs: z.number().nonnegative().optional(),
         })
       )
       .default([]),
@@ -27,6 +29,7 @@ export const sendGroupMessageSchema = z.object({
     "IMAGE",
     "DOCUMENT",
     "VIDEO",
+    "VOICE",
     "SYSTEM",
     "LOCATION",
     "CONTACT",

@@ -11,10 +11,14 @@ export const sendPrivateMessageSchema = z.object({
     files: z
       .array(
         z.object({
-          url: z.string().url(),
-          name: z.string(),
-          size: z.number(),
-          mime: z.string(),
+          objectKey: z.string().min(1).max(500).optional(),
+          url: z.string().url().optional(),
+          name: z.string().default(""),
+          size: z.number().nonnegative().default(0),
+          mime: z.string().default(""),
+          width: z.number().positive().optional(),
+          height: z.number().positive().optional(),
+          durationMs: z.number().nonnegative().optional(),
         })
       )
       .default([]),
@@ -26,6 +30,7 @@ export const sendPrivateMessageSchema = z.object({
     "IMAGE",
     "DOCUMENT",
     "VIDEO",
+    "VOICE",
     "SYSTEM",
     "LOCATION",
     "CONTACT",

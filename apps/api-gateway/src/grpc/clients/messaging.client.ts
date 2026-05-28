@@ -26,6 +26,7 @@ export interface SendMessageParams {
   contentType: string;
   contentText?: string;
   mediaKey?: string;
+  contentJson?: string;
   repliedToId?: string;
   conversationType?: string;
   receiverId?: string;
@@ -42,6 +43,7 @@ export interface GetConversationMessagesParams {
   requesterId: string;
   cursor?: string;
   limit?: number;
+  conversationType?: string;
 }
 export interface GetConversationMessagesResponse {
   messages: MessageDto[];
@@ -55,6 +57,7 @@ export interface MessageDto {
   contentType: string;
   contentText: string;
   mediaKey: string;
+  contentJson: string;
   repliedToId: string;
   sentAt: number;
   reactions: { userId: string; emoji: string }[];
@@ -148,6 +151,7 @@ export function createMessagingClient(): MessagingClient {
         contentType: p.contentType,
         contentText: p.contentText ?? "",
         mediaKey: p.mediaKey ?? "",
+        contentJson: p.contentJson ?? "",
         repliedToId: p.repliedToId ?? "",
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
         receiverId: p.receiverId ?? "",
@@ -159,16 +163,21 @@ export function createMessagingClient(): MessagingClient {
 
   const getMessagesBreaker = makeBreaker(
     "messaging.getConversationMessages",
-    (p: GetConversationMessagesParams) =>
-      call<unknown, GetConversationMessagesResponse>(
+    (p: GetConversationMessagesParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, GetConversationMessagesResponse>(
         "getConversationMessages",
         {
           conversationId: p.conversationId,
           requesterId: p.requesterId,
           cursor: p.cursor ?? "",
           limit: p.limit ?? 30,
+          conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
         }
-      )
+      );
+    }
   );
 
   const markReadBreaker = makeBreaker(

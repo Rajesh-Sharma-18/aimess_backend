@@ -4,6 +4,7 @@ export const MessageType = {
   IMAGE: "IMAGE",
   DOCUMENT: "DOCUMENT",
   VIDEO: "VIDEO",
+  VOICE: "VOICE",
   SYSTEM: "SYSTEM",
   LOCATION: "LOCATION",
   CONTACT: "CONTACT",
