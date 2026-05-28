@@ -368,6 +368,7 @@ export type LeaveReasonInput = z.infer<typeof leaveReasonSchema>;
 export const createInviteLinkSchema = z.object({
   maxUses: z.number().int().min(1).max(1000).optional(),
   expiresInMinutes: z.number().int().min(1).max(525_600).optional(),
+  autoApprove: z.boolean().optional(),
 });
 export type CreateInviteLinkInput = z.infer<typeof createInviteLinkSchema>;
 

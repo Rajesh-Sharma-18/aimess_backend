@@ -378,6 +378,7 @@ function toInviteLinkData(row: CommunityInviteLink): CommunityInviteLinkData {
     createdBy: row.createdBy,
     maxUses: row.maxUses,
     usedCount: row.usedCount,
+    autoApprove: row.autoApprove,
     expiresAt: row.expiresAt?.toISOString() ?? null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -2710,7 +2711,11 @@ export const communityService = {
   async createInviteLink(
     communityId: string,
     callerId: string,
-    input: { maxUses?: number; expiresInMinutes?: number }
+    input: {
+      maxUses?: number;
+      expiresInMinutes?: number;
+      autoApprove?: boolean;
+    }
   ): Promise<CommunityInviteLinkData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -2732,6 +2737,7 @@ export const communityService = {
       ? new Date(Date.now() + input.expiresInMinutes * 60_000)
       : null;
     const maxUses = input.maxUses ?? null;
+    const autoApprove = input.autoApprove ?? false;
 
     // Retry up to 3 times on code collision (P2002 unique violation on `code`).
     let row: Awaited<
@@ -2744,6 +2750,7 @@ export const communityService = {
           communityId,
           createdBy: callerId,
           maxUses,
+          autoApprove,
           expiresAt,
         });
         break;
@@ -2890,7 +2897,7 @@ export const communityService = {
       throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
     }
 
-    // Record audit that the link was used to initiate a join-request.
+    // Record audit that the link was used.
     await this.recordAudit({
       communityId: community.id,
       actorId: callerId,
@@ -2899,15 +2906,49 @@ export const communityService = {
       metadata: { linkId: link.id, code: link.code },
     });
 
-    // Instead of immediately adding the member, create a join request that
-    // goes through the moderator approval flow (per new policy for PUBLIC).
+    const updatedLink = await communityRepository.findInviteLinkById(link.id);
+
+    if (link.autoApprove) {
+      // autoApprove=true: directly add the member without a join request.
+      const snapshotMap = await fetchUserSnapshots([callerId]);
+      const snap = snapshotMap.get(callerId)!;
+      let member;
+      if (existing?.status === CommunityMemberStatus.LEFT) {
+        member = await communityRepository.reactivateMemberWithSnapshot(
+          community.id,
+          callerId,
+          {
+            snapshotUsername: snap.username,
+            snapshotDisplayName: snap.displayName,
+            snapshotAvatarKey: snap.avatarObjectKey,
+          }
+        );
+      } else {
+        member = await communityRepository.createMember({
+          communityId: community.id,
+          userId: callerId,
+          role: CommunityMemberRole.MEMBER,
+          status: CommunityMemberStatus.ACTIVE,
+          snapshotUsername: snap.username,
+          snapshotDisplayName: snap.displayName,
+          snapshotAvatarKey: snap.avatarObjectKey,
+        });
+      }
+      const count = await communityRepository.countActiveMembers(community.id);
+      await communityRepository.setMemberCount(community.id, count);
+      return {
+        link: toInviteLinkData(updatedLink!),
+        member: await toMemberData(member),
+      };
+    }
+
+    // autoApprove=false (default): create a join request through approval flow.
     const joinResult = await this.createJoinRequest(
       community.id,
       callerId,
       null
     );
 
-    const updatedLink = await communityRepository.findInviteLinkById(link.id);
     return {
       link: toInviteLinkData(updatedLink!),
       request: joinResult,

@@ -47,8 +47,8 @@ export const openApiSchemas = {
   FcmTokens: {
     type: "array",
     items: { type: "string", minLength: 1 },
-    minItems: 1,
-    description: "FCM device push tokens (one or more).",
+    description:
+      "FCM device push tokens. Optional — omit or send an empty array when the device has no push token.",
     example: ["fcm-token-abc123"],
   },
   RegisterRequest: {
@@ -64,7 +64,7 @@ export const openApiSchemas = {
       password: { type: "string", minLength: 8, maxLength: 128 },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["account", "password", "fcmTokens"],
+    required: ["account", "password"],
   },
   ValidateAccountRequest: {
     type: "object",
@@ -99,7 +99,7 @@ export const openApiSchemas = {
       password: { type: "string", minLength: 8, maxLength: 128 },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["account", "password", "fcmTokens"],
+    required: ["account", "password"],
   },
   RegisterResponseData: {
     type: "object",
@@ -123,6 +123,14 @@ export const openApiSchemas = {
       tokens: { $ref: "#/components/schemas/AuthTokens" },
     },
     required: ["tokens"],
+  },
+  AccessTokenResponseData: {
+    type: "object",
+    properties: {
+      accessToken: { type: "string" },
+      accessTokenExpiresIn: { type: "integer", example: 900 },
+    },
+    required: ["accessToken", "accessTokenExpiresIn"],
   },
   RefreshTokenRequest: {
     type: "object",
@@ -232,7 +240,7 @@ export const openApiSchemas = {
       },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["idToken", "fcmTokens"],
+    required: ["idToken"],
   },
   AppleLoginRequest: {
     type: "object",
@@ -922,9 +930,8 @@ export const openApiSchemas = {
       },
       deviceType: {
         type: "string",
-        maxLength: 100,
+        enum: ["IOS", "ANDROID", "DESKTOP", "WEB"],
         example: "DESKTOP",
-        description: "One of IOS, ANDROID, DESKTOP, WEB (free-text).",
       },
       os: { type: "string", maxLength: 100, example: "macOS 14" },
       appVersion: { type: "string", maxLength: 100, example: "1.4.0" },
@@ -952,6 +959,8 @@ export const openApiSchemas = {
       state: {
         type: "string",
         enum: ["PENDING", "APPROVED", "CONSUMED", "EXPIRED"],
+        description:
+          "PENDING = waiting for the signed-in device to scan and approve; APPROVED = approved, tokens returned exactly once; CONSUMED = tokens already delivered (poll again returns this); EXPIRED = 120 s TTL elapsed, call initiate again.",
       },
       approvedDeviceLabel: { type: "string", nullable: true },
       tokens: {
@@ -1389,10 +1398,17 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       userId: { type: "string", format: "uuid" },
-      role: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+      role: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        description:
+          "ADMIN = community owner (1 per community); MODERATOR = can kick/ban members; MEMBER = regular participant.",
+      },
       status: {
         type: "string",
         enum: ["ACTIVE", "PENDING", "BANNED", "LEFT"],
+        description:
+          "ACTIVE = current member; PENDING = join request awaiting approval (private communities); BANNED = banned by admin; LEFT = voluntarily left or kicked.",
       },
       joinedAt: { type: "string", format: "date-time" },
       snapshotUsername: { type: "string" },
@@ -1669,15 +1685,6 @@ export const openApiSchemas = {
     },
     required: ["request", "member"],
   },
-  AutoJoinedInviteData: {
-    type: "object",
-    properties: {
-      autoJoined: { type: "boolean", enum: [true] },
-      member: { $ref: "#/components/schemas/CommunityMemberData" },
-      inviteId: { type: "string" },
-    },
-    required: ["autoJoined", "member", "inviteId"],
-  },
   JoinRequestPage: {
     type: "object",
     properties: {
@@ -1780,15 +1787,6 @@ export const openApiSchemas = {
       member: { $ref: "#/components/schemas/CommunityMemberData" },
     },
     required: ["invite", "member"],
-  },
-  AutoApprovedJoinRequestData: {
-    type: "object",
-    properties: {
-      autoApproved: { type: "boolean", enum: [true] },
-      member: { $ref: "#/components/schemas/CommunityMemberData" },
-      requestId: { type: "string" },
-    },
-    required: ["autoApproved", "member", "requestId"],
   },
   InvitePage: {
     type: "object",
@@ -1956,6 +1954,7 @@ export const openApiSchemas = {
           "PRIVACY_CONCERN",
           "OTHER",
         ],
+        description: "Leave reason. When OTHER, reasonText is required.",
       },
       reasonText: { type: "string", maxLength: 500 },
     },
@@ -2006,6 +2005,11 @@ export const openApiSchemas = {
       createdBy: { type: "string", format: "uuid" },
       maxUses: { type: "integer", nullable: true },
       usedCount: { type: "integer" },
+      autoApprove: {
+        type: "boolean",
+        description:
+          "When true, redeeming this link adds the member directly (no join-request flow).",
+      },
       expiresAt: { type: "string", format: "date-time", nullable: true },
       revokedAt: { type: "string", format: "date-time", nullable: true },
       createdAt: { type: "string", format: "date-time" },
@@ -2022,6 +2026,7 @@ export const openApiSchemas = {
       "createdBy",
       "maxUses",
       "usedCount",
+      "autoApprove",
       "expiresAt",
       "revokedAt",
       "createdAt",
@@ -2033,6 +2038,11 @@ export const openApiSchemas = {
     properties: {
       maxUses: { type: "integer", minimum: 1, maximum: 1000 },
       expiresInMinutes: { type: "integer", minimum: 1, maximum: 525600 },
+      autoApprove: {
+        type: "boolean",
+        description:
+          "When true, anyone redeeming this link is added as a member directly. Default false (creates a join request instead).",
+      },
     },
   },
   InviteLinkListResponseData: {
@@ -2048,11 +2058,14 @@ export const openApiSchemas = {
   },
   RedeemInviteLinkResponseData: {
     type: "object",
+    description:
+      "link is always present. member is set when autoApprove=true (direct add); request is set when autoApprove=false (join-request flow).",
     properties: {
       link: { $ref: "#/components/schemas/CommunityInviteLinkData" },
       member: { $ref: "#/components/schemas/CommunityMemberData" },
+      request: { $ref: "#/components/schemas/CommunityJoinRequestData" },
     },
-    required: ["link", "member"],
+    required: ["link"],
   },
 
   // ===========================================================================
@@ -2120,6 +2133,8 @@ export const openApiSchemas = {
           "LOCATION",
           "CONTACT",
         ],
+        description:
+          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card.",
       },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
@@ -2217,8 +2232,15 @@ export const openApiSchemas = {
       role: {
         type: "string",
         enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+        description:
+          "Role hierarchy (highest → lowest): OWNER > ADMIN > MODERATOR > MEMBER.",
       },
-      status: { type: "string", enum: ["ACTIVE", "KICKED", "LEFT", "BANNED"] },
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "KICKED", "LEFT", "BANNED"],
+        description:
+          "ACTIVE = current member; KICKED = removed by admin/owner; LEFT = voluntarily left; BANNED = banned by admin.",
+      },
       joinedAt: { type: "string", format: "date-time" },
       unreadCount: { type: "integer" },
     },

@@ -151,6 +151,8 @@ export type CommunityInviteLinkData = {
   createdBy: string;
   maxUses: number | null;
   usedCount: number;
+  /** When true, redeeming this link directly adds the member instead of creating a join request. */
+  autoApprove: boolean;
   expiresAt: string | null;
   revokedAt: string | null;
   createdAt: string;

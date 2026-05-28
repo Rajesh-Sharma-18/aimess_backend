@@ -5,7 +5,11 @@ import {
   register,
   validateAccount,
 } from "../controllers/auth.controller.js";
-import { logout, refreshTokens } from "../controllers/session.controller.js";
+import {
+  logout,
+  refreshTokens,
+  issueAccessToken,
+} from "../controllers/session.controller.js";
 import {
   requestPasswordResetOtp,
   resetPassword,
@@ -43,6 +47,7 @@ authRoutes.post(
 authRoutes.post("/register", validateBody(registerSchema), register);
 authRoutes.post("/login", validateBody(loginSchema), login);
 authRoutes.post("/refresh", validateBody(refreshTokenSchema), refreshTokens);
+authRoutes.post("/token", validateBody(refreshTokenSchema), issueAccessToken);
 authRoutes.post("/logout", authenticateAccessToken, logout);
 authRoutes.post("/google", validateBody(googleLoginSchema), loginWithGoogle);
 authRoutes.post("/apple", validateBody(appleLoginSchema), loginWithApple);

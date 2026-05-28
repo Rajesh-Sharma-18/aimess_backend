@@ -19,7 +19,7 @@ export const appleLoginSchema = z.object({
     .email("Invalid email address")
     .optional(),
   fullName: z.string().trim().min(1).max(100).optional(),
-  fcmTokens: fcmTokensSchema,
+  fcmTokens: fcmTokensSchema.optional().default([]),
 });
 
 export type AppleLoginInput = z.infer<typeof appleLoginSchema>;

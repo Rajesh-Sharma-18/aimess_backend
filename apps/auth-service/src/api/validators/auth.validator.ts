@@ -29,13 +29,12 @@ export const passwordSchema = z
  */
 export const fcmTokensSchema = z
   .array(z.string().trim().min(1, "FCM token cannot be empty"))
-  .min(1, "At least one FCM token is required")
   .optional();
 
 export const registerSchema = z.object({
   account: accountSchema,
   password: passwordSchema,
-  fcmTokens: fcmTokensSchema,
+  fcmTokens: fcmTokensSchema.default([]),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
@@ -58,7 +57,7 @@ export const loginIdentifierSchema = z
 export const loginSchema = z.object({
   account: loginIdentifierSchema,
   password: passwordSchema,
-  fcmTokens: fcmTokensSchema.optional().default([]),
+  fcmTokens: fcmTokensSchema.default([]),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

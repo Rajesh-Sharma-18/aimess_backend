@@ -358,6 +358,69 @@ export const authPaths = {
       },
     },
   },
+  "/auth/token": {
+    post: {
+      tags: ["Auth"],
+      summary: "Get a new access token",
+      description:
+        "Issues a fresh access token using a valid refresh token. The refresh token is **not** rotated — use this for silent access-token renewal. Use `POST /auth/refresh` when you also want to rotate the refresh token.",
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/RefreshTokenRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "New access token issued",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/AccessTokenResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Validation failed",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Invalid or expired refresh token",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "502": {
+          description: "Auth service unavailable",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/auth/logout": {
     post: {
       tags: ["Auth"],
@@ -495,6 +558,7 @@ export const authPaths = {
           name: "sessionId",
           in: "path",
           required: true,
+          description: "Session ID (sessionId) from GET /auth/sessions.",
           schema: { type: "string", format: "uuid" },
         },
       ],
