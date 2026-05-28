@@ -72,7 +72,6 @@ import {
   publishCommunityDeletedSafe,
   publishCommunityInviteAcceptedSafe,
   publishCommunityInviteSentSafe,
-  publishCommunityJoinedSafe,
   publishCommunityJoinRequestedSafe,
   publishCommunityMemberAddedSafe,
   publishCommunityMemberBannedSafe,
@@ -809,12 +808,15 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // Any ACTIVE member (regardless of role) may view the roster.
-    const membership = await communityRepository.findMembership(
-      communityId,
-      callerId
-    );
-    assertCommunityRole(membership, CommunityMemberRole.MEMBER);
+    // PUBLIC communities: roster is visible to any caller. PRIVATE
+    // communities remain member-only (moderator/member) as before.
+    if (community.type === CommunityType.PRIVATE) {
+      const membership = await communityRepository.findMembership(
+        communityId,
+        callerId
+      );
+      assertCommunityRole(membership, CommunityMemberRole.MEMBER);
+    }
 
     const status = params.status ?? CommunityMemberStatus.ACTIVE;
     const { rows, total } = await communityRepository.listMembers({
@@ -1401,113 +1403,22 @@ export const communityService = {
   async joinCommunity(
     communityId: string,
     callerId: string
-  ): Promise<CommunityMemberData> {
+  ): Promise<CommunityJoinRequestData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
-
-    // Self-join is only allowed on PUBLIC communities; PRIVATE ones require an
-    // explicit invite (add-members).
+    // For PUBLIC communities, create a join request (PENDING) rather than
+    // immediately adding the member. PRIVATE communities still require an
+    // explicit invite/add by an admin.
     if (community.type !== CommunityType.PUBLIC) {
       throw new ForbiddenError("COMMUNITY_JOIN_REQUIRES_INVITE");
     }
 
-    const existing = await communityRepository.findMemberByUserId(
-      communityId,
-      callerId
-    );
-
-    // Already an ACTIVE member → idempotent no-op, return as-is.
-    if (existing && existing.status === CommunityMemberStatus.ACTIVE) {
-      return toMemberData(existing);
-    }
-
-    if (existing && existing.status === CommunityMemberStatus.BANNED) {
-      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
-    }
-
-    if (existing && existing.status === CommunityMemberStatus.PENDING) {
-      // Defensive — PENDING is not generated yet, but if it ever is, the user
-      // must wait for an invite to be approved instead of self-joining.
-      throw new ForbiddenError("COMMUNITY_JOIN_REQUIRES_INVITE");
-    }
-
-    const snapshotMap = await fetchUserSnapshots([callerId]);
-    const snap = snapshotMap.get(callerId)!;
-
-    if (existing && existing.status === CommunityMemberStatus.LEFT) {
-      // Re-join: keep joinedAt, refresh snapshot, force MEMBER role.
-      const reactivated =
-        await communityRepository.reactivateMemberWithSnapshot(
-          communityId,
-          callerId,
-          {
-            snapshotUsername: snap.username,
-            snapshotDisplayName: snap.displayName,
-            snapshotAvatarKey: snap.avatarObjectKey,
-          }
-        );
-
-      const count = await communityRepository.countActiveMembers(communityId);
-      await communityRepository.setMemberCount(communityId, count);
-
-      await this.recordAudit({
-        communityId,
-        actorId: callerId,
-        action: "COMMUNITY_JOINED",
-        metadata: { reactivated: true },
-      });
-
-      logger.info(
-        `Community self-join (reactivated): community=${communityId} by=${callerId}`
-      );
-
-      publishCommunityJoinedSafe({
-        communityId,
-        eventAt: new Date().toISOString(),
-        userId: callerId,
-        reactivated: true,
-      });
-
-      return toMemberData(reactivated);
-    }
-
-    // No prior row → fresh ACTIVE MEMBER.
-    await communityRepository.createMember({
-      communityId,
-      userId: callerId,
-      role: CommunityMemberRole.MEMBER,
-      status: CommunityMemberStatus.ACTIVE,
-      snapshotUsername: snap.username,
-      snapshotDisplayName: snap.displayName,
-      snapshotAvatarKey: snap.avatarObjectKey,
-    });
-
-    const count = await communityRepository.countActiveMembers(communityId);
-    await communityRepository.setMemberCount(communityId, count);
-
-    await this.recordAudit({
-      communityId,
-      actorId: callerId,
-      action: "COMMUNITY_JOINED",
-    });
-
-    logger.info(`Community self-join: community=${communityId} by=${callerId}`);
-
-    publishCommunityJoinedSafe({
-      communityId,
-      eventAt: new Date().toISOString(),
-      userId: callerId,
-      reactivated: false,
-    });
-
-    // Re-read so the returned DTO carries the freshly-assigned joinedAt etc.
-    const row = await communityRepository.findMemberByUserId(
-      communityId,
-      callerId
-    );
-    return toMemberData(row!);
+    // Reuse the createJoinRequest pipeline (which handles mutual-want
+    // auto-accept if a 1:1 invite exists). Pass `null` as the optional
+    // message since this endpoint is the simple "Join" action.
+    return this.createJoinRequest(communityId, callerId, null);
   },
 
   async transferAdmin(
@@ -1667,18 +1578,18 @@ export const communityService = {
     communityId: string,
     callerId: string,
     message: string | null
-  ): Promise<
-    | CommunityJoinRequestData
-    | { autoJoined: true; member: CommunityMemberData; inviteId: string }
-  > {
+  ): Promise<CommunityJoinRequestData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    if (community.type !== CommunityType.PRIVATE) {
-      throw new BadRequestError("COMMUNITY_JOIN_REQUEST_PUBLIC_NOT_ALLOWED");
-    }
+    // Join requests are allowed for both PUBLIC and PRIVATE communities.
+    // PUBLIC: user-initiated joins create a PENDING request for moderators
+    // to approve. PRIVATE: users may not self-join but may still create an
+    // explicit request via UI (or the server may accept moderator-created
+    // add-members/invites). Keep the existing mutual-want auto-accept logic
+    // below.
 
     const existingMember = await communityRepository.findMemberByUserId(
       communityId,
@@ -1691,85 +1602,8 @@ export const communityService = {
       throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
     }
 
-    // A6 mutual-want: a PENDING invite for the caller short-circuits to accept.
-    const pendingInvite =
-      await communityRepository.findInviteByCommunityAndInvitee(
-        communityId,
-        callerId
-      );
-    if (
-      pendingInvite &&
-      pendingInvite.status === CommunityInviteStatus.PENDING
-    ) {
-      const snapshotMap = await fetchUserSnapshots([callerId]);
-      const snap = snapshotMap.get(callerId)!;
-
-      if (!existingMember) {
-        await communityRepository.createMember({
-          communityId,
-          userId: callerId,
-          role: CommunityMemberRole.MEMBER,
-          status: CommunityMemberStatus.ACTIVE,
-          snapshotUsername: snap.username,
-          snapshotDisplayName: snap.displayName,
-          snapshotAvatarKey: snap.avatarObjectKey,
-        });
-      } else {
-        // LEFT (ACTIVE/BANNED were short-circuited above).
-        await communityRepository.reactivateMemberWithSnapshot(
-          communityId,
-          callerId,
-          {
-            snapshotUsername: snap.username,
-            snapshotDisplayName: snap.displayName,
-            snapshotAvatarKey: snap.avatarObjectKey,
-          }
-        );
-      }
-
-      const count = await communityRepository.countActiveMembers(communityId);
-      await communityRepository.setMemberCount(communityId, count);
-
-      await communityRepository.updateInvite(pendingInvite.id, {
-        status: CommunityInviteStatus.ACCEPTED,
-      });
-
-      await this.recordAudit({
-        communityId,
-        actorId: callerId,
-        action: "INVITE_ACCEPTED",
-        targetUserId: callerId,
-        metadata: {
-          inviteId: pendingInvite.id,
-          auto: true,
-          reason: "join_request_auto_accept",
-        },
-      });
-
-      logger.info(
-        `Community join-request auto-accepted pending invite: community=${communityId} user=${callerId} invite=${pendingInvite.id}`
-      );
-
-      // Per E5: on the mutual-want auto-accept path emit ONLY MEMBER_ADDED.
-      // Do NOT also emit JOIN_REQUESTED or INVITE_ACCEPTED here.
-      publishCommunityMemberAddedSafe({
-        communityId,
-        eventAt: new Date().toISOString(),
-        actorId: callerId,
-        targetUserId: callerId,
-        via: "join_request_auto_accept",
-      });
-
-      const row = await communityRepository.findMemberByUserId(
-        communityId,
-        callerId
-      );
-      return {
-        autoJoined: true,
-        member: await toMemberData(row!),
-        inviteId: pendingInvite.id,
-      };
-    }
+    // No auto-accept paths: always create a join request for moderators to
+    // review. (Mutual-want auto-accept removed per policy.)
 
     const existingRequest =
       await communityRepository.findJoinRequestByCommunityAndUser(
@@ -2116,10 +1950,7 @@ export const communityService = {
     communityId: string,
     callerId: string,
     inviteeId: string
-  ): Promise<
-    | CommunityInviteData
-    | { autoApproved: true; member: CommunityMemberData; requestId: string }
-  > {
+  ): Promise<CommunityInviteData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
@@ -2146,88 +1977,8 @@ export const communityService = {
       throw new ForbiddenError("COMMUNITY_INVITE_USER_BANNED");
     }
 
-    // B6 mutual-want: a PENDING join-request from the invitee short-circuits to
-    // approve.
-    const pendingRequest =
-      await communityRepository.findJoinRequestByCommunityAndUser(
-        communityId,
-        inviteeId
-      );
-    if (
-      pendingRequest &&
-      pendingRequest.status === CommunityJoinReqStatus.PENDING
-    ) {
-      const snapshotMap = await fetchUserSnapshots([inviteeId]);
-      const snap = snapshotMap.get(inviteeId)!;
-
-      if (!existingMember) {
-        await communityRepository.createMember({
-          communityId,
-          userId: inviteeId,
-          role: CommunityMemberRole.MEMBER,
-          status: CommunityMemberStatus.ACTIVE,
-          snapshotUsername: snap.username,
-          snapshotDisplayName: snap.displayName,
-          snapshotAvatarKey: snap.avatarObjectKey,
-        });
-      } else {
-        // LEFT (ACTIVE/BANNED were short-circuited above).
-        await communityRepository.reactivateMemberWithSnapshot(
-          communityId,
-          inviteeId,
-          {
-            snapshotUsername: snap.username,
-            snapshotDisplayName: snap.displayName,
-            snapshotAvatarKey: snap.avatarObjectKey,
-          }
-        );
-      }
-
-      const count = await communityRepository.countActiveMembers(communityId);
-      await communityRepository.setMemberCount(communityId, count);
-
-      await communityRepository.updateJoinRequest(pendingRequest.id, {
-        status: CommunityJoinReqStatus.APPROVED,
-        decidedBy: callerId,
-        decidedAt: new Date(),
-      });
-
-      await this.recordAudit({
-        communityId,
-        actorId: callerId,
-        action: "JOIN_REQUEST_APPROVED",
-        targetUserId: inviteeId,
-        metadata: {
-          requestId: pendingRequest.id,
-          auto: true,
-          reason: "invite_auto_approve",
-        },
-      });
-
-      logger.info(
-        `Community invite auto-approved pending join-request: community=${communityId} inviter=${callerId} invitee=${inviteeId} request=${pendingRequest.id}`
-      );
-
-      // Per E5: emit ONLY MEMBER_ADDED on the auto-approve path. Do NOT also
-      // emit INVITE_SENT or JOIN_REQUESTED here.
-      publishCommunityMemberAddedSafe({
-        communityId,
-        eventAt: new Date().toISOString(),
-        actorId: callerId,
-        targetUserId: inviteeId,
-        via: "invite_auto_approve",
-      });
-
-      const row = await communityRepository.findMemberByUserId(
-        communityId,
-        inviteeId
-      );
-      return {
-        autoApproved: true,
-        member: await toMemberData(row!),
-        requestId: pendingRequest.id,
-      };
-    }
+    // No auto-approve: always create (or recycle) an invite row. Pending
+    // join-requests are not auto-approved by creating an invite.
 
     const existingInvite =
       await communityRepository.findInviteByCommunityAndInvitee(
@@ -2972,6 +2723,11 @@ export const communityService = {
     );
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
 
+    // Invite links are only supported for PUBLIC communities per policy.
+    if (community.type !== CommunityType.PUBLIC) {
+      throw new ForbiddenError("COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC");
+    }
+
     const expiresAt = input.expiresInMinutes
       ? new Date(Date.now() + input.expiresInMinutes * 60_000)
       : null;
@@ -3087,7 +2843,8 @@ export const communityService = {
     callerId: string
   ): Promise<{
     link: CommunityInviteLinkData;
-    member: CommunityMemberData;
+    request?: CommunityJoinRequestData;
+    member?: CommunityMemberData;
   }> {
     const link = await communityRepository.findInviteLinkByCode(code);
     if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
@@ -3103,6 +2860,11 @@ export const communityService = {
 
     const community = await communityRepository.findById(link.communityId);
     if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    // Invite links allowed only for PUBLIC communities.
+    if (community.type !== CommunityType.PUBLIC) {
+      throw new ForbiddenError("COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC");
+    }
 
     const existing = await communityRepository.findMemberByUserId(
       community.id,
@@ -3128,37 +2890,7 @@ export const communityService = {
       throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
     }
 
-    // Add or reactivate membership (mirrors joinCommunity reactivation logic).
-    const snapshotMap = await fetchUserSnapshots([callerId]);
-    const snap = snapshotMap.get(callerId)!;
-    if (
-      existing &&
-      (existing.status === CommunityMemberStatus.LEFT ||
-        existing.status === CommunityMemberStatus.PENDING)
-    ) {
-      await communityRepository.reactivateMemberWithSnapshot(
-        community.id,
-        callerId,
-        {
-          snapshotUsername: snap.username,
-          snapshotDisplayName: snap.displayName,
-          snapshotAvatarKey: snap.avatarObjectKey,
-        }
-      );
-    } else {
-      await communityRepository.createMember({
-        communityId: community.id,
-        userId: callerId,
-        role: CommunityMemberRole.MEMBER,
-        status: CommunityMemberStatus.ACTIVE,
-        snapshotUsername: snap.username,
-        snapshotDisplayName: snap.displayName,
-        snapshotAvatarKey: snap.avatarObjectKey,
-      });
-    }
-    const count = await communityRepository.countActiveMembers(community.id);
-    await communityRepository.setMemberCount(community.id, count);
-
+    // Record audit that the link was used to initiate a join-request.
     await this.recordAudit({
       communityId: community.id,
       actorId: callerId,
@@ -3167,25 +2899,18 @@ export const communityService = {
       metadata: { linkId: link.id, code: link.code },
     });
 
-    // Emit MEMBER_ADDED (PART 1 row 5 — via: "invite_link_redeem").
-    publishCommunityMemberAddedSafe({
-      communityId: community.id,
-      eventAt: new Date().toISOString(),
-      actorId: callerId,
-      targetUserId: callerId,
-      via: "invite_link_redeem",
-    });
-
-    // Re-read so the returned member DTO carries joinedAt and refreshed
-    // snapshot, and the link DTO reflects the bumped usedCount.
-    const row = await communityRepository.findMemberByUserId(
+    // Instead of immediately adding the member, create a join request that
+    // goes through the moderator approval flow (per new policy for PUBLIC).
+    const joinResult = await this.createJoinRequest(
       community.id,
-      callerId
+      callerId,
+      null
     );
+
     const updatedLink = await communityRepository.findInviteLinkById(link.id);
     return {
       link: toInviteLinkData(updatedLink!),
-      member: await toMemberData(row!),
+      request: joinResult,
     };
   },
 };

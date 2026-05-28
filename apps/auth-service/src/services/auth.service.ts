@@ -22,7 +22,7 @@ import type { LoginResult, RegisterResult } from "../types/index.js";
 export const authService = {
   async register(req: Request, input: RegisterInput): Promise<RegisterResult> {
     const account = input.account;
-
+    console.log("Attempting to register account:", account); // Debug log
     const existingAccount = await authRepository.findByAccount(account);
 
     if (existingAccount) {
@@ -37,6 +37,8 @@ export const authService = {
       lastPasswordChangeAt: new Date(),
     });
 
+    console.log("User registered with ID:", user); // Debug log
+
     const session = buildSessionContext(req);
     const { tokens } = await issueAuthTokens(user.id, session);
 
@@ -44,6 +46,7 @@ export const authService = {
       userId: user.id,
       account: user.account,
       createdAt: user.createdAt.toISOString(),
+      isGoogleLogin: false,
     });
 
     return {
