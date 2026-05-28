@@ -24,8 +24,8 @@ export const passwordSchema = z
 
 /**
  * FCM device push tokens — optional, captured on register/login when available.
- * When provided, the array must contain at least one non-empty token; clients
- * that cannot obtain a push token (permission denied, web, emulator) omit it.
+ * Clients that cannot obtain push tokens (permission denied, web, emulator) can omit this field
+ * or pass an empty array. Individual tokens (when provided) must be non-empty strings.
  */
 export const fcmTokensSchema = z
   .array(z.string().trim().min(1, "FCM token cannot be empty"))
@@ -34,7 +34,7 @@ export const fcmTokensSchema = z
 export const registerSchema = z.object({
   account: accountSchema,
   password: passwordSchema,
-  fcmTokens: fcmTokensSchema.default([]),
+  fcmTokens: fcmTokensSchema.optional().default([]),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
@@ -57,7 +57,7 @@ export const loginIdentifierSchema = z
 export const loginSchema = z.object({
   account: loginIdentifierSchema,
   password: passwordSchema,
-  fcmTokens: fcmTokensSchema.default([]),
+  fcmTokens: fcmTokensSchema.optional().default([]),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

@@ -117,6 +117,7 @@ export const authRepository = {
         passwordHash: true,
         status: true,
         deletedAt: true,
+        linkedAccounts: { select: { id: true }, take: 1 },
       },
     });
   },
@@ -128,6 +129,7 @@ export const authRepository = {
         passwordHash: true,
         status: true,
         deletedAt: true,
+        linkedAccounts: { select: { id: true }, take: 1 },
       },
     });
   },
