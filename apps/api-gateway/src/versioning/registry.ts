@@ -23,10 +23,12 @@ if (env.USER_SERVICE_URL) {
   v1Services.push({
     segment: "users",
     target: env.USER_SERVICE_URL,
-    downstreamPrefix: "/api/v1",
+    downstreamPrefix: "/api/v1/users",
     swaggerTag: "Users",
   });
 }
+
+console.log("env.COMMUNITY_SERVICE_URL", env.COMMUNITY_SERVICE_URL);
 
 if (env.COMMUNITY_SERVICE_URL) {
   v1Services.push({
@@ -38,6 +40,15 @@ if (env.COMMUNITY_SERVICE_URL) {
     // restores it. (Differs from `users`, whose service mounts at /api/v1 root.)
     downstreamPrefix: "/api/v1/communities",
     swaggerTag: "Communities",
+  });
+}
+
+if (env.CHAT_SERVICE_URL) {
+  v1Services.push({
+    segment: "chat",
+    target: env.CHAT_SERVICE_URL,
+    downstreamPrefix: "/api/chat",
+    swaggerTag: "Chat",
   });
 }
 

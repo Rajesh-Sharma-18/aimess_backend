@@ -2,6 +2,7 @@ import { openApiParameters } from "../../components/parameters.js";
 import { openApiSchemas } from "../../components/schemas.js";
 import { appVersionPaths } from "../../paths/app-version.paths.js";
 import { authPaths } from "../../paths/auth.paths.js";
+import { chatPaths } from "../../paths/chat.paths.js";
 import { communityPaths } from "../../paths/community.paths.js";
 import { userPaths } from "../../paths/user.paths.js";
 
@@ -11,6 +12,7 @@ export const v1Paths = {
   ...authPaths,
   ...userPaths,
   ...communityPaths,
+  ...chatPaths,
 };
 
 export const v1Tags = [
@@ -23,6 +25,27 @@ export const v1Tags = [
   {
     name: "Communities",
     description: "Communities and categories (community-service)",
+  },
+  {
+    name: "Chat — Private",
+    description: "1-to-1 private messaging (chat-service)",
+  },
+  {
+    name: "Chat — Groups",
+    description:
+      "Group rooms, members, messages, pins, and invite links (chat-service)",
+  },
+  {
+    name: "Chat — Notifications",
+    description: "In-app notification feed (chat-service)",
+  },
+  {
+    name: "Chat — Community",
+    description: "Community room browsing and messaging (chat-service)",
+  },
+  {
+    name: "Chat — Media",
+    description: "File upload presigned URLs (chat-service)",
   },
 ];
 

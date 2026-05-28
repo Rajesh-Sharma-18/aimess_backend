@@ -173,6 +173,33 @@ export const friendshipRepository = {
     });
   },
 
+  /**
+   * Returns the subset of `candidateIds` that are ACCEPTED friends with `callerId`,
+   * regardless of who sent the original request. Bounded by caller (≤500 ids).
+   * Used by community-service for server-side friend validation on add-members.
+   */
+  async findAcceptedFriendIdsForUser(
+    callerId: string,
+    candidateIds: string[]
+  ): Promise<string[]> {
+    if (candidateIds.length === 0) return [];
+    const rows = await prisma.friendship.findMany({
+      where: {
+        status: "ACCEPTED",
+        OR: [
+          { requesterId: callerId, addresseeId: { in: candidateIds } },
+          { addresseeId: callerId, requesterId: { in: candidateIds } },
+        ],
+      },
+      select: { requesterId: true, addresseeId: true },
+    });
+    const friends = new Set<string>();
+    for (const r of rows) {
+      friends.add(r.requesterId === callerId ? r.addresseeId : r.requesterId);
+    }
+    return [...friends];
+  },
+
   /** All block rows where the user is either blocker or blocked. */
   findAllBlocks(userId: string) {
     return prisma.block.findMany({

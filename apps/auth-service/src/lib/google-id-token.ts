@@ -26,20 +26,25 @@ function getGoogleClient(): OAuth2Client {
  * `google-auth-library` fetches and caches Google's public signing keys, checks
  * the signature, expiry, issuer, and that the token's `aud` matches our
  * configured OAuth client id — so no service-account private key is needed.
- *
- * Replaces the Firebase-based Google verification; Apple sign-in still goes
- * through Firebase (see lib/firebase-id-token.ts).
  */
 export async function verifyGoogleIdToken(
   idToken: string
 ): Promise<GoogleTokenProfile> {
-  const { GOOGLE_OAUTH_CLIENT_ID } = env;
+  const { GOOGLE_OAUTH_APPLE_CLIENT_ID, GOOGLE_OAUTH_ANDROID_CLIENT_ID } = env;
+
+  // Accept either platform's client ID — google-auth-library matches the token's
+  // `aud` claim against any entry in the array. No client-side platform flag is
+  // needed: the `aud` itself is the cryptographic proof of which app issued it.
+  const audiences = [
+    GOOGLE_OAUTH_APPLE_CLIENT_ID,
+    GOOGLE_OAUTH_ANDROID_CLIENT_ID,
+  ].filter((value): value is string => Boolean(value));
 
   // Resolve config outside the try so a missing-config error surfaces as a real
   // server error, not a misleading "invalid token" 401.
-  if (!GOOGLE_OAUTH_CLIENT_ID) {
+  if (audiences.length === 0) {
     throw new Error(
-      "Google OAuth is not configured. Set GOOGLE_OAUTH_CLIENT_ID to enable Google login."
+      "Google OAuth is not configured. Set GOOGLE_OAUTH_APPLE_CLIENT_ID and/or GOOGLE_OAUTH_ANDROID_CLIENT_ID to enable Google login."
     );
   }
 
@@ -47,7 +52,7 @@ export async function verifyGoogleIdToken(
   try {
     const ticket = await getGoogleClient().verifyIdToken({
       idToken,
-      audience: GOOGLE_OAUTH_CLIENT_ID,
+      audience: audiences,
     });
     payload = ticket.getPayload();
   } catch {

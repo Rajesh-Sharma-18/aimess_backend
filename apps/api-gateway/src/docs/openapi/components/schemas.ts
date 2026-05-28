@@ -47,8 +47,8 @@ export const openApiSchemas = {
   FcmTokens: {
     type: "array",
     items: { type: "string", minLength: 1 },
-    minItems: 1,
-    description: "FCM device push tokens (one or more).",
+    description:
+      "FCM device push tokens. Optional — omit or send an empty array when the device has no push token.",
     example: ["fcm-token-abc123"],
   },
   RegisterRequest: {
@@ -64,7 +64,7 @@ export const openApiSchemas = {
       password: { type: "string", minLength: 8, maxLength: 128 },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["account", "password", "fcmTokens"],
+    required: ["account", "password"],
   },
   ValidateAccountRequest: {
     type: "object",
@@ -99,7 +99,7 @@ export const openApiSchemas = {
       password: { type: "string", minLength: 8, maxLength: 128 },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["account", "password", "fcmTokens"],
+    required: ["account", "password"],
   },
   RegisterResponseData: {
     type: "object",
@@ -123,6 +123,14 @@ export const openApiSchemas = {
       tokens: { $ref: "#/components/schemas/AuthTokens" },
     },
     required: ["tokens"],
+  },
+  AccessTokenResponseData: {
+    type: "object",
+    properties: {
+      accessToken: { type: "string" },
+      accessTokenExpiresIn: { type: "integer", example: 900 },
+    },
+    required: ["accessToken", "accessTokenExpiresIn"],
   },
   RefreshTokenRequest: {
     type: "object",
@@ -232,7 +240,7 @@ export const openApiSchemas = {
       },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
-    required: ["idToken", "fcmTokens"],
+    required: ["idToken"],
   },
   AppleLoginRequest: {
     type: "object",
@@ -240,13 +248,13 @@ export const openApiSchemas = {
       identityToken: {
         type: "string",
         description:
-          "Firebase ID token obtained after Apple sign-in via the Firebase Auth client SDK.",
+          "Apple identity token (`identityToken` from ASAuthorizationAppleIDCredential on iOS, or `id_token` from Sign in with Apple JS on web). Verified directly against Apple's JWKS at https://appleid.apple.com/auth/keys.",
       },
       email: {
         type: "string",
         format: "email",
         description:
-          "Optional fallback display email; never trusted as verified",
+          "Optional. Apple only includes `email` in the identity token on the FIRST authorization; clients should cache it and resend on subsequent logins. Never trusted as verified — used only as a display fallback.",
       },
       fullName: { type: "string", maxLength: 100 },
     },
@@ -325,7 +333,7 @@ export const openApiSchemas = {
       identityToken: {
         type: "string",
         description:
-          "Firebase ID token from an Apple sign-in (Firebase Auth client SDK).",
+          "Apple identity token from Sign in with Apple. Verified directly against Apple's JWKS.",
       },
       email: { type: "string", format: "email" },
       fullName: { type: "string", maxLength: 100 },
@@ -922,9 +930,8 @@ export const openApiSchemas = {
       },
       deviceType: {
         type: "string",
-        maxLength: 100,
+        enum: ["IOS", "ANDROID", "DESKTOP", "WEB"],
         example: "DESKTOP",
-        description: "One of IOS, ANDROID, DESKTOP, WEB (free-text).",
       },
       os: { type: "string", maxLength: 100, example: "macOS 14" },
       appVersion: { type: "string", maxLength: 100, example: "1.4.0" },
@@ -952,6 +959,8 @@ export const openApiSchemas = {
       state: {
         type: "string",
         enum: ["PENDING", "APPROVED", "CONSUMED", "EXPIRED"],
+        description:
+          "PENDING = waiting for the signed-in device to scan and approve; APPROVED = approved, tokens returned exactly once; CONSUMED = tokens already delivered (poll again returns this); EXPIRED = 120 s TTL elapsed, call initiate again.",
       },
       approvedDeviceLabel: { type: "string", nullable: true },
       tokens: {
@@ -982,15 +991,6 @@ export const openApiSchemas = {
       },
     },
     required: ["linkedAt", "sessionId"],
-  },
-  DeleteAccountRequest: {
-    type: "object",
-    description:
-      "Provide currentPassword for password accounts, or otp for passwordless accounts.",
-    properties: {
-      currentPassword: { type: "string", minLength: 1 },
-      otp: { type: "string", pattern: "^\\d{6}$", example: "123456" },
-    },
   },
   DeleteAccountResponseData: {
     type: "object",
@@ -1050,6 +1050,69 @@ export const openApiSchemas = {
   },
 
   // ===========================================================================
+  // user-service · user discovery
+  // ===========================================================================
+  UserDiscoveryItem: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      bio: { type: "string", nullable: true },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Presigned GET URL; null if no avatar.",
+      },
+      avatarUrlExpiresIn: {
+        type: "integer",
+        nullable: true,
+        description: "Seconds until avatarUrl expires; null if no avatar.",
+      },
+      isOnline: { type: "boolean" },
+      relationshipStatus: {
+        type: "string",
+        enum: ["FRIEND", "PENDING_IN", "PENDING_OUT", "NONE"],
+        nullable: true,
+        description:
+          "Omitted when section=all. PENDING_IN = they sent the request to you.",
+      },
+      friendshipId: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description: "Present when relationshipStatus is FRIEND or PENDING_*.",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "firstName",
+      "lastName",
+      "bio",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "isOnline",
+    ],
+  },
+  UserDiscoveryResponseData: {
+    type: "object",
+    properties: {
+      users: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserDiscoveryItem" },
+      },
+      total: {
+        type: "integer",
+        description: "Total matching users (across all pages).",
+      },
+    },
+    required: ["users", "total"],
+  },
+
+  // ===========================================================================
   // community-service
   // ===========================================================================
   CommunityData: {
@@ -1091,6 +1154,17 @@ export const openApiSchemas = {
         enum: ["ADMIN", "MODERATOR", "MEMBER"],
         description: "Caller's membership role; null if not a member.",
       },
+      myIsMuted: {
+        type: "boolean",
+        description: "True if the caller has any mute row for this community.",
+      },
+      myMuteUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the caller's mute expires; null = not muted OR muted indefinitely (use myIsMuted to disambiguate).",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
@@ -1109,6 +1183,8 @@ export const openApiSchemas = {
       "coverUrl",
       "coverUrlExpiresIn",
       "myRole",
+      "myIsMuted",
+      "myMuteUntil",
       "createdAt",
       "updatedAt",
     ],
@@ -1212,20 +1288,91 @@ export const openApiSchemas = {
       "myRole",
     ],
   },
-  MyCommunitiesResponseData: {
+  PaginationMeta: {
     type: "object",
+    description: "Offset/page pagination metadata.",
     properties: {
-      communities: {
-        type: "array",
-        items: { $ref: "#/components/schemas/CommunityListItem" },
+      totalData: { type: "integer", description: "Total matching records." },
+      totalPage: { type: "integer", description: "Total number of pages." },
+      currentPage: {
+        type: "integer",
+        description: "The requested page (1-based).",
       },
+      limit: { type: "integer", description: "Page size." },
       nextCursor: {
         type: "string",
         nullable: true,
-        description: "Community id cursor; null when no more.",
+        description: "Always null for offset pagination (reserved field).",
+      },
+      hasMore: {
+        type: "boolean",
+        description: "True when currentPage < totalPage.",
       },
     },
-    required: ["communities", "nextCursor"],
+    required: [
+      "totalData",
+      "totalPage",
+      "currentPage",
+      "limit",
+      "nextCursor",
+      "hasMore",
+    ],
+  },
+  MyCommunitiesResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityListItem" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  CommunityDiscoverItem: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      handle: { type: "string" },
+      description: { type: "string", nullable: true },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      category: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+        },
+        required: ["id", "name"],
+      },
+      memberCount: { type: "integer" },
+      avatarUrl: { type: "string", format: "uri", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "name",
+      "handle",
+      "description",
+      "type",
+      "category",
+      "memberCount",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "createdAt",
+    ],
+  },
+  CommunityDiscoverResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityDiscoverItem" },
+      },
+    },
+    required: ["pagination", "data"],
   },
   CommunityUploadUrlRequest: {
     type: "object",
@@ -1251,10 +1398,17 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       userId: { type: "string", format: "uuid" },
-      role: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+      role: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        description:
+          "ADMIN = community owner (1 per community); MODERATOR = can kick/ban members; MEMBER = regular participant.",
+      },
       status: {
         type: "string",
         enum: ["ACTIVE", "PENDING", "BANNED", "LEFT"],
+        description:
+          "ACTIVE = current member; PENDING = join request awaiting approval (private communities); BANNED = banned by admin; LEFT = voluntarily left or kicked.",
       },
       joinedAt: { type: "string", format: "date-time" },
       snapshotUsername: { type: "string" },
@@ -1276,17 +1430,13 @@ export const openApiSchemas = {
   CommunityMembersResponseData: {
     type: "object",
     properties: {
-      members: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
         type: "array",
         items: { $ref: "#/components/schemas/CommunityMemberData" },
       },
-      nextCursor: {
-        type: "string",
-        nullable: true,
-        description: "Member id cursor; null when no more.",
-      },
     },
-    required: ["members", "nextCursor"],
+    required: ["pagination", "data"],
   },
   UpdateMemberRoleRequest: {
     type: "object",
@@ -1312,6 +1462,18 @@ export const openApiSchemas = {
     },
     required: ["userIds"],
   },
+  TransferAdminRequest: {
+    type: "object",
+    properties: {
+      userId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "Target user id — must be an ACTIVE member of the community and not the current admin.",
+      },
+    },
+    required: ["userId"],
+  },
   AddMembersResponseData: {
     type: "object",
     properties: {
@@ -1328,13 +1490,13 @@ export const openApiSchemas = {
             userId: { type: "string", format: "uuid" },
             reason: {
               type: "string",
-              enum: ["ALREADY_MEMBER", "BANNED"],
+              enum: ["ALREADY_MEMBER", "BANNED", "NOT_FRIEND"],
             },
           },
           required: ["userId", "reason"],
         },
         description:
-          "User ids not added: already ACTIVE members, or BANNED (must be unbanned first).",
+          "User ids not added: already ACTIVE members, BANNED (must be unbanned first), or NOT_FRIEND with the caller (must be an accepted friend or invited via /invites).",
       },
     },
     required: ["added", "skipped"],
@@ -1358,6 +1520,20 @@ export const openApiSchemas = {
           "MEMBER_BANNED",
           "MEMBER_UNBANNED",
           "ADMIN_TRANSFERRED",
+          "COMMUNITY_JOINED",
+          "COMMUNITY_DELETED",
+          "JOIN_REQUEST_APPROVED",
+          "JOIN_REQUEST_REJECTED",
+          "MEMBER_INVITED",
+          "INVITE_ACCEPTED",
+          "INVITE_DECLINED",
+          "COMMUNITY_REPORT_REVIEWED",
+          "COMMUNITY_REPORT_ACTIONED",
+          "COMMUNITY_REPORT_DISMISSED",
+          "MEMBER_LEFT",
+          "INVITE_LINK_CREATED",
+          "INVITE_LINK_REVOKED",
+          "INVITE_LINK_REDEEMED",
         ],
       },
       targetUserId: {
@@ -1392,16 +1568,1089 @@ export const openApiSchemas = {
   CommunityAuditLogsResponseData: {
     type: "object",
     properties: {
-      logs: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
         type: "array",
         items: { $ref: "#/components/schemas/CommunityAuditLogData" },
       },
-      nextCursor: {
+    },
+    required: ["pagination", "data"],
+  },
+  // --- Join requests ------------------------------------------------------
+  CreateJoinRequestRequest: {
+    type: "object",
+    properties: {
+      message: {
         type: "string",
-        nullable: true,
-        description: "Audit-log id cursor; null when no more.",
+        maxLength: 500,
+        description: "Optional message included with the join request.",
       },
     },
-    required: ["logs", "nextCursor"],
+  },
+  JoinRequestData: {
+    type: "object",
+    properties: {
+      requestId: { type: "string" },
+      communityId: { type: "string" },
+      userId: { type: "string", format: "uuid" },
+      status: {
+        type: "string",
+        enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED"],
+      },
+      message: { type: "string", nullable: true },
+      decidedBy: { type: "string", format: "uuid", nullable: true },
+      decidedAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "requestId",
+      "communityId",
+      "userId",
+      "status",
+      "message",
+      "decidedBy",
+      "decidedAt",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  JoinRequestUserSummary: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+    ],
+  },
+  JoinRequestWithUserData: {
+    allOf: [
+      { $ref: "#/components/schemas/JoinRequestData" },
+      {
+        type: "object",
+        properties: {
+          user: { $ref: "#/components/schemas/JoinRequestUserSummary" },
+        },
+        required: ["user"],
+      },
+    ],
+  },
+  EmbeddedCommunitySummary: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      handle: { type: "string" },
+      type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      memberCount: { type: "integer" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "id",
+      "name",
+      "handle",
+      "type",
+      "memberCount",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+    ],
+  },
+  MyJoinRequestData: {
+    allOf: [
+      { $ref: "#/components/schemas/JoinRequestData" },
+      {
+        type: "object",
+        properties: {
+          community: { $ref: "#/components/schemas/EmbeddedCommunitySummary" },
+        },
+        required: ["community"],
+      },
+    ],
+  },
+  JoinRequestApprovedData: {
+    type: "object",
+    properties: {
+      request: { $ref: "#/components/schemas/JoinRequestData" },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+    required: ["request", "member"],
+  },
+  JoinRequestPage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/JoinRequestWithUserData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  MyJoinRequestPage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MyJoinRequestData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  // --- Invites ------------------------------------------------------------
+  CreateInviteRequest: {
+    type: "object",
+    properties: {
+      inviteeId: { type: "string", format: "uuid" },
+    },
+    required: ["inviteeId"],
+  },
+  InviteData: {
+    type: "object",
+    properties: {
+      inviteId: { type: "string" },
+      communityId: { type: "string" },
+      inviterId: { type: "string", format: "uuid" },
+      inviteeId: { type: "string", format: "uuid" },
+      status: {
+        type: "string",
+        enum: ["PENDING", "ACCEPTED", "DECLINED", "EXPIRED"],
+      },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "inviteId",
+      "communityId",
+      "inviterId",
+      "inviteeId",
+      "status",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  InviteUserSummary: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+    ],
+  },
+  InviteWithUserData: {
+    allOf: [
+      { $ref: "#/components/schemas/InviteData" },
+      {
+        type: "object",
+        properties: {
+          invitee: { $ref: "#/components/schemas/InviteUserSummary" },
+        },
+        required: ["invitee"],
+      },
+    ],
+  },
+  MyInviteData: {
+    allOf: [
+      { $ref: "#/components/schemas/InviteData" },
+      {
+        type: "object",
+        properties: {
+          community: { $ref: "#/components/schemas/EmbeddedCommunitySummary" },
+        },
+        required: ["community"],
+      },
+    ],
+  },
+  InviteAcceptedData: {
+    type: "object",
+    properties: {
+      invite: { $ref: "#/components/schemas/InviteData" },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+    required: ["invite", "member"],
+  },
+  InvitePage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/InviteWithUserData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  MyInvitePage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MyInviteData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  // --- Reports ------------------------------------------------------------
+  CreateReportRequest: {
+    type: "object",
+    properties: {
+      targetUserId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "User id being reported. Omit (null) to report the community itself. Must currently have a member row in the community (any status).",
+      },
+      reason: {
+        type: "string",
+        minLength: 3,
+        maxLength: 1000,
+        description: "Reporter-supplied reason text.",
+      },
+    },
+    required: ["reason"],
+  },
+  ReportResolutionRequest: {
+    type: "object",
+    properties: {
+      resolution: {
+        type: "string",
+        maxLength: 1000,
+        description: "Optional moderator note describing the resolution.",
+      },
+    },
+  },
+  ReportData: {
+    type: "object",
+    properties: {
+      reportId: { type: "string" },
+      communityId: { type: "string" },
+      reporterId: { type: "string", format: "uuid" },
+      targetUserId: { type: "string", format: "uuid", nullable: true },
+      reason: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["OPEN", "REVIEWED", "ACTIONED", "DISMISSED", "WITHDRAWN"],
+      },
+      reviewedBy: { type: "string", format: "uuid", nullable: true },
+      reviewedAt: { type: "string", format: "date-time", nullable: true },
+      resolution: { type: "string", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "reportId",
+      "communityId",
+      "reporterId",
+      "targetUserId",
+      "reason",
+      "status",
+      "reviewedBy",
+      "reviewedAt",
+      "resolution",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ReportUserSummary: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+    ],
+  },
+  ReportWithUsersData: {
+    allOf: [
+      { $ref: "#/components/schemas/ReportData" },
+      {
+        type: "object",
+        properties: {
+          reporter: { $ref: "#/components/schemas/ReportUserSummary" },
+          target: {
+            allOf: [{ $ref: "#/components/schemas/ReportUserSummary" }],
+            nullable: true,
+          },
+        },
+        required: ["reporter", "target"],
+      },
+    ],
+  },
+  MyReportData: {
+    allOf: [
+      { $ref: "#/components/schemas/ReportData" },
+      {
+        type: "object",
+        properties: {
+          community: { $ref: "#/components/schemas/EmbeddedCommunitySummary" },
+        },
+        required: ["community"],
+      },
+    ],
+  },
+  ReportPage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ReportWithUsersData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  MyReportPage: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MyReportData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+
+  // --- Leave reason -------------------------------------------------------
+  LeaveCommunityRequest: {
+    type: "object",
+    description:
+      "Optional leave-reason body. When `reason` is `OTHER`, `reasonText` is required.",
+    properties: {
+      reason: {
+        type: "string",
+        enum: [
+          "UNINTERESTED",
+          "TOO_NOISY",
+          "INAPPROPRIATE_CONTENT",
+          "PRIVACY_CONCERN",
+          "OTHER",
+        ],
+        description: "Leave reason. When OTHER, reasonText is required.",
+      },
+      reasonText: { type: "string", maxLength: 500 },
+    },
+  },
+
+  // --- Mute settings ------------------------------------------------------
+  CommunityMuteData: {
+    type: "object",
+    properties: {
+      communityId: { type: "string" },
+      mutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "null = muted indefinitely.",
+      },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["communityId", "mutedUntil", "createdAt", "updatedAt"],
+  },
+  SetMuteRequest: {
+    type: "object",
+    description:
+      "null or omitted → indefinite mute; positive integer → mute for N minutes.",
+    properties: {
+      durationMinutes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 525600,
+        nullable: true,
+      },
+    },
+  },
+
+  // --- Invite links -------------------------------------------------------
+  CommunityInviteLinkData: {
+    type: "object",
+    properties: {
+      linkId: { type: "string" },
+      code: { type: "string" },
+      url: {
+        type: "string",
+        description:
+          "Built from INVITE_LINK_BASE_URL when set, else just the code.",
+      },
+      communityId: { type: "string" },
+      createdBy: { type: "string", format: "uuid" },
+      maxUses: { type: "integer", nullable: true },
+      usedCount: { type: "integer" },
+      autoApprove: {
+        type: "boolean",
+        description:
+          "When true, redeeming this link adds the member directly (no join-request flow).",
+      },
+      expiresAt: { type: "string", format: "date-time", nullable: true },
+      revokedAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      isActive: {
+        type: "boolean",
+        description: "Computed: not revoked, not expired, not exhausted.",
+      },
+    },
+    required: [
+      "linkId",
+      "code",
+      "url",
+      "communityId",
+      "createdBy",
+      "maxUses",
+      "usedCount",
+      "autoApprove",
+      "expiresAt",
+      "revokedAt",
+      "createdAt",
+      "isActive",
+    ],
+  },
+  CreateInviteLinkRequest: {
+    type: "object",
+    properties: {
+      maxUses: { type: "integer", minimum: 1, maximum: 1000 },
+      expiresInMinutes: { type: "integer", minimum: 1, maximum: 525600 },
+      autoApprove: {
+        type: "boolean",
+        description:
+          "When true, anyone redeeming this link is added as a member directly. Default false (creates a join request instead).",
+      },
+    },
+  },
+  InviteLinkListResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityInviteLinkData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  RedeemInviteLinkResponseData: {
+    type: "object",
+    description:
+      "link is always present. member is set when autoApprove=true (direct add); request is set when autoApprove=false (join-request flow).",
+    properties: {
+      link: { $ref: "#/components/schemas/CommunityInviteLinkData" },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+      request: { $ref: "#/components/schemas/CommunityJoinRequestData" },
+    },
+    required: ["link"],
+  },
+
+  // ===========================================================================
+  // chat-service
+  // ===========================================================================
+
+  // --- Private rooms & messages ---
+  ChatPrivateRoom: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      participants: {
+        type: "array",
+        items: { type: "string" },
+      },
+      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      lastMessage: { type: "object", nullable: true },
+      pinnedCount: { type: "integer" },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "participants", "createdAt", "updatedAt"],
+  },
+  ChatPrivateRoomList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatPrivateRoom" },
+  },
+  ChatMessage: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      senderId: { type: "string", nullable: true },
+      receiverId: { type: "string", nullable: true },
+      content: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          urls: { type: "array", items: { type: "string" } },
+          files: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                url: { type: "string", format: "uri" },
+                name: { type: "string" },
+                size: { type: "number" },
+                mime: { type: "string" },
+              },
+            },
+          },
+          location: { $ref: "#/components/schemas/ChatLocationAttachment" },
+          contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+        },
+      },
+      messageType: {
+        type: "string",
+        enum: [
+          "TEXT",
+          "IMAGE",
+          "DOCUMENT",
+          "VIDEO",
+          "SYSTEM",
+          "LOCATION",
+          "CONTACT",
+        ],
+        description:
+          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card.",
+      },
+      reactions: { type: "object" },
+      parentMessageId: { type: "string", nullable: true },
+      quoteData: { type: "object", nullable: true },
+      isDeleted: { type: "boolean" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "messageType", "createdAt"],
+  },
+  ChatMessageList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatMessage" },
+  },
+  ChatDeletePrivateMessageRequest: {
+    type: "object",
+    properties: {
+      messageId: { type: "string", minLength: 4 },
+      type: { type: "string", enum: ["forMe", "forEveryone"] },
+    },
+    required: ["messageId", "type"],
+  },
+  ChatPin: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      messageId: { type: "string" },
+      pinnedBy: { type: "string" },
+      pinnedAt: { type: "string", format: "date-time" },
+      senderId: { type: "string" },
+      senderDisplayName: { type: "string" },
+      contentPinned: { type: "object" },
+      messageCreatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "messageId", "pinnedBy", "pinnedAt"],
+  },
+  ChatPinList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatPin" },
+  },
+
+  // --- Group rooms ---
+  ChatGroupRoom: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      name: { type: "string" },
+      description: { type: "string" },
+      avatar: { type: "string" },
+      type: { type: "string" },
+      createdBy: { type: "string" },
+      status: { type: "string", enum: ["ACTIVE", "DISBANDED"] },
+      memberLimit: { type: "integer" },
+      memberCount: { type: "integer" },
+      settings: { type: "object" },
+      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      pinnedCount: { type: "integer" },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "name", "createdBy", "status", "createdAt"],
+  },
+  ChatGroupRoomList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatGroupRoom" },
+  },
+  ChatCreateGroupRequest: {
+    type: "object",
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 100 },
+      description: { type: "string", maxLength: 1000 },
+      avatar: { type: "string" },
+      memberLimit: { type: "integer", minimum: 2, maximum: 5000, default: 50 },
+    },
+    required: ["name"],
+  },
+  ChatUpdateGroupRequest: {
+    type: "object",
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 100 },
+      description: { type: "string", maxLength: 1000 },
+      avatar: { type: "string" },
+      memberLimit: { type: "integer", minimum: 2, maximum: 5000 },
+    },
+  },
+
+  // --- Group members ---
+  ChatGroupMember: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      userId: { type: "string" },
+      role: {
+        type: "string",
+        enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+        description:
+          "Role hierarchy (highest → lowest): OWNER > ADMIN > MODERATOR > MEMBER.",
+      },
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "KICKED", "LEFT", "BANNED"],
+        description:
+          "ACTIVE = current member; KICKED = removed by admin/owner; LEFT = voluntarily left; BANNED = banned by admin.",
+      },
+      joinedAt: { type: "string", format: "date-time" },
+      unreadCount: { type: "integer" },
+    },
+    required: ["id", "roomId", "userId", "role", "status", "joinedAt"],
+  },
+  ChatGroupMemberList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatGroupMember" },
+  },
+  ChatAddMemberRequest: {
+    type: "object",
+    properties: {
+      roomId: { type: "string", minLength: 5 },
+      userId: { type: "string", minLength: 5 },
+    },
+    required: ["roomId", "userId"],
+  },
+  ChatKickMemberRequest: {
+    type: "object",
+    properties: {
+      roomId: { type: "string", minLength: 5 },
+      userId: { type: "string", minLength: 5 },
+      reason: { type: "string", maxLength: 1000 },
+    },
+    required: ["roomId", "userId"],
+  },
+  ChatUpdateRoleRequest: {
+    type: "object",
+    properties: {
+      roomId: { type: "string", minLength: 5 },
+      userId: { type: "string", minLength: 5 },
+      role: {
+        type: "string",
+        enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+      },
+    },
+    required: ["roomId", "userId", "role"],
+  },
+  ChatDeleteGroupMessageRequest: {
+    type: "object",
+    properties: {
+      messageId: { type: "string", minLength: 4 },
+      roomId: { type: "string", minLength: 4 },
+    },
+    required: ["messageId", "roomId"],
+  },
+
+  // --- Group invite links ---
+  ChatInviteLink: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      token: { type: "string" },
+      createdBy: { type: "string" },
+      status: { type: "string", enum: ["ACTIVE", "REVOKED", "EXPIRED"] },
+      expiresAt: { type: "string", format: "date-time", nullable: true },
+      maxUses: { type: "integer", nullable: true },
+      usedCount: { type: "integer" },
+      shareName: { type: "string" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "token", "createdBy", "status", "createdAt"],
+  },
+  ChatInviteLinkList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatInviteLink" },
+  },
+  ChatInviteLinkPreview: {
+    type: "object",
+    description: "Public preview of a group invite link.",
+    properties: {
+      token: { type: "string" },
+      groupName: { type: "string" },
+      groupAvatar: { type: "string" },
+      memberCount: { type: "integer" },
+      shareName: { type: "string" },
+    },
+    required: ["token", "groupName", "memberCount"],
+  },
+  ChatCreateInviteLinkRequest: {
+    type: "object",
+    properties: {
+      roomId: { type: "string", minLength: 5 },
+      expiresAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "Optional expiry (ISO 8601).",
+      },
+      maxUses: {
+        type: "integer",
+        minimum: 1,
+        nullable: true,
+        description: "Optional maximum number of uses.",
+      },
+      shareName: { type: "string", maxLength: 200 },
+    },
+    required: ["roomId"],
+  },
+  ChatRevokeInviteLinkRequest: {
+    type: "object",
+    properties: {
+      token: { type: "string", minLength: 10 },
+    },
+    required: ["token"],
+  },
+  ChatJoinByInviteLinkRequest: {
+    type: "object",
+    properties: {
+      token: { type: "string", minLength: 10 },
+    },
+    required: ["token"],
+  },
+
+  // --- Notifications ---
+  ChatNotification: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      userId: { type: "string" },
+      actorId: { type: "string" },
+      type: { type: "string" },
+      entity: { type: "object" },
+      actorSnapshot: { type: "object" },
+      payload: { type: "object" },
+      isRead: { type: "boolean" },
+      readAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "userId", "actorId", "type", "isRead", "createdAt"],
+  },
+  ChatNotificationList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatNotification" },
+  },
+  ChatMarkReadRequest: {
+    type: "object",
+    properties: {
+      notificationId: { type: "string", minLength: 5 },
+    },
+    required: ["notificationId"],
+  },
+  ChatUnreadCountData: {
+    type: "object",
+    properties: {
+      count: { type: "integer", example: 5 },
+    },
+    required: ["count"],
+  },
+
+  // --- Community rooms & messages ---
+  ChatCommunityRoom: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      name: { type: "string" },
+      owner: { type: "string", nullable: true },
+      logo: { type: "string", nullable: true },
+      title: { type: "string", nullable: true },
+      desc: { type: "string", nullable: true },
+      memberNumber: { type: "integer" },
+      onlineNember: { type: "integer" },
+      isLive: { type: "boolean" },
+      tags: { type: "array", items: { type: "string" } },
+      status: { type: "string" },
+      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "name", "status", "createdAt"],
+  },
+  ChatCommunityRoomList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatCommunityRoom" },
+  },
+  ChatCommunityMessage: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      roomId: { type: "string" },
+      sentBy: { type: "string" },
+      senderName: { type: "string", nullable: true },
+      senderAvatar: { type: "string", nullable: true },
+      message: { type: "string", nullable: true },
+      reactions: { type: "object" },
+      parentMessageId: { type: "string", nullable: true },
+      messageType: { type: "string" },
+      attachments: { type: "array", items: { type: "object" } },
+      deletedForAll: { type: "boolean" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "roomId", "sentBy", "createdAt"],
+  },
+  ChatCommunityMessageList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+  },
+
+  // --- Attachments: location & contact ---
+  ChatLocationAttachment: {
+    type: "object",
+    description:
+      "Location share. Lives in message content (private/group) or attachments[] (community).",
+    properties: {
+      lat: { type: "number", minimum: -90, maximum: 90, example: 21.0285 },
+      lng: { type: "number", minimum: -180, maximum: 180, example: 105.8542 },
+      placeName: { type: "string", maxLength: 200, example: "Hoan Kiem Lake" },
+      placeAddress: {
+        type: "string",
+        maxLength: 500,
+        example: "Hanoi, Vietnam",
+      },
+    },
+    required: ["lat", "lng"],
+  },
+  ChatContactAttachment: {
+    type: "object",
+    description:
+      "Contact share. Lives in message content (private/group) or attachments[] (community).",
+    properties: {
+      name: {
+        type: "string",
+        minLength: 1,
+        maxLength: 200,
+        example: "Emily Cooper",
+      },
+      phone: {
+        type: "string",
+        minLength: 1,
+        maxLength: 50,
+        example: "+12345 67890",
+      },
+      avatar: { type: "string", maxLength: 3000, nullable: true },
+      userId: { type: "string", maxLength: 100, nullable: true },
+    },
+    required: ["name", "phone"],
+  },
+
+  // --- Media upload/download ---
+  ChatDownloadUrlRequest: {
+    type: "object",
+    properties: {
+      objectKey: {
+        type: "string",
+        minLength: 1,
+        maxLength: 500,
+        description:
+          "Object key returned by /chat/media/upload-url (must start with chat-uploads/).",
+        example: "chat-uploads/<userId>/<uuid>.mp3",
+      },
+    },
+    required: ["objectKey"],
+  },
+  ChatDownloadUrlData: {
+    type: "object",
+    properties: {
+      objectKey: { type: "string" },
+      downloadUrl: {
+        type: "string",
+        format: "uri",
+        description:
+          "Short-lived presigned GET URL for playing/downloading the object.",
+      },
+    },
+    required: ["objectKey", "downloadUrl"],
+  },
+  ChatUploadUrlRequest: {
+    type: "object",
+    properties: {
+      filename: { type: "string", minLength: 1, maxLength: 255 },
+      contentType: {
+        type: "string",
+        enum: [
+          "image/jpeg",
+          "image/png",
+          "image/webp",
+          "image/gif",
+          "video/mp4",
+          "video/quicktime",
+          "audio/mpeg",
+          "audio/ogg",
+          "audio/wav",
+          "application/pdf",
+          "application/msword",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ],
+      },
+    },
+    required: ["filename", "contentType"],
+  },
+  ChatUploadUrlData: {
+    type: "object",
+    properties: {
+      objectKey: { type: "string", example: "chat-uploads/user123/abc.jpg" },
+      uploadUrl: { type: "string", format: "uri" },
+      contentType: { type: "string", example: "image/jpeg" },
+    },
+    required: ["objectKey", "uploadUrl", "contentType"],
+  },
+
+  // --- Calls ---
+  ChatCall: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      callId: { type: "string", format: "uuid" },
+      callerId: { type: "string", format: "uuid" },
+      calleeId: { type: "string", format: "uuid" },
+      type: { type: "string", enum: ["AUDIO", "VIDEO"] },
+      status: {
+        type: "string",
+        enum: [
+          "RINGING",
+          "IN_PROGRESS",
+          "ENDED",
+          "MISSED",
+          "DECLINED",
+          "FAILED",
+        ],
+      },
+      privateRoomId: { type: "string", nullable: true },
+      initiatedAt: { type: "string", format: "date-time" },
+      answeredAt: { type: "string", format: "date-time", nullable: true },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+      durationSec: { type: "integer", nullable: true },
+      endedBy: { type: "string", format: "uuid", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "callId",
+      "callerId",
+      "calleeId",
+      "type",
+      "status",
+      "initiatedAt",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ChatCallList: {
+    type: "object",
+    properties: {
+      calls: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCall" },
+      },
+      nextCursor: { type: "string", format: "date-time", nullable: true },
+      hasMore: { type: "boolean" },
+    },
+    required: ["calls", "nextCursor", "hasMore"],
+  },
+
+  // --- WebRTC ---
+  ChatIceServer: {
+    type: "object",
+    properties: {
+      urls: { type: "array", items: { type: "string" } },
+      username: { type: "string" },
+      credential: { type: "string" },
+      credentialType: { type: "string", enum: ["password", "oauth"] },
+    },
+    required: ["urls"],
+  },
+  ChatRtcConfiguration: {
+    type: "object",
+    properties: {
+      iceServers: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatIceServer" },
+      },
+      iceCandidatePoolSize: { type: "integer", example: 10 },
+      iceTransportPolicy: { type: "string", enum: ["all", "relay"] },
+    },
+    required: ["iceServers", "iceCandidatePoolSize", "iceTransportPolicy"],
+  },
+
+  // --- Message reactions ---
+  ChatReactionUser: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      displayName: { type: "string" },
+      avatar: { type: "string", nullable: true },
+    },
+    required: ["userId", "displayName", "avatar"],
+  },
+  ChatReactionGroup: {
+    type: "object",
+    properties: {
+      emoji: { type: "string", example: "👍" },
+      count: { type: "integer" },
+      users: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatReactionUser" },
+      },
+      selfReacted: { type: "boolean" },
+    },
+    required: ["emoji", "count", "users", "selfReacted"],
+  },
+  ChatMessageReactions: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      reactions: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatReactionGroup" },
+      },
+    },
+    required: ["messageId", "reactions"],
   },
 } as const;

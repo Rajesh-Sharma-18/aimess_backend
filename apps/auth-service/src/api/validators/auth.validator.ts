@@ -3,11 +3,11 @@ import { z } from "zod";
 export const accountSchema = z
   .string()
   .trim()
-  .toLowerCase()
+  // .toLowerCase()
   .min(3, "Account name must be at least 3 characters long")
   .max(32, "Account name cannot be longer than 32 characters")
   .regex(
-    /^[a-z0-9_]+$/,
+    /^[-a-zA-Z0-9_]+$/,
     "Account name can only contain letters, numbers, and underscores"
   );
 
@@ -22,15 +22,19 @@ export const passwordSchema = z
   .min(8, "Password must be at least 8 characters")
   .max(128, "Password must be at most 128 characters");
 
-/** FCM device push tokens — one or more, captured on register/login. */
+/**
+ * FCM device push tokens — optional, captured on register/login when available.
+ * When provided, the array must contain at least one non-empty token; clients
+ * that cannot obtain a push token (permission denied, web, emulator) omit it.
+ */
 export const fcmTokensSchema = z
   .array(z.string().trim().min(1, "FCM token cannot be empty"))
-  .min(1, "At least one FCM token is required");
+  .optional();
 
 export const registerSchema = z.object({
   account: accountSchema,
   password: passwordSchema,
-  fcmTokens: fcmTokensSchema,
+  fcmTokens: fcmTokensSchema.default([]),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
@@ -53,7 +57,7 @@ export const loginIdentifierSchema = z
 export const loginSchema = z.object({
   account: loginIdentifierSchema,
   password: passwordSchema,
-  fcmTokens: fcmTokensSchema,
+  fcmTokens: fcmTokensSchema.default([]),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

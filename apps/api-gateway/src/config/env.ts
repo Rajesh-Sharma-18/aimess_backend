@@ -16,8 +16,15 @@ const envSchema = z.object({
   AUTH_SERVICE_URL: z.string().url(),
   USER_SERVICE_URL: z.string().url().optional(),
   COMMUNITY_SERVICE_URL: z.string().url().optional(),
+  CHAT_SERVICE_URL: z.string().url().optional(),
   AUTH_GRPC_URL: z.string().optional(),
   USER_GRPC_URL: z.string().optional(),
+  /** gRPC URLs for socket-facing services (required — sockets cannot operate without them). */
+  MESSAGING_GRPC_URL: z.string().min(1),
+  COMMUNITY_GRPC_URL: z.string().min(1),
+  NOTIFICATION_GRPC_URL: z.string().min(1),
+  /** Same JWT secret as auth-service — used by socket auth middleware. */
+  JWT_ACCESS_SECRET: z.string().min(1),
   REDIS_URL: z.string(),
   CORS_ALLOWED_ORIGINS: z.string(),
   API_PUBLIC_URL: z.string().url().optional(),
@@ -31,10 +38,10 @@ const envSchema = z.object({
   /** Optional JSON policy file (default: apps/api-gateway/config/app-versions.json). */
   APP_VERSION_CONFIG_PATH: z.string().min(1).optional(),
   APP_VERSION_ANDROID_MANDATORY: semverLike.default("1.0.0"),
-  APP_VERSION_ANDROID_OPTIONAL: semverLike.default("1.2.0"),
+  APP_VERSION_ANDROID_OPTIONAL: semverLike.default("1.0.0"),
   APP_VERSION_ANDROID_STORE_URL: z.string().url().optional(),
   APP_VERSION_IOS_MANDATORY: semverLike.default("1.0.0"),
-  APP_VERSION_IOS_OPTIONAL: semverLike.default("1.2.0"),
+  APP_VERSION_IOS_OPTIONAL: semverLike.default("1.0.0"),
   APP_VERSION_IOS_STORE_URL: z.string().url().optional(),
 });
 

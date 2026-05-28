@@ -20,5 +20,5 @@ userRoutes.use("/uploads", uploadRoutes);
 userRoutes.use("/usernames", usernameRoutes);
 userRoutes.use("/profiles", profileRoutes);
 userRoutes.use("/friends", friendshipRoutes);
-userRoutes.use("/users", usersRoutes);
-userRoutes.use("/users/internal", internalRoutes);
+userRoutes.use("/", usersRoutes);
+userRoutes.use("/internal", internalRoutes);

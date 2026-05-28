@@ -1,7 +1,10 @@
+import { randomBytes } from "node:crypto";
+
 import {
   BadRequestError,
   ConflictError,
   ForbiddenError,
+  GoneError,
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
@@ -12,35 +15,71 @@ import {
   assertCommunityRole,
   COMMUNITY_ROLE_RANK,
 } from "../lib/community-authz.js";
-import { paginateByCursor } from "../lib/cursor-pagination.js";
-import { normalizeHandle, normalizeName } from "../lib/community-slug.util.js";
 import {
+  buildPaginatedResponse,
+  type PaginatedResponse,
+} from "../lib/pagination.js";
+import { normalizeHandle, normalizeName } from "../lib/community-slug.util.js";
+import { env } from "../config/env.js";
+import {
+  CommunityInviteStatus,
+  CommunityJoinReqStatus,
   CommunityMemberRole,
   CommunityMemberStatus,
+  CommunityReportStatus,
+  CommunityType,
   Prisma,
   type Community,
-  type CommunityType,
+  type CommunityInvite,
+  type CommunityInviteLink,
+  type CommunityJoinRequest,
+  type CommunityReport,
 } from "../generated/prisma/index.js";
 import type {
   AddMembersResult,
   CommunityAuditAction,
   CommunityAuditLogData,
-  CommunityAuditLogsResult,
   CommunityAvailability,
   CommunityCategoryData,
   CommunityData,
+  CommunityDiscoverItem,
+  CommunityInviteData,
+  CommunityInviteLinkData,
+  CommunityInviteWithUserData,
+  CommunityJoinRequestData,
+  CommunityJoinRequestWithUserData,
   CommunityListItem,
   CommunityMemberData,
-  CommunityMembersResult,
-  MyCommunitiesResult,
+  CommunityMuteData,
+  CommunityReportData,
+  CommunityReportWithUsersData,
+  MyInviteData,
+  MyJoinRequestData,
+  MyReportData,
 } from "../types/community.types.js";
 import { communityImageService } from "./community-image.service.js";
 import { memberAvatarService } from "./member-avatar.service.js";
-import { fetchUserSnapshots } from "../lib/user-client.js";
+import {
+  fetchAcceptedFriendIds,
+  fetchUserSnapshots,
+} from "../lib/user-client.js";
 import type {
   CreateCommunityInput,
   UpdateCommunityInput,
 } from "../api/validators/community.validator.js";
+import {
+  publishCommunityAdminTransferredSafe,
+  publishCommunityDeletedSafe,
+  publishCommunityInviteAcceptedSafe,
+  publishCommunityInviteSentSafe,
+  publishCommunityJoinRequestedSafe,
+  publishCommunityMemberAddedSafe,
+  publishCommunityMemberBannedSafe,
+  publishCommunityMemberKickedSafe,
+  publishCommunityMemberRoleChangedSafe,
+  publishCommunityReportActionedSafe,
+  publishCommunityReportCreatedSafe,
+} from "../messaging/publish-community.js";
 
 type CommunityWithCategory = Community & {
   category: { id: string; name: string };
@@ -73,11 +112,16 @@ function uniqueViolationToConflict(
 
 async function toCommunityData(
   community: CommunityWithCategory,
-  myRole: CommunityMemberRole | null
+  myRole: CommunityMemberRole | null,
+  muteRow: { mutedUntil: Date | null } | null
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
+
+  const myIsMuted = !!muteRow;
+  const myMuteUntil =
+    muteRow && muteRow.mutedUntil ? muteRow.mutedUntil.toISOString() : null;
 
   return {
     id: community.id,
@@ -94,8 +138,40 @@ async function toCommunityData(
     coverUrl: null,
     coverUrlExpiresIn: null,
     myRole,
+    myIsMuted,
+    myMuteUntil,
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
+  };
+}
+
+/** Map a community row to the discovery/browse DTO (resolves avatar URL). */
+async function toDiscoverItem(community: {
+  id: string;
+  name: string;
+  handle: string;
+  description: string | null;
+  type: CommunityType;
+  memberCount: number;
+  avatarUrl: string | null;
+  createdAt: Date;
+  category: { id: string; name: string };
+}): Promise<CommunityDiscoverItem> {
+  const avatarView = await communityImageService.resolveViewUrlForClient(
+    community.avatarUrl
+  );
+
+  return {
+    id: community.id,
+    name: community.name,
+    handle: community.handle,
+    description: community.description,
+    type: community.type,
+    category: { id: community.category.id, name: community.category.name },
+    memberCount: community.memberCount,
+    avatarUrl: avatarView?.url ?? null,
+    avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    createdAt: community.createdAt.toISOString(),
   };
 }
 
@@ -126,6 +202,190 @@ async function toMemberData(member: {
 }
 
 /** Map an audit-log row to the API DTO (createdAt → ISO string). */
+/**
+ * Auto-handover sequence used when an admin leaves. Promotes `successorUserId`
+ * to ADMIN, transfers ownership, demotes the leaving admin to MEMBER, marks
+ * them LEFT, recomputes memberCount, audits, logs. No `$transaction`: standalone
+ * Mongo does not support interactive transactions — order matters so the
+ * community always has a valid admin.
+ */
+async function handoverAdminTo(
+  community: CommunityWithCategory,
+  callerId: string,
+  successorUserId: string
+): Promise<CommunityMemberData> {
+  // 1. Promote the successor → ADMIN.
+  await communityRepository.updateMemberRole(
+    community.id,
+    successorUserId,
+    CommunityMemberRole.ADMIN
+  );
+  // 2. Transfer community ownership.
+  await communityRepository.setCommunityAdmin(community.id, successorUserId);
+  // 3. Demote the leaving admin's row to MEMBER.
+  await communityRepository.updateMemberRole(
+    community.id,
+    callerId,
+    CommunityMemberRole.MEMBER
+  );
+  // 4. Mark the leaving admin LEFT.
+  const updated = await communityRepository.updateMemberStatus(
+    community.id,
+    callerId,
+    CommunityMemberStatus.LEFT
+  );
+  // 5. Recompute memberCount (robust against drift).
+  const count = await communityRepository.countActiveMembers(community.id);
+  await communityRepository.setMemberCount(community.id, count);
+  // 6. Audit the handover.
+  await communityService.recordAudit({
+    communityId: community.id,
+    actorId: callerId,
+    action: "ADMIN_TRANSFERRED",
+    targetUserId: successorUserId,
+    metadata: { reason: "admin_left_auto_handover" },
+  });
+  // 7. Structured log.
+  logger.info(
+    `Community admin auto-handover on leave: community=${community.id} from=${callerId} to=${successorUserId}`
+  );
+
+  publishCommunityAdminTransferredSafe({
+    communityId: community.id,
+    eventAt: new Date().toISOString(),
+    actorId: callerId,
+    targetUserId: successorUserId,
+    reason: "admin_left_auto_handover",
+  });
+
+  return toMemberData(updated);
+}
+
+function toJoinRequestData(
+  row: CommunityJoinRequest
+): CommunityJoinRequestData {
+  return {
+    requestId: row.id,
+    communityId: row.communityId,
+    userId: row.userId,
+    status: row.status,
+    message: row.message,
+    decidedBy: row.decidedBy,
+    decidedAt: row.decidedAt ? row.decidedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function toInviteData(row: CommunityInvite): CommunityInviteData {
+  return {
+    inviteId: row.id,
+    communityId: row.communityId,
+    inviterId: row.inviterId,
+    inviteeId: row.inviteeId,
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function toReportData(row: CommunityReport): CommunityReportData {
+  return {
+    reportId: row.id,
+    communityId: row.communityId,
+    reporterId: row.reporterId,
+    targetUserId: row.targetUserId,
+    reason: row.reason,
+    status: row.status,
+    reviewedBy: row.reviewedBy,
+    reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : null,
+    resolution: row.resolution,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * Resolve a community summary row (from `findCommunitiesByIds`) into the
+ * "my list" embedded shape (presigned avatar URL).
+ */
+async function toEmbeddedCommunitySummary(community: {
+  id: string;
+  name: string;
+  handle: string;
+  type: CommunityType;
+  memberCount: number;
+  avatarUrl: string | null;
+}) {
+  const avatarView = await communityImageService.resolveViewUrlForClient(
+    community.avatarUrl
+  );
+  return {
+    id: community.id,
+    name: community.name,
+    handle: community.handle,
+    type: community.type,
+    memberCount: community.memberCount,
+    avatarUrl: avatarView?.url ?? null,
+    avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+  };
+}
+
+/** Snapshot + presigned avatar URL view used by mod-facing list rows. */
+async function buildUserSnapshotView(
+  snapshot: {
+    username: string;
+    displayName: string;
+    avatarObjectKey: string | null;
+  },
+  userId: string
+) {
+  const avatarView = await memberAvatarService.resolveViewUrl(
+    snapshot.avatarObjectKey
+  );
+  return {
+    userId,
+    username: snapshot.username,
+    displayName: snapshot.displayName,
+    avatarUrl: avatarView?.url ?? null,
+    avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+  };
+}
+
+function generateInviteCode(): string {
+  // ~8 URL-safe chars; collision rate is negligible at expected volumes and the
+  // create flow retries on P2002 up to 3 times.
+  return randomBytes(6).toString("base64url");
+}
+
+function buildInviteUrl(code: string): string {
+  return env.INVITE_LINK_BASE_URL
+    ? `${env.INVITE_LINK_BASE_URL}/${code}`
+    : code;
+}
+
+function toInviteLinkData(row: CommunityInviteLink): CommunityInviteLinkData {
+  const now = Date.now();
+  const isActive =
+    !row.revokedAt &&
+    (!row.expiresAt || row.expiresAt.getTime() > now) &&
+    (row.maxUses === null || row.usedCount < row.maxUses);
+  return {
+    linkId: row.id,
+    code: row.code,
+    url: buildInviteUrl(row.code),
+    communityId: row.communityId,
+    createdBy: row.createdBy,
+    maxUses: row.maxUses,
+    usedCount: row.usedCount,
+    autoApprove: row.autoApprove,
+    expiresAt: row.expiresAt?.toISOString() ?? null,
+    revokedAt: row.revokedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    isActive,
+  };
+}
+
 function toAuditLogData(log: {
   id: string;
   communityId: string;
@@ -208,7 +468,11 @@ export const communityService = {
       membership && membership.status === CommunityMemberStatus.ACTIVE
         ? membership.role
         : null;
-    return toCommunityData(community, myRole);
+    const muteRow = await communityRepository.findMuteByUserAndCommunity(
+      callerId,
+      id
+    );
+    return toCommunityData(community, myRole, muteRow);
   },
 
   async create(
@@ -234,8 +498,18 @@ export const communityService = {
         )
       : null;
 
-    // Member list excludes the creator (added as ADMIN below).
-    const memberIds = input.memberIds.filter((id) => id !== creatorId);
+    // Self-exclude (creator is added as ADMIN below).
+    const requestedMemberIds = input.memberIds.filter((id) => id !== creatorId);
+
+    // Server-side friend validation: silently drop any candidate the creator is
+    // not ACCEPTED friends with. On user-service failure, fetchAcceptedFriendIds
+    // returns an empty set so nothing extra is added — community is still created
+    // with just the creator. Decision B3: no override.
+    const friendSet =
+      requestedMemberIds.length > 0
+        ? await fetchAcceptedFriendIds(creatorId, requestedMemberIds)
+        : new Set<string>();
+    const memberIds = requestedMemberIds.filter((id) => friendSet.has(id));
 
     // NO $transaction: local Mongo is a standalone node (no replica set), so
     // Prisma interactive transactions fail at runtime. Use sequential writes +
@@ -309,7 +583,8 @@ export const communityService = {
     await communityCache.invalidateNameAvailability(name);
     await communityCache.invalidateHandleAvailability(handle);
 
-    return toCommunityData(community, CommunityMemberRole.ADMIN);
+    // A brand-new community has no mute row for the creator.
+    return toCommunityData(community, CommunityMemberRole.ADMIN, null);
   },
 
   /** Best-effort rollback of a community whose member writes failed. */
@@ -440,23 +715,22 @@ export const communityService = {
       await communityCache.invalidateHandleAvailability(nextHandle);
     }
 
-    return toCommunityData(updated, membership.role);
+    // Admin who just patched the community isn't asking about mute — skip read.
+    return toCommunityData(updated, membership.role, null);
   },
 
   async listMine(
     userId: string,
-    params: { limit: number; cursor?: string }
-  ): Promise<MyCommunitiesResult> {
-    const rows = await communityRepository.listMyMemberships({
+    params: { page: number; limit: number }
+  ): Promise<PaginatedResponse<CommunityListItem>> {
+    const { rows, total } = await communityRepository.listMyMemberships({
       userId,
+      page: params.page,
       limit: params.limit,
-      cursor: params.cursor,
     });
 
-    const { page, nextCursor } = paginateByCursor(rows, params.limit);
-
     const communities: CommunityListItem[] = await Promise.all(
-      page.map(async (row) => {
+      rows.map(async (row) => {
         const avatarView = await communityImageService.resolveViewUrlForClient(
           row.community.avatarUrl
         );
@@ -473,41 +747,91 @@ export const communityService = {
       })
     );
 
-    return { communities, nextCursor };
+    return buildPaginatedResponse(
+      communities,
+      total,
+      params.page,
+      params.limit
+    );
+  },
+
+  /**
+   * Public discovery / browse / search. Returns PUBLIC communities the caller is
+   * not already in (active/pending/banned are excluded). The "live"/"upcoming"
+   * filters depend on livestream data (stream-service), which does not exist
+   * yet, so they return an empty page rather than misleading results.
+   */
+  async discover(
+    userId: string,
+    params: {
+      q?: string;
+      categoryId?: string;
+      filter: "all" | "live" | "upcoming";
+      page: number;
+      limit: number;
+    }
+  ): Promise<PaginatedResponse<CommunityDiscoverItem>> {
+    if (params.filter !== "all") {
+      // Livestream-based discovery is not available until stream-service ships.
+      return buildPaginatedResponse([], 0, params.page, params.limit);
+    }
+
+    const excludeCommunityIds =
+      await communityRepository.listExcludedCommunityIds(userId);
+
+    const { rows, total } = await communityRepository.listDiscoverable({
+      q: params.q,
+      categoryId: params.categoryId,
+      excludeCommunityIds,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const communities: CommunityDiscoverItem[] = await Promise.all(
+      rows.map((row) => toDiscoverItem(row))
+    );
+
+    return buildPaginatedResponse(
+      communities,
+      total,
+      params.page,
+      params.limit
+    );
   },
 
   async listMembers(
     communityId: string,
     callerId: string,
-    params: { limit: number; cursor?: string; status?: CommunityMemberStatus }
-  ): Promise<CommunityMembersResult> {
+    params: { page: number; limit: number; status?: CommunityMemberStatus }
+  ): Promise<PaginatedResponse<CommunityMemberData>> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // Any ACTIVE member (regardless of role) may view the roster.
-    const membership = await communityRepository.findMembership(
-      communityId,
-      callerId
-    );
-    assertCommunityRole(membership, CommunityMemberRole.MEMBER);
+    // PUBLIC communities: roster is visible to any caller. PRIVATE
+    // communities remain member-only (moderator/member) as before.
+    if (community.type === CommunityType.PRIVATE) {
+      const membership = await communityRepository.findMembership(
+        communityId,
+        callerId
+      );
+      assertCommunityRole(membership, CommunityMemberRole.MEMBER);
+    }
 
     const status = params.status ?? CommunityMemberStatus.ACTIVE;
-    const rows = await communityRepository.listMembers({
+    const { rows, total } = await communityRepository.listMembers({
       communityId,
       status,
+      page: params.page,
       limit: params.limit,
-      cursor: params.cursor,
     });
 
-    const { page, nextCursor } = paginateByCursor(rows, params.limit);
-
     const members: CommunityMemberData[] = await Promise.all(
-      page.map(toMemberData)
+      rows.map(toMemberData)
     );
 
-    return { members, nextCursor };
+    return buildPaginatedResponse(members, total, params.page, params.limit);
   },
 
   async updateMemberRole(
@@ -569,6 +893,15 @@ export const communityService = {
           : "MEMBER_DEMOTED",
       targetUserId,
       metadata: { role },
+    });
+
+    publishCommunityMemberRoleChangedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+      oldRole: target.role,
+      newRole: role,
     });
 
     return toMemberData(updated);
@@ -645,6 +978,14 @@ export const communityService = {
       `Community member kicked: community=${communityId} by=${callerId} target=${targetUserId} reason=${reason ?? "(none)"}`
     );
 
+    publishCommunityMemberKickedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+      reason: reason ?? null,
+    });
+
     return toMemberData(updated);
   },
 
@@ -715,6 +1056,14 @@ export const communityService = {
       `Community member banned: community=${communityId} by=${callerId} target=${targetUserId} reason=${reason ?? "(none)"}`
     );
 
+    publishCommunityMemberBannedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+      reason: reason ?? null,
+    });
+
     return toMemberData(updated);
   },
 
@@ -735,6 +1084,12 @@ export const communityService = {
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
 
+    // Server-side friend validation BEFORE existing-row partitioning. Any
+    // candidate not an ACCEPTED friend of the caller is skipped as NOT_FRIEND.
+    // On user-service failure, fetchAcceptedFriendIds returns an empty set so
+    // all candidates are skipped — conservative by design (Decision B8).
+    // const friendSet = await fetchAcceptedFriendIds(callerId, userIds);
+
     // One read of all existing rows for the requested ids (incl. joinedAt),
     // then partition by status: ACTIVE → skip, BANNED → skip, LEFT →
     // reactivate, none → create.
@@ -753,6 +1108,19 @@ export const communityService = {
     const toCreate: string[] = [];
 
     for (const userId of userIds) {
+      // Caller is always ACTIVE in a community where they hold MODERATOR rank,
+      // but the friend-check would otherwise mark them NOT_FRIEND (a user is
+      // not their own friend). Classify them as ALREADY_MEMBER first.
+      if (userId === callerId) {
+        skipped.push({ userId, reason: "ALREADY_MEMBER" });
+        continue;
+      }
+      // Friend check runs before existing-row classification — do NOT
+      // re-classify NOT_FRIEND ids as ALREADY_MEMBER / BANNED / reactivate.
+      // if (!friendSet.has(userId)) {
+      //   skipped.push({ userId, reason: "NOT_FRIEND" });
+      //   continue;
+      // }
       const member = existingByUserId.get(userId);
       if (!member) {
         toCreate.push(userId);
@@ -831,6 +1199,21 @@ export const communityService = {
       }
 
       added = [...reactivated, ...created];
+
+      // Emit MEMBER_ADDED once per added user (skipped[] are NOT emitted).
+      const eventAt = new Date().toISOString();
+      for (const userId of [
+        ...toReactivate.map((m) => m.userId),
+        ...toCreate,
+      ]) {
+        publishCommunityMemberAddedSafe({
+          communityId,
+          eventAt,
+          actorId: callerId,
+          targetUserId: userId,
+          via: "add_members",
+        });
+      }
     }
 
     return { added, skipped };
@@ -838,7 +1221,8 @@ export const communityService = {
 
   async leaveCommunity(
     communityId: string,
-    callerId: string
+    callerId: string,
+    reasonInput?: { reason: string | null; reasonText: string | null }
   ): Promise<CommunityMemberData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -853,64 +1237,94 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
     }
 
+    // Capture leave-reason metadata once — recorded in MEMBER_LEFT audit in
+    // every branch (admin handover / auto-delete / non-admin).
+    const leaveReason = reasonInput?.reason ?? null;
+    const leaveReasonText = reasonInput?.reasonText ?? null;
+    const leaveMeta = { reason: leaveReason, reasonText: leaveReasonText };
+
     const isAdmin =
       community.adminId === callerId ||
       membership.role === CommunityMemberRole.ADMIN;
 
     if (isAdmin) {
-      // Admin leaving → auto-handover to the longest-tenured active moderator.
-      const successor =
+      // 1) Prefer the longest-tenured ACTIVE moderator as successor.
+      const modSuccessor =
         await communityRepository.findOldestActiveModerator(communityId);
-
-      // No moderator to hand over to — the admin cannot leave.
-      if (!successor) {
-        throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
+      if (modSuccessor) {
+        // Record "user left" BEFORE the handover audit/publish (order: user
+        // left, then admin transferred).
+        await this.recordAudit({
+          communityId,
+          actorId: callerId,
+          action: "MEMBER_LEFT",
+          targetUserId: callerId,
+          metadata: leaveMeta,
+        });
+        return handoverAdminTo(community, callerId, modSuccessor.userId);
       }
 
-      // No $transaction (standalone Mongo), so ORDER MATTERS — the community
-      // must always have a valid admin. Promote + transfer ownership first,
-      // then demote the leaving admin and mark them LEFT.
-      // 1. Promote the successor moderator to ADMIN.
-      await communityRepository.updateMemberRole(
+      // 2) Fall back to the longest-tenured ACTIVE member (excluding the
+      // leaving admin).
+      const memberSuccessor = await communityRepository.findOldestActiveMember(
         communityId,
-        successor.userId,
-        CommunityMemberRole.ADMIN
+        callerId
       );
-      // 2. Transfer community ownership.
-      await communityRepository.setCommunityAdmin(
-        communityId,
-        successor.userId
-      );
-      // 3. Demote the leaving admin's row, then mark it LEFT.
-      await communityRepository.updateMemberRole(
-        communityId,
-        callerId,
-        CommunityMemberRole.MEMBER
-      );
+      if (memberSuccessor) {
+        await this.recordAudit({
+          communityId,
+          actorId: callerId,
+          action: "MEMBER_LEFT",
+          targetUserId: callerId,
+          metadata: leaveMeta,
+        });
+        return handoverAdminTo(community, callerId, memberSuccessor.userId);
+      }
+
+      // 3) No successor at all — the admin is the only active member. Soft-
+      // delete the community. ORDER MATTERS (no $transaction): soft-delete
+      // first so any concurrent reader gets COMMUNITY_NOT_FOUND.
+      await communityRepository.updateCommunity(communityId, {
+        deletedAt: new Date(),
+      });
       const updated = await communityRepository.updateMemberStatus(
         communityId,
         callerId,
         CommunityMemberStatus.LEFT
       );
-      // 4. Recompute memberCount (robust against drift).
-      const count = await communityRepository.countActiveMembers(communityId);
-      await communityRepository.setMemberCount(communityId, count);
+      await communityRepository.setMemberCount(communityId, 0);
 
-      // 5. Audit the handover.
+      // MEMBER_LEFT recorded BEFORE COMMUNITY_DELETED so the order in the
+      // audit log reads "user left → community deleted".
       await this.recordAudit({
         communityId,
         actorId: callerId,
-        action: "ADMIN_TRANSFERRED",
-        targetUserId: successor.userId,
-        metadata: { reason: "admin_left_auto_handover" },
+        action: "MEMBER_LEFT",
+        targetUserId: callerId,
+        metadata: leaveMeta,
       });
 
-      // 6. Structured log of the handover.
+      await this.recordAudit({
+        communityId,
+        actorId: callerId,
+        action: "COMMUNITY_DELETED",
+        metadata: { reason: "admin_left_no_successor" },
+      });
+
+      await communityCache.invalidateNameAvailability(community.name);
+      await communityCache.invalidateHandleAvailability(community.handle);
+
       logger.info(
-        `Community admin auto-handover on leave: community=${communityId} from=${callerId} to=${successor.userId}`
+        `Community auto-deleted on admin leave (no successor): community=${communityId} by=${callerId}`
       );
 
-      // 7. Unchanged response contract — the leaving member DTO (status LEFT).
+      publishCommunityDeletedSafe({
+        communityId,
+        eventAt: new Date().toISOString(),
+        actorId: callerId,
+        reason: "admin_left_no_successor",
+      });
+
       return toMemberData(updated);
     }
 
@@ -924,6 +1338,14 @@ export const communityService = {
 
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "MEMBER_LEFT",
+      targetUserId: callerId,
+      metadata: leaveMeta,
+    });
 
     return toMemberData(updated);
   },
@@ -979,11 +1401,154 @@ export const communityService = {
     return toMemberData(updated);
   },
 
+  async joinCommunity(
+    communityId: string,
+    callerId: string
+  ): Promise<CommunityJoinRequestData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+    // For PUBLIC communities, create a join request (PENDING) rather than
+    // immediately adding the member. PRIVATE communities still require an
+    // explicit invite/add by an admin.
+    if (community.type !== CommunityType.PUBLIC) {
+      throw new ForbiddenError("COMMUNITY_JOIN_REQUIRES_INVITE");
+    }
+
+    // Reuse the createJoinRequest pipeline (which handles mutual-want
+    // auto-accept if a 1:1 invite exists). Pass `null` as the optional
+    // message since this endpoint is the simple "Join" action.
+    return this.createJoinRequest(communityId, callerId, null);
+  },
+
+  async transferAdmin(
+    communityId: string,
+    callerId: string,
+    targetUserId: string
+  ): Promise<CommunityData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    // Only an ACTIVE admin may transfer the admin role.
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
+
+    if (callerId === targetUserId) {
+      throw new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_SELF");
+    }
+
+    const target = await communityRepository.findMemberByUserId(
+      communityId,
+      targetUserId
+    );
+    if (!target || target.status !== CommunityMemberStatus.ACTIVE) {
+      throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
+    }
+
+    // Defensive: target should never already be ADMIN here (only one admin
+    // exists), but guard against a drift between adminId and member.role.
+    if (target.role === CommunityMemberRole.ADMIN) {
+      throw new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_ADMIN");
+    }
+
+    // No $transaction (standalone Mongo). ORDER MATTERS so the community
+    // always has a valid admin:
+    // 1) promote target → ADMIN, 2) transfer ownership, 3) demote caller →
+    // MEMBER (caller stays ACTIVE — Telegram-style hand-off).
+    await communityRepository.updateMemberRole(
+      communityId,
+      targetUserId,
+      CommunityMemberRole.ADMIN
+    );
+    await communityRepository.setCommunityAdmin(communityId, targetUserId);
+    await communityRepository.updateMemberRole(
+      communityId,
+      callerId,
+      CommunityMemberRole.MEMBER
+    );
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "ADMIN_TRANSFERRED",
+      targetUserId,
+      metadata: { reason: "explicit_transfer" },
+    });
+
+    logger.info(
+      `Community admin explicit-transfer: community=${communityId} from=${callerId} to=${targetUserId}`
+    );
+
+    publishCommunityAdminTransferredSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+      reason: "explicit_transfer",
+    });
+
+    const refreshed = await communityRepository.findById(communityId);
+    if (!refreshed) {
+      // Should not happen — soft-delete cannot race an admin-only operation.
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+    // Caller is now a plain MEMBER in the refreshed community.
+    return toCommunityData(refreshed, CommunityMemberRole.MEMBER, null);
+  },
+
+  async deleteCommunity(communityId: string, callerId: string): Promise<void> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    // Only an ACTIVE admin may delete (Telegram/Discord-style — works even
+    // when other ACTIVE members are present).
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
+
+    // No $transaction (standalone Mongo). ORDER MATTERS: soft-delete first so
+    // any concurrent reader gets COMMUNITY_NOT_FOUND while we evict members.
+    await communityRepository.updateCommunity(communityId, {
+      deletedAt: new Date(),
+    });
+    await communityRepository.markAllActiveMembersLeft(communityId);
+    await communityRepository.setMemberCount(communityId, 0);
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "COMMUNITY_DELETED",
+      metadata: { reason: "explicit_delete" },
+    });
+
+    await communityCache.invalidateNameAvailability(community.name);
+    await communityCache.invalidateHandleAvailability(community.handle);
+
+    logger.info(`Community deleted: community=${communityId} by=${callerId}`);
+
+    publishCommunityDeletedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      reason: "explicit_delete",
+    });
+  },
+
   async listAuditLogs(
     communityId: string,
     callerId: string,
-    params: { limit: number; cursor?: string }
-  ): Promise<CommunityAuditLogsResult> {
+    params: { page: number; limit: number }
+  ): Promise<PaginatedResponse<CommunityAuditLogData>> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
@@ -996,16 +1561,1397 @@ export const communityService = {
     );
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
 
-    const rows = await communityRepository.listAuditLogs({
+    const { rows, total } = await communityRepository.listAuditLogs({
       communityId,
+      page: params.page,
       limit: params.limit,
-      cursor: params.cursor,
     });
 
-    const { page, nextCursor } = paginateByCursor(rows, params.limit);
+    const logs: CommunityAuditLogData[] = rows.map(toAuditLogData);
 
-    const logs: CommunityAuditLogData[] = page.map(toAuditLogData);
+    return buildPaginatedResponse(logs, total, params.page, params.limit);
+  },
 
-    return { logs, nextCursor };
+  // ---------------------------------------------------------------------------
+  // Join requests
+  // ---------------------------------------------------------------------------
+  async createJoinRequest(
+    communityId: string,
+    callerId: string,
+    message: string | null
+  ): Promise<CommunityJoinRequestData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    // Join requests are allowed for both PUBLIC and PRIVATE communities.
+    // PUBLIC: user-initiated joins create a PENDING request for moderators
+    // to approve. PRIVATE: users may not self-join but may still create an
+    // explicit request via UI (or the server may accept moderator-created
+    // add-members/invites). Keep the existing mutual-want auto-accept logic
+    // below.
+
+    const existingMember = await communityRepository.findMemberByUserId(
+      communityId,
+      callerId
+    );
+    if (existingMember?.status === CommunityMemberStatus.ACTIVE) {
+      throw new ConflictError("COMMUNITY_ALREADY_MEMBER");
+    }
+    if (existingMember?.status === CommunityMemberStatus.BANNED) {
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+
+    // No auto-accept paths: always create a join request for moderators to
+    // review. (Mutual-want auto-accept removed per policy.)
+
+    const existingRequest =
+      await communityRepository.findJoinRequestByCommunityAndUser(
+        communityId,
+        callerId
+      );
+
+    let row: CommunityJoinRequest;
+    // Gate the JOIN_REQUESTED publish so the idempotent "same PENDING return"
+    // does NOT emit (would spam if a client retries). Fresh create + recycled
+    // request both count as "new" for downstream consumers.
+    let isNewOrRecycled = false;
+    if (!existingRequest) {
+      row = await communityRepository.createJoinRequest({
+        communityId,
+        userId: callerId,
+        message,
+      });
+      isNewOrRecycled = true;
+    } else if (existingRequest.status === CommunityJoinReqStatus.PENDING) {
+      row = existingRequest;
+    } else {
+      row = await communityRepository.recyclePendingJoinRequest(
+        existingRequest.id,
+        message
+      );
+      isNewOrRecycled = true;
+    }
+
+    logger.info(
+      `Community join-request created: community=${communityId} user=${callerId} request=${row.id} status=${row.status}`
+    );
+
+    if (isNewOrRecycled) {
+      publishCommunityJoinRequestedSafe({
+        communityId,
+        eventAt: new Date().toISOString(),
+        userId: callerId,
+        requestId: row.id,
+        message,
+      });
+    }
+
+    return toJoinRequestData(row);
+  },
+
+  async listCommunityJoinRequests(
+    communityId: string,
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      status?: CommunityJoinReqStatus;
+    }
+  ): Promise<PaginatedResponse<CommunityJoinRequestWithUserData>> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const status = params.status ?? CommunityJoinReqStatus.PENDING;
+    const { rows, total } = await communityRepository.listCommunityJoinRequests(
+      {
+        communityId,
+        status,
+        page: params.page,
+        limit: params.limit,
+      }
+    );
+
+    const items: CommunityJoinRequestWithUserData[] = [];
+    if (rows.length > 0) {
+      const snapshotMap = await fetchUserSnapshots(rows.map((r) => r.userId));
+      for (const row of rows) {
+        const snap = snapshotMap.get(row.userId)!;
+        const user = await buildUserSnapshotView(snap, row.userId);
+        items.push({ ...toJoinRequestData(row), user });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  async listMyJoinRequests(
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      status?: CommunityJoinReqStatus;
+    }
+  ): Promise<PaginatedResponse<MyJoinRequestData>> {
+    const { rows, total } = await communityRepository.listMyJoinRequests({
+      userId: callerId,
+      status: params.status,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: MyJoinRequestData[] = [];
+    if (rows.length > 0) {
+      const communityIds = [...new Set(rows.map((r) => r.communityId))];
+      const communities =
+        await communityRepository.findCommunitiesByIds(communityIds);
+      const communityMap = new Map(communities.map((c) => [c.id, c]));
+
+      for (const row of rows) {
+        const community = communityMap.get(row.communityId);
+        if (!community) continue; // soft-deleted; best-effort filter
+        items.push({
+          ...toJoinRequestData(row),
+          community: await toEmbeddedCommunitySummary(community),
+        });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  async approveJoinRequest(
+    communityId: string,
+    callerId: string,
+    requestId: string
+  ): Promise<{
+    request: CommunityJoinRequestData;
+    member: CommunityMemberData;
+  }> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+
+    const request = await communityRepository.findJoinRequestById(requestId);
+    if (!request || request.communityId !== communityId) {
+      throw new NotFoundError("COMMUNITY_JOIN_REQUEST_NOT_FOUND");
+    }
+
+    // Idempotent: already-APPROVED requests return the existing member row.
+    if (request.status === CommunityJoinReqStatus.APPROVED) {
+      const existing = await communityRepository.findMemberByUserId(
+        communityId,
+        request.userId
+      );
+      if (existing) {
+        return {
+          request: toJoinRequestData(request),
+          member: await toMemberData(existing),
+        };
+      }
+      logger.warn(
+        `approveJoinRequest: APPROVED request ${requestId} has no member row; re-writing`
+      );
+    } else if (request.status !== CommunityJoinReqStatus.PENDING) {
+      throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
+    }
+
+    // A12 race: re-read member state.
+    const targetMember = await communityRepository.findMemberByUserId(
+      communityId,
+      request.userId
+    );
+    if (targetMember?.status === CommunityMemberStatus.ACTIVE) {
+      // Already a member — mark request APPROVED + return idempotently.
+      const updated = await communityRepository.updateJoinRequest(requestId, {
+        status: CommunityJoinReqStatus.APPROVED,
+        decidedBy: callerId,
+        decidedAt: new Date(),
+      });
+      return {
+        request: toJoinRequestData(updated),
+        member: await toMemberData(targetMember),
+      };
+    }
+    if (targetMember?.status === CommunityMemberStatus.BANNED) {
+      // Defensive: close the request out as REJECTED before throwing.
+      try {
+        await communityRepository.updateJoinRequest(requestId, {
+          status: CommunityJoinReqStatus.REJECTED,
+          decidedBy: callerId,
+          decidedAt: new Date(),
+        });
+      } catch (closeErr) {
+        logger.error(
+          `Failed to close BANNED-race join-request ${requestId} during approve`
+        );
+        logger.error(closeErr);
+      }
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+
+    const snapshotMap = await fetchUserSnapshots([request.userId]);
+    const snap = snapshotMap.get(request.userId)!;
+
+    if (targetMember?.status === CommunityMemberStatus.LEFT) {
+      await communityRepository.reactivateMemberWithSnapshot(
+        communityId,
+        request.userId,
+        {
+          snapshotUsername: snap.username,
+          snapshotDisplayName: snap.displayName,
+          snapshotAvatarKey: snap.avatarObjectKey,
+        }
+      );
+    } else {
+      await communityRepository.createMember({
+        communityId,
+        userId: request.userId,
+        role: CommunityMemberRole.MEMBER,
+        status: CommunityMemberStatus.ACTIVE,
+        snapshotUsername: snap.username,
+        snapshotDisplayName: snap.displayName,
+        snapshotAvatarKey: snap.avatarObjectKey,
+      });
+    }
+
+    const count = await communityRepository.countActiveMembers(communityId);
+    await communityRepository.setMemberCount(communityId, count);
+
+    const updatedRequest = await communityRepository.updateJoinRequest(
+      requestId,
+      {
+        status: CommunityJoinReqStatus.APPROVED,
+        decidedBy: callerId,
+        decidedAt: new Date(),
+      }
+    );
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "JOIN_REQUEST_APPROVED",
+      targetUserId: request.userId,
+      metadata: { requestId },
+    });
+
+    logger.info(
+      `Community join-request approved: community=${communityId} request=${requestId} approver=${callerId} target=${request.userId}`
+    );
+
+    publishCommunityMemberAddedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId: request.userId,
+      via: "join_request_approved",
+    });
+
+    const row = await communityRepository.findMemberByUserId(
+      communityId,
+      request.userId
+    );
+    return {
+      request: toJoinRequestData(updatedRequest),
+      member: await toMemberData(row!),
+    };
+  },
+
+  async rejectJoinRequest(
+    communityId: string,
+    callerId: string,
+    requestId: string
+  ): Promise<CommunityJoinRequestData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const request = await communityRepository.findJoinRequestById(requestId);
+    if (!request || request.communityId !== communityId) {
+      throw new NotFoundError("COMMUNITY_JOIN_REQUEST_NOT_FOUND");
+    }
+    if (request.status !== CommunityJoinReqStatus.PENDING) {
+      throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
+    }
+
+    const updated = await communityRepository.updateJoinRequest(requestId, {
+      status: CommunityJoinReqStatus.REJECTED,
+      decidedBy: callerId,
+      decidedAt: new Date(),
+    });
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "JOIN_REQUEST_REJECTED",
+      targetUserId: request.userId,
+      metadata: { requestId },
+    });
+
+    return toJoinRequestData(updated);
+  },
+
+  async cancelJoinRequest(
+    communityId: string,
+    callerId: string,
+    requestId: string
+  ): Promise<CommunityJoinRequestData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const request = await communityRepository.findJoinRequestById(requestId);
+    if (!request || request.communityId !== communityId) {
+      throw new NotFoundError("COMMUNITY_JOIN_REQUEST_NOT_FOUND");
+    }
+    if (request.userId !== callerId) {
+      throw new ForbiddenError("COMMUNITY_JOIN_REQUEST_NOT_OWNER");
+    }
+    if (request.status !== CommunityJoinReqStatus.PENDING) {
+      throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
+    }
+
+    const updated = await communityRepository.updateJoinRequest(requestId, {
+      status: CommunityJoinReqStatus.CANCELLED,
+      decidedBy: callerId,
+      decidedAt: new Date(),
+    });
+
+    return toJoinRequestData(updated);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Invites
+  // ---------------------------------------------------------------------------
+  async createInvite(
+    communityId: string,
+    callerId: string,
+    inviteeId: string
+  ): Promise<CommunityInviteData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+
+    if (inviteeId === callerId) {
+      throw new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_SELF");
+    }
+
+    const existingMember = await communityRepository.findMemberByUserId(
+      communityId,
+      inviteeId
+    );
+    if (existingMember?.status === CommunityMemberStatus.ACTIVE) {
+      throw new ConflictError("COMMUNITY_ALREADY_MEMBER");
+    }
+    if (existingMember?.status === CommunityMemberStatus.BANNED) {
+      throw new ForbiddenError("COMMUNITY_INVITE_USER_BANNED");
+    }
+
+    // No auto-approve: always create (or recycle) an invite row. Pending
+    // join-requests are not auto-approved by creating an invite.
+
+    const existingInvite =
+      await communityRepository.findInviteByCommunityAndInvitee(
+        communityId,
+        inviteeId
+      );
+
+    let invite: CommunityInvite;
+    // Gate INVITE_SENT publish so the idempotent "same PENDING return" does
+    // NOT emit. Fresh create + recycled invite both count as "new".
+    let isNewOrRecycled = false;
+    if (!existingInvite) {
+      invite = await communityRepository.createInvite({
+        communityId,
+        inviterId: callerId,
+        inviteeId,
+      });
+      isNewOrRecycled = true;
+    } else if (existingInvite.status === CommunityInviteStatus.PENDING) {
+      invite = existingInvite;
+    } else {
+      invite = await communityRepository.recyclePendingInvite(
+        existingInvite.id,
+        callerId
+      );
+      isNewOrRecycled = true;
+    }
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "MEMBER_INVITED",
+      targetUserId: inviteeId,
+      metadata: { inviteId: invite.id },
+    });
+
+    logger.info(
+      `Community invite created: community=${communityId} inviter=${callerId} invitee=${inviteeId} invite=${invite.id} status=${invite.status}`
+    );
+
+    if (isNewOrRecycled) {
+      publishCommunityInviteSentSafe({
+        communityId,
+        eventAt: new Date().toISOString(),
+        inviterId: callerId,
+        inviteeId,
+        inviteId: invite.id,
+      });
+    }
+
+    return toInviteData(invite);
+  },
+
+  async listCommunityInvites(
+    communityId: string,
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      status?: CommunityInviteStatus;
+    }
+  ): Promise<PaginatedResponse<CommunityInviteWithUserData>> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const { rows, total } = await communityRepository.listCommunityInvites({
+      communityId,
+      status: params.status,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: CommunityInviteWithUserData[] = [];
+    if (rows.length > 0) {
+      const snapshotMap = await fetchUserSnapshots(
+        rows.map((r) => r.inviteeId)
+      );
+      for (const row of rows) {
+        const snap = snapshotMap.get(row.inviteeId)!;
+        const invitee = await buildUserSnapshotView(snap, row.inviteeId);
+        items.push({ ...toInviteData(row), invitee });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  async listMyInvites(
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      status?: CommunityInviteStatus;
+    }
+  ): Promise<PaginatedResponse<MyInviteData>> {
+    const { rows, total } = await communityRepository.listMyInvites({
+      inviteeId: callerId,
+      status: params.status,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: MyInviteData[] = [];
+    if (rows.length > 0) {
+      const communityIds = [...new Set(rows.map((r) => r.communityId))];
+      const communities =
+        await communityRepository.findCommunitiesByIds(communityIds);
+      const communityMap = new Map(communities.map((c) => [c.id, c]));
+
+      for (const row of rows) {
+        const community = communityMap.get(row.communityId);
+        if (!community) continue; // soft-deleted; best-effort filter
+        items.push({
+          ...toInviteData(row),
+          community: await toEmbeddedCommunitySummary(community),
+        });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  async acceptInvite(
+    callerId: string,
+    inviteId: string
+  ): Promise<{ invite: CommunityInviteData; member: CommunityMemberData }> {
+    const invite = await communityRepository.findInviteById(inviteId);
+    if (!invite) {
+      throw new NotFoundError("COMMUNITY_INVITE_NOT_FOUND");
+    }
+    if (invite.inviteeId !== callerId) {
+      throw new ForbiddenError("COMMUNITY_INVITE_NOT_INVITEE");
+    }
+
+    const community = await communityRepository.findById(invite.communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    if (invite.status === CommunityInviteStatus.ACCEPTED) {
+      const existing = await communityRepository.findMemberByUserId(
+        invite.communityId,
+        callerId
+      );
+      if (existing) {
+        return {
+          invite: toInviteData(invite),
+          member: await toMemberData(existing),
+        };
+      }
+      logger.warn(
+        `acceptInvite: ACCEPTED invite ${inviteId} has no member row; re-writing`
+      );
+    } else if (invite.status !== CommunityInviteStatus.PENDING) {
+      throw new BadRequestError("COMMUNITY_INVITE_NOT_PENDING");
+    }
+
+    const targetMember = await communityRepository.findMemberByUserId(
+      invite.communityId,
+      callerId
+    );
+    if (targetMember?.status === CommunityMemberStatus.ACTIVE) {
+      const updatedInvite = await communityRepository.updateInvite(inviteId, {
+        status: CommunityInviteStatus.ACCEPTED,
+      });
+      return {
+        invite: toInviteData(updatedInvite),
+        member: await toMemberData(targetMember),
+      };
+    }
+    if (targetMember?.status === CommunityMemberStatus.BANNED) {
+      try {
+        await communityRepository.updateInvite(inviteId, {
+          status: CommunityInviteStatus.DECLINED,
+        });
+      } catch (closeErr) {
+        logger.error(
+          `Failed to close BANNED-race invite ${inviteId} during accept`
+        );
+        logger.error(closeErr);
+      }
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+
+    const snapshotMap = await fetchUserSnapshots([callerId]);
+    const snap = snapshotMap.get(callerId)!;
+
+    if (targetMember?.status === CommunityMemberStatus.LEFT) {
+      await communityRepository.reactivateMemberWithSnapshot(
+        invite.communityId,
+        callerId,
+        {
+          snapshotUsername: snap.username,
+          snapshotDisplayName: snap.displayName,
+          snapshotAvatarKey: snap.avatarObjectKey,
+        }
+      );
+    } else {
+      await communityRepository.createMember({
+        communityId: invite.communityId,
+        userId: callerId,
+        role: CommunityMemberRole.MEMBER,
+        status: CommunityMemberStatus.ACTIVE,
+        snapshotUsername: snap.username,
+        snapshotDisplayName: snap.displayName,
+        snapshotAvatarKey: snap.avatarObjectKey,
+      });
+    }
+
+    const count = await communityRepository.countActiveMembers(
+      invite.communityId
+    );
+    await communityRepository.setMemberCount(invite.communityId, count);
+
+    const updatedInvite = await communityRepository.updateInvite(inviteId, {
+      status: CommunityInviteStatus.ACCEPTED,
+    });
+
+    await this.recordAudit({
+      communityId: invite.communityId,
+      actorId: callerId,
+      action: "INVITE_ACCEPTED",
+      targetUserId: callerId,
+      metadata: { inviteId },
+    });
+
+    logger.info(
+      `Community invite accepted: community=${invite.communityId} invite=${inviteId} by=${callerId}`
+    );
+
+    // Per E5 / spec note: explicit accept emits ONLY INVITE_ACCEPTED (the
+    // consumer treats this as "X accepted your invite", not "X was added").
+    // Do NOT also publish MEMBER_ADDED here.
+    publishCommunityInviteAcceptedSafe({
+      communityId: invite.communityId,
+      eventAt: new Date().toISOString(),
+      userId: callerId,
+      inviteId,
+    });
+
+    const row = await communityRepository.findMemberByUserId(
+      invite.communityId,
+      callerId
+    );
+    return {
+      invite: toInviteData(updatedInvite),
+      member: await toMemberData(row!),
+    };
+  },
+
+  async declineInvite(
+    callerId: string,
+    inviteId: string
+  ): Promise<CommunityInviteData> {
+    const invite = await communityRepository.findInviteById(inviteId);
+    if (!invite) {
+      throw new NotFoundError("COMMUNITY_INVITE_NOT_FOUND");
+    }
+    if (invite.inviteeId !== callerId) {
+      throw new ForbiddenError("COMMUNITY_INVITE_NOT_INVITEE");
+    }
+    if (invite.status !== CommunityInviteStatus.PENDING) {
+      throw new BadRequestError("COMMUNITY_INVITE_NOT_PENDING");
+    }
+
+    const updated = await communityRepository.updateInvite(inviteId, {
+      status: CommunityInviteStatus.DECLINED,
+    });
+
+    await this.recordAudit({
+      communityId: invite.communityId,
+      actorId: callerId,
+      action: "INVITE_DECLINED",
+      targetUserId: callerId,
+      metadata: { inviteId, communityId: invite.communityId },
+    });
+
+    return toInviteData(updated);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  async createReport(
+    communityId: string,
+    callerId: string,
+    input: { targetUserId?: string; reason: string }
+  ): Promise<CommunityReportData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    // A1: only an ACTIVE member of the community may file a report.
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    if (
+      !callerMembership ||
+      callerMembership.status !== CommunityMemberStatus.ACTIVE
+    ) {
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
+
+    const targetUserId = input.targetUserId ?? null;
+
+    // A2: cannot self-report.
+    if (targetUserId && targetUserId === callerId) {
+      throw new BadRequestError("COMMUNITY_REPORT_CANNOT_TARGET_SELF");
+    }
+
+    // A4: when targeting a member, that member row must exist (any status).
+    if (targetUserId) {
+      const targetMember = await communityRepository.findMemberByUserId(
+        communityId,
+        targetUserId
+      );
+      if (!targetMember) {
+        throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
+      }
+    }
+
+    // A5: service-level dedup — an existing OPEN report from the same
+    // reporter on the same (community, target) tuple is returned idempotently.
+    const existing =
+      await communityRepository.findOpenReportByReporterAndTarget({
+        communityId,
+        reporterId: callerId,
+        targetUserId,
+      });
+    if (existing) {
+      return toReportData(existing);
+    }
+
+    const row = await communityRepository.createReport({
+      communityId,
+      reporterId: callerId,
+      targetUserId,
+      reason: input.reason,
+    });
+
+    logger.info(
+      `Community report created: community=${communityId} reporter=${callerId} target=${targetUserId ?? "(community)"} report=${row.id}`
+    );
+
+    publishCommunityReportCreatedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      reportId: row.id,
+      reporterId: callerId,
+      targetUserId,
+      reason: input.reason,
+    });
+
+    return toReportData(row);
+  },
+
+  async listCommunityReports(
+    communityId: string,
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      status?: CommunityReportStatus;
+    }
+  ): Promise<PaginatedResponse<CommunityReportWithUsersData>> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    // A8: mod/admin only.
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const status = params.status ?? CommunityReportStatus.OPEN;
+    const { rows, total } = await communityRepository.listCommunityReports({
+      communityId,
+      status,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: CommunityReportWithUsersData[] = [];
+    if (rows.length > 0) {
+      // Batch-fetch reporter + (optional) target snapshots once.
+      const userIds = new Set<string>();
+      for (const r of rows) {
+        userIds.add(r.reporterId);
+        if (r.targetUserId) userIds.add(r.targetUserId);
+      }
+      const snapshotMap = await fetchUserSnapshots([...userIds]);
+      for (const row of rows) {
+        const reporterSnap = snapshotMap.get(row.reporterId)!;
+        const reporter = await buildUserSnapshotView(
+          reporterSnap,
+          row.reporterId
+        );
+        let target: CommunityReportWithUsersData["target"] = null;
+        if (row.targetUserId) {
+          const targetSnap = snapshotMap.get(row.targetUserId)!;
+          target = await buildUserSnapshotView(targetSnap, row.targetUserId);
+        }
+        items.push({ ...toReportData(row), reporter, target });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  async listMyReports(
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      status?: CommunityReportStatus;
+    }
+  ): Promise<PaginatedResponse<MyReportData>> {
+    const { rows, total } = await communityRepository.listMyReports({
+      reporterId: callerId,
+      status: params.status,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: MyReportData[] = [];
+    if (rows.length > 0) {
+      const communityIds = [...new Set(rows.map((r) => r.communityId))];
+      const communities =
+        await communityRepository.findCommunitiesByIds(communityIds);
+      const communityMap = new Map(communities.map((c) => [c.id, c]));
+
+      for (const row of rows) {
+        const community = communityMap.get(row.communityId);
+        if (!community) continue; // soft-deleted; best-effort filter
+        items.push({
+          ...toReportData(row),
+          community: await toEmbeddedCommunitySummary(community),
+        });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  /**
+   * Shared transition helper for review / action / dismiss.
+   * Enforces A7 transitions, A8 authz, A14 audit (for non-REVIEWED targets).
+   */
+  async _resolveReport(
+    communityId: string,
+    callerId: string,
+    reportId: string,
+    nextStatus:
+      | typeof CommunityReportStatus.REVIEWED
+      | typeof CommunityReportStatus.ACTIONED
+      | typeof CommunityReportStatus.DISMISSED,
+    resolution: string | null,
+    auditAction:
+      | "COMMUNITY_REPORT_REVIEWED"
+      | "COMMUNITY_REPORT_ACTIONED"
+      | "COMMUNITY_REPORT_DISMISSED"
+  ): Promise<CommunityReportData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      // A15: soft-deleted community → 404.
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const report = await communityRepository.findReportById(reportId);
+    if (!report || report.communityId !== communityId) {
+      throw new NotFoundError("COMMUNITY_REPORT_NOT_FOUND");
+    }
+
+    // A7 transitions:
+    //   OPEN → REVIEWED | ACTIONED | DISMISSED
+    //   REVIEWED → ACTIONED | DISMISSED
+    //   ACTIONED, DISMISSED, WITHDRAWN are terminal.
+    const allowed: Record<CommunityReportStatus, CommunityReportStatus[]> = {
+      [CommunityReportStatus.OPEN]: [
+        CommunityReportStatus.REVIEWED,
+        CommunityReportStatus.ACTIONED,
+        CommunityReportStatus.DISMISSED,
+      ],
+      [CommunityReportStatus.REVIEWED]: [
+        CommunityReportStatus.ACTIONED,
+        CommunityReportStatus.DISMISSED,
+      ],
+      [CommunityReportStatus.ACTIONED]: [],
+      [CommunityReportStatus.DISMISSED]: [],
+      [CommunityReportStatus.WITHDRAWN]: [],
+    };
+    if (!allowed[report.status].includes(nextStatus)) {
+      throw new BadRequestError("COMMUNITY_REPORT_INVALID_TRANSITION");
+    }
+
+    const updated = await communityRepository.updateReport(reportId, {
+      status: nextStatus,
+      reviewedBy: callerId,
+      reviewedAt: new Date(),
+      resolution: resolution,
+    });
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: auditAction,
+      targetUserId: report.targetUserId ?? undefined,
+      reason: resolution ?? undefined,
+      metadata: { reportId, fromStatus: report.status, toStatus: nextStatus },
+    });
+
+    logger.info(
+      `Community report ${nextStatus.toLowerCase()}: community=${communityId} report=${reportId} by=${callerId} from=${report.status}`
+    );
+
+    // Per spec: only the "ACTIONED" transition publishes (review/dismiss are
+    // observation events the consumer doesn't fan out yet). Withdraw goes
+    // through a separate method and never emits.
+    if (auditAction === "COMMUNITY_REPORT_ACTIONED") {
+      publishCommunityReportActionedSafe({
+        communityId,
+        eventAt: new Date().toISOString(),
+        reportId,
+        actorId: callerId,
+        reporterId: report.reporterId,
+        targetUserId: report.targetUserId ?? null,
+      });
+    }
+
+    return toReportData(updated);
+  },
+
+  reviewReport(
+    communityId: string,
+    callerId: string,
+    reportId: string,
+    resolution: string | null
+  ): Promise<CommunityReportData> {
+    return this._resolveReport(
+      communityId,
+      callerId,
+      reportId,
+      CommunityReportStatus.REVIEWED,
+      resolution,
+      "COMMUNITY_REPORT_REVIEWED"
+    );
+  },
+
+  actionReport(
+    communityId: string,
+    callerId: string,
+    reportId: string,
+    resolution: string | null
+  ): Promise<CommunityReportData> {
+    return this._resolveReport(
+      communityId,
+      callerId,
+      reportId,
+      CommunityReportStatus.ACTIONED,
+      resolution,
+      "COMMUNITY_REPORT_ACTIONED"
+    );
+  },
+
+  dismissReport(
+    communityId: string,
+    callerId: string,
+    reportId: string,
+    resolution: string | null
+  ): Promise<CommunityReportData> {
+    return this._resolveReport(
+      communityId,
+      callerId,
+      reportId,
+      CommunityReportStatus.DISMISSED,
+      resolution,
+      "COMMUNITY_REPORT_DISMISSED"
+    );
+  },
+
+  /**
+   * A11: reporter withdraws an OPEN report. Owner-only, OPEN-only.
+   * Sets status WITHDRAWN with resolution "withdrawn_by_reporter".
+   * No mod authz needed; no audit (reporter changed their mind — not a mod action).
+   * No community soft-delete check: a user may withdraw a report on a deleted
+   * community to clean up their own list.
+   */
+  async withdrawReport(
+    communityId: string,
+    callerId: string,
+    reportId: string
+  ): Promise<CommunityReportData> {
+    const report = await communityRepository.findReportById(reportId);
+    if (!report || report.communityId !== communityId) {
+      throw new NotFoundError("COMMUNITY_REPORT_NOT_FOUND");
+    }
+    if (report.reporterId !== callerId) {
+      throw new ForbiddenError("COMMUNITY_REPORT_NOT_OWNER");
+    }
+    if (report.status !== CommunityReportStatus.OPEN) {
+      throw new BadRequestError("COMMUNITY_REPORT_NOT_OPEN");
+    }
+
+    const updated = await communityRepository.updateReport(reportId, {
+      status: CommunityReportStatus.WITHDRAWN,
+      resolution: "withdrawn_by_reporter",
+    });
+
+    logger.info(
+      `Community report withdrawn: community=${communityId} report=${reportId} by=${callerId}`
+    );
+
+    return toReportData(updated);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Mute settings (per-user, per-community notification mute)
+  // ---------------------------------------------------------------------------
+  async getMute(
+    communityId: string,
+    callerId: string
+  ): Promise<CommunityMuteData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
+
+    const row = await communityRepository.findMuteByUserAndCommunity(
+      callerId,
+      communityId
+    );
+    if (!row) {
+      throw new NotFoundError("COMMUNITY_NOT_MUTED");
+    }
+
+    return {
+      communityId,
+      mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  },
+
+  async setMute(
+    communityId: string,
+    callerId: string,
+    durationMinutes: number | null | undefined
+  ): Promise<CommunityMuteData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
+
+    // null / undefined → indefinite mute; positive number → now + N minutes.
+    const mutedUntil =
+      durationMinutes == null
+        ? null
+        : new Date(Date.now() + durationMinutes * 60_000);
+
+    const row = await communityRepository.upsertMute(
+      callerId,
+      communityId,
+      mutedUntil
+    );
+
+    return {
+      communityId,
+      mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  },
+
+  async clearMute(communityId: string, callerId: string): Promise<void> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
+
+    await communityRepository.clearMute(callerId, communityId);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Invite links (shareable join links — distinct from 1:1 invites)
+  // ---------------------------------------------------------------------------
+  async createInviteLink(
+    communityId: string,
+    callerId: string,
+    input: {
+      maxUses?: number;
+      expiresInMinutes?: number;
+      autoApprove?: boolean;
+    }
+  ): Promise<CommunityInviteLinkData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    // Invite links are only supported for PUBLIC communities per policy.
+    if (community.type !== CommunityType.PUBLIC) {
+      throw new ForbiddenError("COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC");
+    }
+
+    const expiresAt = input.expiresInMinutes
+      ? new Date(Date.now() + input.expiresInMinutes * 60_000)
+      : null;
+    const maxUses = input.maxUses ?? null;
+    const autoApprove = input.autoApprove ?? false;
+
+    // Retry up to 3 times on code collision (P2002 unique violation on `code`).
+    let row: Awaited<
+      ReturnType<typeof communityRepository.createInviteLink>
+    > | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        row = await communityRepository.createInviteLink({
+          code: generateInviteCode(),
+          communityId,
+          createdBy: callerId,
+          maxUses,
+          autoApprove,
+          expiresAt,
+        });
+        break;
+      } catch (err) {
+        if (!isUniqueConstraintError(err) || attempt === 2) throw err;
+      }
+    }
+    if (!row) throw new Error("Failed to allocate invite-link code");
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "INVITE_LINK_CREATED",
+      metadata: {
+        linkId: row.id,
+        maxUses,
+        expiresAt: expiresAt?.toISOString() ?? null,
+      },
+    });
+
+    return toInviteLinkData(row);
+  },
+
+  async listInviteLinks(
+    communityId: string,
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      status?: "active" | "expired" | "revoked";
+    }
+  ): Promise<PaginatedResponse<CommunityInviteLinkData>> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const { rows, total } = await communityRepository.listInviteLinks({
+      communityId,
+      status: params.status,
+      page: params.page,
+      limit: params.limit,
+    });
+    return buildPaginatedResponse(
+      rows.map(toInviteLinkData),
+      total,
+      params.page,
+      params.limit
+    );
+  },
+
+  async revokeInviteLink(
+    communityId: string,
+    callerId: string,
+    linkId: string
+  ): Promise<CommunityInviteLinkData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const link = await communityRepository.findInviteLinkById(linkId);
+    if (!link || link.communityId !== communityId) {
+      throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+    }
+    if (link.revokedAt) {
+      return toInviteLinkData(link); // idempotent
+    }
+    const updated = await communityRepository.updateInviteLink(linkId, {
+      revokedAt: new Date(),
+    });
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "INVITE_LINK_REVOKED",
+      metadata: { linkId },
+    });
+
+    return toInviteLinkData(updated);
+  },
+
+  async redeemInviteLink(
+    code: string,
+    callerId: string
+  ): Promise<{
+    link: CommunityInviteLinkData;
+    request?: CommunityJoinRequestData;
+    member?: CommunityMemberData;
+  }> {
+    const link = await communityRepository.findInviteLinkByCode(code);
+    if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+    if (link.revokedAt) {
+      throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
+    }
+    if (link.expiresAt && link.expiresAt.getTime() <= Date.now()) {
+      throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
+    }
+    if (link.maxUses !== null && link.usedCount >= link.maxUses) {
+      throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
+    }
+
+    const community = await communityRepository.findById(link.communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    // Invite links allowed only for PUBLIC communities.
+    if (community.type !== CommunityType.PUBLIC) {
+      throw new ForbiddenError("COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC");
+    }
+
+    const existing = await communityRepository.findMemberByUserId(
+      community.id,
+      callerId
+    );
+    if (existing?.status === CommunityMemberStatus.BANNED) {
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+    if (existing?.status === CommunityMemberStatus.ACTIVE) {
+      // Idempotent: do NOT increment usedCount or re-emit MEMBER_ADDED.
+      return {
+        link: toInviteLinkData(link),
+        member: await toMemberData(existing),
+      };
+    }
+
+    // Atomic capacity-guarded increment — if count === 0, another redeemer
+    // beat us across the line and the link is now exhausted.
+    const incRes = await communityRepository.incrementInviteLinkUsageIfUnder(
+      link.id
+    );
+    if (incRes.count === 0) {
+      throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
+    }
+
+    // Record audit that the link was used.
+    await this.recordAudit({
+      communityId: community.id,
+      actorId: callerId,
+      action: "INVITE_LINK_REDEEMED",
+      targetUserId: callerId,
+      metadata: { linkId: link.id, code: link.code },
+    });
+
+    const updatedLink = await communityRepository.findInviteLinkById(link.id);
+
+    if (link.autoApprove) {
+      // autoApprove=true: directly add the member without a join request.
+      const snapshotMap = await fetchUserSnapshots([callerId]);
+      const snap = snapshotMap.get(callerId)!;
+      let member;
+      if (existing?.status === CommunityMemberStatus.LEFT) {
+        member = await communityRepository.reactivateMemberWithSnapshot(
+          community.id,
+          callerId,
+          {
+            snapshotUsername: snap.username,
+            snapshotDisplayName: snap.displayName,
+            snapshotAvatarKey: snap.avatarObjectKey,
+          }
+        );
+      } else {
+        member = await communityRepository.createMember({
+          communityId: community.id,
+          userId: callerId,
+          role: CommunityMemberRole.MEMBER,
+          status: CommunityMemberStatus.ACTIVE,
+          snapshotUsername: snap.username,
+          snapshotDisplayName: snap.displayName,
+          snapshotAvatarKey: snap.avatarObjectKey,
+        });
+      }
+      const count = await communityRepository.countActiveMembers(community.id);
+      await communityRepository.setMemberCount(community.id, count);
+      return {
+        link: toInviteLinkData(updatedLink!),
+        member: await toMemberData(member),
+      };
+    }
+
+    // autoApprove=false (default): create a join request through approval flow.
+    const joinResult = await this.createJoinRequest(
+      community.id,
+      callerId,
+      null
+    );
+
+    return {
+      link: toInviteLinkData(updatedLink!),
+      request: joinResult,
+    };
   },
 };

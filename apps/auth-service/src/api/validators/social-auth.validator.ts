@@ -4,7 +4,7 @@ import { fcmTokensSchema } from "./auth.validator.js";
 
 export const googleLoginSchema = z.object({
   idToken: z.string().trim().min(1, "Google ID token is required"),
-  fcmTokens: fcmTokensSchema,
+  fcmTokens: fcmTokensSchema.optional().default([]),
 });
 
 export type GoogleLoginInput = z.infer<typeof googleLoginSchema>;
@@ -19,6 +19,7 @@ export const appleLoginSchema = z.object({
     .email("Invalid email address")
     .optional(),
   fullName: z.string().trim().min(1).max(100).optional(),
+  fcmTokens: fcmTokensSchema.optional().default([]),
 });
 
 export type AppleLoginInput = z.infer<typeof appleLoginSchema>;

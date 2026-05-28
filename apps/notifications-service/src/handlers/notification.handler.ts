@@ -1,4 +1,14 @@
-import type { UserCreatedPayload } from "@aimess/shared-types";
+import type {
+  ChangeEmailOtpRequestedPayload,
+  LinkEmailOtpRequestedPayload,
+  PasswordResetOtpRequestedPayload,
+  UserCreatedPayload,
+} from "@aimess/shared-types";
+
+import { sendMail } from "../providers/mail/sendMail.js";
+import { changeEmailOtpEmail } from "../providers/mail/templates/change-email-otp.js";
+import { linkEmailOtpEmail } from "../providers/mail/templates/link-email-otp.js";
+import { passwordResetOtpEmail } from "../providers/mail/templates/password-reset-otp.js";
 
 export async function handleUserRegistered(_data: UserCreatedPayload) {
   //   await sendMail({
@@ -13,4 +23,34 @@ export async function handleUserRegistered(_data: UserCreatedPayload) {
   //       body: "Welcome to AIMess",
   //     });
   //   }
+}
+
+export async function handlePasswordResetOtpRequested(
+  data: PasswordResetOtpRequestedPayload
+): Promise<void> {
+  const { subject, html } = passwordResetOtpEmail({
+    code: data.code,
+    ttlSeconds: data.ttlSeconds,
+  });
+  await sendMail({ to: data.email, subject, html });
+}
+
+export async function handleLinkEmailOtpRequested(
+  data: LinkEmailOtpRequestedPayload
+): Promise<void> {
+  const { subject, html } = linkEmailOtpEmail({
+    code: data.code,
+    ttlSeconds: data.ttlSeconds,
+  });
+  await sendMail({ to: data.email, subject, html });
+}
+
+export async function handleChangeEmailOtpRequested(
+  data: ChangeEmailOtpRequestedPayload
+): Promise<void> {
+  const { subject, html } = changeEmailOtpEmail({
+    code: data.code,
+    ttlSeconds: data.ttlSeconds,
+  });
+  await sendMail({ to: data.email, subject, html });
 }

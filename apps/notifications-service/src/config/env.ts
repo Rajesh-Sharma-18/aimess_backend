@@ -7,6 +7,7 @@ dotenv.config();
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]),
   NOTIFICATIONS_SERVICE_PORT: z.coerce.number().positive(),
+  NOTIFICATIONS_GRPC_PORT: z.coerce.number().positive().default(4006),
 
   REDIS_HOST: z.string(),
   REDIS_PORT: z.coerce.number(),

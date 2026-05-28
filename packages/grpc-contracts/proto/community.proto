@@ -1,0 +1,42 @@
+syntax = "proto3";
+package community;
+
+service CommunityService {
+  rpc SendCommunityMessage (SendCommunityMessageRequest) returns (SendCommunityMessageResponse);
+  rpc GetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
+}
+
+message SendCommunityMessageRequest {
+  string community_id      = 1;
+  string room_id           = 2;
+  string sender_id         = 3;
+  string client_message_id = 4;
+  string message           = 5;
+  string content_type      = 6;
+  string media_key         = 7;
+}
+message SendCommunityMessageResponse {
+  string message_id = 1;
+  string room_id    = 2;
+  int64  sent_at    = 3;
+}
+message GetCommunityMessagesRequest {
+  string room_id      = 1;
+  string requester_id = 2;
+  string cursor       = 3;
+  int32  limit        = 4;
+}
+message GetCommunityMessagesResponse {
+  repeated CommunityMessageDto messages   = 1;
+  string                       next_cursor = 2;
+  bool                         has_more   = 3;
+}
+message CommunityMessageDto {
+  string message_id   = 1;
+  string room_id      = 2;
+  string sender_id    = 3;
+  string message      = 4;
+  string content_type = 5;
+  string media_key    = 6;
+  int64  sent_at      = 7;
+}

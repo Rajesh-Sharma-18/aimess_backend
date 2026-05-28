@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package user;
+
+service UserService {
+  rpc CheckFriendship (CheckFriendshipRequest) returns (CheckFriendshipResponse);
+}
+
+message CheckFriendshipRequest {
+  string user_a = 1;
+  string user_b = 2;
+}
+
+message CheckFriendshipResponse {
+  bool are_friends = 1;
+}

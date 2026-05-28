@@ -19,8 +19,33 @@ const USER_DELETED_DLQ_ROUTING_KEY = "user.deleted.queue.dead";
 
 const PREFETCH = 10;
 
+/**
+ * Retry amqp.connect with exponential backoff (2s → 4s → … → 30s cap).
+ * Covers the startup race where RabbitMQ is still initialising when the
+ * service boots alongside it in Docker Compose / pnpm dev.
+ */
+async function connectWithRetry(
+  url: string,
+  retries = 8
+): Promise<amqp.ChannelModel> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await amqp.connect(url);
+    } catch (err) {
+      if (attempt === retries) throw err;
+      const delay = Math.min(2000 * attempt, 30_000);
+      logger.warn(
+        `RabbitMQ connection attempt ${String(attempt)}/${String(retries)} failed — retrying in ${String(delay / 1000)}s`
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  /* istanbul ignore next */
+  throw new Error("connectWithRetry: unreachable");
+}
+
 export async function startUserDeletedConsumer(): Promise<void> {
-  const connection = await amqp.connect(env.RABBITMQ_URL);
+  const connection = await connectWithRetry(env.RABBITMQ_URL);
   const channel = await connection.createChannel();
 
   // Dead-letter exchange + queue for messages that fail permanently.

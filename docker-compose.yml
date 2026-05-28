@@ -52,10 +52,12 @@ services:
       - mongodb_data:/data/db
 
     healthcheck:
-      test:
-        [
+      test: [
           "CMD-SHELL",
-          'mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate(); }"',
+          # Initiate with explicit localhost:27017 so the RS config is stable
+          # across container restarts (ephemeral Docker hostnames break rs.status
+          # on every restart — localhost is always valid inside the container).
+          'mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({ _id: \"rs0\", members: [{ _id: 0, host: \"localhost:27017\" }] }); }"',
         ]
       interval: 10s
       timeout: 5s
@@ -184,6 +186,119 @@ services:
     networks:
       - aimess-network
 
+  # ============================================================================
+  # Redis Cluster — 3 primary nodes for chat-service (Socket.IO adapter + cache)
+  #
+  # Each node announces itself via host.docker.internal so that:
+  #   • App processes on the host follow MOVED redirects to localhost:700x
+  #   • Nodes inside the Docker network reach peers through the host bridge
+  #
+  # Set REDIS_CLUSTER_NODES=127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003 in
+  # apps/chat-service/.env to enable cluster mode in the chat service.
+  # Leave REDIS_CLUSTER_NODES unset to keep using the single redis node above.
+  # ============================================================================
+  redis-node-1:
+    image: redis:7
+    container_name: aimess-redis-node-1
+    restart: unless-stopped
+    command: >
+      redis-server
+      --cluster-enabled yes
+      --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000
+      --cluster-announce-hostname host.docker.internal
+      --cluster-announce-port 7001
+      --cluster-announce-bus-port 17001
+      --appendonly yes
+      --bind 0.0.0.0
+    ports:
+      - "7001:6379"
+      - "17001:17001"
+    volumes:
+      - redis_cluster_1:/data
+    networks:
+      - aimess-network
+
+  redis-node-2:
+    image: redis:7
+    container_name: aimess-redis-node-2
+    restart: unless-stopped
+    command: >
+      redis-server
+      --cluster-enabled yes
+      --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000
+      --cluster-announce-hostname host.docker.internal
+      --cluster-announce-port 7002
+      --cluster-announce-bus-port 17002
+      --appendonly yes
+      --bind 0.0.0.0
+    ports:
+      - "7002:6379"
+      - "17002:17002"
+    volumes:
+      - redis_cluster_2:/data
+    networks:
+      - aimess-network
+
+  redis-node-3:
+    image: redis:7
+    container_name: aimess-redis-node-3
+    restart: unless-stopped
+    command: >
+      redis-server
+      --cluster-enabled yes
+      --cluster-config-file /data/nodes.conf
+      --cluster-node-timeout 5000
+      --cluster-announce-hostname host.docker.internal
+      --cluster-announce-port 7003
+      --cluster-announce-bus-port 17003
+      --appendonly yes
+      --bind 0.0.0.0
+    ports:
+      - "7003:6379"
+      - "17003:17003"
+    volumes:
+      - redis_cluster_3:/data
+    networks:
+      - aimess-network
+
+  redis-cluster-init:
+    image: redis:7
+    container_name: aimess-redis-cluster-init
+    # Runs once, exits 0 when done. Restarts only if it crashes before finishing.
+    restart: on-failure
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+    volumes:
+      - ./docker/redis/cluster-init.sh:/cluster-init.sh:ro
+    command: ["sh", "/cluster-init.sh"]
+    networks:
+      - aimess-network
+
+  # ============================================================================
+  # nginx — reverse proxy with WebSocket sticky sessions
+  #
+  # Routes:
+  #   /z-socket/  →  chat-service  (ip_hash sticky — required for Socket.IO)
+  #   /api/       →  api-gateway
+  #
+  # In local dev the upstream targets are host.docker.internal:3004 / :8000.
+  # Add extra `server` lines in docker/nginx/nginx.conf for additional pods.
+  # ============================================================================
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: aimess-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - aimess-network
+
 # ============================================================================
 # Volumes
 # ============================================================================
@@ -194,6 +309,9 @@ volumes:
   rabbitmq_data:
   minio_data:
   pgadmin_data:
+  redis_cluster_1:
+  redis_cluster_2:
+  redis_cluster_3:
 
 # ============================================================================
 # Network

@@ -1,10 +1,6 @@
 import type { Request } from "express";
 
-import {
-  BadRequestError,
-  ConflictError,
-  UnauthorizedError,
-} from "@aimess/errors";
+import { BadRequestError, ConflictError } from "@aimess/errors";
 
 import type {
   RequestChangeEmailInput,
@@ -14,6 +10,8 @@ import { OtpPurpose } from "../generated/prisma/client.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
 import { normalizeEmail, verifyOtpCode } from "../lib/otp.js";
 import { sendEmailOtp } from "../lib/send-email-otp.js";
+import { env } from "../config/env.js";
+import { publishChangeEmailOtpSafe } from "../messaging/publish-auth-email-otp.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { otpRepository } from "../repositories/otp.repository.js";
 
@@ -52,11 +50,17 @@ export const changeEmailService = {
       throw new ConflictError("AUTH_EMAIL_EXISTS");
     }
 
-    await sendEmailOtp(req, {
+    const { code } = await sendEmailOtp(req, {
       userId,
       identifier: newEmail,
       purpose: OtpPurpose.EMAIL_CHANGE,
       logContext: "Change email OTP",
+    });
+    publishChangeEmailOtpSafe({
+      email: newEmail,
+      code,
+      ttlSeconds: env.OTP_TTL_SECONDS,
+      requestedAt: new Date().toISOString(),
     });
   },
 
@@ -94,7 +98,7 @@ export const changeEmailService = {
     );
 
     if (!otp || otp.userId !== userId) {
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
+      throw new BadRequestError("AUTH_OTP_INVALID");
     }
 
     if (otp.attempts >= otp.maxAttempts) {
@@ -104,7 +108,7 @@ export const changeEmailService = {
     const codeValid = await verifyOtpCode(input.code, otp.codeHash);
     if (!codeValid) {
       await otpRepository.incrementAttempts(otp.id);
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
+      throw new BadRequestError("AUTH_OTP_INVALID");
     }
 
     await otpRepository.markConsumed(otp.id);

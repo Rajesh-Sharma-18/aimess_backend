@@ -11,7 +11,7 @@ export type ServiceProxyOptions = {
 
 /**
  * Proxy mounted at `/api/{version}/{segment}`.
- * Rewrites `/login` → `/api/auth/login` (Express strips the mount path before proxying).
+ * Rewrites the public gateway path into the downstream service path.
  */
 export function createServiceProxy(
   options: ServiceProxyOptions
@@ -23,7 +23,12 @@ export function createServiceProxy(
     changeOrigin: true,
     pathRewrite: (path) => {
       const suffix = path.startsWith("/") ? path : `/${path}`;
-      return `${downstreamPrefix}${suffix}`;
+      const normalizedSuffix =
+        suffix.replace(
+          new RegExp(`^(/api/v\\d+)?/${options.serviceName}`),
+          ""
+        ) || "/";
+      return `${downstreamPrefix}${normalizedSuffix}`;
     },
     on: {
       error: (error, _req, res) => {

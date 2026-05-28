@@ -1,10 +1,6 @@
 import type { Request } from "express";
 
-import {
-  BadRequestError,
-  NotFoundError,
-  UnauthorizedError,
-} from "@aimess/errors";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
 import bcrypt from "bcryptjs";
 
 import type {
@@ -28,6 +24,7 @@ import {
 import { markSessionsRevoked } from "../lib/session-active-cache.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { env } from "../config/env.js";
+import { publishPasswordResetOtpSafe } from "../messaging/publish-password-reset-otp.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { otpRepository } from "../repositories/otp.repository.js";
 import { passwordResetRepository } from "../repositories/password-reset.repository.js";
@@ -82,6 +79,13 @@ export const passwordResetService = {
     });
 
     logDevOtp(email, plainCode);
+
+    publishPasswordResetOtpSafe({
+      email,
+      code: plainCode,
+      ttlSeconds: env.OTP_TTL_SECONDS,
+      requestedAt: new Date().toISOString(),
+    });
   },
 
   async verifyOtp(
@@ -94,7 +98,7 @@ export const passwordResetService = {
     );
 
     if (!otp) {
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
+      throw new BadRequestError("AUTH_OTP_INVALID");
     }
 
     if (otp.attempts >= otp.maxAttempts) {
@@ -104,12 +108,12 @@ export const passwordResetService = {
     const codeValid = await verifyOtpCode(input.code, otp.codeHash);
     if (!codeValid) {
       await otpRepository.incrementAttempts(otp.id);
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
+      throw new BadRequestError("AUTH_OTP_INVALID");
     }
 
     const user = await authRepository.findByEmailForPasswordReset(email);
     if (!user || !canResetPassword(user)) {
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
+      throw new BadRequestError("AUTH_OTP_INVALID");
     }
 
     await otpRepository.markConsumed(otp.id);
@@ -138,11 +142,11 @@ export const passwordResetService = {
       await passwordResetRepository.findValidByTokenHash(tokenHash);
 
     if (!record || record.consumedAt) {
-      throw new UnauthorizedError("AUTH_RESET_TOKEN_INVALID");
+      throw new BadRequestError("AUTH_RESET_TOKEN_INVALID");
     }
 
     if (record.expiresAt <= new Date()) {
-      throw new UnauthorizedError("AUTH_RESET_TOKEN_EXPIRED");
+      throw new BadRequestError("AUTH_RESET_TOKEN_EXPIRED");
     }
 
     const account = await authRepository.findPasswordHashByUserId(
@@ -155,7 +159,7 @@ export const passwordResetService = {
       account.status !== AccountStatus.ACTIVE ||
       !account.passwordHash
     ) {
-      throw new UnauthorizedError("AUTH_RESET_TOKEN_INVALID");
+      throw new BadRequestError("AUTH_RESET_TOKEN_INVALID");
     }
 
     const sameAsCurrent = await bcrypt.compare(

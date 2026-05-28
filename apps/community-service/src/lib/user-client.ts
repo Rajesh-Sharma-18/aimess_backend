@@ -56,3 +56,46 @@ export async function fetchUserSnapshots(
     return new Map(userIds.map((id) => [id, FALLBACK_SNAPSHOT(id)]));
   }
 }
+
+type FriendshipCheckResponse = {
+  success: boolean;
+  data?: { friends: string[] };
+};
+
+/**
+ * Server-side friend validation. Returns the subset of `candidateIds` that are
+ * ACCEPTED friends with the caller in user-service.
+ *
+ * Safety policy: on ANY failure (network, non-2xx, malformed body) return an
+ * EMPTY set so callers reject all candidates as NOT_FRIEND. We prefer loud,
+ * conservative failure over silent over-permissive adds.
+ */
+export async function fetchAcceptedFriendIds(
+  callerId: string,
+  candidateIds: string[]
+): Promise<Set<string>> {
+  if (candidateIds.length === 0) return new Set();
+
+  const url =
+    `${env.USER_SERVICE_URL.replace(/\/$/, "")}` +
+    `/api/v1/users/internal/friendship-check` +
+    `?callerId=${encodeURIComponent(callerId)}` +
+    `&candidateIds=${candidateIds.join(",")}`;
+
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(env.USER_SERVICE_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      throw new Error(`Friendship check failed: ${response.status}`);
+    }
+    const body = (await response.json()) as FriendshipCheckResponse;
+    return new Set(body.data?.friends ?? []);
+  } catch (error) {
+    logger.error(
+      "fetchAcceptedFriendIds failed — treating all candidates as NOT_FRIEND"
+    );
+    logger.error(error);
+    return new Set();
+  }
+}

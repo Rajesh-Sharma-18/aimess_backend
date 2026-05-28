@@ -1,0 +1,9 @@
+{
+  "name": "@aimess/grpc-contracts",
+  "version": "1.0.0",
+  "description": "gRPC proto definitions for AIMess services",
+  "type": "module",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

@@ -4,6 +4,7 @@ import helmet from "helmet";
 import { localeMiddleware } from "@aimess/utils";
 
 import { userRoutes } from "./api/routes/index.js";
+import { internalRoutes } from "./api/routes/internal.routes.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { healthRouter } from "./routes/health.routes.js";
 
@@ -18,7 +19,8 @@ export function createApp(): Express {
   app.use(localeMiddleware);
 
   app.use("/health", healthRouter);
-  app.use("/api/v1", userRoutes);
+  app.use("/api/internal", internalRoutes);
+  app.use("/api/v1/users", userRoutes);
 
   app.use(errorHandler);
 

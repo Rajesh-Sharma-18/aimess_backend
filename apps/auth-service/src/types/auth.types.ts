@@ -18,3 +18,8 @@ export type RegisterResult = {
 export type LoginResult = {
   tokens: AuthTokensResponse;
 };
+
+export type AccessTokenResponse = {
+  accessToken: string;
+  accessTokenExpiresIn: number;
+};

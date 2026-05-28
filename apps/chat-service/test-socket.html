@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIMess Chat Socket.IO Tester</title>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<style>
+  :root { --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a; --text: #e1e4ed; --muted: #6b7280; --accent: #6366f1; --green: #22c55e; --red: #ef4444; --orange: #f59e0b; --blue: #3b82f6; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; background: var(--bg); color: var(--text); font-size: 13px; }
+
+  .layout { display: grid; grid-template-columns: 280px 1fr 1fr; height: 100vh; }
+
+  /* Sidebar */
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; }
+  .sidebar h2 { font-size: 14px; color: var(--accent); margin-bottom: 12px; letter-spacing: 0.5px; }
+  .section-title { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin: 16px 0 6px; }
+  .event-btn { width: 100%; padding: 7px 10px; margin: 2px 0; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; text-align: left; font-size: 12px; font-family: inherit; transition: all 0.15s; }
+  .event-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .event-btn.active { background: rgba(99,102,241,0.15); border-color: var(--accent); }
+
+  /* Main panels */
+  .panel { display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+  .panel-header { padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+
+  /* Connection bar */
+  .conn-bar { padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .conn-bar input { flex: 1; min-width: 200px; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; font-size: 12px; }
+  .conn-bar input::placeholder { color: var(--muted); }
+  .btn { padding: 6px 14px; border: none; border-radius: 6px; font-family: inherit; font-size: 12px; cursor: pointer; font-weight: 600; transition: all 0.15s; }
+  .btn-connect { background: var(--green); color: #000; }
+  .btn-disconnect { background: var(--red); color: #fff; }
+  .btn-send { background: var(--accent); color: #fff; }
+  .btn-send:hover { opacity: 0.9; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .status { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.disconnected { background: var(--red); }
+
+  /* Emit panel */
+  .emit-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .emit-form { flex: 1; display: flex; flex-direction: column; padding: 12px 16px; gap: 8px; overflow-y: auto; }
+  .field-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .event-name-display { padding: 6px 10px; background: rgba(99,102,241,0.1); border: 1px solid var(--accent); border-radius: 6px; color: var(--accent); font-size: 12px; }
+  textarea { width: 100%; flex: 1; min-height: 120px; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; font-size: 12px; resize: vertical; }
+  textarea:focus, input:focus { outline: none; border-color: var(--accent); }
+  .emit-footer { padding: 10px 16px; background: var(--surface); border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+  .ack-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+
+  /* Log panel */
+  .log-area { flex: 1; overflow-y: auto; padding: 8px; }
+  .log-entry { padding: 6px 10px; margin: 2px 0; border-radius: 4px; font-size: 12px; border-left: 3px solid transparent; word-break: break-all; }
+  .log-entry.sent { border-left-color: var(--accent); background: rgba(99,102,241,0.05); }
+  .log-entry.received { border-left-color: var(--green); background: rgba(34,197,94,0.05); }
+  .log-entry.ack { border-left-color: var(--orange); background: rgba(245,158,11,0.05); }
+  .log-entry.system { border-left-color: var(--muted); background: rgba(107,114,128,0.05); color: var(--muted); }
+  .log-entry.error { border-left-color: var(--red); background: rgba(239,68,68,0.05); color: var(--red); }
+  .log-time { color: var(--muted); font-size: 10px; margin-right: 6px; }
+  .log-tag { font-weight: 600; margin-right: 4px; }
+  .log-data { color: var(--muted); display: block; margin-top: 3px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+  .log-controls { padding: 8px 16px; background: var(--surface); border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .log-controls label { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+
+  /* Quick-fill buttons */
+  .quick-fills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .qf-btn { padding: 3px 8px; font-size: 10px; background: rgba(99,102,241,0.1); border: 1px solid var(--border); border-radius: 4px; color: var(--accent); cursor: pointer; font-family: inherit; }
+  .qf-btn:hover { background: rgba(99,102,241,0.2); }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- SIDEBAR: Event list -->
+  <div class="sidebar">
+    <h2>AIMess Socket Tester</h2>
+
+    <div class="section-title">Connection</div>
+    <div class="event-btn" onclick="selectEvent('_connect')" style="color:var(--green)">Connect / Disconnect</div>
+
+    <div class="section-title">Session</div>
+    <div class="event-btn" onclick="selectEvent('heartbeat')">Heartbeat</div>
+    <div class="event-btn" onclick="selectEvent('app_state')">App State</div>
+
+    <div class="section-title">Private Chat</div>
+    <div class="event-btn" onclick="selectEvent('priv_home_join')">Home Join</div>
+    <div class="event-btn" onclick="selectEvent('priv_home_leave')">Home Leave</div>
+    <div class="event-btn" onclick="selectEvent('priv_home_load_more')">Home Load More</div>
+    <div class="event-btn" onclick="selectEvent('priv_initiation')">Initiation Join</div>
+    <div class="event-btn" onclick="selectEvent('priv_join_room')">Join Room</div>
+    <div class="event-btn" onclick="selectEvent('priv_load_more')">Load More Messages</div>
+    <div class="event-btn" onclick="selectEvent('priv_send')">Send Message</div>
+    <div class="event-btn" onclick="selectEvent('priv_react')">React</div>
+    <div class="event-btn" onclick="selectEvent('priv_pin')">Pin Message</div>
+    <div class="event-btn" onclick="selectEvent('priv_unpin')">Unpin Message</div>
+    <div class="event-btn" onclick="selectEvent('priv_read')">Mark Read</div>
+
+    <div class="section-title">Group Chat</div>
+    <div class="event-btn" onclick="selectEvent('grp_home_join')">Home Join</div>
+    <div class="event-btn" onclick="selectEvent('grp_home_leave')">Home Leave</div>
+    <div class="event-btn" onclick="selectEvent('grp_home_load_more')">Home Load More</div>
+    <div class="event-btn" onclick="selectEvent('grp_join_room')">Join Room</div>
+    <div class="event-btn" onclick="selectEvent('grp_load_more')">Load More Messages</div>
+    <div class="event-btn" onclick="selectEvent('grp_send')">Send Message</div>
+    <div class="event-btn" onclick="selectEvent('grp_react')">React</div>
+    <div class="event-btn" onclick="selectEvent('grp_pin')">Pin Message</div>
+    <div class="event-btn" onclick="selectEvent('grp_unpin')">Unpin Message</div>
+    <div class="event-btn" onclick="selectEvent('grp_delete')">Delete Message</div>
+    <div class="event-btn" onclick="selectEvent('grp_read')">Mark Read</div>
+
+    <div class="section-title">Community</div>
+    <div class="event-btn" onclick="selectEvent('comm_home_join')">Home Join</div>
+    <div class="event-btn" onclick="selectEvent('comm_home_leave')">Home Leave</div>
+    <div class="event-btn" onclick="selectEvent('comm_join_room')">Join Room</div>
+    <div class="event-btn" onclick="selectEvent('comm_load_more')">Load More Messages</div>
+    <div class="event-btn" onclick="selectEvent('comm_send')">Send Message</div>
+    <div class="event-btn" onclick="selectEvent('comm_react')">React</div>
+
+    <div class="section-title">Livestream</div>
+    <div class="event-btn" onclick="selectEvent('live_join')">Join Stream</div>
+    <div class="event-btn" onclick="selectEvent('live_leave')">Leave Stream</div>
+    <div class="event-btn" onclick="selectEvent('live_comment')">Add Comment</div>
+    <div class="event-btn" onclick="selectEvent('live_load_more')">Load More Comments</div>
+
+    <div class="section-title">Presence</div>
+    <div class="event-btn" onclick="selectEvent('pres_subscribe')">Subscribe Peers</div>
+    <div class="event-btn" onclick="selectEvent('pres_unsubscribe')">Unsubscribe Peers</div>
+
+    <div class="section-title">Custom</div>
+    <div class="event-btn" onclick="selectEvent('custom')" style="color:var(--orange)">Custom Event</div>
+  </div>
+
+  <!-- MIDDLE: Emit panel -->
+  <div class="panel">
+    <div class="conn-bar">
+      <input id="serverUrl" placeholder="Server URL" value="http://localhost:3004">
+      <input id="jwtToken" placeholder="JWT Access Token (Bearer ...)" style="min-width:300px">
+      <button class="btn btn-connect" id="connBtn" onclick="toggleConnection()">Connect</button>
+      <span class="status"><span class="status-dot disconnected" id="statusDot"></span><span id="statusText">Disconnected</span></span>
+    </div>
+
+    <div class="panel-header">
+      <span>Emit Event</span>
+    </div>
+
+    <div class="emit-area">
+      <div class="emit-form">
+        <div class="field-label">Event Name</div>
+        <input id="eventName" class="event-name-display" value="room:private:home:join" placeholder="Event name">
+
+        <div class="field-label">Payload (JSON)</div>
+        <textarea id="payload">{}</textarea>
+
+        <div class="quick-fills" id="quickFills"></div>
+      </div>
+      <div class="emit-footer">
+        <div class="ack-toggle">
+          <input type="checkbox" id="withAck" checked>
+          <label for="withAck">With Acknowledgement</label>
+        </div>
+        <button class="btn btn-send" id="sendBtn" onclick="emitEvent()" disabled>Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Log panel -->
+  <div class="panel" style="border-right:none">
+    <div class="panel-header">
+      <span>Event Log</span>
+      <span style="margin-left:auto;font-size:11px;color:var(--muted)" id="logCount">0 events</span>
+    </div>
+    <div class="log-area" id="logArea"></div>
+    <div class="log-controls">
+      <label><input type="checkbox" id="autoScroll" checked> Auto-scroll</label>
+      <label><input type="checkbox" id="showData" checked> Show data</label>
+      <button class="btn" style="background:var(--border);color:var(--text);margin-left:auto" onclick="clearLog()">Clear</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let socket = null;
+let logEntryCount = 0;
+
+// ── Event definitions ──
+const EVENTS = {
+  // Session
+  heartbeat:        { event: 'room:private:presence:heartbeat', payload: {} },
+  app_state:        { event: 'room:private:presence:app_state', payload: { state: 'FOREGROUND' } },
+
+  // Private
+  priv_home_join:   { event: 'room:private:home:join', payload: {} },
+  priv_home_leave:  { event: 'room:private:home:leave', payload: {} },
+  priv_home_load_more: { event: 'room:private:home:conversations:load-more', payload: { lastMessageAt: '' } },
+  priv_initiation:  { event: 'room:private:initiation:join', payload: {} },
+  priv_join_room:   { event: 'room:private:user:join', payload: { roomId: '<ROOM_ID>' } },
+  priv_load_more:   { event: 'room:private:messages:load-more', payload: { roomId: '<ROOM_ID>', lastMessageDate: '' } },
+  priv_send:        { event: 'room:private:message:add', payload: {
+    roomId: '<ROOM_ID>', receiverId: '<RECEIVER_USER_ID>',
+    content: { text: 'Hello from tester!', urls: [], files: [] },
+    messageType: 'TEXT', parentMessageId: null
+  }},
+  priv_react:       { event: 'room:private:message:react', payload: { roomId: '<ROOM_ID>', messageId: '<MSG_ID>', reactions: {} } },
+  priv_pin:         { event: 'room:private:message:pin', payload: { roomId: '<ROOM_ID>', messageId: '<MSG_ID>' } },
+  priv_unpin:       { event: 'room:private:message:unpin', payload: { roomId: '<ROOM_ID>', messageId: '<MSG_ID>', pinId: '<PIN_ID>' } },
+  priv_read:        { event: 'room:private:conversation:read', payload: { roomId: '<ROOM_ID>', receiverId: '<RECEIVER_ID>', lastMessageId: '<MSG_ID>' } },
+
+  // Group
+  grp_home_join:    { event: 'room:group:home:join', payload: {} },
+  grp_home_leave:   { event: 'room:group:home:leave', payload: {} },
+  grp_home_load_more: { event: 'room:group:home:conversations:load-more', payload: { lastMessageAt: '' } },
+  grp_join_room:    { event: 'room:group:user:join', payload: { roomId: '<GROUP_ID>' } },
+  grp_load_more:    { event: 'room:group:messages:load-more', payload: { roomId: '<GROUP_ID>', lastMessageDate: '' } },
+  grp_send:         { event: 'room:group:message:add', payload: {
+    roomId: '<GROUP_ID>',
+    content: { text: 'Hello group!', urls: [], files: [] },
+    messageType: 'TEXT', parentMessageId: null, clientMessageId: null
+  }},
+  grp_react:        { event: 'room:group:message:react', payload: { roomId: '<GROUP_ID>', messageId: '<MSG_ID>', reactions: {} } },
+  grp_pin:          { event: 'room:group:message:pin', payload: { roomId: '<GROUP_ID>', messageId: '<MSG_ID>' } },
+  grp_unpin:        { event: 'room:group:message:unpin', payload: { roomId: '<GROUP_ID>', messageId: '<MSG_ID>' } },
+  grp_delete:       { event: 'room:group:message:delete', payload: { roomId: '<GROUP_ID>', messageId: '<MSG_ID>' } },
+  grp_read:         { event: 'room:group:conversation:read', payload: { roomId: '<GROUP_ID>', lastMessageId: '<MSG_ID>' } },
+
+  // Community
+  comm_home_join:   { event: 'room:general:home:join', payload: {} },
+  comm_home_leave:  { event: 'room:general:home:leave', payload: {} },
+  comm_join_room:   { event: 'room:general:user:join', payload: { roomId: '<COMMUNITY_ROOM_ID>' } },
+  comm_load_more:   { event: 'room:general:messages:load-more', payload: { roomId: '<COMMUNITY_ROOM_ID>', lastMessageDate: '' } },
+  comm_send:        { event: 'room:general:message:add', payload: {
+    roomId: '<COMMUNITY_ROOM_ID>', message: 'Hello community!', messageType: 'text',
+    username: 'testuser', displayname: 'Test User', avatar: '',
+    parentMessageId: null, clientMessageId: null
+  }},
+  comm_react:       { event: 'room:general:message:react', payload: { roomId: '<COMMUNITY_ROOM_ID>', messageId: '<MSG_ID>', reactions: {} } },
+
+  // Livestream
+  live_join:        { event: 'room:livestream:join', payload: { livestreamId: '<LIVESTREAM_ID>' } },
+  live_leave:       { event: 'room:livestream:leave', payload: { livestreamId: '<LIVESTREAM_ID>' } },
+  live_comment:     { event: 'room:livestream:comment:add', payload: {
+    livestreamId: '<LIVESTREAM_ID>', message: 'Great stream!',
+    username: 'testuser', displayname: 'Test User', avatar: '', clientMessageId: null
+  }},
+  live_load_more:   { event: 'room:livestream:comments:load-more', payload: { livestreamId: '<LIVESTREAM_ID>', cursor: '' } },
+
+  // Presence
+  pres_subscribe:   { event: 'room:private:presence:subscribe', payload: { peerIds: ['<USER_ID>'] } },
+  pres_unsubscribe: { event: 'room:private:presence:unsubscribe', payload: { peerIds: ['<USER_ID>'] } },
+
+  // Custom
+  custom:           { event: 'your:custom:event', payload: {} },
+};
+
+// ── Server-emitted events to listen for ──
+const LISTEN_EVENTS = [
+  // Private
+  'room:private:message:react:new',
+  'room:private:home:conversation:read:updated',
+  // Group
+  'room:group:message:react:new',
+  'room:group:home:conversation:read:updated',
+  // Community
+  'room:general:message:react:new',
+  'room:general:nofify:join',
+  'room:general:state:update',
+];
+
+function selectEvent(key) {
+  document.querySelectorAll('.event-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+
+  if (key === '_connect') {
+    document.getElementById('eventName').value = '';
+    document.getElementById('payload').value = '';
+    document.getElementById('serverUrl').focus();
+    return;
+  }
+
+  const def = EVENTS[key];
+  if (!def) return;
+  document.getElementById('eventName').value = def.event;
+  document.getElementById('payload').value = JSON.stringify(def.payload, null, 2);
+}
+
+function toggleConnection() {
+  if (socket && socket.connected) {
+    socket.disconnect();
+    return;
+  }
+  connect();
+}
+
+function connect() {
+  let url = document.getElementById('serverUrl').value.trim();
+  url = url.replace(/\/z-product\/?$/, '').replace(/\/+$/, '');
+  const token = document.getElementById('jwtToken').value.trim();
+
+  if (!url) return log('error', 'SYSTEM', 'Server URL is required');
+  if (!token) return log('error', 'SYSTEM', 'JWT token is required');
+
+  log('system', 'SYSTEM', `Connecting to ${url}/z-product ...`);
+
+  socket = io(url + '/z-product', {
+    path: '/z-socket/',
+    transports: ['websocket'],
+    auth: { token },
+    reconnection: false,
+  });
+
+  socket.on('connect', () => {
+    setConnected(true);
+    log('system', 'CONNECTED', `Socket ID: ${socket.id}`);
+    document.getElementById('sendBtn').disabled = false;
+    setupListeners();
+  });
+
+  socket.on('disconnect', (reason) => {
+    setConnected(false);
+    log('system', 'DISCONNECTED', reason);
+    document.getElementById('sendBtn').disabled = true;
+  });
+
+  socket.on('connect_error', (err) => {
+    setConnected(false);
+    log('error', 'CONNECT_ERROR', err.message);
+    document.getElementById('sendBtn').disabled = true;
+  });
+}
+
+function setupListeners() {
+  // Listen for known server-emitted events
+  LISTEN_EVENTS.forEach(evt => {
+    socket.on(evt, (data) => {
+      log('received', evt, data);
+    });
+  });
+
+  // Catch-all for dynamic room events (Socket.IO doesn't support wildcards natively,
+  // but we can use onAny to catch every event)
+  socket.onAny((eventName, ...args) => {
+    // Skip events we already handle in LISTEN_EVENTS
+    if (LISTEN_EVENTS.includes(eventName)) return;
+    // Skip internal socket.io events
+    if (eventName === 'connect' || eventName === 'disconnect') return;
+    log('received', eventName, args.length === 1 ? args[0] : args);
+  });
+}
+
+function emitEvent() {
+  if (!socket || !socket.connected) {
+    log('error', 'SYSTEM', 'Not connected');
+    return;
+  }
+
+  const eventName = document.getElementById('eventName').value.trim();
+  const payloadStr = document.getElementById('payload').value.trim();
+  const withAck = document.getElementById('withAck').checked;
+
+  if (!eventName) return log('error', 'SYSTEM', 'Event name is required');
+
+  let payload;
+  try {
+    payload = payloadStr ? JSON.parse(payloadStr) : {};
+  } catch (e) {
+    log('error', 'SYSTEM', 'Invalid JSON: ' + e.message);
+    return;
+  }
+
+  log('sent', eventName, payload);
+
+  if (withAck) {
+    socket.emit(eventName, payload, (response) => {
+      log('ack', eventName + ' (ACK)', response);
+    });
+  } else {
+    socket.emit(eventName, payload);
+  }
+}
+
+function setConnected(connected) {
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  const btn = document.getElementById('connBtn');
+
+  if (connected) {
+    dot.className = 'status-dot connected';
+    text.textContent = 'Connected';
+    btn.textContent = 'Disconnect';
+    btn.className = 'btn btn-disconnect';
+  } else {
+    dot.className = 'status-dot disconnected';
+    text.textContent = 'Disconnected';
+    btn.textContent = 'Connect';
+    btn.className = 'btn btn-connect';
+  }
+}
+
+function log(type, tag, data) {
+  const area = document.getElementById('logArea');
+  const entry = document.createElement('div');
+  entry.className = 'log-entry ' + type;
+
+  const time = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+
+  let dataHtml = '';
+  const showData = document.getElementById('showData').checked;
+  if (showData && data !== undefined && data !== null) {
+    const str = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    dataHtml = `<span class="log-data">${escapeHtml(str)}</span>`;
+  }
+
+  const arrow = type === 'sent' ? '▶' : type === 'received' ? '◀' : type === 'ack' ? '↩' : '•';
+
+  entry.innerHTML = `<span class="log-time">${time}</span><span class="log-tag">${arrow} ${escapeHtml(tag)}</span>${dataHtml}`;
+
+  area.appendChild(entry);
+  logEntryCount++;
+  document.getElementById('logCount').textContent = logEntryCount + ' events';
+
+  if (document.getElementById('autoScroll').checked) {
+    area.scrollTop = area.scrollHeight;
+  }
+}
+
+function clearLog() {
+  document.getElementById('logArea').innerHTML = '';
+  logEntryCount = 0;
+  document.getElementById('logCount').textContent = '0 events';
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    emitEvent();
+  }
+});
+</script>
+</body>
+</html>

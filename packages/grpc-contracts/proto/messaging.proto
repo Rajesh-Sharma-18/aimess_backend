@@ -1,0 +1,211 @@
+syntax = "proto3";
+package messaging;
+
+enum ConversationType {
+  PRIVATE = 0;
+  GROUP   = 1;
+}
+
+service MessagingService {
+  rpc SendMessage             (SendMessageRequest)             returns (SendMessageResponse);
+  rpc GetConversationMessages (GetConversationMessagesRequest) returns (GetConversationMessagesResponse);
+  rpc MarkMessagesRead        (MarkMessagesReadRequest)        returns (MarkMessagesReadResponse);
+  rpc SendReaction            (SendReactionRequest)            returns (SendReactionResponse);
+  rpc ForwardMessage          (ForwardMessageRequest)          returns (ForwardMessageResponse);
+  rpc GetMessageReactions     (GetMessageReactionsRequest)     returns (GetMessageReactionsResponse);
+  rpc InitiateCall            (InitiateCallRequest)            returns (InitiateCallResponse);
+  rpc AnswerCall              (AnswerCallRequest)              returns (AnswerCallResponse);
+  rpc DeclineCall             (DeclineCallRequest)             returns (DeclineCallResponse);
+  rpc EndCall                 (EndCallRequest)                 returns (EndCallResponse);
+  rpc GetCallHistory          (GetCallHistoryRequest)          returns (GetCallHistoryResponse);
+  rpc GetRtcConfig            (GetRtcConfigRequest)            returns (GetRtcConfigResponse);
+}
+
+message SendMessageRequest {
+  string           conversation_id    = 1;
+  string           sender_id          = 2;
+  string           client_message_id  = 3;
+  string           content_type       = 4;
+  string           content_text       = 5;
+  string           media_key          = 6;
+  string           replied_to_id      = 7;
+  string           receiver_id        = 8;
+  ConversationType conversation_type  = 9;
+  string           sender_name        = 10;
+  string           sender_avatar      = 11;
+  string           content_json       = 12;
+}
+message SendMessageResponse {
+  string message_id      = 1;
+  string conversation_id = 2;
+  int64  sent_at         = 3;
+  bool   already_sent    = 4;
+}
+message GetConversationMessagesRequest {
+  string           conversation_id    = 1;
+  string           requester_id       = 2;
+  string           cursor             = 3;
+  int32            limit              = 4;
+  ConversationType conversation_type  = 5;
+}
+message GetConversationMessagesResponse {
+  repeated MessageDto messages   = 1;
+  string              next_cursor = 2;
+  bool                has_more   = 3;
+}
+message MessageDto {
+  string message_id      = 1;
+  string conversation_id = 2;
+  string sender_id       = 3;
+  string content_type    = 4;
+  string content_text    = 5;
+  string media_key       = 6;
+  string replied_to_id   = 7;
+  int64  sent_at         = 8;
+  repeated ReactionDto reactions = 9;
+  bool   is_read         = 10;
+  string content_json    = 11;
+}
+message ReactionDto {
+  string user_id = 1;
+  string emoji   = 2;
+}
+message MarkMessagesReadRequest {
+  string           conversation_id    = 1;
+  string           reader_id          = 2;
+  string           up_to_message_id   = 3;
+  ConversationType conversation_type  = 4;
+}
+message MarkMessagesReadResponse {
+  int32 updated_count = 1;
+}
+message SendReactionRequest {
+  string           message_id         = 1;
+  string           conversation_id    = 2;
+  string           user_id            = 3;
+  string           emoji              = 4;
+  ConversationType conversation_type  = 5;
+}
+message SendReactionResponse {
+  string message_id        = 1;
+  repeated ReactionDto reactions = 2;
+}
+
+message ForwardMessageRequest {
+  string           message_id             = 1;
+  string           target_conversation_id = 2;
+  string           sender_id              = 3;
+  string           receiver_id            = 4;
+  string           client_message_id      = 5;
+  ConversationType conversation_type      = 6;
+  string           sender_name            = 7;
+  string           sender_avatar          = 8;
+}
+message ForwardMessageResponse {
+  string message_id      = 1;
+  string conversation_id = 2;
+  int64  sent_at         = 3;
+}
+
+message GetMessageReactionsRequest {
+  string           message_id         = 1;
+  string           conversation_id    = 2;
+  ConversationType conversation_type  = 3;
+  string           requester_id       = 4;
+}
+message ReactionUserDto {
+  string user_id      = 1;
+  string display_name = 2;
+  string avatar       = 3;
+}
+message ReactionGroupDto {
+  string emoji                   = 1;
+  int32  count                   = 2;
+  repeated ReactionUserDto users = 3;
+  bool   self_reacted            = 4;
+}
+message GetMessageReactionsResponse {
+  string message_id                   = 1;
+  repeated ReactionGroupDto reactions  = 2;
+}
+
+message InitiateCallRequest {
+  string caller_id       = 1;
+  string callee_id       = 2;
+  string type            = 3;
+  string private_room_id = 4;
+}
+message AnswerCallRequest {
+  string call_id   = 1;
+  string callee_id = 2;
+}
+message AnswerCallResponse {
+  string call_id = 1;
+  string status  = 2;
+}
+message DeclineCallRequest {
+  string call_id   = 1;
+  string callee_id = 2;
+}
+message DeclineCallResponse {
+  string call_id = 1;
+  string status  = 2;
+}
+message EndCallRequest {
+  string call_id = 1;
+  string user_id = 2;
+}
+message EndCallResponse {
+  string call_id      = 1;
+  string status       = 2;
+  int32  duration_sec = 3;
+}
+message GetCallHistoryRequest {
+  string user_id = 1;
+  string cursor  = 2;
+  int32  limit   = 3;
+}
+message CallDto {
+  string call_id      = 1;
+  string caller_id    = 2;
+  string callee_id    = 3;
+  string type         = 4;
+  string status       = 5;
+  int64  initiated_at = 6;
+  int64  answered_at  = 7;
+  int64  ended_at     = 8;
+  int32  duration_sec = 9;
+  string ended_by     = 10;
+}
+message GetCallHistoryResponse {
+  repeated CallDto calls = 1;
+  string           next_cursor = 2;
+  bool             has_more    = 3;
+}
+
+message IceServer {
+  repeated string urls           = 1;
+  string          username       = 2;
+  string          credential     = 3;
+  string          credential_type = 4;
+}
+
+message RtcConfiguration {
+  repeated IceServer ice_servers         = 1;
+  int32              ice_candidate_pool_size = 2;
+  string             ice_transport_policy = 3;
+}
+
+message InitiateCallResponse {
+  string            call_id   = 1;
+  string            status    = 2;
+  RtcConfiguration rtc_config = 3;
+}
+
+message GetRtcConfigRequest {
+  string user_id = 1;
+}
+
+message GetRtcConfigResponse {
+  RtcConfiguration rtc_config = 1;
+}

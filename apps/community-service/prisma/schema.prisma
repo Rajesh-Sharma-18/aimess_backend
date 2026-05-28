@@ -112,9 +112,8 @@ model CommunityAuditLog {
 }
 
 // -----------------------------------------------------------------------------
-// FUTURE — join requests / invites (gated communities). Not yet wired.
+// Join requests / invites (gated communities).
 // -----------------------------------------------------------------------------
-/// FUTURE
 model CommunityJoinRequest {
   id          String                 @id @default(auto()) @map("_id") @db.ObjectId
   communityId String                 @db.ObjectId
@@ -131,7 +130,6 @@ model CommunityJoinRequest {
   @@map("community_join_requests")
 }
 
-/// FUTURE
 model CommunityInvite {
   id          String                @id @default(auto()) @map("_id") @db.ObjectId
   communityId String                @db.ObjectId
@@ -147,9 +145,11 @@ model CommunityInvite {
 }
 
 // -----------------------------------------------------------------------------
-// FUTURE — moderation reports against communities or members. Not yet wired.
+// CommunityReport — moderation reports against a community OR a specific member.
+// targetUserId null → report is against the community itself.
+// Reporter/target/reviewer ids = AuthUser.id (UUID).
+// Service-level dedup (no @@unique because targetUserId is optional).
 // -----------------------------------------------------------------------------
-/// FUTURE
 model CommunityReport {
   id           String                @id @default(auto()) @map("_id") @db.ObjectId
   communityId  String                @db.ObjectId
@@ -157,11 +157,54 @@ model CommunityReport {
   targetUserId String?
   reason       String
   status       CommunityReportStatus @default(OPEN)
+  reviewedBy   String?
+  reviewedAt   DateTime?
+  resolution   String?
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
 
   @@index([communityId, status])
+  @@index([reporterId, status])
   @@map("community_reports")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityMuteSetting — per-user per-community notification mute. `mutedUntil`
+// null → muted indefinitely; future Date → muted until that timestamp; row
+// absent → not muted. Lazy expiration (no janitor).
+// -----------------------------------------------------------------------------
+model CommunityMuteSetting {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String // AuthUser.id
+  communityId String    @db.ObjectId
+  mutedUntil  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, communityId])
+  @@index([userId])
+  @@map("community_mute_settings")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityInviteLink — shareable join link (distinct from 1:1 CommunityInvite).
+// `code` is server-generated, URL-safe; revoked / expired / exhausted is computed
+// at redeem time. Atomic conditional-update guards against over-redemption.
+// -----------------------------------------------------------------------------
+model CommunityInviteLink {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  code        String    @unique
+  communityId String    @db.ObjectId
+  createdBy   String // AuthUser.id of issuer
+  maxUses     Int?
+  usedCount   Int       @default(0)
+  autoApprove Boolean   @default(false)
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([communityId, revokedAt])
+  @@map("community_invite_links")
 }
 
 // =============================================================================
@@ -186,7 +229,6 @@ enum CommunityMemberStatus {
   LEFT
 }
 
-/// FUTURE
 enum CommunityJoinReqStatus {
   PENDING
   APPROVED
@@ -194,7 +236,6 @@ enum CommunityJoinReqStatus {
   CANCELLED
 }
 
-/// FUTURE
 enum CommunityInviteStatus {
   PENDING
   ACCEPTED
@@ -202,10 +243,10 @@ enum CommunityInviteStatus {
   EXPIRED
 }
 
-/// FUTURE
 enum CommunityReportStatus {
   OPEN
   REVIEWED
   ACTIONED
   DISMISSED
+  WITHDRAWN
 }
