@@ -80,3 +80,9 @@ export const getMessagesSchema = z.object({
   cursor: z.string().nullish(),
   limit: z.coerce.number().min(1).max(100).default(30),
 });
+
+export const forwardMessageSchema = z.object({
+  targetRoomId: z.string().min(4).max(150),
+  receiverId: z.string().min(4).max(100),
+  clientMessageId: z.string().min(1).max(100).nullish(),
+});

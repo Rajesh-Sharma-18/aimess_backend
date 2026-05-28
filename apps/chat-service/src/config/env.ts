@@ -50,6 +50,24 @@ const envSchema = z.object({
 
   USER_SERVICE_URL: z.string().url().optional(),
   AUTH_SERVICE_URL: z.string().url().optional(),
+
+  USER_SERVICE_GRPC_URL: z.string().default("0.0.0.0:4002"),
+
+  FRIENDSHIP_CACHE_TTL_SEC: z.coerce.number().positive().default(600), // 10 minutes
+
+  WEBRTC_STUN_SERVERS: z
+    .string()
+    .default("stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"),
+  WEBRTC_TURN_SERVER: z.string().optional().default(""),
+  WEBRTC_TURN_USERNAME: z.string().optional().default(""),
+  WEBRTC_TURN_PASSWORD: z.string().optional().default(""),
+  WEBRTC_TURN_CREDENTIAL_EXPIRES_IN_HOURS: z.coerce
+    .number()
+    .positive()
+    .default(24),
+  WEBRTC_ICE_CANDIDATE_POOL_SIZE: z.coerce.number().nonnegative().default(10),
+  WEBRTC_RTC_CODEC_PREFERENCES: z.string().default("opus,h264"),
+  WEBRTC_CALL_TIMEOUT_SEC: z.coerce.number().positive().default(120),
 });
 
 const parsed = envSchema.safeParse(process.env);

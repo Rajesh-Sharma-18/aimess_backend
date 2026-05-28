@@ -1,6 +1,6 @@
 // =============================================================================
 // chat-service  ·  MongoDB  ·  chat_db
-// Owns: private messaging, group messaging, community rooms, friendships,
+// Owns: private messaging, group messaging, community rooms,
 //       notifications, livestream comments, pins.
 // =============================================================================
 
@@ -66,6 +66,9 @@ model PrivateMessage {
   parentMessageId  String?   @db.ObjectId
   quoteData        Json?
   clientInfo      Json?
+  clientMessageId  String?
+  isForwarded      Boolean   @default(false)
+  forwardData      Json?
   deletedFor       Json      @default("{}")
   isDeleted        Boolean   @default(false)
   deletedAt        DateTime?
@@ -76,6 +79,7 @@ model PrivateMessage {
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([systemEvent])
+  @@index([clientMessageId])
   @@map("private_messages")
 }
 
@@ -153,6 +157,8 @@ model GroupMessage {
   parentMessageId    String?   @db.ObjectId
   quoteData          Json?
   reactions          Json      @default("{}")
+  isForwarded        Boolean   @default(false)
+  forwardData        Json?
   isDeleted          Boolean   @default(false)
   deletedType        String?
   deletedPlaceholder String    @default("")
@@ -244,23 +250,6 @@ model GroupMessagePin {
   @@unique([roomId, messageId])
   @@index([roomId, pinnedAt(sort: Desc)])
   @@map("group_message_pins")
-}
-
-// -----------------------------------------------------------------------------
-// Friendship
-// -----------------------------------------------------------------------------
-model Friendship {
-  id                String   @id @default(auto()) @map("_id") @db.ObjectId
-  requesterId       String
-  users             String[]
-  pairKey           String   @unique
-  status            String   @default("PENDING")
-  lastInteractionAt DateTime @default(now())
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-
-  @@index([users, status])
-  @@map("friendships")
 }
 
 // -----------------------------------------------------------------------------
@@ -406,4 +395,48 @@ model LivestreamComment {
   @@index([livestreamId, createdAt(sort: Desc)])
   @@index([livestreamId, sentBy, clientCommentId])
   @@map("chat_livestream_comments")
+}
+
+// -----------------------------------------------------------------------------
+// Friendship (local copy, eventually consistent with user-service)
+// Synced via events: friendship.created, friendship.deleted, friendship.blocked
+// Allows chat-service to operate independently without user-service gRPC calls
+// -----------------------------------------------------------------------------
+model Friendship {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String
+  friendId  String
+  status    String   @default("ACTIVE") // ACTIVE, BLOCKED, BANNED, PENDING
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, friendId])
+  @@index([userId, status])
+  @@index([friendId, status])
+  @@map("friendships")
+}
+
+// -----------------------------------------------------------------------------
+// Call
+// -----------------------------------------------------------------------------
+model Call {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  callId        String    @unique
+  callerId      String
+  calleeId      String
+  type          String    @default("AUDIO")
+  status        String    @default("RINGING")
+  privateRoomId String?
+  initiatedAt   DateTime  @default(now())
+  answeredAt    DateTime?
+  endedAt       DateTime?
+  durationSec   Int?
+  endedBy       String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([callerId, initiatedAt(sort: Desc)])
+  @@index([calleeId, initiatedAt(sort: Desc)])
+  @@index([status])
+  @@map("calls")
 }

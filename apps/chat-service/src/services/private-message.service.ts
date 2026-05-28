@@ -3,7 +3,7 @@ import { logger } from "@aimess/logger";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
-import type { FriendshipRepository } from "../repositories/friendship.repository.js";
+import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { PrivateMessage } from "../generated/prisma/index.js";
@@ -14,7 +14,7 @@ export class PrivateMessageService {
     private readonly roomRepo: PrivateRoomRepository,
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
-    private readonly friendshipRepo: FriendshipRepository
+    private readonly userServiceClient: UserServiceClient
   ) {}
 
   async sendMessage(params: {
@@ -28,13 +28,24 @@ export class PrivateMessageService {
     };
     messageType: string;
     parentMessageId?: string | null;
+    clientMessageId?: string | null;
   }): Promise<PrivateMessage> {
-    const friends = await this.friendshipRepo.areFriends(
+    const friends = await this.userServiceClient.checkFriendship(
       params.senderId,
       params.receiverId
     );
     if (!friends) {
       throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
+    }
+
+    // Idempotency: if clientMessageId provided, check for existing message
+    if (params.clientMessageId) {
+      const existing = await this.messageRepo.findByClientMessageId(
+        params.roomId,
+        params.senderId,
+        params.clientMessageId
+      );
+      if (existing) return existing;
     }
 
     const entity: Record<string, unknown> = {
@@ -44,6 +55,7 @@ export class PrivateMessageService {
       content: params.content,
       messageType: params.messageType || "TEXT",
       parentMessageId: params.parentMessageId || null,
+      clientMessageId: params.clientMessageId ?? null,
     };
 
     // If reply, attach quote data
@@ -187,6 +199,132 @@ export class PrivateMessageService {
 
   async countSearchResults(roomId: string, query: string): Promise<number> {
     return this.messageRepo.countSearchResults(roomId, query);
+  }
+
+  async forwardMessage(params: {
+    sourceMessageId: string;
+    targetRoomId: string;
+    senderId: string;
+    receiverId: string;
+    clientMessageId?: string | null;
+  }): Promise<PrivateMessage> {
+    // friendship gate
+    const friends = await this.userServiceClient.checkFriendship(
+      params.senderId,
+      params.receiverId
+    );
+    if (!friends) throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
+
+    // idempotency
+    if (params.clientMessageId) {
+      const existing = await this.messageRepo.findByClientMessageId(
+        params.targetRoomId,
+        params.senderId,
+        params.clientMessageId
+      );
+      if (existing) return existing;
+    }
+
+    // fetch source message
+    const source = await this.messageRepo.findById(params.sourceMessageId);
+    if (!source || source.isDeleted)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const forwardData = {
+      originalMessageId: source.id,
+      originalRoomId: source.roomId,
+      originalSenderId: source.senderId ?? "",
+      originalCreatedAt: source.createdAt.toISOString(),
+      originalContentType: source.messageType,
+    };
+
+    const message = await this.messageRepo.createForwardedMessage({
+      roomId: params.targetRoomId,
+      senderId: params.senderId,
+      receiverId: params.receiverId,
+      content: source.content as object,
+      messageType: source.messageType,
+      forwardData,
+      clientMessageId: params.clientMessageId ?? null,
+    });
+
+    this.roomRepo
+      .updateRoomOnNewMessage({
+        roomId: params.targetRoomId,
+        message: {
+          _id: message.id,
+          content: message.content,
+          senderId: message.senderId ?? "",
+          messageType: message.messageType,
+          systemEvent: message.systemEvent,
+          systemData: message.systemData,
+          createdAt: message.createdAt,
+        },
+        receiverId: params.receiverId,
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          `PrivateMessageService|forwardMessage|updateRoom failed: ${String(err)}`
+        );
+      });
+
+    return message;
+  }
+
+  async getMessageReactions(params: {
+    messageId: string;
+    roomId: string;
+    requesterId: string;
+  }): Promise<{
+    reactions: Record<
+      string,
+      {
+        count: number;
+        users: { userId: string; displayName: string; avatar: string }[];
+        selfReacted: boolean;
+      }
+    >;
+  }> {
+    const raw = await this.messageRepo.getReactions(params.messageId);
+    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const reactions = (raw ?? {}) as Record<string, string[]>;
+    const allUserIds = [...new Set(Object.values(reactions).flat())];
+
+    const snapshots =
+      allUserIds.length > 0
+        ? await this.userSnapshotService.getUserSnapshotsMap(
+            allUserIds,
+            this.cacheRepo
+          )
+        : new Map<string, Record<string, unknown>>();
+
+    const result: Record<
+      string,
+      {
+        count: number;
+        users: { userId: string; displayName: string; avatar: string }[];
+        selfReacted: boolean;
+      }
+    > = {};
+
+    for (const [emoji, userIds] of Object.entries(reactions)) {
+      result[emoji] = {
+        count: userIds.length,
+        selfReacted: userIds.includes(params.requesterId),
+        users: userIds.map((uid) => {
+          const snap = snapshots.get(uid) ?? {};
+          return {
+            userId: uid,
+            displayName:
+              (snap.displayName as string) ?? (snap.memberId as string) ?? "",
+            avatar: (snap.avatar as string) ?? "",
+          };
+        }),
+      };
+    }
+
+    return { reactions: result };
   }
 
   async enrichMessages(

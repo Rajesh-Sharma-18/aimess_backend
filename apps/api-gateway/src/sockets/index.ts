@@ -7,11 +7,14 @@ import { createGatewayRedisClients } from "./redis.js";
 import { registerChatNamespace } from "./namespaces/chat.ns.js";
 import { registerCommunityNamespace } from "./namespaces/community.ns.js";
 import { registerNotifyNamespace } from "./namespaces/notify.ns.js";
-import { createMessagingClient } from "../grpc/clients/messaging.client.js";
+import type { MessagingClient } from "../grpc/clients/messaging.client.js";
 import { createCommunityClient } from "../grpc/clients/community.client.js";
 import { createNotificationClient } from "../grpc/clients/notification.client.js";
 
-export async function setupSockets(httpServer: HttpServer): Promise<void> {
+export async function setupSockets(
+  httpServer: HttpServer,
+  messagingClient: MessagingClient
+): Promise<void> {
   const { pub, sub } = createGatewayRedisClients();
   await Promise.all([pub.connect(), sub.connect()]);
 
@@ -44,11 +47,10 @@ export async function setupSockets(httpServer: HttpServer): Promise<void> {
     notifySub.connect(),
   ]);
 
-  const messagingClient = createMessagingClient();
   const communityClient = createCommunityClient();
   const notificationClient = createNotificationClient();
 
-  registerChatNamespace(io, messagingClient, chatSub);
+  registerChatNamespace(io, messagingClient, chatSub, pub);
   registerCommunityNamespace(io, communityClient, communitySub);
   registerNotifyNamespace(io, notificationClient, notifySub);
 

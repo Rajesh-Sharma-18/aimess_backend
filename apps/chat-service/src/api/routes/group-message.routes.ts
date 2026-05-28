@@ -4,7 +4,10 @@ import { authenticate } from "../../middleware/authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
-import { deleteGroupMessageSchema } from "../validators/group-message.validator.js";
+import {
+  deleteGroupMessageSchema,
+  forwardGroupMessageSchema,
+} from "../validators/group-message.validator.js";
 import {
   messageListQuerySchema,
   messageSearchQuerySchema,
@@ -40,6 +43,22 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     ctrl.deleteMessage
   );
   router.get("/:roomId/pins", authenticate, ctrl.getPins);
+
+  // Forward a group message
+  router.post(
+    "/:roomId/messages/:messageId/forward",
+    authenticate,
+    sendLimit,
+    validateBody(forwardGroupMessageSchema),
+    ctrl.forwardMessage
+  );
+
+  // Get reactions on a group message
+  router.get(
+    "/:roomId/messages/:messageId/reactions",
+    authenticate,
+    ctrl.getMessageReactions
+  );
 
   return router;
 }

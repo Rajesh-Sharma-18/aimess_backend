@@ -117,4 +117,49 @@ export class PrivateMessageController {
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
   });
+
+  forwardMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { targetRoomId, receiverId, clientMessageId } = req.body as {
+      targetRoomId: string;
+      receiverId: string;
+      clientMessageId?: string | null;
+    };
+    const result = await this.messageService.forwardMessage({
+      sourceMessageId: messageId,
+      targetRoomId,
+      senderId: userId,
+      receiverId,
+      clientMessageId: clientMessageId ?? null,
+    });
+    await this.redis.publish(
+      `conv:${targetRoomId}`,
+      JSON.stringify({
+        event: "message:new",
+        data: {
+          messageId: result.id,
+          conversationId: targetRoomId,
+          senderId: userId,
+          contentType: result.messageType,
+          isForwarded: true,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_FORWARDED", req.locale)));
+  });
+
+  getMessageReactions = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const roomId = req.params.roomId as string;
+    const result = await this.messageService.getMessageReactions({
+      messageId,
+      roomId,
+      requesterId: userId,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
 }

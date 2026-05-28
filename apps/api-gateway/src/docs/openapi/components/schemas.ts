@@ -2518,4 +2518,117 @@ export const openApiSchemas = {
     },
     required: ["objectKey", "uploadUrl", "contentType"],
   },
+
+  // --- Calls ---
+  ChatCall: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      callId: { type: "string", format: "uuid" },
+      callerId: { type: "string", format: "uuid" },
+      calleeId: { type: "string", format: "uuid" },
+      type: { type: "string", enum: ["AUDIO", "VIDEO"] },
+      status: {
+        type: "string",
+        enum: [
+          "RINGING",
+          "IN_PROGRESS",
+          "ENDED",
+          "MISSED",
+          "DECLINED",
+          "FAILED",
+        ],
+      },
+      privateRoomId: { type: "string", nullable: true },
+      initiatedAt: { type: "string", format: "date-time" },
+      answeredAt: { type: "string", format: "date-time", nullable: true },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+      durationSec: { type: "integer", nullable: true },
+      endedBy: { type: "string", format: "uuid", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "callId",
+      "callerId",
+      "calleeId",
+      "type",
+      "status",
+      "initiatedAt",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ChatCallList: {
+    type: "object",
+    properties: {
+      calls: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCall" },
+      },
+      nextCursor: { type: "string", format: "date-time", nullable: true },
+      hasMore: { type: "boolean" },
+    },
+    required: ["calls", "nextCursor", "hasMore"],
+  },
+
+  // --- WebRTC ---
+  ChatIceServer: {
+    type: "object",
+    properties: {
+      urls: { type: "array", items: { type: "string" } },
+      username: { type: "string" },
+      credential: { type: "string" },
+      credentialType: { type: "string", enum: ["password", "oauth"] },
+    },
+    required: ["urls"],
+  },
+  ChatRtcConfiguration: {
+    type: "object",
+    properties: {
+      iceServers: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatIceServer" },
+      },
+      iceCandidatePoolSize: { type: "integer", example: 10 },
+      iceTransportPolicy: { type: "string", enum: ["all", "relay"] },
+    },
+    required: ["iceServers", "iceCandidatePoolSize", "iceTransportPolicy"],
+  },
+
+  // --- Message reactions ---
+  ChatReactionUser: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      displayName: { type: "string" },
+      avatar: { type: "string", nullable: true },
+    },
+    required: ["userId", "displayName", "avatar"],
+  },
+  ChatReactionGroup: {
+    type: "object",
+    properties: {
+      emoji: { type: "string", example: "👍" },
+      count: { type: "integer" },
+      users: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatReactionUser" },
+      },
+      selfReacted: { type: "boolean" },
+    },
+    required: ["emoji", "count", "users", "selfReacted"],
+  },
+  ChatMessageReactions: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      reactions: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatReactionGroup" },
+      },
+    },
+    required: ["messageId", "reactions"],
+  },
 } as const;

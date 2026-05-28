@@ -2,16 +2,19 @@ import { createServer } from "node:http";
 
 import { logger } from "@aimess/logger";
 
-import { app } from "./app.js";
+import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import { setupSockets } from "./sockets/index.js";
+import { createMessagingClient } from "./grpc/clients/messaging.client.js";
 
 async function start() {
   try {
+    const messagingClient = createMessagingClient();
+    const app = createApp(messagingClient);
     const httpServer = createServer(app);
 
     // Attach Socket.IO (Redis adapter init + namespace registration)
-    await setupSockets(httpServer);
+    await setupSockets(httpServer, messagingClient);
 
     httpServer.listen(env.API_GATEWAY_PORT, "0.0.0.0", () => {
       const port = String(env.API_GATEWAY_PORT);

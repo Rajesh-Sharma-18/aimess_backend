@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import type { Redis, Cluster } from "ioredis";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
@@ -13,7 +14,8 @@ import type { GroupPinService } from "../../services/group-pin.service.js";
 export class GroupMessageController {
   constructor(
     private readonly messageService: GroupMessageService,
-    private readonly pinService: GroupPinService
+    private readonly pinService: GroupPinService,
+    private readonly redis: Redis | Cluster
   ) {}
 
   getMessages = asyncHandler(async (req: Request, res: Response) => {
@@ -93,5 +95,53 @@ export class GroupMessageController {
       ? t("CHAT_MESSAGES_SEARCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+  });
+
+  forwardMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { targetRoomId, clientMessageId, senderName, senderAvatar } =
+      req.body as {
+        targetRoomId: string;
+        clientMessageId?: string | null;
+        senderName?: string;
+        senderAvatar?: string;
+      };
+    const result = await this.messageService.forwardMessage({
+      sourceMessageId: messageId,
+      targetRoomId,
+      senderId: userId,
+      senderName: senderName ?? "",
+      senderAvatar: senderAvatar ?? "",
+      clientMessageId: clientMessageId ?? null,
+    });
+    await this.redis.publish(
+      `conv:${targetRoomId}`,
+      JSON.stringify({
+        event: "message:new",
+        data: {
+          messageId: result.id,
+          conversationId: targetRoomId,
+          senderId: userId,
+          contentType: result.messageType,
+          isForwarded: true,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_FORWARDED", req.locale)));
+  });
+
+  getMessageReactions = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const roomId = req.params.roomId as string;
+    const result = await this.messageService.getMessageReactions({
+      messageId,
+      roomId,
+      requesterId: userId,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 }

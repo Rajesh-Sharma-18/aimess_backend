@@ -191,3 +191,19 @@ export const AppState = {
   CLOSED: "CLOSED",
 } as const;
 export type AppState = (typeof AppState)[keyof typeof AppState];
+
+export const CallType = {
+  AUDIO: "AUDIO",
+  VIDEO: "VIDEO",
+} as const;
+export type CallType = (typeof CallType)[keyof typeof CallType];
+
+export const CallStatus = {
+  RINGING: "RINGING",
+  IN_PROGRESS: "IN_PROGRESS",
+  ENDED: "ENDED",
+  MISSED: "MISSED",
+  DECLINED: "DECLINED",
+  FAILED: "FAILED",
+} as const;
+export type CallStatus = (typeof CallStatus)[keyof typeof CallStatus];

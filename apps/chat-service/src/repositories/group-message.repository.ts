@@ -26,6 +26,8 @@ export class GroupMessageRepository {
         parentMessageId: (data.parentMessageId as string) ?? null,
         quoteData: (data.quoteData as object) ?? null,
         reactions: (data.reactions as object) ?? {},
+        isForwarded: (data.isForwarded as boolean) ?? false,
+        forwardData: (data.forwardData as object) ?? null,
         isDeleted: (data.isDeleted as boolean) ?? false,
         deletedType: (data.deletedType as string) ?? null,
         deletedPlaceholder: (data.deletedPlaceholder as string) ?? "",
@@ -93,11 +95,19 @@ export class GroupMessageRepository {
 
   async findByClientMessageId(
     roomId: string,
-    senderId: string,
-    clientMessageId: string
+    senderIdOrClientMessageId: string,
+    clientMessageId?: string
   ): Promise<GroupMessage | null> {
+    // Supports two call signatures:
+    // findByClientMessageId(roomId, senderId, clientMessageId)  — original
+    // findByClientMessageId(roomId, clientMessageId)            — for forward idempotency
+    if (clientMessageId !== undefined) {
+      return this.prisma.groupMessage.findFirst({
+        where: { roomId, senderId: senderIdOrClientMessageId, clientMessageId },
+      });
+    }
     return this.prisma.groupMessage.findFirst({
-      where: { roomId, senderId, clientMessageId },
+      where: { roomId, clientMessageId: senderIdOrClientMessageId },
     });
   }
 
@@ -172,5 +182,44 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.count({
       where: { roomId, isDeleted: false },
     });
+  }
+
+  async createForwardedMessage(data: {
+    roomId: string;
+    senderId: string;
+    senderName: string;
+    senderAvatar: string;
+    content: object;
+    messageType: string;
+    forwardData: object;
+    clientMessageId?: string | null;
+  }): Promise<GroupMessage> {
+    return this.prisma.groupMessage.create({
+      data: {
+        roomId: data.roomId,
+        senderId: data.senderId,
+        senderName: data.senderName,
+        senderAvatar: data.senderAvatar,
+        content: data.content as Prisma.InputJsonValue,
+        messageType: data.messageType,
+        isForwarded: true,
+        forwardData: data.forwardData as Prisma.InputJsonValue,
+        clientMessageId: data.clientMessageId ?? null,
+        reactions: {},
+        isDeleted: false,
+        deletedForUserIds: [],
+      },
+    });
+  }
+
+  async getReactions(
+    messageId: string
+  ): Promise<Record<string, unknown> | null> {
+    const msg = await this.prisma.groupMessage.findUnique({
+      where: { id: messageId },
+      select: { reactions: true },
+    });
+    if (!msg) return null;
+    return msg.reactions as Record<string, unknown>;
   }
 }

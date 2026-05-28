@@ -7,6 +7,7 @@ const envSchema = z
   .object({
     NODE_ENV: z.enum(["development", "production", "test"]),
     USER_SERVICE_PORT: z.coerce.number().positive(),
+    USER_GRPC_PORT: z.coerce.number().positive().default(4002),
 
     USER_DATABASE_URL: z.string(),
 

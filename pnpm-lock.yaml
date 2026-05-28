@@ -58,6 +58,9 @@ importers:
       "@aimess/errors":
         specifier: workspace:*
         version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
@@ -240,6 +243,9 @@ importers:
       "@aimess/errors":
         specifier: workspace:*
         version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
@@ -264,6 +270,9 @@ importers:
       "@prisma/client":
         specifier: ^6.9.0
         version: 6.19.3(prisma@6.19.3(typescript@6.0.3))(typescript@6.0.3)
+      amqplib:
+        specifier: ^0.10.5
+        version: 0.10.9
       cors:
         specifier: ^2.8.6
         version: 2.8.6
@@ -282,10 +291,16 @@ importers:
       nanoid:
         specifier: ^5.1.5
         version: 5.1.11
+      opossum:
+        specifier: ^8.1.4
+        version: 8.5.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      "@types/amqplib":
+        specifier: ^0.10.4
+        version: 0.10.8
       "@types/cors":
         specifier: ^2.8.19
         version: 2.8.19
@@ -295,6 +310,9 @@ importers:
       "@types/node":
         specifier: ^25.6.0
         version: 25.6.2
+      "@types/opossum":
+        specifier: ^8.1.4
+        version: 8.1.9
       prisma:
         specifier: ^6.9.0
         version: 6.19.3(typescript@6.0.3)
@@ -474,6 +492,12 @@ importers:
       "@aimess/utils":
         specifier: workspace:*
         version: link:../../packages/utils
+      "@grpc/grpc-js":
+        specifier: ^1.14.3
+        version: 1.14.3
+      "@grpc/proto-loader":
+        specifier: ^0.8.1
+        version: 0.8.1
       "@prisma/client":
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3))(typescript@6.0.3)
@@ -555,6 +579,28 @@ importers:
   packages/errors: {}
 
   packages/grpc-contracts: {}
+
+  packages/grpc-utils:
+    dependencies:
+      "@aimess/logger":
+        specifier: workspace:*
+        version: link:../logger
+      "@grpc/grpc-js":
+        specifier: ^1.14.3
+        version: 1.14.3
+      opossum:
+        specifier: ^8.1.4
+        version: 8.5.0
+    devDependencies:
+      "@types/node":
+        specifier: ^25.6.0
+        version: 25.6.2
+      "@types/opossum":
+        specifier: ^8.1.4
+        version: 8.1.9
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
 
   packages/logger:
     dependencies:
@@ -2472,6 +2518,13 @@ packages:
         integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==,
       }
 
+  amqplib@0.10.9:
+    resolution:
+      {
+        integrity: sha512-jwSftI4QjS3mizvnSnOrPGYiUnm1vI2OP1iXeOUz5pb74Ua0nbf6nPyyTzuiCLEE3fMpaJORXh2K/TQ08H5xGA==,
+      }
+    engines: { node: ">=10" }
+
   amqplib@2.0.1:
     resolution:
       {
@@ -2643,6 +2696,12 @@ packages:
     resolution:
       {
         integrity: sha512-zRpUiDwd/xk6ADqPMATG8vc9VPrkck7T07OIx0gnjmJAnHnTVXNQG3vfvWNuiZIkwu9KrKdA1iJKfsfTVxE6NA==,
+      }
+
+  buffer-more-ints@1.0.0:
+    resolution:
+      {
+        integrity: sha512-EMetuGFz5SLsT0QTnXzINh4Ksr+oo4i+UGTXEshiGCQWnsgSs7ZhJ8fzlwQ+OzEMs0MpDAMr1hxnblp5a4vcHg==,
       }
 
   bundle-require@5.1.0:
@@ -4861,6 +4920,12 @@ packages:
       }
     engines: { node: ">=0.6" }
 
+  querystringify@2.2.0:
+    resolution:
+      {
+        integrity: sha512-FIqgj2EUvTa7R50u0rGsyTftzjYmv/a3hO345bZNrqabNqjtgiDMgmo4mkUjd+nzU5oF3dClKqFIPUKybUyqoQ==,
+      }
+
   range-parser@1.2.1:
     resolution:
       {
@@ -5588,6 +5653,12 @@ packages:
     resolution:
       {
         integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==,
+      }
+
+  url-parse@1.5.10:
+    resolution:
+      {
+        integrity: sha512-WypcfiRhfeUP9vvF0j6rw0J3hrWrw6iZv3+22h6iRMJ/8z1Tj6XfLP4DsUix5MhMPnXpiHDoKyoZ/bdCkwBCiQ==,
       }
 
   util-deprecate@1.0.2:
@@ -7027,6 +7098,11 @@ snapshots:
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
+  amqplib@0.10.9:
+    dependencies:
+      buffer-more-ints: 1.0.0
+      url-parse: 1.5.10
+
   amqplib@2.0.1: {}
 
   ansi-escapes@7.3.0:
@@ -7106,6 +7182,8 @@ snapshots:
   bson@7.2.0: {}
 
   buffer-equal-constant-time@1.0.1: {}
+
+  buffer-more-ints@1.0.0: {}
 
   bundle-require@5.1.0(esbuild@0.27.7):
     dependencies:
@@ -8476,6 +8554,8 @@ snapshots:
     dependencies:
       side-channel: 1.1.0
 
+  querystringify@2.2.0: {}
+
   range-parser@1.2.1: {}
 
   raw-body@3.0.2:
@@ -8952,6 +9032,11 @@ snapshots:
   uri-js@4.4.1:
     dependencies:
       punycode: 2.3.1
+
+  url-parse@1.5.10:
+    dependencies:
+      querystringify: 2.2.0
+      requires-port: 1.0.0
 
   util-deprecate@1.0.2: {}
 

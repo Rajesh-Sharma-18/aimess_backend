@@ -1,4 +1,4 @@
-import { BadRequestError, NotFoundError } from "@aimess/errors";
+import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -221,5 +221,130 @@ export class GroupMessageService {
     reactions: Record<string, unknown[]>
   ): Promise<GroupMessage | null> {
     return this.messageRepo.addReactions(messageId, reactions);
+  }
+
+  async forwardMessage(params: {
+    sourceMessageId: string;
+    targetRoomId: string;
+    senderId: string;
+    senderName: string;
+    senderAvatar: string;
+    clientMessageId?: string | null;
+  }): Promise<GroupMessage> {
+    // check sender is active member of target room
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      params.targetRoomId,
+      params.senderId
+    );
+    if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+
+    // idempotency — require senderId to avoid false matches across senders
+    if (params.clientMessageId) {
+      const existing = await this.messageRepo.findByClientMessageId(
+        params.targetRoomId,
+        params.senderId,
+        params.clientMessageId
+      );
+      if (existing) return existing;
+    }
+
+    // fetch source message
+    const source = await this.messageRepo.findById(params.sourceMessageId);
+    if (!source || source.isDeleted)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const forwardData = {
+      originalMessageId: source.id,
+      originalRoomId: source.roomId,
+      originalSenderId: source.senderId ?? "",
+      originalCreatedAt: source.createdAt.toISOString(),
+      originalContentType: source.messageType,
+    };
+
+    const message = await this.messageRepo.createForwardedMessage({
+      roomId: params.targetRoomId,
+      senderId: params.senderId,
+      senderName: params.senderName,
+      senderAvatar: params.senderAvatar,
+      content: source.content as object,
+      messageType: source.messageType,
+      forwardData,
+      clientMessageId: params.clientMessageId ?? null,
+    });
+
+    // update room last message (fire and forget)
+    const messageContent = (message.content ?? {}) as Record<string, unknown>;
+    this.roomRepo
+      .updateLastMessage(params.targetRoomId, {
+        _id: message.id,
+        senderId: message.senderId ?? null,
+        senderName: message.senderName,
+        messageType: message.messageType,
+        content: { text: (messageContent.text as string) || "" },
+        createdAt: message.createdAt,
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          `GroupMessageService|forwardMessage|updateLastMessage failed: ${String(err)}`
+        );
+      });
+
+    return message;
+  }
+
+  async getMessageReactions(params: {
+    messageId: string;
+    roomId: string;
+    requesterId: string;
+  }): Promise<{
+    reactions: Record<
+      string,
+      {
+        count: number;
+        users: { userId: string; displayName: string; avatar: string }[];
+        selfReacted: boolean;
+      }
+    >;
+  }> {
+    const raw = await this.messageRepo.getReactions(params.messageId);
+    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const reactions = (raw ?? {}) as Record<string, string[]>;
+    const allUserIds = [...new Set(Object.values(reactions).flat())];
+
+    const snapshots =
+      allUserIds.length > 0
+        ? await this.userSnapshotService.getUserSnapshotsMap(
+            allUserIds,
+            this.cacheRepo
+          )
+        : new Map<string, Record<string, unknown>>();
+
+    const result: Record<
+      string,
+      {
+        count: number;
+        users: { userId: string; displayName: string; avatar: string }[];
+        selfReacted: boolean;
+      }
+    > = {};
+
+    for (const [emoji, userIds] of Object.entries(reactions)) {
+      result[emoji] = {
+        count: userIds.length,
+        selfReacted: userIds.includes(params.requesterId),
+        users: userIds.map((uid) => {
+          const snap = snapshots.get(uid) ?? {};
+          return {
+            userId: uid,
+            displayName:
+              (snap.displayName as string) ?? (snap.memberId as string) ?? "",
+            avatar: (snap.avatar as string) ?? "",
+          };
+        }),
+      };
+    }
+
+    return { reactions: result };
   }
 }

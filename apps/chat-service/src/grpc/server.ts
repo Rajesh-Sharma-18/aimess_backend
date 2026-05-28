@@ -6,8 +6,11 @@ import { logger } from "@aimess/logger";
 import { redis } from "../config/redis.js";
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
+import type { GroupMemberService } from "../services/group-member.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
+import type { CallService } from "../services/call.service.js";
+import type { WebRtcConfigService } from "../services/webrtc-config.service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -18,8 +21,11 @@ const PROTO_PATH = path.resolve(
 export interface GrpcDeps {
   privateMessageService: PrivateMessageService;
   groupMessageService: GroupMessageService;
+  groupMemberService: GroupMemberService;
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
+  callService: CallService;
+  webRtcConfigService: WebRtcConfigService;
 }
 
 function parseMessageContent(req: {
@@ -105,6 +111,9 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             content: unknown;
             createdAt: unknown;
           };
+          // Track whether this was an idempotency hit (message already existed).
+          // Set by comparing createdAt to now after the service call.
+          let alreadySent = false;
 
           const conversationType = String(
             req.conversationType ?? ""
@@ -129,6 +138,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               content,
               messageType: req.contentType || "TEXT",
               parentMessageId: req.repliedToId || null,
+              clientMessageId: req.clientMessageId || null,
             });
           }
 
@@ -153,6 +163,14 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             })
           );
 
+          // Detect idempotency hit: message created more than 5s ago → already existed
+          if (
+            msg.createdAt instanceof Date &&
+            Date.now() - msg.createdAt.getTime() > 5000
+          ) {
+            alreadySent = true;
+          }
+
           callback(null, {
             messageId: msg.id,
             conversationId: req.conversationId,
@@ -160,6 +178,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               msg.createdAt instanceof Date
                 ? msg.createdAt.getTime()
                 : Date.now(),
+            alreadySent,
           });
         } catch (err) {
           logger.error(`gRPC sendMessage error: ${String(err)}`);
@@ -271,13 +290,27 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             conversationId: string;
             readerId: string;
             upToMessageId: string;
+            conversationType?: string;
           };
 
-          await deps.privateMessageService.markRead({
-            roomId: req.conversationId,
-            userId: req.readerId,
-            lastMessageId: req.upToMessageId,
-          });
+          const conversationType =
+            typeof req.conversationType === "string"
+              ? req.conversationType.toUpperCase()
+              : "PRIVATE";
+
+          if (conversationType === "GROUP") {
+            await deps.groupMemberService.markRead({
+              roomId: req.conversationId,
+              userId: req.readerId,
+              lastMessageId: req.upToMessageId,
+            });
+          } else {
+            await deps.privateMessageService.markRead({
+              roomId: req.conversationId,
+              userId: req.readerId,
+              lastMessageId: req.upToMessageId,
+            });
+          }
 
           await redis.publish(
             `conv:${req.conversationId}`,
@@ -367,6 +400,294 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
+    },
+
+    forwardMessage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            targetConversationId?: string;
+            senderId?: string;
+            receiverId?: string;
+            clientMessageId?: string;
+            conversationType?: string;
+            senderName?: string;
+            senderAvatar?: string;
+          };
+
+          const conversationType =
+            typeof req.conversationType === "string"
+              ? req.conversationType.toUpperCase()
+              : "PRIVATE";
+
+          let message: { id: string; messageType: string; createdAt: Date };
+
+          if (conversationType === "GROUP") {
+            message = await deps.groupMessageService.forwardMessage({
+              sourceMessageId: req.messageId ?? "",
+              targetRoomId: req.targetConversationId ?? "",
+              senderId: req.senderId ?? "",
+              senderName: req.senderName ?? "",
+              senderAvatar: req.senderAvatar ?? "",
+              clientMessageId: req.clientMessageId ?? null,
+            });
+          } else {
+            message = await deps.privateMessageService.forwardMessage({
+              sourceMessageId: req.messageId ?? "",
+              targetRoomId: req.targetConversationId ?? "",
+              senderId: req.senderId ?? "",
+              receiverId: req.receiverId ?? "",
+              clientMessageId: req.clientMessageId ?? null,
+            });
+          }
+
+          await redis.publish(
+            `conv:${req.targetConversationId ?? ""}`,
+            JSON.stringify({
+              event: "message:new",
+              data: {
+                messageId: message.id,
+                conversationId: req.targetConversationId,
+                senderId: req.senderId,
+                contentType: message.messageType,
+                isForwarded: true,
+              },
+            })
+          );
+
+          callback(null, {
+            messageId: message.id,
+            conversationId: req.targetConversationId ?? "",
+            sentAt: message.createdAt.getTime(),
+          });
+        } catch (err) {
+          logger.error(`gRPC forwardMessage error: ${String(err)}`);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: String(err),
+          });
+        }
+      })();
+    },
+
+    getMessageReactions: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId?: string;
+            conversationId?: string;
+            conversationType?: string;
+            requesterId?: string;
+          };
+
+          const conversationType =
+            typeof req.conversationType === "string"
+              ? req.conversationType.toUpperCase()
+              : "PRIVATE";
+
+          const result =
+            conversationType === "GROUP"
+              ? await deps.groupMessageService.getMessageReactions({
+                  messageId: req.messageId ?? "",
+                  roomId: req.conversationId ?? "",
+                  requesterId: req.requesterId ?? "",
+                })
+              : await deps.privateMessageService.getMessageReactions({
+                  messageId: req.messageId ?? "",
+                  roomId: req.conversationId ?? "",
+                  requesterId: req.requesterId ?? "",
+                });
+
+          const reactionList = Object.entries(result.reactions).map(
+            ([emoji, data]) => ({
+              emoji,
+              count: data.count,
+              users: data.users,
+              selfReacted: data.selfReacted,
+            })
+          );
+
+          callback(null, {
+            messageId: req.messageId ?? "",
+            reactions: reactionList,
+          });
+        } catch (err) {
+          logger.error(`gRPC getMessageReactions error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    initiateCall: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            callerId?: string;
+            calleeId?: string;
+            type?: string;
+            privateRoomId?: string;
+          };
+          const result = await deps.callService.initiateCall({
+            callerId: req.callerId ?? "",
+            calleeId: req.calleeId ?? "",
+            type: req.type ?? "AUDIO",
+            privateRoomId: req.privateRoomId ?? null,
+          });
+
+          const rtcConfig = deps.webRtcConfigService.getRtcConfiguration();
+          callback(null, {
+            callId: result.callId,
+            status: result.status,
+            rtcConfig: {
+              iceServers: rtcConfig.iceServers.map((server) => ({
+                urls: server.urls,
+                username: server.username ?? "",
+                credential: server.credential ?? "",
+                credentialType: server.credentialType ?? "password",
+              })),
+              iceCandidatePoolSize: rtcConfig.iceCandidatePoolSize,
+              iceTransportPolicy: rtcConfig.iceTransportPolicy,
+            },
+          });
+        } catch (err) {
+          logger.error(`gRPC initiateCall error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    answerCall: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { callId?: string; calleeId?: string };
+          const result = await deps.callService.answerCall({
+            callId: req.callId ?? "",
+            calleeId: req.calleeId ?? "",
+          });
+          callback(null, { callId: result.callId, status: result.status });
+        } catch (err) {
+          logger.error(`gRPC answerCall error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    declineCall: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { callId?: string; calleeId?: string };
+          const result = await deps.callService.declineCall({
+            callId: req.callId ?? "",
+            calleeId: req.calleeId ?? "",
+          });
+          callback(null, { callId: result.callId, status: result.status });
+        } catch (err) {
+          logger.error(`gRPC declineCall error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    endCall: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { callId?: string; userId?: string };
+          const result = await deps.callService.endCall({
+            callId: req.callId ?? "",
+            userId: req.userId ?? "",
+          });
+          callback(null, {
+            callId: result.callId,
+            status: result.status,
+            durationSec: result.durationSec ?? 0,
+          });
+        } catch (err) {
+          logger.error(`gRPC endCall error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    getCallHistory: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          const result = await deps.callService.getCallHistory({
+            userId: req.userId ?? "",
+            cursor: req.cursor ?? null,
+            limit: req.limit ?? 20,
+          });
+          callback(null, {
+            calls: result.calls.map((c) => ({
+              callId: c.callId,
+              callerId: c.callerId,
+              calleeId: c.calleeId,
+              type: c.type,
+              status: c.status,
+              initiatedAt: c.initiatedAt.getTime(),
+              answeredAt: c.answeredAt?.getTime() ?? 0,
+              endedAt: c.endedAt?.getTime() ?? 0,
+              durationSec: c.durationSec ?? 0,
+              endedBy: c.endedBy ?? "",
+            })),
+            nextCursor: result.nextCursor ?? "",
+            hasMore: result.hasMore,
+          });
+        } catch (err) {
+          logger.error(`gRPC getCallHistory error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    getRtcConfig: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      try {
+        const rtcConfig = deps.webRtcConfigService.getRtcConfiguration();
+        callback(null, {
+          rtcConfig: {
+            iceServers: rtcConfig.iceServers.map((server) => ({
+              urls: server.urls,
+              username: server.username ?? "",
+              credential: server.credential ?? "",
+              credentialType: server.credentialType ?? "password",
+            })),
+            iceCandidatePoolSize: rtcConfig.iceCandidatePoolSize,
+            iceTransportPolicy: rtcConfig.iceTransportPolicy,
+          },
+        });
+      } catch (err) {
+        logger.error(`gRPC getRtcConfig error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
     },
   };
 

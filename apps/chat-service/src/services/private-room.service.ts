@@ -3,7 +3,7 @@ import { logger } from "@aimess/logger";
 
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
-import type { FriendshipRepository } from "../repositories/friendship.repository.js";
+import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
@@ -13,7 +13,7 @@ export class PrivateRoomService {
     private readonly privateRoomRepo: PrivateRoomRepository,
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
-    private readonly friendshipRepo: FriendshipRepository
+    private readonly userServiceClient: UserServiceClient
   ) {}
 
   async getOrCreateRoom(userId: string, peerId: string): Promise<PrivateRoom> {
@@ -22,7 +22,10 @@ export class PrivateRoomService {
       await this.privateRoomRepo.findByParticipantsKey(participantsKey);
     if (existing) return existing;
 
-    const friends = await this.friendshipRepo.areFriends(userId, peerId);
+    const friends = await this.userServiceClient.checkFriendship(
+      userId,
+      peerId
+    );
     if (!friends) {
       throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
     }

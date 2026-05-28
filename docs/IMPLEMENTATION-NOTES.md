@@ -1,7 +1,7 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-05-25**.
+> Update this whenever you ship or change a feature. Last reviewed: **2026-05-28**.
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**).
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening).
 
@@ -228,6 +228,52 @@ Second wave of scalability work: Redis Cluster support in code + docker-compose,
 | 3 pods + Redis Cluster + nginx | ~50,000–100,000             |
 | Kubernetes 700+ pods + Atlas   | ~10,000,000                 |
 
+#### chat-service — calling, forward messages, reaction users, retry idempotency + WebRTC config (shipped 2026-05-28)
+
+Five features shipped end-to-end through the multi-agent pipeline. All green (typecheck PASS on chat-service + api-gateway).
+
+**1. Forward Messages (private + group)**
+
+- `PrivateMessage` + `GroupMessage` gained `isForwarded Boolean @default(false)` and `forwardData Json?`. Shape: `{ originalMessageId, originalRoomId, originalSenderId, originalCreatedAt, originalContentType }`.
+- `privateMessageService.forwardMessage()` + `groupMessageService.forwardMessage()` check friendship/membership, then guard idempotency via 3-arg `findByClientMessageId(roomId, senderId, clientMessageId)` before creating.
+- HTTP: `POST /private/rooms/:roomId/messages/:messageId/forward` + `POST /groups/:roomId/messages/:messageId/forward`. gRPC: `ForwardMessage` RPC in `MessagingService`. Socket.IO: `message:forward` event on `/chat` namespace; gateway publishes `message:new` to Redis `conv:<targetRoomId>` on success.
+- **Constants:** `CHAT_MESSAGE_FORWARDED` + `CHAT_REACTIONS_FETCHED` added to `packages/constants/src/messages/chat.messages.ts` and package rebuilt.
+
+**2. View Reaction Users**
+
+- Reactions stored as `Json` on messages: `Record<emoji, Array<{userId, userName, avatar, memberId}>>`.
+- New `getMessageReactions()` on both private + group services — fetches reactions Json, collects unique `userId`s, enriches via `userSnapshotService.getUserSnapshots()`, groups by emoji with `count`, `users[]`, `selfReacted` flag.
+- HTTP: `GET /private/rooms/:roomId/messages/:messageId/reactions` + `GET /groups/:roomId/messages/:messageId/reactions`. gRPC: `GetMessageReactions` RPC (routes to private or group service based on `conversationType`). Socket.IO: `message:reactions:get` event.
+
+**3. Retry Failed Messages — clientMessageId Idempotency**
+
+- `PrivateMessage` model gained `clientMessageId String?` + `@@index([clientMessageId])`. (GroupMessage already had it.)
+- Sparse-but-partial unique index created at startup: `partialFilterExpression: { clientMessageId: { $type: "string" } }` — covers only actual strings, not null/missing rows (avoids E11000 on existing messages without a clientMessageId).
+- `privateMessageService.sendMessage()` now accepts `clientMessageId?`; calls `findByClientMessageId(roomId, senderId, clientMessageId)` BEFORE create — returns existing message if found.
+- gRPC `sendMessage` handler passes `clientMessageId` from request; detects idempotency hit (msg.createdAt > 5s ago → `alreadySent: true` in response). New `bool already_sent = 4` field added to proto `SendMessageResponse`.
+
+**4. Audio/Video Calling (signaling + history)**
+
+- New `Call` Prisma model in `apps/chat-service/prisma/schema.prisma`: fields `callId @unique`, `callerId`, `calleeId`, `type` (AUDIO/VIDEO enum), `status` (RINGING/IN_PROGRESS/ENDED/MISSED/DECLINED/FAILED enum), `privateRoomId?`, `initiatedAt`, `answeredAt?`, `endedAt?`, `durationSec?`, `endedBy?`. Indexes on `(callerId, initiatedAt desc)`, `(calleeId, initiatedAt desc)`, `status`.
+- `CallRepository` (`repositories/call.repository.ts`): `create`, `findByCallId`, `updateStatus`, `findByParticipant` (cursor-based).
+- `CallService` (`services/call.service.ts`) — full lifecycle: `initiateCall` checks `PrivateRoom.blockedBy`, creates Call RINGING, publishes to Redis `user:<calleeId>`; `answerCall` guards status=RINGING → IN_PROGRESS; `declineCall` guards RINGING → DECLINED; `endCall` accepts from either participant when RINGING|IN_PROGRESS, calculates `durationSec` from `answeredAt` → ENDED; `getCallHistory` cursor-based by `initiatedAt`.
+- `CallController` + `call.routes.ts`: `GET /calls` (history), `GET /calls/:callId`. gRPC: 5 new RPCs — `InitiateCall`, `AnswerCall`, `DeclineCall`, `EndCall`, `GetCallHistory`. Socket.IO `/chat`: 5 new events — `call:initiate`, `call:answer`, `call:decline`, `call:end`, `call:ice` (ICE relay only: publishes to Redis `call:<callId>`, no DB write). New `CallStatus` + `CallType` enums in `src/types/enums.ts`.
+
+**5. WebRTC Configuration**
+
+- 8 new env vars in `chat-service/src/config/env.ts`: `WEBRTC_STUN_SERVERS` (default: Google STUN), `WEBRTC_TURN_SERVER`, `WEBRTC_TURN_USERNAME`, `WEBRTC_TURN_PASSWORD`, `WEBRTC_TURN_CREDENTIAL_EXPIRES_IN_HOURS`, `WEBRTC_ICE_CANDIDATE_POOL_SIZE` (default 10), `WEBRTC_RTC_CODEC_PREFERENCES` (default "opus,h264"), `WEBRTC_CALL_TIMEOUT_SEC` (default 120).
+- `WebRtcConfigService` (`services/webrtc-config.service.ts`): `buildIceServers()` (STUN always; TURN if all 3 vars set, warns if URL without credentials), `getRtcConfiguration()`, `getCodecPreferences()`.
+- gRPC: `GetRtcConfig` RPC — returns `RtcConfiguration { iceServers[], iceCandidatePoolSize, iceTransportPolicy }`. `initiateCall` gRPC handler includes `rtcConfig` in response.
+- api-gateway: `GET /api/v1/webrtc/rtc-config` HTTP endpoint (returns 503 on circuit-breaker open).
+- Socket.IO: `call:initiate` callback includes `rtcConfig` field.
+- Constants: `packages/constants/src/webrtc.ts` — `WEBRTC_CODECS`, `WEBRTC_CALL_CONSTRAINTS`, `WEBRTC_TIMEOUTS`.
+
+**Bug fixes (same session)**
+
+- **`markMessagesRead` gRPC routing:** handler always called `privateMessageService.markRead()` regardless of `conversationType`. Fixed to route to `groupMemberService.markRead()` for GROUP.
+- **`alreadySent` in gRPC sendMessage:** proto `SendMessageResponse` had `bool already_sent = 4` but handler never set it. Fixed.
+- **Group forward idempotency:** was calling `findByClientMessageId(roomId, clientMessageId)` with 2 args (missing `senderId`), risking false matches across senders. Fixed to 3 args.
+
 ---
 
 #### auth-service — fcmTokens deferred (2026-05-25)
@@ -306,6 +352,18 @@ Second wave of scalability work: Redis Cluster support in code + docker-compose,
 - [ ] **Friend-request privacy gate skipped (v1):** `PrivacySettings.whoCanSendFriendRequests` is not enforced on `POST /friends/requests`. Add before GA.
 - [ ] **Community member input not validated as friends:** create `memberIds` and add-members `userIds` trust the client (no friendship/consent check).
 - [ ] **Community features still unbuilt:** join-requests, invites, ownership transfer, soft-delete endpoint, discovery/search, cover image, reports. The `CommunityJoinRequest` / `CommunityInvite` / `CommunityReport` models exist as `/// FUTURE` (defined but unwired — no repo/service/routes). Join-requests need a "request to join" flow first (today members are only added at create time or directly by admin/mod — there is no join/invite path).
+- [x] **Audio/video calling (chat-service)** — shipped 2026-05-28: `Call` model, `CallRepository`, `CallService` full lifecycle, 5 gRPC RPCs, 5 Socket.IO events, ICE relay via Redis `call:<callId>`.
+- [x] **Forward messages (private + group)** — shipped 2026-05-28: `isForwarded`/`forwardData` fields, `forwardMessage()` on both services, HTTP + gRPC + Socket.IO.
+- [x] **Reaction users view** — shipped 2026-05-28: `getMessageReactions()` on both services, HTTP + gRPC + Socket.IO.
+- [x] **clientMessageId idempotency on private messages** — shipped 2026-05-28: `clientMessageId` field + partial-filter index + pre-send dedup + `already_sent` gRPC flag.
+- [x] **WebRTC config service + api-gateway endpoint** — shipped 2026-05-28: `WebRtcConfigService`, `GetRtcConfig` gRPC RPC, `GET /api/v1/webrtc/rtc-config` gateway route.
+- [ ] **SHOULD FIX — `getMessageReactions` duplicated:** logic is identical between private and group services. Extract to `src/lib/reactions.ts` shared helper.
+- [ ] **SHOULD FIX — `buildForwardData()` duplicated:** construction repeated in both private and group forward paths. Extract to a shared helper.
+- [ ] **SHOULD FIX — `CALL_*` error codes not in `@aimess/constants`:** affects only i18n/client error mapping, not functionality.
+- [ ] **SHOULD FIX — `getCodecPreferences()` unused (dead code):** `WebRtcConfigService.getCodecPreferences()` is not called anywhere — for future codec negotiation. Document or remove.
+- [ ] **SHOULD FIX — `iceTransportPolicy` hardcoded to `"all"`:** consider an env var for relay-only mode in production (useful when direct P2P is blocked by corporate firewalls).
+- [ ] **SHOULD FIX — `buildIceServers()` rebuilds on every request:** consider caching the result at `WebRtcConfigService` init time and refreshing only on env change.
+- [ ] **SHOULD FIX — `CallStatus.MISSED` never set:** requires a Bull delayed job that fires at 60s if the call is still RINGING. Deferred — calls that time out currently stay stuck in RINGING.
 
 ---
 
@@ -338,6 +396,16 @@ Second wave of scalability work: Redis Cluster support in code + docker-compose,
 - ESLint (`config/redis.ts`, `repositories/cache.repository.ts`, `server.ts`) — **0 errors, 0 warnings**
 - DRY review — **PASS** (one blocking issue caught and fixed: `createRedisSubClient` must not inherit `enableAutoPipelining:true`; corrected before merge)
 - Runtime / integration — **NOT done** (no test runner; verified by typecheck + lint + multi-agent review)
+
+---
+
+---
+
+## 8. Verification status (2026-05-28 — calling, forward, reactions, idempotency, WebRTC)
+
+- `npx tsc --noEmit` (chat-service) — **PASS** (zero type errors after all five features + bug fixes)
+- `npx tsc --noEmit` (api-gateway) — **PASS** (WebRTC config endpoint + updated OpenAPI schemas)
+- Runtime / integration — **NOT done** (no test runner; verified by typecheck + multi-agent review/tester code-reading)
 
 ---
 

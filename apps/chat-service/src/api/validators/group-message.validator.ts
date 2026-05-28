@@ -63,3 +63,8 @@ export const pinGroupMessageSchema = z.object({
   roomId: z.string().min(4).max(100),
   messageId: z.string().min(4).max(100),
 });
+
+export const forwardGroupMessageSchema = z.object({
+  targetRoomId: z.string().min(4).max(150),
+  clientMessageId: z.string().min(1).max(100).nullish(),
+});

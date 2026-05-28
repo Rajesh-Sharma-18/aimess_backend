@@ -2,22 +2,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
-import CircuitBreaker from "opossum";
-import { logger } from "@aimess/logger";
 import { env } from "../../config/env.js";
+import {
+  makeBreaker,
+  makeBreakerNoArgs,
+  makeGrpcCall,
+} from "@aimess/grpc-utils";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
   __dirname,
   "../../../../../packages/grpc-contracts/proto/messaging.proto"
 );
-
-const BREAKER_OPTS = {
-  timeout: 2000,
-  errorThresholdPercentage: 50,
-  resetTimeout: 10000,
-  volumeThreshold: 5,
-};
 
 export interface SendMessageParams {
   conversationId: string;
@@ -37,6 +33,7 @@ export interface SendMessageResult {
   messageId: string;
   conversationId: string;
   sentAt: number;
+  alreadySent: boolean;
 }
 export interface GetConversationMessagesParams {
   conversationId: string;
@@ -67,6 +64,7 @@ export interface MarkMessagesReadParams {
   conversationId: string;
   readerId: string;
   upToMessageId: string;
+  conversationType?: string;
 }
 export interface SendReactionParams {
   messageId: string;
@@ -79,6 +77,112 @@ export interface SendReactionResult {
   reactions: { userId: string; emoji: string }[];
 }
 
+export interface ForwardMessageParams {
+  messageId: string;
+  targetConversationId: string;
+  senderId: string;
+  receiverId?: string;
+  clientMessageId: string;
+  conversationType?: string;
+  senderName?: string;
+  senderAvatar?: string;
+}
+export interface ForwardMessageResult {
+  messageId: string;
+  conversationId: string;
+  sentAt: number;
+}
+
+export interface GetMessageReactionsParams {
+  messageId: string;
+  conversationId: string;
+  conversationType?: string;
+  requesterId: string;
+}
+export interface ReactionUserDto {
+  userId: string;
+  displayName: string;
+  avatar: string;
+}
+export interface ReactionGroupDto {
+  emoji: string;
+  count: number;
+  users: ReactionUserDto[];
+  selfReacted: boolean;
+}
+export interface GetMessageReactionsResult {
+  messageId: string;
+  reactions: ReactionGroupDto[];
+}
+
+export interface IceServer {
+  urls: string[];
+  username?: string;
+  credential?: string;
+  credentialType?: string;
+}
+
+export interface RtcConfiguration {
+  iceServers: IceServer[];
+  iceCandidatePoolSize: number;
+  iceTransportPolicy: string;
+}
+
+export interface GetRtcConfigResult {
+  rtcConfig: RtcConfiguration;
+}
+
+export interface InitiateCallParams {
+  callerId: string;
+  calleeId: string;
+  type?: string;
+  privateRoomId?: string;
+}
+export interface CallStatusResult {
+  callId: string;
+  status: string;
+  rtcConfig?: RtcConfiguration;
+}
+export interface AnswerCallParams {
+  callId: string;
+  calleeId: string;
+}
+export interface DeclineCallParams {
+  callId: string;
+  calleeId: string;
+}
+export interface EndCallParams {
+  callId: string;
+  userId: string;
+}
+export interface EndCallResult {
+  callId: string;
+  status: string;
+  durationSec: number;
+}
+export interface GetCallHistoryParams {
+  userId: string;
+  cursor?: string;
+  limit?: number;
+}
+export interface CallDto {
+  callId: string;
+  callerId: string;
+  calleeId: string;
+  type: string;
+  status: string;
+  initiatedAt: number;
+  answeredAt: number;
+  endedAt: number;
+  durationSec: number;
+  endedBy: string;
+}
+export interface GetCallHistoryResult {
+  calls: CallDto[];
+  nextCursor: string;
+  hasMore: boolean;
+}
+
 export interface MessagingClient {
   sendMessage(p: SendMessageParams): Promise<SendMessageResult>;
   getConversationMessages(
@@ -88,19 +192,16 @@ export interface MessagingClient {
     p: MarkMessagesReadParams
   ): Promise<{ updatedCount: number }>;
   sendReaction(p: SendReactionParams): Promise<SendReactionResult>;
-}
-
-function makeBreaker<T, R>(
-  name: string,
-  fn: (p: T) => Promise<R>
-): CircuitBreaker<[T], R> {
-  const breaker = new CircuitBreaker(fn, { ...BREAKER_OPTS, name });
-  breaker.fallback(() => {
-    throw new Error(`${name} unavailable`);
-  });
-  breaker.on("open", () => logger.warn(`Circuit opened: ${name}`));
-  breaker.on("halfOpen", () => logger.info(`Circuit half-open: ${name}`));
-  return breaker;
+  forwardMessage(p: ForwardMessageParams): Promise<ForwardMessageResult>;
+  getMessageReactions(
+    p: GetMessageReactionsParams
+  ): Promise<GetMessageReactionsResult>;
+  initiateCall(p: InitiateCallParams): Promise<CallStatusResult>;
+  answerCall(p: AnswerCallParams): Promise<CallStatusResult>;
+  declineCall(p: DeclineCallParams): Promise<CallStatusResult>;
+  endCall(p: EndCallParams): Promise<EndCallResult>;
+  getCallHistory(p: GetCallHistoryParams): Promise<GetCallHistoryResult>;
+  getRtcConfig(): Promise<GetRtcConfigResult>;
 }
 
 export function createMessagingClient(): MessagingClient {
@@ -121,22 +222,8 @@ export function createMessagingClient(): MessagingClient {
     grpc.credentials.createInsecure()
   );
 
-  function call<TReq, TRes>(method: string, req: TReq): Promise<TRes> {
-    return new Promise((resolve, reject) => {
-      (
-        client as unknown as Record<
-          string,
-          (
-            r: TReq,
-            cb: (e: grpc.ServiceError | null, res: TRes) => void
-          ) => void
-        >
-      )[method](req, (err, res) => {
-        if (err) reject(err);
-        else resolve(res);
-      });
-    });
-  }
+  const call = <TReq, TRes>(method: string, req: TReq) =>
+    makeGrpcCall<TReq, TRes>(client, method, req);
 
   const sendMessageBreaker = makeBreaker(
     "messaging.sendMessage",
@@ -182,12 +269,17 @@ export function createMessagingClient(): MessagingClient {
 
   const markReadBreaker = makeBreaker(
     "messaging.markMessagesRead",
-    (p: MarkMessagesReadParams) =>
-      call<unknown, { updatedCount: number }>("markMessagesRead", {
+    (p: MarkMessagesReadParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, { updatedCount: number }>("markMessagesRead", {
         conversationId: p.conversationId,
         readerId: p.readerId,
         upToMessageId: p.upToMessageId,
-      })
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+      });
+    }
   );
 
   const sendReactionBreaker = makeBreaker(
@@ -201,10 +293,105 @@ export function createMessagingClient(): MessagingClient {
       })
   );
 
+  const forwardMessageBreaker = makeBreaker(
+    "messaging.forwardMessage",
+    (p: ForwardMessageParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, ForwardMessageResult>("forwardMessage", {
+        messageId: p.messageId,
+        targetConversationId: p.targetConversationId,
+        senderId: p.senderId,
+        receiverId: p.receiverId ?? "",
+        clientMessageId: p.clientMessageId,
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+        senderName: p.senderName ?? "",
+        senderAvatar: p.senderAvatar ?? "",
+      });
+    }
+  );
+
+  const getMessageReactionsBreaker = makeBreaker(
+    "messaging.getMessageReactions",
+    (p: GetMessageReactionsParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, GetMessageReactionsResult>("getMessageReactions", {
+        messageId: p.messageId,
+        conversationId: p.conversationId,
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+        requesterId: p.requesterId,
+      });
+    }
+  );
+
+  const initiateCallBreaker = makeBreaker(
+    "messaging.initiateCall",
+    (p: InitiateCallParams) =>
+      call<unknown, CallStatusResult>("initiateCall", {
+        callerId: p.callerId,
+        calleeId: p.calleeId,
+        type: p.type ?? "AUDIO",
+        privateRoomId: p.privateRoomId ?? "",
+      })
+  );
+
+  const answerCallBreaker = makeBreaker(
+    "messaging.answerCall",
+    (p: AnswerCallParams) =>
+      call<unknown, CallStatusResult>("answerCall", {
+        callId: p.callId,
+        calleeId: p.calleeId,
+      })
+  );
+
+  const declineCallBreaker = makeBreaker(
+    "messaging.declineCall",
+    (p: DeclineCallParams) =>
+      call<unknown, CallStatusResult>("declineCall", {
+        callId: p.callId,
+        calleeId: p.calleeId,
+      })
+  );
+
+  const endCallBreaker = makeBreaker("messaging.endCall", (p: EndCallParams) =>
+    call<unknown, EndCallResult>("endCall", {
+      callId: p.callId,
+      userId: p.userId,
+    })
+  );
+
+  const getCallHistoryBreaker = makeBreaker(
+    "messaging.getCallHistory",
+    (p: GetCallHistoryParams) =>
+      call<unknown, GetCallHistoryResult>("getCallHistory", {
+        userId: p.userId,
+        cursor: p.cursor ?? "",
+        limit: p.limit ?? 20,
+      })
+  );
+
+  const getRtcConfigBreaker = makeBreakerNoArgs(
+    "messaging.getRtcConfig",
+    () => {
+      return call<unknown, GetRtcConfigResult>("getRtcConfig", { userId: "" });
+    }
+  );
+
   return {
     sendMessage: (p) => sendMessageBreaker.fire(p),
     getConversationMessages: (p) => getMessagesBreaker.fire(p),
     markMessagesRead: (p) => markReadBreaker.fire(p),
     sendReaction: (p) => sendReactionBreaker.fire(p),
+    forwardMessage: (p) => forwardMessageBreaker.fire(p),
+    getMessageReactions: (p) => getMessageReactionsBreaker.fire(p),
+    initiateCall: (p) => initiateCallBreaker.fire(p),
+    answerCall: (p) => answerCallBreaker.fire(p),
+    declineCall: (p) => declineCallBreaker.fire(p),
+    endCall: (p) => endCallBreaker.fire(p),
+    getCallHistory: (p) => getCallHistoryBreaker.fire(p),
+    getRtcConfig: () => getRtcConfigBreaker.fire(),
   };
 }

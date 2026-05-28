@@ -99,6 +99,14 @@ export const CHAT_MESSAGES = {
   },
 
   // --- Mutation success ---
+  CHAT_MESSAGE_FORWARDED: {
+    vi: "Đã chuyển tiếp tin nhắn",
+    en: "Message forwarded",
+  },
+  CHAT_REACTIONS_FETCHED: {
+    vi: "Lấy danh sách cảm xúc thành công",
+    en: "Reactions fetched successfully",
+  },
   CHAT_CONVERSATION_DELETED: {
     vi: "Đã xóa cuộc trò chuyện",
     en: "Conversation deleted",

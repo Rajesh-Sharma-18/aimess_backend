@@ -78,7 +78,13 @@
       "PowerShell(Remove-Item -Force \"D:\\\\AIMess\\\\aimess_backend\\\\apps\\\\user-service\\\\src\\\\__presign-proof.ts\"; if \\(-not \\(Test-Path \"D:\\\\AIMess\\\\aimess_backend\\\\apps\\\\user-service\\\\src\\\\__presign-proof.ts\"\\)\\) { \"DELETED\" })",
       "Bash(powershell.exe -Command 'Get-NetIPAddress -AdressFamily IPv4 | Where-Object { $_.IPAddress -like '\\\\''192.168.*'\\\\'' -or $_.IPAddress -like '\\\\''10.*'\\\\'' -or $_.IPAddress -like '\\\\''172.*'\\\\'' } | Select-Object IPAddress, InterfaceAlias | Format-Table -AutoSize')",
       "Bash(cp /tmp/schema.bak prisma/schema.prisma)",
-      "Read(//c/c/Users/Windows/Documents/Rajesh/aimess_backend/apps/chat-service/prisma/**)"
+      "Read(//c/c/Users/Windows/Documents/Rajesh/aimess_backend/apps/chat-service/prisma/**)",
+      "Bash(pnpm lint *)",
+      "Bash(pnpm typecheck *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "PowerShell(Invoke-WebRequest -Uri \"https://win.rustup.rs/x86_64\" -OutFile \"$env:TEMP\\\\rustup-init.exe\")",
+      "PowerShell(& \"$env:TEMP\\\\rustup-init.exe\" -y --default-toolchain stable)"
     ]
   }
 }

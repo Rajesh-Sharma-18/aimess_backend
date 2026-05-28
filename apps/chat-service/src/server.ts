@@ -19,12 +19,12 @@ import { GroupMessageRepository } from "./repositories/group-message.repository.
 import { GroupMemberRepository } from "./repositories/group-member.repository.js";
 import { GroupInviteLinkRepository } from "./repositories/group-invite-link.repository.js";
 import { GroupMessagePinRepository } from "./repositories/group-message-pin.repository.js";
-import { FriendshipRepository } from "./repositories/friendship.repository.js";
 import { GeneralRoomRepository } from "./repositories/general-room.repository.js";
 import { GeneralRoomMessageRepository } from "./repositories/general-room-message.repository.js";
 import { RoomMemberRepository } from "./repositories/room-member.repository.js";
 import { NotificationRepository } from "./repositories/notification.repository.js";
 import { CacheRepository } from "./repositories/cache.repository.js";
+import { CallRepository } from "./repositories/call.repository.js";
 
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
@@ -39,6 +39,8 @@ import { NotificationService } from "./services/notification.service.js";
 import { CommunityRoomService } from "./services/community-room.service.js";
 import { CommunityMessageService } from "./services/community-message.service.js";
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
+import { CallService } from "./services/call.service.js";
+import { WebRtcConfigService } from "./services/webrtc-config.service.js";
 
 // -- Controllers --
 import { PrivateRoomController } from "./api/controllers/private-room.controller.js";
@@ -51,9 +53,17 @@ import { NotificationController } from "./api/controllers/notification.controlle
 import { CommunityController } from "./api/controllers/community.controller.js";
 import { CommunityMessageController } from "./api/controllers/community-message.controller.js";
 import { MediaController } from "./api/controllers/media.controller.js";
+import { CallController } from "./api/controllers/call.controller.js";
 
 // -- gRPC --
 import { startGrpcServer } from "./grpc/server.js";
+import { createUserServiceClient } from "./grpc/user.client.js";
+
+// -- Events --
+import {
+  initializeEventConsumers,
+  closeEventConsumers,
+} from "./events/index.js";
 
 let httpServer: Server | undefined;
 
@@ -126,10 +136,10 @@ const startServer = async () => {
       const maxAttempts = 5;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await prisma.$runCommandRaw({
             createIndexes: collection,
             indexes: [indexBody],
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
           } as any);
           logger.info(`Index ensured: ${indexName}`);
           return;
@@ -184,6 +194,16 @@ const startServer = async () => {
 
     const idemIndexes = [
       {
+        collection: "private_messages",
+        body: {
+          key: { roomId: 1, senderId: 1, clientMessageId: 1 },
+          name: "private_messages_idempotency_idx",
+          unique: true,
+          partialFilterExpression: { clientMessageId: { $type: "string" } },
+        },
+        name: "private_messages_idempotency_idx",
+      },
+      {
         collection: "group_messages",
         body: {
           key: { roomId: 1, senderId: 1, clientMessageId: 1 },
@@ -217,6 +237,14 @@ const startServer = async () => {
 
     await connectChatRedis();
 
+    // Initialize event consumers (RabbitMQ-based eventual consistency)
+    try {
+      await initializeEventConsumers();
+    } catch (err) {
+      logger.warn("Event consumers failed to initialize (non-critical)");
+      logger.warn(err);
+    }
+
     try {
       await ensureBuckets(storageClient, [env.MINIO_BUCKET]);
       logger.info(`MinIO buckets ready: ${env.MINIO_BUCKET}`);
@@ -236,27 +264,28 @@ const startServer = async () => {
     const groupMemberRepo = new GroupMemberRepository(prisma);
     const groupInviteLinkRepo = new GroupInviteLinkRepository(prisma);
     const groupMessagePinRepo = new GroupMessagePinRepository(prisma);
-    const friendshipRepo = new FriendshipRepository(prisma);
     const generalRoomRepo = new GeneralRoomRepository(prisma);
     const generalRoomMessageRepo = new GeneralRoomMessageRepository(prisma);
     const roomMemberRepo = new RoomMemberRepository(prisma);
     const notificationRepo = new NotificationRepository(prisma);
+    const callRepo = new CallRepository(prisma);
 
     // 3. Instantiate services
     const userSnapshotService = new UserSnapshotService();
+    const userServiceClient = createUserServiceClient();
 
     const privateRoomService = new PrivateRoomService(
       privateRoomRepo,
       cacheRepo,
       userSnapshotService,
-      friendshipRepo
+      userServiceClient
     );
     const privateMessageService = new PrivateMessageService(
       privateMessageRepo,
       privateRoomRepo,
       cacheRepo,
       userSnapshotService,
-      friendshipRepo
+      userServiceClient
     );
     const privatePinService = new PrivatePinService(
       privateMessagePinRepo,
@@ -297,6 +326,7 @@ const startServer = async () => {
     );
 
     const notificationService = new NotificationService(notificationRepo);
+    const callService = new CallService(callRepo, privateRoomRepo, redis);
 
     const communityRoomService = new CommunityRoomService(
       generalRoomRepo,
@@ -312,12 +342,17 @@ const startServer = async () => {
       userSnapshotService
     );
 
+    const webRtcConfigService = new WebRtcConfigService();
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
       groupMessageService,
+      groupMemberService,
       cacheRepo,
       userSnapshotService,
+      callService,
+      webRtcConfigService,
     });
 
     // 4. Instantiate controllers
@@ -331,7 +366,8 @@ const startServer = async () => {
       groupRoomCtrl: new GroupRoomController(groupRoomService),
       groupMessageCtrl: new GroupMessageController(
         groupMessageService,
-        groupPinService
+        groupPinService,
+        redis
       ),
       groupMemberCtrl: new GroupMemberController(groupMemberService),
       groupInviteLinkCtrl: new GroupInviteLinkController(
@@ -345,6 +381,7 @@ const startServer = async () => {
         redis
       ),
       mediaCtrl: new MediaController(),
+      callCtrl: new CallController(callService),
     };
 
     // 5. Create Express app + HTTP server
@@ -377,6 +414,13 @@ async function shutdown(signal: string): Promise<void> {
     }
     httpServer.close(() => resolve());
   });
+
+  // Close event consumers gracefully
+  try {
+    await closeEventConsumers();
+  } catch (err) {
+    logger.warn("Error closing event consumers", err);
+  }
 
   await disconnectDatabase();
 

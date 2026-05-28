@@ -922,6 +922,229 @@ const mediaUploadUrl = {
 };
 
 // =============================================================================
+// Private — forward & reactions
+// =============================================================================
+const privateMessageForward = {
+  post: {
+    tags: ["Chat — Private"],
+    summary: "Forward private message",
+    description:
+      "Forwards a message to another private room. Idempotent via `clientMessageId`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["targetRoomId", "receiverId"],
+            properties: {
+              targetRoomId: { type: "string" as const },
+              receiverId: { type: "string" as const },
+              clientMessageId: { type: "string" as const },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Message forwarded", undefined, "201"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const privateMessageReactions = {
+  get: {
+    tags: ["Chat — Private"],
+    summary: "Get reactions on a private message",
+    description:
+      "Returns reactions grouped by emoji with user details and a `selfReacted` flag.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    responses: {
+      ...successResponse("Reactions", "ChatMessageReactions"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+// =============================================================================
+// Groups — forward & reactions
+// =============================================================================
+const groupMessageForward = {
+  post: {
+    tags: ["Chat — Groups"],
+    summary: "Forward group message",
+    description:
+      "Forwards a message to another room. Idempotent via `clientMessageId`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["targetRoomId"],
+            properties: {
+              targetRoomId: { type: "string" as const },
+              clientMessageId: { type: "string" as const },
+              senderName: { type: "string" as const },
+              senderAvatar: { type: "string" as const },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Message forwarded", undefined, "201"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMessageReactions = {
+  get: {
+    tags: ["Chat — Groups"],
+    summary: "Get reactions on a group message",
+    description:
+      "Returns reactions grouped by emoji with user details and a `selfReacted` flag.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    responses: {
+      ...successResponse("Reactions", "ChatMessageReactions"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+// =============================================================================
+// Calls
+// =============================================================================
+const callHistory = {
+  get: {
+    tags: ["Chat — Calls"],
+    summary: "Get call history",
+    description:
+      "Cursor-paginated list of calls the authenticated user participated in, ordered by `initiatedAt` descending.",
+    security: [{ bearerAuth: [] }],
+    parameters: [cursorParam(), limitParam(20, 50)],
+    responses: {
+      ...successResponse("Call history", "ChatCallList"),
+      "401": unauthorized,
+    },
+  },
+};
+
+const callById = {
+  get: {
+    tags: ["Chat — Calls"],
+    summary: "Get call details",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "callId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    responses: {
+      ...successResponse("Call details", "ChatCall"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+// =============================================================================
+// WebRTC
+// =============================================================================
+const rtcConfig = {
+  get: {
+    tags: ["Chat — WebRTC"],
+    summary: "Get WebRTC ICE server configuration",
+    description:
+      "Returns STUN/TURN ICE server configuration for establishing WebRTC peer connections. Fetch at app startup or on `call:initiate`. Falls back to 503 if the config service is unavailable.",
+    security: [{ bearerAuth: [] }],
+    responses: {
+      ...successResponse("ICE server configuration", "ChatRtcConfiguration"),
+      "401": unauthorized,
+      "503": {
+        description: "Config service temporarily unavailable",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+    },
+  },
+};
+
+// =============================================================================
 // Assemble all chat paths
 // =============================================================================
 export const chatPaths = {
@@ -972,6 +1195,23 @@ export const chatPaths = {
   "/chat/community/rooms/{roomId}/messages": communityMessages,
   "/chat/community/rooms/{roomId}/messages/search": communitySearch2,
   "/chat/community/messages/{messageId}": communityMessageDelete,
+
+  // Private — forward & reactions
+  "/chat/private/rooms/{roomId}/messages/{messageId}/forward":
+    privateMessageForward,
+  "/chat/private/rooms/{roomId}/messages/{messageId}/reactions":
+    privateMessageReactions,
+
+  // Groups — forward & reactions
+  "/chat/groups/{roomId}/messages/{messageId}/forward": groupMessageForward,
+  "/chat/groups/{roomId}/messages/{messageId}/reactions": groupMessageReactions,
+
+  // Calls
+  "/chat/calls": callHistory,
+  "/chat/calls/{callId}": callById,
+
+  // WebRTC
+  "/webrtc/rtc-config": rtcConfig,
 
   // Media
   "/chat/media/upload-url": mediaUploadUrl,

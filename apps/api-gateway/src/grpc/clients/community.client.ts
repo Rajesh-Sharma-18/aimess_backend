@@ -2,22 +2,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
-import CircuitBreaker from "opossum";
-import { logger } from "@aimess/logger";
 import { env } from "../../config/env.js";
+import { makeBreaker, makeGrpcCall } from "@aimess/grpc-utils";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
   __dirname,
   "../../../../../packages/grpc-contracts/proto/community.proto"
 );
-
-const BREAKER_OPTS = {
-  timeout: 2000,
-  errorThresholdPercentage: 50,
-  resetTimeout: 10000,
-  volumeThreshold: 5,
-};
 
 export interface SendCommunityMessageParams {
   communityId: string;
@@ -63,19 +55,6 @@ export interface CommunityClient {
   ): Promise<GetCommunityMessagesResponse>;
 }
 
-function makeBreaker<T, R>(
-  name: string,
-  fn: (p: T) => Promise<R>
-): CircuitBreaker<[T], R> {
-  const breaker = new CircuitBreaker(fn, { ...BREAKER_OPTS, name });
-  breaker.fallback(() => {
-    throw new Error(`${name} unavailable`);
-  });
-  breaker.on("open", () => logger.warn(`Circuit opened: ${name}`));
-  breaker.on("halfOpen", () => logger.info(`Circuit half-open: ${name}`));
-  return breaker;
-}
-
 export function createCommunityClient(): CommunityClient {
   const pkgDef = protoLoader.loadSync(PROTO_PATH, {
     keepCase: false,
@@ -93,18 +72,8 @@ export function createCommunityClient(): CommunityClient {
     grpc.credentials.createInsecure()
   );
 
-  function call<TReq, TRes>(method: string, req: TReq): Promise<TRes> {
-    return new Promise((resolve, reject) => {
-      const typed = client as unknown as Record<
-        string,
-        (r: TReq, cb: (e: grpc.ServiceError | null, res: TRes) => void) => void
-      >;
-      typed[method](req, (err, res) => {
-        if (err) reject(err);
-        else resolve(res);
-      });
-    });
-  }
+  const call = <TReq, TRes>(method: string, req: TReq) =>
+    makeGrpcCall<TReq, TRes>(client, method, req);
 
   const sendMsgBreaker = makeBreaker(
     "community.sendCommunityMessage",

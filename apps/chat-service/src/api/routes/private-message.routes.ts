@@ -2,8 +2,12 @@ import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
+import { validateBody } from "../middleware/validate-body.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
-import { deleteMessageQuerySchema } from "../validators/private-message.validator.js";
+import {
+  deleteMessageQuerySchema,
+  forwardMessageSchema,
+} from "../validators/private-message.validator.js";
 import {
   messageListQuerySchema,
   messageSearchQuerySchema,
@@ -64,6 +68,22 @@ export function createPrivateMessageRoutes(
 
   // Get pins in a room
   router.get("/rooms/:roomId/pins", authenticate, messageCtrl.getPins);
+
+  // Forward a private message to another private room
+  router.post(
+    "/rooms/:roomId/messages/:messageId/forward",
+    authenticate,
+    sendLimit,
+    validateBody(forwardMessageSchema),
+    messageCtrl.forwardMessage
+  );
+
+  // Get reactions on a private message
+  router.get(
+    "/rooms/:roomId/messages/:messageId/reactions",
+    authenticate,
+    messageCtrl.getMessageReactions
+  );
 
   return router;
 }

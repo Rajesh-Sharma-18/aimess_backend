@@ -18,7 +18,7 @@ import {
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
 import { validateBody } from "../middleware/validate-body.js";
 import {
-  loginSchema,
+  // loginSchema,
   registerSchema,
   validateAccountSchema,
 } from "../validators/auth.validator.js";
@@ -41,7 +41,8 @@ authRoutes.post(
   validateAccount
 );
 authRoutes.post("/register", validateBody(registerSchema), register);
-authRoutes.post("/login", validateBody(loginSchema), login);
+// authRoutes.post("/login", validateBody(loginSchema), login);
+authRoutes.post("/login", login);
 authRoutes.post("/refresh", validateBody(refreshTokenSchema), refreshTokens);
 authRoutes.post("/logout", authenticateAccessToken, logout);
 authRoutes.post("/google", validateBody(googleLoginSchema), loginWithGoogle);

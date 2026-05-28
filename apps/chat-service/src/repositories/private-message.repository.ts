@@ -21,6 +21,9 @@ export class PrivateMessageRepository {
     parentMessageId?: string | null;
     quoteData?: object | null;
     clientInfo?: object | null;
+    clientMessageId?: string | null;
+    isForwarded?: boolean;
+    forwardData?: object | null;
     deletedFor?: object;
     isDeleted?: boolean;
     [key: string]: unknown;
@@ -40,6 +43,9 @@ export class PrivateMessageRepository {
         parentMessageId: data.parentMessageId ?? null,
         quoteData: (data.quoteData as object) ?? null,
         clientInfo: (data.clientInfo as object) ?? null,
+        clientMessageId: data.clientMessageId ?? null,
+        isForwarded: data.isForwarded ?? false,
+        forwardData: (data.forwardData as object) ?? null,
         deletedFor: (data.deletedFor as object) ?? {},
         isDeleted: data.isDeleted ?? false,
         createdAt: (data.createdAt as Date) ?? new Date(),
@@ -189,5 +195,53 @@ export class PrivateMessageRepository {
     return this.prisma.privateMessage.count({
       where: { roomId, isDeleted: false },
     });
+  }
+
+  async findByClientMessageId(
+    roomId: string,
+    senderId: string,
+    clientMessageId: string
+  ): Promise<PrivateMessage | null> {
+    return this.prisma.privateMessage.findFirst({
+      where: { roomId, senderId, clientMessageId },
+    });
+  }
+
+  async createForwardedMessage(data: {
+    roomId: string;
+    senderId: string;
+    receiverId: string;
+    content: object;
+    messageType: string;
+    forwardData: object;
+    clientMessageId?: string | null;
+  }): Promise<PrivateMessage> {
+    return this.prisma.privateMessage.create({
+      data: {
+        roomId: data.roomId,
+        senderId: data.senderId,
+        receiverId: data.receiverId,
+        content: data.content as Prisma.InputJsonValue,
+        messageType: data.messageType,
+        isForwarded: true,
+        forwardData: data.forwardData as Prisma.InputJsonValue,
+        clientMessageId: data.clientMessageId ?? null,
+        readBy: [],
+        reactions: {},
+        deletedFor: {},
+        isDeleted: false,
+      },
+    });
+  }
+
+  async getReactions(
+    messageId: string
+  ): Promise<Record<string, unknown> | null> {
+    const msg = await this.prisma.privateMessage.findUnique({
+      where: { id: messageId },
+      select: { reactions: true },
+    });
+    if (!msg) return null;
+    return msg.reactions as Record<string, unknown>;
   }
 }
