@@ -3,11 +3,11 @@ import { z } from "zod";
 export const accountSchema = z
   .string()
   .trim()
-  .toLowerCase()
+  // .toLowerCase()
   .min(3, "Account name must be at least 3 characters long")
   .max(32, "Account name cannot be longer than 32 characters")
   .regex(
-    /^[a-z0-9_]+$/,
+    /^[-a-zA-Z0-9_]+$/,
     "Account name can only contain letters, numbers, and underscores"
   );
 

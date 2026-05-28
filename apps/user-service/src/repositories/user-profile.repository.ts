@@ -77,12 +77,14 @@ export const userProfileRepository = {
       select: {
         userId: true,
         username: true,
+        account: true,
         firstName: true,
         lastName: true,
         bio: true,
         dateOfBirth: true,
         gender: true,
         avatarUrl: true,
+        isGoogleLogin: true,
         updatedAt: true,
       },
     });
@@ -157,19 +159,23 @@ export const userProfileRepository = {
 
   createFromRegistration(params: {
     userId: string;
+    account: string;
     username: string;
     displayName: string;
+    isGoogleLogin?: boolean;
   }) {
-    const { userId, username, displayName } = params;
+    const { userId, account, username, displayName, isGoogleLogin } = params;
 
     return prisma.$transaction(async (tx) => {
       const profile = await tx.userProfile.create({
         data: {
           userId,
+          account,
           username,
           firstName: displayName,
           lastName: "User",
           dateOfBirth: PLACEHOLDER_DATE_OF_BIRTH,
+          isGoogleLogin,
         },
       });
 

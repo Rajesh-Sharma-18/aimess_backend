@@ -13,6 +13,8 @@ export type UserCreatedPayload = {
   /** Present when the user registered or signed up with an email; omitted for account-only signup. */
   email?: string;
   createdAt: string;
+  /** True when the user signed up via Google. */
+  isGoogleLogin?: boolean;
 };
 
 export type UserDeletedPayload = {

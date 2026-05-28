@@ -10,5 +10,5 @@ export function isEmailLoginIdentifier(value: string): boolean {
  * are always lowercased, so we lowercase both here.
  */
 export function normalizeLoginIdentifier(value: string): string {
-  return value.trim().toLowerCase();
+  return value.trim();
 }

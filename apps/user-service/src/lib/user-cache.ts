@@ -16,6 +16,7 @@ const KEY_PREFIX = "aimess:user";
 export type CachedProfileRecord = {
   userId: string;
   username: string;
+  account: string | null;
   firstName: string;
   lastName: string;
   bio: string | null;
@@ -23,6 +24,7 @@ export type CachedProfileRecord = {
   gender: ProfileGender | null;
   avatarUrl: string | null;
   updatedAt: string;
+  isGoogleLogin: boolean;
 };
 
 type UsernameAvailabilityCache = {
@@ -196,6 +198,8 @@ export const userCache = {
 export function toCachedProfileRecord(profile: {
   userId: string;
   username: string;
+  account?: string | null;
+  isGoogleLogin: boolean;
   firstName: string;
   lastName: string;
   bio: string | null;
@@ -207,6 +211,8 @@ export function toCachedProfileRecord(profile: {
   return {
     userId: profile.userId,
     username: profile.username,
+    account: profile.account ?? null,
+    isGoogleLogin: profile.isGoogleLogin,
     firstName: profile.firstName,
     lastName: profile.lastName,
     bio: profile.bio,
@@ -220,6 +226,8 @@ export function toCachedProfileRecord(profile: {
 export function fromCachedProfileRecord(record: CachedProfileRecord): {
   userId: string;
   username: string;
+  account: string | null;
+  isGoogleLogin: boolean;
   firstName: string;
   lastName: string;
   bio: string | null;
@@ -232,6 +240,8 @@ export function fromCachedProfileRecord(record: CachedProfileRecord): {
   return {
     userId: record.userId,
     username: record.username,
+    account: record.account,
+    isGoogleLogin: record.isGoogleLogin,
     firstName: record.firstName,
     lastName: record.lastName,
     bio: record.bio,

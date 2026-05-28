@@ -61,6 +61,8 @@ function isUniqueViolationOnField(
 type ProfileRecord = {
   userId: string;
   username: string;
+  account: string | null;
+  isGoogleLogin: boolean;
   firstName: string;
   lastName: string;
   bio: string | null;
@@ -73,6 +75,7 @@ type ProfileRecord = {
 
 async function toProfileData(
   profile: Omit<ProfileRecord, "deletedAt">,
+  account: string | null,
   email: string | null
 ): Promise<UserProfileData> {
   const avatarView = await avatarService.resolveViewUrlForClient(
@@ -85,7 +88,9 @@ async function toProfileData(
     firstName: profile.firstName,
     lastName: profile.lastName,
     bio: profile.bio,
+    account: account ?? (profile as { account?: string }).account ?? null,
     email,
+    isGoogleLogin: profile.isGoogleLogin,
     dateOfBirth: formatDateOfBirth(profile.dateOfBirth),
     gender: profile.gender,
     avatarUrl: avatarView?.url ?? null,
@@ -94,12 +99,15 @@ async function toProfileData(
   };
 }
 
-async function resolveProfileEmail(
+async function resolveProfileAuthSummary(
   userId: string,
   accessToken: string
-): Promise<string | null> {
+): Promise<{ account: string | null; email: string | null }> {
   const { account } = await resolveAuthAccountSummary(userId, accessToken);
-  return account?.email ?? null;
+  return {
+    account: account?.account ?? null,
+    email: account?.email ?? null,
+  };
 }
 
 async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
@@ -109,6 +117,7 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
   }
 
   const profile = await userProfileRepository.findByUserId(userId);
+  console.log("Loaded profile from DB:", userId, profile);
   if (!profile || profile.deletedAt) {
     throw new NotFoundError("USER_PROFILE_NOT_FOUND");
   }
@@ -124,8 +133,9 @@ export const userProfileService = {
     accessToken: string
   ): Promise<UserProfileData> {
     const profile = await loadProfileRecord(userId);
-    const email = await resolveProfileEmail(userId, accessToken);
-    return toProfileData(profile, email);
+    const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+    console.log("Testing ProfileGG:", profile, authSummary);
+    return toProfileData(profile, authSummary.account, authSummary.email);
   },
 
   async createFromUserCreatedEvent(data: UserCreatedPayload): Promise<void> {
@@ -151,8 +161,10 @@ export const userProfileService = {
       try {
         await userProfileRepository.createFromRegistration({
           userId: data.userId,
+          account: data.account,
           username,
           displayName,
+          isGoogleLogin: data.isGoogleLogin ?? false,
         });
 
         await userCache.onUsernameClaimed(username);
@@ -304,11 +316,12 @@ export const userProfileService = {
       }
     }
 
-    // No-op PATCH: resolve email only here so an empty update still returns the
-    // current profile without an unnecessary auth-service hop on the mutate path.
+    // No-op PATCH: resolve account/email only here so an empty update still
+    // returns the current profile without an unnecessary auth-service hop on
+    // the mutate path.
     if (Object.keys(updateData).length === 0) {
-      const email = await resolveProfileEmail(userId, accessToken);
-      return toProfileData(profile, email);
+      const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+      return toProfileData(profile, authSummary.account, authSummary.email);
     }
 
     const updated = await userProfileRepository.updateProfile(
@@ -331,7 +344,7 @@ export const userProfileService = {
       await userCache.onUsernameClaimed(updateData.username);
     }
 
-    const email = await resolveProfileEmail(userId, accessToken);
-    return toProfileData(updated, email);
+    const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+    return toProfileData(updated, authSummary.account, authSummary.email);
   },
 };

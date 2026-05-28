@@ -1,10 +1,6 @@
 import type { Request } from "express";
 
-import {
-  BadRequestError,
-  ConflictError,
-  UnauthorizedError,
-} from "@aimess/errors";
+import { BadRequestError, ConflictError } from "@aimess/errors";
 
 import type {
   RequestChangeEmailInput,
@@ -102,7 +98,7 @@ export const changeEmailService = {
     );
 
     if (!otp || otp.userId !== userId) {
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
+      throw new BadRequestError("AUTH_OTP_INVALID");
     }
 
     if (otp.attempts >= otp.maxAttempts) {
@@ -112,7 +108,7 @@ export const changeEmailService = {
     const codeValid = await verifyOtpCode(input.code, otp.codeHash);
     if (!codeValid) {
       await otpRepository.incrementAttempts(otp.id);
-      throw new UnauthorizedError("AUTH_OTP_INVALID");
+      throw new BadRequestError("AUTH_OTP_INVALID");
     }
 
     await otpRepository.markConsumed(otp.id);

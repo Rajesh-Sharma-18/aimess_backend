@@ -23,6 +23,8 @@ model UserProfile {
   userId                 String              @id @db.Uuid
   // Public identity
   username               String              @unique // @handle
+  account                String?             @unique @db.VarChar(32)
+  isGoogleLogin          Boolean             @default(false)
   firstName              String              @db.VarChar(50)
   lastName               String              @db.VarChar(50)
   bio                    String?             @db.VarChar(280)

@@ -20,7 +20,7 @@ export function createApp(): Express {
 
   app.use("/health", healthRouter);
   app.use("/api/internal", internalRoutes);
-  app.use("/api/v1", userRoutes);
+  app.use("/api/v1/users", userRoutes);
 
   app.use(errorHandler);
 

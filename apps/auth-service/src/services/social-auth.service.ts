@@ -175,6 +175,7 @@ async function signInWithProvider(
     account: user.account,
     email: user.email ?? profile.email,
     createdAt: user.createdAt.toISOString(),
+    isGoogleLogin: true,
   });
 
   const session = buildSessionContext(req);

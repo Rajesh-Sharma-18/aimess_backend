@@ -301,11 +301,15 @@ export const joinCommunity = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
 
-    const member = await communityService.joinCommunity(id, req.auth.userId);
+    const result = await communityService.joinCommunity(id, req.auth.userId);
 
+    // `joinCommunity` now creates a join request for PUBLIC communities and
+    // returns the join-request DTO. Respond with CREATED.
     return res
-      .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(member, t("COMMUNITY_JOINED", req.locale)));
+      .status(HTTP_STATUS.CREATED)
+      .json(
+        new ApiResponse(result, t("COMMUNITY_JOIN_REQUEST_CREATED", req.locale))
+      );
   }
 );
 
@@ -351,15 +355,6 @@ export const createCommunityJoinRequest = asyncHandler(
       req.auth.userId,
       message ?? null
     );
-
-    // Auto-accepted invite path returns a different envelope.
-    if ("autoJoined" in result) {
-      return res
-        .status(HTTP_STATUS.OK)
-        .json(
-          new ApiResponse(result, t("COMMUNITY_INVITE_ACCEPTED", req.locale))
-        );
-    }
     return res
       .status(HTTP_STATUS.CREATED)
       .json(
@@ -477,16 +472,6 @@ export const createCommunityInvite = asyncHandler(
       inviteeId
     );
 
-    if ("autoApproved" in result) {
-      return res
-        .status(HTTP_STATUS.OK)
-        .json(
-          new ApiResponse(
-            result,
-            t("COMMUNITY_JOIN_REQUEST_APPROVED", req.locale)
-          )
-        );
-    }
     return res
       .status(HTTP_STATUS.CREATED)
       .json(new ApiResponse(result, t("COMMUNITY_INVITE_CREATED", req.locale)));

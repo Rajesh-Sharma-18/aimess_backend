@@ -73,6 +73,7 @@ export async function startUserCreatedConsumer(): Promise<void> {
       };
 
       if (parsed.type === UserEvents.USER_CREATED) {
+        console.log("001 Received user.created event:", parsed.data);
         await handleUserCreated(parsed.data);
       } else {
         logger.warn(`Unknown event type: ${parsed.type}`);
