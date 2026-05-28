@@ -1,0 +1,13 @@
+{
+  "name": "@aimess/errors",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node -e \"process.exit(0)\""
+  }
+}

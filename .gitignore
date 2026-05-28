@@ -1,0 +1,27 @@
+# ENV FILES
+.env
+.env.*
+!.env.example
+
+# NODE
+node_modules
+
+# BUILD
+dist
+.next
+.turbo
+_deploy-*
+
+# LOGS
+logs
+*.log
+
+# Gateway runtime app-version overrides (use app-versions.example.json as template)
+apps/api-gateway/config/app-versions.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code — local only (skills under .claude/skills/ are committed)
+.claude/worktrees/

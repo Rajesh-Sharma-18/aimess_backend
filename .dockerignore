@@ -1,0 +1,20 @@
+# Monorepo context: keep the build context small (faster uploads, fewer irrelevant invalidations).
+
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+
+.git
+**/.git
+
+# Env and local secrets (never ship into images)
+**/.env
+.env
+.env.*
+!.env.example
+
+.cursor
+*.log
+Thumbs.db
+.DS_Store

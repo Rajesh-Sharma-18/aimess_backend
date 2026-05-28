@@ -1,0 +1,172 @@
+import { avatarService } from "./avatar.service.js";
+import { friendshipRepository } from "../repositories/friendship.repository.js";
+import { userProfileRepository } from "../repositories/user-profile.repository.js";
+import type { SearchUsersQuery } from "../api/validators/user-discovery.validator.js";
+
+export type RelationshipStatus =
+  | "FRIEND"
+  | "PENDING_IN"
+  | "PENDING_OUT"
+  | "NONE";
+
+export type UserDiscoveryResult = {
+  userId: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  bio: string | null;
+  avatarUrl: string | null;
+  avatarUrlExpiresIn: number | null;
+  isOnline: boolean;
+  relationshipStatus: RelationshipStatus;
+  friendshipId: string | null;
+};
+
+async function resolveAvatarUrl(
+  avatarUrl: string | null
+): Promise<{ url: string | null; expiresIn: number | null }> {
+  const view = await avatarService.resolveViewUrlForClient(avatarUrl);
+  return { url: view?.url ?? null, expiresIn: view?.expiresIn ?? null };
+}
+
+export const userDiscoveryService = {
+  async searchUsers(
+    viewerId: string,
+    params: SearchUsersQuery
+  ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
+    const { section, q, page, limit } = params;
+    const skip = (page - 1) * limit;
+
+    if (section === "friends") {
+      return userDiscoveryService._queryFriends(viewerId, q, skip, limit);
+    }
+
+    return userDiscoveryService._queryOthers(viewerId, q, skip, limit);
+  },
+
+  async _queryFriends(
+    viewerId: string,
+    q: string | undefined,
+    skip: number,
+    limit: number
+  ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
+    const friendships =
+      await friendshipRepository.findAcceptedFriends(viewerId);
+    if (friendships.length === 0) {
+      return { users: [], total: 0 };
+    }
+
+    const friendIds = friendships.map((f) =>
+      f.requesterId === viewerId ? f.addresseeId : f.requesterId
+    );
+
+    const friendshipIdByPeer = new Map(
+      friendships.map((f) => {
+        const peerId =
+          f.requesterId === viewerId ? f.addresseeId : f.requesterId;
+        return [peerId, f.id];
+      })
+    );
+
+    const [profiles, total] = await Promise.all([
+      userProfileRepository.findUsersInList(friendIds, q, skip, limit),
+      userProfileRepository.countUsersInList(friendIds, q),
+    ]);
+
+    const users = await Promise.all(
+      profiles.map(async (p) => {
+        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
+        return {
+          userId: p.userId,
+          username: p.username,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          bio: p.bio,
+          avatarUrl: url,
+          avatarUrlExpiresIn: expiresIn,
+          isOnline: p.isOnline,
+          relationshipStatus: "FRIEND" as RelationshipStatus,
+          friendshipId: friendshipIdByPeer.get(p.userId) ?? null,
+        };
+      })
+    );
+
+    return { users, total };
+  },
+
+  async _queryOthers(
+    viewerId: string,
+    q: string | undefined,
+    skip: number,
+    limit: number
+  ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
+    const [allRelationships, allBlocks] = await Promise.all([
+      friendshipRepository.findAllForUser(viewerId),
+      friendshipRepository.findAllBlocks(viewerId),
+    ]);
+
+    const acceptedFriendIds = new Set<string>();
+    const blockedUserIds = new Set<string>();
+    const pendingRelMap = new Map<
+      string,
+      { friendshipId: string; isRequester: boolean }
+    >();
+
+    for (const f of allRelationships) {
+      const peerId = f.requesterId === viewerId ? f.addresseeId : f.requesterId;
+      if (f.status === "ACCEPTED") {
+        acceptedFriendIds.add(peerId);
+      } else if (f.status === "PENDING") {
+        pendingRelMap.set(peerId, {
+          friendshipId: f.id,
+          isRequester: f.requesterId === viewerId,
+        });
+      }
+    }
+
+    for (const b of allBlocks) {
+      const otherId = b.blockerId === viewerId ? b.blockedId : b.blockerId;
+      blockedUserIds.add(otherId);
+    }
+
+    const excludeIds = [
+      viewerId,
+      ...Array.from(acceptedFriendIds),
+      ...Array.from(blockedUserIds),
+    ];
+
+    const [profiles, total] = await Promise.all([
+      userProfileRepository.findUsersNotInList(excludeIds, q, skip, limit),
+      userProfileRepository.countUsersNotInList(excludeIds, q),
+    ]);
+
+    const users = await Promise.all(
+      profiles.map(async (p) => {
+        const pending = pendingRelMap.get(p.userId);
+        let relationshipStatus: RelationshipStatus = "NONE";
+        let friendshipId: string | null = null;
+        if (pending) {
+          relationshipStatus = pending.isRequester
+            ? "PENDING_OUT"
+            : "PENDING_IN";
+          friendshipId = pending.friendshipId;
+        }
+        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
+        return {
+          userId: p.userId,
+          username: p.username,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          bio: p.bio,
+          avatarUrl: url,
+          avatarUrlExpiresIn: expiresIn,
+          isOnline: p.isOnline,
+          relationshipStatus,
+          friendshipId,
+        };
+      })
+    );
+
+    return { users, total };
+  },
+};

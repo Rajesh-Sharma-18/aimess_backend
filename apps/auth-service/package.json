@@ -1,0 +1,48 @@
+{
+  "name": "@aimess/auth-service",
+  "version": "1.0.0",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch --include ./src --include ../../packages/constants/dist --clear-screen=false src/server.ts",
+    "start": "node dist/server.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "build": "prisma generate && tsc",
+    "typecheck": "prisma generate && tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node -e \"process.exit(0)\""
+  },
+  "dependencies": {
+    "@aimess/auth-jwt": "workspace:*",
+    "@aimess/constants": "workspace:*",
+    "@aimess/errors": "workspace:*",
+    "@aimess/logger": "workspace:*",
+    "@aimess/prisma-pg": "workspace:*",
+    "@aimess/redis": "workspace:*",
+    "@aimess/shared-types": "workspace:*",
+    "@aimess/utils": "workspace:*",
+    "@prisma/client": "^7.8.0",
+    "amqplib": "^2.0.1",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "firebase-admin": "^13.9.0",
+    "google-auth-library": "^10.6.2",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.10.1",
+    "mongoose": "^9.6.1",
+    "pg": "^8.20.0",
+    "ua-parser-js": "^2.0.9",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.7",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.0",
+    "prisma": "^7.8.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,272 @@
+// =============================================================================
+// user-service  ·  PostgreSQL  ·  user_db
+// Owns: profiles, friendships, blocks, privacy/chat/app settings, search history.
+// Does NOT own: credentials, OTPs, sessions (those live in auth-service).
+//
+// userId here = auth-service AuthUser.id (UUID, no FK across DBs).
+// =============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// -----------------------------------------------------------------------------
+// UserProfile — created via `user.created` event from auth-service.
+// userId is the PK and matches AuthUser.id.
+// -----------------------------------------------------------------------------
+model UserProfile {
+  userId                 String              @id @db.Uuid
+  // Public identity
+  username               String              @unique // @handle
+  firstName              String              @db.VarChar(50)
+  lastName               String              @db.VarChar(50)
+  bio                    String?             @db.VarChar(280)
+  gender                 ProfileGender?
+  avatarUrl              String?
+  coverImageUrl          String?
+  dateOfBirth            DateTime            @db.Date
+  // Username change throttle — SOW §1.2: 1 change per 30 days
+  lastUsernameChangeAt   DateTime?
+  // Denormalized counters (updated via events)
+  friendsCount           Int                 @default(0)
+  communitiesCount       Int                 @default(0)
+  groupsCount            Int                 @default(0)
+  // Presence
+  isOnline               Boolean             @default(false)
+  lastSeenAt             DateTime?
+  // Status mirror — synced from auth-service for fast local checks
+  status                 ProfileStatus       @default(ACTIVE)
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  deletedAt              DateTime?
+  privacySettings        PrivacySettings?
+  chatSettings           ChatSettings?
+  appSettings            AppSettings?
+  notificationSettings   NotificationSettings?
+  liveStreamSettings     LiveStreamSettings?
+  sentFriendRequests     Friendship[]        @relation("RequesterFriendships")
+  receivedFriendRequests Friendship[]        @relation("AddresseeFriendships")
+  blocksMade             Block[]             @relation("BlockerBlocks")
+  blocksReceived         Block[]             @relation("BlockedByBlocks")
+  recentSearches         RecentSearch[]      @relation("Searcher")
+  callPrivacyAllowList   CallAllowedFriend[] @relation("CallOwner")
+
+  @@index([username])
+  @@index([firstName, lastName])
+  @@index([status, deletedAt])
+  @@map("user_profiles")
+}
+
+// -----------------------------------------------------------------------------
+// Friendship — single row per pair, direction recorded for pending state.
+// Convention: always store with requesterId in the "from" position.
+// -----------------------------------------------------------------------------
+model Friendship {
+  id           String           @id @default(uuid()) @db.Uuid
+  requesterId  String           @db.Uuid
+  requester    UserProfile      @relation("RequesterFriendships", fields: [requesterId], references: [userId], onDelete: Cascade)
+  addresseeId  String           @db.Uuid
+  addressee    UserProfile      @relation("AddresseeFriendships", fields: [addresseeId], references: [userId], onDelete: Cascade)
+  status       FriendshipStatus @default(PENDING)
+  acceptedAt   DateTime?
+  rejectedAt   DateTime?
+  cancelledAt  DateTime?
+  unfriendedAt DateTime?
+  unfriendedBy String?          @db.Uuid // who initiated the unfriend
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@unique([requesterId, addresseeId])
+  @@index([addresseeId, status]) // incoming-request inbox
+  @@index([requesterId, status]) // outgoing-request list
+  @@index([status, acceptedAt]) // global friend graph queries
+  @@map("friendships")
+}
+
+model Block {
+  id        String      @id @default(uuid()) @db.Uuid
+  blockerId String      @db.Uuid
+  blocker   UserProfile @relation("BlockerBlocks", fields: [blockerId], references: [userId], onDelete: Cascade)
+  blockedId String      @db.Uuid
+  blocked   UserProfile @relation("BlockedByBlocks", fields: [blockedId], references: [userId], onDelete: Cascade)
+  reason    String?     @db.VarChar(500)
+  createdAt DateTime    @default(now())
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId]) // "is this user blocked by anyone I'm trying to message?"
+  @@map("blocks")
+}
+
+// -----------------------------------------------------------------------------
+// PrivacySettings
+// -----------------------------------------------------------------------------
+model PrivacySettings {
+  userId                   String           @id @db.Uuid
+  user                     UserProfile      @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  whoCanFindMe             PrivacyScope     @default(EVERYONE)
+  whoCanSendFriendRequests PrivacyScope     @default(EVERYONE)
+  whoCanSeeOnlineStatus    PrivacyScope     @default(FRIENDS)
+  whoCanViewProfile        PrivacyScope     @default(EVERYONE)
+  whoCanCallMe             CallPrivacyScope @default(FRIENDS)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("privacy_settings")
+}
+
+// -----------------------------------------------------------------------------
+// CallAllowedFriend — when whoCanCallMe = SELECTED_FRIENDS, this is the allow list
+// -----------------------------------------------------------------------------
+model CallAllowedFriend {
+  id            String      @id @default(uuid()) @db.Uuid
+  ownerId       String      @db.Uuid
+  owner         UserProfile @relation("CallOwner", fields: [ownerId], references: [userId], onDelete: Cascade)
+  allowedUserId String      @db.Uuid
+  createdAt     DateTime    @default(now())
+
+  @@unique([ownerId, allowedUserId])
+  @@index([ownerId])
+  @@map("call_allowed_friends")
+}
+
+// -----------------------------------------------------------------------------
+// ChatSettings
+// -----------------------------------------------------------------------------
+model ChatSettings {
+  userId           String          @id @db.Uuid
+  user             UserProfile     @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  autoDeleteTimer  AutoDeleteTimer @default(OFF)
+  typingIndicators Boolean         @default(true)
+  readReceipts     Boolean         @default(true)
+  updatedAt        DateTime        @updatedAt
+
+  @@map("chat_settings")
+}
+
+// -----------------------------------------------------------------------------
+// AppSettings — General screen: Language + Theme.
+// -----------------------------------------------------------------------------
+model AppSettings {
+  userId    String      @id @db.Uuid
+  user      UserProfile @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  language  String      @default("en") // ISO 639-1; supported: en, vi, th
+  theme     AppTheme    @default(AUTO) // AUTO = "System" in the UI
+  updatedAt DateTime    @updatedAt
+
+  @@map("app_settings")
+}
+
+// -----------------------------------------------------------------------------
+// NotificationSettings — Notification Preferences screen.
+// Per-category toggles + Quiet Hours (silence alerts on selected days/window).
+// -----------------------------------------------------------------------------
+model NotificationSettings {
+  userId               String      @id @db.Uuid
+  user                 UserProfile @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  // Category toggles
+  chatEnabled          Boolean     @default(true)
+  callEnabled          Boolean     @default(true)
+  friendRequestEnabled Boolean     @default(true)
+  systemEnabled        Boolean     @default(true)
+  communityEnabled     Boolean     @default(true)
+  liveStreamEnabled    Boolean     @default(true)
+  // Quiet Hours
+  quietHoursEnabled    Boolean     @default(false)
+  quietHoursStart      String? // "HH:mm" 24h, e.g. "22:00"
+  quietHoursEnd        String? // "HH:mm" 24h, e.g. "07:00"
+  quietHoursDays       Int[]       @default([]) // 0=Sunday .. 6=Saturday
+  updatedAt            DateTime    @updatedAt
+
+  @@map("notification_settings")
+}
+
+// -----------------------------------------------------------------------------
+// LiveStreamSettings — Livestream screen: default playback video quality.
+// -----------------------------------------------------------------------------
+model LiveStreamSettings {
+  userId             String           @id @db.Uuid
+  user               UserProfile      @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  defaultVideoQuality LiveStreamQuality @default(AUTO)
+  updatedAt          DateTime         @updatedAt
+
+  @@map("livestream_settings")
+}
+
+// -----------------------------------------------------------------------------
+// RecentSearch
+// -----------------------------------------------------------------------------
+model RecentSearch {
+  id             String      @id @default(uuid()) @db.Uuid
+  userId         String      @db.Uuid // searcher
+  searcher       UserProfile @relation("Searcher", fields: [userId], references: [userId], onDelete: Cascade)
+  searchedUserId String?     @db.Uuid // populated if a user was tapped
+  query          String?     @db.VarChar(100)
+  createdAt      DateTime    @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("recent_searches")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum ProfileStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum ProfileGender {
+  MALE
+  FEMALE
+  NON_BINARY
+  PREFER_NOT_TO_SAY
+  OTHER
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  CANCELLED // sender cancelled a pending request
+  UNFRIENDED // was friends, now unfriended — keeps history for re-friending
+}
+
+enum PrivacyScope {
+  EVERYONE
+  FRIENDS_OF_FRIENDS
+  FRIENDS
+  NO_ONE
+}
+
+enum CallPrivacyScope {
+  FRIENDS
+  SELECTED_FRIENDS
+  NO_ONE
+}
+
+enum AutoDeleteTimer {
+  OFF
+  DAYS_7
+  DAYS_15
+  DAYS_30
+}
+
+enum AppTheme {
+  LIGHT
+  DARK
+  AUTO // "System" in the UI
+}
+
+enum LiveStreamQuality {
+  AUTO // Recommended — adapts to connection speed
+  HIGH_1080P
+  STANDARD_720P
+  DATA_SAVER_480P
+}

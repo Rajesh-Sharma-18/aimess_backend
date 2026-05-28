@@ -1,0 +1,211 @@
+// =============================================================================
+// community-service  ·  MongoDB  ·  community_db
+// Owns: communities, categories, membership (+ future: posts, invites, reports).
+//
+// creatorId / adminId / userId here = auth-service AuthUser.id (UUID string,
+// no FK across DBs / services).
+//
+// NOTE: the local Mongo runs as a STANDALONE node (directConnection=true, no
+// replica set), so Prisma interactive `$transaction` fails at runtime. Service
+// code MUST use sequential writes + createMany + compensating cleanup instead.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("COMMUNITY_DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityCategory — curated list shown in the create-community picker.
+// Seeded idempotently via prisma/seed/categories.seed.ts.
+// -----------------------------------------------------------------------------
+model CommunityCategory {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  name        String      @unique
+  slug        String      @unique
+  order       Int         @default(0)
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  communities Community[]
+
+  @@index([active, order])
+  @@map("community_categories")
+}
+
+// -----------------------------------------------------------------------------
+// Community — a public/private space owned by its creator.
+// `handle` is the @Community-Name slug (unique); `name` is the display name.
+// -----------------------------------------------------------------------------
+model Community {
+  id          String            @id @default(auto()) @map("_id") @db.ObjectId
+  name        String            @unique
+  handle      String            @unique
+  description String?
+  type        CommunityType     @default(PUBLIC)
+  categoryId  String            @db.ObjectId
+  category    CommunityCategory @relation(fields: [categoryId], references: [id])
+  creatorId   String // AuthUser.id of the original creator
+  adminId     String // AuthUser.id of the current admin/owner
+  avatarUrl   String? // MinIO object key (community/avatar/{userId}/{uuid}.ext)
+  coverUrl    String? // MinIO object key (community/cover/{userId}/{uuid}.ext)
+  memberCount Int               @default(1)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  deletedAt   DateTime?
+  members     CommunityMember[]
+
+  @@index([categoryId])
+  @@index([creatorId])
+  @@map("communities")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityMember — membership row. userId = AuthUser.id.
+// -----------------------------------------------------------------------------
+model CommunityMember {
+  id          String                @id @default(auto()) @map("_id") @db.ObjectId
+  communityId String                @db.ObjectId
+  community   Community             @relation(fields: [communityId], references: [id])
+  userId              String // AuthUser.id
+  snapshotUsername    String
+  snapshotDisplayName String
+  snapshotAvatarKey   String?
+  role        CommunityMemberRole   @default(MEMBER)
+  status      CommunityMemberStatus @default(ACTIVE)
+  joinedAt    DateTime              @default(now())
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@unique([communityId, userId])
+  @@index([userId, status])
+  @@index([communityId, status])
+  @@map("community_members")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityAuditLog — append-only moderation trail (promote/demote, kick, ban,
+// unban, admin transfer). `communityId` is a plain ObjectId scalar (no relation
+// field needed); actorId / targetUserId = AuthUser.id. ObjectId is time-ordered,
+// so newest-first ordering uses `id` desc and cursor pagination keys on `id`.
+// -----------------------------------------------------------------------------
+model CommunityAuditLog {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  communityId  String   @db.ObjectId
+  actorId      String // AuthUser.id who performed the action
+  action       String // see CommunityAuditAction union in code
+  targetUserId String? // member acted upon (if any)
+  reason       String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  // Query filters by communityId and orders by `id` desc (ObjectId is
+  // time-ordered) with cursor pagination on `id` — so a plain communityId index
+  // backs the filter and the PK `_id` index serves the sort.
+  @@index([communityId])
+  @@map("community_audit_logs")
+}
+
+// -----------------------------------------------------------------------------
+// FUTURE — join requests / invites (gated communities). Not yet wired.
+// -----------------------------------------------------------------------------
+/// FUTURE
+model CommunityJoinRequest {
+  id          String                 @id @default(auto()) @map("_id") @db.ObjectId
+  communityId String                 @db.ObjectId
+  userId      String
+  status      CommunityJoinReqStatus @default(PENDING)
+  message     String?
+  decidedBy   String?
+  decidedAt   DateTime?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+
+  @@unique([communityId, userId])
+  @@index([communityId, status])
+  @@map("community_join_requests")
+}
+
+/// FUTURE
+model CommunityInvite {
+  id          String                @id @default(auto()) @map("_id") @db.ObjectId
+  communityId String                @db.ObjectId
+  inviterId   String
+  inviteeId   String
+  status      CommunityInviteStatus @default(PENDING)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  @@unique([communityId, inviteeId])
+  @@index([inviteeId, status])
+  @@map("community_invites")
+}
+
+// -----------------------------------------------------------------------------
+// FUTURE — moderation reports against communities or members. Not yet wired.
+// -----------------------------------------------------------------------------
+/// FUTURE
+model CommunityReport {
+  id           String                @id @default(auto()) @map("_id") @db.ObjectId
+  communityId  String                @db.ObjectId
+  reporterId   String
+  targetUserId String?
+  reason       String
+  status       CommunityReportStatus @default(OPEN)
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@index([communityId, status])
+  @@map("community_reports")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum CommunityType {
+  PUBLIC
+  PRIVATE
+}
+
+enum CommunityMemberRole {
+  ADMIN
+  MODERATOR
+  MEMBER
+}
+
+enum CommunityMemberStatus {
+  ACTIVE
+  PENDING
+  BANNED
+  LEFT
+}
+
+/// FUTURE
+enum CommunityJoinReqStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+/// FUTURE
+enum CommunityInviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+/// FUTURE
+enum CommunityReportStatus {
+  OPEN
+  REVIEWED
+  ACTIONED
+  DISMISSED
+}

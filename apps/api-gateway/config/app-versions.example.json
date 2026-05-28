@@ -1,0 +1,13 @@
+{
+  "android": {
+    "mandatoryUpdate": "1.0.0",
+    "optionalUpdate": "1.2.0",
+    "storeUrl": "https://play.google.com/store/apps/details?id=com.aimess.app"
+  },
+  "ios": {
+    "mandatoryUpdate": "1.0.0",
+    "optionalUpdate": "1.2.0",
+    "storeUrl": "https://apps.apple.com/app/id000000000"
+  },
+  "updatedAt": "2026-01-01T00:00:00.000Z"
+}
