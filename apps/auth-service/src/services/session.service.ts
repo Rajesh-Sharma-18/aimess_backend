@@ -18,7 +18,10 @@ import {
 import { env } from "../config/env.js";
 import { refreshTokenRepository } from "../repositories/refresh-token.repository.js";
 import { sessionRepository } from "../repositories/session.repository.js";
-import type { AuthTokensResponse } from "../types/auth.types.js";
+import type {
+  AccessTokenResponse,
+  AuthTokensResponse,
+} from "../types/auth.types.js";
 import type {
   ActiveSessionItem,
   ListSessionsResult,
@@ -116,6 +119,59 @@ export const sessionService = {
       accessTokenExpiresIn,
       refreshTokenExpiresIn,
     });
+  },
+
+  async issueAccessToken(refreshToken: string): Promise<AccessTokenResponse> {
+    const tokenHash = hashToken(refreshToken);
+    const stored = await refreshTokenRepository.findByTokenHash(tokenHash);
+
+    if (!stored) {
+      throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
+    }
+
+    if (stored.rotatedToId) {
+      const active = await sessionRepository.listActiveSessionIds(
+        stored.userId
+      );
+      await sessionRepository.revokeAllForUser(
+        stored.userId,
+        SessionRevokeReason.TOKEN_REUSE_DETECTED
+      );
+      await markSessionsRevoked(active.map((row) => row.id));
+      throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
+    }
+
+    if (stored.revokedAt) {
+      throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
+    }
+
+    const now = new Date();
+    if (stored.expiresAt <= now) {
+      throw new UnauthorizedError("AUTH_REFRESH_TOKEN_EXPIRED");
+    }
+
+    if (stored.session.revokedAt) {
+      throw new UnauthorizedError("AUTH_REFRESH_TOKEN_INVALID");
+    }
+
+    if (stored.user.deletedAt || stored.user.status !== AccountStatus.ACTIVE) {
+      throw new UnauthorizedError("AUTH_ACCOUNT_NOT_ACTIVE");
+    }
+
+    const accessTokenExpiresIn = parseExpiresInSeconds(
+      env.JWT_ACCESS_EXPIRES_IN
+    );
+
+    const accessToken = signAccessToken({
+      userId: stored.userId,
+      sessionId: stored.sessionId,
+      secret: env.JWT_ACCESS_SECRET,
+      expiresInSeconds: accessTokenExpiresIn,
+    });
+
+    await markSessionActive(stored.sessionId);
+
+    return { accessToken, accessTokenExpiresIn };
   },
 
   async logout(userId: string, sessionId: string): Promise<void> {

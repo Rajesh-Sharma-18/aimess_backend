@@ -17,6 +17,17 @@ export const refreshTokens = asyncHandler(
   }
 );
 
+export const issueAccessToken = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { refreshToken } = req.body as RefreshTokenInput;
+    const result = await sessionService.issueAccessToken(refreshToken);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("AUTH_ACCESS_TOKEN_ISSUED", req.locale)));
+  }
+);
+
 export const logout = asyncHandler(async (req: Request, res: Response) => {
   await sessionService.logout(req.auth.userId, req.auth.sessionId);
 

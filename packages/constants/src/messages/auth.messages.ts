@@ -54,6 +54,10 @@ export const AUTH_MESSAGES = {
     vi: "Làm mới phiên đăng nhập thành công",
     en: "Session refreshed successfully",
   },
+  AUTH_ACCESS_TOKEN_ISSUED: {
+    vi: "Cấp access token mới thành công",
+    en: "Access token issued successfully",
+  },
   AUTH_REFRESH_TOKEN_INVALID: {
     vi: "Phiên đăng nhập không hợp lệ, vui lòng đăng nhập lại",
     en: "Invalid refresh token, please sign in again",

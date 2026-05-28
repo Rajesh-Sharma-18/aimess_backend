@@ -920,6 +920,7 @@ export const communityRepository = {
     communityId: string;
     createdBy: string;
     maxUses: number | null;
+    autoApprove: boolean;
     expiresAt: Date | null;
   }) {
     return prisma.communityInviteLink.create({ data });

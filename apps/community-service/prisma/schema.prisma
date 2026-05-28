@@ -198,6 +198,7 @@ model CommunityInviteLink {
   createdBy   String // AuthUser.id of issuer
   maxUses     Int?
   usedCount   Int       @default(0)
+  autoApprove Boolean   @default(false)
   expiresAt   DateTime?
   revokedAt   DateTime?
   createdAt   DateTime  @default(now())

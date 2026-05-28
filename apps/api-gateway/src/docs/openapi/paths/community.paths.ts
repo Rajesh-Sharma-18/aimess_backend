@@ -361,6 +361,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -406,6 +407,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -483,6 +485,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -528,6 +531,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
@@ -606,6 +610,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -679,6 +684,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
@@ -749,6 +755,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -806,6 +813,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -864,6 +872,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -936,12 +945,14 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "userId",
           in: "path",
           required: true,
+          description: "User ID of the target member.",
           schema: { type: "string", format: "uuid" },
         },
       ],
@@ -1016,12 +1027,14 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "userId",
           in: "path",
           required: true,
+          description: "User ID of the target member.",
           schema: { type: "string", format: "uuid" },
         },
       ],
@@ -1107,12 +1120,14 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "userId",
           in: "path",
           required: true,
+          description: "User ID of the target member.",
           schema: { type: "string", format: "uuid" },
         },
       ],
@@ -1195,12 +1210,14 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "userId",
           in: "path",
           required: true,
+          description: "User ID of the target member.",
           schema: { type: "string", format: "uuid" },
         },
       ],
@@ -1428,6 +1445,8 @@ export const communityPaths = {
           name: "inviteId",
           in: "path",
           required: true,
+          description:
+            "Invite ID from GET /communities/invites/mine or GET /communities/{id}/invites.",
           schema: { type: "string" },
         },
       ],
@@ -1491,6 +1510,8 @@ export const communityPaths = {
           name: "inviteId",
           in: "path",
           required: true,
+          description:
+            "Invite ID from GET /communities/invites/mine or GET /communities/{id}/invites.",
           schema: { type: "string" },
         },
       ],
@@ -1546,7 +1567,7 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Submit a join request",
       description:
-        "PRIVATE communities only. If a PENDING invite already exists for the caller, this auto-accepts the invite (returns `AutoJoinedInviteData` with status 200) instead of creating a new request.",
+        "PRIVATE communities only. If a PENDING invite already exists for the caller, this auto-accepts the invite (returns `InviteAcceptedData` with status 200) instead of creating a new request.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -1554,6 +1575,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -1596,7 +1618,7 @@ export const communityPaths = {
                     type: "object",
                     properties: {
                       data: {
-                        $ref: "#/components/schemas/AutoJoinedInviteData",
+                        $ref: "#/components/schemas/InviteAcceptedData",
                       },
                     },
                   },
@@ -1652,6 +1674,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
@@ -1729,12 +1752,15 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "requestId",
           in: "path",
           required: true,
+          description:
+            "Join request ID from GET /communities/{id}/join-requests.",
           schema: { type: "string" },
         },
       ],
@@ -1801,12 +1827,15 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "requestId",
           in: "path",
           required: true,
+          description:
+            "Join request ID from GET /communities/{id}/join-requests.",
           schema: { type: "string" },
         },
       ],
@@ -1870,12 +1899,15 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "requestId",
           in: "path",
           required: true,
+          description:
+            "Join request ID from GET /communities/{id}/join-requests.",
           schema: { type: "string" },
         },
       ],
@@ -1931,7 +1963,7 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Invite a user to a community",
       description:
-        "Moderator or admin only. If a PENDING join-request already exists from the invitee, this auto-approves the request (returns `AutoApprovedJoinRequestData` with status 200) instead of creating a new invite.",
+        "Moderator or admin only. If a PENDING join-request already exists from the invitee, this auto-approves the request (returns `JoinRequestApprovedData` with status 200) instead of creating a new invite.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -1939,6 +1971,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -1981,7 +2014,7 @@ export const communityPaths = {
                     type: "object",
                     properties: {
                       data: {
-                        $ref: "#/components/schemas/AutoApprovedJoinRequestData",
+                        $ref: "#/components/schemas/JoinRequestApprovedData",
                       },
                     },
                   },
@@ -2038,6 +2071,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
@@ -2114,6 +2148,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
       ],
@@ -2183,6 +2218,7 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
@@ -2260,12 +2296,14 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "reportId",
           in: "path",
           required: true,
+          description: "Report ID from GET /communities/{id}/reports.",
           schema: { type: "string" },
         },
       ],
@@ -2337,12 +2375,14 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "reportId",
           in: "path",
           required: true,
+          description: "Report ID from GET /communities/{id}/reports.",
           schema: { type: "string" },
         },
       ],
@@ -2414,12 +2454,14 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "reportId",
           in: "path",
           required: true,
+          description: "Report ID from GET /communities/{id}/reports.",
           schema: { type: "string" },
         },
       ],
@@ -2491,12 +2533,14 @@ export const communityPaths = {
           name: "id",
           in: "path",
           required: true,
+          description: "Community ID.",
           schema: { type: "string" },
         },
         {
           name: "reportId",
           in: "path",
           required: true,
+          description: "Report ID from GET /communities/{id}/reports.",
           schema: { type: "string" },
         },
       ],
@@ -2558,7 +2602,13 @@ export const communityPaths = {
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
-        { name: "id", in: "path", required: true, schema: { type: "string" } },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
       ],
       responses: {
         "200": {
@@ -2606,7 +2656,13 @@ export const communityPaths = {
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
-        { name: "id", in: "path", required: true, schema: { type: "string" } },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
       ],
       requestBody: {
         required: true,
@@ -2661,7 +2717,13 @@ export const communityPaths = {
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
-        { name: "id", in: "path", required: true, schema: { type: "string" } },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
       ],
       responses: {
         "200": {
@@ -2703,7 +2765,13 @@ export const communityPaths = {
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
-        { name: "id", in: "path", required: true, schema: { type: "string" } },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
       ],
       requestBody: {
         required: true,
@@ -2761,7 +2829,13 @@ export const communityPaths = {
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
-        { name: "id", in: "path", required: true, schema: { type: "string" } },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
         {
           name: "page",
           in: "query",
@@ -2827,11 +2901,19 @@ export const communityPaths = {
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
-        { name: "id", in: "path", required: true, schema: { type: "string" } },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
         {
           name: "linkId",
           in: "path",
           required: true,
+          description:
+            "Invite link ID from GET /communities/{id}/invite-links.",
           schema: { type: "string" },
         },
       ],
