@@ -11,6 +11,7 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
 import type { WebRtcConfigService } from "../services/webrtc-config.service.js";
+import type { PresenceService } from "../services/presence.service.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -26,6 +27,7 @@ export interface GrpcDeps {
   userSnapshotService: UserSnapshotService;
   callService: CallService;
   webRtcConfigService: WebRtcConfigService;
+  presenceService: PresenceService;
 }
 
 function parseMessageContent(req: {
@@ -187,6 +189,75 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
       })();
     },
 
+    editMessage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId: string;
+            conversationId: string;
+            editorId: string;
+            contentText?: string;
+            contentJson?: string;
+            conversationType?: string;
+          };
+
+          const conversationType =
+            typeof req.conversationType === "string"
+              ? req.conversationType.toUpperCase()
+              : "PRIVATE";
+
+          if (conversationType === "GROUP") {
+            callback({
+              code: grpc.status.UNIMPLEMENTED,
+              message: "EditMessage not supported for GROUP conversations",
+            });
+            return;
+          }
+
+          const content = parseMessageContent(req);
+          const updated = await deps.privateMessageService.editMessage({
+            messageId: req.messageId,
+            userId: req.editorId,
+            content,
+          });
+
+          const editedAtMs =
+            updated.editedAt instanceof Date
+              ? updated.editedAt.getTime()
+              : Date.now();
+          const contentJson = stringifyContent(updated.content);
+
+          await redis.publish(
+            `conv:${req.conversationId}`,
+            JSON.stringify({
+              event: "message:edited",
+              data: {
+                messageId: updated.id,
+                conversationId: req.conversationId,
+                contentText:
+                  ((updated.content as Record<string, unknown>)
+                    ?.text as string) ?? "",
+                contentJson,
+                editedAt: editedAtMs,
+              },
+            })
+          );
+
+          callback(null, {
+            messageId: updated.id,
+            editedAt: editedAtMs,
+            contentJson,
+          });
+        } catch (err) {
+          logger.error(`gRPC editMessage error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     getConversationMessages: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -327,6 +398,125 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
           callback(null, { updatedCount: 1 });
         } catch (err) {
           logger.error(`gRPC markMessagesRead error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    markDelivered: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            conversationId: string;
+            recipientId: string;
+            upToMessageId: string;
+            conversationType?: string;
+          };
+
+          const conversationType =
+            typeof req.conversationType === "string"
+              ? req.conversationType.toUpperCase()
+              : "PRIVATE";
+
+          if (conversationType === "GROUP") {
+            callback(null, { updatedCount: 0 });
+            return;
+          }
+
+          const { count, messageIds } =
+            await deps.privateMessageService.markDelivered({
+              roomId: req.conversationId,
+              recipientId: req.recipientId,
+              upToMessageId: req.upToMessageId,
+            });
+
+          if (count > 0) {
+            await redis.publish(
+              `conv:${req.conversationId}`,
+              JSON.stringify({
+                event: "message:delivered",
+                data: {
+                  conversationId: req.conversationId,
+                  recipientId: req.recipientId,
+                  upToMessageId: req.upToMessageId,
+                  messageIds,
+                },
+              })
+            );
+          }
+
+          callback(null, { updatedCount: count });
+        } catch (err) {
+          logger.error(`gRPC markDelivered error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    presenceConnect: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId: string;
+            deviceId: string;
+            platform?: string;
+            clientType?: string;
+            appState?: string;
+          };
+          await deps.presenceService.connect(req.userId, req.deviceId, {
+            platform: req.platform || "unknown",
+            clientType: req.clientType || "unknown",
+            appState: req.appState || "FOREGROUND",
+          });
+          callback(null, { ok: true });
+        } catch (err) {
+          logger.error(`gRPC presenceConnect error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    presenceDisconnect: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { userId: string; deviceId: string };
+          await deps.presenceService.disconnect(req.userId, req.deviceId);
+          callback(null, { ok: true });
+        } catch (err) {
+          logger.error(`gRPC presenceDisconnect error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    presenceHeartbeat: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId: string;
+            deviceId: string;
+            appState?: string;
+          };
+          await deps.presenceService.heartbeat(
+            req.userId,
+            req.deviceId,
+            req.appState || "FOREGROUND"
+          );
+          callback(null, { ok: true });
+        } catch (err) {
+          logger.error(`gRPC presenceHeartbeat error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

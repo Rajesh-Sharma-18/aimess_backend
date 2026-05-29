@@ -18,6 +18,11 @@ const envSchema = z.object({
 
   JWT_ACCESS_EXPIRES_IN: z.string(),
   JWT_REFRESH_EXPIRES_IN: z.string(),
+  /**
+   * Refresh-token lifetime (seconds) when the user opts into "remember me" at
+   * login. Falls back to 30 days. The access-token lifetime is unaffected.
+   */
+  JWT_REFRESH_EXPIRES_IN_REMEMBER_ME: z.string().default("2592000"),
 
   RABBITMQ_URL: z.string().min(1),
 

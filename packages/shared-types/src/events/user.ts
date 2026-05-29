@@ -27,5 +27,7 @@ export type UserProfileUpdatedPayload = {
   username: string;
   displayName: string;
   avatarObjectKey: string | null;
+  /** True when all required profile fields are filled in (derived). */
+  isProfileCompleted: boolean;
   updatedAt: string;
 };

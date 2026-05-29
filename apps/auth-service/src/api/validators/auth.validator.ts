@@ -58,6 +58,7 @@ export const loginSchema = z.object({
   account: loginIdentifierSchema,
   password: passwordSchema,
   fcmTokens: fcmTokensSchema.optional().default([]),
+  rememberMe: z.boolean().optional().default(false),
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;

@@ -3,10 +3,14 @@ import { logger } from "@aimess/logger";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import type { PrivateMessageReportRepository } from "../repositories/private-message-report.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
-import type { PrivateMessage } from "../generated/prisma/index.js";
+import type {
+  PrivateMessage,
+  PrivateMessageReport,
+} from "../generated/prisma/index.js";
 
 export class PrivateMessageService {
   constructor(
@@ -14,7 +18,8 @@ export class PrivateMessageService {
     private readonly roomRepo: PrivateRoomRepository,
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
-    private readonly userServiceClient: UserServiceClient
+    private readonly userServiceClient: UserServiceClient,
+    private readonly reportRepo: PrivateMessageReportRepository
   ) {}
 
   async sendMessage(params: {
@@ -184,6 +189,76 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_DELETE_OWN_MESSAGES_ONLY");
     }
     return this.messageRepo.deleteForEveryone(messageId, userId);
+  }
+
+  async editMessage(params: {
+    messageId: string;
+    userId: string;
+    content: {
+      text: string;
+      urls?: string[];
+      files?: Array<Record<string, unknown>>;
+    };
+  }): Promise<PrivateMessage> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (message.isDeleted)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (message.senderId !== params.userId)
+      throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
+    if (message.messageType !== "TEXT")
+      throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
+    return this.messageRepo.editMessage(params.messageId, params.content);
+  }
+
+  async markDelivered(params: {
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<{ count: number; messageIds: string[] }> {
+    return this.messageRepo.markDeliveredUpTo(
+      params.roomId,
+      params.recipientId,
+      params.upToMessageId
+    );
+  }
+
+  async reportMessage(params: {
+    messageId: string;
+    reporterId: string;
+    reason: string;
+    description?: string;
+  }): Promise<PrivateMessageReport> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const room = await this.roomRepo.findByRoomId(message.roomId);
+    if (!room || !room.participants?.includes(params.reporterId))
+      throw new ForbiddenError("CHAT_REPORT_NOT_PARTICIPANT");
+
+    if (message.senderId === params.reporterId)
+      throw new BadRequestError("CHAT_REPORT_OWN_MESSAGE");
+
+    try {
+      return await this.reportRepo.create({
+        roomId: message.roomId,
+        messageId: message.id,
+        reporterId: params.reporterId,
+        reportedUserId: message.senderId ?? "",
+        reason: params.reason,
+        description: params.description ?? "",
+      });
+    } catch (err) {
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code?: string }).code === "P2002"
+      ) {
+        throw new BadRequestError("CHAT_ALREADY_REPORTED");
+      }
+      throw err;
+    }
   }
 
   async react(

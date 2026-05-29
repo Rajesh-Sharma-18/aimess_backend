@@ -171,6 +171,35 @@ const privateMessages = {
 };
 
 const privateMessageDelete = {
+  patch: {
+    tags: ["Chat — Private"],
+    summary: "Edit a private message (text only)",
+    description:
+      "Edits the caller's own TEXT message. Prior content is kept in editHistory.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatEditMessageRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Message edited"),
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
   delete: {
     tags: ["Chat — Private"],
     summary: "Delete private message",
@@ -195,6 +224,114 @@ const privateMessageDelete = {
     responses: {
       ...successResponse("Message deleted"),
       "400": badRequest,
+      "401": unauthorized,
+    },
+  },
+};
+
+const privateMessageReport = {
+  post: {
+    tags: ["Chat — Private"],
+    summary: "Report a private message",
+    description:
+      "Reports another participant's message. One report per user per message.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatReportMessageRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Message reported", undefined, "201"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const privateRoomMute = {
+  post: {
+    tags: ["Chat — Private"],
+    summary: "Mute a private chat",
+    description:
+      "Mutes the room for the caller. Omit or null `muteUntil` to mute indefinitely.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    requestBody: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatMuteRoomRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Chat muted"),
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+const privateRoomUnmute = {
+  post: {
+    tags: ["Chat — Private"],
+    summary: "Unmute a private chat",
+    description: "Removes the caller's mute on the room.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Chat unmuted"),
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
+const privatePresence = {
+  get: {
+    tags: ["Chat — Private"],
+    summary: "Get a user's presence",
+    description: "Returns online/offline state and last-seen for a user.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "userId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    responses: {
+      ...successResponse("Presence", "ChatPresence"),
       "401": unauthorized,
     },
   },
@@ -1155,6 +1292,10 @@ export const chatPaths = {
   "/chat/private/rooms/{roomId}/messages": privateMessages,
   "/chat/private/rooms/{roomId}/messages/search": privateSearch,
   "/chat/private/messages/{messageId}": privateMessageDelete,
+  "/chat/private/messages/{messageId}/report": privateMessageReport,
+  "/chat/private/rooms/{roomId}/mute": privateRoomMute,
+  "/chat/private/rooms/{roomId}/unmute": privateRoomUnmute,
+  "/chat/private/presence/{userId}": privatePresence,
   "/chat/private/rooms/{roomId}/pins": privatePins,
 
   // Group rooms

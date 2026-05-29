@@ -2,26 +2,24 @@ import { z } from "zod";
 
 import { locationSchema, contactSchema } from "./attachment.validator.js";
 
+const messageFileSchema = z.object({
+  objectKey: z.string().min(1).max(500).optional(),
+  url: z.string().url().optional(),
+  name: z.string().default(""),
+  size: z.number().nonnegative().default(0),
+  mime: z.string().default(""),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  durationMs: z.number().nonnegative().optional(),
+});
+
 export const sendPrivateMessageSchema = z.object({
   roomId: z.string().min(5).max(300),
   receiverId: z.string().min(5).max(100),
   content: z.object({
     text: z.string().default(""),
     urls: z.array(z.string().url()).default([]),
-    files: z
-      .array(
-        z.object({
-          objectKey: z.string().min(1).max(500).optional(),
-          url: z.string().url().optional(),
-          name: z.string().default(""),
-          size: z.number().nonnegative().default(0),
-          mime: z.string().default(""),
-          width: z.number().positive().optional(),
-          height: z.number().positive().optional(),
-          durationMs: z.number().nonnegative().optional(),
-        })
-      )
-      .default([]),
+    files: z.array(messageFileSchema).default([]),
     location: locationSchema.optional(),
     contact: contactSchema.optional(),
   }),
@@ -85,4 +83,29 @@ export const forwardMessageSchema = z.object({
   targetRoomId: z.string().min(4).max(150),
   receiverId: z.string().min(4).max(100),
   clientMessageId: z.string().min(1).max(100).nullish(),
+});
+
+export const editMessageSchema = z.object({
+  content: z.object({
+    text: z.string().min(1).max(10000),
+    urls: z.array(z.string().url()).default([]),
+    files: z.array(messageFileSchema).default([]),
+  }),
+});
+
+export const muteRoomSchema = z.object({
+  muteUntil: z.string().datetime().nullish(),
+});
+
+export const reportMessageSchema = z.object({
+  reason: z.enum([
+    "SPAM",
+    "HARASSMENT",
+    "HATE_SPEECH",
+    "NUDITY",
+    "VIOLENCE",
+    "SCAM",
+    "OTHER",
+  ]),
+  description: z.string().max(1000).default(""),
 });

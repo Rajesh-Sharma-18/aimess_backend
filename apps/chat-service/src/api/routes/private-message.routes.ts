@@ -7,6 +7,9 @@ import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
   deleteMessageQuerySchema,
   forwardMessageSchema,
+  editMessageSchema,
+  muteRoomSchema,
+  reportMessageSchema,
 } from "../validators/private-message.validator.js";
 import {
   messageListQuerySchema,
@@ -14,6 +17,7 @@ import {
 } from "../validators/query.validator.js";
 import type { PrivateRoomController } from "../controllers/private-room.controller.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
+import type { PresenceController } from "../controllers/presence.controller.js";
 
 const sendLimit = createRateLimit({
   windowMs: 60_000,
@@ -23,12 +27,16 @@ const sendLimit = createRateLimit({
 
 export function createPrivateMessageRoutes(
   roomCtrl: PrivateRoomController,
-  messageCtrl: PrivateMessageController
+  messageCtrl: PrivateMessageController,
+  presenceCtrl: PresenceController
 ): Router {
   const router = Router();
 
   // Conversation list
   router.get("/conversations", authenticate, roomCtrl.getConversationList);
+
+  // Peer presence (online/offline + last seen)
+  router.get("/presence/:userId", authenticate, presenceCtrl.getPresence);
 
   // Get or create room with a peer
   router.post(
@@ -40,6 +48,15 @@ export function createPrivateMessageRoutes(
 
   // Delete conversation for me
   router.delete("/rooms/:roomId", authenticate, roomCtrl.deleteForMe);
+
+  // Mute / unmute a conversation
+  router.post(
+    "/rooms/:roomId/mute",
+    authenticate,
+    validateBody(muteRoomSchema),
+    roomCtrl.muteRoom
+  );
+  router.post("/rooms/:roomId/unmute", authenticate, roomCtrl.unmuteRoom);
 
   // Search messages in a room (must precede the messages list route)
   router.get(
@@ -55,6 +72,24 @@ export function createPrivateMessageRoutes(
     authenticate,
     validateQuery(messageListQuerySchema),
     messageCtrl.getMessages
+  );
+
+  // Edit a message
+  router.patch(
+    "/messages/:messageId",
+    authenticate,
+    sendLimit,
+    validateBody(editMessageSchema),
+    messageCtrl.editMessage
+  );
+
+  // Report a message
+  router.post(
+    "/messages/:messageId/report",
+    authenticate,
+    sendLimit,
+    validateBody(reportMessageSchema),
+    messageCtrl.reportMessage
   );
 
   // Delete a message

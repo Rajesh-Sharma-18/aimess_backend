@@ -8,8 +8,13 @@ enum ConversationType {
 
 service MessagingService {
   rpc SendMessage             (SendMessageRequest)             returns (SendMessageResponse);
+  rpc EditMessage             (EditMessageRequest)             returns (EditMessageResponse);
   rpc GetConversationMessages (GetConversationMessagesRequest) returns (GetConversationMessagesResponse);
   rpc MarkMessagesRead        (MarkMessagesReadRequest)        returns (MarkMessagesReadResponse);
+  rpc MarkDelivered           (MarkDeliveredRequest)           returns (MarkDeliveredResponse);
+  rpc PresenceConnect         (PresenceConnectRequest)         returns (PresenceAck);
+  rpc PresenceDisconnect      (PresenceDisconnectRequest)      returns (PresenceAck);
+  rpc PresenceHeartbeat       (PresenceHeartbeatRequest)       returns (PresenceAck);
   rpc SendReaction            (SendReactionRequest)            returns (SendReactionResponse);
   rpc ForwardMessage          (ForwardMessageRequest)          returns (ForwardMessageResponse);
   rpc GetMessageReactions     (GetMessageReactionsRequest)     returns (GetMessageReactionsResponse);
@@ -70,6 +75,19 @@ message ReactionDto {
   string user_id = 1;
   string emoji   = 2;
 }
+message EditMessageRequest {
+  string           message_id        = 1;
+  string           conversation_id   = 2;
+  string           editor_id         = 3;
+  string           content_text      = 4;
+  string           content_json      = 5;
+  ConversationType conversation_type = 6;
+}
+message EditMessageResponse {
+  string message_id   = 1;
+  int64  edited_at    = 2;
+  string content_json = 3;
+}
 message MarkMessagesReadRequest {
   string           conversation_id    = 1;
   string           reader_id          = 2;
@@ -78,6 +96,34 @@ message MarkMessagesReadRequest {
 }
 message MarkMessagesReadResponse {
   int32 updated_count = 1;
+}
+message MarkDeliveredRequest {
+  string           conversation_id   = 1;
+  string           recipient_id      = 2;
+  string           up_to_message_id  = 3;
+  ConversationType conversation_type = 4;
+}
+message MarkDeliveredResponse {
+  int32 updated_count = 1;
+}
+message PresenceConnectRequest {
+  string user_id     = 1;
+  string device_id   = 2;
+  string platform    = 3;
+  string client_type = 4;
+  string app_state   = 5;
+}
+message PresenceDisconnectRequest {
+  string user_id   = 1;
+  string device_id = 2;
+}
+message PresenceHeartbeatRequest {
+  string user_id   = 1;
+  string device_id = 2;
+  string app_state = 3;
+}
+message PresenceAck {
+  bool ok = 1;
 }
 message SendReactionRequest {
   string           message_id         = 1;

@@ -22,6 +22,7 @@ import type { CommunityController } from "../controllers/community.controller.js
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
 import type { MediaController } from "../controllers/media.controller.js";
 import type { CallController } from "../controllers/call.controller.js";
+import type { PresenceController } from "../controllers/presence.controller.js";
 
 export interface Controllers {
   privateRoomCtrl: PrivateRoomController;
@@ -35,6 +36,7 @@ export interface Controllers {
   communityMessageCtrl: CommunityMessageController;
   mediaCtrl: MediaController;
   callCtrl: CallController;
+  presenceCtrl: PresenceController;
 }
 
 export function createRoutes(controllers: Controllers): Router {
@@ -48,7 +50,8 @@ export function createRoutes(controllers: Controllers): Router {
     `${basePath}/private`,
     createPrivateMessageRoutes(
       controllers.privateRoomCtrl,
-      controllers.privateMessageCtrl
+      controllers.privateMessageCtrl,
+      controllers.presenceCtrl
     )
   );
   router.use(

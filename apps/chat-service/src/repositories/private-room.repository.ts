@@ -244,4 +244,44 @@ export class PrivateRoomRepository {
       data: { deletedFor },
     });
   }
+
+  async setMuted(
+    roomId: string,
+    userId: string,
+    muteUntil: Date | null
+  ): Promise<PrivateRoom | null> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return null;
+
+    const mutedBy = (existing.mutedBy ?? {}) as Record<string, unknown>;
+    mutedBy[userId] = {
+      mutedAt: new Date().toISOString(),
+      muteUntil: muteUntil ? muteUntil.toISOString() : null,
+    };
+
+    return this.prisma.privateRoom.update({
+      where: { roomId },
+      data: { mutedBy: mutedBy as unknown as Prisma.InputJsonValue },
+    });
+  }
+
+  async setUnmuted(
+    roomId: string,
+    userId: string
+  ): Promise<PrivateRoom | null> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return null;
+
+    const mutedBy = (existing.mutedBy ?? {}) as Record<string, unknown>;
+    delete mutedBy[userId];
+
+    return this.prisma.privateRoom.update({
+      where: { roomId },
+      data: { mutedBy: mutedBy as unknown as Prisma.InputJsonValue },
+    });
+  }
 }

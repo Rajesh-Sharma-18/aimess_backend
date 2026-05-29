@@ -97,6 +97,12 @@ export const openApiSchemas = {
         example: "johndoe",
       },
       password: { type: "string", minLength: 8, maxLength: 128 },
+      rememberMe: {
+        type: "boolean",
+        default: false,
+        description:
+          "When true, the issued refresh token is longer-lived (30 days) so the session persists across app restarts. Access-token lifetime is unchanged.",
+      },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
     required: ["account", "password"],
@@ -121,8 +127,13 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       tokens: { $ref: "#/components/schemas/AuthTokens" },
+      isProfileCompleted: {
+        type: "boolean",
+        description:
+          "Whether the user has filled in their required profile fields (username, firstName, lastName — all must be non-empty). Lets the client route to the edit-profile screen on first login. Mirrored from user-service via the user.profile_updated event.",
+      },
     },
-    required: ["tokens"],
+    required: ["tokens", "isProfileCompleted"],
   },
   AccessTokenResponseData: {
     type: "object",
@@ -368,9 +379,14 @@ export const openApiSchemas = {
         },
         required: ["userId", "account", "provider"],
       },
+      isProfileCompleted: {
+        type: "boolean",
+        description:
+          "Whether the user has filled in their required profile fields. Always false for a brand-new account (isNewUser=true).",
+      },
       tokens: { $ref: "#/components/schemas/AuthTokens" },
     },
-    required: ["isNewUser", "user", "tokens"],
+    required: ["isNewUser", "user", "isProfileCompleted", "tokens"],
   },
   UpdateProfileRequest: {
     type: "object",
@@ -584,6 +600,16 @@ export const openApiSchemas = {
         nullable: true,
         description: "Primary account email from auth-service.",
       },
+      isGoogleLogin: {
+        type: "boolean",
+        description:
+          "True when a GOOGLE provider is linked to the account in auth-service.",
+      },
+      isAppleLogin: {
+        type: "boolean",
+        description:
+          "True when an APPLE provider is linked to the account in auth-service.",
+      },
       dateOfBirth: { type: "string", format: "date" },
       gender: {
         type: "string",
@@ -611,6 +637,8 @@ export const openApiSchemas = {
       "lastName",
       "bio",
       "email",
+      "isGoogleLogin",
+      "isAppleLogin",
       "dateOfBirth",
       "gender",
       "avatarUrl",
@@ -2652,5 +2680,53 @@ export const openApiSchemas = {
       },
     },
     required: ["messageId", "reactions"],
+  },
+  ChatEditMessageRequest: {
+    type: "object",
+    required: ["content"],
+    properties: {
+      content: {
+        type: "object",
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: 10000 },
+          urls: { type: "array", items: { type: "string" } },
+          files: { type: "array", items: { type: "object" } },
+        },
+      },
+    },
+  },
+  ChatMuteRoomRequest: {
+    type: "object",
+    properties: {
+      muteUntil: { type: "string", format: "date-time", nullable: true },
+    },
+  },
+  ChatReportMessageRequest: {
+    type: "object",
+    required: ["reason"],
+    properties: {
+      reason: {
+        type: "string",
+        enum: [
+          "SPAM",
+          "HARASSMENT",
+          "HATE_SPEECH",
+          "NUDITY",
+          "VIOLENCE",
+          "SCAM",
+          "OTHER",
+        ],
+      },
+      description: { type: "string", maxLength: 1000 },
+    },
+  },
+  ChatPresence: {
+    type: "object",
+    properties: {
+      userId: { type: "string" },
+      isOnline: { type: "boolean" },
+      lastSeen: { type: "integer", nullable: true },
+    },
   },
 } as const;

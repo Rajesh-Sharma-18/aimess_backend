@@ -38,6 +38,7 @@ model PrivateRoom {
   lastUnreadPreviewByUser   Json     @default("{}")
   blockedBy                 Json     @default("[]")
   deletedFor                Json     @default("{}")
+  mutedBy                   Json     @default("{}")
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
   createdAt                 DateTime @default(now())
@@ -74,6 +75,10 @@ model PrivateMessage {
   deletedAt        DateTime?
   deletedBy        String?
   createdAt        DateTime  @default(now())
+  editedAt         DateTime?
+  editHistory      Json      @default("[]")
+  deliveredTo      Json      @default("[]")
+  deliveredAt      Json      @default("{}")
 
   @@index([roomId, createdAt(sort: Desc)])
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
@@ -439,4 +444,25 @@ model Call {
   @@index([calleeId, initiatedAt(sort: Desc)])
   @@index([status])
   @@map("calls")
+}
+
+// -----------------------------------------------------------------------------
+// PrivateMessageReport
+// -----------------------------------------------------------------------------
+model PrivateMessageReport {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomId         String
+  messageId      String   @db.ObjectId
+  reporterId     String
+  reportedUserId String
+  reason         String
+  description    String   @default("")
+  status         String   @default("PENDING")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([messageId, reporterId])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([reportedUserId])
+  @@map("private_message_reports")
 }

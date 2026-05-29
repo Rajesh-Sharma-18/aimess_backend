@@ -30,6 +30,9 @@ model AuthUser {
   emailVerified        Boolean              @default(false)
   phoneVerified        Boolean              @default(false)
   ageVerified          Boolean              @default(false)
+  // Mirrored from user-service via the user.profile_updated event so the login
+  // response can route the client to the edit-profile screen.
+  isProfileCompleted   Boolean              @default(false)
   dateOfBirth          DateTime?            @db.Date // collected later (profile / compliance)
   // Legal acceptance — collected when user accepts terms (not required at minimal signup)
   termsAcceptedAt      DateTime?

@@ -38,6 +38,13 @@ export class PresenceService {
       const previousStatus = await this.cacheRepo.getUserPresence(userId);
       await this.cacheRepo.setUserPresence(userId, isOnline);
 
+      // When the user is no longer online, persist a "last seen" timestamp.
+      let lastSeen: number | null = null;
+      if (!isOnline) {
+        lastSeen = now;
+        await this.cacheRepo.setLastSeen(userId, lastSeen);
+      }
+
       // Emit presence change if status changed
       const prevOnline = previousStatus === "online";
       if (prevOnline !== isOnline && this.redis) {
@@ -51,6 +58,7 @@ export class PresenceService {
               lastActiveAt: isOnline
                 ? now
                 : Number(sessions[0]?.lastActiveAt ?? now),
+              lastSeen,
             },
           })
         );
@@ -60,13 +68,53 @@ export class PresenceService {
     }
   }
 
-  async heartbeat(userId: string, deviceId: string): Promise<void> {
-    await this.cacheRepo.heartbeat({ userId, deviceId, now: Date.now() });
+  async connect(
+    userId: string,
+    deviceId: string,
+    meta: { platform: string; clientType: string; appState: string }
+  ): Promise<void> {
+    await this.cacheRepo.upsertDeviceSession({
+      userId,
+      deviceId,
+      socketId: "",
+      platform: meta.platform,
+      clientType: meta.clientType,
+      realtimeConnected: true,
+      appState: meta.appState,
+      now: Date.now(),
+    });
+    await this.recompute(userId);
+  }
+
+  async disconnect(userId: string, deviceId: string): Promise<void> {
+    await this.cacheRepo.setDisconnected({
+      userId,
+      deviceId,
+      nowMs: Date.now(),
+    });
+    await this.cacheRepo.setLastSeen(userId, Date.now());
+    await this.recompute(userId);
+  }
+
+  async heartbeat(
+    userId: string,
+    deviceId: string,
+    appState?: string
+  ): Promise<void> {
+    if (appState) {
+      await this.cacheRepo.setAppState(userId, deviceId, appState, Date.now());
+    } else {
+      await this.cacheRepo.heartbeat({ userId, deviceId, now: Date.now() });
+    }
     await this.recompute(userId);
   }
 
   async getPresence(userId: string): Promise<boolean> {
     const status = await this.cacheRepo.getUserPresence(userId);
     return status === "online";
+  }
+
+  async getLastSeen(userId: string): Promise<number | null> {
+    return this.cacheRepo.getLastSeen(userId);
   }
 }

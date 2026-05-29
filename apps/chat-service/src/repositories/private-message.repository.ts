@@ -138,6 +138,91 @@ export class PrivateMessageRepository {
     });
   }
 
+  async editMessage(
+    messageId: string,
+    content: object
+  ): Promise<PrivateMessage> {
+    // Read-then-write so we can push the prior content snapshot into editHistory
+    // (mirrors deleteForMe's read-then-write of a Json field).
+    const existing = await this.prisma.privateMessage.findUnique({
+      where: { id: messageId },
+    });
+    const now = new Date();
+    const history = Array.isArray(existing?.editHistory)
+      ? (existing!.editHistory as unknown[])
+      : [];
+    const priorText =
+      ((existing?.content ?? {}) as Record<string, unknown>)?.text ?? "";
+    const updatedHistory = [
+      ...history,
+      { text: priorText, editedAt: now.toISOString() },
+    ];
+
+    return this.prisma.privateMessage.update({
+      where: { id: messageId },
+      data: {
+        content: content as unknown as Prisma.InputJsonValue,
+        editedAt: now,
+        editHistory: updatedHistory as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  async markDeliveredUpTo(
+    roomId: string,
+    recipientId: string,
+    upToMessageId: string
+  ): Promise<{ count: number; messageIds: string[] }> {
+    const upToMessage = await this.prisma.privateMessage.findUnique({
+      where: { id: upToMessageId },
+    });
+    if (!upToMessage) return { count: 0, messageIds: [] };
+
+    // Candidate messages: same room, created at/before the boundary, not sent by
+    // the recipient, not deleted-for-everyone. Bound the batch to 200.
+    const candidates = await this.prisma.privateMessage.findMany({
+      where: {
+        roomId,
+        isDeleted: false,
+        senderId: { not: recipientId },
+        createdAt: { lte: upToMessage.createdAt },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+
+    const now = new Date().toISOString();
+    const updatedIds: string[] = [];
+
+    for (const msg of candidates) {
+      const deliveredTo = Array.isArray(msg.deliveredTo)
+        ? (msg.deliveredTo as string[])
+        : [];
+      // Idempotent: skip if already delivered to this recipient.
+      if (deliveredTo.includes(recipientId)) continue;
+      // Skip messages the recipient deleted for themselves.
+      const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
+      if (recipientId in deletedFor) continue;
+
+      const deliveredAt = (msg.deliveredAt ?? {}) as Record<string, string>;
+      deliveredAt[recipientId] = now;
+
+      await this.prisma.privateMessage.update({
+        where: { id: msg.id },
+        data: {
+          deliveredTo: [
+            ...deliveredTo,
+            recipientId,
+          ] as unknown as Prisma.InputJsonValue,
+          deliveredAt: deliveredAt as unknown as Prisma.InputJsonValue,
+        },
+      });
+      updatedIds.push(msg.id);
+    }
+
+    return { count: updatedIds.length, messageIds: updatedIds };
+  }
+
   async deleteForMe(
     messageId: string,
     userId: string

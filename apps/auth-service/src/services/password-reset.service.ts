@@ -155,8 +155,6 @@ export const passwordResetService = {
     const account = await authRepository.findPasswordHashByUserId(
       record.userId
     );
-    console.log("account", account);
-    console.log("record", record);
 
     // const isSocialUser = user.linkedAccounts.length > 0;
 

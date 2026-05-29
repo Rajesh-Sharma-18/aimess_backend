@@ -66,6 +66,47 @@ export interface MarkMessagesReadParams {
   upToMessageId: string;
   conversationType?: string;
 }
+export interface EditMessageParams {
+  messageId: string;
+  conversationId: string;
+  editorId: string;
+  contentText?: string;
+  contentJson?: string;
+  conversationType?: string;
+}
+export interface EditMessageResult {
+  messageId: string;
+  editedAt: number;
+  contentJson: string;
+}
+export interface MarkDeliveredParams {
+  conversationId: string;
+  recipientId: string;
+  upToMessageId: string;
+  conversationType?: string;
+}
+export interface MarkDeliveredResult {
+  updatedCount: number;
+}
+export interface PresenceConnectParams {
+  userId: string;
+  deviceId: string;
+  platform?: string;
+  clientType?: string;
+  appState?: string;
+}
+export interface PresenceDisconnectParams {
+  userId: string;
+  deviceId: string;
+}
+export interface PresenceHeartbeatParams {
+  userId: string;
+  deviceId: string;
+  appState?: string;
+}
+export interface PresenceAck {
+  ok: boolean;
+}
 export interface SendReactionParams {
   messageId: string;
   conversationId: string;
@@ -191,6 +232,11 @@ export interface MessagingClient {
   markMessagesRead(
     p: MarkMessagesReadParams
   ): Promise<{ updatedCount: number }>;
+  editMessage(p: EditMessageParams): Promise<EditMessageResult>;
+  markDelivered(p: MarkDeliveredParams): Promise<MarkDeliveredResult>;
+  presenceConnect(p: PresenceConnectParams): Promise<PresenceAck>;
+  presenceDisconnect(p: PresenceDisconnectParams): Promise<PresenceAck>;
+  presenceHeartbeat(p: PresenceHeartbeatParams): Promise<PresenceAck>;
   sendReaction(p: SendReactionParams): Promise<SendReactionResult>;
   forwardMessage(p: ForwardMessageParams): Promise<ForwardMessageResult>;
   getMessageReactions(
@@ -280,6 +326,69 @@ export function createMessagingClient(): MessagingClient {
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
       });
     }
+  );
+
+  const editMessageBreaker = makeBreaker(
+    "messaging.editMessage",
+    (p: EditMessageParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, EditMessageResult>("editMessage", {
+        messageId: p.messageId,
+        conversationId: p.conversationId,
+        editorId: p.editorId,
+        contentText: p.contentText ?? "",
+        contentJson: p.contentJson ?? "",
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+      });
+    }
+  );
+
+  const markDeliveredBreaker = makeBreaker(
+    "messaging.markDelivered",
+    (p: MarkDeliveredParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, MarkDeliveredResult>("markDelivered", {
+        conversationId: p.conversationId,
+        recipientId: p.recipientId,
+        upToMessageId: p.upToMessageId,
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+      });
+    }
+  );
+
+  const presenceConnectBreaker = makeBreaker(
+    "messaging.presenceConnect",
+    (p: PresenceConnectParams) =>
+      call<unknown, PresenceAck>("presenceConnect", {
+        userId: p.userId,
+        deviceId: p.deviceId,
+        platform: p.platform ?? "unknown",
+        clientType: p.clientType ?? "unknown",
+        appState: p.appState ?? "FOREGROUND",
+      })
+  );
+
+  const presenceDisconnectBreaker = makeBreaker(
+    "messaging.presenceDisconnect",
+    (p: PresenceDisconnectParams) =>
+      call<unknown, PresenceAck>("presenceDisconnect", {
+        userId: p.userId,
+        deviceId: p.deviceId,
+      })
+  );
+
+  const presenceHeartbeatBreaker = makeBreaker(
+    "messaging.presenceHeartbeat",
+    (p: PresenceHeartbeatParams) =>
+      call<unknown, PresenceAck>("presenceHeartbeat", {
+        userId: p.userId,
+        deviceId: p.deviceId,
+        appState: p.appState ?? "FOREGROUND",
+      })
   );
 
   const sendReactionBreaker = makeBreaker(
@@ -384,6 +493,11 @@ export function createMessagingClient(): MessagingClient {
     sendMessage: (p) => sendMessageBreaker.fire(p),
     getConversationMessages: (p) => getMessagesBreaker.fire(p),
     markMessagesRead: (p) => markReadBreaker.fire(p),
+    editMessage: (p) => editMessageBreaker.fire(p),
+    markDelivered: (p) => markDeliveredBreaker.fire(p),
+    presenceConnect: (p) => presenceConnectBreaker.fire(p),
+    presenceDisconnect: (p) => presenceDisconnectBreaker.fire(p),
+    presenceHeartbeat: (p) => presenceHeartbeatBreaker.fire(p),
     sendReaction: (p) => sendReactionBreaker.fire(p),
     forwardMessage: (p) => forwardMessageBreaker.fire(p),
     getMessageReactions: (p) => getMessageReactionsBreaker.fire(p),

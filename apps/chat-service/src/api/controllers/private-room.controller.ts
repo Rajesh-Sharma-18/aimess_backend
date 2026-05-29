@@ -46,4 +46,27 @@ export class PrivateRoomController {
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(null, t("CHAT_CONVERSATION_DELETED", req.locale)));
   });
+
+  muteRoom = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { muteUntil } = req.body as { muteUntil?: string | null };
+    const result = await this.service.muteRoom(
+      roomId,
+      userId,
+      muteUntil ? new Date(muteUntil) : null
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_ROOM_MUTED", req.locale)));
+  });
+
+  unmuteRoom = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const result = await this.service.unmuteRoom(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_ROOM_UNMUTED", req.locale)));
+  });
 }

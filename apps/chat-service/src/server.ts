@@ -25,6 +25,7 @@ import { RoomMemberRepository } from "./repositories/room-member.repository.js";
 import { NotificationRepository } from "./repositories/notification.repository.js";
 import { CacheRepository } from "./repositories/cache.repository.js";
 import { CallRepository } from "./repositories/call.repository.js";
+import { PrivateMessageReportRepository } from "./repositories/private-message-report.repository.js";
 
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
@@ -41,6 +42,7 @@ import { CommunityMessageService } from "./services/community-message.service.js
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
 import { CallService } from "./services/call.service.js";
 import { WebRtcConfigService } from "./services/webrtc-config.service.js";
+import { PresenceService } from "./services/presence.service.js";
 
 // -- Controllers --
 import { PrivateRoomController } from "./api/controllers/private-room.controller.js";
@@ -54,6 +56,7 @@ import { CommunityController } from "./api/controllers/community.controller.js";
 import { CommunityMessageController } from "./api/controllers/community-message.controller.js";
 import { MediaController } from "./api/controllers/media.controller.js";
 import { CallController } from "./api/controllers/call.controller.js";
+import { PresenceController } from "./api/controllers/presence.controller.js";
 
 // -- gRPC --
 import { startGrpcServer } from "./grpc/server.js";
@@ -269,6 +272,7 @@ const startServer = async () => {
     const roomMemberRepo = new RoomMemberRepository(prisma);
     const notificationRepo = new NotificationRepository(prisma);
     const callRepo = new CallRepository(prisma);
+    const privateMessageReportRepo = new PrivateMessageReportRepository(prisma);
 
     // 3. Instantiate services
     const userSnapshotService = new UserSnapshotService();
@@ -285,7 +289,8 @@ const startServer = async () => {
       privateRoomRepo,
       cacheRepo,
       userSnapshotService,
-      userServiceClient
+      userServiceClient,
+      privateMessageReportRepo
     );
     const privatePinService = new PrivatePinService(
       privateMessagePinRepo,
@@ -343,6 +348,7 @@ const startServer = async () => {
     );
 
     const webRtcConfigService = new WebRtcConfigService();
+    const presenceService = new PresenceService(cacheRepo, redis);
 
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
@@ -353,6 +359,7 @@ const startServer = async () => {
       userSnapshotService,
       callService,
       webRtcConfigService,
+      presenceService,
     });
 
     // 4. Instantiate controllers
@@ -382,6 +389,7 @@ const startServer = async () => {
       ),
       mediaCtrl: new MediaController(),
       callCtrl: new CallController(callService),
+      presenceCtrl: new PresenceController(presenceService),
     };
 
     // 5. Create Express app + HTTP server
