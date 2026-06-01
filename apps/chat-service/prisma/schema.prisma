@@ -83,6 +83,7 @@ model PrivateMessage {
   @@index([roomId, createdAt(sort: Desc)])
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
+  @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([systemEvent])
   @@index([clientMessageId])
   @@map("private_messages")
@@ -171,10 +172,13 @@ model GroupMessage {
   deletedBy          String?
   deletedForUserIds  Json      @default("[]")
   createdAt          DateTime  @default(now())
+  editedAt           DateTime?
+  editHistory        Json      @default("[]")
 
   @@index([roomId, createdAt(sort: Desc)])
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
+  @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([clientMessageId])
   @@index([senderId])
   @@index([messageType])
@@ -306,12 +310,15 @@ model GeneralRoomMessage {
   deletedBy       Json     @default("[]")
   deletedForAll   Boolean  @default(false)
   reports         Json     @default("[]")
+  editedAt        DateTime?
+  editHistory     Json     @default("[]")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   @@index([roomId])
   @@index([roomId, sentBy])
   @@index([deletedForAll])
+  @@index([roomId, messageType, createdAt(sort: Desc)])
   @@map("general_room_messages")
 }
 
@@ -328,6 +335,8 @@ model RoomMember {
   leftAt   DateTime?
   bannedAt DateTime?
   banInfo  Json?
+  lastReadMessageId String?   @db.ObjectId
+  lastReadAt        DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

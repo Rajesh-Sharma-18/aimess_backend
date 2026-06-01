@@ -1,0 +1,33 @@
+// =============================================================================
+// notifications-service  ·  MongoDB  ·  aimess_notifications
+// Owns: device-token store (FCM push fan-out).
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  // Runtime PrismaClient overrides this via datasourceUrl (composed from MONGO_*
+  // parts in src/config/env.ts); prisma.config.ts composes it for CLI commands.
+  url      = env("MONGO_DATABASE_URL")
+}
+
+// -------------------------------------------   
+// One row per (userId, token). `token` is globally unique so re-registering the
+// same token from a different user moves ownership.
+// -----------------------------------------------------------------------------
+model DeviceToken {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String
+  token      String   @unique
+  platform   String
+  deviceId   String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("device_tokens")
+}

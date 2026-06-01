@@ -81,6 +81,201 @@ function limitParam(defaultVal: number, max = 100) {
   };
 }
 
+function mediaTypeParam() {
+  return {
+    name: "type",
+    in: "query" as const,
+    required: false,
+    schema: {
+      type: "string" as const,
+      enum: ["IMAGE", "VIDEO", "GIF", "VOICE", "DOCUMENT", "STICKER"],
+    },
+    description: "Optional media-kind filter. Omit to list all shared media.",
+  };
+}
+
+function pageNumberParam() {
+  return {
+    name: "pageNumber",
+    in: "query" as const,
+    required: false,
+    schema: { type: "integer" as const, minimum: 1, default: 1 },
+    description: "1-based page number.",
+  };
+}
+
+function conversationTimestampParam() {
+  return {
+    name: "timestamp",
+    in: "query" as const,
+    required: false,
+    schema: { type: "integer" as const, minimum: 1 },
+    description:
+      "Epoch milliseconds. Returns messages with createdAt < timestamp (defaults to now).",
+  };
+}
+
+const roomIdPathParam = {
+  name: "roomId",
+  in: "path" as const,
+  required: true,
+  schema: { type: "string" as const },
+};
+
+const messageIdPathParam = {
+  name: "messageId",
+  in: "path" as const,
+  required: true,
+  schema: { type: "string" as const },
+};
+
+// Shared media listing (cursor-paginated) — private / group / community.
+function mediaListPath(tag: string, summary: string) {
+  return {
+    get: {
+      tags: [tag],
+      summary,
+      description:
+        "Cursor-paginated list of media-bearing messages in the room (images, video, GIFs, voice notes, documents, stickers). Optional `type` narrows to a single media kind.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        roomIdPathParam,
+        mediaTypeParam(),
+        cursorParam(),
+        limitParam(30),
+      ],
+      responses: {
+        ...successResponse(
+          "Shared media",
+          tag.includes("Community")
+            ? "ChatCommunityMessageList"
+            : "ChatMessageList"
+        ),
+        "401": unauthorized,
+        "404": notFound,
+      },
+    },
+  };
+}
+
+// Conversation listing (offset-paginated) + mark-as-read side effect.
+function conversationPath(tag: string, summary: string) {
+  return {
+    get: {
+      tags: [tag],
+      summary,
+      description:
+        "Offset-paginated message history, newest-first, returning messages with `createdAt < timestamp` (defaults to now). Side effect: advances the caller's read pointer, marking the room read up to the newest returned message.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        roomIdPathParam,
+        pageNumberParam(),
+        limitParam(30),
+        conversationTimestampParam(),
+      ],
+      responses: {
+        ...successResponse(
+          "Messages page (read pointer advanced)",
+          tag.includes("Community")
+            ? "ChatCommunityConversationPage"
+            : "ChatConversationPage"
+        ),
+        "401": unauthorized,
+        "404": notFound,
+      },
+    },
+  };
+}
+
+const privateMedia = mediaListPath(
+  "Chat — Private",
+  "List shared media (private)"
+);
+const groupMedia = mediaListPath("Chat — Groups", "List shared media (group)");
+const communityMedia = mediaListPath(
+  "Chat — Community",
+  "List shared media (community)"
+);
+
+const groupConversation = conversationPath(
+  "Chat — Groups",
+  "Get conversation + mark as read (group)"
+);
+const communityConversation = conversationPath(
+  "Chat — Community",
+  "Get conversation + mark as read (community)"
+);
+
+const groupMessageEdit = {
+  patch: {
+    tags: ["Chat — Groups"],
+    summary: "Edit a group message (text only)",
+    description:
+      "Edits the caller's own TEXT message within the 15-minute edit window. Expired edits return 410 (CHAT_EDIT_WINDOW_EXPIRED).",
+    security: [{ bearerAuth: [] }],
+    parameters: [messageIdPathParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatEditMessageRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Message edited"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "410": {
+        description: "Edit window expired (CHAT_EDIT_WINDOW_EXPIRED)",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+    },
+  },
+};
+
+const communityMessageEdit = {
+  patch: {
+    tags: ["Chat — Community"],
+    summary: "Edit a community message (text only)",
+    description:
+      "Edits the caller's own TEXT community message within the 15-minute edit window. The body must include `communityId` so the edit broadcast reaches the right community room. Expired edits return 410 (CHAT_EDIT_WINDOW_EXPIRED).",
+    security: [{ bearerAuth: [] }],
+    parameters: [messageIdPathParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            $ref: "#/components/schemas/ChatEditCommunityMessageRequest",
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Message edited"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "410": {
+        description: "Edit window expired (CHAT_EDIT_WINDOW_EXPIRED)",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+    },
+  },
+};
+
 // =============================================================================
 // Private messaging
 // =============================================================================
@@ -1290,6 +1485,7 @@ export const chatPaths = {
   "/chat/private/rooms/{peerId}": privateRoomByPeer,
   "/chat/private/rooms/{roomId}": privateRoomDelete,
   "/chat/private/rooms/{roomId}/messages": privateMessages,
+  "/chat/private/rooms/{roomId}/media": privateMedia,
   "/chat/private/rooms/{roomId}/messages/search": privateSearch,
   "/chat/private/messages/{messageId}": privateMessageDelete,
   "/chat/private/messages/{messageId}/report": privateMessageReport,
@@ -1304,8 +1500,11 @@ export const chatPaths = {
   "/chat/groups/{roomId}": groupById,
   "/chat/groups/{roomId}/disband": groupDisband,
   "/chat/groups/{roomId}/messages": groupMessages,
+  "/chat/groups/{roomId}/conversation": groupConversation,
+  "/chat/groups/{roomId}/media": groupMedia,
   "/chat/groups/{roomId}/messages/search": groupSearch,
   "/chat/groups/messages/delete": groupMessageDelete,
+  "/chat/groups/messages/{messageId}": groupMessageEdit,
   "/chat/groups/{roomId}/pins": groupPins,
 
   // Group members
@@ -1334,8 +1533,13 @@ export const chatPaths = {
   "/chat/community/rooms/{roomId}/join": communityJoin,
   "/chat/community/rooms/{roomId}/leave": communityLeave,
   "/chat/community/rooms/{roomId}/messages": communityMessages,
+  "/chat/community/rooms/{roomId}/conversation": communityConversation,
+  "/chat/community/rooms/{roomId}/media": communityMedia,
   "/chat/community/rooms/{roomId}/messages/search": communitySearch2,
-  "/chat/community/messages/{messageId}": communityMessageDelete,
+  "/chat/community/messages/{messageId}": {
+    ...communityMessageDelete,
+    ...communityMessageEdit,
+  },
 
   // Private — forward & reactions
   "/chat/private/rooms/{roomId}/messages/{messageId}/forward":
@@ -1357,4 +1561,14 @@ export const chatPaths = {
   // Media
   "/chat/media/upload-url": mediaUploadUrl,
   "/chat/media/download-url": mediaDownloadUrl,
+
+  // TODO(notifications): The notifications-service exposes device-token
+  // registration endpoints — `POST /v1/devices` and `DELETE /v1/devices/:token`
+  // (FCM token store + event-driven push). They are intentionally NOT documented
+  // here because the API gateway does not currently proxy notifications-service:
+  // the versioned service registry (apps/api-gateway/src/versioning/registry.ts)
+  // only routes `auth`, `users`, `communities`, and `chat`. Once a
+  // `notifications` segment is added to the registry, document these under a
+  // "Notifications — Devices" tag with the public gateway path (e.g.
+  // `/notifications/v1/devices`).
 };

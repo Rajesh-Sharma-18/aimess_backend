@@ -14,6 +14,7 @@ import {
 import {
   messageListQuerySchema,
   messageSearchQuerySchema,
+  mediaListQuerySchema,
 } from "../validators/query.validator.js";
 import type { PrivateRoomController } from "../controllers/private-room.controller.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
@@ -72,6 +73,14 @@ export function createPrivateMessageRoutes(
     authenticate,
     validateQuery(messageListQuerySchema),
     messageCtrl.getMessages
+  );
+
+  // Shared media / docs listing for a room
+  router.get(
+    "/rooms/:roomId/media",
+    authenticate,
+    validateQuery(mediaListQuerySchema),
+    messageCtrl.getRoomMedia
   );
 
   // Edit a message

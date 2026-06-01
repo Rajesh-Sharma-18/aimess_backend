@@ -4,6 +4,21 @@ package notification;
 service NotificationService {
   rpc GetNotifications      (GetNotificationsRequest)      returns (GetNotificationsResponse);
   rpc MarkNotificationsRead (MarkNotificationsReadRequest) returns (MarkNotificationsReadResponse);
+  rpc CreateNotification    (CreateNotificationRequest)    returns (CreateNotificationResponse);
+}
+
+message CreateNotificationRequest {
+  string user_id  = 1;
+  // Actor that triggered the notification (may be empty for system events).
+  string actor_id = 2;
+  string type     = 3;
+  string title    = 4;
+  string body     = 5;
+  // Arbitrary structured context (entity ids, roster, etc.) as string→string.
+  map<string, string> data = 6;
+}
+message CreateNotificationResponse {
+  string id = 1;
 }
 
 message GetNotificationsRequest {

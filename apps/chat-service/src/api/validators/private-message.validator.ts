@@ -1,6 +1,14 @@
 import { z } from "zod";
 
-import { locationSchema, contactSchema } from "./attachment.validator.js";
+import {
+  locationSchema,
+  contactSchema,
+  stickerSchema,
+} from "./attachment.validator.js";
+import {
+  CHAT_TEXT_MAX_CHARS,
+  enforceMediaLimits,
+} from "../../constants/media-limits.js";
 
 const messageFileSchema = z.object({
   objectKey: z.string().min(1).max(500).optional(),
@@ -13,28 +21,34 @@ const messageFileSchema = z.object({
   durationMs: z.number().nonnegative().optional(),
 });
 
-export const sendPrivateMessageSchema = z.object({
-  roomId: z.string().min(5).max(300),
-  receiverId: z.string().min(5).max(100),
-  content: z.object({
-    text: z.string().default(""),
-    urls: z.array(z.string().url()).default([]),
-    files: z.array(messageFileSchema).default([]),
-    location: locationSchema.optional(),
-    contact: contactSchema.optional(),
-  }),
-  messageType: z.enum([
-    "TEXT",
-    "IMAGE",
-    "DOCUMENT",
-    "VIDEO",
-    "VOICE",
-    "SYSTEM",
-    "LOCATION",
-    "CONTACT",
-  ]),
-  parentMessageId: z.string().nullish(),
-});
+export const sendPrivateMessageSchema = z
+  .object({
+    roomId: z.string().min(5).max(300),
+    receiverId: z.string().min(5).max(100),
+    content: z.object({
+      text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+      urls: z.array(z.string().url()).default([]),
+      files: z.array(messageFileSchema).default([]),
+      location: locationSchema.optional(),
+      contact: contactSchema.optional(),
+      sticker: stickerSchema.optional(),
+    }),
+    messageType: z.enum([
+      "TEXT",
+      "IMAGE",
+      "DOCUMENT",
+      "VIDEO",
+      "VOICE",
+      "SYSTEM",
+      "LOCATION",
+      "CONTACT",
+      "STICKER",
+    ]),
+    parentMessageId: z.string().nullish(),
+  })
+  .superRefine((val, ctx) => {
+    enforceMediaLimits(val.messageType, val.content.files, ctx);
+  });
 
 export const markReadSchema = z.object({
   receiverId: z.string().min(4).max(150),
@@ -87,7 +101,7 @@ export const forwardMessageSchema = z.object({
 
 export const editMessageSchema = z.object({
   content: z.object({
-    text: z.string().min(1).max(10000),
+    text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),
     urls: z.array(z.string().url()).default([]),
     files: z.array(messageFileSchema).default([]),
   }),

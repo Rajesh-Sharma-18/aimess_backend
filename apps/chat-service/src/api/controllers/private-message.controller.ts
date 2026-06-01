@@ -7,6 +7,7 @@ import { HTTP_STATUS, t } from "@aimess/constants";
 import {
   buildPaginatedResponse,
   buildListResponse,
+  buildCursorResponse,
 } from "../../lib/pagination.js";
 import type { PrivateMessageService } from "../../services/private-message.service.js";
 import type { PrivatePinService } from "../../services/private-pin.service.js";
@@ -37,6 +38,27 @@ export class PrivateMessageController {
       "createdAt"
     );
     const msg = paginated.data.length
+      ? t("CHAT_MESSAGES_FETCHED", req.locale)
+      : t("CHAT_NO_MESSAGES_FOUND", req.locale);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+  });
+
+  getRoomMedia = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const type = req.query.type as string | undefined;
+    const cursor = req.query.cursor as string | undefined;
+    const limit = Number(req.query.limit) || 30;
+    const messages = await this.messageService.listMedia({
+      roomId,
+      userId,
+      type,
+      cursor,
+      limit,
+    });
+    const enriched = await this.messageService.enrichMessages(messages);
+    const paginated = buildCursorResponse(enriched, limit, "createdAt");
+    const msg = paginated.items.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_MESSAGES_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));

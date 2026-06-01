@@ -360,6 +360,8 @@ const startServer = async () => {
       callService,
       webRtcConfigService,
       presenceService,
+      communityMessageService,
+      notificationRepo,
     });
 
     // 4. Instantiate controllers

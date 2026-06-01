@@ -2131,11 +2131,20 @@ export const openApiSchemas = {
       receiverId: { type: "string", nullable: true },
       content: {
         type: "object",
+        description:
+          "Message body. Validation caps (applied when a message is sent): `text` maxLength 4000 chars; for IMAGE messages at most 10 files; each VIDEO file ≤100MB and ≤180000ms (3 min); each VOICE file ≤300000ms (5 min); other files (GIF/DOCUMENT) ≤50MB.",
         properties: {
-          text: { type: "string" },
+          text: {
+            type: "string",
+            maxLength: 4000,
+            description: "Plain-text body. Max 4000 characters.",
+          },
           urls: { type: "array", items: { type: "string" } },
           files: {
             type: "array",
+            maxItems: 10,
+            description:
+              "Media files. IMAGE messages allow at most 10 files; VIDEO files are capped at 100MB / 180000ms; VOICE at 300000ms; GIF/DOCUMENT at 50MB.",
             items: {
               type: "object",
               properties: {
@@ -2143,11 +2152,17 @@ export const openApiSchemas = {
                 name: { type: "string" },
                 size: { type: "number" },
                 mime: { type: "string" },
+                durationMs: {
+                  type: "number",
+                  description:
+                    "Playback duration in milliseconds (video/voice).",
+                },
               },
             },
           },
           location: { $ref: "#/components/schemas/ChatLocationAttachment" },
           contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+          sticker: { $ref: "#/components/schemas/ChatSticker" },
         },
       },
       messageType: {
@@ -2157,12 +2172,15 @@ export const openApiSchemas = {
           "IMAGE",
           "DOCUMENT",
           "VIDEO",
+          "GIF",
+          "VOICE",
+          "STICKER",
           "SYSTEM",
           "LOCATION",
           "CONTACT",
         ],
         description:
-          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card.",
+          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card. STICKER = sticker message (see `content.sticker`).",
       },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
@@ -2455,8 +2473,17 @@ export const openApiSchemas = {
       message: { type: "string", nullable: true },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
-      messageType: { type: "string" },
-      attachments: { type: "array", items: { type: "object" } },
+      messageType: {
+        type: "string",
+        description:
+          "Community message kind (stored lower-case): text, image, voice, custom, location, contact, sticker.",
+      },
+      attachments: {
+        type: "array",
+        description:
+          "Media / sticker / location / contact attachments. Sticker entries follow ChatSticker. Send-time caps: text ≤4000 chars; ≤10 images; video ≤100MB/180000ms; voice ≤300000ms; other files ≤50MB.",
+        items: { type: "object" },
+      },
       deletedForAll: { type: "boolean" },
       createdAt: { type: "string", format: "date-time" },
     },
@@ -2505,6 +2532,29 @@ export const openApiSchemas = {
       userId: { type: "string", maxLength: 100, nullable: true },
     },
     required: ["name", "phone"],
+  },
+  ChatSticker: {
+    type: "object",
+    description:
+      "Sticker payload. Lives in message content (private/group) or attachments[] (community). Exactly one of `objectKey` or `url` is required.",
+    properties: {
+      objectKey: {
+        type: "string",
+        minLength: 1,
+        maxLength: 500,
+        description:
+          "Object-storage key for the sticker asset. One of objectKey / url is required.",
+      },
+      url: {
+        type: "string",
+        format: "uri",
+        description:
+          "Direct URL to the sticker asset. One of objectKey / url is required.",
+      },
+      packId: { type: "string", maxLength: 100 },
+      stickerId: { type: "string", maxLength: 100 },
+    },
+    required: ["packId", "stickerId"],
   },
 
   // --- Media upload/download ---
@@ -2695,6 +2745,69 @@ export const openApiSchemas = {
         },
       },
     },
+  },
+  ChatEditCommunityMessageRequest: {
+    type: "object",
+    required: ["communityId", "content"],
+    properties: {
+      communityId: {
+        type: "string",
+        minLength: 1,
+        description:
+          "Community the message belongs to — required so the edit broadcast reaches the right community room.",
+      },
+      content: {
+        type: "object",
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: 4000 },
+        },
+      },
+    },
+  },
+  ChatConversationPage: {
+    type: "object",
+    description:
+      "Offset-paginated message envelope. `data` is newest-first; reading a page also advances the caller's read pointer up to the newest returned message.",
+    properties: {
+      pagination: {
+        type: "object",
+        properties: {
+          totalData: { type: "integer" },
+          totalPage: { type: "integer" },
+          currentPage: { type: "integer" },
+          limit: { type: "integer" },
+          hasMore: { type: "boolean" },
+        },
+      },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatMessage" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  ChatCommunityConversationPage: {
+    type: "object",
+    description:
+      "Offset-paginated community message envelope. `data` is newest-first; reading a page also advances the caller's read pointer up to the newest returned message.",
+    properties: {
+      pagination: {
+        type: "object",
+        properties: {
+          totalData: { type: "integer" },
+          totalPage: { type: "integer" },
+          currentPage: { type: "integer" },
+          limit: { type: "integer" },
+          hasMore: { type: "boolean" },
+        },
+      },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+      },
+    },
+    required: ["pagination", "data"],
   },
   ChatMuteRoomRequest: {
     type: "object",

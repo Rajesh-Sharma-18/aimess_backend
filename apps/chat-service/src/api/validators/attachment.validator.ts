@@ -20,5 +20,15 @@ export const contactSchema = z.object({
   userId: z.string().max(100).optional(),
 });
 
+export const stickerSchema = z
+  .object({
+    objectKey: z.string().min(1).max(500).optional(),
+    url: z.string().url().optional(),
+    packId: z.string().max(100),
+    stickerId: z.string().max(100),
+  })
+  .refine((d) => d.objectKey || d.url, "sticker needs objectKey or url");
+
 export type LocationAttachment = z.infer<typeof locationSchema>;
 export type ContactAttachment = z.infer<typeof contactSchema>;
+export type StickerAttachment = z.infer<typeof stickerSchema>;

@@ -3,6 +3,7 @@
   PrivateMessage,
   Prisma,
 } from "../generated/prisma/index.js";
+import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 
 export class PrivateMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -328,5 +329,39 @@ export class PrivateMessageRepository {
     });
     if (!msg) return null;
     return msg.reactions as Record<string, unknown>;
+  }
+
+  /**
+   * List media/document messages in a room, newest first, cursor on createdAt.
+   * Excludes messages deleted-for-everyone; per-user "delete for me" is filtered
+   * in memory (deletedFor shape: { [userId]: ISO-timestamp }).
+   */
+  async listMedia(params: {
+    roomId: string;
+    userId: string;
+    type?: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<PrivateMessage[]> {
+    const mediaTypes = MEDIA_MESSAGE_TYPES;
+    const messages = await this.prisma.privateMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        isDeleted: false,
+        messageType: params.type ? params.type : { in: [...mediaTypes] },
+        ...(params.cursor
+          ? { createdAt: { lt: new Date(params.cursor) } }
+          : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: params.limit + 10,
+    });
+
+    return messages
+      .filter((msg) => {
+        const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
+        return !(params.userId in deletedFor);
+      })
+      .slice(0, params.limit);
   }
 }

@@ -49,6 +49,36 @@ export class RoomMemberRepository {
     });
   }
 
+  /**
+   * Advance the member's read pointer to a specific message, forward-only: the
+   * pointer is moved only when `messageCreatedAt` is newer than the stored
+   * `lastReadAt` (never regresses). No-op if the member isn't active.
+   */
+  async advanceReadPointer(
+    roomId: string,
+    userId: string,
+    messageId: string,
+    messageCreatedAt: Date
+  ): Promise<RoomMember | null> {
+    const existing = await this.prisma.roomMember.findFirst({
+      where: { roomId, userId, status: "active" },
+    });
+    if (!existing) return null;
+
+    // Forward-only: skip if the stored pointer is already at/after this message.
+    if (existing.lastReadAt && existing.lastReadAt >= messageCreatedAt) {
+      return existing;
+    }
+
+    return this.prisma.roomMember.update({
+      where: { roomId_userId: { roomId, userId } },
+      data: {
+        lastReadMessageId: messageId,
+        lastReadAt: messageCreatedAt,
+      },
+    });
+  }
+
   async isBanned(roomId: string, userId: string): Promise<boolean> {
     const member = await this.prisma.roomMember.findFirst({
       where: { roomId, userId, status: "banned" },

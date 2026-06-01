@@ -1,7 +1,7 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-05-28**.
+> Update this whenever you ship or change a feature. Last reviewed: **2026-06-01**.
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**).
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening).
 
@@ -521,3 +521,98 @@ Closed out the six partially-implemented direct-message features. Work spans **c
 - Delivered batch continuation beyond 200.
 - PM push-notification producer (so mute actually suppresses pushes) + presence durability in user-service if a durable last-seen column is needed (would use a `presence.changed` event + user-service consumer — Option B).
 - Pre-existing amqplib type drift in chat-service `src/events/*`.
+
+---
+
+## 2026-06-01 — chat message limits, stickers, edit window, shared media, conversation API
+
+Closed out five chat-service capabilities spanning private/group/community messaging. Shipped via the `aimess-architecture` Agent Team Mode (PM → Pro Coders → DRY + Contract reviewers + Quality Tester → fix loop). No real-time transport change: chat-service publishes `{event,data}` to Redis (`conv:<roomId>` / `community:<communityId>`); the gateway re-emits over Socket.IO.
+
+### Message validation limits (send + edit, all three contexts)
+
+- Enforced in the send validators (Zod `superRefine` via `enforceMediaLimits`) AND defensively at the service layer (`assertAttachmentsValid`), on **both** send and edit, across private/group/community:
+  - text ≤ **4,000** chars (was 10,000)
+  - photos ≤ **10** per message
+  - video ≤ **100 MB** and `durationMs` ≤ **180000** (3 min)
+  - voice `durationMs` ≤ **300000** (5 min)
+- Per-type caps centralized in `apps/chat-service/src/constants/media-limits.ts` (single source of truth — `MEDIA_LIMITS` table + the two enforcement functions). Byte caps: video 100 MB via `CHAT_VIDEO_MAX_BYTES`; images/voice/GIF/document/sticker 50 MB via `CHAT_UPLOAD_MAX_BYTES` (the generic cap). Stable error codes: `CHAT_IMAGE_COUNT_EXCEEDED`, `CHAT_VIDEO_TOO_LARGE`, `CHAT_VIDEO_TOO_LONG`, `CHAT_VOICE_TOO_LONG`, `CHAT_FILE_TOO_LARGE`.
+- New env vars (`config/env.ts`, coerced+defaulted): `CHAT_TEXT_MAX_CHARS` (4000), `CHAT_VIDEO_MAX_BYTES` (104857600). `CHAT_UPLOAD_MAX_BYTES` (52428800) already existed.
+
+### STICKER message type
+
+- Added `STICKER` to `MessageType` (`"STICKER"`) and `CommunityMessageType` (`"sticker"`) in `src/types/enums.ts`.
+- `content.sticker` shape via `stickerSchema` in `api/validators/attachment.validator.ts`: `{ objectKey? | url? (one required, `.refine`), packId, stickerId }`. **Client-supplied — there is no server-side sticker-pack system** (no pack catalog, no validation that packId/stickerId exist). Stickers carry no `files[]` array, so `assertAttachmentsValid`/`enforceMediaLimits` treat STICKER as a no-op.
+
+### 15-minute edit window
+
+- Edits rejected when `now - createdAt > 15 min` (`CHAT_EDIT_WINDOW_MS` in `media-limits.ts`) → **`GoneError("CHAT_EDIT_WINDOW_EXPIRED")`** (HTTP 410), enforced in all three message services (`private-message.service.ts`, `group-message.service.ts`, `community-message.service.ts`).
+- Net-new edit endpoints: group `PATCH /api/chat/groups/messages/:messageId` and community `PATCH /api/chat/community/messages/:messageId` (the latter requires `communityId` in the body). Private edit already existed (see "13 — Edit message" above). Community edit broadcasts on the `community:<communityId>` Redis channel with a `community:message:edited` event.
+
+### Shared media/docs endpoints (cursor-paginated, type-filtered)
+
+- `GET /api/chat/private/rooms/:roomId/media`, `GET /api/chat/groups/:roomId/media`, `GET /api/chat/community/rooms/:roomId/media`. Query (`mediaListQuerySchema`): `type` (IMAGE|VIDEO|GIF|VOICE|DOCUMENT|STICKER), `cursor`, `limit`.
+- Community stores its media type differently (IMAGE/VOICE/STICKER lower-cased; VIDEO/GIF/DOCUMENT collapsed to `"custom"`) — the incoming filter is mapped via `mapCommunityMediaType` in `media-limits.ts`; unknown types return an empty result rather than broadening the query.
+- New composite index `[roomId, messageType, createdAt(desc)]` added on `PrivateMessage` / `GroupMessage` / `GeneralRoomMessage` to back the filtered listing (see migration note below).
+
+### Conversation list + mark-as-read (offset-paginated)
+
+- `GET /api/chat/groups/:roomId/conversation`, `GET /api/chat/community/rooms/:roomId/conversation`. Query (`conversationQuerySchema`): `pageNumber` (1-based, default 1), `limit` (default 30, max 100), `timestamp` (epoch ms, default now).
+- Returns messages with `createdAt < timestamp`, newest-first, offset `(pageNumber-1)*limit`, **excluding deleted-for-all and the caller's deleted-for-self** — filtered **at the DB level** via raw Mongo (`$ne`-on-array against the `deletedForUserIds` / `deletedBy` Json arrays) rather than the old over-fetch-and-slice approach.
+- **Side effect:** advances the caller's read pointer (`lastReadAt` / `lastReadMessageId`), **forward-only**, and recomputes remaining unread (group `unreadCount` is recomputed, not blind-zeroed). New fields added to the community `RoomMember`: `lastReadMessageId`, `lastReadAt` (group `GroupMember` already had them).
+
+---
+
+## 2026-06-01 — notifications-service: community + friend notifications and event-driven push
+
+Built the notifications-service from a stub into a working push/mail **transport + orchestration** layer, plus the cross-service contracts it needs. Shipped via the Agent Team Mode.
+
+### Architecture decision (important)
+
+- The notification **inbox** is owned by **chat-service** (its existing `Notification` model). **notifications-service does not own the inbox and never writes another service's DB** (one-service-one-DB). It persists inbox rows by calling a **new chat-service gRPC `CreateNotification`** RPC, and otherwise only sends push/mail.
+
+### Device-token store (owned by notifications-service)
+
+- **Prisma 6 MongoDB connector** (NOT Mongoose), in its own `aimess_notifications` DB. Model `DeviceToken { userId, token @unique, platform, deviceId?, lastSeenAt, createdAt, @@index([userId]) }` (`apps/notifications-service/prisma/schema.prisma`). `token` is globally unique so re-registering the same token from another user moves ownership.
+  - **NB:** the service pins `prisma`/`@prisma/client` `^6.9.0`, consistent with the project-wide rule that **Prisma 7 dropped MongoDB support** (the same reason community-/chat-service stay on Prisma 6). (The internal task summary called this "Prisma 7" — that was inaccurate; the code is Prisma 6.)
+- REST (JWT-auth): `POST /v1/devices` (upsert `{token, platform, deviceId}`), `DELETE /v1/devices/:token` (unregister). Dead tokens are auto-pruned on FCM invalid-token errors.
+
+### Community + friend notifications (event-driven)
+
+- New consumer on **`community.queue`** maps community events → recipients: `JOIN_REQUESTED`→admins/mods, `MEMBER_ADDED`→target, `ADMIN_TRANSFERRED`→new admin, `KICKED`/`BANNED`/`ROLE_CHANGED`→affected, `INVITE_SENT`→invitee, `INVITE_ACCEPTED`→inviter, `REPORT_CREATED`→admins/mods, `REPORT_ACTIONED`→reporter, `DELETED`→all members. Honors the `communityEnabled` setting. (This is the consumer the community-service event publishers — see §0 — were waiting on.)
+- New consumer on **`friendship.queue`** → friend push under the `friendRequestEnabled` category. (Also previously unconsumed — see §4.)
+
+### Settings lookup + push pipeline
+
+- New user-service gRPC **`GetNotificationSettings`**, opossum-wrapped, Redis-cached (key `notif:settings:<userId>`, TTL 300 s, allow-on-open). Cache is busted by a new **`user.settings_updated`** event (consumer on `user.settings_updated.queue`).
+- Push pipeline: check per-category setting + quiet hours → look up device tokens → `sendPush` per token → prune dead tokens → write the inbox row via the chat `CreateNotification` gRPC.
+- **gRPC client host = `127.0.0.1`** (e.g. `USER_SERVICE_GRPC_URL` default `127.0.0.1:4002`, `CHAT_SERVICE_GRPC_URL` `127.0.0.1:4004`) — **not `0.0.0.0`**, which is a bind-only address and fails as a _connect_ target on Windows. (The server still _binds_ `0.0.0.0:<port>`, which is correct.)
+
+### Cross-service contracts
+
+- `packages/grpc-contracts/proto/user.proto`: `+GetNotificationSettings`. `notification.proto`: `+CreateNotification` (served by chat-service).
+- `packages/shared-types`: community events enriched with recipient rosters (`moderatorRecipientIds`, `memberIds`, `inviterId`); user events `+SETTINGS_UPDATED`.
+
+---
+
+## Known gaps / TODOs (2026-06-01 — chat limits/media/conversation + notifications)
+
+- [ ] **`message.sent` (chat-service) and `call.*` (call-service) publishers NOT built** → push-on-new-message and push-on-call are **deferred** until those publishers exist. Only `community.*` and `friend.*` push are live today.
+- [ ] **Pending `prisma db push` (needs a live Mongo):** chat-service (group/community `editedAt`/`editHistory`, the new media composite indexes, community `RoomMember.lastReadAt`/`lastReadMessageId`) and notifications-service (`device_tokens` unique index). Run `pnpm db:push && pnpm db:generate` in each app on every environment.
+- [ ] **Conversation API raw-Mongo queries** verified by construction (field names, `$oid` for the community ObjectId `roomId`) but **not yet live-DB smoke-tested**.
+- [ ] **Pre-existing amqplib type errors** in `apps/chat-service/src/events/` (`friendship.consumer.ts`, `index.ts`) — unrelated to this work; they block a full chat-service `tsc` build. Spawned as a separate task (same drift noted in §"2026-05-29" above).
+- [ ] **No automated tests** in chat-/notifications-service (test scripts are placeholders) — sign-off was multi-reviewer + typecheck + lint.
+
+### Resolved by this session (see §4 entries above)
+
+- [x] **Friendship events have a consumer** — notifications-service `friendship.queue` consumer (was "NO consumer" in §4).
+- [x] **`community.queue` has a consumer** — notifications-service community consumer (was the §0 "Known gap").
+- [x] **FCM trigger-on-event for community + friend** — push now fires for those event families (the §4 "delivery does not" item is now partial: community/friend live, message/call deferred). Device-token lifecycle (register/unregister, dead-token pruning) is also addressed by the new `DeviceToken` store.
+
+---
+
+## Verification status (2026-06-01 — chat limits/media/conversation + notifications)
+
+- Executed via the **aimess-architecture Agent Team Mode** (PM → Pro Coders → DRY + Contract reviewers + Quality Tester → fix loop). Reviewers + Quality Tester ran before sign-off.
+- **Notable fixes from review:** community edit Redis channel corrected (`conv:*` → `community:*`); community media type-filter mapping fixed; conversation pagination corrected to a **DB-level deletion filter + boundary-aware count** (replacing a broken over-fetch + in-memory-slice); group `unreadCount` is **recomputed** instead of unconditionally zeroed.
+- **Final state:** `typecheck` + `lint` clean across chat / notifications / user / community — only the **6 pre-existing amqplib errors** in chat-service `src/events/*` remain.
+- Runtime / integration — **NOT done** (no test runner; verified by typecheck + lint + multi-agent review/tester code-reading). Conversation raw-Mongo queries not yet live-DB smoke-tested.

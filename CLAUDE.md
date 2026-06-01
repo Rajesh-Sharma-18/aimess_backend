@@ -4,6 +4,8 @@ Read **`docs/ARCHITECTURE.md`** for the full platform design (all 9 microservice
 
 Read **`docs/IMPLEMENTATION-NOTES.md`** for the current implementation status of auth-service & user-service, key decisions/conventions (session revocation model, DLQ naming, cache-first auth lookup, username cooldown), known gaps/TODOs, and the latest review record. **Keep it updated when you ship or change a feature.**
 
+Read **`docs/SOCKET_EVENTS.md`** for the real-time contract — Socket.IO namespaces (`/chat`, `/community`, `/notify`), every client→server and server→client event with payloads, rooms, and end-to-end scenarios. **Keep it in sync with `apps/api-gateway/src/sockets/` when events change.**
+
 ## Quick facts
 
 - **Monorepo:** pnpm workspaces + Turborepo. Use **pnpm only**.

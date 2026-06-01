@@ -336,6 +336,34 @@ export const communityRepository = {
    * Members of a community filtered by status — offset/page pagination on id.
    * Returns the page rows plus the total matching count.
    */
+  /**
+   * Active member userIds split by role — used to build notification recipient
+   * rosters (admins/moderators for moderation events) at publish time.
+   */
+  async findActiveMemberIdsByRoles(
+    communityId: string,
+    roles: CommunityMemberRole[]
+  ): Promise<string[]> {
+    const rows = await prisma.communityMember.findMany({
+      where: {
+        communityId,
+        status: CommunityMemberStatus.ACTIVE,
+        role: { in: roles },
+      },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
+  },
+
+  /** All ACTIVE member userIds — used to notify everyone on community deletion. */
+  async findActiveMemberIds(communityId: string): Promise<string[]> {
+    const rows = await prisma.communityMember.findMany({
+      where: { communityId, status: CommunityMemberStatus.ACTIVE },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
+  },
+
   async listMembers(params: {
     communityId: string;
     status: CommunityMemberStatus;

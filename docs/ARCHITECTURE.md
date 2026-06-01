@@ -118,4 +118,6 @@ Auth and user services use the first two today; the others are reserved for upco
 2. **Shared code in `packages/`** — do not copy-paste logger or error helpers into each app.
 3. **Explicit configuration** — each app loads its own `.env`; root `.env` is primarily for Docker Compose variable substitution.
 
+For the real-time contract (Socket.IO namespaces, events, payloads, and scenarios), see **[Socket Events](./SOCKET_EVENTS.md)**.
+
 For commands, env file layout, and migrations, continue to **[Development](./DEVELOPMENT.md)**.

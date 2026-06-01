@@ -1,5 +1,16 @@
-import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ForbiddenError,
+  GoneError,
+  NotFoundError,
+} from "@aimess/errors";
 import { logger } from "@aimess/logger";
+
+import {
+  CHAT_EDIT_WINDOW_MS,
+  CHAT_TEXT_MAX_CHARS,
+  assertAttachmentsValid,
+} from "../constants/media-limits.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -35,6 +46,12 @@ export class PrivateMessageService {
     parentMessageId?: string | null;
     clientMessageId?: string | null;
   }): Promise<PrivateMessage> {
+    // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
+    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
+      throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    }
+    assertAttachmentsValid(params.messageType, params.content?.files);
+
     const friends = await this.userServiceClient.checkFriendship(
       params.senderId,
       params.receiverId
@@ -149,6 +166,30 @@ export class PrivateMessageService {
     );
   }
 
+  async listMedia(params: {
+    roomId: string;
+    userId: string;
+    type?: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<PrivateMessage[]> {
+    // Enforce participation first.
+    const room = await this.roomRepo.findByRoomId(params.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    if (!room.participants?.includes(params.userId))
+      throw new ForbiddenError("CHAT_NOT_PARTICIPANT");
+
+    return this.messageRepo.listMedia({
+      roomId: room.roomId,
+      userId: params.userId,
+      type: params.type,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+  }
+
   async markRead(params: {
     roomId: string;
     userId: string;
@@ -208,6 +249,10 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
     if (message.messageType !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
+    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
+      throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
+      throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
     return this.messageRepo.editMessage(params.messageId, params.content);
   }
 

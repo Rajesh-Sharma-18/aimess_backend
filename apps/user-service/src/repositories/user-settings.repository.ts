@@ -98,7 +98,45 @@ const notificationSelect = {
   updatedAt: true,
 } as const;
 
+export type NotificationSettingsRow = {
+  chatEnabled: boolean;
+  callEnabled: boolean;
+  friendRequestEnabled: boolean;
+  systemEnabled: boolean;
+  communityEnabled: boolean;
+  liveStreamEnabled: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursStart: string | null;
+  quietHoursEnd: string | null;
+  quietHoursDays: number[];
+};
+
 export const userSettingsRepository = {
+  /**
+   * Notification preferences only — consumed by the GetNotificationSettings
+   * gRPC handler. Returns null when the row does not exist yet (callers default
+   * to "all enabled").
+   */
+  findNotificationSettings(
+    userId: string
+  ): Promise<NotificationSettingsRow | null> {
+    return prisma.notificationSettings.findUnique({
+      where: { userId },
+      select: {
+        chatEnabled: true,
+        callEnabled: true,
+        friendRequestEnabled: true,
+        systemEnabled: true,
+        communityEnabled: true,
+        liveStreamEnabled: true,
+        quietHoursEnabled: true,
+        quietHoursStart: true,
+        quietHoursEnd: true,
+        quietHoursDays: true,
+      },
+    });
+  },
+
   findSettingsBundle(userId: string): Promise<SettingsBundle | null> {
     return prisma.userProfile.findUnique({
       where: { userId },

@@ -3,6 +3,10 @@
   GeneralRoomMessage,
   Prisma,
 } from "../generated/prisma/index.js";
+import {
+  COMMUNITY_MEDIA_MESSAGE_TYPES,
+  mapCommunityMediaType,
+} from "../constants/media-limits.js";
 
 export class GeneralRoomMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -77,6 +81,113 @@ export class GeneralRoomMessageRepository {
         return !deletedBy.includes(userId);
       })
       .slice(0, limit);
+  }
+
+  /**
+   * Mongo `$match` for a community conversation page: not deleted-for-all, older
+   * than `beforeMs`, and not deleted-for-me by this user. `deletedBy` is a Json
+   * array (not a Prisma scalar list), so the per-user exclusion can't use the typed
+   * `has` filter — Mongo's `$ne` on the array matches docs where no element equals
+   * userId, i.e. "not deleted for this user". Building the filter at the DB level
+   * (vs. fetch-extra + in-memory slice) keeps skip/take boundaries correct.
+   *
+   * roomId is an ObjectId column here, so it must be matched as `{ $oid }`.
+   */
+  private conversationMatch(params: {
+    roomId: string;
+    userId: string;
+    beforeMs: number;
+  }): Prisma.InputJsonObject {
+    return {
+      roomId: { $oid: params.roomId },
+      deletedForAll: false,
+      createdAt: { $lt: { $date: new Date(params.beforeMs).toISOString() } },
+      deletedBy: { $ne: params.userId },
+    };
+  }
+
+  /**
+   * Offset-paginated conversation page for a community room: messages with
+   * `createdAt < beforeMs`, newest first, skipping `skip` and taking `take`.
+   * Excludes deleted-for-all AND messages this user deleted-for-me. The deletion
+   * filter is applied at the DB level via a raw Mongo match (see
+   * `conversationMatch`), so the page is exactly `take` rows with correct offsets.
+   */
+  async listConversationMessages(params: {
+    roomId: string;
+    userId: string;
+    beforeMs: number;
+    skip: number;
+    take: number;
+  }): Promise<GeneralRoomMessage[]> {
+    const raw = (await this.prisma.generalRoomMessage.findRaw({
+      filter: this.conversationMatch(params),
+      options: {
+        sort: { createdAt: -1 },
+        skip: params.skip,
+        limit: params.take,
+      },
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+
+    const ids = raw
+      .map((doc) => (typeof doc._id === "string" ? doc._id : doc._id?.$oid))
+      .filter((id): id is string => Boolean(id));
+    if (!ids.length) return [];
+
+    // findRaw preserves order; re-fetch typed docs and restore that order.
+    const docs = await this.prisma.generalRoomMessage.findMany({
+      where: { id: { in: ids } },
+    });
+    const byId = new Map(docs.map((d) => [d.id, d]));
+    return ids
+      .map((id) => byId.get(id))
+      .filter((d): d is GeneralRoomMessage => Boolean(d));
+  }
+
+  /**
+   * Count for the conversation page — SAME filter as `listConversationMessages`
+   * (createdAt < beforeMs, not deleted-for-all, not deleted-for-me), so
+   * total/hasMore line up with the returned page. Uses `aggregateRaw` because
+   * the per-user `deletedBy` Json array can't be filtered via the typed `count` API.
+   */
+  async countConversation(params: {
+    roomId: string;
+    userId: string;
+    beforeMs: number;
+  }): Promise<number> {
+    const result = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        { $match: this.conversationMatch(params) },
+        { $count: "total" },
+      ],
+    })) as unknown as Array<{ total: number }>;
+    return result[0]?.total ?? 0;
+  }
+
+  /**
+   * Count of messages in the room still newer than `afterDate` that are visible
+   * to this user (not deleted-for-all, not deleted-for-me). Used to recompute
+   * remaining unread after advancing a read pointer to a non-newest page.
+   */
+  async countUnreadAfter(params: {
+    roomId: string;
+    userId: string;
+    afterDate: Date;
+  }): Promise<number> {
+    const result = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $oid: params.roomId },
+            deletedForAll: false,
+            createdAt: { $gt: { $date: params.afterDate.toISOString() } },
+            deletedBy: { $ne: params.userId },
+          },
+        },
+        { $count: "total" },
+      ],
+    })) as unknown as Array<{ total: number }>;
+    return result[0]?.total ?? 0;
   }
 
   async searchByText(
@@ -154,6 +265,82 @@ export class GeneralRoomMessageRepository {
       where: { id: messageId },
       data: { deletedForAll: true },
     });
+  }
+
+  async editMessage(
+    messageId: string,
+    text: string
+  ): Promise<GeneralRoomMessage> {
+    // `message` is a top-level String field here (community schema), so we edit
+    // it directly while pushing the prior text into editHistory.
+    const existing = await this.prisma.generalRoomMessage.findUnique({
+      where: { id: messageId },
+    });
+    const now = new Date();
+    const history = Array.isArray(existing?.editHistory)
+      ? (existing!.editHistory as unknown[])
+      : [];
+    const updatedHistory = [
+      ...history,
+      { text: existing?.message ?? "", editedAt: now.toISOString() },
+    ];
+
+    return this.prisma.generalRoomMessage.update({
+      where: { id: messageId },
+      data: {
+        message: text,
+        editedAt: now,
+        editHistory: updatedHistory as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  /**
+   * List media/document messages in a community room, newest first, cursor on
+   * createdAt. Community types are lowercase, so the caller's upper-case `type`
+   * filter is mapped down. Excludes deleted-for-all; per-user deletes filtered
+   * in memory.
+   */
+  async listMedia(params: {
+    roomId: string;
+    userId: string;
+    type?: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<GeneralRoomMessage[]> {
+    // Community enum is lowercase (e.g. "image"); GIF/VIDEO/DOCUMENT are carried
+    // as "custom" today. Map the incoming upper-case filter to its community
+    // storage value (IMAGE→image, VIDEO/GIF/DOCUMENT→custom, …). An unknown
+    // mapped value would never match any stored doc, so we don't fall back to the
+    // full set — that's the bug we're fixing (the filter must actually filter).
+    const mediaTypes = [...COMMUNITY_MEDIA_MESSAGE_TYPES];
+    const mappedType = params.type
+      ? mapCommunityMediaType(params.type)
+      : undefined;
+
+    const messages = await this.prisma.generalRoomMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        deletedForAll: false,
+        messageType: params.type
+          ? // A requested type with no mapping yields no media (empty result)
+            // instead of silently returning everything.
+            (mappedType ?? "__none__")
+          : { in: mediaTypes },
+        ...(params.cursor
+          ? { createdAt: { lt: new Date(params.cursor) } }
+          : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: params.limit + 10,
+    });
+
+    return messages
+      .filter((msg) => {
+        const deletedBy = (msg.deletedBy ?? []) as string[];
+        return !deletedBy.includes(params.userId);
+      })
+      .slice(0, params.limit);
   }
 
   async addReport(

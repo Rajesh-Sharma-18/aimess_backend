@@ -1323,6 +1323,8 @@ export const communityService = {
         eventAt: new Date().toISOString(),
         actorId: callerId,
         reason: "admin_left_no_successor",
+        // No successor exists — the leaving admin is the only active member.
+        memberIds: [callerId],
       });
 
       return toMemberData(updated);
@@ -1516,6 +1518,11 @@ export const communityService = {
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
 
+    // Capture the active roster BEFORE eviction so the DELETED event can
+    // notify everyone who was a member at delete time.
+    const memberIds =
+      await communityRepository.findActiveMemberIds(communityId);
+
     // No $transaction (standalone Mongo). ORDER MATTERS: soft-delete first so
     // any concurrent reader gets COMMUNITY_NOT_FOUND while we evict members.
     await communityRepository.updateCommunity(communityId, {
@@ -1541,6 +1548,7 @@ export const communityService = {
       eventAt: new Date().toISOString(),
       actorId: callerId,
       reason: "explicit_delete",
+      memberIds,
     });
   },
 
@@ -1639,12 +1647,18 @@ export const communityService = {
     );
 
     if (isNewOrRecycled) {
+      const moderatorRecipientIds =
+        await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]);
       publishCommunityJoinRequestedSafe({
         communityId,
         eventAt: new Date().toISOString(),
         userId: callerId,
         requestId: row.id,
         message,
+        moderatorRecipientIds,
       });
     }
 
@@ -2226,6 +2240,7 @@ export const communityService = {
       eventAt: new Date().toISOString(),
       userId: callerId,
       inviteId,
+      inviterId: invite.inviterId,
     });
 
     const row = await communityRepository.findMemberByUserId(
@@ -2334,6 +2349,11 @@ export const communityService = {
       `Community report created: community=${communityId} reporter=${callerId} target=${targetUserId ?? "(community)"} report=${row.id}`
     );
 
+    const reportModeratorRecipientIds =
+      await communityRepository.findActiveMemberIdsByRoles(communityId, [
+        CommunityMemberRole.ADMIN,
+        CommunityMemberRole.MODERATOR,
+      ]);
     publishCommunityReportCreatedSafe({
       communityId,
       eventAt: new Date().toISOString(),
@@ -2341,6 +2361,7 @@ export const communityService = {
       reporterId: callerId,
       targetUserId,
       reason: input.reason,
+      moderatorRecipientIds: reportModeratorRecipientIds,
     });
 
     return toReportData(row);

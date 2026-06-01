@@ -222,6 +222,32 @@ export const userProfileService = {
           continue;
         }
 
+        // Stale account collision: the new auth user legitimately owns this
+        // account (auth_users.account is globally unique among ALL auth users,
+        // including soft-deleted ones), so any existing profile holding it must
+        // belong to a now-deleted auth user. We intentionally do NOT filter by
+        // deletedAt — orphaned profiles can still be status=ACTIVE when the auth
+        // user was hard-deleted without a user.deleted event — so we free the
+        // account regardless of status, then retry the insert (now collision-free).
+        if (isUniqueViolationOnField(error, "account")) {
+          const { count } = await userProfileRepository.clearAccountValue(
+            data.account
+          );
+          if (count === 0) {
+            // Nothing was freed yet a P2002 on account fired: an anomaly worth
+            // surfacing (e.g. the constraint moved). Let it retry/DLQ rather
+            // than loop silently.
+            logger.error(
+              `Account "${data.account}" collided but no orphaned profile was freed (count=0); userId=${data.userId}`
+            );
+          } else {
+            logger.warn(
+              `Reclaimed stale account "${data.account}" from ${count} orphaned profile(s); retrying (attempt ${attempt}/${USERNAME_CLAIM_MAX_ATTEMPTS})`
+            );
+          }
+          continue;
+        }
+
         // Unknown unique constraint — surface it for retry/DLQ handling.
         throw error;
       }

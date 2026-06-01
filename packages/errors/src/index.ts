@@ -1,11 +1,11 @@
-export * from "./AppError";
-export * from "./is-app-error";
+export { AppError } from "./AppError";
+export { isAppError } from "./is-app-error";
 
-export * from "./BadRequestError";
-export * from "./UnauthorizedError";
-export * from "./ForbiddenError";
-export * from "./NotFoundError";
-export * from "./ConflictError";
-export * from "./GoneError";
-export * from "./TooManyRequestsError";
-export * from "./UnsupportedMediaTypeError";
+export { BadRequestError } from "./BadRequestError";
+export { UnauthorizedError } from "./UnauthorizedError";
+export { ForbiddenError } from "./ForbiddenError";
+export { NotFoundError } from "./NotFoundError";
+export { ConflictError } from "./ConflictError";
+export { GoneError } from "./GoneError";
+export { TooManyRequestsError } from "./TooManyRequestsError";
+export { UnsupportedMediaTypeError } from "./UnsupportedMediaTypeError";
