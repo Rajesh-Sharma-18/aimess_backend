@@ -1,4 +1,4 @@
-import type { Channel, ConsumeMessage, Connection } from "amqplib";
+import type { Channel, ConsumeMessage, ChannelModel } from "amqplib";
 import { logger } from "@aimess/logger";
 import { FriendshipRepository } from "../repositories/friendship.repository.js";
 
@@ -23,7 +23,7 @@ export class FriendshipEventConsumer {
   private channel: Channel | null = null;
   private friendshipRepo = new FriendshipRepository();
 
-  async start(connection: Connection): Promise<void> {
+  async start(connection: ChannelModel): Promise<void> {
     try {
       this.channel = await connection.createChannel();
 
