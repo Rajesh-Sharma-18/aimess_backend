@@ -1270,6 +1270,375 @@ export const communityPaths = {
       },
     },
   },
+  "/communities/{id}/muted-members": {
+    get: {
+      tags: ["Communities"],
+      summary: "List moderation-muted members",
+      description:
+        "Moderator or admin only. Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. Fully-expired mutes are excluded (lazy expiration — a row whose `mutedUntil` is in the past is treated as not muted).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+          description: "1-based page number.",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Muted members",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityMutedMembersResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Not a community moderator/admin (caller lacks MODERATOR rank)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/members/{userId}/mute": {
+    post: {
+      tags: ["Communities"],
+      summary: "Mute a member",
+      description:
+        "Moderator or admin only. Upserts a moderation mute on an ACTIVE member. `durationMinutes` null/omitted → mute indefinitely; positive integer → mute for N minutes. You cannot mute yourself or the community admin, and you must outrank the target (a moderator cannot mute another moderator). Recorded in the community moderation audit log (`MEMBER_MUTED`).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          description: "User ID of the target member.",
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/SetMemberMuteRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Member muted",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityMutedMemberData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description:
+            "Validation failed, cannot modify self, or cannot modify the community admin",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Not a community moderator/admin, or does not outrank the target",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community or target member not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    delete: {
+      tags: ["Communities"],
+      summary: "Unmute a member",
+      description:
+        "Moderator or admin only. Removes an active moderation mute. Fails when the member is not currently muted (a fully-expired mute is treated as not muted). Recorded in the community moderation audit log (`MEMBER_UNMUTED`).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          description: "User ID of the target member.",
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Member unmuted (data is null)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Not a community moderator/admin (caller lacks MODERATOR rank)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found, or the member is not muted",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/members/{userId}/warn": {
+    post: {
+      tags: ["Communities"],
+      summary: "Warn a member",
+      description:
+        "Moderator or admin only. Appends a warning (with a required note) to an ACTIVE member. Warnings are append-only — a member may have multiple. You cannot warn yourself or the community admin, and you must outrank the target. Recorded in the community moderation audit log (`MEMBER_WARNED`).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          description: "User ID of the target member.",
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/WarnMemberRequest" },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Member warned",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityMemberWarningData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description:
+            "Validation failed, cannot modify self, or cannot modify the community admin",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Not a community moderator/admin, or does not outrank the target",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community or target member not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/members/{userId}/warnings": {
+    get: {
+      tags: ["Communities"],
+      summary: "List a member's warnings",
+      description:
+        "Moderator or admin only. Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`, newest first.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          description: "User ID of the target member.",
+          schema: { type: "string", format: "uuid" },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+          description: "1-based page number.",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Member warnings",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityMemberWarningsResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Not a community moderator/admin (caller lacks MODERATOR rank)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/communities/join-requests/mine": {
     get: {
       tags: ["Communities"],
@@ -2520,12 +2889,12 @@ export const communityPaths = {
       },
     },
   },
-  "/communities/{id}/reports/{reportId}": {
-    delete: {
+  "/communities/{id}/reports/{reportId}/withdraw": {
+    post: {
       tags: ["Communities"],
       summary: "Withdraw your own report",
       description:
-        "Reporter-only. Allowed only while the report is OPEN. Terminal status WITHDRAWN with resolution `\"withdrawn_by_reporter\"`. Not audited (caller's intent didn't materialize).",
+        "Reporter-only (the caller must be the original reporter). Allowed only while the report is OPEN. Terminal status WITHDRAWN with resolution `\"withdrawn_by_reporter\"`. Not audited (caller's intent didn't materialize).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -2546,7 +2915,7 @@ export const communityPaths = {
       ],
       responses: {
         "200": {
-          description: "Report withdrawn",
+          description: "Report withdrawn (status WITHDRAWN)",
           content: {
             "application/json": {
               schema: {
@@ -2582,6 +2951,59 @@ export const communityPaths = {
         },
         "404": {
           description: "Report not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/reports/{reportId}": {
+    delete: {
+      tags: ["Communities"],
+      summary: "Hard-delete a report",
+      description:
+        "Moderator or admin only. Permanently deletes the report row regardless of its current status. This is a destructive moderation action (distinct from the reporter self-withdraw at POST /communities/{id}/reports/{reportId}/withdraw) and is recorded in the community moderation audit log (`COMMUNITY_REPORT_DELETED`).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+        {
+          name: "reportId",
+          in: "path",
+          required: true,
+          description: "Report ID from GET /communities/{id}/reports.",
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Report deleted (data is null)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Caller is not a moderator or admin of the community",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community or report not found",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -2731,6 +3153,140 @@ export const communityPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Not an ACTIVE member",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+
+  // --- Notification preferences --------------------------------------------
+  "/communities/{id}/notification-preferences": {
+    get: {
+      tags: ["Communities"],
+      summary: "Get the caller's notification preferences",
+      description:
+        "ACTIVE-member only. Returns the caller's per-community notification toggles. When no preference row exists, defaults are returned (all toggles true; `createdAt`/`updatedAt` null).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Notification preferences",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityNotificationPreferenceData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Not an ACTIVE member",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ["Communities"],
+      summary: "Set or update the caller's notification preferences",
+      description:
+        "Upsert. ACTIVE-member only. At least one of `streamEnabled`, `chatEnabled`, `announcementEnabled` must be present; omitted fields are left unchanged.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              $ref: "#/components/schemas/SetNotificationPrefsRequest",
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Notification preferences updated",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityNotificationPreferenceData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Validation failed (e.g. no preference field provided)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
             },
           },
         },

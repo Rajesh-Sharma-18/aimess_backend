@@ -30,6 +30,13 @@ const envSchema = z.object({
   API_PUBLIC_URL: z.string().url().optional(),
   /** Comma-separated Swagger server URLs (e.g. localhost + LAN IP). */
   SWAGGER_SERVER_URLS: z.string().optional(),
+
+  SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15),
+  SENSITIVE_AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
   /**
    * Number of reverse-proxy hops in front of the gateway (0 = direct clients).
    * Use 1 behind nginx/ALB. Do not use `true` — express-rate-limit rejects it.

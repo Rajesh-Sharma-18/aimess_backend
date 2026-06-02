@@ -9,7 +9,6 @@ import { logger } from "@aimess/logger";
 import { env } from "../config/env.js";
 import { isUserCacheReady, redis } from "../config/redis.js";
 import type { ProfileGender } from "../generated/prisma/client.js";
-import type { AuthAccountSummary } from "../types/auth-account.types.js";
 
 const KEY_PREFIX = "aimess:user";
 
@@ -45,10 +44,6 @@ function usernameAvailabilityKey(
 
 function profileRecordKey(userId: string): string {
   return `${KEY_PREFIX}:profile:record:${userId}`;
-}
-
-function accountSummaryKey(userId: string): string {
-  return `${KEY_PREFIX}:account:summary:${userId}`;
 }
 
 function usernameAvailabilityPattern(username: string): string {
@@ -160,27 +155,6 @@ export const userCache = {
   async invalidateProfile(userId: string): Promise<void> {
     await withCache(async () => {
       await cacheDel(redis, profileRecordKey(userId));
-    }, undefined);
-  },
-
-  async getAccountSummary(userId: string): Promise<AuthAccountSummary | null> {
-    return withCache(
-      () => cacheGetJson<AuthAccountSummary>(redis, accountSummaryKey(userId)),
-      null
-    );
-  },
-
-  async setAccountSummary(
-    userId: string,
-    summary: AuthAccountSummary
-  ): Promise<void> {
-    await withCache(async () => {
-      await cacheSetJson(
-        redis,
-        accountSummaryKey(userId),
-        summary,
-        env.REDIS_CACHE_ACCOUNT_TTL_SEC
-      );
     }, undefined);
   },
 

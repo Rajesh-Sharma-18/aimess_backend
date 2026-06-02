@@ -27,6 +27,7 @@ import type {
   ListMembersQuery,
   ListReportsQuery,
   ModerationReasonInput,
+  MutedMembersQuery,
   MyCommunitiesQuery,
   MyInvitesQuery,
   MyJoinRequestsQuery,
@@ -34,10 +35,14 @@ import type {
   NameAvailableQuery,
   ReportIdParams,
   ReportResolutionInput,
+  SetMemberMuteInput,
   SetMuteInput,
+  SetNotificationPrefsInput,
   TransferAdminInput,
   UpdateCommunityInput,
   UpdateMemberRoleInput,
+  WarningsQuery,
+  WarnMemberInput,
 } from "../validators/community.validator.js";
 
 export const createCommunity = asyncHandler(
@@ -293,6 +298,100 @@ export const unbanCommunityMember = asyncHandler(
       .status(HTTP_STATUS.OK)
       .json(
         new ApiResponse(member, t("COMMUNITY_MEMBER_UNBANNED", req.locale))
+      );
+  }
+);
+
+export const muteCommunityMember = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, userId } = req.params as CommunityMemberParams;
+    const { durationMinutes, reason } = req.body as SetMemberMuteInput;
+
+    const data = await communityService.muteMember(
+      id,
+      req.auth.userId,
+      userId,
+      durationMinutes ?? null,
+      reason
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(data, t("COMMUNITY_MEMBER_MUTED", req.locale)));
+  }
+);
+
+export const unmuteCommunityMember = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, userId } = req.params as CommunityMemberParams;
+
+    await communityService.unmuteMember(id, req.auth.userId, userId);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("COMMUNITY_MEMBER_UNMUTED", req.locale)));
+  }
+);
+
+export const listCommunityMutedMembers = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const { page, limit } = req.query as unknown as MutedMembersQuery;
+
+    const result = await communityService.listMutedMembers(
+      id,
+      req.auth.userId,
+      { page, limit }
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_MUTED_MEMBERS_FETCHED", req.locale)
+        )
+      );
+  }
+);
+
+export const warnCommunityMember = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, userId } = req.params as CommunityMemberParams;
+    const { note } = req.body as WarnMemberInput;
+
+    const data = await communityService.warnMember(
+      id,
+      req.auth.userId,
+      userId,
+      note
+    );
+
+    return res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(data, t("COMMUNITY_MEMBER_WARNED", req.locale)));
+  }
+);
+
+export const listCommunityMemberWarnings = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, userId } = req.params as CommunityMemberParams;
+    const { page, limit } = req.query as unknown as WarningsQuery;
+
+    const result = await communityService.listMemberWarnings(
+      id,
+      req.auth.userId,
+      userId,
+      { page, limit }
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_MEMBER_WARNINGS_FETCHED", req.locale)
+        )
       );
   }
 );
@@ -660,6 +759,16 @@ export const withdrawCommunityReport = asyncHandler(
   }
 );
 
+export const deleteCommunityReport = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id, reportId } = req.params as ReportIdParams;
+    await communityService.deleteReport(id, req.auth.userId, reportId);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("COMMUNITY_REPORT_DELETED", req.locale)));
+  }
+);
+
 // --- Mute settings ---------------------------------------------------------
 
 export const getMuteSetting = asyncHandler(
@@ -694,6 +803,46 @@ export const clearMuteSetting = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(null, t("COMMUNITY_MUTE_CLEARED", req.locale)));
+  }
+);
+
+// --- Notification preferences ----------------------------------------------
+
+export const getNotificationPreferences = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const data = await communityService.getNotificationPreferences(
+      id,
+      req.auth.userId
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          data,
+          t("COMMUNITY_NOTIFICATION_PREFERENCES_FETCHED", req.locale)
+        )
+      );
+  }
+);
+
+export const setNotificationPreferences = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const body = req.body as SetNotificationPrefsInput;
+    const data = await communityService.setNotificationPreferences(
+      id,
+      req.auth.userId,
+      body
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          data,
+          t("COMMUNITY_NOTIFICATION_PREFERENCES_UPDATED", req.locale)
+        )
+      );
   }
 );
 

@@ -50,10 +50,20 @@ export async function verifyGoogleIdToken(
 
   let payload;
   try {
-    const ticket = await getGoogleClient().verifyIdToken({
+    const verifyPromise = getGoogleClient().verifyIdToken({
       idToken,
       audience: audiences,
     });
+
+    // google-auth-library fetches Google's public JWKS on every cold call
+    // (cached after first fetch). If the server can't reach Google's servers
+    // the promise hangs indefinitely — race against a hard timeout so the
+    // caller gets a clean error instead of a request that never resolves.
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Google JWKS fetch timed out")), 10_000)
+    );
+
+    const ticket = await Promise.race([verifyPromise, timeoutPromise]);
     payload = ticket.getPayload();
   } catch {
     throw new UnauthorizedError("AUTH_SOCIAL_TOKEN_INVALID");

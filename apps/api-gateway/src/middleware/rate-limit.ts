@@ -45,8 +45,10 @@ export const rateLimiter = rateLimit({
  * Redis store (rate-limit-redis) when the gateway is horizontally scaled.
  */
 export const sensitiveAuthRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
+  // windowMs: 15 * 60 * 1000,
+  // max: 20,
+  windowMs: env.SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES, // 15 minutes
+  max: env.SENSITIVE_AUTH_RATE_LIMIT_MAX,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   validate: {
@@ -55,5 +57,24 @@ export const sensitiveAuthRateLimiter = rateLimit({
   message: {
     success: false,
     message: "Too many attempts, please try again later.",
+  },
+});
+
+/**
+ * Lenient per-IP limiter for forgot-password OTP endpoints.
+ * Tighter than the global limit but looser than sensitiveAuthRateLimiter
+ * since users legitimately retry during password-reset flows.
+ */
+export const forgotPasswordRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: {
+    trustProxy: env.TRUST_PROXY_HOPS > 0,
+  },
+  message: {
+    success: false,
+    message: "Too many password reset attempts, please try again later.",
   },
 });

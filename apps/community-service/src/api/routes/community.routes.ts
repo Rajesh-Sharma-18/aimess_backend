@@ -17,10 +17,12 @@ import {
   createCommunityReport,
   declineCommunityInvite,
   deleteCommunity,
+  deleteCommunityReport,
   discoverCommunities,
   dismissCommunityReport,
   getCommunity,
   getMuteSetting,
+  getNotificationPreferences,
   joinCommunity,
   kickCommunityMember,
   leaveCommunity,
@@ -30,20 +32,26 @@ import {
   listCommunityInviteLinks,
   listCommunityJoinRequests,
   listCommunityMembers,
+  listCommunityMemberWarnings,
+  listCommunityMutedMembers,
   listCommunityReports,
   listMyCommunities,
   listMyInvites,
   listMyJoinRequests,
   listMyReports,
+  muteCommunityMember,
   redeemCommunityInviteLink,
   rejectCommunityJoinRequest,
   reviewCommunityReport,
   revokeCommunityInviteLink,
   setMuteSetting,
+  setNotificationPreferences,
   transferCommunityAdmin,
   unbanCommunityMember,
+  unmuteCommunityMember,
   updateCommunity,
   updateCommunityMemberRole,
+  warnCommunityMember,
   withdrawCommunityReport,
 } from "../controllers/community.controller.js";
 import { createUploadUrl } from "../controllers/upload.controller.js";
@@ -74,6 +82,7 @@ import {
   listMembersQuerySchema,
   listReportsQuerySchema,
   moderationReasonSchema,
+  mutedMembersQuerySchema,
   myCommunitiesQuerySchema,
   myInvitesQuerySchema,
   myJoinRequestsQuerySchema,
@@ -81,10 +90,14 @@ import {
   nameAvailableQuerySchema,
   reportIdParamsSchema,
   reportResolutionSchema,
+  setMemberMuteSchema,
   setMuteSchema,
+  setNotificationPrefsSchema,
   transferAdminSchema,
   updateCommunitySchema,
   updateMemberRoleSchema,
+  warningsQuerySchema,
+  warnMemberSchema,
 } from "../validators/community.validator.js";
 import { uploadUrlSchema } from "../validators/upload.validator.js";
 
@@ -255,6 +268,42 @@ communityRoutes.delete(
   unbanCommunityMember
 );
 
+// --- Member moderation mute / warn (MODERATOR+) ---
+
+communityRoutes.get(
+  "/:id/muted-members",
+  validateParams(communityIdParamsSchema),
+  validateQuery(mutedMembersQuerySchema),
+  listCommunityMutedMembers
+);
+
+communityRoutes.post(
+  "/:id/members/:userId/mute",
+  validateParams(communityMemberParamsSchema),
+  validateBody(setMemberMuteSchema),
+  muteCommunityMember
+);
+
+communityRoutes.delete(
+  "/:id/members/:userId/mute",
+  validateParams(communityMemberParamsSchema),
+  unmuteCommunityMember
+);
+
+communityRoutes.post(
+  "/:id/members/:userId/warn",
+  validateParams(communityMemberParamsSchema),
+  validateBody(warnMemberSchema),
+  warnCommunityMember
+);
+
+communityRoutes.get(
+  "/:id/members/:userId/warnings",
+  validateParams(communityMemberParamsSchema),
+  validateQuery(warningsQuerySchema),
+  listCommunityMemberWarnings
+);
+
 // --- Join requests under a community ---
 
 communityRoutes.post(
@@ -342,10 +391,18 @@ communityRoutes.post(
   dismissCommunityReport
 );
 
+// Reporter self-withdraw (owner-only, OPEN-only).
+communityRoutes.post(
+  "/:id/reports/:reportId/withdraw",
+  validateParams(reportIdParamsSchema),
+  withdrawCommunityReport
+);
+
+// Moderator hard-delete of a report (MODERATOR+).
 communityRoutes.delete(
   "/:id/reports/:reportId",
   validateParams(reportIdParamsSchema),
-  withdrawCommunityReport
+  deleteCommunityReport
 );
 
 // --- Mute settings ---
@@ -367,6 +424,21 @@ communityRoutes.delete(
   "/:id/mute",
   validateParams(communityIdParamsSchema),
   clearMuteSetting
+);
+
+// --- Notification preferences (MEMBER+ self-service) ---
+
+communityRoutes.get(
+  "/:id/notification-preferences",
+  validateParams(communityIdParamsSchema),
+  getNotificationPreferences
+);
+
+communityRoutes.put(
+  "/:id/notification-preferences",
+  validateParams(communityIdParamsSchema),
+  validateBody(setNotificationPrefsSchema),
+  setNotificationPreferences
 );
 
 // --- Invite links (per-community) ---

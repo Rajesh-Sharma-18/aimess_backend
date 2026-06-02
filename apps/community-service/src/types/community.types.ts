@@ -107,6 +107,49 @@ export type CommunityMemberData = {
   /** Presigned GET URL for the member's avatar (private bucket); null if none. */
   snapshotAvatarUrl: string | null;
   snapshotAvatarUrlExpiresIn: number | null;
+  /** ISO-8601 timestamp of when the member was banned; null when not banned. */
+  bannedAt: string | null;
+  /** AuthUser.id of the admin who banned the member; null when not banned. */
+  bannedBy: string | null;
+  /** Operator-supplied ban reason; null when not banned or no reason given. */
+  banReason: string | null;
+};
+
+/** A single moderation-muted member row. Returned by mute / list-muted. */
+export type CommunityMutedMemberData = {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  avatarUrlExpiresIn: number | null;
+  /** AuthUser.id of the moderator/admin who muted the member. */
+  mutedBy: string;
+  reason: string | null;
+  /** ISO-8601 timestamp of when the mute was created. */
+  mutedAt: string;
+  /** ISO-8601; null = indefinite mute. */
+  mutedUntil: string | null;
+};
+
+/** A single moderation warning issued to a member. */
+export type CommunityMemberWarningData = {
+  warningId: string;
+  userId: string;
+  warnedBy: string;
+  note: string;
+  createdAt: string;
+};
+
+/** Per-community notification preference toggles for the calling member. */
+export type CommunityNotificationPreferenceData = {
+  communityId: string;
+  /** null = not muted or muted indefinitely. */
+  mutedUntil: string | null;
+  streamEnabled: boolean;
+  chatEnabled: boolean;
+  announcementEnabled: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
 };
 
 /** Reason a requested userId was skipped by the add-members endpoint. */
@@ -125,6 +168,9 @@ export type CommunityAuditAction =
   | "MEMBER_KICKED"
   | "MEMBER_BANNED"
   | "MEMBER_UNBANNED"
+  | "MEMBER_MUTED"
+  | "MEMBER_UNMUTED"
+  | "MEMBER_WARNED"
   | "ADMIN_TRANSFERRED"
   | "COMMUNITY_JOINED"
   | "COMMUNITY_DELETED"
@@ -136,6 +182,7 @@ export type CommunityAuditAction =
   | "COMMUNITY_REPORT_REVIEWED"
   | "COMMUNITY_REPORT_ACTIONED"
   | "COMMUNITY_REPORT_DISMISSED"
+  | "COMMUNITY_REPORT_DELETED"
   | "MEMBER_LEFT"
   | "INVITE_LINK_CREATED"
   | "INVITE_LINK_REVOKED"
