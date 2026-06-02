@@ -1340,31 +1340,32 @@ export const authPaths = {
   "/auth/account": {
     delete: {
       tags: ["Auth"],
-      summary: "Delete account by email (testing)",
+      summary: "Delete my account (soft delete)",
       description:
-        "Hard-deletes the account matching the given email and revokes all sessions. No authentication required. Same email can be re-registered immediately after.",
+        "Soft-deletes the authenticated user's account: marks it PENDING_DELETION with a 30-day grace window, revokes all sessions/refresh tokens, and emits a user.deleted event. Afterwards neither password login nor any linked Google/Apple provider can authenticate. Password confirmation is required ONLY when the account has a password; social-only accounts may omit it.",
+      security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
-        required: true,
+        required: false,
         content: {
           "application/json": {
             schema: {
               type: "object",
               properties: {
-                email: {
+                password: {
                   type: "string",
-                  format: "email",
-                  example: "user@example.com",
+                  minLength: 1,
+                  description:
+                    "Current account password. Required (400 AUTH_PASSWORD_REQUIRED) when the account has a password; an incorrect value returns 401 AUTH_PASSWORD_INCORRECT. Omit for social-only accounts (no passwordHash).",
                 },
               },
-              required: ["email"],
             },
           },
         },
       },
       responses: {
         "200": {
-          description: "Account deleted",
+          description: "Account soft-deleted",
           content: {
             "application/json": {
               schema: {
@@ -1383,8 +1384,16 @@ export const authPaths = {
             },
           },
         },
-        "404": {
-          description: "No account found with that email",
+        "400": {
+          description: "Password required for an account that has one",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Missing/invalid access token, or incorrect password",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },

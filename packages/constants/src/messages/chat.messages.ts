@@ -103,6 +103,22 @@ export const CHAT_MESSAGES = {
     vi: "Đã chuyển tiếp tin nhắn",
     en: "Message forwarded",
   },
+  CHAT_MESSAGE_EDITED: {
+    vi: "Đã chỉnh sửa tin nhắn",
+    en: "Message edited",
+  },
+  CHAT_MESSAGE_REPORTED: {
+    vi: "Đã báo cáo tin nhắn",
+    en: "Message reported",
+  },
+  CHAT_ROOM_MUTED: {
+    vi: "Đã tắt thông báo cuộc trò chuyện",
+    en: "Conversation muted",
+  },
+  CHAT_ROOM_UNMUTED: {
+    vi: "Đã bật thông báo cuộc trò chuyện",
+    en: "Conversation unmuted",
+  },
   CHAT_REACTIONS_FETCHED: {
     vi: "Lấy danh sách cảm xúc thành công",
     en: "Reactions fetched successfully",
@@ -149,9 +165,29 @@ export const CHAT_MESSAGES = {
     vi: "Bạn chỉ có thể xóa tin nhắn của mình",
     en: "You can only delete your own messages",
   },
+  CHAT_EDIT_OWN_MESSAGES_ONLY: {
+    vi: "Bạn chỉ có thể chỉnh sửa tin nhắn của mình",
+    en: "You can only edit your own messages",
+  },
+  CHAT_EDIT_TEXT_ONLY: {
+    vi: "Chỉ có thể chỉnh sửa tin nhắn văn bản",
+    en: "Only text messages can be edited",
+  },
   CHAT_MESSAGE_ALREADY_DELETED: {
     vi: "Tin nhắn đã bị xóa",
     en: "Message already deleted",
+  },
+  CHAT_REPORT_NOT_PARTICIPANT: {
+    vi: "Bạn không phải là thành viên của cuộc trò chuyện này",
+    en: "You are not a participant in this conversation",
+  },
+  CHAT_REPORT_OWN_MESSAGE: {
+    vi: "Bạn không thể báo cáo tin nhắn của chính mình",
+    en: "You cannot report your own message",
+  },
+  CHAT_ALREADY_REPORTED: {
+    vi: "Bạn đã báo cáo tin nhắn này rồi",
+    en: "You have already reported this message",
   },
   CHAT_NOT_A_PARTICIPANT: {
     vi: "Bạn không phải là thành viên của cuộc trò chuyện này",

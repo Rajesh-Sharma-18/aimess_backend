@@ -189,6 +189,18 @@ export const userProfileRepository = {
     });
   },
 
+  /**
+   * Release a denormalized `account` held by a stale/orphaned profile so a new
+   * registration can claim it. Safe because auth_users.account is globally unique
+   * among live users — any profile sharing this account belongs to a deleted user.
+   */
+  clearAccountValue(account: string) {
+    return prisma.userProfile.updateMany({
+      where: { account },
+      data: { account: null },
+    });
+  },
+
   softDelete(userId: string, deletedAt: Date) {
     return prisma.userProfile.update({
       where: { userId },

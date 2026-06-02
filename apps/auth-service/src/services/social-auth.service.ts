@@ -72,6 +72,7 @@ async function loginExistingLinkedUser(
 ): Promise<SocialLoginResult> {
   assertUserCanLogin(user);
   const tokens = await issueTokensForUser(req, user);
+  const isProfileCompleted = await authRepository.getProfileCompleted(user.id);
 
   return {
     isNewUser: false,
@@ -81,6 +82,7 @@ async function loginExistingLinkedUser(
       email: user.email,
       provider,
     },
+    isProfileCompleted,
     tokens,
   };
 }
@@ -144,6 +146,7 @@ async function signInWithProvider(
           email: existingUser.email,
           provider,
         },
+        isProfileCompleted: existingUser.isProfileCompleted,
         tokens,
       };
     }
@@ -175,7 +178,7 @@ async function signInWithProvider(
     account: user.account,
     email: user.email ?? profile.email,
     createdAt: user.createdAt.toISOString(),
-    isGoogleLogin: true,
+    isGoogleLogin: authProvider === AuthProvider.GOOGLE,
   });
 
   const session = buildSessionContext(req);
@@ -189,6 +192,8 @@ async function signInWithProvider(
       email: user.email,
       provider,
     },
+    // Brand-new account — profile is never complete at creation.
+    isProfileCompleted: false,
     tokens,
   };
 }

@@ -1,6 +1,7 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 
 import type { UpdateSettingsInput } from "../api/validators/settings.validator.js";
+import { publishSettingsUpdatedSafe } from "../messaging/publish-settings-updated.js";
 import {
   type NotificationSettingsUpdate,
   type PrivacySettingsUpdate,
@@ -179,6 +180,13 @@ export const userSettingsService = {
     });
 
     const updated = await loadSettingsBundle(userId);
+
+    // Let notifications-service bust its cached notification-settings entry.
+    publishSettingsUpdatedSafe({
+      userId,
+      updatedAt: new Date().toISOString(),
+    });
+
     return mapSettingsBundle(updated);
   },
 };

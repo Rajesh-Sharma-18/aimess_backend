@@ -97,6 +97,12 @@ export const openApiSchemas = {
         example: "johndoe",
       },
       password: { type: "string", minLength: 8, maxLength: 128 },
+      rememberMe: {
+        type: "boolean",
+        default: false,
+        description:
+          "When true, the issued refresh token is longer-lived (30 days) so the session persists across app restarts. Access-token lifetime is unchanged.",
+      },
       fcmTokens: { $ref: "#/components/schemas/FcmTokens" },
     },
     required: ["account", "password"],
@@ -121,8 +127,13 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       tokens: { $ref: "#/components/schemas/AuthTokens" },
+      isProfileCompleted: {
+        type: "boolean",
+        description:
+          "Whether the user has filled in their required profile fields (username, firstName, lastName — all must be non-empty). Lets the client route to the edit-profile screen on first login. Mirrored from user-service via the user.profile_updated event.",
+      },
     },
-    required: ["tokens"],
+    required: ["tokens", "isProfileCompleted"],
   },
   AccessTokenResponseData: {
     type: "object",
@@ -368,9 +379,14 @@ export const openApiSchemas = {
         },
         required: ["userId", "account", "provider"],
       },
+      isProfileCompleted: {
+        type: "boolean",
+        description:
+          "Whether the user has filled in their required profile fields. Always false for a brand-new account (isNewUser=true).",
+      },
       tokens: { $ref: "#/components/schemas/AuthTokens" },
     },
-    required: ["isNewUser", "user", "tokens"],
+    required: ["isNewUser", "user", "isProfileCompleted", "tokens"],
   },
   UpdateProfileRequest: {
     type: "object",
@@ -584,6 +600,16 @@ export const openApiSchemas = {
         nullable: true,
         description: "Primary account email from auth-service.",
       },
+      isGoogleLogin: {
+        type: "boolean",
+        description:
+          "True when a GOOGLE provider is linked to the account in auth-service.",
+      },
+      isAppleLogin: {
+        type: "boolean",
+        description:
+          "True when an APPLE provider is linked to the account in auth-service.",
+      },
       dateOfBirth: { type: "string", format: "date" },
       gender: {
         type: "string",
@@ -611,6 +637,8 @@ export const openApiSchemas = {
       "lastName",
       "bio",
       "email",
+      "isGoogleLogin",
+      "isAppleLogin",
       "dateOfBirth",
       "gender",
       "avatarUrl",
@@ -2103,11 +2131,20 @@ export const openApiSchemas = {
       receiverId: { type: "string", nullable: true },
       content: {
         type: "object",
+        description:
+          "Message body. Validation caps (applied when a message is sent): `text` maxLength 4000 chars; for IMAGE messages at most 10 files; each VIDEO file ≤100MB and ≤180000ms (3 min); each VOICE file ≤300000ms (5 min); other files (GIF/DOCUMENT) ≤50MB.",
         properties: {
-          text: { type: "string" },
+          text: {
+            type: "string",
+            maxLength: 4000,
+            description: "Plain-text body. Max 4000 characters.",
+          },
           urls: { type: "array", items: { type: "string" } },
           files: {
             type: "array",
+            maxItems: 10,
+            description:
+              "Media files. IMAGE messages allow at most 10 files; VIDEO files are capped at 100MB / 180000ms; VOICE at 300000ms; GIF/DOCUMENT at 50MB.",
             items: {
               type: "object",
               properties: {
@@ -2115,11 +2152,17 @@ export const openApiSchemas = {
                 name: { type: "string" },
                 size: { type: "number" },
                 mime: { type: "string" },
+                durationMs: {
+                  type: "number",
+                  description:
+                    "Playback duration in milliseconds (video/voice).",
+                },
               },
             },
           },
           location: { $ref: "#/components/schemas/ChatLocationAttachment" },
           contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+          sticker: { $ref: "#/components/schemas/ChatSticker" },
         },
       },
       messageType: {
@@ -2129,12 +2172,15 @@ export const openApiSchemas = {
           "IMAGE",
           "DOCUMENT",
           "VIDEO",
+          "GIF",
+          "VOICE",
+          "STICKER",
           "SYSTEM",
           "LOCATION",
           "CONTACT",
         ],
         description:
-          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card.",
+          "SYSTEM = server-generated event (e.g. member joined/left). LOCATION = shared map pin. CONTACT = shared contact card. STICKER = sticker message (see `content.sticker`).",
       },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
@@ -2427,8 +2473,17 @@ export const openApiSchemas = {
       message: { type: "string", nullable: true },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
-      messageType: { type: "string" },
-      attachments: { type: "array", items: { type: "object" } },
+      messageType: {
+        type: "string",
+        description:
+          "Community message kind (stored lower-case): text, image, voice, custom, location, contact, sticker.",
+      },
+      attachments: {
+        type: "array",
+        description:
+          "Media / sticker / location / contact attachments. Sticker entries follow ChatSticker. Send-time caps: text ≤4000 chars; ≤10 images; video ≤100MB/180000ms; voice ≤300000ms; other files ≤50MB.",
+        items: { type: "object" },
+      },
       deletedForAll: { type: "boolean" },
       createdAt: { type: "string", format: "date-time" },
     },
@@ -2477,6 +2532,29 @@ export const openApiSchemas = {
       userId: { type: "string", maxLength: 100, nullable: true },
     },
     required: ["name", "phone"],
+  },
+  ChatSticker: {
+    type: "object",
+    description:
+      "Sticker payload. Lives in message content (private/group) or attachments[] (community). Exactly one of `objectKey` or `url` is required.",
+    properties: {
+      objectKey: {
+        type: "string",
+        minLength: 1,
+        maxLength: 500,
+        description:
+          "Object-storage key for the sticker asset. One of objectKey / url is required.",
+      },
+      url: {
+        type: "string",
+        format: "uri",
+        description:
+          "Direct URL to the sticker asset. One of objectKey / url is required.",
+      },
+      packId: { type: "string", maxLength: 100 },
+      stickerId: { type: "string", maxLength: 100 },
+    },
+    required: ["packId", "stickerId"],
   },
 
   // --- Media upload/download ---
@@ -2652,5 +2730,116 @@ export const openApiSchemas = {
       },
     },
     required: ["messageId", "reactions"],
+  },
+  ChatEditMessageRequest: {
+    type: "object",
+    required: ["content"],
+    properties: {
+      content: {
+        type: "object",
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: 10000 },
+          urls: { type: "array", items: { type: "string" } },
+          files: { type: "array", items: { type: "object" } },
+        },
+      },
+    },
+  },
+  ChatEditCommunityMessageRequest: {
+    type: "object",
+    required: ["communityId", "content"],
+    properties: {
+      communityId: {
+        type: "string",
+        minLength: 1,
+        description:
+          "Community the message belongs to — required so the edit broadcast reaches the right community room.",
+      },
+      content: {
+        type: "object",
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: 4000 },
+        },
+      },
+    },
+  },
+  ChatConversationPage: {
+    type: "object",
+    description:
+      "Offset-paginated message envelope. `data` is newest-first; reading a page also advances the caller's read pointer up to the newest returned message.",
+    properties: {
+      pagination: {
+        type: "object",
+        properties: {
+          totalData: { type: "integer" },
+          totalPage: { type: "integer" },
+          currentPage: { type: "integer" },
+          limit: { type: "integer" },
+          hasMore: { type: "boolean" },
+        },
+      },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatMessage" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  ChatCommunityConversationPage: {
+    type: "object",
+    description:
+      "Offset-paginated community message envelope. `data` is newest-first; reading a page also advances the caller's read pointer up to the newest returned message.",
+    properties: {
+      pagination: {
+        type: "object",
+        properties: {
+          totalData: { type: "integer" },
+          totalPage: { type: "integer" },
+          currentPage: { type: "integer" },
+          limit: { type: "integer" },
+          hasMore: { type: "boolean" },
+        },
+      },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  ChatMuteRoomRequest: {
+    type: "object",
+    properties: {
+      muteUntil: { type: "string", format: "date-time", nullable: true },
+    },
+  },
+  ChatReportMessageRequest: {
+    type: "object",
+    required: ["reason"],
+    properties: {
+      reason: {
+        type: "string",
+        enum: [
+          "SPAM",
+          "HARASSMENT",
+          "HATE_SPEECH",
+          "NUDITY",
+          "VIOLENCE",
+          "SCAM",
+          "OTHER",
+        ],
+      },
+      description: { type: "string", maxLength: 1000 },
+    },
+  },
+  ChatPresence: {
+    type: "object",
+    properties: {
+      userId: { type: "string" },
+      isOnline: { type: "boolean" },
+      lastSeen: { type: "integer", nullable: true },
+    },
   },
 } as const;

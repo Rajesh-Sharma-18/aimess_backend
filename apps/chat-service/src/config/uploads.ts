@@ -9,7 +9,9 @@ export const UPLOAD_TYPES = {
   CHAT_ATTACHMENT: {
     bucket: env.MINIO_BUCKET,
     keyPrefix: "chat-uploads",
-    maxBytes: env.CHAT_UPLOAD_MAX_BYTES,
+    // Presign uses the largest per-type cap (video) so video uploads succeed;
+    // real per-type enforcement happens in the send validators / service guard.
+    maxBytes: env.CHAT_VIDEO_MAX_BYTES,
     allowedMime: {
       "image/jpeg": "jpg",
       "image/png": "png",

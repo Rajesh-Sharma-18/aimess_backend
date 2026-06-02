@@ -4,9 +4,12 @@
   "description": "Workspace-only scaffold source; use pnpm create-service to copy into apps/.",
   "main": "dist/server.js",
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "prisma generate && tsc",
+    "typecheck": "prisma generate && tsc --noEmit",
     "start": "node dist/server.js",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "postinstall": "prisma generate",
     "lint": "eslint .",
     "test": "node -e \"process.exit(0)\"",
     "dev": "tsx watch --include ./src --clear-screen=false src/server.ts"
@@ -16,8 +19,11 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@aimess/auth-jwt": "workspace:*",
     "@aimess/errors": "workspace:*",
+    "@aimess/grpc-utils": "workspace:*",
     "@aimess/logger": "workspace:*",
+    "@aimess/redis": "workspace:*",
     "@aimess/shared-types": "workspace:*",
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.1",
@@ -28,6 +34,8 @@
     "express": "^5.2.1",
     "firebase-admin": "^13.9.0",
     "helmet": "^8.1.0",
+    "ioredis": "^5.10.1",
+    "@prisma/client": "^6.9.0",
     "nodemailer": "^8.0.7",
     "zod": "^4.4.3"
   },
@@ -35,6 +43,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^25.6.2",
+    "prisma": "^6.9.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }

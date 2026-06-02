@@ -5,6 +5,7 @@ import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
 import { env } from "../config/env.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
+import { userSettingsRepository } from "../repositories/user-settings.repository.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -39,6 +40,36 @@ export function startUserGrpcServer(): grpc.Server {
           callback(null, { areFriends: row !== null });
         } catch (err) {
           logger.error(`gRPC checkFriendship error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Per-category notification preferences. When no row exists yet, default to
+    // "all enabled" so notifications-service still delivers (allow-by-default).
+    getNotificationSettings: (
+      call: grpc.ServerUnaryCall<{ userId: string }, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const { userId } = call.request;
+          const row =
+            await userSettingsRepository.findNotificationSettings(userId);
+          callback(null, {
+            chatEnabled: row?.chatEnabled ?? true,
+            callEnabled: row?.callEnabled ?? true,
+            friendRequestEnabled: row?.friendRequestEnabled ?? true,
+            systemEnabled: row?.systemEnabled ?? true,
+            communityEnabled: row?.communityEnabled ?? true,
+            liveStreamEnabled: row?.liveStreamEnabled ?? true,
+            quietHoursEnabled: row?.quietHoursEnabled ?? false,
+            quietHoursStart: row?.quietHoursStart ?? "",
+            quietHoursEnd: row?.quietHoursEnd ?? "",
+            quietHoursDays: row?.quietHoursDays ?? [],
+          });
+        } catch (err) {
+          logger.error(`gRPC getNotificationSettings error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

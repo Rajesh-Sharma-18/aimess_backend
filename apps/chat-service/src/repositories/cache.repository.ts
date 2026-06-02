@@ -156,6 +156,24 @@ export class CacheRepository {
     return this.redis.get(`presence:user:${userId}`);
   }
 
+  async setLastSeen(userId: string, ts: number): Promise<void> {
+    // Retain ~30 days so the chat header can show "last seen" long after a user
+    // goes offline.
+    await this.redis.set(
+      `presence:lastseen:${userId}`,
+      String(ts),
+      "EX",
+      60 * 60 * 24 * 30
+    );
+  }
+
+  async getLastSeen(userId: string): Promise<number | null> {
+    const value = await this.redis.get(`presence:lastseen:${userId}`);
+    if (!value) return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   // === User Snapshot Cache ===
 
   async setUserSnapshot(

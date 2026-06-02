@@ -1,12 +1,27 @@
-import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ForbiddenError,
+  GoneError,
+  NotFoundError,
+} from "@aimess/errors";
 import { logger } from "@aimess/logger";
+
+import {
+  CHAT_EDIT_WINDOW_MS,
+  CHAT_TEXT_MAX_CHARS,
+  assertAttachmentsValid,
+} from "../constants/media-limits.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import type { PrivateMessageReportRepository } from "../repositories/private-message-report.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
-import type { PrivateMessage } from "../generated/prisma/index.js";
+import type {
+  PrivateMessage,
+  PrivateMessageReport,
+} from "../generated/prisma/index.js";
 
 export class PrivateMessageService {
   constructor(
@@ -14,7 +29,8 @@ export class PrivateMessageService {
     private readonly roomRepo: PrivateRoomRepository,
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
-    private readonly userServiceClient: UserServiceClient
+    private readonly userServiceClient: UserServiceClient,
+    private readonly reportRepo: PrivateMessageReportRepository
   ) {}
 
   async sendMessage(params: {
@@ -30,6 +46,12 @@ export class PrivateMessageService {
     parentMessageId?: string | null;
     clientMessageId?: string | null;
   }): Promise<PrivateMessage> {
+    // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
+    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
+      throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    }
+    assertAttachmentsValid(params.messageType, params.content?.files);
+
     const friends = await this.userServiceClient.checkFriendship(
       params.senderId,
       params.receiverId
@@ -144,6 +166,30 @@ export class PrivateMessageService {
     );
   }
 
+  async listMedia(params: {
+    roomId: string;
+    userId: string;
+    type?: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<PrivateMessage[]> {
+    // Enforce participation first.
+    const room = await this.roomRepo.findByRoomId(params.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    if (!room.participants?.includes(params.userId))
+      throw new ForbiddenError("CHAT_NOT_PARTICIPANT");
+
+    return this.messageRepo.listMedia({
+      roomId: room.roomId,
+      userId: params.userId,
+      type: params.type,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+  }
+
   async markRead(params: {
     roomId: string;
     userId: string;
@@ -184,6 +230,80 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_DELETE_OWN_MESSAGES_ONLY");
     }
     return this.messageRepo.deleteForEveryone(messageId, userId);
+  }
+
+  async editMessage(params: {
+    messageId: string;
+    userId: string;
+    content: {
+      text: string;
+      urls?: string[];
+      files?: Array<Record<string, unknown>>;
+    };
+  }): Promise<PrivateMessage> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (message.isDeleted)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (message.senderId !== params.userId)
+      throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
+    if (message.messageType !== "TEXT")
+      throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
+    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
+      throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
+      throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
+    return this.messageRepo.editMessage(params.messageId, params.content);
+  }
+
+  async markDelivered(params: {
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<{ count: number; messageIds: string[] }> {
+    return this.messageRepo.markDeliveredUpTo(
+      params.roomId,
+      params.recipientId,
+      params.upToMessageId
+    );
+  }
+
+  async reportMessage(params: {
+    messageId: string;
+    reporterId: string;
+    reason: string;
+    description?: string;
+  }): Promise<PrivateMessageReport> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const room = await this.roomRepo.findByRoomId(message.roomId);
+    if (!room || !room.participants?.includes(params.reporterId))
+      throw new ForbiddenError("CHAT_REPORT_NOT_PARTICIPANT");
+
+    if (message.senderId === params.reporterId)
+      throw new BadRequestError("CHAT_REPORT_OWN_MESSAGE");
+
+    try {
+      return await this.reportRepo.create({
+        roomId: message.roomId,
+        messageId: message.id,
+        reporterId: params.reporterId,
+        reportedUserId: message.senderId ?? "",
+        reason: params.reason,
+        description: params.description ?? "",
+      });
+    } catch (err) {
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code?: string }).code === "P2002"
+      ) {
+        throw new BadRequestError("CHAT_ALREADY_REPORTED");
+      }
+      throw err;
+    }
   }
 
   async react(

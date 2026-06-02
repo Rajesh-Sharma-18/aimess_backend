@@ -122,6 +122,43 @@ export class GroupMemberRepository {
     });
   }
 
+  /**
+   * Advance the member's read pointer to a specific message, forward-only: the
+   * pointer is moved only when `messageCreatedAt` is newer than the stored
+   * `lastReadAt` (never regresses). No-op if the member isn't ACTIVE.
+   *
+   * `remainingUnread` is the count of messages still newer than the NEW pointer
+   * that are visible to this user (computed by the caller). We set `unreadCount`
+   * to that instead of hard-zeroing, so viewing an OLD page (whose newest message
+   * still post-dates messages the user hasn't seen) doesn't wrongly clear unread.
+   */
+  async advanceReadPointer(
+    roomId: string,
+    userId: string,
+    messageId: string,
+    messageCreatedAt: Date,
+    remainingUnread: number
+  ): Promise<GroupMember | null> {
+    const existing = await this.prisma.groupMember.findFirst({
+      where: { roomId, userId, status: "ACTIVE" },
+    });
+    if (!existing) return null;
+
+    // Forward-only: skip if the stored pointer is already at/after this message.
+    if (existing.lastReadAt && existing.lastReadAt >= messageCreatedAt) {
+      return existing;
+    }
+
+    return this.prisma.groupMember.update({
+      where: { roomId_userId: { roomId, userId } },
+      data: {
+        lastReadMessageId: messageId,
+        lastReadAt: messageCreatedAt,
+        unreadCount: remainingUnread < 0 ? 0 : remainingUnread,
+      },
+    });
+  }
+
   async incUnreadForRoom(roomId: string, excludeUserId: string): Promise<void> {
     await this.prisma.groupMember.updateMany({
       where: {

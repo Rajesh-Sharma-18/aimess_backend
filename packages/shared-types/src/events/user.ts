@@ -3,6 +3,9 @@ export const UserEvents = {
   USER_CREATED: "user.created",
   USER_DELETED: "user.deleted",
   USER_PROFILE_UPDATED: "user.profile_updated",
+  /** Emitted when a user changes settings — lets notifications-service bust its
+   *  cached notification-settings entry. */
+  SETTINGS_UPDATED: "user.settings_updated",
 } as const;
 
 export type UserEventType = (typeof UserEvents)[keyof typeof UserEvents];
@@ -27,5 +30,12 @@ export type UserProfileUpdatedPayload = {
   username: string;
   displayName: string;
   avatarObjectKey: string | null;
+  /** True when all required profile fields are filled in (derived). */
+  isProfileCompleted: boolean;
+  updatedAt: string;
+};
+
+export type UserSettingsUpdatedPayload = {
+  userId: string;
   updatedAt: string;
 };

@@ -61,12 +61,23 @@ export class PrivateRoomService {
       this.cacheRepo
     );
 
+    const now = Date.now();
     const enrichedRooms = rooms.map((room) => {
       const peerId =
         (room.participants || []).find((p) => p !== params.userId) || "";
       const snapshot = snapshots.get(peerId) || {};
+      const mutedBy = (room.mutedBy ?? {}) as Record<
+        string,
+        { muteUntil?: string | null }
+      >;
+      const myMute = mutedBy[params.userId];
+      const isMuted =
+        myMute != null &&
+        (myMute.muteUntil == null ||
+          new Date(myMute.muteUntil).getTime() > now);
       return {
         ...room,
+        isMuted,
         peerId,
         peer: {
           id: peerId,
@@ -95,5 +106,29 @@ export class PrivateRoomService {
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     await this.privateRoomRepo.setDeletedFor(roomId, userId);
+  }
+
+  async muteRoom(
+    roomId: string,
+    userId: string,
+    muteUntil: Date | null
+  ): Promise<PrivateRoom> {
+    const room = await this.privateRoomRepo.findByRoomId(roomId);
+    if (!room || !room.participants?.includes(userId))
+      throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const updated = await this.privateRoomRepo.setMuted(
+      roomId,
+      userId,
+      muteUntil
+    );
+    return updated ?? room;
+  }
+
+  async unmuteRoom(roomId: string, userId: string): Promise<PrivateRoom> {
+    const room = await this.privateRoomRepo.findByRoomId(roomId);
+    if (!room || !room.participants?.includes(userId))
+      throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const updated = await this.privateRoomRepo.setUnmuted(roomId, userId);
+    return updated ?? room;
   }
 }

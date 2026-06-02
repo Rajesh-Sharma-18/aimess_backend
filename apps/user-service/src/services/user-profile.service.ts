@@ -22,6 +22,11 @@ import {
   userCache,
 } from "../lib/user-cache.js";
 import { resolveAuthAccountSummary } from "../lib/resolve-auth-account.js";
+import type {
+  AuthAccountSummary,
+  SignInProvider,
+} from "../types/auth-account.types.js";
+import { isProfileComplete } from "../lib/profile-completion.util.js";
 import { normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import type { UserProfileData } from "../types/user-profile.types.js";
@@ -73,10 +78,16 @@ type ProfileRecord = {
   deletedAt: Date | null;
 };
 
+type ProfileAuthSummary = {
+  account: string | null;
+  email: string | null;
+  isGoogleLogin: boolean | null;
+  isAppleLogin: boolean | null;
+};
+
 async function toProfileData(
   profile: Omit<ProfileRecord, "deletedAt">,
-  account: string | null,
-  email: string | null
+  authSummary: ProfileAuthSummary
 ): Promise<UserProfileData> {
   const avatarView = await avatarService.resolveViewUrlForClient(
     profile.avatarUrl
@@ -88,9 +99,13 @@ async function toProfileData(
     firstName: profile.firstName,
     lastName: profile.lastName,
     bio: profile.bio,
-    account: account ?? (profile as { account?: string }).account ?? null,
-    email,
-    isGoogleLogin: profile.isGoogleLogin,
+    account:
+      authSummary.account ?? (profile as { account?: string }).account ?? null,
+    email: authSummary.email,
+    // Prefer live linked-account status from auth-service; fall back to the
+    // synced-at-registration DB flag when auth-service is unavailable.
+    isGoogleLogin: authSummary.isGoogleLogin ?? profile.isGoogleLogin,
+    isAppleLogin: authSummary.isAppleLogin ?? false,
     dateOfBirth: formatDateOfBirth(profile.dateOfBirth),
     gender: profile.gender,
     avatarUrl: avatarView?.url ?? null,
@@ -99,14 +114,28 @@ async function toProfileData(
   };
 }
 
+function isProviderConnected(
+  account: Pick<AuthAccountSummary, "providers"> | null,
+  provider: SignInProvider
+): boolean | null {
+  if (!account?.providers) {
+    return null;
+  }
+  return account.providers.some(
+    (entry) => entry.provider === provider && entry.connected
+  );
+}
+
 async function resolveProfileAuthSummary(
   userId: string,
   accessToken: string
-): Promise<{ account: string | null; email: string | null }> {
+): Promise<ProfileAuthSummary> {
   const { account } = await resolveAuthAccountSummary(userId, accessToken);
   return {
     account: account?.account ?? null,
     email: account?.email ?? null,
+    isGoogleLogin: isProviderConnected(account, "GOOGLE"),
+    isAppleLogin: isProviderConnected(account, "APPLE"),
   };
 }
 
@@ -117,7 +146,6 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
   }
 
   const profile = await userProfileRepository.findByUserId(userId);
-  console.log("Loaded profile from DB:", userId, profile);
   if (!profile || profile.deletedAt) {
     throw new NotFoundError("USER_PROFILE_NOT_FOUND");
   }
@@ -134,8 +162,7 @@ export const userProfileService = {
   ): Promise<UserProfileData> {
     const profile = await loadProfileRecord(userId);
     const authSummary = await resolveProfileAuthSummary(userId, accessToken);
-    console.log("Testing ProfileGG:", profile, authSummary);
-    return toProfileData(profile, authSummary.account, authSummary.email);
+    return toProfileData(profile, authSummary);
   },
 
   async createFromUserCreatedEvent(data: UserCreatedPayload): Promise<void> {
@@ -192,6 +219,32 @@ export const userProfileService = {
           logger.warn(
             `Username "${username}" was claimed concurrently; retrying generation (attempt ${attempt}/${USERNAME_CLAIM_MAX_ATTEMPTS})`
           );
+          continue;
+        }
+
+        // Stale account collision: the new auth user legitimately owns this
+        // account (auth_users.account is globally unique among ALL auth users,
+        // including soft-deleted ones), so any existing profile holding it must
+        // belong to a now-deleted auth user. We intentionally do NOT filter by
+        // deletedAt — orphaned profiles can still be status=ACTIVE when the auth
+        // user was hard-deleted without a user.deleted event — so we free the
+        // account regardless of status, then retry the insert (now collision-free).
+        if (isUniqueViolationOnField(error, "account")) {
+          const { count } = await userProfileRepository.clearAccountValue(
+            data.account
+          );
+          if (count === 0) {
+            // Nothing was freed yet a P2002 on account fired: an anomaly worth
+            // surfacing (e.g. the constraint moved). Let it retry/DLQ rather
+            // than loop silently.
+            logger.error(
+              `Account "${data.account}" collided but no orphaned profile was freed (count=0); userId=${data.userId}`
+            );
+          } else {
+            logger.warn(
+              `Reclaimed stale account "${data.account}" from ${count} orphaned profile(s); retrying (attempt ${attempt}/${USERNAME_CLAIM_MAX_ATTEMPTS})`
+            );
+          }
           continue;
         }
 
@@ -321,7 +374,7 @@ export const userProfileService = {
     // the mutate path.
     if (Object.keys(updateData).length === 0) {
       const authSummary = await resolveProfileAuthSummary(userId, accessToken);
-      return toProfileData(profile, authSummary.account, authSummary.email);
+      return toProfileData(profile, authSummary);
     }
 
     const updated = await userProfileRepository.updateProfile(
@@ -336,6 +389,7 @@ export const userProfileService = {
       username: updated.username,
       displayName: buildDisplayName(updated.firstName, updated.lastName),
       avatarObjectKey: updated.avatarUrl ?? null,
+      isProfileCompleted: isProfileComplete(updated),
       updatedAt: updated.updatedAt.toISOString(),
     });
 
@@ -345,6 +399,6 @@ export const userProfileService = {
     }
 
     const authSummary = await resolveProfileAuthSummary(userId, accessToken);
-    return toProfileData(updated, authSummary.account, authSummary.email);
+    return toProfileData(updated, authSummary);
   },
 };

@@ -138,6 +138,23 @@ export function registerChatNamespace(
       z.enum(["private", "group"]).default("private")
     ),
   });
+  const MessageEditSchema = z.object({
+    messageId: z.string().min(1),
+    conversationId: z.string().min(1),
+    contentText: z.string().optional(),
+    contentJson: z.string().optional(),
+    conversationType: z.preprocess(
+      (v) => (typeof v === "string" ? v.toLowerCase() : v),
+      z.enum(["private", "group"]).default("private")
+    ),
+  });
+  const MessageDeliveredSchema = z.object({
+    conversationId: z.string().min(1),
+    upToMessageId: z.string().min(1),
+  });
+  const PresenceSubscribeSchema = z.object({
+    peerIds: z.array(z.string().min(1)).max(500),
+  });
   const CallInitiateSchema = z.object({
     calleeId: z.string().min(1),
     type: z.enum(["AUDIO", "VIDEO"]).default("AUDIO"),
@@ -153,8 +170,32 @@ export function registerChatNamespace(
 
   chat.on("connection", (socket: Socket) => {
     const { userId } = socket.data;
+    const deviceId = socket.data.sessionId ?? socket.id;
     void socket.join(`user:${userId}`);
     logger.debug(`/chat connected userId=${userId}`);
+
+    // Mark the user online in chat-service presence (best-effort).
+    if (userId) {
+      const platform =
+        (socket.handshake.query?.platform as string) ||
+        (socket.handshake.headers["x-platform"] as string) ||
+        "unknown";
+      const clientType =
+        (socket.handshake.query?.clientType as string) ||
+        (socket.handshake.headers["x-client-type"] as string) ||
+        "unknown";
+      messagingClient
+        .presenceConnect({
+          userId,
+          deviceId,
+          platform,
+          clientType,
+          appState: "FOREGROUND",
+        })
+        .catch((err: unknown) =>
+          logger.warn(`/chat presence:connect error: ${String(err)}`)
+        );
+    }
 
     socket.on("conv:join", (payload: unknown) => {
       const r = ConvJoinSchema.safeParse(payload);
@@ -261,6 +302,86 @@ export function registerChatNamespace(
             logger.warn(`/chat messages:fetch gRPC error: ${String(err)}`);
             ack(callback, { success: false, error: "SERVICE_ERROR" });
           });
+      }
+    );
+
+    // Feature 13: Edit message
+    socket.on(
+      "message:edit",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = MessageEditSchema.safeParse(payload);
+        if (!r.success) {
+          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          return;
+        }
+        messagingClient
+          .editMessage({ ...r.data, editorId: userId })
+          .then((result) => ack(callback, { success: true, data: result }))
+          .catch((err: unknown) => {
+            logger.warn(`/chat message:edit gRPC error: ${String(err)}`);
+            ack(callback, { success: false, error: "SERVICE_ERROR" });
+          });
+      }
+    );
+
+    // Feature 15: Delivered receipts (client emits on receiving message:new)
+    socket.on(
+      "message:delivered",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = MessageDeliveredSchema.safeParse(payload);
+        if (!r.success) {
+          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          return;
+        }
+        messagingClient
+          .markDelivered({ ...r.data, recipientId: userId })
+          .then((result) => ack(callback, { success: true, data: result }))
+          .catch((err: unknown) => {
+            logger.warn(`/chat message:delivered gRPC error: ${String(err)}`);
+            ack(callback, { success: false, error: "SERVICE_ERROR" });
+          });
+      }
+    );
+
+    // Feature 18/19: Presence heartbeat + peer subscription
+    socket.on("presence:heartbeat", (payload: unknown) => {
+      const appState =
+        (payload as { appState?: string } | undefined)?.appState ??
+        "FOREGROUND";
+      messagingClient
+        .presenceHeartbeat({ userId, deviceId, appState })
+        .catch((err: unknown) =>
+          logger.warn(`/chat presence:heartbeat error: ${String(err)}`)
+        );
+    });
+
+    socket.on(
+      "presence:subscribe",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = PresenceSubscribeSchema.safeParse(payload);
+        if (!r.success) {
+          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          return;
+        }
+        for (const peerId of r.data.peerIds) {
+          void socket.join(`user:${peerId}`);
+        }
+        ack(callback, { success: true });
+      }
+    );
+
+    socket.on(
+      "presence:unsubscribe",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = PresenceSubscribeSchema.safeParse(payload);
+        if (!r.success) {
+          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          return;
+        }
+        for (const peerId of r.data.peerIds) {
+          void socket.leave(`user:${peerId}`);
+        }
+        ack(callback, { success: true });
       }
     );
 
@@ -433,6 +554,13 @@ export function registerChatNamespace(
 
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/chat disconnected userId=${userId} reason=${reason}`);
+      if (userId) {
+        messagingClient
+          .presenceDisconnect({ userId, deviceId })
+          .catch((err: unknown) =>
+            logger.warn(`/chat presence:disconnect error: ${String(err)}`)
+          );
+      }
     });
   });
 }

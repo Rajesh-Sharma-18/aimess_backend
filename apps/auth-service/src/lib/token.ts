@@ -38,11 +38,14 @@ export function createRefreshTokenValue(): string {
 
 export async function issueAuthTokens(
   userId: string,
-  session: SessionContext
+  session: SessionContext,
+  rememberMe?: boolean
 ): Promise<IssuedAuthTokens> {
   const accessTokenExpiresIn = parseExpiresInSeconds(env.JWT_ACCESS_EXPIRES_IN);
   const refreshTokenExpiresIn = parseExpiresInSeconds(
-    env.JWT_REFRESH_EXPIRES_IN
+    rememberMe
+      ? env.JWT_REFRESH_EXPIRES_IN_REMEMBER_ME
+      : env.JWT_REFRESH_EXPIRES_IN
   );
 
   const refreshToken = createRefreshTokenValue();

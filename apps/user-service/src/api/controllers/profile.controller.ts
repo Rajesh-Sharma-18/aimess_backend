@@ -9,7 +9,6 @@ import { userProfileService } from "../../services/user-profile.service.js";
 
 export const getMyProfile = asyncHandler(
   async (req: Request, res: Response) => {
-    console.log("Fetching profile for user:", req.auth.userId);
     const profile = await userProfileService.getMyProfile(
       req.auth.userId,
       extractBearerToken(req)

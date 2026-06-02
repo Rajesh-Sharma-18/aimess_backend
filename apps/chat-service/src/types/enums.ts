@@ -8,6 +8,7 @@ export const MessageType = {
   SYSTEM: "SYSTEM",
   LOCATION: "LOCATION",
   CONTACT: "CONTACT",
+  STICKER: "STICKER",
 } as const;
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
 
@@ -19,6 +20,7 @@ export const CommunityMessageType = {
   CUSTOM: "custom",
   LOCATION: "location",
   CONTACT: "contact",
+  STICKER: "sticker",
 } as const;
 export type CommunityMessageType =
   (typeof CommunityMessageType)[keyof typeof CommunityMessageType];

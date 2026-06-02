@@ -11,6 +11,7 @@
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
     "lint": "eslint .",
+    "backfill:profile-completion": "tsx scripts/backfill-profile-completion.ts",
     "test": "node -e \"process.exit(0)\""
   },
   "keywords": [],

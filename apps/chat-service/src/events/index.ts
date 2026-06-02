@@ -3,7 +3,7 @@ import { logger } from "@aimess/logger";
 import { env } from "../config/env.js";
 import { FriendshipEventConsumer } from "./friendship.consumer.js";
 
-let connection: amqp.Connection | null = null;
+let connection: amqp.ChannelModel | null = null;
 let friendshipConsumer: FriendshipEventConsumer | null = null;
 
 export async function initializeEventConsumers(): Promise<void> {

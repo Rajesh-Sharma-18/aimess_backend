@@ -1,5 +1,6 @@
 import { prisma } from "../config/prisma.js";
 import {
+  AccountStatus,
   AuthProvider,
   SessionRevokeReason,
   type DeviceType,
@@ -15,6 +16,7 @@ const loginUserSelect = {
   status: true,
   lockedUntil: true,
   deletedAt: true,
+  isProfileCompleted: true,
 } as const;
 
 export const authRepository = {
@@ -181,6 +183,54 @@ export const authRepository = {
     });
   },
 
+  /**
+   * Soft-delete: retain the row but mark it for deletion and revoke every
+   * active session + refresh token so the account (and any linked Google/Apple
+   * provider) can no longer authenticate. A grace-period job hard-purges rows
+   * whose scheduledDeletionAt has elapsed.
+   */
+  softDeleteUser(userId: string) {
+    return prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const scheduledDeletionAt = new Date(
+        now.getTime() + 30 * 24 * 60 * 60 * 1000
+      );
+
+      const activeSessions = await tx.session.findMany({
+        where: { userId, revokedAt: null },
+        select: { id: true },
+      });
+
+      await tx.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: {
+          revokedAt: now,
+          revokedReason: SessionRevokeReason.ACCOUNT_DELETED,
+        },
+      });
+
+      await tx.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+
+      await tx.authUser.update({
+        where: { id: userId },
+        data: {
+          status: AccountStatus.PENDING_DELETION,
+          deletionRequestedAt: now,
+          scheduledDeletionAt,
+          deletedAt: now,
+        },
+      });
+
+      return {
+        deletedAt: now,
+        revokedSessionIds: activeSessions.map((session) => session.id),
+      };
+    });
+  },
+
   findByAccount(account: string) {
     return prisma.authUser.findUnique({ where: { account } });
   },
@@ -227,6 +277,26 @@ export const authRepository = {
     });
   },
 
+  async getProfileCompleted(userId: string): Promise<boolean> {
+    const row = await prisma.authUser.findUnique({
+      where: { id: userId },
+      select: { isProfileCompleted: true },
+    });
+    return row?.isProfileCompleted ?? false;
+  },
+
+  /**
+   * Mirrors the profile-completion flag from the user.profile_updated event.
+   * Uses updateMany so a stale event for a deleted/missing user is a no-op
+   * rather than throwing.
+   */
+  async markProfileCompletion(userId: string, isProfileCompleted: boolean) {
+    await prisma.authUser.updateMany({
+      where: { id: userId },
+      data: { isProfileCompleted },
+    });
+  },
+
   recordSuccessfulLogin(userId: string) {
     return prisma.authUser.update({
       where: { id: userId },
@@ -239,7 +309,7 @@ export const authRepository = {
   },
 
   async mergeFcmTokens(userId: string, tokens: string[]): Promise<void> {
-    if (tokens.length === 0) return;
+    if (tokens?.length === 0) return;
     await prisma.$executeRaw`
       UPDATE auth_users
       SET "fcmTokens" = (

@@ -17,6 +17,9 @@ export type RegisterResult = {
 
 export type LoginResult = {
   tokens: AuthTokensResponse;
+  /** Whether the user has filled in their required profile fields; lets the
+   * client route to the edit-profile screen on first login. */
+  isProfileCompleted: boolean;
 };
 
 export type AccessTokenResponse = {

@@ -18,6 +18,11 @@ const envSchema = z.object({
 
   JWT_ACCESS_EXPIRES_IN: z.string(),
   JWT_REFRESH_EXPIRES_IN: z.string(),
+  /**
+   * Refresh-token lifetime (seconds) when the user opts into "remember me" at
+   * login. Falls back to 30 days. The access-token lifetime is unaffected.
+   */
+  JWT_REFRESH_EXPIRES_IN_REMEMBER_ME: z.string().default("2592000"),
 
   RABBITMQ_URL: z.string().min(1),
 
@@ -37,6 +42,17 @@ const envSchema = z.object({
   OTP_REQUEST_WINDOW_SEC: z.coerce.number().int().positive().default(900),
   /** Dev only: fixed OTP (e.g. 123456). Logged in terminal until email is wired up. */
   OTP_DEV_FIXED_CODE: z.string().optional(),
+
+  /** Max failed auth attempts (register, login, password reset, etc.) within 15-min window. */
+  SENSITIVE_AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(20),
+
+  SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15),
+  /** Proxy hops to trust for rate limiting IP detection (0 = no proxy, 1+ = trust X-Forwarded-For). */
+  TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(0),
 
   /**
    * Google OAuth 2.0 client IDs (Google Cloud Console → Credentials), one per

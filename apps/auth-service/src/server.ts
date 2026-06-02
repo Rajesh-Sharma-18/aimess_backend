@@ -4,6 +4,7 @@ import app from "./app.js";
 import { env } from "./config/env.js";
 import { prisma } from "./config/prisma.js";
 import { connectAuthRedis, redis } from "./config/redis.js";
+import { startProfileUpdatedConsumer } from "./messaging/profile-updated-consumer.js";
 import { logger } from "@aimess/logger";
 
 let httpServer: Server | undefined;
@@ -32,6 +33,18 @@ const startServer = async () => {
     } catch (error) {
       logger.warn(
         "Redis unavailable/timed out — auth-service is starting anyway; Redis-backed features (OTP throttle, device-link, session cache) will fail until Redis is reachable"
+      );
+      logger.warn(error);
+    }
+
+    // Mirror profile-completion status from user-service. Wrapped so a broker
+    // outage never blocks startup; the flag just stays stale until reconnect.
+    try {
+      await startProfileUpdatedConsumer();
+      logger.info("RabbitMQ profile-updated consumer started");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable after retries — profile-completion sync will not run until auth-service restarts"
       );
       logger.warn(error);
     }

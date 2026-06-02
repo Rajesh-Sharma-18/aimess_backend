@@ -1,39 +1,63 @@
 import { z } from "zod";
 
-import { locationSchema, contactSchema } from "./attachment.validator.js";
+import {
+  locationSchema,
+  contactSchema,
+  stickerSchema,
+} from "./attachment.validator.js";
+import {
+  CHAT_TEXT_MAX_CHARS,
+  enforceMediaLimits,
+} from "../../constants/media-limits.js";
 
-export const sendCommunityMessageSchema = z.object({
-  roomId: z.string().min(5).max(50),
-  message: z.string().default(""),
-  messageType: z.enum([
-    "image",
-    "text",
-    "voice",
-    "custom",
-    "location",
-    "contact",
-  ]),
-  parentMessageId: z.string().nullish(),
-  clientMessageId: z.string().optional(),
-  username: z.string().min(5).max(50),
-  displayname: z.string().nullish(),
-  avatar: z.string().max(3000).default(""),
-  media: z
-    .object({
-      files: z.array(
-        z.object({
-          url: z.string().url(),
-          key: z.string(),
-          mime: z.string(),
-          size: z.number(),
-          width: z.number().optional(),
-          height: z.number().optional(),
-        })
-      ),
-    })
-    .optional(),
-  location: locationSchema.optional(),
-  contact: contactSchema.optional(),
+export const sendCommunityMessageSchema = z
+  .object({
+    roomId: z.string().min(5).max(50),
+    message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+    messageType: z.enum([
+      "image",
+      "text",
+      "voice",
+      "custom",
+      "location",
+      "contact",
+      "sticker",
+    ]),
+    parentMessageId: z.string().nullish(),
+    clientMessageId: z.string().optional(),
+    username: z.string().min(5).max(50),
+    displayname: z.string().nullish(),
+    avatar: z.string().max(3000).default(""),
+    media: z
+      .object({
+        files: z.array(
+          z.object({
+            url: z.string().url(),
+            key: z.string(),
+            mime: z.string(),
+            size: z.number(),
+            width: z.number().optional(),
+            height: z.number().optional(),
+            durationMs: z.number().nonnegative().optional(),
+          })
+        ),
+      })
+      .optional(),
+    location: locationSchema.optional(),
+    contact: contactSchema.optional(),
+    sticker: stickerSchema.optional(),
+  })
+  .superRefine((val, ctx) => {
+    enforceMediaLimits(val.messageType, val.media?.files, ctx);
+  });
+
+export const editCommunityMessageSchema = z.object({
+  // communityId is required so the edit broadcast reaches the right /community
+  // room (clients join community:<communityId>, mirroring the send path).
+  communityId: z.string().min(1),
+  content: z.object({
+    text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),
+  }),
 });
 
 export const reactCommunityMessageSchema = z.object({

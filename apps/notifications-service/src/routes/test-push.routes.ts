@@ -31,7 +31,7 @@ testPushRouter.post("/push", async (req: Request, res: Response) => {
   const results = await Promise.all(
     tokens.map(async (token) => {
       try {
-        const messageId = await sendPush({ token, title, body });
+        const { messageId } = await sendPush({ token, title, body });
         return { token, ok: messageId !== null, messageId };
       } catch (error) {
         logger.error("sendPush threw for token", error);

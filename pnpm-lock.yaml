@@ -185,6 +185,9 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
+      express-rate-limit:
+        specifier: ^8.5.1
+        version: 8.5.1(express@5.2.1)
       google-auth-library:
         specifier: ^10.6.2
         version: 10.6.2
@@ -404,12 +407,21 @@ importers:
 
   apps/notifications-service:
     dependencies:
+      "@aimess/auth-jwt":
+        specifier: workspace:*
+        version: link:../../packages/auth-jwt
       "@aimess/errors":
         specifier: workspace:*
         version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
+      "@aimess/redis":
+        specifier: workspace:*
+        version: link:../../packages/redis
       "@aimess/shared-types":
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -419,6 +431,9 @@ importers:
       "@grpc/proto-loader":
         specifier: ^0.8.1
         version: 0.8.1
+      "@prisma/client":
+        specifier: ^6.9.0
+        version: 6.19.3(prisma@6.19.3(typescript@6.0.3))(typescript@6.0.3)
       "@types/nodemailer":
         specifier: ^8.0.0
         version: 8.0.0
@@ -440,6 +455,9 @@ importers:
       helmet:
         specifier: ^8.1.0
         version: 8.1.0
+      ioredis:
+        specifier: ^5.10.1
+        version: 5.10.1
       nodemailer:
         specifier: ^8.0.7
         version: 8.0.7
@@ -456,6 +474,9 @@ importers:
       "@types/node":
         specifier: ^25.6.2
         version: 25.6.2
+      prisma:
+        specifier: ^6.9.0
+        version: 6.19.3(typescript@6.0.3)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0

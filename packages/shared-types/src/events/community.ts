@@ -72,6 +72,8 @@ export type CommunityAdminTransferredPayload = CommunityEventBase & {
 export type CommunityDeletedPayload = CommunityEventBase & {
   actorId: string;
   reason: "explicit_delete" | "admin_left_no_successor";
+  /** All members that were active at deletion time — notify each. */
+  memberIds: string[];
 };
 
 export type CommunityJoinRequestedPayload = CommunityEventBase & {
@@ -79,6 +81,8 @@ export type CommunityJoinRequestedPayload = CommunityEventBase & {
   userId: string;
   requestId: string;
   message: string | null;
+  /** Admins + moderators that can action this request — notify each. */
+  moderatorRecipientIds: string[];
 };
 
 export type CommunityInviteSentPayload = CommunityEventBase & {
@@ -91,6 +95,8 @@ export type CommunityInviteAcceptedPayload = CommunityEventBase & {
   /** Accepting user. */
   userId: string;
   inviteId: string;
+  /** Original inviter — notified that their invite was accepted. */
+  inviterId: string;
 };
 
 export type CommunityReportCreatedPayload = CommunityEventBase & {
@@ -99,6 +105,8 @@ export type CommunityReportCreatedPayload = CommunityEventBase & {
   /** Null when the report targets the community itself. */
   targetUserId: string | null;
   reason: string;
+  /** Admins + moderators that should review the report — notify each. */
+  moderatorRecipientIds: string[];
 };
 
 export type CommunityReportActionedPayload = CommunityEventBase & {

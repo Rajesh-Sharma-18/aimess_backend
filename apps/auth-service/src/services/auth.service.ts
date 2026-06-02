@@ -65,6 +65,8 @@ export const authService = {
       ? await authRepository.findByEmailForLogin(identifier)
       : await authRepository.findByAccountForLogin(identifier);
 
+    console.log("user found for login:", user); // Debug log
+
     if (!user || user.deletedAt) {
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
     }
@@ -102,10 +104,15 @@ export const authService = {
     await authRepository.mergeFcmTokens(user.id, input.fcmTokens);
 
     const session = buildSessionContext(req);
-    const { tokens } = await issueAuthTokens(user.id, session);
+    const { tokens } = await issueAuthTokens(
+      user.id,
+      session,
+      input.rememberMe
+    );
 
     return {
       tokens,
+      isProfileCompleted: user.isProfileCompleted,
     };
   },
 };

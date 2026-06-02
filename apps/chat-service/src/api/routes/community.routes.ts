@@ -2,11 +2,15 @@ import { Router } from "express";
 
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
+import { validateBody } from "../middleware/validate-body.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
   messageListQuerySchema,
   messageSearchQuerySchema,
+  mediaListQuerySchema,
+  conversationQuerySchema,
 } from "../validators/query.validator.js";
+import { editCommunityMessageSchema } from "../validators/community.validator.js";
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
 
@@ -39,11 +43,32 @@ export function createCommunityRoutes(
     validateQuery(messageListQuerySchema),
     messageCtrl.getMessages
   );
+  router.get(
+    "/rooms/:roomId/conversation",
+    authenticate,
+    validateQuery(conversationQuerySchema),
+    messageCtrl.getConversation
+  );
+  router.get(
+    "/rooms/:roomId/media",
+    authenticate,
+    validateQuery(mediaListQuerySchema),
+    messageCtrl.getRoomMedia
+  );
   router.delete(
     "/messages/:messageId",
     authenticate,
     messageLimit,
     messageCtrl.deleteMessage
+  );
+
+  // Edit a community message (own, text-only, within the 15-min window)
+  router.patch(
+    "/messages/:messageId",
+    authenticate,
+    messageLimit,
+    validateBody(editCommunityMessageSchema),
+    messageCtrl.editMessage
   );
 
   return router;

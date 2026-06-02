@@ -35,7 +35,14 @@ export default [
     },
   },
   {
-    files: ["scripts/**/*.ts"],
+    // Standalone scripts live under scripts/ (outside each service's tsconfig
+    // `src` rootDir), so type-aware linting cannot resolve them to a project.
+    files: ["**/scripts/**/*.ts"],
+    languageOptions: {
+      parserOptions: {
+        project: false,
+      },
+    },
     rules: {
       "no-console": "off",
     },

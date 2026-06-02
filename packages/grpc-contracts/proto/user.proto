@@ -4,6 +4,7 @@ package user;
 
 service UserService {
   rpc CheckFriendship (CheckFriendshipRequest) returns (CheckFriendshipResponse);
+  rpc GetNotificationSettings (GetNotificationSettingsRequest) returns (NotificationSettings);
 }
 
 message CheckFriendshipRequest {
@@ -13,4 +14,24 @@ message CheckFriendshipRequest {
 
 message CheckFriendshipResponse {
   bool are_friends = 1;
+}
+
+message GetNotificationSettingsRequest {
+  string user_id = 1;
+}
+
+// Per-category notification preferences (user-service Postgres NotificationSettings).
+message NotificationSettings {
+  bool   chat_enabled           = 1;
+  bool   call_enabled           = 2;
+  bool   friend_request_enabled = 3;
+  bool   system_enabled         = 4;
+  bool   community_enabled      = 5;
+  bool   live_stream_enabled    = 6;
+  bool   quiet_hours_enabled    = 7;
+  // "HH:mm" 24h local time, or empty string when unset.
+  string quiet_hours_start      = 8;
+  string quiet_hours_end        = 9;
+  // ISO weekday numbers the quiet-hours window applies to (1=Mon … 7=Sun).
+  repeated int32 quiet_hours_days = 10;
 }

@@ -1,5 +1,16 @@
-import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ForbiddenError,
+  GoneError,
+  NotFoundError,
+} from "@aimess/errors";
 import { logger } from "@aimess/logger";
+
+import {
+  CHAT_EDIT_WINDOW_MS,
+  CHAT_TEXT_MAX_CHARS,
+  assertAttachmentsValid,
+} from "../constants/media-limits.js";
 
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -27,6 +38,15 @@ export class GroupMessageService {
     parentMessageId?: string | null;
     clientMessageId?: string | null;
   }): Promise<GroupMessage> {
+    // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
+    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
+      throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    }
+    assertAttachmentsValid(
+      params.messageType,
+      params.content?.files as Array<Record<string, unknown>> | undefined
+    );
+
     // Verify membership
     const member = await this.memberRepo.findActiveByRoomAndUser(
       params.roomId,
@@ -153,6 +173,82 @@ export class GroupMessageService {
     );
   }
 
+  /**
+   * Paginated conversation page for a group room + mark-as-read side effect.
+   * Enforces active membership first (same check as getMessages/listMedia),
+   * fetches the offset page (createdAt < timestamp, newest first), then advances
+   * the caller's read pointer to the newest returned message (forward-only).
+   */
+  async getConversation(params: {
+    roomId: string;
+    userId: string;
+    pageNumber: number;
+    limit: number;
+    timestamp?: number;
+  }): Promise<{ messages: GroupMessage[]; total: number }> {
+    // Enforce active membership first.
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+
+    const beforeMs = params.timestamp ?? Date.now();
+    const skip = (params.pageNumber - 1) * params.limit;
+
+    const [messages, total] = await Promise.all([
+      this.messageRepo.listConversationMessages({
+        roomId: params.roomId,
+        userId: params.userId,
+        beforeMs,
+        skip,
+        take: params.limit,
+      }),
+      // Count must match the page's filter (createdAt < beforeMs + per-user
+      // deletion exclusion), not the boundary-less countByRoom.
+      this.messageRepo.countConversation({
+        roomId: params.roomId,
+        userId: params.userId,
+        beforeMs,
+      }),
+    ]);
+
+    // Mark-as-read: advance to the newest message in the page (index 0, since
+    // the page is createdAt DESC). Forward-only; skip when the page is empty.
+    // Recompute remaining unread (messages still newer than the new pointer that
+    // are visible to this user) so viewing an old page doesn't wrongly zero unread.
+    const newest = messages[0];
+    if (newest) {
+      const remainingUnread = await this.messageRepo
+        .countUnreadAfter({
+          roomId: params.roomId,
+          userId: params.userId,
+          afterDate: newest.createdAt,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupMessageService|getConversation|countUnreadAfter failed: ${String(err)}`
+          );
+          return 0;
+        });
+      await this.memberRepo
+        .advanceReadPointer(
+          params.roomId,
+          params.userId,
+          newest.id,
+          newest.createdAt,
+          remainingUnread
+        )
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupMessageService|getConversation|advanceReadPointer failed: ${String(err)}`
+          );
+        });
+    }
+
+    return { messages, total };
+  }
+
   async searchMessages(params: {
     roomId: string;
     query: string;
@@ -163,6 +259,29 @@ export class GroupMessageService {
       params.query,
       params.limit
     );
+  }
+
+  async listMedia(params: {
+    roomId: string;
+    userId: string;
+    type?: string;
+    cursor?: string | null;
+    limit: number;
+  }): Promise<GroupMessage[]> {
+    // Enforce active membership first.
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
+
+    return this.messageRepo.listMedia({
+      roomId: params.roomId,
+      userId: params.userId,
+      type: params.type,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -214,6 +333,30 @@ export class GroupMessageService {
     }
 
     return this.messageRepo.deleteForEveryone(messageId, userId, deletedType);
+  }
+
+  async editMessage(params: {
+    messageId: string;
+    userId: string;
+    content: {
+      text: string;
+      urls?: string[];
+      files?: unknown[];
+    };
+  }): Promise<GroupMessage> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (message.isDeleted)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (message.senderId !== params.userId)
+      throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
+    if (message.messageType !== "TEXT")
+      throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
+    if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
+      throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
+      throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
+    return this.messageRepo.editMessage(params.messageId, params.content);
   }
 
   async react(

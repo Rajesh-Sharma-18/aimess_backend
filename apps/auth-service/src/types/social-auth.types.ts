@@ -10,5 +10,8 @@ export type SocialLoginResult = {
     email: string | null;
     provider: SocialAuthProvider;
   };
+  /** Whether the user has filled in their required profile fields; lets the
+   * client route to the edit-profile screen on first login. */
+  isProfileCompleted: boolean;
   tokens: AuthTokensResponse;
 };

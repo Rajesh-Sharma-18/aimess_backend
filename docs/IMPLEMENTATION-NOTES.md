@@ -1,7 +1,7 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-05-28**.
+> Update this whenever you ship or change a feature. Last reviewed: **2026-06-01**.
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**).
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening).
 
@@ -412,3 +412,207 @@ Five features shipped end-to-end through the multi-agent pipeline. All green (ty
 ### Postman
 
 A ready-to-import collection + environment live at `postman/` (`aimess-friends.postman_collection.json`, `aimess-local.postman_environment.json`): auth (register/login/refresh, two users), the friend-request lifecycle, and user discovery — with test scripts that auto-capture tokens, `userId` (decoded from the JWT `sub`), and `friendshipId`. Defaults hit services directly (auth `:3001/api/auth`, user `:3002/api/v1`); switch the two base-URL env vars to the gateway to route through `:3000`.
+
+---
+
+## Profile-completion flag in login responses (2026-05-29)
+
+Both password login (`POST /auth/login`) and social login (Google/Apple) now return `isProfileCompleted: boolean` so the client can route to the edit-profile screen on first login.
+
+**Source of truth & sync.** Profile data lives only in user-service, so it owns the computation:
+
+- `apps/user-service/src/lib/profile-completion.util.ts` → `isProfileComplete()` derives the flag from exactly three required fields: **`username`, `firstName`, `lastName`** — all must be non-null and non-empty after trimming. `dateOfBirth` and `gender` are **not** part of the rule. (Updated 2026-05-29 — see "Profile-completion rule narrowed" below; was previously firstName + lastName + non-placeholder DOB + gender.)
+- On every profile update, user-service includes `isProfileCompleted` in the existing `user.profile_updated` event (`UserProfileUpdatedPayload` in `@aimess/shared-types`).
+- auth-service consumes that event (`apps/auth-service/src/messaging/profile-updated-consumer.ts`, started in `server.ts`) and mirrors the flag onto `AuthUser.isProfileCompleted` via `authRepository.markProfileCompletion` (uses `updateMany`, so a stale event for a deleted user is a safe no-op).
+- Login reads `AuthUser.isProfileCompleted` directly (no cross-service call on the hot path) — eventual consistency, default `false` until first profile completion.
+
+**Social login.** New accounts return `false`. The email-link path reads the full `AuthUser` (`findByEmail`); the already-linked path fetches the flag via `authRepository.getProfileCompleted(userId)` to avoid coupling to the linked-account `select`.
+
+**Migration.** `apps/auth-service/prisma/migrations/20260529120000_add_profile_completed_flag` adds `isProfileCompleted BOOLEAN NOT NULL DEFAULT false` to `auth_users`. Run `pnpm db:migrate:deploy` (auth) to apply.
+
+**Messaging note.** auth-service had no consumer infrastructure before this; publishers use `channel.sendToQueue(<named queue>)` on the default exchange (no topic exchange / routing keys). The new consumer declares the same `user.profile_updated.queue` + DLX topology the user-service publisher uses.
+
+---
+
+## Profile-completion rule narrowed + stale-flag backfill (2026-05-29)
+
+**Rule change.** `isProfileComplete()` now checks **only `username`, `firstName`, `lastName`** (all non-empty), dropping the `dateOfBirth`/`gender` requirements. `ProfileCompletionFields` and the `PLACEHOLDER_DOB_ISO` constant + `ProfileGender` import were removed from `profile-completion.util.ts`. OpenAPI `LoginResponseData.isProfileCompleted` description updated to match (`components/schemas.ts`).
+
+**Bug: stale `auth_users.isProfileCompleted`.** The flag is mirror-only (auth-service does not own name fields) and is refreshed **solely** by the `user.profile_updated` event, which fires only on a non-empty profile update (`user-profile.service.ts` returns early on a no-op PATCH). So:
+
+- Login is correct as-is — it returns the mirrored flag; no login code change was needed.
+- Rows last written under the old rule (e.g. a user with username/first/last filled but no gender/DOB → old logic published `false`) stay stale until the next profile edit re-publishes.
+
+**Backfill (for existing stale rows).** `apps/user-service/scripts/backfill-profile-completion.ts` (run: `pnpm --filter @aimess/user-service backfill:profile-completion [-- <userId>...]`) streams `UserProfile` rows (cursor-paginated, optional userId filter), recomputes `isProfileComplete`, and re-publishes `user.profile_updated` on a **confirm channel** (`waitForConfirms` per batch). Idempotent — the consumer just sets the flag. Requires RabbitMQ up + auth-service running to drain. Not needed for normal operation (the edit-profile event handles it going forward); it's a one-shot cleanup tool.
+
+---
+
+## rememberMe on login (2026-05-29)
+
+`POST /auth/login` accepts `rememberMe?: boolean` (default false). When true, the refresh token is issued with a longer TTL (`JWT_REFRESH_EXPIRES_IN_REMEMBER_ME`, 30 days = 2592000s) so the session survives app restarts; the access-token lifetime is unchanged. Implemented per-request (no DB column): `issueAuthTokens(userId, session, rememberMe)` in `apps/auth-service/src/lib/token.ts` picks the refresh TTL; `loginSchema` carries `rememberMe`. Env: `JWT_REFRESH_EXPIRES_IN_REMEMBER_ME` in auth-service `.env`/`.env.example`.
+
+---
+
+## Account deletion (soft delete, conditional password) (2026-05-29)
+
+`DELETE /auth/account` (auth via access token; `apps/auth-service/src/services/account-deletion.service.ts`):
+
+- Password is confirmed against `auth_users.passwordHash` **only when the account has one**. Accounts with a password: missing → 400 `AUTH_PASSWORD_REQUIRED`, wrong → 401 `AUTH_PASSWORD_INCORRECT`. Social-only accounts (no passwordHash) skip the password. Request body: `{ password?: string }` (`account-deletion.validator.ts`).
+- Soft delete: `authRepository.softDeleteUser` sets `status=PENDING_DELETION`, `deletionRequestedAt`, `scheduledDeletionAt` (+30d), `deletedAt`, and revokes all active sessions/refresh tokens (`SessionRevokeReason.ACCOUNT_DELETED`). A `user.deleted` event is published.
+- After deletion, BOTH password login and any linked Google/Apple provider are blocked by the `deletedAt`/non-ACTIVE guards in `auth.service` and `social-auth.service` (`assertUserCanLogin`).
+- Linked accounts: managed via existing `/auth/social/{google,apple}/link` + `/auth/social/unlink`; connected/not-connected status comes from the account-summary providers list.
+- TODO: the 30-day grace-period hard-purge job (consume/scan `scheduledDeletionAt`) is not wired yet.
+
+---
+
+## isGoogleLogin / isAppleLogin on GET /users/profiles/me (2026-05-29)
+
+`GET` and `PATCH /users/profiles/me` now return `isGoogleLogin` and `isAppleLogin`. user-service derives them live from the `providers[]` array of auth-service's `GET /api/auth/internal/account` (already fetched via `resolveAuthAccountSummary`): `isProviderConnected(account, "GOOGLE"|"APPLE")` in `apps/user-service/src/services/user-profile.service.ts`. When auth-service is unavailable (no providers), `isGoogleLogin` falls back to the synced-at-registration DB flag and `isAppleLogin` falls back to `false`. No schema/migration change; reuses the existing Redis cache + outage fallback.
+
+---
+
+## 2026-05-29 — Personal (1:1) chat: completed 6 partial features
+
+Closed out the six partially-implemented direct-message features. Work spans **chat-service** (Prisma v6 on MongoDB `chat_db`), **api-gateway** (Socket.IO `/chat` namespace + gRPC client + Swagger), and shared **packages/grpc-contracts** + **packages/constants**. Real-time transport unchanged: chat-service publishes `{event,data}` to Redis `conv:<roomId>` / `user:<userId>`; the gateway psubscribes `conv:*`/`user:*` and re-emits over Socket.IO.
+
+### 13 — Edit message
+
+- `PrivateMessage.editedAt` + `editHistory` (Json, prior-content snapshots). Sender-only; rejects deleted (cannot resurrect a forEveryone-deleted msg) and non-TEXT.
+- gRPC `EditMessage`; REST `PATCH /api/chat/private/messages/:messageId` (Zod `editMessageSchema`, reuses shared `messageFileSchema`). Emits `message:edited` on `conv:<roomId>`; socket inbound `message:edit`.
+- Both gRPC + REST publish via one shared helper `src/lib/edited-event.ts` (`stringifyContent` / `buildEditedEventData`) so the payload is identical and never throws.
+
+### 15 — Delivered status (full per-recipient)
+
+- `PrivateMessage.deliveredTo` (Json array of userIds) + `deliveredAt` (Json map). gRPC `MarkDelivered` (ack by `upToMessageId`, mirrors MarkMessagesRead). `markDeliveredUpTo` is idempotent (skips already-delivered), never self-delivers (`senderId != recipientId`), skips deleted/hidden, batch-capped at 200.
+- Socket: recipient emits `message:delivered {conversationId, upToMessageId}` on receiving `message:new`; sender receives `message:delivered` on `conv:<roomId>`. Status chain: sent → delivered → read.
+- NOTE: 200-row cap has no continuation cursor yet — a recipient returning after >200 undelivered msgs leaves the tail unmarked (follow-up).
+
+### 18/19 — Presence: online/offline + last seen (Option A: chat-service Redis owns presence; no cross-DB write to user-service)
+
+- Wired the previously-unwired `PresenceService` + device-session cache. gRPC `PresenceConnect/PresenceDisconnect/PresenceHeartbeat`. Gateway `/chat` connect hook → `presenceConnect`; `disconnect` → `presenceDisconnect`; inbound `presence:heartbeat`, `presence:subscribe`/`unsubscribe` (join/leave `user:<peerId>` to receive `presence:status`). `deviceId = socket.data.sessionId`.
+- `recompute` aggregates across all device sessions (online until ALL devices drop); writes `presence:lastseen:<id>` on offline transition; emits `presence:status {isOnline,lastSeen}` on `user:<id>`. REST `GET /api/chat/private/presence/:userId` → `{isOnline,lastSeen}`. "Online duration" intentionally out of scope.
+
+### 22 — Mute/unmute private chat
+
+- `PrivateRoom.mutedBy` Json map `{ [userId]: { mutedAt, muteUntil|null } }` (mirrors `deletedFor`). REST `POST /rooms/:roomId/mute` (optional ISO `muteUntil`, null = indefinite) + `POST /rooms/:roomId/unmute`. Conversation list now carries computed `isMuted` (expired `muteUntil` ⇒ not muted). Participant-guarded; orthogonal to block.
+- NOTE: no PM push pipeline exists yet, so mute is stored + exposed but inert for push until a chat-notification producer is added.
+
+### 27 — Report private message
+
+- New model `PrivateMessageReport` (reporterId, reportedUserId, messageId, roomId, reason enum, description, status=PENDING, `@@unique([messageId, reporterId])`). REST `POST /rooms/.../messages/:messageId/report` → 201 (rate-limited). Participant-guard + self-report reject; duplicate → `CHAT_ALREADY_REPORTED` (P2002). Stored for an admin/moderation panel (no backoffice consumer yet).
+
+### Cross-cutting
+
+- proto: 5 new RPCs in `packages/grpc-contracts/proto/messaging.proto` (loaded at runtime by both services — restart both to pick up). Gateway gRPC client methods all wrapped in opossum breakers (markMessagesRead pattern).
+- i18n: new `CHAT_*` keys in `packages/constants/src/messages/chat.messages.ts` (en + vi).
+- Swagger: `ChatEditMessageRequest`, `ChatMuteRoomRequest`, `ChatReportMessageRequest`, `ChatPresence`, `PrivateMessageReport` schemas + paths for edit (PATCH), report, mute, unmute, presence (all `bearerAuth`).
+
+### Build / review status
+
+- Agent-team review (DRY + Contract + Quality) passed after 2 fixes: (1) 4 OpenAPI path objects had been left commented out — now defined + registered; (2) REST edit publish unified onto the safe shared helper.
+- typecheck/lint green for all touched files in chat-service, api-gateway, constants. The only remaining chat-service `tsc` errors are **pre-existing** amqplib type-API drift in `src/events/index.ts` + `src/events/friendship.consumer.ts` (untouched here) — fix separately by moving to the amqplib v0.10 `ChannelModel` API.
+
+### Migration / deploy action
+
+- chat-service schema synced via `prisma db push` (Mongo, no SQL migration). `db push` + `db generate` were applied locally (collection `private_message_reports` + indexes created). Re-run `pnpm db:push && pnpm db:generate` in `apps/chat-service` on other environments. Restart chat-service AND api-gateway so the new proto RPCs load.
+
+### Remaining follow-ups (out of scope this pass)
+
+- Delivered batch continuation beyond 200.
+- PM push-notification producer (so mute actually suppresses pushes) + presence durability in user-service if a durable last-seen column is needed (would use a `presence.changed` event + user-service consumer — Option B).
+- Pre-existing amqplib type drift in chat-service `src/events/*`.
+
+---
+
+## 2026-06-01 — chat message limits, stickers, edit window, shared media, conversation API
+
+Closed out five chat-service capabilities spanning private/group/community messaging. Shipped via the `aimess-architecture` Agent Team Mode (PM → Pro Coders → DRY + Contract reviewers + Quality Tester → fix loop). No real-time transport change: chat-service publishes `{event,data}` to Redis (`conv:<roomId>` / `community:<communityId>`); the gateway re-emits over Socket.IO.
+
+### Message validation limits (send + edit, all three contexts)
+
+- Enforced in the send validators (Zod `superRefine` via `enforceMediaLimits`) AND defensively at the service layer (`assertAttachmentsValid`), on **both** send and edit, across private/group/community:
+  - text ≤ **4,000** chars (was 10,000)
+  - photos ≤ **10** per message
+  - video ≤ **100 MB** and `durationMs` ≤ **180000** (3 min)
+  - voice `durationMs` ≤ **300000** (5 min)
+- Per-type caps centralized in `apps/chat-service/src/constants/media-limits.ts` (single source of truth — `MEDIA_LIMITS` table + the two enforcement functions). Byte caps: video 100 MB via `CHAT_VIDEO_MAX_BYTES`; images/voice/GIF/document/sticker 50 MB via `CHAT_UPLOAD_MAX_BYTES` (the generic cap). Stable error codes: `CHAT_IMAGE_COUNT_EXCEEDED`, `CHAT_VIDEO_TOO_LARGE`, `CHAT_VIDEO_TOO_LONG`, `CHAT_VOICE_TOO_LONG`, `CHAT_FILE_TOO_LARGE`.
+- New env vars (`config/env.ts`, coerced+defaulted): `CHAT_TEXT_MAX_CHARS` (4000), `CHAT_VIDEO_MAX_BYTES` (104857600). `CHAT_UPLOAD_MAX_BYTES` (52428800) already existed.
+
+### STICKER message type
+
+- Added `STICKER` to `MessageType` (`"STICKER"`) and `CommunityMessageType` (`"sticker"`) in `src/types/enums.ts`.
+- `content.sticker` shape via `stickerSchema` in `api/validators/attachment.validator.ts`: `{ objectKey? | url? (one required, `.refine`), packId, stickerId }`. **Client-supplied — there is no server-side sticker-pack system** (no pack catalog, no validation that packId/stickerId exist). Stickers carry no `files[]` array, so `assertAttachmentsValid`/`enforceMediaLimits` treat STICKER as a no-op.
+
+### 15-minute edit window
+
+- Edits rejected when `now - createdAt > 15 min` (`CHAT_EDIT_WINDOW_MS` in `media-limits.ts`) → **`GoneError("CHAT_EDIT_WINDOW_EXPIRED")`** (HTTP 410), enforced in all three message services (`private-message.service.ts`, `group-message.service.ts`, `community-message.service.ts`).
+- Net-new edit endpoints: group `PATCH /api/chat/groups/messages/:messageId` and community `PATCH /api/chat/community/messages/:messageId` (the latter requires `communityId` in the body). Private edit already existed (see "13 — Edit message" above). Community edit broadcasts on the `community:<communityId>` Redis channel with a `community:message:edited` event.
+
+### Shared media/docs endpoints (cursor-paginated, type-filtered)
+
+- `GET /api/chat/private/rooms/:roomId/media`, `GET /api/chat/groups/:roomId/media`, `GET /api/chat/community/rooms/:roomId/media`. Query (`mediaListQuerySchema`): `type` (IMAGE|VIDEO|GIF|VOICE|DOCUMENT|STICKER), `cursor`, `limit`.
+- Community stores its media type differently (IMAGE/VOICE/STICKER lower-cased; VIDEO/GIF/DOCUMENT collapsed to `"custom"`) — the incoming filter is mapped via `mapCommunityMediaType` in `media-limits.ts`; unknown types return an empty result rather than broadening the query.
+- New composite index `[roomId, messageType, createdAt(desc)]` added on `PrivateMessage` / `GroupMessage` / `GeneralRoomMessage` to back the filtered listing (see migration note below).
+
+### Conversation list + mark-as-read (offset-paginated)
+
+- `GET /api/chat/groups/:roomId/conversation`, `GET /api/chat/community/rooms/:roomId/conversation`. Query (`conversationQuerySchema`): `pageNumber` (1-based, default 1), `limit` (default 30, max 100), `timestamp` (epoch ms, default now).
+- Returns messages with `createdAt < timestamp`, newest-first, offset `(pageNumber-1)*limit`, **excluding deleted-for-all and the caller's deleted-for-self** — filtered **at the DB level** via raw Mongo (`$ne`-on-array against the `deletedForUserIds` / `deletedBy` Json arrays) rather than the old over-fetch-and-slice approach.
+- **Side effect:** advances the caller's read pointer (`lastReadAt` / `lastReadMessageId`), **forward-only**, and recomputes remaining unread (group `unreadCount` is recomputed, not blind-zeroed). New fields added to the community `RoomMember`: `lastReadMessageId`, `lastReadAt` (group `GroupMember` already had them).
+
+---
+
+## 2026-06-01 — notifications-service: community + friend notifications and event-driven push
+
+Built the notifications-service from a stub into a working push/mail **transport + orchestration** layer, plus the cross-service contracts it needs. Shipped via the Agent Team Mode.
+
+### Architecture decision (important)
+
+- The notification **inbox** is owned by **chat-service** (its existing `Notification` model). **notifications-service does not own the inbox and never writes another service's DB** (one-service-one-DB). It persists inbox rows by calling a **new chat-service gRPC `CreateNotification`** RPC, and otherwise only sends push/mail.
+
+### Device-token store (owned by notifications-service)
+
+- **Prisma 6 MongoDB connector** (NOT Mongoose), in its own `aimess_notifications` DB. Model `DeviceToken { userId, token @unique, platform, deviceId?, lastSeenAt, createdAt, @@index([userId]) }` (`apps/notifications-service/prisma/schema.prisma`). `token` is globally unique so re-registering the same token from another user moves ownership.
+  - **NB:** the service pins `prisma`/`@prisma/client` `^6.9.0`, consistent with the project-wide rule that **Prisma 7 dropped MongoDB support** (the same reason community-/chat-service stay on Prisma 6). (The internal task summary called this "Prisma 7" — that was inaccurate; the code is Prisma 6.)
+- REST (JWT-auth): `POST /v1/devices` (upsert `{token, platform, deviceId}`), `DELETE /v1/devices/:token` (unregister). Dead tokens are auto-pruned on FCM invalid-token errors.
+
+### Community + friend notifications (event-driven)
+
+- New consumer on **`community.queue`** maps community events → recipients: `JOIN_REQUESTED`→admins/mods, `MEMBER_ADDED`→target, `ADMIN_TRANSFERRED`→new admin, `KICKED`/`BANNED`/`ROLE_CHANGED`→affected, `INVITE_SENT`→invitee, `INVITE_ACCEPTED`→inviter, `REPORT_CREATED`→admins/mods, `REPORT_ACTIONED`→reporter, `DELETED`→all members. Honors the `communityEnabled` setting. (This is the consumer the community-service event publishers — see §0 — were waiting on.)
+- New consumer on **`friendship.queue`** → friend push under the `friendRequestEnabled` category. (Also previously unconsumed — see §4.)
+
+### Settings lookup + push pipeline
+
+- New user-service gRPC **`GetNotificationSettings`**, opossum-wrapped, Redis-cached (key `notif:settings:<userId>`, TTL 300 s, allow-on-open). Cache is busted by a new **`user.settings_updated`** event (consumer on `user.settings_updated.queue`).
+- Push pipeline: check per-category setting + quiet hours → look up device tokens → `sendPush` per token → prune dead tokens → write the inbox row via the chat `CreateNotification` gRPC.
+- **gRPC client host = `127.0.0.1`** (e.g. `USER_SERVICE_GRPC_URL` default `127.0.0.1:4002`, `CHAT_SERVICE_GRPC_URL` `127.0.0.1:4004`) — **not `0.0.0.0`**, which is a bind-only address and fails as a _connect_ target on Windows. (The server still _binds_ `0.0.0.0:<port>`, which is correct.)
+
+### Cross-service contracts
+
+- `packages/grpc-contracts/proto/user.proto`: `+GetNotificationSettings`. `notification.proto`: `+CreateNotification` (served by chat-service).
+- `packages/shared-types`: community events enriched with recipient rosters (`moderatorRecipientIds`, `memberIds`, `inviterId`); user events `+SETTINGS_UPDATED`.
+
+---
+
+## Known gaps / TODOs (2026-06-01 — chat limits/media/conversation + notifications)
+
+- [ ] **`message.sent` (chat-service) and `call.*` (call-service) publishers NOT built** → push-on-new-message and push-on-call are **deferred** until those publishers exist. Only `community.*` and `friend.*` push are live today.
+- [ ] **Pending `prisma db push` (needs a live Mongo):** chat-service (group/community `editedAt`/`editHistory`, the new media composite indexes, community `RoomMember.lastReadAt`/`lastReadMessageId`) and notifications-service (`device_tokens` unique index). Run `pnpm db:push && pnpm db:generate` in each app on every environment.
+- [ ] **Conversation API raw-Mongo queries** verified by construction (field names, `$oid` for the community ObjectId `roomId`) but **not yet live-DB smoke-tested**.
+- [ ] **Pre-existing amqplib type errors** in `apps/chat-service/src/events/` (`friendship.consumer.ts`, `index.ts`) — unrelated to this work; they block a full chat-service `tsc` build. Spawned as a separate task (same drift noted in §"2026-05-29" above).
+- [ ] **No automated tests** in chat-/notifications-service (test scripts are placeholders) — sign-off was multi-reviewer + typecheck + lint.
+
+### Resolved by this session (see §4 entries above)
+
+- [x] **Friendship events have a consumer** — notifications-service `friendship.queue` consumer (was "NO consumer" in §4).
+- [x] **`community.queue` has a consumer** — notifications-service community consumer (was the §0 "Known gap").
+- [x] **FCM trigger-on-event for community + friend** — push now fires for those event families (the §4 "delivery does not" item is now partial: community/friend live, message/call deferred). Device-token lifecycle (register/unregister, dead-token pruning) is also addressed by the new `DeviceToken` store.
+
+---
+
+## Verification status (2026-06-01 — chat limits/media/conversation + notifications)
+
+- Executed via the **aimess-architecture Agent Team Mode** (PM → Pro Coders → DRY + Contract reviewers + Quality Tester → fix loop). Reviewers + Quality Tester ran before sign-off.
+- **Notable fixes from review:** community edit Redis channel corrected (`conv:*` → `community:*`); community media type-filter mapping fixed; conversation pagination corrected to a **DB-level deletion filter + boundary-aware count** (replacing a broken over-fetch + in-memory-slice); group `unreadCount` is **recomputed** instead of unconditionally zeroed.
+- **Final state:** `typecheck` + `lint` clean across chat / notifications / user / community — only the **6 pre-existing amqplib errors** in chat-service `src/events/*` remain.
+- Runtime / integration — **NOT done** (no test runner; verified by typecheck + lint + multi-agent review/tester code-reading). Conversation raw-Mongo queries not yet live-DB smoke-tested.

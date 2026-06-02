@@ -40,7 +40,6 @@ export const register = asyncHandler(async (req: Request, res: Response) => {
 export const login = asyncHandler(async (req: Request, res: Response) => {
   const body = req.body as LoginInput;
   const result = await authService.login(req, body);
-  console.log("Login result:", result); // Debug log
   return res
     .status(HTTP_STATUS.OK)
     .json(new ApiResponse(result, t("AUTH_LOGIN_SUCCESS", req.locale)));

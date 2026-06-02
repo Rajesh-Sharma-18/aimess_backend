@@ -11,7 +11,10 @@ export type UserProfileData = {
   account: string | null;
   /** Primary account email from auth-service; null if unset or auth unavailable. */
   email: string | null;
+  /** True when a GOOGLE provider is linked in auth-service. */
   isGoogleLogin: boolean;
+  /** True when an APPLE provider is linked in auth-service. */
+  isAppleLogin: boolean;
   dateOfBirth: string;
   gender: ProfileGenderValue | null;
   /** Presigned GET URL (private bucket). Refresh via profile API when expired. */
