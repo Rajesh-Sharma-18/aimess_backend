@@ -270,6 +270,46 @@ export const COMMUNITY_MESSAGES = {
     vi: "Không thể chuyển trạng thái báo cáo này",
     en: "Invalid report status transition",
   },
+  COMMUNITY_REPORT_DELETED: {
+    vi: "Đã xóa báo cáo",
+    en: "Report deleted",
+  },
+
+  // --- Member moderation mute / warn --------------------------------------
+  COMMUNITY_MEMBER_MUTED: {
+    vi: "Đã tắt tiếng thành viên",
+    en: "Member muted",
+  },
+  COMMUNITY_MEMBER_UNMUTED: {
+    vi: "Đã bỏ tắt tiếng thành viên",
+    en: "Member unmuted",
+  },
+  COMMUNITY_MEMBER_NOT_MUTED: {
+    vi: "Thành viên này hiện không bị tắt tiếng",
+    en: "This member is not muted",
+  },
+  COMMUNITY_MUTED_MEMBERS_FETCHED: {
+    vi: "Lấy danh sách thành viên bị tắt tiếng thành công",
+    en: "Muted members fetched successfully",
+  },
+  COMMUNITY_MEMBER_WARNED: {
+    vi: "Đã cảnh cáo thành viên",
+    en: "Member warned",
+  },
+  COMMUNITY_MEMBER_WARNINGS_FETCHED: {
+    vi: "Lấy danh sách cảnh cáo thành viên thành công",
+    en: "Member warnings fetched successfully",
+  },
+
+  // --- Notification preferences -------------------------------------------
+  COMMUNITY_NOTIFICATION_PREFERENCES_FETCHED: {
+    vi: "Lấy tùy chọn thông báo thành công",
+    en: "Notification preferences fetched successfully",
+  },
+  COMMUNITY_NOTIFICATION_PREFERENCES_UPDATED: {
+    vi: "Đã cập nhật tùy chọn thông báo",
+    en: "Notification preferences updated",
+  },
 
   // --- Mute ---------------------------------------------------------------
   COMMUNITY_MUTE_UPDATED: {

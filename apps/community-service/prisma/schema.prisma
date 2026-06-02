@@ -78,6 +78,9 @@ model CommunityMember {
   snapshotAvatarKey   String?
   role        CommunityMemberRole   @default(MEMBER)
   status      CommunityMemberStatus @default(ACTIVE)
+  bannedAt    DateTime?
+  bannedBy    String?
+  banReason   String?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
@@ -174,16 +177,56 @@ model CommunityReport {
 // absent → not muted. Lazy expiration (no janitor).
 // -----------------------------------------------------------------------------
 model CommunityMuteSetting {
-  id          String    @id @default(auto()) @map("_id") @db.ObjectId
-  userId      String // AuthUser.id
-  communityId String    @db.ObjectId
-  mutedUntil  DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id                  String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId              String // AuthUser.id
+  communityId         String    @db.ObjectId
+  mutedUntil          DateTime?
+  streamEnabled       Boolean   @default(true)
+  chatEnabled         Boolean   @default(true)
+  announcementEnabled Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@unique([userId, communityId])
   @@index([userId])
   @@map("community_mute_settings")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityMemberMute — moderation mute applied to a member by a moderator/admin
+// (distinct from the per-user notification mute CommunityMuteSetting).
+// `mutedUntil` null → muted indefinitely; future Date → muted until that
+// timestamp; row absent → not muted. Lazy expiration (no janitor).
+// -----------------------------------------------------------------------------
+model CommunityMemberMute {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  communityId String    @db.ObjectId
+  userId      String // AuthUser.id of the muted member
+  mutedBy     String // AuthUser.id of the moderator/admin
+  reason      String?
+  mutedUntil  DateTime? // null = indefinite
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([communityId, userId])
+  @@index([communityId])
+  @@map("community_member_mutes")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityMemberWarning — moderation warning issued to a member, with a note.
+// Append-only (multiple warnings per member).
+// -----------------------------------------------------------------------------
+model CommunityMemberWarning {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  communityId String   @db.ObjectId
+  userId      String // AuthUser.id of the warned member
+  warnedBy    String // AuthUser.id of the moderator/admin
+  note        String
+  createdAt   DateTime @default(now())
+
+  @@index([communityId, userId])
+  @@map("community_member_warnings")
 }
 
 // -----------------------------------------------------------------------------

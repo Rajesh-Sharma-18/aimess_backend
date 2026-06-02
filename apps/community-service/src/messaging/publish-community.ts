@@ -12,6 +12,9 @@ import {
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
   type CommunityMemberKickedPayload,
+  type CommunityMemberMutedPayload,
+  type CommunityMemberUnmutedPayload,
+  type CommunityMemberWarnedPayload,
   type CommunityMemberRoleChangedPayload,
   type CommunityReportActionedPayload,
   type CommunityReportCreatedPayload,
@@ -66,6 +69,24 @@ export function publishCommunityMemberBannedSafe(
   data: CommunityMemberBannedPayload
 ): void {
   publishSafe(CommunityEvents.MEMBER_BANNED, data, "community.member_banned");
+}
+
+export function publishCommunityMemberMutedSafe(
+  data: CommunityMemberMutedPayload
+): void {
+  publishSafe(CommunityEvents.MEMBER_MUTED, data, "community.member_muted");
+}
+
+export function publishCommunityMemberUnmutedSafe(
+  data: CommunityMemberUnmutedPayload
+): void {
+  publishSafe(CommunityEvents.MEMBER_UNMUTED, data, "community.member_unmuted");
+}
+
+export function publishCommunityMemberWarnedSafe(
+  data: CommunityMemberWarnedPayload
+): void {
+  publishSafe(CommunityEvents.MEMBER_WARNED, data, "community.member_warned");
 }
 
 export function publishCommunityMemberRoleChangedSafe(

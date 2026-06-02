@@ -1443,6 +1443,25 @@ export const openApiSchemas = {
       snapshotDisplayName: { type: "string" },
       snapshotAvatarUrl: { type: "string", nullable: true },
       snapshotAvatarUrlExpiresIn: { type: "integer", nullable: true },
+      bannedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "When the member was banned; null when not banned.",
+      },
+      bannedBy: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description:
+          "User ID of the admin who banned the member; null when not banned.",
+      },
+      banReason: {
+        type: "string",
+        nullable: true,
+        description:
+          "Operator-supplied ban reason; null when not banned or no reason given.",
+      },
     },
     required: [
       "userId",
@@ -1453,6 +1472,9 @@ export const openApiSchemas = {
       "snapshotDisplayName",
       "snapshotAvatarUrl",
       "snapshotAvatarUrlExpiresIn",
+      "bannedAt",
+      "bannedBy",
+      "banReason",
     ],
   },
   CommunityMembersResponseData: {
@@ -2015,6 +2037,151 @@ export const openApiSchemas = {
         maximum: 525600,
         nullable: true,
       },
+    },
+  },
+
+  // --- Member moderation: mute / warn -------------------------------------
+  CommunityMutedMemberData: {
+    type: "object",
+    description: "A single moderation-muted member row.",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      mutedBy: {
+        type: "string",
+        format: "uuid",
+        description: "User ID of the moderator/admin who muted the member.",
+      },
+      reason: { type: "string", nullable: true },
+      mutedAt: { type: "string", format: "date-time" },
+      mutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "null = muted indefinitely.",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "mutedBy",
+      "reason",
+      "mutedAt",
+      "mutedUntil",
+    ],
+  },
+  CommunityMutedMembersResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityMutedMemberData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  SetMemberMuteRequest: {
+    type: "object",
+    description:
+      "durationMinutes null/omitted → mute indefinitely; positive integer → mute for N minutes.",
+    properties: {
+      durationMinutes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 525600,
+        nullable: true,
+      },
+      reason: {
+        type: "string",
+        maxLength: 500,
+        description: "Optional moderation reason.",
+      },
+    },
+  },
+  CommunityMemberWarningData: {
+    type: "object",
+    description: "A single moderation warning issued to a member.",
+    properties: {
+      warningId: { type: "string" },
+      userId: { type: "string", format: "uuid" },
+      warnedBy: {
+        type: "string",
+        format: "uuid",
+        description: "User ID of the moderator/admin who issued the warning.",
+      },
+      note: { type: "string" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["warningId", "userId", "warnedBy", "note", "createdAt"],
+  },
+  CommunityMemberWarningsResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityMemberWarningData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  WarnMemberRequest: {
+    type: "object",
+    properties: {
+      note: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1000,
+        description: "Required warning note.",
+      },
+    },
+    required: ["note"],
+  },
+
+  // --- Notification preferences -------------------------------------------
+  CommunityNotificationPreferenceData: {
+    type: "object",
+    description:
+      "Per-community notification preference toggles for the caller.",
+    properties: {
+      communityId: { type: "string" },
+      mutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "null = not muted or muted indefinitely.",
+      },
+      streamEnabled: { type: "boolean" },
+      chatEnabled: { type: "boolean" },
+      announcementEnabled: { type: "boolean" },
+      createdAt: { type: "string", format: "date-time", nullable: true },
+      updatedAt: { type: "string", format: "date-time", nullable: true },
+    },
+    required: [
+      "communityId",
+      "mutedUntil",
+      "streamEnabled",
+      "chatEnabled",
+      "announcementEnabled",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  SetNotificationPrefsRequest: {
+    type: "object",
+    description:
+      "At least one of the toggles must be present; omitted fields are left unchanged.",
+    properties: {
+      streamEnabled: { type: "boolean" },
+      chatEnabled: { type: "boolean" },
+      announcementEnabled: { type: "boolean" },
     },
   },
 

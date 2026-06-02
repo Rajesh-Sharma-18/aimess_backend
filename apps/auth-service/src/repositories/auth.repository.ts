@@ -308,8 +308,8 @@ export const authRepository = {
     });
   },
 
-  async mergeFcmTokens(userId: string, tokens: string[]): Promise<void> {
-    if (tokens?.length === 0) return;
+  async mergeFcmTokens(userId: string, tokens: string[] | null): Promise<void> {
+    if (!tokens || tokens.length === 0) return;
     await prisma.$executeRaw`
       UPDATE auth_users
       SET "fcmTokens" = (

@@ -50,7 +50,10 @@ import type {
   CommunityJoinRequestWithUserData,
   CommunityListItem,
   CommunityMemberData,
+  CommunityMemberWarningData,
+  CommunityMutedMemberData,
   CommunityMuteData,
+  CommunityNotificationPreferenceData,
   CommunityReportData,
   CommunityReportWithUsersData,
   MyInviteData,
@@ -76,6 +79,9 @@ import {
   publishCommunityMemberAddedSafe,
   publishCommunityMemberBannedSafe,
   publishCommunityMemberKickedSafe,
+  publishCommunityMemberMutedSafe,
+  publishCommunityMemberUnmutedSafe,
+  publishCommunityMemberWarnedSafe,
   publishCommunityMemberRoleChangedSafe,
   publishCommunityReportActionedSafe,
   publishCommunityReportCreatedSafe,
@@ -184,6 +190,9 @@ async function toMemberData(member: {
   snapshotUsername: string;
   snapshotDisplayName: string;
   snapshotAvatarKey: string | null;
+  bannedAt?: Date | null;
+  bannedBy?: string | null;
+  banReason?: string | null;
 }): Promise<CommunityMemberData> {
   const avatarView = await memberAvatarService.resolveViewUrl(
     member.snapshotAvatarKey
@@ -198,6 +207,9 @@ async function toMemberData(member: {
     snapshotDisplayName: member.snapshotDisplayName,
     snapshotAvatarUrl: avatarView?.url ?? null,
     snapshotAvatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    bannedAt: member.bannedAt ? member.bannedAt.toISOString() : null,
+    bannedBy: member.bannedBy ?? null,
+    banReason: member.banReason ?? null,
   };
 }
 
@@ -907,18 +919,42 @@ export const communityService = {
     return toMemberData(updated);
   },
 
-  async kickMember(
+  /**
+   * Shared MODERATOR+ guard for member-targeted moderation actions (kick, mute,
+   * warn). Performs the identical six-step gate those actions share and returns
+   * the loaded `community`, `target` member row, and `callerMembership` so the
+   * caller reuses them without re-querying:
+   *   1. community exists (404 COMMUNITY_NOT_FOUND)
+   *   2. caller is an ACTIVE MODERATOR+ (assertCommunityRole)
+   *   3. caller !== target (400 COMMUNITY_MEMBER_CANNOT_MODIFY_SELF)
+   *   4. target exists and is ACTIVE (404 COMMUNITY_MEMBER_NOT_FOUND)
+   *   5. target is not the admin / an ADMIN (400 COMMUNITY_MEMBER_CANNOT_MODIFY_ADMIN)
+   *   6. caller strictly outranks target (403 COMMUNITY_FORBIDDEN)
+   *
+   * NOTE: intentionally NOT used by ban/unban — ban requires ADMIN, allows
+   * non-ACTIVE targets, and skips the strict-rank rule.
+   */
+  async _assertCanModerateMember(
     communityId: string,
     callerId: string,
-    targetUserId: string,
-    reason?: string
-  ): Promise<CommunityMemberData> {
+    targetUserId: string
+  ): Promise<{
+    community: NonNullable<
+      Awaited<ReturnType<typeof communityRepository.findById>>
+    >;
+    target: NonNullable<
+      Awaited<ReturnType<typeof communityRepository.findMemberByUserId>>
+    >;
+    callerMembership: NonNullable<
+      Awaited<ReturnType<typeof communityRepository.findMembership>>
+    >;
+  }> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // A MODERATOR or ADMIN may kick members.
+    // A MODERATOR or ADMIN may perform the action.
     const callerMembership = await communityRepository.findMembership(
       communityId,
       callerId
@@ -937,7 +973,7 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
     }
 
-    // The community admin can never be kicked.
+    // The community admin / an ADMIN can never be the target.
     if (
       community.adminId === targetUserId ||
       target.role === CommunityMemberRole.ADMIN
@@ -946,13 +982,24 @@ export const communityService = {
     }
 
     // Strict rank rule: the caller must outrank the target, so a MODERATOR
-    // cannot kick a peer MODERATOR (only ADMIN can).
+    // cannot act on a peer MODERATOR (only ADMIN can).
     if (
       COMMUNITY_ROLE_RANK[callerMembership.role] <=
       COMMUNITY_ROLE_RANK[target.role]
     ) {
       throw new ForbiddenError("COMMUNITY_FORBIDDEN");
     }
+
+    return { community, target, callerMembership };
+  },
+
+  async kickMember(
+    communityId: string,
+    callerId: string,
+    targetUserId: string,
+    reason?: string
+  ): Promise<CommunityMemberData> {
+    await this._assertCanModerateMember(communityId, callerId, targetUserId);
 
     // Single-document update + recompute of memberCount — no $transaction
     // (standalone Mongo). Recounting ACTIVE members is robust against drift.
@@ -1037,7 +1084,12 @@ export const communityService = {
     const updated = await communityRepository.updateMemberStatus(
       communityId,
       targetUserId,
-      CommunityMemberStatus.BANNED
+      CommunityMemberStatus.BANNED,
+      {
+        bannedAt: new Date(),
+        bannedBy: callerId,
+        banReason: reason ?? null,
+      }
     );
 
     const count = await communityRepository.countActiveMembers(communityId);
@@ -1387,7 +1439,8 @@ export const communityService = {
     const updated = await communityRepository.updateMemberStatus(
       communityId,
       targetUserId,
-      CommunityMemberStatus.LEFT
+      CommunityMemberStatus.LEFT,
+      { bannedAt: null, bannedBy: null, banReason: null }
     );
 
     const count = await communityRepository.countActiveMembers(communityId);
@@ -1401,6 +1454,268 @@ export const communityService = {
     });
 
     return toMemberData(updated);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Member moderation mute (moderator-applied — distinct from notification mute)
+  // ---------------------------------------------------------------------------
+  async muteMember(
+    communityId: string,
+    callerId: string,
+    targetUserId: string,
+    durationMinutes: number | null | undefined,
+    reason?: string
+  ): Promise<CommunityMutedMemberData> {
+    const { target } = await this._assertCanModerateMember(
+      communityId,
+      callerId,
+      targetUserId
+    );
+
+    // null / undefined → indefinite; positive number → now + N minutes.
+    const mutedUntil =
+      durationMinutes == null
+        ? null
+        : new Date(Date.now() + durationMinutes * 60_000);
+
+    const row = await communityRepository.upsertMemberMute({
+      communityId,
+      userId: targetUserId,
+      mutedBy: callerId,
+      reason: reason ?? null,
+      mutedUntil,
+    });
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "MEMBER_MUTED",
+      targetUserId,
+      reason,
+      metadata: {
+        reason: reason ?? null,
+        mutedUntil: mutedUntil?.toISOString() ?? null,
+      },
+    });
+
+    logger.info(
+      `Community member muted: community=${communityId} by=${callerId} target=${targetUserId} until=${mutedUntil?.toISOString() ?? "(indefinite)"}`
+    );
+
+    publishCommunityMemberMutedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+      reason: reason ?? null,
+      mutedUntil: mutedUntil?.toISOString() ?? null,
+    });
+
+    const view = await buildUserSnapshotView(
+      {
+        username: target.snapshotUsername,
+        displayName: target.snapshotDisplayName,
+        avatarObjectKey: target.snapshotAvatarKey,
+      },
+      targetUserId
+    );
+
+    return {
+      userId: view.userId,
+      username: view.username,
+      displayName: view.displayName,
+      avatarUrl: view.avatarUrl,
+      avatarUrlExpiresIn: view.avatarUrlExpiresIn,
+      mutedBy: row.mutedBy,
+      reason: row.reason,
+      mutedAt: row.createdAt.toISOString(),
+      mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+    };
+  },
+
+  async unmuteMember(
+    communityId: string,
+    callerId: string,
+    targetUserId: string
+  ): Promise<void> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+
+    const existing = await communityRepository.findMemberMute(
+      communityId,
+      targetUserId
+    );
+    // No active mute → 404 (a fully-expired row is treated as not muted).
+    if (
+      !existing ||
+      (existing.mutedUntil && existing.mutedUntil.getTime() <= Date.now())
+    ) {
+      throw new NotFoundError("COMMUNITY_MEMBER_NOT_MUTED");
+    }
+
+    await communityRepository.deleteMemberMute(communityId, targetUserId);
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "MEMBER_UNMUTED",
+      targetUserId,
+    });
+
+    logger.info(
+      `Community member unmuted: community=${communityId} by=${callerId} target=${targetUserId}`
+    );
+
+    publishCommunityMemberUnmutedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+    });
+  },
+
+  async listMutedMembers(
+    communityId: string,
+    callerId: string,
+    params: { page: number; limit: number }
+  ): Promise<PaginatedResponse<CommunityMutedMemberData>> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const { rows, total } = await communityRepository.listMutedMembers({
+      communityId,
+      now: new Date(),
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: CommunityMutedMemberData[] = [];
+    if (rows.length > 0) {
+      const userIds = rows.map((r) => r.userId);
+      const members = await communityRepository.findMembersByUserIds(
+        communityId,
+        userIds
+      );
+      const memberMap = new Map(members.map((m) => [m.userId, m]));
+
+      for (const row of rows) {
+        const member = memberMap.get(row.userId);
+        const avatarView = await memberAvatarService.resolveViewUrl(
+          member?.snapshotAvatarKey ?? null
+        );
+        items.push({
+          userId: row.userId,
+          username: member?.snapshotUsername ?? "",
+          displayName: member?.snapshotDisplayName ?? "",
+          avatarUrl: avatarView?.url ?? null,
+          avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+          mutedBy: row.mutedBy,
+          reason: row.reason,
+          mutedAt: row.createdAt.toISOString(),
+          mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+        });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Member warnings
+  // ---------------------------------------------------------------------------
+  async warnMember(
+    communityId: string,
+    callerId: string,
+    targetUserId: string,
+    note: string
+  ): Promise<CommunityMemberWarningData> {
+    await this._assertCanModerateMember(communityId, callerId, targetUserId);
+
+    const row = await communityRepository.createMemberWarning({
+      communityId,
+      userId: targetUserId,
+      warnedBy: callerId,
+      note,
+    });
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "MEMBER_WARNED",
+      targetUserId,
+      metadata: { note },
+    });
+
+    logger.info(
+      `Community member warned: community=${communityId} by=${callerId} target=${targetUserId}`
+    );
+
+    publishCommunityMemberWarnedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+      note,
+    });
+
+    return {
+      warningId: row.id,
+      userId: row.userId,
+      warnedBy: row.warnedBy,
+      note: row.note,
+      createdAt: row.createdAt.toISOString(),
+    };
+  },
+
+  async listMemberWarnings(
+    communityId: string,
+    callerId: string,
+    targetUserId: string,
+    params: { page: number; limit: number }
+  ): Promise<PaginatedResponse<CommunityMemberWarningData>> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const { rows, total } = await communityRepository.listMemberWarnings({
+      communityId,
+      userId: targetUserId,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: CommunityMemberWarningData[] = rows.map((row) => ({
+      warningId: row.id,
+      userId: row.userId,
+      warnedBy: row.warnedBy,
+      note: row.note,
+      createdAt: row.createdAt.toISOString(),
+    }));
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
   },
 
   async joinCommunity(
@@ -2635,6 +2950,47 @@ export const communityService = {
     return toReportData(updated);
   },
 
+  /**
+   * Hard-delete a report (MODERATOR+). Community must exist, report must exist
+   * and belong to the community. Records a COMMUNITY_REPORT_DELETED audit entry
+   * with the prior status in metadata.
+   */
+  async deleteReport(
+    communityId: string,
+    callerId: string,
+    reportId: string
+  ): Promise<void> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const report = await communityRepository.findReportById(reportId);
+    if (!report || report.communityId !== communityId) {
+      throw new NotFoundError("COMMUNITY_REPORT_NOT_FOUND");
+    }
+
+    await communityRepository.deleteReport(reportId);
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "COMMUNITY_REPORT_DELETED",
+      targetUserId: report.targetUserId ?? undefined,
+      metadata: { reportId, priorStatus: report.status },
+    });
+
+    logger.info(
+      `Community report deleted: community=${communityId} report=${reportId} by=${callerId} priorStatus=${report.status}`
+    );
+  },
+
   // ---------------------------------------------------------------------------
   // Mute settings (per-user, per-community notification mute)
   // ---------------------------------------------------------------------------
@@ -2724,6 +3080,94 @@ export const communityService = {
     }
 
     await communityRepository.clearMute(callerId, communityId);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Per-community notification preferences (toggles on the mute-setting row)
+  // ---------------------------------------------------------------------------
+  async getNotificationPreferences(
+    communityId: string,
+    callerId: string
+  ): Promise<CommunityNotificationPreferenceData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
+
+    const row = await communityRepository.findMuteByUserAndCommunity(
+      callerId,
+      communityId
+    );
+
+    // A member always has implicit defaults — no row → all enabled, not muted.
+    if (!row) {
+      return {
+        communityId,
+        mutedUntil: null,
+        streamEnabled: true,
+        chatEnabled: true,
+        announcementEnabled: true,
+        createdAt: null,
+        updatedAt: null,
+      };
+    }
+
+    return {
+      communityId,
+      mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+      streamEnabled: row.streamEnabled,
+      chatEnabled: row.chatEnabled,
+      announcementEnabled: row.announcementEnabled,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  },
+
+  async setNotificationPreferences(
+    communityId: string,
+    callerId: string,
+    prefs: {
+      streamEnabled?: boolean;
+      chatEnabled?: boolean;
+      announcementEnabled?: boolean;
+    }
+  ): Promise<CommunityNotificationPreferenceData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
+
+    const row = await communityRepository.upsertNotificationPrefs(
+      callerId,
+      communityId,
+      prefs
+    );
+
+    return {
+      communityId,
+      mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+      streamEnabled: row.streamEnabled,
+      chatEnabled: row.chatEnabled,
+      announcementEnabled: row.announcementEnabled,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
   },
 
   // ---------------------------------------------------------------------------

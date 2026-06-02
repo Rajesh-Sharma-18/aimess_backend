@@ -335,6 +335,66 @@ export const setMuteSchema = z.object({
 });
 export type SetMuteInput = z.infer<typeof setMuteSchema>;
 
+// --- Member moderation mute / warn ----------------------------------------
+
+/** Mute a member: optional duration (null/omitted = indefinite) + optional reason. */
+export const setMemberMuteSchema = z.object({
+  durationMinutes: z
+    .number()
+    .int()
+    .min(1, "durationMinutes must be at least 1")
+    .max(525_600, "durationMinutes must be at most 525600 (365 days)")
+    .nullable()
+    .optional(),
+  reason: z
+    .string()
+    .trim()
+    .max(500, "Reason must be at most 500 characters")
+    .optional(),
+});
+export type SetMemberMuteInput = z.infer<typeof setMemberMuteSchema>;
+
+export const mutedMembersQuerySchema = z.object({
+  page: pageSchema,
+  limit: limitSchema,
+});
+export type MutedMembersQuery = z.infer<typeof mutedMembersQuerySchema>;
+
+/** Warn a member: a required note. */
+export const warnMemberSchema = z.object({
+  note: z
+    .string()
+    .trim()
+    .min(1, "Note is required")
+    .max(1000, "Note must be at most 1000 characters"),
+});
+export type WarnMemberInput = z.infer<typeof warnMemberSchema>;
+
+export const warningsQuerySchema = z.object({
+  page: pageSchema,
+  limit: limitSchema,
+});
+export type WarningsQuery = z.infer<typeof warningsQuerySchema>;
+
+// --- Notification preferences ---------------------------------------------
+
+export const setNotificationPrefsSchema = z
+  .object({
+    streamEnabled: z.boolean().optional(),
+    chatEnabled: z.boolean().optional(),
+    announcementEnabled: z.boolean().optional(),
+  })
+  .refine(
+    (b) =>
+      b.streamEnabled !== undefined ||
+      b.chatEnabled !== undefined ||
+      b.announcementEnabled !== undefined,
+    { message: "At least one preference field is required" }
+  );
+export type SetNotificationPrefsInput = z.infer<
+  typeof setNotificationPrefsSchema
+>;
+
 // --- Leave reason ---------------------------------------------------------
 
 export const leaveReasonSchema = z

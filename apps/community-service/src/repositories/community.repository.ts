@@ -219,6 +219,9 @@ export const communityRepository = {
         snapshotUsername: true,
         snapshotDisplayName: true,
         snapshotAvatarKey: true,
+        bannedAt: true,
+        bannedBy: true,
+        banReason: true,
       },
     });
   },
@@ -241,6 +244,9 @@ export const communityRepository = {
         snapshotUsername: true,
         snapshotDisplayName: true,
         snapshotAvatarKey: true,
+        bannedAt: true,
+        bannedBy: true,
+        banReason: true,
       },
     });
   },
@@ -270,6 +276,9 @@ export const communityRepository = {
         snapshotUsername: true,
         snapshotDisplayName: true,
         snapshotAvatarKey: true,
+        bannedAt: true,
+        bannedBy: true,
+        banReason: true,
       },
     });
   },
@@ -306,19 +315,31 @@ export const communityRepository = {
         snapshotUsername: true,
         snapshotDisplayName: true,
         snapshotAvatarKey: true,
+        bannedAt: true,
+        bannedBy: true,
+        banReason: true,
       },
     });
   },
 
-  /** Single-document status update keyed by the (communityId, userId) unique. */
+  /**
+   * Single-document status update keyed by the (communityId, userId) unique.
+   * Optionally also sets/clears the ban metadata (bannedAt/bannedBy/banReason)
+   * in the same write — used by banMember (set) and unbanMember (clear to null).
+   */
   updateMemberStatus(
     communityId: string,
     userId: string,
-    status: CommunityMemberStatus
+    status: CommunityMemberStatus,
+    banMeta?: {
+      bannedAt: Date | null;
+      bannedBy: string | null;
+      banReason: string | null;
+    }
   ) {
     return prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
-      data: { status },
+      data: banMeta ? { status, ...banMeta } : { status },
       select: {
         id: true,
         userId: true,
@@ -328,6 +349,9 @@ export const communityRepository = {
         snapshotUsername: true,
         snapshotDisplayName: true,
         snapshotAvatarKey: true,
+        bannedAt: true,
+        bannedBy: true,
+        banReason: true,
       },
     });
   },
@@ -390,6 +414,9 @@ export const communityRepository = {
           snapshotUsername: true,
           snapshotDisplayName: true,
           snapshotAvatarKey: true,
+          bannedAt: true,
+          bannedBy: true,
+          banReason: true,
         },
       }),
       prisma.communityMember.count({ where }),
@@ -861,6 +888,11 @@ export const communityRepository = {
     });
   },
 
+  /** Hard-delete a report row (moderator action). */
+  deleteReport(reportId: string) {
+    return prisma.communityReport.delete({ where: { id: reportId } });
+  },
+
   async listCommunityReports(params: {
     communityId: string;
     status?: CommunityReportStatus;
@@ -938,6 +970,129 @@ export const communityRepository = {
     return prisma.communityMuteSetting.deleteMany({
       where: { userId, communityId },
     });
+  },
+
+  /**
+   * Upsert only the notification-preference toggles (stream/chat/announcement)
+   * on the mute-setting row, leaving `mutedUntil` untouched. A row created here
+   * starts un-muted (mutedUntil omitted → null).
+   */
+  upsertNotificationPrefs(
+    userId: string,
+    communityId: string,
+    prefs: {
+      streamEnabled?: boolean;
+      chatEnabled?: boolean;
+      announcementEnabled?: boolean;
+    }
+  ) {
+    return prisma.communityMuteSetting.upsert({
+      where: { userId_communityId: { userId, communityId } },
+      create: { userId, communityId, ...prefs },
+      update: prefs,
+    });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Member moderation mutes (moderator-applied — distinct from notification mute)
+  // ---------------------------------------------------------------------------
+  findMemberMute(communityId: string, userId: string) {
+    return prisma.communityMemberMute.findUnique({
+      where: { communityId_userId: { communityId, userId } },
+    });
+  },
+
+  /** Idempotent re-mute: updates mutedBy/reason/mutedUntil on conflict. */
+  upsertMemberMute(data: {
+    communityId: string;
+    userId: string;
+    mutedBy: string;
+    reason: string | null;
+    mutedUntil: Date | null;
+  }) {
+    return prisma.communityMemberMute.upsert({
+      where: {
+        communityId_userId: {
+          communityId: data.communityId,
+          userId: data.userId,
+        },
+      },
+      create: data,
+      update: {
+        mutedBy: data.mutedBy,
+        reason: data.reason,
+        mutedUntil: data.mutedUntil,
+      },
+    });
+  },
+
+  deleteMemberMute(communityId: string, userId: string) {
+    return prisma.communityMemberMute.delete({
+      where: { communityId_userId: { communityId, userId } },
+    });
+  },
+
+  /**
+   * Currently-muted members for a community (lazy expiration: mutedUntil null OR
+   * in the future). Offset/page pagination, newest mute first.
+   */
+  async listMutedMembers(params: {
+    communityId: string;
+    now: Date;
+    page: number;
+    limit: number;
+  }) {
+    const where: Prisma.CommunityMemberMuteWhereInput = {
+      communityId: params.communityId,
+      OR: [{ mutedUntil: null }, { mutedUntil: { gt: params.now } }],
+    };
+
+    const [rows, total] = await Promise.all([
+      prisma.communityMemberMute.findMany({
+        where,
+        orderBy: { id: "desc" },
+        skip: (params.page - 1) * params.limit,
+        take: params.limit,
+      }),
+      prisma.communityMemberMute.count({ where }),
+    ]);
+    return { rows, total };
+  },
+
+  // ---------------------------------------------------------------------------
+  // Member warnings
+  // ---------------------------------------------------------------------------
+  createMemberWarning(data: {
+    communityId: string;
+    userId: string;
+    warnedBy: string;
+    note: string;
+  }) {
+    return prisma.communityMemberWarning.create({ data });
+  },
+
+  /** Warnings for a member, newest first. Offset/page pagination. */
+  async listMemberWarnings(params: {
+    communityId: string;
+    userId: string;
+    page: number;
+    limit: number;
+  }) {
+    const where = {
+      communityId: params.communityId,
+      userId: params.userId,
+    };
+
+    const [rows, total] = await Promise.all([
+      prisma.communityMemberWarning.findMany({
+        where,
+        orderBy: { id: "desc" },
+        skip: (params.page - 1) * params.limit,
+        take: params.limit,
+      }),
+      prisma.communityMemberWarning.count({ where }),
+    ]);
+    return { rows, total };
   },
 
   // ---------------------------------------------------------------------------

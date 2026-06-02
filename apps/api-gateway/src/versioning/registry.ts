@@ -28,8 +28,6 @@ if (env.USER_SERVICE_URL) {
   });
 }
 
-console.log("env.COMMUNITY_SERVICE_URL", env.COMMUNITY_SERVICE_URL);
-
 if (env.COMMUNITY_SERVICE_URL) {
   v1Services.push({
     segment: "communities",

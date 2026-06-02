@@ -39,7 +39,6 @@ function canResetPassword(user: {
 }): boolean {
   const isSocialUser = user.linkedAccounts.length > 0;
   return (
-    // Boolean(user.passwordHash) &&
     (isSocialUser || Boolean(user.passwordHash)) &&
     !user.deletedAt &&
     user.status === AccountStatus.ACTIVE
@@ -161,8 +160,7 @@ export const passwordResetService = {
     if (
       !account ||
       account.deletedAt ||
-      account.status !== AccountStatus.ACTIVE ||
-      (!account.linkedAccounts?.length && !account.passwordHash)
+      account.status !== AccountStatus.ACTIVE
     ) {
       throw new BadRequestError("AUTH_RESET_TOKEN_INVALID");
     }

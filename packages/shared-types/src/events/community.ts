@@ -3,6 +3,9 @@ export const CommunityEvents = {
   MEMBER_ADDED: "community.member_added",
   MEMBER_KICKED: "community.member_kicked",
   MEMBER_BANNED: "community.member_banned",
+  MEMBER_MUTED: "community.member_muted",
+  MEMBER_UNMUTED: "community.member_unmuted",
+  MEMBER_WARNED: "community.member_warned",
   MEMBER_ROLE_CHANGED: "community.member_role_changed",
   JOINED: "community.joined",
   ADMIN_TRANSFERRED: "community.admin_transferred",
@@ -46,6 +49,25 @@ export type CommunityMemberBannedPayload = CommunityEventBase & {
   actorId: string;
   targetUserId: string;
   reason: string | null;
+};
+
+export type CommunityMemberMutedPayload = CommunityEventBase & {
+  actorId: string;
+  targetUserId: string;
+  reason: string | null;
+  /** ISO-8601; null = indefinite mute. */
+  mutedUntil: string | null;
+};
+
+export type CommunityMemberUnmutedPayload = CommunityEventBase & {
+  actorId: string;
+  targetUserId: string;
+};
+
+export type CommunityMemberWarnedPayload = CommunityEventBase & {
+  actorId: string;
+  targetUserId: string;
+  note: string;
 };
 
 export type CommunityMemberRoleChangedPayload = CommunityEventBase & {
