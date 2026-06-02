@@ -2,16 +2,25 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
 import { generateRoomId } from "../lib/room-id.js";
+import { SystemEvent } from "../types/enums.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
+import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
+
+export type EnrichedGroupRoom = GroupRoom & {
+  isMuted: boolean;
+  unreadCount: number;
+  role: string;
+};
 
 export class GroupRoomService {
   constructor(
     private readonly roomRepo: GroupRoomRepository,
     private readonly memberRepo: GroupMemberRepository,
-    private readonly inviteLinkRepo: GroupInviteLinkRepository
+    private readonly inviteLinkRepo: GroupInviteLinkRepository,
+    private readonly sysMsg: GroupSystemMessageService
   ) {}
 
   async createGroup(params: {
@@ -42,11 +51,24 @@ export class GroupRoomService {
       joinedAt: new Date(),
     });
 
+    // System message → sets lastMessageAt so the brand-new (message-less) group
+    // appears and sorts in the unified inbox immediately.
+    await this.sysMsg.post({
+      roomId,
+      actorId: params.createdBy,
+      systemEvent: SystemEvent.GROUP_CREATED,
+      systemData: { groupName: params.name },
+    });
+
     logger.info(
       `GroupRoomService|createGroup|room=${roomId}, owner=${params.createdBy}`
     );
 
-    return { room, member };
+    // Re-read so the response reflects the lastMessageAt/preview the system
+    // message just set (the `room` above predates that write). Falls back to the
+    // original row if the post/read was a no-op.
+    const fresh = await this.roomRepo.findActiveByRoomId(roomId);
+    return { room: fresh ?? room, member };
   }
 
   async getRoom(roomId: string): Promise<GroupRoom> {
@@ -74,8 +96,38 @@ export class GroupRoomService {
       throw new BadRequestError("CHAT_ONLY_OWNER_ADMIN_UPDATE");
     }
 
+    // Snapshot the pre-update values so we only post system messages for fields
+    // that actually changed (a client may re-send unchanged values).
+    const room = await this.roomRepo.findActiveByRoomId(roomId);
+    if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+
     const updated = await this.roomRepo.updateRoom(roomId, data);
     if (!updated) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+
+    // One system message per changed presentational field (memberLimit is silent).
+    if (data.name != null && data.name !== room.name) {
+      await this.sysMsg.post({
+        roomId,
+        actorId: userId,
+        systemEvent: SystemEvent.ROOM_RENAMED,
+        systemData: { newName: data.name },
+      });
+    }
+    if (data.avatar != null && data.avatar !== room.avatar) {
+      await this.sysMsg.post({
+        roomId,
+        actorId: userId,
+        systemEvent: SystemEvent.AVATAR_CHANGED,
+      });
+    }
+    if (data.description != null && data.description !== room.description) {
+      await this.sysMsg.post({
+        roomId,
+        actorId: userId,
+        systemEvent: SystemEvent.DESCRIPTION_CHANGED,
+      });
+    }
+
     return updated;
   }
 
@@ -111,5 +163,50 @@ export class GroupRoomService {
     const roomIds = await this.memberRepo.getActiveRoomIds(userId);
     if (!roomIds.length) return 0;
     return this.roomRepo.countUserGroups(roomIds);
+  }
+
+  /**
+   * Timestamp-bounded group fetch for the unified inbox, enriched with the
+   * viewer's per-room unread count, mute state, and role.
+   */
+  async getInboxGroups(params: {
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<EnrichedGroupRoom[]> {
+    const memberships = await this.memberRepo.getActiveMemberships(
+      params.userId
+    );
+    if (!memberships.length) return [];
+
+    const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
+    const roomIds = memberships.map((m) => m.roomId);
+
+    const rooms = await this.roomRepo.getInboxGroups({
+      roomIds,
+      direction: params.direction,
+      ts: params.ts,
+      limit: params.limit,
+    });
+
+    const now = Date.now();
+    return rooms.map((room) => {
+      const membership = membershipByRoom.get(room.roomId);
+      const settings = (membership?.notificationSettings ?? {}) as {
+        mute?: boolean;
+        muteUntil?: string | null;
+      };
+      const isMuted =
+        settings.mute === true ||
+        (settings.muteUntil != null &&
+          new Date(settings.muteUntil).getTime() > now);
+      return {
+        ...room,
+        isMuted,
+        unreadCount: membership?.unreadCount ?? 0,
+        role: membership?.role ?? "MEMBER",
+      };
+    });
   }
 }

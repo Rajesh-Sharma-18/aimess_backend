@@ -75,6 +75,34 @@ export function buildListResponse<T>(
 }
 
 /**
+ * Build a response for the timestamp-paginated message endpoints. Keeps the
+ * same outer shape as `buildPaginatedResponse` (so the client contract is
+ * stable) but takes a pre-computed `hasMore` and an epoch-ms `nextCursor`
+ * (the boundary createdAt to feed back as the next before_ts/after_ts).
+ * `currentPage`/`totalPage` are not meaningful for cursor paging and are
+ * reported as best-effort from `totalCount`.
+ */
+export function buildTimelineResponse<T>(
+  items: T[],
+  totalCount: number,
+  limit: number,
+  hasMore: boolean,
+  nextCursor: string | null
+): PaginatedResponse<T> {
+  return {
+    pagination: {
+      totalData: totalCount,
+      totalPage: Math.ceil(totalCount / limit) || 1,
+      currentPage: 1,
+      limit,
+      nextCursor,
+      hasMore,
+    },
+    data: items,
+  };
+}
+
+/**
  * Build a cursor-based pagination filter for Mongoose queries.
  * Uses date-based cursors (ISO string of lastMessageAt or createdAt).
  */

@@ -54,6 +54,13 @@ const envSchema = z.object({
   AUTH_SERVICE_URL: z.string().url().optional(),
 
   USER_SERVICE_GRPC_URL: z.string().default("0.0.0.0:4002"),
+  COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
+  // Boot-time reconciliation of community chat rooms (pull from community-service
+  // over gRPC). Disable to skip the reconciler entirely.
+  COMMUNITY_ROOM_RECONCILE_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
 
   FRIENDSHIP_CACHE_TTL_SEC: z.coerce.number().positive().default(600), // 10 minutes
 

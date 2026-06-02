@@ -73,6 +73,23 @@ const MessagesFetchSchema = z.object({
   ),
 });
 
+const CatchupSchema = z.object({
+  rooms: z
+    .array(
+      z.object({
+        roomId: z.string().min(1),
+        sinceSeq: z.number().int().nonnegative().default(0),
+        conversationType: z.preprocess(
+          (v) => (typeof v === "string" ? v.toLowerCase() : v),
+          z.enum(["private", "group"]).default("private")
+        ),
+        limit: z.number().int().positive().max(200).optional(),
+      })
+    )
+    .min(1)
+    .max(50),
+});
+
 // ─── Redis pub/sub message shape published by messaging-service ──────────────
 interface RedisSocketEvent {
   event: string;
@@ -302,6 +319,71 @@ export function registerChatNamespace(
             logger.warn(`/chat messages:fetch gRPC error: ${String(err)}`);
             ack(callback, { success: false, error: "SERVICE_ERROR" });
           });
+      }
+    );
+
+    // Reconnect gap-fill: fetch missed messages per room since a known seq.
+    socket.on(
+      "chat:catchup",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const parsed = CatchupSchema.safeParse(payload);
+        if (!parsed.success) {
+          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          return;
+        }
+        void (async () => {
+          const rooms = parsed.data.rooms;
+          const results = await Promise.allSettled(
+            rooms.map((room) =>
+              messagingClient.catchupRoom({
+                conversationId: room.roomId,
+                requesterId: userId,
+                sinceSeq: room.sinceSeq,
+                limit: room.limit ?? 100,
+                conversationType: room.conversationType,
+              })
+            )
+          );
+
+          const ackRooms: Array<{
+            roomId: string;
+            hasMore: boolean;
+            lastSeq: number;
+            authorized: boolean;
+          }> = [];
+
+          results.forEach((res, idx) => {
+            const room = rooms[idx]!;
+            if (res.status === "fulfilled") {
+              const r = res.value;
+              socket.emit("chat:catchup:result", {
+                roomId: room.roomId,
+                events: r.events.map((e) => ({
+                  ...e,
+                  sequenceNumber: Number(e.sequenceNumber),
+                  sentAt: Number(e.sentAt),
+                  editedAt: Number(e.editedAt),
+                })),
+                hasMore: r.hasMore,
+                lastSeq: Number(r.lastSeq),
+              });
+              ackRooms.push({
+                roomId: room.roomId,
+                hasMore: r.hasMore,
+                lastSeq: Number(r.lastSeq),
+                authorized: r.authorized,
+              });
+            } else {
+              logger.warn(
+                `/chat chat:catchup gRPC error for room ${room.roomId}: ${String(
+                  res.reason
+                )}`
+              );
+            }
+          });
+
+          ack(callback, { success: true, data: { rooms: ackRooms } });
+        })();
       }
     );
 

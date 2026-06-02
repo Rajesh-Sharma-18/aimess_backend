@@ -76,6 +76,30 @@ export class GroupMemberRepository {
     return members.map((m) => m.roomId);
   }
 
+  /**
+   * Active memberships for a user with the per-room fields the inbox needs to
+   * enrich each group item (unread count, mute state, role) without a second
+   * round trip per room.
+   */
+  async getActiveMemberships(userId: string): Promise<
+    Array<{
+      roomId: string;
+      role: string;
+      unreadCount: number;
+      notificationSettings: GroupMember["notificationSettings"];
+    }>
+  > {
+    return this.prisma.groupMember.findMany({
+      where: { userId, status: "ACTIVE" },
+      select: {
+        roomId: true,
+        role: true,
+        unreadCount: true,
+        notificationSettings: true,
+      },
+    });
+  }
+
   async updateStatus(
     roomId: string,
     userId: string,

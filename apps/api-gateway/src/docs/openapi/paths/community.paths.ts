@@ -180,16 +180,31 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "List communities I belong to",
       description:
-        "Communities where you are an ACTIVE member. Offset/page pagination (`page` + `limit`); response carries `pagination` (totalData, totalPage, currentPage, limit, hasMore) and `data`.",
+        "Communities where you are an ACTIVE member, ordered by `lastActivityAt` " +
+        "(latest community message, else createdAt). Timestamp-cursor pagination: " +
+        "`before_ts` returns items with `lastActivityAt <= before_ts` (newest-first); " +
+        "`after_ts` returns items with `lastActivityAt >= after_ts` (oldest-first); " +
+        "mutually exclusive, omit both for the newest page. Boundaries are inclusive " +
+        "(consecutive pages can share the boundary item — de-duplicate by `id`). " +
+        "Page with `pagination.nextCursor` (epoch-ms) fed back as the same param.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
         {
-          name: "page",
+          name: "before_ts",
           in: "query",
           required: false,
-          schema: { type: "integer", minimum: 1, default: 1 },
-          description: "1-based page number.",
+          schema: { type: "integer", minimum: 1 },
+          description:
+            "Epoch ms. Returns items with lastActivityAt <= before_ts.",
+        },
+        {
+          name: "after_ts",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1 },
+          description:
+            "Epoch ms. Returns items with lastActivityAt >= after_ts.",
         },
         {
           name: "limit",

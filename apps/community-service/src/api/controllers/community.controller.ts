@@ -123,9 +123,15 @@ export const listCategories = asyncHandler(
 
 export const listMyCommunities = asyncHandler(
   async (req: Request, res: Response) => {
-    const { page, limit } = req.query as unknown as MyCommunitiesQuery;
+    const { before_ts, after_ts, limit } =
+      req.query as unknown as MyCommunitiesQuery;
+
+    const direction = after_ts != null ? "after" : "before";
+    const tsMs = after_ts ?? before_ts ?? Date.now();
+
     const result = await communityService.listMine(req.auth.userId, {
-      page,
+      direction,
+      ts: new Date(tsMs),
       limit,
     });
 

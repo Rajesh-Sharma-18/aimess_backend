@@ -104,6 +104,11 @@ export class PrivateMessageService {
       }
     }
 
+    // Allocate the per-room monotonic sequence AFTER the idempotency pre-check,
+    // immediately before insert, so a retried clientMessageId never burns a seq.
+    const seq = await this.roomRepo.allocateSequence(params.roomId);
+    entity.sequenceNumber = seq;
+
     const message = await this.messageRepo.createMessage(
       entity as Parameters<PrivateMessageRepository["createMessage"]>[0]
     );
@@ -147,6 +152,44 @@ export class PrivateMessageService {
       beforeTimestamp,
       params.limit
     );
+  }
+
+  /**
+   * Timestamp-paginated message page (before_ts / after_ts). Over-fetches one
+   * extra row in the repo so `hasMore` is exact; `nextCursor` is the boundary
+   * message's createdAt as epoch-ms (feed back as the next before_ts/after_ts).
+   */
+  async getMessagesTimeline(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<{
+    items: PrivateMessage[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const room = await this.roomRepo.findByRoomId(params.roomId, {
+      projection: { roomId: 1, deletedFor: 1 },
+    });
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    const rows = await this.messageRepo.findByRoomIdTimeline({
+      userId: params.userId,
+      roomId: room.roomId,
+      direction: params.direction,
+      ts: params.ts,
+      limit: params.limit,
+    });
+
+    const hasMore = rows.length > params.limit;
+    const items = rows.slice(0, params.limit);
+    const last = items[items.length - 1];
+    const nextCursor =
+      hasMore && last ? String(last.createdAt.getTime()) : null;
+
+    return { items, hasMore, nextCursor };
   }
 
   async searchMessages(params: {
@@ -358,6 +401,8 @@ export class PrivateMessageService {
       originalContentType: source.messageType,
     };
 
+    const seq = await this.roomRepo.allocateSequence(params.targetRoomId);
+
     const message = await this.messageRepo.createForwardedMessage({
       roomId: params.targetRoomId,
       senderId: params.senderId,
@@ -366,6 +411,7 @@ export class PrivateMessageService {
       messageType: source.messageType,
       forwardData,
       clientMessageId: params.clientMessageId ?? null,
+      sequenceNumber: seq,
     });
 
     this.roomRepo
@@ -445,6 +491,48 @@ export class PrivateMessageService {
     }
 
     return { reactions: result };
+  }
+
+  /**
+   * Reconnect gap-fill: returns messages with sequenceNumber > sinceSeq for a
+   * room the user participates in. Includes tombstones (no isDeleted filter) so
+   * the client can reconcile deletes/edits it missed while offline.
+   */
+  async catchup(p: {
+    roomId: string;
+    userId: string;
+    sinceSeq: number;
+    limit: number;
+  }): Promise<{
+    authorized: boolean;
+    events: PrivateMessage[];
+    hasMore: boolean;
+    lastSeq: number;
+  }> {
+    const room = await this.roomRepo.findByRoomId(p.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room || !room.participants?.includes(p.userId)) {
+      return {
+        authorized: false,
+        events: [],
+        hasMore: false,
+        lastSeq: p.sinceSeq,
+      };
+    }
+
+    const rows = await this.messageRepo.findAfterSeq(
+      p.roomId,
+      p.sinceSeq,
+      p.limit
+    );
+    const hasMore = rows.length > p.limit;
+    const events = hasMore ? rows.slice(0, p.limit) : rows;
+    const lastSeq = events.length
+      ? events[events.length - 1]!.sequenceNumber
+      : p.sinceSeq;
+
+    return { authorized: true, events, hasMore, lastSeq };
   }
 
   async enrichMessages(

@@ -34,6 +34,8 @@ export interface SendMessageResult {
   conversationId: string;
   sentAt: number;
   alreadySent: boolean;
+  // int64 on the wire arrives as a STRING (proto-loader longs:String); coerce.
+  sequenceNumber: number;
 }
 export interface GetConversationMessagesParams {
   conversationId: string;
@@ -59,6 +61,7 @@ export interface MessageDto {
   sentAt: number;
   reactions: { userId: string; emoji: string }[];
   isRead: boolean;
+  sequenceNumber: number;
 }
 export interface MarkMessagesReadParams {
   conversationId: string;
@@ -78,6 +81,7 @@ export interface EditMessageResult {
   messageId: string;
   editedAt: number;
   contentJson: string;
+  sequenceNumber: number;
 }
 export interface MarkDeliveredParams {
   conversationId: string;
@@ -132,6 +136,35 @@ export interface ForwardMessageResult {
   messageId: string;
   conversationId: string;
   sentAt: number;
+  sequenceNumber: number;
+}
+
+export interface CatchupRoomParams {
+  conversationId: string;
+  requesterId: string;
+  sinceSeq: number;
+  limit: number;
+  conversationType: string;
+}
+export interface CatchupEventDto {
+  messageId: string;
+  conversationId: string;
+  senderId: string;
+  contentType: string;
+  contentText: string;
+  contentJson: string;
+  sentAt: number;
+  sequenceNumber: number;
+  isDeleted: boolean;
+  deletedType: string;
+  editedAt: number;
+}
+export interface CatchupRoomResult {
+  conversationId: string;
+  events: CatchupEventDto[];
+  hasMore: boolean;
+  lastSeq: number;
+  authorized: boolean;
 }
 
 export interface GetMessageReactionsParams {
@@ -248,6 +281,7 @@ export interface MessagingClient {
   endCall(p: EndCallParams): Promise<EndCallResult>;
   getCallHistory(p: GetCallHistoryParams): Promise<GetCallHistoryResult>;
   getRtcConfig(): Promise<GetRtcConfigResult>;
+  catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
 }
 
 export function createMessagingClient(): MessagingClient {
@@ -290,7 +324,9 @@ export function createMessagingClient(): MessagingClient {
         receiverId: p.receiverId ?? "",
         senderName: p.senderName ?? "",
         senderAvatar: p.senderAvatar ?? "",
-      });
+        // int64 sequence_number arrives as a string (proto-loader longs:String);
+        // coerce so the relayed ack matches the declared `number` type.
+      }).then((r) => ({ ...r, sequenceNumber: Number(r.sequenceNumber) }));
     }
   );
 
@@ -309,7 +345,14 @@ export function createMessagingClient(): MessagingClient {
           limit: p.limit ?? 30,
           conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
         }
-      );
+      ).then((r) => ({
+        ...r,
+        // int64 sequence_number arrives as a string (proto-loader longs:String).
+        messages: r.messages.map((m) => ({
+          ...m,
+          sequenceNumber: Number(m.sequenceNumber),
+        })),
+      }));
     }
   );
 
@@ -341,7 +384,7 @@ export function createMessagingClient(): MessagingClient {
         contentText: p.contentText ?? "",
         contentJson: p.contentJson ?? "",
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
-      });
+      }).then((r) => ({ ...r, sequenceNumber: Number(r.sequenceNumber) }));
     }
   );
 
@@ -417,7 +460,7 @@ export function createMessagingClient(): MessagingClient {
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
         senderName: p.senderName ?? "",
         senderAvatar: p.senderAvatar ?? "",
-      });
+      }).then((r) => ({ ...r, sequenceNumber: Number(r.sequenceNumber) }));
     }
   );
 
@@ -482,6 +525,22 @@ export function createMessagingClient(): MessagingClient {
       })
   );
 
+  const catchupRoomBreaker = makeBreaker(
+    "messaging.catchupRoom",
+    (p: CatchupRoomParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, CatchupRoomResult>("catchupRoom", {
+        conversationId: p.conversationId,
+        requesterId: p.requesterId,
+        sinceSeq: p.sinceSeq,
+        limit: p.limit,
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+      });
+    }
+  );
+
   const getRtcConfigBreaker = makeBreakerNoArgs(
     "messaging.getRtcConfig",
     () => {
@@ -507,5 +566,6 @@ export function createMessagingClient(): MessagingClient {
     endCall: (p) => endCallBreaker.fire(p),
     getCallHistory: (p) => getCallHistoryBreaker.fire(p),
     getRtcConfig: () => getRtcConfigBreaker.fire(),
+    catchupRoom: (p) => catchupRoomBreaker.fire(p),
   };
 }

@@ -86,6 +86,10 @@ import {
   publishCommunityReportActionedSafe,
   publishCommunityReportCreatedSafe,
 } from "../messaging/publish-community.js";
+import {
+  publishCommunityCreatedForChatSafe,
+  publishCommunityDeletedForChatSafe,
+} from "../messaging/publish-community-chat.js";
 
 type CommunityWithCategory = Community & {
   category: { id: string; name: string };
@@ -595,6 +599,15 @@ export const communityService = {
     await communityCache.invalidateNameAvailability(name);
     await communityCache.invalidateHandleAvailability(handle);
 
+    // Provision the community's chat room in chat-service (GeneralRoom id ===
+    // community.id) so community chat works and drives lastActivityAt ordering.
+    publishCommunityCreatedForChatSafe({
+      communityId: community.id,
+      name: community.name,
+      avatarUrl: community.avatarUrl ?? null,
+      ownerId: creatorId,
+    });
+
     // A brand-new community has no mute row for the creator.
     return toCommunityData(community, CommunityMemberRole.ADMIN, null);
   },
@@ -733,38 +746,56 @@ export const communityService = {
 
   async listMine(
     userId: string,
-    params: { page: number; limit: number }
+    params: { direction: "before" | "after"; ts: Date; limit: number }
   ): Promise<PaginatedResponse<CommunityListItem>> {
-    const { rows, total } = await communityRepository.listMyMemberships({
+    // Over-fetch one extra row so hasMore is exact.
+    const { rows, total } = await communityRepository.listMineByActivity({
       userId,
-      page: params.page,
-      limit: params.limit,
+      direction: params.direction,
+      ts: params.ts,
+      limit: params.limit + 1,
     });
 
+    const hasMore = rows.length > params.limit;
+    const pageRows = rows.slice(0, params.limit);
+
     const communities: CommunityListItem[] = await Promise.all(
-      rows.map(async (row) => {
+      pageRows.map(async (row) => {
         const avatarView = await communityImageService.resolveViewUrlForClient(
-          row.community.avatarUrl
+          row.avatarUrl
         );
         return {
-          id: row.community.id,
-          name: row.community.name,
-          handle: row.community.handle,
-          type: row.community.type,
-          memberCount: row.community.memberCount,
+          id: row.id,
+          name: row.name,
+          handle: row.handle,
+          type: row.type,
+          memberCount: row.memberCount,
           avatarUrl: avatarView?.url ?? null,
           avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-          myRole: row.role,
+          myRole: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
+          lastActivityAt: row.lastActivityAt.toISOString(),
         };
       })
     );
 
-    return buildPaginatedResponse(
-      communities,
-      total,
-      params.page,
-      params.limit
-    );
+    // Inclusive boundary (as specified) → consecutive pages can share the
+    // boundary community; clients de-duplicate by id. nextCursor is epoch-ms to
+    // feed straight back as before_ts/after_ts.
+    const lastRow = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && lastRow ? String(lastRow.lastActivityAt.getTime()) : null;
+
+    return {
+      pagination: {
+        totalData: total,
+        totalPage: Math.ceil(total / params.limit) || 1,
+        currentPage: 1,
+        limit: params.limit,
+        nextCursor,
+        hasMore,
+      },
+      data: communities,
+    };
   },
 
   /**
@@ -1378,6 +1409,7 @@ export const communityService = {
         // No successor exists — the leaving admin is the only active member.
         memberIds: [callerId],
       });
+      publishCommunityDeletedForChatSafe(communityId);
 
       return toMemberData(updated);
     }
@@ -1865,6 +1897,7 @@ export const communityService = {
       reason: "explicit_delete",
       memberIds,
     });
+    publishCommunityDeletedForChatSafe(communityId);
   },
 
   async listAuditLogs(

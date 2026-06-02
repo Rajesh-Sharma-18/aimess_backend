@@ -72,6 +72,8 @@ export type CommunityListItem = {
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   myRole: CommunityMemberRole;
+  /** Latest activity (latest community message, else createdAt), ISO-8601. */
+  lastActivityAt: string;
 };
 
 /**

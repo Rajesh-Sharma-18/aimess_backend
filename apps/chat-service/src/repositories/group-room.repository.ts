@@ -37,6 +37,15 @@ export class GroupRoomRepository {
     });
   }
 
+  async allocateSequence(roomId: string): Promise<number> {
+    const r = await this.prisma.groupRoom.update({
+      where: { roomId },
+      data: { lastSequence: { increment: 1 } },
+      select: { lastSequence: true },
+    });
+    return r.lastSequence;
+  }
+
   async findByRoomId(roomId: string): Promise<GroupRoom | null> {
     return this.prisma.groupRoom.findUnique({ where: { roomId } });
   }
@@ -133,6 +142,34 @@ export class GroupRoomRepository {
   async countUserGroups(roomIds: string[]): Promise<number> {
     return this.prisma.groupRoom.count({
       where: { roomId: { in: roomIds }, status: "ACTIVE" },
+    });
+  }
+
+  /**
+   * Timestamp-bounded group fetch for the unified inbox.
+   * - direction "before": lastMessageAt <= ts, newest-first (desc).
+   * - direction "after" : lastMessageAt >= ts, oldest-first (asc).
+   * Only ACTIVE groups the user belongs to (roomIds) with a lastMessageAt.
+   */
+  async getInboxGroups(params: {
+    roomIds: string[];
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<GroupRoom[]> {
+    const bound =
+      params.direction === "before"
+        ? { lte: params.ts, not: null }
+        : { gte: params.ts, not: null };
+    const dir = params.direction === "before" ? "desc" : "asc";
+    return this.prisma.groupRoom.findMany({
+      where: {
+        roomId: { in: params.roomIds },
+        status: "ACTIVE",
+        lastMessageAt: bound,
+      },
+      orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
+      take: params.limit,
     });
   }
 }

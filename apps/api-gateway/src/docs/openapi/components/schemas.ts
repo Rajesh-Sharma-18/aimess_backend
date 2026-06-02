@@ -1304,6 +1304,12 @@ export const openApiSchemas = {
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       myRole: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+      lastActivityAt: {
+        type: "string",
+        format: "date-time",
+        description:
+          "Latest activity (latest community message, else createdAt). The sort key; feed its epoch-ms into before_ts/after_ts to page.",
+      },
     },
     required: [
       "id",
@@ -1314,6 +1320,7 @@ export const openApiSchemas = {
       "avatarUrl",
       "avatarUrlExpiresIn",
       "myRole",
+      "lastActivityAt",
     ],
   },
   PaginationMeta: {
@@ -2289,6 +2296,65 @@ export const openApiSchemas = {
     type: "array",
     items: { $ref: "#/components/schemas/ChatPrivateRoom" },
   },
+  // --- Unified inbox (private rooms + group chats merged by lastMessageAt) ---
+  ChatInboxItem: {
+    type: "object",
+    description:
+      "A single inbox entry — either a 1:1 private room or a group chat, discriminated by `type`. Fields specific to the other kind are null.",
+    properties: {
+      type: { type: "string", enum: ["PRIVATE", "GROUP"] },
+      roomId: { type: "string" },
+      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      lastMessageId: { type: "string", nullable: true },
+      lastMessage: {
+        type: "object",
+        nullable: true,
+        description:
+          "Last message preview. Shape differs by `type` (private: room.lastMessage; group: room.lastMessagePreview) — branch on `type` to read it.",
+      },
+      unreadCount: { type: "integer" },
+      isMuted: { type: "boolean" },
+      pinnedCount: { type: "integer" },
+      peer: {
+        nullable: true,
+        description: "PRIVATE only — the other participant's snapshot.",
+        allOf: [{ $ref: "#/components/schemas/ChatPeer" }],
+      },
+      name: { type: "string", nullable: true, description: "GROUP only." },
+      avatar: { type: "string", nullable: true, description: "GROUP only." },
+      description: {
+        type: "string",
+        nullable: true,
+        description: "GROUP only.",
+      },
+      memberCount: {
+        type: "integer",
+        nullable: true,
+        description: "GROUP only.",
+      },
+      role: {
+        type: "string",
+        nullable: true,
+        description: "GROUP only — the viewer's role.",
+      },
+    },
+    required: ["type", "roomId", "unreadCount", "isMuted", "pinnedCount"],
+  },
+  ChatPeer: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      displayName: { type: "string" },
+      memberId: { type: "string" },
+      avatar: { type: "string" },
+      isDeletedUser: { type: "boolean" },
+      isOnline: { type: "boolean" },
+    },
+  },
+  ChatInboxList: {
+    type: "array",
+    items: { $ref: "#/components/schemas/ChatInboxItem" },
+  },
   ChatMessage: {
     type: "object",
     properties: {
@@ -2353,6 +2419,11 @@ export const openApiSchemas = {
       parentMessageId: { type: "string", nullable: true },
       quoteData: { type: "object", nullable: true },
       isDeleted: { type: "boolean" },
+      sequenceNumber: {
+        type: "integer",
+        description:
+          "Per-room monotonic sequence number assigned at send time. Use for ordering and for the `chat:catchup` reconnect gap-fill (`sinceSeq`).",
+      },
       createdAt: { type: "string", format: "date-time" },
     },
     required: ["id", "roomId", "messageType", "createdAt"],

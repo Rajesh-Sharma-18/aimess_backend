@@ -79,6 +79,14 @@ export class RoomMemberRepository {
     });
   }
 
+  /** Mark every active member of a room as left (community disbanded/deleted). */
+  async markAllLeft(roomId: string): Promise<void> {
+    await this.prisma.roomMember.updateMany({
+      where: { roomId, status: "active" },
+      data: { status: "left", leftAt: new Date() },
+    });
+  }
+
   async isBanned(roomId: string, userId: string): Promise<boolean> {
     const member = await this.prisma.roomMember.findFirst({
       where: { roomId, userId, status: "banned" },

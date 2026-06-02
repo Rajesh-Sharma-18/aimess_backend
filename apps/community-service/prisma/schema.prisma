@@ -55,6 +55,10 @@ model Community {
   avatarUrl   String? // MinIO object key (community/avatar/{userId}/{uuid}.ext)
   coverUrl    String? // MinIO object key (community/cover/{userId}/{uuid}.ext)
   memberCount Int               @default(1)
+  // Latest activity for inbox-style ordering: bumped to a community message's
+  // timestamp (denormalized from chat-service via the community.activity event),
+  // initialized to createdAt so message-less communities still sort by age.
+  lastActivityAt DateTime       @default(now())
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   deletedAt   DateTime?
@@ -62,6 +66,7 @@ model Community {
 
   @@index([categoryId])
   @@index([creatorId])
+  @@index([lastActivityAt])
   @@map("communities")
 }
 

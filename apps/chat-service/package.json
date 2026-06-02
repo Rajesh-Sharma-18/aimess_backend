@@ -8,6 +8,7 @@
     "start": "node dist/server.js",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
+    "backfill:seq": "tsx scripts/backfill-sequence-numbers.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "postinstall": "prisma generate",

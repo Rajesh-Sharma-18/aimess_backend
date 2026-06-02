@@ -29,9 +29,11 @@ import { PrivateMessageReportRepository } from "./repositories/private-message-r
 
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
+import { InboxService } from "./services/inbox.service.js";
 import { PrivateMessageService } from "./services/private-message.service.js";
 import { PrivatePinService } from "./services/private-pin.service.js";
 import { GroupRoomService } from "./services/group-room.service.js";
+import { GroupSystemMessageService } from "./services/group-system-message.service.js";
 import { GroupMessageService } from "./services/group-message.service.js";
 import { GroupMemberService } from "./services/group-member.service.js";
 import { GroupInviteLinkService } from "./services/group-invite-link.service.js";
@@ -46,6 +48,7 @@ import { PresenceService } from "./services/presence.service.js";
 
 // -- Controllers --
 import { PrivateRoomController } from "./api/controllers/private-room.controller.js";
+import { InboxController } from "./api/controllers/inbox.controller.js";
 import { PrivateMessageController } from "./api/controllers/private-message.controller.js";
 import { GroupRoomController } from "./api/controllers/group-room.controller.js";
 import { GroupMessageController } from "./api/controllers/group-message.controller.js";
@@ -67,6 +70,7 @@ import {
   initializeEventConsumers,
   closeEventConsumers,
 } from "./events/index.js";
+import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
 
 let httpServer: Server | undefined;
 
@@ -300,14 +304,23 @@ const startServer = async () => {
       userSnapshotService
     );
 
+    const groupSystemMessageService = new GroupSystemMessageService(
+      groupMessageRepo,
+      groupRoomRepo,
+      cacheRepo,
+      userSnapshotService,
+      redis
+    );
     const groupMemberService = new GroupMemberService(
       groupMemberRepo,
-      groupRoomRepo
+      groupRoomRepo,
+      groupSystemMessageService
     );
     const groupRoomService = new GroupRoomService(
       groupRoomRepo,
       groupMemberRepo,
-      groupInviteLinkRepo
+      groupInviteLinkRepo,
+      groupSystemMessageService
     );
     const groupMessageService = new GroupMessageService(
       groupMessageRepo,
@@ -350,6 +363,9 @@ const startServer = async () => {
     const webRtcConfigService = new WebRtcConfigService();
     const presenceService = new PresenceService(cacheRepo, redis);
 
+    // Unified inbox = private rooms + group chats merged by lastMessageAt
+    const inboxService = new InboxService(privateRoomService, groupRoomService);
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
@@ -367,6 +383,7 @@ const startServer = async () => {
     // 4. Instantiate controllers
     const controllers = {
       privateRoomCtrl: new PrivateRoomController(privateRoomService),
+      inboxCtrl: new InboxController(inboxService),
       privateMessageCtrl: new PrivateMessageController(
         privateMessageService,
         privatePinService,
@@ -404,9 +421,14 @@ const startServer = async () => {
         `Chat service listening on port ${String(env.CHAT_SERVICE_PORT)}`
       );
       logger.info(
-        "HTTP routes: /api/chat/private, /api/chat/groups, /api/chat/group-members, /api/chat/invite-links, /api/chat/notifications, /api/chat/community, /api/chat/media"
+        "HTTP routes: /api/chat/inbox, /api/chat/private, /api/chat/groups, /api/chat/group-members, /api/chat/invite-links, /api/chat/notifications, /api/chat/community, /api/chat/media"
       );
     });
+
+    // Boot-time reconciliation of community chat rooms (best-effort, non-blocking):
+    // pull communities from community-service over gRPC and provision any missing
+    // rooms / deactivate rooms of deleted communities. Self-heals dropped events.
+    void reconcileCommunityRooms();
   } catch (error) {
     logger.error("Chat service startup failed");
     logger.error(error);

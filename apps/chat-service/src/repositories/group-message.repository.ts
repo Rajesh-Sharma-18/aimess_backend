@@ -15,6 +15,7 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.create({
       data: {
         roomId: data.roomId,
+        sequenceNumber: (data.sequenceNumber as number) ?? 0,
         clientMessageId: (data.clientMessageId as string) ?? null,
         senderId: (data.senderId as string) ?? null,
         senderName: (data.senderName as string) ?? "",
@@ -43,6 +44,18 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findUnique({ where: { id: messageId } });
   }
 
+  async findAfterSeq(
+    roomId: string,
+    sinceSeq: number,
+    limit: number
+  ): Promise<GroupMessage[]> {
+    return this.prisma.groupMessage.findMany({
+      where: { roomId, sequenceNumber: { gt: sinceSeq } },
+      orderBy: { sequenceNumber: "asc" },
+      take: limit + 1,
+    });
+  }
+
   async findByRoomIdWithTime(
     roomId: string,
     beforeTimestamp: string,
@@ -64,6 +77,44 @@ export class GroupMessageRepository {
       const deletedFor = (raw.deletedForUserIds ?? []) as string[];
       return !deletedFor.includes(userId);
     });
+  }
+
+  /**
+   * Timestamp-bounded message page for the message-list endpoint.
+   * - direction "before": createdAt <= ts, newest-first (desc).
+   * - direction "after" : createdAt >= ts, oldest-first (asc).
+   * Matches the legacy `findByRoomIdWithTime` visibility (deleted-for-everyone
+   * messages are kept so the client can render the placeholder); only per-user
+   * "delete for me" (deletedForUserIds Json array) is filtered in memory.
+   * Over-fetches a small buffer, then returns up to `limit + 1` survivors so the
+   * caller can compute exact `hasMore`.
+   */
+  async findByRoomIdTimeline(params: {
+    userId: string;
+    roomId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<GroupMessage[]> {
+    const bound =
+      params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
+    const order = params.direction === "before" ? "desc" : "asc";
+    const messages = await this.prisma.groupMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        createdAt: bound,
+      },
+      orderBy: { createdAt: order },
+      take: params.limit + 1 + 10,
+    });
+
+    return messages
+      .filter((msg) => {
+        const raw = msg as unknown as { deletedForUserIds?: unknown };
+        const deletedFor = (raw.deletedForUserIds ?? []) as string[];
+        return !deletedFor.includes(params.userId);
+      })
+      .slice(0, params.limit + 1);
   }
 
   /**
@@ -300,10 +351,12 @@ export class GroupMessageRepository {
     messageType: string;
     forwardData: object;
     clientMessageId?: string | null;
+    sequenceNumber?: number;
   }): Promise<GroupMessage> {
     return this.prisma.groupMessage.create({
       data: {
         roomId: data.roomId,
+        sequenceNumber: (data.sequenceNumber as number) ?? 0,
         senderId: data.senderId,
         senderName: data.senderName,
         senderAvatar: data.senderAvatar,

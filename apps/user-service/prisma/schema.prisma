@@ -20,43 +20,43 @@ datasource db {
 // userId is the PK and matches AuthUser.id.
 // -----------------------------------------------------------------------------
 model UserProfile {
-  userId                 String              @id @db.Uuid
+  userId                 String                @id @db.Uuid
   // Public identity
-  username               String              @unique // @handle
-  account                String?             @unique @db.VarChar(32)
-  isGoogleLogin          Boolean             @default(false)
-  firstName              String              @db.VarChar(50)
-  lastName               String              @db.VarChar(50)
-  bio                    String?             @db.VarChar(280)
+  username               String                @unique // @handle
+  account                String?               @unique @db.VarChar(32)
+  isGoogleLogin          Boolean               @default(false)
+  firstName              String                @db.VarChar(50)
+  lastName               String                @db.VarChar(50)
+  bio                    String?               @db.VarChar(280)
   gender                 ProfileGender?
   avatarUrl              String?
   coverImageUrl          String?
-  dateOfBirth            DateTime            @db.Date
+  dateOfBirth            DateTime              @db.Date
   // Username change throttle — SOW §1.2: 1 change per 30 days
-  lastUsernameChangeAt   DateTime?
+  lastUsernameChangeAt   DateTime?             @db.Timestamptz(3)
   // Denormalized counters (updated via events)
-  friendsCount           Int                 @default(0)
-  communitiesCount       Int                 @default(0)
-  groupsCount            Int                 @default(0)
+  friendsCount           Int                   @default(0)
+  communitiesCount       Int                   @default(0)
+  groupsCount            Int                   @default(0)
   // Presence
-  isOnline               Boolean             @default(false)
-  lastSeenAt             DateTime?
+  isOnline               Boolean               @default(false)
+  lastSeenAt             DateTime?             @db.Timestamptz(3)
   // Status mirror — synced from auth-service for fast local checks
-  status                 ProfileStatus       @default(ACTIVE)
-  createdAt              DateTime            @default(now())
-  updatedAt              DateTime            @updatedAt
-  deletedAt              DateTime?
+  status                 ProfileStatus         @default(ACTIVE)
+  createdAt              DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime              @updatedAt @db.Timestamptz(3)
+  deletedAt              DateTime?             @db.Timestamptz(3)
   privacySettings        PrivacySettings?
   chatSettings           ChatSettings?
   appSettings            AppSettings?
   notificationSettings   NotificationSettings?
   liveStreamSettings     LiveStreamSettings?
-  sentFriendRequests     Friendship[]        @relation("RequesterFriendships")
-  receivedFriendRequests Friendship[]        @relation("AddresseeFriendships")
-  blocksMade             Block[]             @relation("BlockerBlocks")
-  blocksReceived         Block[]             @relation("BlockedByBlocks")
-  recentSearches         RecentSearch[]      @relation("Searcher")
-  callPrivacyAllowList   CallAllowedFriend[] @relation("CallOwner")
+  sentFriendRequests     Friendship[]          @relation("RequesterFriendships")
+  receivedFriendRequests Friendship[]          @relation("AddresseeFriendships")
+  blocksMade             Block[]               @relation("BlockerBlocks")
+  blocksReceived         Block[]               @relation("BlockedByBlocks")
+  recentSearches         RecentSearch[]        @relation("Searcher")
+  callPrivacyAllowList   CallAllowedFriend[]   @relation("CallOwner")
 
   @@index([username])
   @@index([firstName, lastName])
@@ -75,13 +75,13 @@ model Friendship {
   addresseeId  String           @db.Uuid
   addressee    UserProfile      @relation("AddresseeFriendships", fields: [addresseeId], references: [userId], onDelete: Cascade)
   status       FriendshipStatus @default(PENDING)
-  acceptedAt   DateTime?
-  rejectedAt   DateTime?
-  cancelledAt  DateTime?
-  unfriendedAt DateTime?
+  acceptedAt   DateTime?        @db.Timestamptz(3)
+  rejectedAt   DateTime?        @db.Timestamptz(3)
+  cancelledAt  DateTime?        @db.Timestamptz(3)
+  unfriendedAt DateTime?        @db.Timestamptz(3)
   unfriendedBy String?          @db.Uuid // who initiated the unfriend
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
 
   @@unique([requesterId, addresseeId])
   @@index([addresseeId, status]) // incoming-request inbox
@@ -97,7 +97,7 @@ model Block {
   blockedId String      @db.Uuid
   blocked   UserProfile @relation("BlockedByBlocks", fields: [blockedId], references: [userId], onDelete: Cascade)
   reason    String?     @db.VarChar(500)
-  createdAt DateTime    @default(now())
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
 
   @@unique([blockerId, blockedId])
   @@index([blockedId]) // "is this user blocked by anyone I'm trying to message?"
@@ -116,7 +116,7 @@ model PrivacySettings {
   whoCanViewProfile        PrivacyScope     @default(EVERYONE)
   whoCanCallMe             CallPrivacyScope @default(FRIENDS)
 
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
   @@map("privacy_settings")
 }
@@ -129,7 +129,7 @@ model CallAllowedFriend {
   ownerId       String      @db.Uuid
   owner         UserProfile @relation("CallOwner", fields: [ownerId], references: [userId], onDelete: Cascade)
   allowedUserId String      @db.Uuid
-  createdAt     DateTime    @default(now())
+  createdAt     DateTime    @default(now()) @db.Timestamptz(3)
 
   @@unique([ownerId, allowedUserId])
   @@index([ownerId])
@@ -145,7 +145,7 @@ model ChatSettings {
   autoDeleteTimer  AutoDeleteTimer @default(OFF)
   typingIndicators Boolean         @default(true)
   readReceipts     Boolean         @default(true)
-  updatedAt        DateTime        @updatedAt
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
 
   @@map("chat_settings")
 }
@@ -158,7 +158,7 @@ model AppSettings {
   user      UserProfile @relation(fields: [userId], references: [userId], onDelete: Cascade)
   language  String      @default("en") // ISO 639-1; supported: en, vi, th
   theme     AppTheme    @default(AUTO) // AUTO = "System" in the UI
-  updatedAt DateTime    @updatedAt
+  updatedAt DateTime    @updatedAt @db.Timestamptz(3)
 
   @@map("app_settings")
 }
@@ -182,7 +182,7 @@ model NotificationSettings {
   quietHoursStart      String? // "HH:mm" 24h, e.g. "22:00"
   quietHoursEnd        String? // "HH:mm" 24h, e.g. "07:00"
   quietHoursDays       Int[]       @default([]) // 0=Sunday .. 6=Saturday
-  updatedAt            DateTime    @updatedAt
+  updatedAt            DateTime    @updatedAt @db.Timestamptz(3)
 
   @@map("notification_settings")
 }
@@ -191,10 +191,10 @@ model NotificationSettings {
 // LiveStreamSettings — Livestream screen: default playback video quality.
 // -----------------------------------------------------------------------------
 model LiveStreamSettings {
-  userId             String           @id @db.Uuid
-  user               UserProfile      @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  userId              String            @id @db.Uuid
+  user                UserProfile       @relation(fields: [userId], references: [userId], onDelete: Cascade)
   defaultVideoQuality LiveStreamQuality @default(AUTO)
-  updatedAt          DateTime         @updatedAt
+  updatedAt           DateTime          @updatedAt @db.Timestamptz(3)
 
   @@map("livestream_settings")
 }
@@ -208,7 +208,7 @@ model RecentSearch {
   searcher       UserProfile @relation("Searcher", fields: [userId], references: [userId], onDelete: Cascade)
   searchedUserId String?     @db.Uuid // populated if a user was tapped
   query          String?     @db.VarChar(100)
-  createdAt      DateTime    @default(now())
+  createdAt      DateTime    @default(now()) @db.Timestamptz(3)
 
   @@index([userId, createdAt(sort: Desc)])
   @@map("recent_searches")

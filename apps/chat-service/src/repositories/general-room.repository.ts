@@ -7,6 +7,16 @@ export class GeneralRoomRepository {
     return this.prisma.generalRoom.findUnique({ where: { id: roomId } });
   }
 
+  /**
+   * All room ids with their status — the diff target for the boot reconciler so
+   * it can tell which communities already have a (de)activated chat room.
+   */
+  async listAllIdsWithStatus(): Promise<Array<{ id: string; status: string }>> {
+    return this.prisma.generalRoom.findMany({
+      select: { id: true, status: true },
+    });
+  }
+
   async findActiveRooms(): Promise<GeneralRoom[]> {
     return this.prisma.generalRoom.findMany({
       where: { status: "active" },
@@ -86,5 +96,40 @@ export class GeneralRoomRepository {
     // Community rooms are open -- membership is tracked in room_members
     // Return true as a default for general rooms (open communities)
     return true;
+  }
+
+  /**
+   * Provision (idempotently) the chat room backing a community-service Community.
+   * The room's `id` is the Community's id, so `roomId === communityId` across the
+   * whole community-chat path. Driven by the `community.created` sync event.
+   */
+  async provisionForCommunity(
+    communityId: string,
+    data: { name: string; owner?: string | null; logo?: string | null }
+  ): Promise<void> {
+    await this.prisma.generalRoom.upsert({
+      where: { id: communityId },
+      create: {
+        id: communityId,
+        name: data.name,
+        owner: data.owner ?? null,
+        logo: data.logo ?? null,
+        status: "active",
+      },
+      update: {
+        // Keep room metadata in sync, and re-activate if it was soft-removed.
+        name: data.name,
+        logo: data.logo ?? null,
+        status: "active",
+      },
+    });
+  }
+
+  /** Soft-deactivate a community's chat room (driven by `community.deleted`). */
+  async deactivateForCommunity(communityId: string): Promise<void> {
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId },
+      data: { status: "inactive" },
+    });
   }
 }

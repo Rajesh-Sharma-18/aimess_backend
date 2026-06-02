@@ -84,7 +84,9 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "PowerShell(Invoke-WebRequest -Uri \"https://win.rustup.rs/x86_64\" -OutFile \"$env:TEMP\\\\rustup-init.exe\")",
-      "PowerShell(& \"$env:TEMP\\\\rustup-init.exe\" -y --default-toolchain stable)"
+      "PowerShell(& \"$env:TEMP\\\\rustup-init.exe\" -y --default-toolchain stable)",
+      "Bash(rtk grep *)",
+      "Bash(xargs cat)"
     ]
   }
 }

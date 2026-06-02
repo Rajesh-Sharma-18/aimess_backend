@@ -101,10 +101,24 @@ export const handleAvailableQuerySchema = z.object({
 
 export type HandleAvailableQuery = z.infer<typeof handleAvailableQuerySchema>;
 
-export const myCommunitiesQuerySchema = z.object({
-  page: pageSchema,
-  limit: limitSchema,
-});
+/**
+ * `GET /communities/mine` — cursor pagination over the caller's communities,
+ * ordered by `lastActivityAt` (latest community message, else createdAt).
+ * Timestamps are epoch milliseconds and mutually exclusive:
+ *   before_ts → lastActivityAt <= before_ts (newest-first)
+ *   after_ts  → lastActivityAt >= after_ts  (oldest-first)
+ * Omit both for the newest page.
+ */
+export const myCommunitiesQuerySchema = z
+  .object({
+    before_ts: z.coerce.number().int().positive().optional(),
+    after_ts: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().positive().max(50).default(20),
+  })
+  .refine((q) => !(q.before_ts != null && q.after_ts != null), {
+    message: "Provide either before_ts or after_ts, not both",
+    path: ["before_ts"],
+  });
 
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
 

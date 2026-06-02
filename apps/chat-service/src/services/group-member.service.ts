@@ -1,21 +1,32 @@
 import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
 
+import { SystemEvent } from "../types/enums.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
+import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { GroupMember } from "../generated/prisma/index.js";
 
 export class GroupMemberService {
   constructor(
     private readonly memberRepo: GroupMemberRepository,
-    private readonly roomRepo: GroupRoomRepository
+    private readonly roomRepo: GroupRoomRepository,
+    private readonly sysMsg: GroupSystemMessageService
   ) {}
 
-  async addMember(params: {
-    roomId: string;
-    userId: string;
-    invitedBy?: string;
-    role?: string;
-  }): Promise<GroupMember> {
+  /**
+   * Adds (or reactivates) a member. By default posts a MEMBER_ADDED system
+   * message attributed to `invitedBy`. The invite-link join path passes
+   * `opts` to post MEMBER_JOINED attributed to the joining user instead.
+   */
+  async addMember(
+    params: {
+      roomId: string;
+      userId: string;
+      invitedBy?: string;
+      role?: string;
+    },
+    opts?: { systemEvent?: SystemEvent; actorId?: string }
+  ): Promise<GroupMember> {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
 
@@ -45,6 +56,15 @@ export class GroupMemberService {
     });
 
     await this.roomRepo.incMemberCount(params.roomId, 1);
+
+    const systemEvent = opts?.systemEvent ?? SystemEvent.MEMBER_ADDED;
+    await this.sysMsg.post({
+      roomId: params.roomId,
+      actorId: opts?.actorId ?? params.invitedBy ?? params.userId,
+      systemEvent,
+      systemData: { targetUserId: params.userId },
+    });
+
     return member;
   }
 
@@ -63,6 +83,13 @@ export class GroupMemberService {
       leftAt: new Date(),
     });
     await this.roomRepo.incMemberCount(roomId, -1);
+
+    await this.sysMsg.post({
+      roomId,
+      actorId: userId,
+      systemEvent: SystemEvent.MEMBER_LEFT,
+    });
+
     return updated;
   }
 
@@ -104,6 +131,14 @@ export class GroupMemberService {
       }
     );
     await this.roomRepo.incMemberCount(params.roomId, -1);
+
+    await this.sysMsg.post({
+      roomId: params.roomId,
+      actorId: params.kickedBy,
+      systemEvent: SystemEvent.MEMBER_REMOVED,
+      systemData: { targetUserId: params.targetUserId },
+    });
+
     return updated;
   }
 
@@ -127,11 +162,23 @@ export class GroupMemberService {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }
 
-    return this.memberRepo.updateRole(
+    const updated = await this.memberRepo.updateRole(
       params.roomId,
       params.targetUserId,
       params.newRole
     );
+
+    await this.sysMsg.post({
+      roomId: params.roomId,
+      actorId: params.actorUserId,
+      systemEvent: SystemEvent.ROLE_CHANGED,
+      systemData: {
+        targetUserId: params.targetUserId,
+        newRole: params.newRole,
+      },
+    });
+
+    return updated;
   }
 
   async markRead(params: {

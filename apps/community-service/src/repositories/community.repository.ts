@@ -9,6 +9,7 @@ import {
   type Prisma,
 } from "../generated/prisma/index.js";
 import type { CommunityAuditAction } from "../types/community.types.js";
+import { publishCommunityMemberSyncedForChatSafe } from "../messaging/publish-community-chat.js";
 
 export const communityRepository = {
   // ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ export const communityRepository = {
   // ---------------------------------------------------------------------------
   // Members
   // ---------------------------------------------------------------------------
-  createMember(data: {
+  async createMember(data: {
     communityId: string;
     userId: string;
     role: CommunityMemberRole;
@@ -123,11 +124,18 @@ export const communityRepository = {
     snapshotDisplayName: string;
     snapshotAvatarKey: string | null;
   }) {
-    return prisma.communityMember.create({ data });
+    const row = await prisma.communityMember.create({ data });
+    publishCommunityMemberSyncedForChatSafe({
+      communityId: data.communityId,
+      userId: data.userId,
+      status: data.status,
+      role: data.role,
+    });
+    return row;
   },
 
   /** Bulk insert members (single-collection — safe without a replica set). */
-  createManyMembers(
+  async createManyMembers(
     communityId: string,
     members: Array<{
       userId: string;
@@ -138,9 +146,18 @@ export const communityRepository = {
       snapshotAvatarKey: string | null;
     }>
   ) {
-    return prisma.communityMember.createMany({
+    const result = await prisma.communityMember.createMany({
       data: members.map((m) => ({ communityId, ...m })),
     });
+    for (const m of members) {
+      publishCommunityMemberSyncedForChatSafe({
+        communityId,
+        userId: m.userId,
+        status: m.status,
+        role: m.role,
+      });
+    }
+    return result;
   },
 
   deleteMembersForCommunity(communityId: string) {
@@ -298,12 +315,12 @@ export const communityRepository = {
   },
 
   /** Single-document role update keyed by the (communityId, userId) unique. */
-  updateMemberRole(
+  async updateMemberRole(
     communityId: string,
     userId: string,
     role: CommunityMemberRole
   ) {
-    return prisma.communityMember.update({
+    const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: { role },
       select: {
@@ -320,6 +337,8 @@ export const communityRepository = {
         banReason: true,
       },
     });
+    publishCommunityMemberSyncedForChatSafe({ communityId, userId, role });
+    return row;
   },
 
   /**
@@ -327,7 +346,7 @@ export const communityRepository = {
    * Optionally also sets/clears the ban metadata (bannedAt/bannedBy/banReason)
    * in the same write — used by banMember (set) and unbanMember (clear to null).
    */
-  updateMemberStatus(
+  async updateMemberStatus(
     communityId: string,
     userId: string,
     status: CommunityMemberStatus,
@@ -337,7 +356,7 @@ export const communityRepository = {
       banReason: string | null;
     }
   ) {
-    return prisma.communityMember.update({
+    const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: banMeta ? { status, ...banMeta } : { status },
       select: {
@@ -354,6 +373,8 @@ export const communityRepository = {
         banReason: true,
       },
     });
+    publishCommunityMemberSyncedForChatSafe({ communityId, userId, status });
+    return row;
   },
 
   /**
@@ -426,45 +447,123 @@ export const communityRepository = {
   },
 
   /**
-   * Communities where the caller is an ACTIVE member — offset/page pagination
-   * on id. Returns the page rows plus the total matching count.
+   * Communities where the caller is an ACTIVE member, timestamp-cursor paginated
+   * on `Community.lastActivityAt` (latest message, else createdAt). Queried from
+   * the Community side so we can order by the native `lastActivityAt` field and
+   * apply the time bound at the DB level; the caller's role is pulled via a
+   * filtered include on `members`.
+   *
+   * - direction "before": lastActivityAt <= ts, newest-first (desc)
+   * - direction "after" : lastActivityAt >= ts, oldest-first (asc)
+   *
+   * Fetches `limit` rows (caller over-fetches by +1 for an exact hasMore).
+   * Returns rows + the caller's total active-community count.
    */
-  async listMyMemberships(params: {
+  async listMineByActivity(params: {
     userId: string;
-    page: number;
+    direction: "before" | "after";
+    ts: Date;
     limit: number;
   }) {
+    const dir = params.direction === "before" ? "desc" : "asc";
+    const bound =
+      params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
+
     const where = {
-      userId: params.userId,
-      status: CommunityMemberStatus.ACTIVE,
-      community: { deletedAt: { isSet: false } },
+      deletedAt: { isSet: false },
+      lastActivityAt: bound,
+      members: {
+        some: {
+          userId: params.userId,
+          status: CommunityMemberStatus.ACTIVE,
+        },
+      },
     };
 
     const [rows, total] = await Promise.all([
-      prisma.communityMember.findMany({
+      prisma.community.findMany({
         where,
-        orderBy: { id: "asc" },
-        skip: (params.page - 1) * params.limit,
+        orderBy: [{ lastActivityAt: dir }, { id: dir }],
         take: params.limit,
         select: {
           id: true,
-          role: true,
-          community: {
-            select: {
-              id: true,
-              name: true,
-              handle: true,
-              type: true,
-              memberCount: true,
-              avatarUrl: true,
+          name: true,
+          handle: true,
+          type: true,
+          memberCount: true,
+          avatarUrl: true,
+          lastActivityAt: true,
+          // At most one row per (communityId, userId) by unique constraint, so
+          // no take needed (Prisma's mongodb provider doesn't support take on a
+          // nested relation read anyway).
+          members: {
+            where: { userId: params.userId },
+            select: { role: true },
+          },
+        },
+      }),
+      prisma.community.count({
+        where: {
+          deletedAt: { isSet: false },
+          members: {
+            some: {
+              userId: params.userId,
+              status: CommunityMemberStatus.ACTIVE,
             },
           },
         },
       }),
-      prisma.communityMember.count({ where }),
     ]);
 
     return { rows, total };
+  },
+
+  /**
+   * Forward-only bump of a community's `lastActivityAt` (denormalized from a
+   * chat-service community message). No-op if the stored value is already newer
+   * (out-of-order/duplicate event).
+   */
+  async bumpLastActivityAt(
+    communityId: string,
+    activityAt: Date
+  ): Promise<void> {
+    await prisma.community.updateMany({
+      where: { id: communityId, lastActivityAt: { lt: activityAt } },
+      data: { lastActivityAt: activityAt },
+    });
+  },
+
+  /**
+   * Cursor-paginated list of communities (+ all their members) for chat-service's
+   * boot reconciliation of community chat rooms. Cursor is the community `id`
+   * (ObjectId, time-ordered), ascending for stable paging. Includes soft-deleted
+   * communities (carries `deletedAt`) so the reconciler can deactivate their rooms.
+   * All member statuses/roles are returned so RoomMember rows map correctly.
+   */
+  async listForReconciliation(params: {
+    afterId?: string | null;
+    limit: number;
+  }) {
+    return prisma.community.findMany({
+      ...(params.afterId ? { cursor: { id: params.afterId }, skip: 1 } : {}),
+      orderBy: { id: "asc" },
+      take: params.limit,
+      select: {
+        id: true,
+        name: true,
+        adminId: true,
+        avatarUrl: true,
+        deletedAt: true,
+        members: {
+          select: {
+            userId: true,
+            status: true,
+            role: true,
+            joinedAt: true,
+          },
+        },
+      },
+    });
   },
 
   // ---------------------------------------------------------------------------

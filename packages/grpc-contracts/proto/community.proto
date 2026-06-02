@@ -4,6 +4,9 @@ package community;
 service CommunityService {
   rpc SendCommunityMessage (SendCommunityMessageRequest) returns (SendCommunityMessageResponse);
   rpc GetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
+  // Reconciliation: chat-service pulls communities (+ members) on boot to
+  // provision any missing community chat rooms / sync RoomMember rows.
+  rpc ListCommunities (ListCommunitiesRequest) returns (ListCommunitiesResponse);
 }
 
 message SendCommunityMessageRequest {
@@ -39,4 +42,29 @@ message CommunityMessageDto {
   string content_type = 5;
   string media_key    = 6;
   int64  sent_at      = 7;
+}
+
+// ---- Reconciliation (ListCommunities) ----
+message ListCommunitiesRequest {
+  string after_id = 1; // exclusive cursor on community id; empty = from start
+  int32  limit    = 2; // page size; 0 = server default
+}
+message ReconcileMemberDto {
+  string user_id   = 1;
+  string status    = 2; // ACTIVE | PENDING | BANNED | LEFT
+  string role      = 3; // ADMIN | MODERATOR | MEMBER
+  int64  joined_at = 4; // epoch ms
+}
+message ReconcileCommunityDto {
+  string id         = 1;
+  string name       = 2;
+  string admin_id   = 3;
+  string avatar_url = 4;
+  bool   deleted    = 5; // deletedAt is set (soft-deleted)
+  repeated ReconcileMemberDto members = 6;
+}
+message ListCommunitiesResponse {
+  repeated ReconcileCommunityDto communities = 1;
+  string next_after_id = 2; // pass back as after_id for the next page
+  bool   has_more      = 3;
 }

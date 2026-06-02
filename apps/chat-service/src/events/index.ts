@@ -2,9 +2,11 @@ import * as amqp from "amqplib";
 import { logger } from "@aimess/logger";
 import { env } from "../config/env.js";
 import { FriendshipEventConsumer } from "./friendship.consumer.js";
+import { CommunityRoomSyncConsumer } from "./community-room-sync.consumer.js";
 
 let connection: amqp.ChannelModel | null = null;
 let friendshipConsumer: FriendshipEventConsumer | null = null;
+let communityRoomSyncConsumer: CommunityRoomSyncConsumer | null = null;
 
 export async function initializeEventConsumers(): Promise<void> {
   if (!env.RABBITMQ_URL) {
@@ -28,11 +30,16 @@ export async function initializeEventConsumers(): Promise<void> {
       logger.warn("RabbitMQ connection closed");
       connection = null;
       friendshipConsumer = null;
+      communityRoomSyncConsumer = null;
     });
 
     // Start friendship event consumer
     friendshipConsumer = new FriendshipEventConsumer();
     await friendshipConsumer.start(connection);
+
+    // Provision/teardown community chat rooms from community-service events
+    communityRoomSyncConsumer = new CommunityRoomSyncConsumer();
+    await communityRoomSyncConsumer.start(connection);
   } catch (err) {
     logger.error("Failed to initialize event consumers", err);
     throw err;
@@ -43,6 +50,9 @@ export async function closeEventConsumers(): Promise<void> {
   try {
     if (friendshipConsumer) {
       await friendshipConsumer.stop();
+    }
+    if (communityRoomSyncConsumer) {
+      await communityRoomSyncConsumer.stop();
     }
     if (connection) {
       await connection.close();

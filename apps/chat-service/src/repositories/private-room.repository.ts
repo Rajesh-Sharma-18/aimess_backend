@@ -14,6 +14,15 @@ export class PrivateRoomRepository {
     return this.prisma.privateRoom.findUnique({ where: { roomId } });
   }
 
+  async allocateSequence(roomId: string): Promise<number> {
+    const r = await this.prisma.privateRoom.update({
+      where: { roomId },
+      data: { lastSequence: { increment: 1 } },
+      select: { lastSequence: true },
+    });
+    return r.lastSequence;
+  }
+
   async findByParticipantsKey(key: string): Promise<PrivateRoom | null> {
     return this.prisma.privateRoom.findUnique({
       where: { participantsKey: key },
@@ -71,6 +80,34 @@ export class PrivateRoomRepository {
   async countConversations(userId: string): Promise<number> {
     return this.prisma.privateRoom.count({
       where: { participants: { has: userId }, lastMessageAt: { not: null } },
+    });
+  }
+
+  /**
+   * Timestamp-bounded conversation fetch for the unified inbox.
+   * - direction "before": lastMessageAt <= ts, newest-first (desc).
+   * - direction "after" : lastMessageAt >= ts, oldest-first (asc).
+   * Rooms without a lastMessageAt are excluded (no position in a time-ordered
+   * list), matching getConversationList.
+   */
+  async getInboxConversations(params: {
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<PrivateRoom[]> {
+    const bound =
+      params.direction === "before"
+        ? { lte: params.ts, not: null }
+        : { gte: params.ts, not: null };
+    const dir = params.direction === "before" ? "desc" : "asc";
+    return this.prisma.privateRoom.findMany({
+      where: {
+        participants: { has: params.userId },
+        lastMessageAt: bound,
+      },
+      orderBy: [{ lastMessageAt: dir }, { roomId: dir }],
+      take: params.limit,
     });
   }
 

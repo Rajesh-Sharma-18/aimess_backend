@@ -4,6 +4,7 @@ import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
 import { redis } from "../config/redis.js";
+import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
@@ -152,6 +153,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             messageType: string;
             content: unknown;
             createdAt: unknown;
+            sequenceNumber: number;
           };
           // Track whether this was an idempotency hit (message already existed).
           // Set by comparing createdAt to now after the service call.
@@ -201,6 +203,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                   msg.createdAt instanceof Date
                     ? msg.createdAt.getTime()
                     : Date.now(),
+                sequenceNumber: msg.sequenceNumber,
               },
             })
           );
@@ -221,6 +224,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                 ? msg.createdAt.getTime()
                 : Date.now(),
             alreadySent,
+            sequenceNumber: msg.sequenceNumber,
           });
         } catch (err) {
           logger.error(`gRPC sendMessage error: ${String(err)}`);
@@ -282,6 +286,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                     ?.text as string) ?? "",
                 contentJson,
                 editedAt: editedAtMs,
+                sequenceNumber: updated.sequenceNumber,
               },
             })
           );
@@ -290,6 +295,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             messageId: updated.id,
             editedAt: editedAtMs,
             contentJson,
+            sequenceNumber: updated.sequenceNumber,
           });
         } catch (err) {
           logger.error(`gRPC editMessage error: ${String(err)}`);
@@ -654,7 +660,12 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
 
-          let message: { id: string; messageType: string; createdAt: Date };
+          let message: {
+            id: string;
+            messageType: string;
+            createdAt: Date;
+            sequenceNumber: number;
+          };
 
           if (conversationType === "GROUP") {
             message = await deps.groupMessageService.forwardMessage({
@@ -685,6 +696,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                 senderId: req.senderId,
                 contentType: message.messageType,
                 isForwarded: true,
+                sequenceNumber: message.sequenceNumber,
               },
             })
           );
@@ -693,6 +705,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             messageId: message.id,
             conversationId: req.targetConversationId ?? "",
             sentAt: message.createdAt.getTime(),
+            sequenceNumber: message.sequenceNumber,
           });
         } catch (err) {
           logger.error(`gRPC forwardMessage error: ${String(err)}`);
@@ -919,6 +932,76 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
         callback({ code: grpc.status.INTERNAL, message: String(err) });
       }
     },
+
+    catchupRoom: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            conversationId: string;
+            requesterId: string;
+            sinceSeq: string | number;
+            limit: number;
+            conversationType: string;
+          };
+
+          const conversationType = String(
+            req.conversationType ?? ""
+          ).toUpperCase();
+          // proto-loader delivers int64 since_seq as a STRING (longs: String).
+          const sinceSeq = Number(req.sinceSeq ?? 0);
+          const limit = Math.min(Math.max(req.limit || 100, 1), 200);
+
+          const result =
+            conversationType === "GROUP"
+              ? await deps.groupMessageService.catchup({
+                  roomId: req.conversationId,
+                  userId: req.requesterId,
+                  sinceSeq,
+                  limit,
+                })
+              : await deps.privateMessageService.catchup({
+                  roomId: req.conversationId,
+                  userId: req.requesterId,
+                  sinceSeq,
+                  limit,
+                });
+
+          const events = result.events.map((e) => {
+            const content = (e as { content?: unknown }).content;
+            const deletedType = (e as { deletedType?: string | null })
+              .deletedType;
+            const editedAt = (e as { editedAt?: Date | null }).editedAt;
+            return {
+              messageId: e.id,
+              conversationId: req.conversationId,
+              senderId: e.senderId ?? "",
+              contentType: e.messageType,
+              contentText: (content as { text?: string })?.text ?? "",
+              contentJson: stringifyContent(content),
+              sentAt: e.createdAt instanceof Date ? e.createdAt.getTime() : 0,
+              sequenceNumber: e.sequenceNumber,
+              isDeleted: e.isDeleted,
+              deletedType: deletedType ?? "",
+              editedAt: editedAt instanceof Date ? editedAt.getTime() : 0,
+            };
+          });
+
+          callback(null, {
+            conversationId: req.conversationId,
+            events,
+            hasMore: result.hasMore,
+            lastSeq: result.lastSeq,
+            authorized: result.authorized,
+          });
+        } catch (err) {
+          logger.error(`gRPC catchupRoom error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
   };
 
   const communityImpl: grpc.UntypedServiceImplementation = {
@@ -985,6 +1068,20 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               },
             })
           );
+
+          // Denormalize activity to community-service so GET /communities/mine
+          // can order by latest message. Uses req.communityId (the
+          // community-service Community.id), NOT roomId (chat GeneralRoom.id).
+          if (req.communityId) {
+            publishCommunityActivitySafe({
+              communityId: req.communityId,
+              lastMessageAt:
+                saved.createdAt instanceof Date
+                  ? saved.createdAt.toISOString()
+                  : new Date(sentAt).toISOString(),
+              lastMessageId: saved.id,
+            });
+          }
 
           callback(null, {
             messageId: saved.id,

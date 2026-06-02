@@ -27,11 +27,13 @@ export class PrivateMessageRepository {
     forwardData?: object | null;
     deletedFor?: object;
     isDeleted?: boolean;
+    sequenceNumber?: number;
     [key: string]: unknown;
   }): Promise<PrivateMessage> {
     return this.prisma.privateMessage.create({
       data: {
         roomId: data.roomId,
+        sequenceNumber: (data.sequenceNumber as number) ?? 0,
         senderId: data.senderId ?? null,
         receiverId: data.receiverId ?? null,
         content: (data.content as object) ?? { text: "", urls: [], files: [] },
@@ -56,6 +58,18 @@ export class PrivateMessageRepository {
 
   async findById(messageId: string): Promise<PrivateMessage | null> {
     return this.prisma.privateMessage.findUnique({ where: { id: messageId } });
+  }
+
+  async findAfterSeq(
+    roomId: string,
+    sinceSeq: number,
+    limit: number
+  ): Promise<PrivateMessage[]> {
+    return this.prisma.privateMessage.findMany({
+      where: { roomId, sequenceNumber: { gt: sinceSeq } },
+      orderBy: { sequenceNumber: "asc" },
+      take: limit + 1,
+    });
   }
 
   async findMessageMeta(
@@ -98,6 +112,43 @@ export class PrivateMessageRepository {
         return !(userId in deletedFor);
       })
       .slice(0, limit);
+  }
+
+  /**
+   * Timestamp-bounded message page for the message-list endpoint.
+   * - direction "before": createdAt <= ts, newest-first (desc).
+   * - direction "after" : createdAt >= ts, oldest-first (asc).
+   * Excludes deleted-for-everyone (isDeleted) at the DB level; per-user
+   * "delete for me" is filtered in memory (deletedFor: { [userId]: ts }).
+   * Over-fetches a small buffer to absorb in-memory deletions, then returns
+   * up to `limit + 1` survivors so the caller can compute exact `hasMore`.
+   */
+  async findByRoomIdTimeline(params: {
+    userId: string;
+    roomId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<PrivateMessage[]> {
+    const bound =
+      params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
+    const order = params.direction === "before" ? "desc" : "asc";
+    const messages = await this.prisma.privateMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        isDeleted: false,
+        createdAt: bound,
+      },
+      orderBy: { createdAt: order },
+      take: params.limit + 1 + 10,
+    });
+
+    return messages
+      .filter((msg) => {
+        const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
+        return !(params.userId in deletedFor);
+      })
+      .slice(0, params.limit + 1);
   }
 
   async searchByText(
@@ -301,10 +352,12 @@ export class PrivateMessageRepository {
     messageType: string;
     forwardData: object;
     clientMessageId?: string | null;
+    sequenceNumber?: number;
   }): Promise<PrivateMessage> {
     return this.prisma.privateMessage.create({
       data: {
         roomId: data.roomId,
+        sequenceNumber: (data.sequenceNumber as number) ?? 0,
         senderId: data.senderId,
         receiverId: data.receiverId,
         content: data.content as Prisma.InputJsonValue,
