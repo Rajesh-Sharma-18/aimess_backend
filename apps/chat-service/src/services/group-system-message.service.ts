@@ -76,6 +76,12 @@ export class GroupSystemMessageService {
         ...(targetUserId ? { targetUserId, targetName } : {}),
       };
 
+      // Allocate the per-room monotonic sequence (same as a real send) so
+      // lifecycle/system messages flow through chat:catchup (seq > sinceSeq)
+      // on reconnect instead of defaulting to 0 — which both excluded them
+      // from gap-fill and broke the monotonic guarantee (many rows at seq 0).
+      const seq = await this.roomRepo.allocateSequence(roomId);
+
       const message = await this.messageRepo.create({
         roomId,
         senderId: actorId,
@@ -85,6 +91,7 @@ export class GroupSystemMessageService {
         systemEvent,
         systemData,
         content: { text, urls: [], files: [] },
+        sequenceNumber: seq,
       });
 
       // Bump inbox order/preview (no unread increment).
@@ -110,6 +117,7 @@ export class GroupSystemMessageService {
               contentType: "SYSTEM",
               contentText: text,
               contentJson: JSON.stringify(message.content),
+              sequenceNumber: seq,
               systemEvent,
               systemData,
               sentAt:

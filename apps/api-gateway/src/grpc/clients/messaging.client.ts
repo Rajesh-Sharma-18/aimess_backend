@@ -158,6 +158,8 @@ export interface CatchupEventDto {
   isDeleted: boolean;
   deletedType: string;
   editedAt: number;
+  systemEvent: string;
+  systemData: string;
 }
 export interface CatchupRoomResult {
   conversationId: string;

@@ -280,6 +280,10 @@ message CatchupEventDto {
   bool   is_deleted      = 9;
   string deleted_type    = 10;
   int64  edited_at       = 11;
+  // SYSTEM messages (group lifecycle) carry structured data so reconnecting
+  // clients can localize/render them, matching the realtime message:new event.
+  string system_event    = 12;
+  string system_data     = 13; // JSON-encoded object ("" for non-system messages)
 }
 message CatchupRoomResponse {
   string conversation_id           = 1;
