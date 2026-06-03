@@ -186,23 +186,25 @@ presence, and 1-1 WebRTC call signaling. Delegates to **chat-service** over gRPC
 
 Published by chat-service to a Redis channel; the gateway re-emits to the room.
 
-| Event                 | Room (channel)     | Payload                                                                                                                                                                                                                   | Trigger                                                                       |
-| --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `message:new`         | `conv:<id>`        | `{ messageId, conversationId, senderId, contentType, contentText, contentJson, sentAt, sequenceNumber }` (+`isForwarded` on forward; for **group system events** `contentType:"SYSTEM"` plus `systemEvent`, `systemData`) | a message is created/forwarded, or a group lifecycle system message is posted |
-| `message:edited`      | `conv:<id>`        | `{ messageId, conversationId, contentText, contentJson, editedAt, sequenceNumber }`                                                                                                                                       | message edited                                                                |
-| `chat:catchup:result` | (direct to socket) | `{ roomId, events: [CatchupEvent], hasMore, lastSeq }` (see below)                                                                                                                                                        | reconnect gap-fill response, one per room                                     |
-| `message:read`        | `conv:<id>`        | `{ conversationId, readerId, upToMessageId }`                                                                                                                                                                             | read receipt                                                                  |
-| `message:delivered`   | `conv:<id>`        | `{ conversationId, recipientId, upToMessageId, messageIds[] }`                                                                                                                                                            | delivery receipt (private)                                                    |
-| `message:reaction`    | `conv:<id>`        | `{ messageId, conversationId, reactions: [{ emoji, userId }] }`                                                                                                                                                           | reaction added/removed (full current set)                                     |
-| `message:delete`      | `conv:<id>`        | `{ messageId, type: "forEveryone"\|"forMe", deletedBy }`                                                                                                                                                                  | message deleted                                                               |
-| `typing:start`        | `conv:<id>`        | `{ userId, conversationId }`                                                                                                                                                                                              | a peer starts typing                                                          |
-| `typing:stop`         | `conv:<id>`        | `{ userId, conversationId }`                                                                                                                                                                                              | a peer stops typing                                                           |
-| `presence:status`     | `user:<id>`        | `{ userId, isOnline, lastActiveAt, lastSeen }`                                                                                                                                                                            | a watched peer's online status changes                                        |
-| `call:incoming`       | `user:<calleeId>`  | `{ callId, callerId, type }`                                                                                                                                                                                              | someone calls you                                                             |
-| `call:answered`       | `call:<callId>`    | `{ callId }`                                                                                                                                                                                                              | callee accepted                                                               |
-| `call:declined`       | `call:<callId>`    | `{ callId }`                                                                                                                                                                                                              | callee rejected                                                               |
-| `call:ended`          | `call:<callId>`    | `{ callId, endedBy, durationSec }`                                                                                                                                                                                        | call ended                                                                    |
-| `call:ice`            | `call:<callId>`    | `{ callId, candidate, from }`                                                                                                                                                                                             | peer ICE candidate                                                            |
+| Event                 | Room (channel)     | Payload                                                                                                                                                                                                                   | Trigger                                                                                                                                      |
+| --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message:new`         | `conv:<id>`        | `{ messageId, conversationId, senderId, contentType, contentText, contentJson, sentAt, sequenceNumber }` (+`isForwarded` on forward; for **group system events** `contentType:"SYSTEM"` plus `systemEvent`, `systemData`) | a message is created/forwarded, or a group lifecycle system message is posted                                                                |
+| `message:edited`      | `conv:<id>`        | `{ messageId, conversationId, contentText, contentJson, editedAt, sequenceNumber }`                                                                                                                                       | message edited                                                                                                                               |
+| `conv:updated`        | `user:<id>`        | `{ type: "PRIVATE"\|"GROUP", roomId, lastMessageId, lastMessage: { contentType, text }, lastMessageAt, senderId, unread }`                                                                                                | bump-to-top for the chat list/inbox — fired on every new message (incl. forwards) to all participants (sender's copy has `unread:false`)     |
+| `community:updated`   | `user:<id>`        | `{ communityId, roomId, lastMessageId, lastMessage: { contentType, text }, lastMessageAt, senderId, unread }`                                                                                                             | bump-to-top for the community list — fired on every new community message; **delivered on `/chat`** (not `/community`) to all active members |
+| `chat:catchup:result` | (direct to socket) | `{ roomId, events: [CatchupEvent], hasMore, lastSeq }` (see below)                                                                                                                                                        | reconnect gap-fill response, one per room                                                                                                    |
+| `message:read`        | `conv:<id>`        | `{ conversationId, readerId, upToMessageId }`                                                                                                                                                                             | read receipt                                                                                                                                 |
+| `message:delivered`   | `conv:<id>`        | `{ conversationId, recipientId, upToMessageId, messageIds[] }`                                                                                                                                                            | delivery receipt (private)                                                                                                                   |
+| `message:reaction`    | `conv:<id>`        | `{ messageId, conversationId, reactions: [{ emoji, userId }] }`                                                                                                                                                           | reaction added/removed (full current set)                                                                                                    |
+| `message:delete`      | `conv:<id>`        | `{ messageId, type: "forEveryone"\|"forMe", deletedBy }`                                                                                                                                                                  | message deleted                                                                                                                              |
+| `typing:start`        | `conv:<id>`        | `{ userId, conversationId }`                                                                                                                                                                                              | a peer starts typing                                                                                                                         |
+| `typing:stop`         | `conv:<id>`        | `{ userId, conversationId }`                                                                                                                                                                                              | a peer stops typing                                                                                                                          |
+| `presence:status`     | `user:<id>`        | `{ userId, isOnline, lastActiveAt, lastSeen }`                                                                                                                                                                            | a watched peer's online status changes                                                                                                       |
+| `call:incoming`       | `user:<calleeId>`  | `{ callId, callerId, type }`                                                                                                                                                                                              | someone calls you                                                                                                                            |
+| `call:answered`       | `call:<callId>`    | `{ callId }`                                                                                                                                                                                                              | callee accepted                                                                                                                              |
+| `call:declined`       | `call:<callId>`    | `{ callId }`                                                                                                                                                                                                              | callee rejected                                                                                                                              |
+| `call:ended`          | `call:<callId>`    | `{ callId, endedBy, durationSec }`                                                                                                                                                                                        | call ended                                                                                                                                   |
+| `call:ice`            | `call:<callId>`    | `{ callId, candidate, from }`                                                                                                                                                                                             | peer ICE candidate                                                                                                                           |
 
 > **Delete note:** message deletes are published to `conv:<roomId>` for both
 > 1-1/group and community rooms. Client rule: on `forEveryone` hide for all; on
@@ -217,6 +219,23 @@ Published by chat-service to a Redis channel; the gateway re-emits to the room.
 > `systemEvent` + `systemData` for i18n. These bump the room's last-message
 > (so it sorts in the unified inbox **`GET /api/v1/chat/inbox`**) but do **not**
 > raise unread counts.
+
+> **List bump events — `conv:updated` / `community:updated`:** these are
+> WhatsApp/Telegram-style "move-to-top" hints for the list/inbox surface,
+> delivered to `user:<id>` (so a client sitting on the chat **list** screen —
+> joined only `user:<id>`, not inside the conversation — can reorder and update
+> the preview **without refetching**). Both are delivered on the **`/chat`**
+> namespace; `community:updated` is intentionally on `/chat` (not `/community`)
+> because the unified list/inbox uses the `/chat` socket — FE must listen there.
+> They are **independent** from `message:new`: a user inside a conversation
+> receives both — `message:new` to append in-room and `conv:updated` to reorder
+> the list. On receipt the client splices the item to the top of its list, keyed
+> by `roomId` (chat) / `communityId` (community), and updates the preview +
+> unread. The events are **idempotent** — safe to receive more than once. The
+> `unread` field is a **v1 boolean hint** (`true` for recipients other than the
+> sender, `false` on the sender's own copy); an absolute unread **count** is a
+> planned enhancement. `lastMessageAt` is **epoch milliseconds** (a plain number,
+> consistent with `sentAt` on `message:new`).
 
 ### 4.3 Reconnect gap-fill — `chat:catchup`
 
@@ -261,6 +280,8 @@ requesting socket, not broadcast), plus an aggregate ack.
       "isDeleted": false,
       "deletedType": "", // group tombstones only; "" for private
       "editedAt": 0, // epoch ms, 0 if never edited
+      "systemEvent": "", // set for SYSTEM messages (e.g. "GROUP_CREATED", "ROOM_RENAMED"); "" otherwise
+      "systemData": "", // JSON-encoded object for SYSTEM messages (localize/render from this); "" otherwise
     },
   ],
   "hasMore": false, // more rows beyond `limit` — re-request with sinceSeq=lastSeq
@@ -397,6 +418,25 @@ Either: emit call:end { callId }       → call:<callId> receives "call:ended" {
 ICE candidates are relayed through Redis only — never persisted. The backend is
 **signaling-only**; media flows peer-to-peer / via TURN (`rtcConfig`).
 
+### 7.6 List bump-to-top (chat + community)
+
+```
+A sits on the chat LIST screen: connect /chat → joins user:<A> only (no conv:join)
+Someone sends a new message in a chat A belongs to
+        chat-service publishes "conv:updated" to user:<A> (+ every other participant)
+A: receives "conv:updated" { type, roomId, lastMessage, lastMessageAt, unread:true }
+        → splices that chat to the top of the list (key roomId), updates preview + unread
+A new community message arrives in a community A is a member of
+        chat-service publishes "community:updated" to user:<A> on the /chat namespace
+A (listening on /chat): receives "community:updated" { communityId, … }
+        → splices that community to the top (key communityId), updates preview + unread
+```
+
+A user **inside** a conversation receives **both** `message:new` (append in-room)
+and `conv:updated` (reorder the list) for the same message — handle them
+independently. Both bump events are idempotent: re-receiving the same one is a
+no-op once the list item is already at the top with the same `lastMessageId`.
+
 ---
 
 ## 8. Error handling
@@ -423,7 +463,8 @@ failures surface as a `connect_error` with message `Authentication required` /
 `community:join` · `community:leave` · `community:message:send` ·
 `community:messages:fetch` · `notifications:fetch` · `notifications:mark_read`
 
-**Server → Client:** `message:new` · `message:edited` · `chat:catchup:result` · `message:read` ·
+**Server → Client:** `message:new` · `message:edited` · `conv:updated` ·
+`community:updated` · `chat:catchup:result` · `message:read` ·
 `message:delivered` · `message:reaction` · `message:delete` · `typing:start` ·
 `typing:stop` · `presence:status` · `call:incoming` · `call:answered` ·
 `call:declined` · `call:ended` · `call:ice` · `community:message:new` ·

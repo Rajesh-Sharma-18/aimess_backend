@@ -10,6 +10,7 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
 } from "../../lib/pagination.js";
+import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import type { GroupMessageService } from "../../services/group-message.service.js";
 import type { GroupPinService } from "../../services/group-pin.service.js";
 
@@ -238,6 +239,18 @@ export class GroupMessageController {
         },
       })
     );
+    // Fire-and-forget bump (incl. member fetch) — must never delay the HTTP response.
+    publishConvUpdatedSafe({
+      redis: this.redis,
+      type: "GROUP",
+      roomId: targetRoomId,
+      fetchRecipients: () =>
+        this.messageService.getActiveMemberIds(targetRoomId),
+      senderId: userId,
+      lastMessageId: result.id,
+      lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
+      preview: { contentType: result.messageType, text: "" },
+    });
     res
       .status(HTTP_STATUS.CREATED)
       .json(new ApiResponse(result, t("CHAT_MESSAGE_FORWARDED", req.locale)));

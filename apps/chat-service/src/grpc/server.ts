@@ -5,6 +5,10 @@ import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
+import {
+  publishConvUpdatedSafe,
+  publishCommunityUpdatedSafe,
+} from "../events/publish-conv-updated.js";
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
@@ -207,6 +211,42 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               },
             })
           );
+
+          // Bump-to-top: fan out conv:updated to every participant's inbox.
+          // Fire-and-forget — must never delay the send callback.
+          {
+            const bumpSentAt =
+              msg.createdAt instanceof Date
+                ? msg.createdAt.getTime()
+                : Date.now();
+            const bumpText =
+              ((msg.content as Record<string, unknown>)?.text as string) ?? "";
+            const bumpBase = {
+              redis,
+              type: (conversationType?.toUpperCase() === "GROUP"
+                ? "GROUP"
+                : "PRIVATE") as "GROUP" | "PRIVATE",
+              roomId: req.conversationId,
+              senderId: req.senderId,
+              lastMessageId: msg.id,
+              lastMessageAt: bumpSentAt,
+              preview: { contentType: msg.messageType, text: bumpText },
+            };
+            if (conversationType === "GROUP") {
+              publishConvUpdatedSafe({
+                ...bumpBase,
+                fetchRecipients: () =>
+                  deps.groupMessageService.getActiveMemberIds(
+                    req.conversationId
+                  ),
+              });
+            } else {
+              publishConvUpdatedSafe({
+                ...bumpBase,
+                recipientIds: [req.senderId, req.receiverId],
+              });
+            }
+          }
 
           // Detect idempotency hit: message created more than 5s ago → already existed
           if (
@@ -701,6 +741,35 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             })
           );
 
+          // Bump-to-top: fan out conv:updated to every participant's inbox.
+          // Fire-and-forget — must never delay the send callback.
+          {
+            const targetId = req.targetConversationId ?? "";
+            const bumpBase = {
+              redis,
+              type: (conversationType?.toUpperCase() === "GROUP"
+                ? "GROUP"
+                : "PRIVATE") as "GROUP" | "PRIVATE",
+              roomId: targetId,
+              senderId: req.senderId ?? "",
+              lastMessageId: message.id,
+              lastMessageAt: message.createdAt.getTime(),
+              preview: { contentType: message.messageType, text: "" },
+            };
+            if (conversationType === "GROUP") {
+              publishConvUpdatedSafe({
+                ...bumpBase,
+                fetchRecipients: () =>
+                  deps.groupMessageService.getActiveMemberIds(targetId),
+              });
+            } else {
+              publishConvUpdatedSafe({
+                ...bumpBase,
+                recipientIds: [req.senderId ?? "", req.receiverId ?? ""],
+              });
+            }
+          }
+
           callback(null, {
             messageId: message.id,
             conversationId: req.targetConversationId ?? "",
@@ -974,6 +1043,9 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             const deletedType = (e as { deletedType?: string | null })
               .deletedType;
             const editedAt = (e as { editedAt?: Date | null }).editedAt;
+            const systemEvent = (e as { systemEvent?: string | null })
+              .systemEvent;
+            const systemData = (e as { systemData?: unknown }).systemData;
             return {
               messageId: e.id,
               conversationId: req.conversationId,
@@ -986,6 +1058,8 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               isDeleted: e.isDeleted,
               deletedType: deletedType ?? "",
               editedAt: editedAt instanceof Date ? editedAt.getTime() : 0,
+              systemEvent: systemEvent ?? "",
+              systemData: systemData ? JSON.stringify(systemData) : "",
             };
           });
 
@@ -1082,6 +1156,24 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               lastMessageId: saved.id,
             });
           }
+
+          // Bump-to-top: fan out community:updated to every member's list.
+          // Fire-and-forget — must never delay the send callback.
+          publishCommunityUpdatedSafe({
+            redis,
+            communityId: req.communityId,
+            // Genuine chat room id — same value as community:message:new emits.
+            roomId: saved.roomId,
+            fetchMembers: () =>
+              deps.communityMessageService.getActiveMemberIds(req.roomId),
+            senderId: req.senderId,
+            lastMessageId: saved.id,
+            lastMessageAt: sentAt,
+            preview: {
+              contentType: saved.messageType,
+              text: saved.message ?? "",
+            },
+          });
 
           callback(null, {
             messageId: saved.id,

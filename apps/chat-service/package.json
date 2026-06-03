@@ -13,7 +13,7 @@
     "db:push": "prisma db push",
     "postinstall": "prisma generate",
     "lint": "eslint .",
-    "test": "node -e \"process.exit(0)\""
+    "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@aimess/auth-jwt": "workspace:*",

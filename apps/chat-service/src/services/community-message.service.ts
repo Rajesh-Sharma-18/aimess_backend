@@ -136,6 +136,15 @@ export class CommunityMessageService {
     return message;
   }
 
+  /**
+   * Active member userIds for a community room — the recipient list for the
+   * community list "bump-to-top" (`community:updated`) fan-out.
+   */
+  async getActiveMemberIds(roomId: string): Promise<string[]> {
+    const members = await this.memberRepo.findActiveByRoom(roomId);
+    return members.map((m) => m.userId);
+  }
+
   async getMessages(params: {
     roomId: string;
     userId: string;

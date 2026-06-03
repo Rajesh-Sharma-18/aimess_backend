@@ -10,6 +10,7 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
 } from "../../lib/pagination.js";
+import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import type { PrivateMessageService } from "../../services/private-message.service.js";
 import type { PrivatePinService } from "../../services/private-pin.service.js";
 
@@ -183,6 +184,17 @@ export class PrivateMessageController {
         },
       })
     );
+    // Fire-and-forget bump — must never delay the HTTP response.
+    publishConvUpdatedSafe({
+      redis: this.redis,
+      type: "PRIVATE",
+      roomId: targetRoomId,
+      recipientIds: [userId, receiverId],
+      senderId: userId,
+      lastMessageId: result.id,
+      lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
+      preview: { contentType: result.messageType, text: "" },
+    });
     res
       .status(HTTP_STATUS.CREATED)
       .json(new ApiResponse(result, t("CHAT_MESSAGE_FORWARDED", req.locale)));

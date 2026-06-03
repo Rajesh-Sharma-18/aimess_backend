@@ -164,6 +164,15 @@ export class GroupMessageService {
     return message;
   }
 
+  /**
+   * Active member userIds for a group room — the recipient list for inbox
+   * "bump-to-top" (`conv:updated`) fan-out.
+   */
+  async getActiveMemberIds(roomId: string): Promise<string[]> {
+    const members = await this.memberRepo.findActiveMembers(roomId);
+    return members.map((m) => m.userId);
+  }
+
   async getMessages(params: {
     roomId: string;
     userId: string;
