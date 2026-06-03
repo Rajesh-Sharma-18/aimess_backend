@@ -1,0 +1,34 @@
+{
+  "name": "@aimess/backoffice-service",
+  "version": "1.0.0",
+  "description": "Workspace-only scaffold source; use pnpm create-service to copy into apps/.",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.js",
+    "lint": "eslint .",
+    "test": "node -e \"process.exit(0)\"",
+    "dev": "tsx watch --include ./src --clear-screen=false src/server.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@aimess/errors": "workspace:*",
+    "@aimess/logger": "workspace:*",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
