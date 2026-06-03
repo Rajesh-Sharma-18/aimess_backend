@@ -1,0 +1,183 @@
+# Communities — Discovery & Listing (pagination / filter / sort)
+
+**Source:** `apps/community-service/src/api/routes/community.routes.ts` (`GET /discover`, `GET /mine`), `controllers/community.controller.ts` (`discoverCommunities`, `listMyCommunities`), `validators/community.validator.ts` (`discoverQuerySchema`, `myCommunitiesQuerySchema`), `services/community.service.ts` (`discover`, `listMine`). Also chat-service room listing (see community-chat.md).
+
+> **Service:** community-service. `discover` = offset/page pagination over PUBLIC communities the caller is NOT already in. `mine` = cursor pagination ordered by `lastActivityAt`.
+
+---
+
+### TC-COMM-103 — Discover all PUBLIC communities (page 1)
+
+| Field                     | Value                                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Discovery                                                                                  |
+| **API/Event Name**        | `GET /api/v1/communities/discover?filter=all&page=1&limit=20`                                            |
+| **Test Scenario**         | Browse public communities                                                                                |
+| **Category**              | Pagination/Filter/Sort                                                                                   |
+| **Priority**              | High                                                                                                     |
+| **Preconditions**         | Authenticated; PUBLIC communities exist                                                                  |
+| **Request Payload**       | query                                                                                                    |
+| **Expected Response**     | `200` paginated discover items (id, name, handle, type, category, memberCount, avatarUrl) + `pagination` |
+| **Expected DB Changes**   | None                                                                                                     |
+| **Expected Socket/Event** | None                                                                                                     |
+| **Notes**                 | Excludes communities caller is active/pending/banned in (`listExcludedCommunityIds`).                    |
+
+### TC-COMM-104 — Discover with text search `q`
+
+| Field                     | Value                                     |
+| ------------------------- | ----------------------------------------- |
+| **Feature/Module**        | Communities / Discovery                   |
+| **API/Event Name**        | `GET /api/v1/communities/discover?q=rust` |
+| **Test Scenario**         | Search by name/handle                     |
+| **Category**              | Pagination/Filter/Sort                    |
+| **Priority**              | Medium                                    |
+| **Preconditions**         | Matching communities exist                |
+| **Request Payload**       | `q=rust` (1–100 chars)                    |
+| **Expected Response**     | `200` matching subset                     |
+| **Expected DB Changes**   | None                                      |
+| **Expected Socket/Event** | None                                      |
+| **Notes**                 | Empty `q` → `400`; >100 chars → `400`.    |
+
+### TC-COMM-105 — Discover filtered by categoryId
+
+| Field                     | Value                                                 |
+| ------------------------- | ----------------------------------------------------- |
+| **Feature/Module**        | Communities / Discovery                               |
+| **API/Event Name**        | `GET /api/v1/communities/discover?categoryId=<24hex>` |
+| **Test Scenario**         | Filter by category                                    |
+| **Category**              | Pagination/Filter/Sort                                |
+| **Priority**              | Medium                                                |
+| **Preconditions**         | Communities in that category                          |
+| **Request Payload**       | `categoryId=<24hex>`                                  |
+| **Expected Response**     | `200` filtered list                                   |
+| **Expected DB Changes**   | None                                                  |
+| **Expected Socket/Event** | None                                                  |
+| **Notes**                 | Malformed categoryId → `400`.                         |
+
+### TC-COMM-106 — Discover filter=live / upcoming returns empty (gap)
+
+| Field                     | Value                                                                               |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Discovery                                                             |
+| **API/Event Name**        | `GET /api/v1/communities/discover?filter=live`                                      |
+| **Test Scenario**         | Livestream-based filter                                                             |
+| **Category**              | Edge Case / Gap                                                                     |
+| **Priority**              | Low                                                                                 |
+| **Preconditions**         | —                                                                                   |
+| **Request Payload**       | `filter=live` or `filter=upcoming`                                                  |
+| **Expected Response**     | `200` empty page (no error)                                                         |
+| **Expected DB Changes**   | None                                                                                |
+| **Expected Socket/Event** | None                                                                                |
+| **Notes**                 | Reserved until stream-service ships — returns `buildPaginatedResponse([], 0, ...)`. |
+
+### TC-COMM-107 — Discover limit boundary
+
+| Field                     | Value                                          |
+| ------------------------- | ---------------------------------------------- |
+| **Feature/Module**        | Communities / Discovery                        |
+| **API/Event Name**        | `GET /api/v1/communities/discover?limit=51`    |
+| **Test Scenario**         | limit exceeds cap                              |
+| **Category**              | Input Validation                               |
+| **Priority**              | Low                                            |
+| **Preconditions**         | —                                              |
+| **Request Payload**       | `limit=51` / `limit=0` / `page=0`              |
+| **Expected Response**     | `400` (limit max 50; page/limit positive ints) |
+| **Expected DB Changes**   | None                                           |
+| **Expected Socket/Event** | None                                           |
+| **Notes**                 | defaults page=1, limit=20.                     |
+
+### TC-COMM-108 — Discover excludes communities caller already in
+
+| Field                     | Value                                                      |
+| ------------------------- | ---------------------------------------------------------- |
+| **Feature/Module**        | Communities / Discovery                                    |
+| **API/Event Name**        | `GET /api/v1/communities/discover`                         |
+| **Test Scenario**         | Member/pending/banned communities not shown                |
+| **Category**              | Business Rule                                              |
+| **Priority**              | High                                                       |
+| **Preconditions**         | Caller is active in community A, pending in B, banned in C |
+| **Request Payload**       | query                                                      |
+| **Expected Response**     | `200`; A, B, C absent from results                         |
+| **Expected DB Changes**   | None                                                       |
+| **Expected Socket/Event** | None                                                       |
+| **Notes**                 | PRIVATE communities never appear in discover.              |
+
+### TC-COMM-109 — List my communities (cursor, newest first)
+
+| Field                     | Value                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                                                                                                                 |
+| **API/Event Name**        | `GET /api/v1/communities/mine?limit=20`                                                                                               |
+| **Test Scenario**         | First page of caller's communities by lastActivityAt                                                                                  |
+| **Category**              | Pagination/Filter/Sort                                                                                                                |
+| **Priority**              | High                                                                                                                                  |
+| **Preconditions**         | Caller is a member of ≥1 community                                                                                                    |
+| **Request Payload**       | no cursor                                                                                                                             |
+| **Expected Response**     | `200` items (id, name, handle, type, memberCount, avatarUrl, myRole, lastActivityAt) + `pagination.nextCursor` (epoch-ms) + `hasMore` |
+| **Expected DB Changes**   | None                                                                                                                                  |
+| **Expected Socket/Event** | None                                                                                                                                  |
+| **Notes**                 | Ordered by lastActivityAt (latest message else createdAt).                                                                            |
+
+### TC-COMM-110 — List my communities — before_ts pagination
+
+| Field                     | Value                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                                                                    |
+| **API/Event Name**        | `GET /api/v1/communities/mine?before_ts=<ms>&limit=20`                                   |
+| **Test Scenario**         | Older page (newest-first)                                                                |
+| **Category**              | Pagination/Filter/Sort                                                                   |
+| **Priority**              | Medium                                                                                   |
+| **Preconditions**         | More than one page                                                                       |
+| **Request Payload**       | `before_ts` = previous nextCursor                                                        |
+| **Expected Response**     | `200` next older page; boundary community may repeat (inclusive) — client de-dupes by id |
+| **Expected DB Changes**   | None                                                                                     |
+| **Expected Socket/Event** | None                                                                                     |
+| **Notes**                 | `lastActivityAt <= before_ts`.                                                           |
+
+### TC-COMM-111 — List my communities — after_ts pagination
+
+| Field                     | Value                                        |
+| ------------------------- | -------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                        |
+| **API/Event Name**        | `GET /api/v1/communities/mine?after_ts=<ms>` |
+| **Test Scenario**         | Fetch newer (oldest-first) page              |
+| **Category**              | Pagination/Filter/Sort                       |
+| **Priority**              | Low                                          |
+| **Preconditions**         | —                                            |
+| **Request Payload**       | `after_ts`                                   |
+| **Expected Response**     | `200`; `lastActivityAt >= after_ts`          |
+| **Expected DB Changes**   | None                                         |
+| **Expected Socket/Event** | None                                         |
+| **Notes**                 | —                                            |
+
+### TC-COMM-112 — before_ts and after_ts both provided
+
+| Field                     | Value                                                    |
+| ------------------------- | -------------------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                                    |
+| **API/Event Name**        | `GET /api/v1/communities/mine?before_ts=1&after_ts=2`    |
+| **Test Scenario**         | Mutually exclusive cursors                               |
+| **Category**              | Input Validation                                         |
+| **Priority**              | Medium                                                   |
+| **Preconditions**         | —                                                        |
+| **Request Payload**       | both params                                              |
+| **Expected Response**     | `400` ("Provide either before_ts or after_ts, not both") |
+| **Expected DB Changes**   | None                                                     |
+| **Expected Socket/Event** | None                                                     |
+| **Notes**                 | `myCommunitiesQuerySchema.refine`.                       |
+
+### TC-COMM-113 — List my communities when none
+
+| Field                     | Value                                                                     |
+| ------------------------- | ------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                                                     |
+| **API/Event Name**        | `GET /api/v1/communities/mine`                                            |
+| **Test Scenario**         | Caller has no communities                                                 |
+| **Category**              | Edge Case                                                                 |
+| **Priority**              | Low                                                                       |
+| **Preconditions**         | New user                                                                  |
+| **Request Payload**       | —                                                                         |
+| **Expected Response**     | `200` `{ data: [], pagination: { hasMore:false, nextCursor:null, ... } }` |
+| **Expected DB Changes**   | None                                                                      |
+| **Expected Socket/Event** | None                                                                      |
+| **Notes**                 | totalPage floors to 1.                                                    |
