@@ -190,6 +190,64 @@ export class GeneralRoomMessageRepository {
     return result[0]?.total ?? 0;
   }
 
+  /**
+   * Bulk unread counts for many rooms in ONE aggregateRaw: for each room, count
+   * visible messages (not deleted-for-all, not deleted-for-me) created strictly
+   * after that room's per-user read threshold. A `$switch` selects the right
+   * threshold per roomId (default epoch 0 for never-read rooms). Returns a
+   * Record<roomId(hex), number>; rooms with no matching docs are absent (treat
+   * as 0 by the caller).
+   *
+   * `roomId` is an ObjectId column, so thresholds are matched via `{ $oid }` and
+   * the grouped `_id` comes back as extended JSON `{ $oid: "<hex>" }`.
+   */
+  async countUnreadBulk(params: {
+    userId: string;
+    thresholds: Array<{ roomId: string; afterDate: Date }>;
+  }): Promise<Record<string, number>> {
+    if (!params.thresholds.length) return {};
+
+    const oids = params.thresholds.map((t) => ({ $oid: t.roomId }));
+    const branches = params.thresholds.map((t) => ({
+      case: { $eq: ["$roomId", { $oid: t.roomId }] },
+      then: { $date: t.afterDate.toISOString() },
+    }));
+
+    const result = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $in: oids },
+            deletedForAll: false,
+            deletedBy: { $ne: params.userId },
+          },
+        },
+        {
+          $addFields: {
+            _thr: {
+              $switch: {
+                branches,
+                default: { $date: "1970-01-01T00:00:00.000Z" },
+              },
+            },
+          },
+        },
+        { $match: { $expr: { $gt: ["$createdAt", "$_thr"] } } },
+        { $group: { _id: "$roomId", total: { $sum: 1 } } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{
+      _id: { $oid?: string } | string;
+      total: number;
+    }>;
+
+    const counts: Record<string, number> = {};
+    for (const row of result) {
+      const hex = typeof row._id === "string" ? row._id : row._id?.$oid;
+      if (hex) counts[hex] = row.total;
+    }
+    return counts;
+  }
+
   async searchByText(
     roomId: string,
     query: string,

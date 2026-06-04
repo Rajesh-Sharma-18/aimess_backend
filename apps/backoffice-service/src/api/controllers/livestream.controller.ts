@@ -2,7 +2,6 @@ import { NotFoundError } from "@aimess/errors";
 import type { RequestHandler } from "express";
 
 import { getRequestContext } from "../../lib/request-context.js";
-import { buildMeta } from "../../lib/response-meta.js";
 import { livestreamService } from "../../services/index.js";
 import type {
   ListLivestreamsQuery,
@@ -15,6 +14,7 @@ import type {
   ListLivestreamReportsQueryInput,
   ListLivestreamsQueryInput,
 } from "../validators/index.js";
+import { HTTP_STATUS } from "@aimess/constants";
 
 /** GET /v1/livestreams — paginated, filtered list. */
 export const listLivestreams: RequestHandler = (req, res, next) => {
@@ -24,11 +24,10 @@ export const listLivestreams: RequestHandler = (req, res, next) => {
       const result = await livestreamService.listLivestreams(
         query as ListLivestreamsQuery
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result.data,
         pagination: result.pagination,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -44,10 +43,9 @@ export const getLivestreamDetails: RequestHandler = (req, res, next) => {
       const livestreamId = req.params.livestreamId as string;
       const livestream = await livestreamService.getLivestream(livestreamId);
       if (!livestream) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: livestream,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -66,11 +64,10 @@ export const listLivestreamReports: RequestHandler = (req, res, next) => {
         livestreamId,
         query as ListLivestreamReportsQuery
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result.data,
         pagination: result.pagination,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -91,10 +88,9 @@ export const endLivestream: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -116,7 +112,6 @@ export const bulkEndLivestreams: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -138,7 +133,6 @@ export const bulkReviewLivestreamReports: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);

@@ -17,7 +17,7 @@ const startServer = async (): Promise<void> => {
     logger.info("PostgreSQL (admin_db) connected");
 
     // Bounded so a hung/misconfigured Redis can never block app.listen. The
-    // jti-blacklist + cache recover once Redis is reachable again.
+    // active-session + perms cache recover once Redis is reachable again.
     try {
       await Promise.race([
         connectBackofficeRedis(),
@@ -31,7 +31,7 @@ const startServer = async (): Promise<void> => {
       logger.info("Redis connected");
     } catch (error) {
       logger.warn(
-        "Redis unavailable/timed out — backoffice-service is starting anyway; jti blacklist + cache will fail until Redis is reachable"
+        "Redis unavailable/timed out — backoffice-service is starting anyway; active-session + perms cache will fail until Redis is reachable"
       );
       logger.warn(error);
     }

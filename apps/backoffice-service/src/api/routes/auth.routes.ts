@@ -39,5 +39,5 @@ authRoutes.post(
   resetPassword
 );
 
-// Self (requires a valid admin bearer to revoke its own jti).
+// Self (requires a valid admin bearer to revoke its own session).
 authRoutes.post("/logout", adminAuth, logout);

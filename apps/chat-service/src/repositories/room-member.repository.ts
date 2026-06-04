@@ -100,6 +100,20 @@ export class RoomMemberRepository {
     });
   }
 
+  /**
+   * Bulk: a user's ACTIVE member rows across many rooms — the basis for
+   * member-only community-chat summaries. One query, no N+1.
+   */
+  async findActiveByUserAndRooms(
+    userId: string,
+    roomIds: string[]
+  ): Promise<RoomMember[]> {
+    if (!roomIds.length) return [];
+    return this.prisma.roomMember.findMany({
+      where: { userId, status: "active", roomId: { in: roomIds } },
+    });
+  }
+
   async attachSenderRoomStatus(
     roomId: string,
     messages: Array<Record<string, unknown>>

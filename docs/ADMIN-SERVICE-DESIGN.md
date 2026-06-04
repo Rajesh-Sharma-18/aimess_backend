@@ -31,7 +31,7 @@ Every element on the dashboard screenshot, mapped to its source service. This dr
 | Active vs Churned chart                                 | User Service                                         | time-series read-model (`DailyActiveSnapshot`)                      |
 | Communities vs Groups donut                             | Community Service + chat-service                     | two read-model counters                                             |
 | Service Status (API/Chat/Media/Livestream/Notification) | each service `/health` + gRPC health + breaker state | live probe (Redis-cached 5–10s)                                     |
-| Quick Links (counts)                                    | derived from the above                               | reuse `/dashboard/stats`                                            |
+| Quick Links (counts)                                    | derived from the above                               | reuse `/dashboard/overview`                                         |
 | i18n EN / Tiếng Việt                                    | client-side + localizable content                    | stable error codes; translated content for announcements/categories |
 
 ---
@@ -85,7 +85,9 @@ Conventions: base path `/admin/v1` (gateway strips `/admin`, proxies to `:3010/v
 
 ### 2.1 Dashboard
 
-**`GET /dashboard/stats`** — every stat card in one call.
+> **Implemented as three split endpoints:** `GET /dashboard/overview` (`data: { stats }`), `GET /dashboard/charts?period=daily|weekly|monthly` (`data: { activeVsChurned, communitiesGroups }`), and `GET /dashboard/service-status` (`data: { serviceStatus }`). Each is cached independently and fetches only the upstreams its section needs. The example payloads below show each section's sub-object shape.
+
+**`GET /dashboard/overview`** → `data: { stats }` — every stat card in one call.
 
 ```jsonc
 // 200
@@ -104,7 +106,7 @@ Conventions: base path `/admin/v1` (gateway strips `/admin`, proxies to `:3010/v
 }
 ```
 
-**`GET /dashboard/active-vs-churned?period=monthly|weekly|daily&from&to`** — chart series.
+**`GET /dashboard/charts?period=monthly|weekly|daily&from&to`** → `data: { activeVsChurned, communitiesGroups }` — chart series (`activeVsChurned`) + donut (`communitiesGroups`).
 
 ```jsonc
 // 200
@@ -127,7 +129,7 @@ Conventions: base path `/admin/v1` (gateway strips `/admin`, proxies to `:3010/v
 }
 ```
 
-**`GET /dashboard/communities-groups`** — donut.
+`communitiesGroups` (donut, returned inside `/dashboard/charts`):
 
 ```jsonc
 { "communities": 248, "groups": 1342, "total": 1590 }

@@ -47,13 +47,28 @@ export const openApiSchemas = {
       password: { type: "string", minLength: 1, example: "S3cret!pass" },
     },
   },
+  AdminRefreshRequest: {
+    type: "object",
+    required: ["refreshToken"],
+    properties: {
+      refreshToken: {
+        type: "string",
+        description:
+          "Opaque admin refresh token from login or a previous refresh",
+      },
+    },
+  },
   AdminTokens: {
     type: "object",
     description:
-      "Admin JWT pair — access (8h, JWT_ADMIN_SECRET) + refresh (7d, JWT_ADMIN_REFRESH_SECRET). Expiries are in seconds.",
+      "Admin token pair — access token is a compact JWT (8h, JWT_ADMIN_SECRET); refresh token is an opaque random string (7d) hashed at rest and validated server-side. Expiries are in seconds.",
     properties: {
       accessToken: { type: "string", example: "eyJhbGciOiJIUzI1NiIs..." },
-      refreshToken: { type: "string", example: "eyJhbGciOiJIUzI1NiIs..." },
+      refreshToken: {
+        type: "string",
+        example:
+          "hOY0NnBT5NzlJuC9iWpXW16Eh1RLJY2piemrzYfPh7VeMeSJm9sr_IiNilQb7PI6",
+      },
       accessTokenExpiresIn: { type: "integer", example: 28800 },
       refreshTokenExpiresIn: { type: "integer", example: 604800 },
     },
@@ -89,6 +104,13 @@ export const openApiSchemas = {
       id: { type: "string", example: "adm_1" },
       email: { type: "string", format: "email", example: "ops@aimess.io" },
       name: { type: "string", example: "Ops Admin" },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        description:
+          "Always present. Custom avatar URL if set, otherwise a system-generated default avatar derived from the admin's name/id.",
+        example: "https://api.dicebear.com/9.x/initials/svg?seed=Ops%20Admin",
+      },
       role: {
         type: "string",
         enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
@@ -106,7 +128,7 @@ export const openApiSchemas = {
       },
       lastLoginAt: { type: "string", format: "date-time", nullable: true },
     },
-    required: ["id", "email", "role", "permissions"],
+    required: ["id", "email", "avatarUrl", "role", "permissions"],
   },
   AdminChangePasswordRequest: {
     type: "object",
@@ -257,24 +279,35 @@ export const openApiSchemas = {
   },
 
   // ---- Dashboard ----
-  AdminDashboard: {
+  AdminDashboardOverview: {
     type: "object",
     description:
-      "Merged dashboard payload returned by GET /admin/v1/dashboard/stats — all four widgets in one response.",
+      "Stat-card payload returned by GET /admin/v1/dashboard/overview.",
     properties: {
       stats: { $ref: "#/components/schemas/AdminDashboardStats" },
+    },
+    required: ["stats"],
+  },
+  AdminDashboardCharts: {
+    type: "object",
+    description:
+      "Chart payload returned by GET /admin/v1/dashboard/charts — the active-vs-churned series (filtered by `?period=`) and the communities/groups donut.",
+    properties: {
       activeVsChurned: { $ref: "#/components/schemas/AdminActiveVsChurned" },
       communitiesGroups: {
         $ref: "#/components/schemas/AdminCommunitiesGroups",
       },
+    },
+    required: ["activeVsChurned", "communitiesGroups"],
+  },
+  AdminDashboardServiceStatusResponse: {
+    type: "object",
+    description:
+      "Service-status payload returned by GET /admin/v1/dashboard/service-status.",
+    properties: {
       serviceStatus: { $ref: "#/components/schemas/AdminServiceStatus" },
     },
-    required: [
-      "stats",
-      "activeVsChurned",
-      "communitiesGroups",
-      "serviceStatus",
-    ],
+    required: ["serviceStatus"],
   },
   AdminDashboardStats: {
     type: "object",
@@ -288,25 +321,18 @@ export const openApiSchemas = {
       totalLivestreams: {
         type: "integer",
         example: 17,
-        description: "STATIC stub for now — see `stale`.",
+        description: "STATIC stub for now — no live source wired yet.",
       },
       openReports: {
         type: "integer",
         example: 8,
-        description: "STATIC stub for now — see `stale`.",
+        description: "STATIC stub for now — no live source wired yet.",
       },
       bannedUsers: { type: "integer", example: 34 },
       churnedUsers: {
         type: "integer",
         example: 0,
-        description: "STATIC stub (0) for now — see `stale.churned`.",
-      },
-      asOf: { type: "string", format: "date-time" },
-      stale: {
-        type: "object",
-        description:
-          "Flags fields currently served from static stubs OR degraded to 0 because their source service was unreachable.",
-        example: { totalLivestreams: true, openReports: true, churned: true },
+        description: "STATIC stub (0) for now — no live source wired yet.",
       },
     },
   },
@@ -2116,8 +2142,16 @@ export const openApiSchemas = {
     properties: {
       userId: { type: "string", format: "uuid" },
       emailVerified: { type: "boolean", example: true },
+      primaryAccount: {
+        type: "string",
+        enum: ["EMAIL", "GOOGLE", "APPLE"],
+        nullable: true,
+        description:
+          "The account's primary sign-in method. Set to the first method ever linked and never overwritten thereafter.",
+        example: "EMAIL",
+      },
     },
-    required: ["userId", "emailVerified"],
+    required: ["userId", "emailVerified", "primaryAccount"],
   },
   ChangeEmailRequest: {
     type: "object",
@@ -2184,6 +2218,21 @@ export const openApiSchemas = {
     required: ["provider"],
   },
   SocialLinkResponseData: {
+    type: "object",
+    properties: {
+      provider: { type: "string", enum: ["GOOGLE", "APPLE"] },
+      primaryAccount: {
+        type: "string",
+        enum: ["EMAIL", "GOOGLE", "APPLE"],
+        nullable: true,
+        description:
+          "The account's primary sign-in method. Set to the first method ever linked and never overwritten thereafter.",
+        example: "GOOGLE",
+      },
+    },
+    required: ["provider", "primaryAccount"],
+  },
+  SocialUnlinkResponseData: {
     type: "object",
     properties: {
       provider: { type: "string", enum: ["GOOGLE", "APPLE"] },
@@ -2435,6 +2484,30 @@ export const openApiSchemas = {
         description:
           "True when an APPLE provider is linked to the account in auth-service.",
       },
+      primaryAccount: {
+        type: "string",
+        enum: ["EMAIL", "GOOGLE", "APPLE"],
+        nullable: true,
+        description:
+          "The first sign-in method ever linked to the account (auth-service). Always present; null when unset, missing on older records, or auth-service is unavailable.",
+        example: "GOOGLE",
+      },
+      googleEmail: {
+        type: "string",
+        format: "email",
+        nullable: true,
+        description:
+          "Email of the linked Google account. Non-null only while isGoogleLogin is true; null otherwise. Always present.",
+        example: "user@gmail.com",
+      },
+      appleEmail: {
+        type: "string",
+        format: "email",
+        nullable: true,
+        description:
+          "Email of the linked Apple account. Non-null only while isAppleLogin is true; null otherwise. Always present.",
+        example: "user@privaterelay.appleid.com",
+      },
       dateOfBirth: { type: "string", format: "date" },
       gender: {
         type: "string",
@@ -2464,6 +2537,9 @@ export const openApiSchemas = {
       "email",
       "isGoogleLogin",
       "isAppleLogin",
+      "primaryAccount",
+      "googleEmail",
+      "appleEmail",
       "dateOfBirth",
       "gender",
       "avatarUrl",
@@ -2987,6 +3063,12 @@ export const openApiSchemas = {
       creatorId: { type: "string", format: "uuid" },
       adminId: { type: "string", format: "uuid" },
       memberCount: { type: "integer", example: 1 },
+      memberLimit: {
+        type: "integer",
+        example: 256,
+        description:
+          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
+      },
       avatarUrl: {
         type: "string",
         format: "uri",
@@ -3031,6 +3113,7 @@ export const openApiSchemas = {
       "creatorId",
       "adminId",
       "memberCount",
+      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "coverUrl",
@@ -3118,6 +3201,30 @@ export const openApiSchemas = {
     },
     required: ["categories"],
   },
+  CommunityLastMessageActivity: {
+    type: "object",
+    description:
+      "Preview of the latest community-chat message for the list screen. " +
+      "Member-only: only present for communities the caller is an ACTIVE member " +
+      "of (null otherwise / when there are no messages).",
+    properties: {
+      username: {
+        type: "string",
+        description: "Display name of the last message's sender.",
+      },
+      message: {
+        type: "string",
+        description:
+          "List-screen preview string (text content, or a placeholder like '📷 Photo' for media).",
+      },
+      dateTime: {
+        type: "integer",
+        format: "int64",
+        description: "Timestamp of the last message as epoch milliseconds.",
+      },
+    },
+    required: ["username", "message", "dateTime"],
+  },
   CommunityListItem: {
     type: "object",
     properties: {
@@ -3126,14 +3233,32 @@ export const openApiSchemas = {
       handle: { type: "string" },
       type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
       memberCount: { type: "integer" },
+      memberLimit: {
+        type: "integer",
+        example: 256,
+        description:
+          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
+      },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       myRole: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
       lastActivityAt: {
-        type: "string",
-        format: "date-time",
+        type: "integer",
+        format: "int64",
         description:
-          "Latest activity (latest community message, else createdAt). The sort key; feed its epoch-ms into before_ts/after_ts to page.",
+          "Latest activity (latest community message, else createdAt) as epoch milliseconds. The sort key; feed into before_ts/after_ts to page.",
+      },
+      unreadMessageCount: {
+        type: "integer",
+        default: 0,
+        description:
+          "Unread community-chat messages for the caller based on their last-read state. 0 when fully read or chat-service is unavailable.",
+      },
+      lastMessageActivity: {
+        nullable: true,
+        allOf: [{ $ref: "#/components/schemas/CommunityLastMessageActivity" }],
+        description:
+          "Latest community-chat message preview (member-only); null when there are no messages or chat-service is unavailable.",
       },
     },
     required: [
@@ -3142,10 +3267,13 @@ export const openApiSchemas = {
       "handle",
       "type",
       "memberCount",
+      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "myRole",
       "lastActivityAt",
+      "unreadMessageCount",
+      "lastMessageActivity",
     ],
   },
   PaginationMeta: {
@@ -3206,9 +3334,31 @@ export const openApiSchemas = {
         required: ["id", "name"],
       },
       memberCount: { type: "integer" },
+      memberLimit: {
+        type: "integer",
+        example: 256,
+        description:
+          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
+      },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
-      createdAt: { type: "string", format: "date-time" },
+      createdAt: {
+        type: "integer",
+        format: "int64",
+        description: "Creation time as epoch milliseconds.",
+      },
+      unreadMessageCount: {
+        type: "integer",
+        default: 0,
+        description:
+          "Unread community-chat messages for the caller. Only present via GET /communities/mine search mode (member-only); absent on the public /communities/discover alias.",
+      },
+      lastMessageActivity: {
+        nullable: true,
+        allOf: [{ $ref: "#/components/schemas/CommunityLastMessageActivity" }],
+        description:
+          "Latest community-chat message preview (member-only). Only present via GET /communities/mine search mode; absent on the public /communities/discover alias.",
+      },
     },
     required: [
       "id",
@@ -3218,6 +3368,7 @@ export const openApiSchemas = {
       "type",
       "category",
       "memberCount",
+      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
       "createdAt",
@@ -3230,6 +3381,24 @@ export const openApiSchemas = {
       data: {
         type: "array",
         items: { $ref: "#/components/schemas/CommunityDiscoverItem" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
+  // GET /communities/mine search-mode item: a discover item that ALWAYS carries
+  // the chat-activity fields (unlike the public /discover alias, which omits
+  // them). Same shape as CommunityDiscoverItem but both fields are required.
+  MyCommunitiesSearchItem: {
+    allOf: [{ $ref: "#/components/schemas/CommunityDiscoverItem" }],
+    required: ["unreadMessageCount", "lastMessageActivity"],
+  },
+  MyCommunitiesSearchResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MyCommunitiesSearchItem" },
       },
     },
     required: ["pagination", "data"],
@@ -3534,6 +3703,12 @@ export const openApiSchemas = {
       handle: { type: "string" },
       type: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
       memberCount: { type: "integer" },
+      memberLimit: {
+        type: "integer",
+        example: 256,
+        description:
+          "Static platform-wide maximum members per community (currently a fixed cap, same for all communities).",
+      },
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
     },
@@ -3543,6 +3718,7 @@ export const openApiSchemas = {
       "handle",
       "type",
       "memberCount",
+      "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
     ],

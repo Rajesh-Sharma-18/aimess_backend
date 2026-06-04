@@ -20,6 +20,7 @@ import {
   type PaginatedResponse,
 } from "../lib/pagination.js";
 import { normalizeHandle, normalizeName } from "../lib/community-slug.util.js";
+import { COMMUNITY_MEMBER_LIMIT } from "../constants/index.js";
 import { env } from "../config/env.js";
 import {
   CommunityInviteStatus,
@@ -43,6 +44,7 @@ import type {
   CommunityCategoryData,
   CommunityData,
   CommunityDiscoverItem,
+  CommunityLastMessageActivity,
   CommunityInviteData,
   CommunityInviteLinkData,
   CommunityInviteWithUserData,
@@ -62,6 +64,7 @@ import type {
 } from "../types/community.types.js";
 import { communityImageService } from "./community-image.service.js";
 import { memberAvatarService } from "./member-avatar.service.js";
+import { getChatClient } from "../grpc/chat.client.js";
 import {
   fetchAcceptedFriendIds,
   fetchUserSnapshots,
@@ -143,6 +146,7 @@ async function toCommunityData(
     creatorId: community.creatorId,
     adminId: community.adminId,
     memberCount: community.memberCount,
+    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     coverUrl: null,
@@ -179,9 +183,10 @@ async function toDiscoverItem(community: {
     type: community.type,
     category: { id: community.category.id, name: community.category.name },
     memberCount: community.memberCount,
+    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-    createdAt: community.createdAt.toISOString(),
+    createdAt: community.createdAt.getTime(),
   };
 }
 
@@ -342,6 +347,7 @@ async function toEmbeddedCommunitySummary(community: {
     handle: community.handle,
     type: community.type,
     memberCount: community.memberCount,
+    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
   };
@@ -423,6 +429,51 @@ function toAuditLogData(log: {
     createdAt: log.createdAt.toISOString(),
   };
 }
+
+/** Resolved chat enrichment for one community: unread count + preview-or-null. */
+type ChatEnrichment = {
+  unreadMessageCount: number;
+  lastMessageActivity: CommunityLastMessageActivity | null;
+};
+
+/**
+ * Bulk-fetch community-chat summaries (unread + last message) for the caller and
+ * index them by communityId. Member-only previews are enforced in chat-service;
+ * non-member / missing ids resolve to `{ unreadMessageCount: 0,
+ * lastMessageActivity: null }`. Always degrades gracefully (empty map on chat
+ * failure — the gRPC client already falls back to []).
+ */
+async function fetchChatEnrichment(
+  userId: string,
+  communityIds: string[]
+): Promise<Map<string, ChatEnrichment>> {
+  const map = new Map<string, ChatEnrichment>();
+  if (!communityIds.length) return map;
+
+  const summaries = await getChatClient().getCommunityChatSummaries({
+    userId,
+    communityIds,
+  });
+  for (const s of summaries) {
+    map.set(s.communityId, {
+      unreadMessageCount: s.unreadMessageCount ?? 0,
+      lastMessageActivity:
+        s.hasLastMessage && s.lastMessage
+          ? {
+              username: s.lastMessage.username,
+              message: s.lastMessage.message,
+              dateTime: s.lastMessage.dateTime,
+            }
+          : null,
+    });
+  }
+  return map;
+}
+
+const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
+  unreadMessageCount: 0,
+  lastMessageActivity: null,
+};
 
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
@@ -759,21 +810,31 @@ export const communityService = {
     const hasMore = rows.length > params.limit;
     const pageRows = rows.slice(0, params.limit);
 
+    // Bulk community-chat enrichment (unread + last-message preview) for the page.
+    const chatMap = await fetchChatEnrichment(
+      userId,
+      pageRows.map((row) => row.id)
+    );
+
     const communities: CommunityListItem[] = await Promise.all(
       pageRows.map(async (row) => {
         const avatarView = await communityImageService.resolveViewUrlForClient(
           row.avatarUrl
         );
+        const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
         return {
           id: row.id,
           name: row.name,
           handle: row.handle,
           type: row.type,
           memberCount: row.memberCount,
+          memberLimit: COMMUNITY_MEMBER_LIMIT,
           avatarUrl: avatarView?.url ?? null,
           avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
           myRole: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
-          lastActivityAt: row.lastActivityAt.toISOString(),
+          lastActivityAt: row.lastActivityAt.getTime(),
+          unreadMessageCount: chat.unreadMessageCount,
+          lastMessageActivity: chat.lastMessageActivity,
         };
       })
     );
@@ -799,10 +860,15 @@ export const communityService = {
   },
 
   /**
-   * Public discovery / browse / search. Returns PUBLIC communities the caller is
-   * not already in (active/pending/banned are excluded). The "live"/"upcoming"
-   * filters depend on livestream data (stream-service), which does not exist
-   * yet, so they return an empty page rather than misleading results.
+   * Public discovery / browse / search. Two membership strategies:
+   *   - default (discover alias): PUBLIC communities the caller is not already
+   *     in (active/pending/banned excluded).
+   *   - `includeJoined` (/communities/mine search mode): PUBLIC communities PLUS
+   *     any community the caller is an ACTIVE member of (so PRIVATE communities
+   *     they belong to surface), without excluding joined communities.
+   * The "live"/"upcoming" filters depend on livestream data (stream-service),
+   * which does not exist yet, so they return an empty page rather than
+   * misleading results.
    */
   async discover(
     userId: string,
@@ -812,6 +878,8 @@ export const communityService = {
       filter: "all" | "live" | "upcoming";
       page: number;
       limit: number;
+      includeJoined?: boolean;
+      includeChatActivity?: boolean;
     }
   ): Promise<PaginatedResponse<CommunityDiscoverItem>> {
     if (params.filter !== "all") {
@@ -819,12 +887,24 @@ export const communityService = {
       return buildPaginatedResponse([], 0, params.page, params.limit);
     }
 
-    const excludeCommunityIds =
-      await communityRepository.listExcludedCommunityIds(userId);
+    // Visibility strategy differs by caller: search mode (`includeJoined`) widens
+    // to PUBLIC + the caller's ACTIVE memberships; the discover alias narrows to
+    // PUBLIC and excludes communities the caller already relates to.
+    const [includeMemberCommunityIds, excludeCommunityIds] =
+      params.includeJoined
+        ? [
+            await communityRepository.listActiveMemberCommunityIds(userId),
+            undefined,
+          ]
+        : [
+            undefined,
+            await communityRepository.listExcludedCommunityIds(userId),
+          ];
 
     const { rows, total } = await communityRepository.listDiscoverable({
       q: params.q,
       categoryId: params.categoryId,
+      includeMemberCommunityIds,
       excludeCommunityIds,
       page: params.page,
       limit: params.limit,
@@ -833,6 +913,22 @@ export const communityService = {
     const communities: CommunityDiscoverItem[] = await Promise.all(
       rows.map((row) => toDiscoverItem(row))
     );
+
+    // /communities/mine search mode: enrich with community-chat activity. Non-
+    // member rows naturally resolve to 0 unread + null preview (member-only
+    // previews enforced in chat-service). The public /discover alias passes
+    // includeChatActivity=false and the fields stay absent (contract unchanged).
+    if (params.includeChatActivity && communities.length > 0) {
+      const chatMap = await fetchChatEnrichment(
+        userId,
+        communities.map((c) => c.id)
+      );
+      for (const item of communities) {
+        const chat = chatMap.get(item.id) ?? EMPTY_CHAT_ENRICHMENT;
+        item.unreadMessageCount = chat.unreadMessageCount;
+        item.lastMessageActivity = chat.lastMessageActivity;
+      }
+    }
 
     return buildPaginatedResponse(
       communities,

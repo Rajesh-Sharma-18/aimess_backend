@@ -2,7 +2,6 @@ import { NotFoundError } from "@aimess/errors";
 import type { RequestHandler } from "express";
 
 import { getRequestContext } from "../../lib/request-context.js";
-import { buildMeta } from "../../lib/response-meta.js";
 import { moderationService } from "../../services/index.js";
 import type { ListReportsQuery } from "../../types/moderation.types.js";
 import type {
@@ -12,6 +11,7 @@ import type {
   ListReportsQueryInput,
   ResolveReportInput,
 } from "../validators/index.js";
+import { HTTP_STATUS } from "@aimess/constants";
 
 /** GET /v1/moderation/reports — paginated, filtered list. */
 export const listReports: RequestHandler = (req, res, next) => {
@@ -21,11 +21,10 @@ export const listReports: RequestHandler = (req, res, next) => {
       const result = await moderationService.listReports(
         query as ListReportsQuery
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result.data,
         pagination: result.pagination,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -41,10 +40,9 @@ export const getReportDetails: RequestHandler = (req, res, next) => {
       const reportId = req.params.reportId as string;
       const report = await moderationService.getReport(reportId);
       if (!report) throw new NotFoundError("REPORT_NOT_FOUND");
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: report,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -65,10 +63,9 @@ export const resolveReport: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -89,10 +86,9 @@ export const dismissReport: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -114,7 +110,6 @@ export const bulkResolveReports: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -136,7 +131,6 @@ export const bulkDismissReports: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);

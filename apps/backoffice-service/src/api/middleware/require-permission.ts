@@ -14,9 +14,7 @@ export function requirePermission(permission: PermissionKey): RequestHandler {
       return;
     }
     if (!req.admin.permissions.includes(permission)) {
-      // No generic "forbidden" key in @aimess/constants (shared pkg is not ours
-      // to modify); pass a readable message that doubles as the fallback.
-      next(new ForbiddenError("Insufficient permissions"));
+      next(new ForbiddenError("ADMIN_FORBIDDEN"));
       return;
     }
     next();

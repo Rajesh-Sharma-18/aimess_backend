@@ -48,6 +48,9 @@ model AdminUser {
   email        String      @unique
   passwordHash String
   name         String
+  // Custom avatar URL set via the admin profile. null = use the system-generated
+  // default avatar (resolved on read in lib/admin-avatar.ts), never stored.
+  avatarUrl    String?
   roleId       String      @db.Uuid
   role         AdminRole   @relation(fields: [roleId], references: [id])
   status       AdminStatus @default(ACTIVE)
@@ -128,15 +131,16 @@ model RolePermission {
 }
 
 model AdminSession {
-  id        String    @id @default(uuid()) @db.Uuid
-  adminId   String    @db.Uuid
-  admin     AdminUser @relation(fields: [adminId], references: [id])
-  jti       String    @unique // matches JWT id; revoke via Redis blacklist
-  ip        String
-  userAgent String?
-  expiresAt DateTime  @db.Timestamptz(3)
-  revokedAt DateTime? @db.Timestamptz(3)
-  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  id               String    @id @default(uuid()) @db.Uuid
+  adminId          String    @db.Uuid
+  admin            AdminUser @relation(fields: [adminId], references: [id])
+  refreshTokenHash String    @unique
+  refreshExpiresAt DateTime  @db.Timestamptz(3)
+  rotatedToId      String?   @unique @db.Uuid
+  ip               String
+  userAgent        String?
+  revokedAt        DateTime? @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([adminId])
 }

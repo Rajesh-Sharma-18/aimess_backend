@@ -616,35 +616,69 @@ export const communityRepository = {
   },
 
   /**
-   * Public, non-deleted communities for discovery/browse, optionally filtered by
-   * a name/handle search term and/or category, excluding the given community ids.
+   * Community ids where the user is an ACTIVE member. Used by the search mode of
+   * `GET /communities/mine` to widen visibility to PRIVATE communities the
+   * caller already belongs to. The (userId, status) index backs this.
+   */
+  async listActiveMemberCommunityIds(userId: string): Promise<string[]> {
+    const rows = await prisma.communityMember.findMany({
+      where: {
+        userId,
+        status: CommunityMemberStatus.ACTIVE,
+      },
+      select: { communityId: true },
+    });
+    return rows.map((r) => r.communityId);
+  },
+
+  /**
+   * Communities for discovery/browse, optionally filtered by a name/handle
+   * search term and/or category. Serves two callers:
+   *   - discover alias: PUBLIC communities, excluding ids the caller relates to
+   *     (`excludeCommunityIds`).
+   *   - /communities/mine search mode: PUBLIC communities PLUS any community in
+   *     `includeMemberCommunityIds` (the caller's ACTIVE PRIVATE memberships).
    * Newest-first (ObjectId is time-ordered) with offset/page pagination on `id`.
    * Returns the page rows plus the total matching count.
    */
   async listDiscoverable(params: {
     q?: string;
     categoryId?: string;
-    excludeCommunityIds: string[];
+    includeMemberCommunityIds?: string[];
+    excludeCommunityIds?: string[];
     page: number;
     limit: number;
   }) {
-    const where: Prisma.CommunityWhereInput = {
-      deletedAt: { isSet: false },
-      type: CommunityType.PUBLIC,
-    };
+    const and: Prisma.CommunityWhereInput[] = [];
 
-    if (params.excludeCommunityIds.length > 0) {
-      where.id = { notIn: params.excludeCommunityIds };
+    // Visibility: PUBLIC, plus any community the caller is an ACTIVE member of.
+    const visibilityOr: Prisma.CommunityWhereInput[] = [
+      { type: CommunityType.PUBLIC },
+    ];
+    if (params.includeMemberCommunityIds?.length) {
+      visibilityOr.push({ id: { in: params.includeMemberCommunityIds } });
+    }
+    and.push({ OR: visibilityOr });
+
+    if (params.excludeCommunityIds?.length) {
+      and.push({ id: { notIn: params.excludeCommunityIds } });
     }
     if (params.categoryId) {
-      where.categoryId = params.categoryId;
+      and.push({ categoryId: params.categoryId });
     }
     if (params.q) {
-      where.OR = [
-        { name: { contains: params.q, mode: "insensitive" } },
-        { handle: { contains: params.q, mode: "insensitive" } },
-      ];
+      and.push({
+        OR: [
+          { name: { contains: params.q, mode: "insensitive" } },
+          { handle: { contains: params.q, mode: "insensitive" } },
+        ],
+      });
     }
+
+    const where: Prisma.CommunityWhereInput = {
+      deletedAt: { isSet: false },
+      AND: and,
+    };
 
     const [rows, total] = await Promise.all([
       prisma.community.findMany({

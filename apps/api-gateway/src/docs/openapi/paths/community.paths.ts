@@ -7,6 +7,15 @@ const unauthorized = {
   },
 };
 
+const validationError = {
+  description: "Query validation failed (e.g. no filter/pagination param)",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
 export const communityPaths = {
   "/communities": {
     post: {
@@ -178,48 +187,52 @@ export const communityPaths = {
   "/communities/mine": {
     get: {
       tags: ["Communities"],
-      summary: "List my communities (scope=joined) / discover (scope=discover)",
+      summary: "List my communities (joined) / search communities",
       description:
-        "Unified communities list. `scope` selects the dataset and pagination style:\n\n" +
-        "**scope=joined** (default) — communities where you are an ACTIVE member, " +
-        "ordered by `lastActivityAt` (latest community message, else createdAt). " +
-        "Timestamp-cursor pagination: `before_ts` returns items with " +
-        "`lastActivityAt <= before_ts` (newest-first); `after_ts` returns items with " +
-        "`lastActivityAt >= after_ts` (oldest-first); mutually exclusive, omit both for " +
-        "the newest page. Boundaries are inclusive (consecutive pages can share the " +
-        "boundary item — de-duplicate by `id`). Page with `pagination.nextCursor` " +
-        "(epoch-ms) fed back as the same param. Returns `MyCommunitiesResponseData`.\n\n" +
-        "**scope=discover** — public communities you are not already in (active, pending, " +
-        "and banned memberships excluded). Optional `q` searches name and handle " +
-        "(case-insensitive); optional `categoryId` filters by category. `filter` defaults " +
-        "to `all`; `live`/`upcoming` are reserved for livestream discovery and currently " +
-        "return an empty page. Newest-first offset/page pagination (`page` + `limit`). " +
-        "Returns `CommunityDiscoverResponseData`.\n\n" +
-        "Params not relevant to the active scope are ignored. (The legacy " +
-        "`GET /communities/discover` endpoint is a deprecated alias for `scope=discover`.)",
+        "Unified communities list. The mode is inferred from the params — there " +
+        "is no `scope` flag. **At least one of `before_ts`, `after_ts`, `q`, or " +
+        "`categoryId` must be present**, else a 400 validation error.\n\n" +
+        "**Joined mode** (`before_ts` or `after_ts` present) — communities where " +
+        "you are an ACTIVE member, ordered by `lastActivityAt` (latest community " +
+        "message, else createdAt). Timestamp-cursor pagination: `before_ts` " +
+        "returns items with `lastActivityAt <= before_ts` (newest-first); " +
+        "`after_ts` returns items with `lastActivityAt >= after_ts` (oldest-first); " +
+        "mutually exclusive. Boundaries are inclusive (consecutive pages can share " +
+        "the boundary item — de-duplicate by `id`). Page with " +
+        "`pagination.nextCursor` (epoch-ms) fed back as the same param. Pagination " +
+        "takes precedence over `q`/`categoryId` if both are sent. Returns " +
+        "`MyCommunitiesResponseData`.\n\n" +
+        "**Search mode** (`q` and/or `categoryId`, no pagination) — communities " +
+        "matching the filters across **PUBLIC communities PLUS any PRIVATE " +
+        "community you are already an ACTIVE member of** (joined communities are " +
+        "NOT excluded). Optional `q` searches name and handle (case-insensitive); " +
+        "optional `categoryId` filters by category. `filter` defaults to `all`; " +
+        "`live`/`upcoming` are reserved for livestream discovery and currently " +
+        "return an empty page. Newest-first offset/page pagination (`page` + " +
+        "`limit`). Returns `CommunityDiscoverResponseData`.\n\n" +
+        "All datetime response fields are epoch milliseconds (number). (The legacy " +
+        "`GET /communities/discover` endpoint is a deprecated alias for search " +
+        "with the original 'exclude joined' filtering.)\n\n" +
+        "**Community-chat fields (both modes).** Every item carries " +
+        "`unreadMessageCount` (integer, default 0) and `lastMessageActivity` " +
+        "(object or null). These are **member-only**: a real unread count and " +
+        "last-message preview are returned only for communities you are an ACTIVE " +
+        "member of; for any non-member community surfaced by search mode they are " +
+        "`0` / `null`. `lastMessageActivity` is `{ username, message, dateTime }` " +
+        "where `dateTime` is **epoch milliseconds** and `message` is a list-screen " +
+        "preview (text content, or a placeholder like '📷 Photo' for media). If " +
+        "chat-service is unavailable the endpoint degrades gracefully (all items " +
+        "get `0` / `null`).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
-        {
-          name: "scope",
-          in: "query",
-          required: false,
-          schema: {
-            type: "string",
-            enum: ["joined", "discover"],
-            default: "joined",
-          },
-          description:
-            "`joined` (default): my communities, cursor pagination. " +
-            "`discover`: public browse/search, offset pagination.",
-        },
         {
           name: "before_ts",
           in: "query",
           required: false,
           schema: { type: "integer", minimum: 1 },
           description:
-            "scope=joined only. Epoch ms. Returns items with lastActivityAt <= before_ts.",
+            "Joined mode. Epoch ms. Returns items with lastActivityAt <= before_ts (newest-first).",
         },
         {
           name: "after_ts",
@@ -227,7 +240,7 @@ export const communityPaths = {
           required: false,
           schema: { type: "integer", minimum: 1 },
           description:
-            "scope=joined only. Epoch ms. Returns items with lastActivityAt >= after_ts.",
+            "Joined mode. Epoch ms. Returns items with lastActivityAt >= after_ts (oldest-first).",
         },
         {
           name: "q",
@@ -235,7 +248,7 @@ export const communityPaths = {
           required: false,
           schema: { type: "string", minLength: 1, maxLength: 100 },
           description:
-            "scope=discover only. Search term matched against community name and handle.",
+            "Search mode. Search term matched against community name and handle (case-insensitive).",
         },
         {
           name: "categoryId",
@@ -243,7 +256,7 @@ export const communityPaths = {
           required: false,
           schema: { type: "string", pattern: "^[a-f0-9]{24}$" },
           description:
-            "scope=discover only. Filter to a single category (24-char hex ObjectId).",
+            "Search mode. Filter to a single category (24-char hex ObjectId).",
         },
         {
           name: "filter",
@@ -255,7 +268,7 @@ export const communityPaths = {
             default: "all",
           },
           description:
-            "scope=discover only. `all` browses every public community. " +
+            "Search mode. `all` browses every matching community. " +
             "`live`/`upcoming` are reserved for livestream filtering and currently return an empty page.",
         },
         {
@@ -263,7 +276,7 @@ export const communityPaths = {
           in: "query",
           required: false,
           schema: { type: "integer", minimum: 1, default: 1 },
-          description: "scope=discover only. 1-based page number.",
+          description: "Search mode. 1-based page number.",
         },
         {
           name: "limit",
@@ -275,7 +288,7 @@ export const communityPaths = {
       responses: {
         "200": {
           description:
-            "My communities (scope=joined) or discovered communities (scope=discover)",
+            "My communities (joined mode) or matching communities (search mode)",
           content: {
             "application/json": {
               schema: {
@@ -290,7 +303,7 @@ export const communityPaths = {
                             $ref: "#/components/schemas/MyCommunitiesResponseData",
                           },
                           {
-                            $ref: "#/components/schemas/CommunityDiscoverResponseData",
+                            $ref: "#/components/schemas/MyCommunitiesSearchResponseData",
                           },
                         ],
                       },
@@ -301,6 +314,7 @@ export const communityPaths = {
             },
           },
         },
+        "400": validationError,
         "401": unauthorized,
       },
     },
@@ -311,8 +325,8 @@ export const communityPaths = {
       summary: "Discover / search / browse public communities (deprecated)",
       deprecated: true,
       description:
-        "**Deprecated** — use `GET /communities/mine?scope=discover` instead. " +
-        "Public communities you are not already in (active, pending, and banned memberships are excluded). Optional `q` searches name and handle (case-insensitive); optional `categoryId` filters by category. `filter` defaults to `all`; `live` and `upcoming` are reserved for livestream-based discovery and currently return an empty page (no stream-service yet). Newest-first, offset/page pagination (`page` + `limit`); response carries `pagination` and `data`.",
+        "**Deprecated** — use `GET /communities/mine` with `q`/`categoryId` instead. " +
+        "Public communities you are not already in (active, pending, and banned memberships are excluded). Optional `q` searches name and handle (case-insensitive); optional `categoryId` filters by category. `filter` defaults to `all`; `live` and `upcoming` are reserved for livestream-based discovery and currently return an empty page (no stream-service yet). Newest-first, offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. `createdAt` in each item is now epoch milliseconds (filtering is unchanged).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

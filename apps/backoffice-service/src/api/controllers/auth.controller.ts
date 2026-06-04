@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 import { getRequestContext } from "../../lib/request-context.js";
 import { adminAuthService } from "../../services/index.js";
 import type { LoginInput, RefreshInput } from "../validators/index.js";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 /** POST /v1/auth/login — single-step (email + password). */
 export const login: RequestHandler = (req, res, next) => {
@@ -14,9 +15,9 @@ export const login: RequestHandler = (req, res, next) => {
         password,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "Login successful",
+        message: t("ADMIN_LOGIN_SUCCESS", req.locale),
         data: result,
       });
     } catch (error) {
@@ -34,9 +35,9 @@ export const refresh: RequestHandler = (req, res, next) => {
         refreshToken,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "Token refreshed",
+        message: t("ADMIN_TOKEN_REFRESHED", req.locale),
         data: result,
       });
     } catch (error) {
@@ -45,17 +46,21 @@ export const refresh: RequestHandler = (req, res, next) => {
   })();
 };
 
-/** POST /v1/auth/logout — blacklist the current access jti. */
+/** POST /v1/auth/logout — revoke the current session. */
 export const logout: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const admin = req.admin!;
       await adminAuthService.logout(
         admin.id,
-        admin.jti,
+        admin.sid,
         getRequestContext(req)
       );
-      res.status(200).json({ success: true, data: { loggedOut: true } });
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        message: t("ADMIN_LOGOUT_SUCCESS", req.locale),
+        data: { loggedOut: true },
+      });
     } catch (error) {
       next(error);
     }

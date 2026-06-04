@@ -69,6 +69,7 @@ export const authRepository = {
         account: true,
         email: true,
         emailVerified: true,
+        primaryAccount: true,
         linkedAccounts: {
           select: {
             provider: true,
@@ -93,6 +94,26 @@ export const authRepository = {
         emailVerified: true,
       },
     });
+  },
+
+  /**
+   * Sets the user's primary account exactly once. The `primaryAccount: null`
+   * guard in the WHERE makes this an atomic no-op when a value is already
+   * present, so the first linked provider wins and is never overwritten even
+   * under concurrent link requests. Returns the effective value afterwards.
+   */
+  async setPrimaryAccountIfUnset(userId: string, provider: AuthProvider) {
+    await prisma.authUser.updateMany({
+      where: { id: userId, primaryAccount: null },
+      data: { primaryAccount: provider },
+    });
+
+    const row = await prisma.authUser.findUnique({
+      where: { id: userId },
+      select: { primaryAccount: true },
+    });
+
+    return row?.primaryAccount ?? null;
   },
 
   linkVerifiedEmail(userId: string, email: string) {

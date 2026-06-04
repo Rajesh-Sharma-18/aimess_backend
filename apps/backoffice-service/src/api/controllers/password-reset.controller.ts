@@ -8,8 +8,7 @@ import type {
   ResetPasswordInput,
   VerifyOtpInput,
 } from "../validators/index.js";
-
-const NEUTRAL_OTP_MESSAGE = "If an account exists, an OTP has been sent.";
+import { HTTP_STATUS, t } from "@aimess/constants";
 
 /** POST /v1/auth/forgot-password — enumeration-safe OTP issuance. */
 export const forgotPassword: RequestHandler = (req, res, next) => {
@@ -19,9 +18,9 @@ export const forgotPassword: RequestHandler = (req, res, next) => {
       await adminPasswordResetService.requestOtp(getRequestContext(req), {
         email,
       });
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: NEUTRAL_OTP_MESSAGE,
+        message: t("ADMIN_OTP_SENT", req.locale),
         data: { email },
       });
     } catch (error) {
@@ -36,9 +35,9 @@ export const verifyOtp: RequestHandler = (req, res, next) => {
     try {
       const { email, code } = req.body as VerifyOtpInput;
       const result = await adminPasswordResetService.verifyOtp({ email, code });
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "OTP verified.",
+        message: t("ADMIN_OTP_VERIFIED", req.locale),
         data: result,
       });
     } catch (error) {
@@ -55,9 +54,9 @@ export const resendOtp: RequestHandler = (req, res, next) => {
       await adminPasswordResetService.resendOtp(getRequestContext(req), {
         email,
       });
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: NEUTRAL_OTP_MESSAGE,
+        message: t("ADMIN_OTP_SENT", req.locale),
         data: { email },
       });
     } catch (error) {
@@ -75,9 +74,9 @@ export const resetPassword: RequestHandler = (req, res, next) => {
         resetToken,
         password,
       });
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "Password updated successfully.",
+        message: t("ADMIN_PASSWORD_RESET_SUCCESS", req.locale),
         data: { reset: true },
       });
     } catch (error) {

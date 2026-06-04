@@ -22,8 +22,8 @@ describe("resetPasswordSchema", () => {
     assert.equal(r.success, true);
   });
 
-  it("rejects passwords shorter than 12 chars", () => {
-    const short = "Ab1!cdef"; // 8 chars
+  it("rejects passwords shorter than the 6-char minimum", () => {
+    const short = "Ab1!c"; // 5 chars, has all char classes -> only length fails
     const r = resetPasswordSchema.safeParse({
       resetToken: "x".repeat(43),
       password: short,

@@ -7,6 +7,12 @@ export class GeneralRoomRepository {
     return this.prisma.generalRoom.findUnique({ where: { id: roomId } });
   }
 
+  /** Bulk fetch rooms by id (community-chat summaries enrichment). */
+  async findManyByIds(ids: string[]): Promise<GeneralRoom[]> {
+    if (!ids.length) return [];
+    return this.prisma.generalRoom.findMany({ where: { id: { in: ids } } });
+  }
+
   /**
    * All room ids with their status — the diff target for the boot reconciler so
    * it can tell which communities already have a (de)activated chat room.

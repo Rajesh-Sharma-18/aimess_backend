@@ -2,7 +2,7 @@
 
 **Source:** `apps/community-service/src/api/routes/community.routes.ts` (`GET /discover`, `GET /mine`), `controllers/community.controller.ts` (`discoverCommunities`, `listMyCommunities`), `validators/community.validator.ts` (`discoverQuerySchema`, `myCommunitiesQuerySchema`), `services/community.service.ts` (`discover`, `listMine`). Also chat-service room listing (see community-chat.md).
 
-> **Service:** community-service. `discover` = offset/page pagination over PUBLIC communities the caller is NOT already in. `mine` = cursor pagination ordered by `lastActivityAt`.
+> **Service:** community-service. `discover` (deprecated alias) = offset/page pagination over PUBLIC communities the caller is NOT already in. `mine` infers the mode from params (no `scope`): **at least one of `before_ts`/`after_ts`/`q`/`categoryId` is required**. Pagination present → cursor pagination ordered by `lastActivityAt` over my ACTIVE-member communities. Else → search across PUBLIC communities PLUS PRIVATE ones the caller is an ACTIVE member of (joined NOT excluded), filtered by `q`/`categoryId`. All datetime response fields are epoch milliseconds (number).
 >
 > **Merged endpoint (current):** `GET /communities/mine` now serves both datasets via a `scope` param — `scope=joined` (default) = my communities (cursor pagination, `before_ts`/`after_ts`); `scope=discover` = public browse/search (offset pagination, `q`/`categoryId`/`filter`/`page`). `scope` defaults to `joined`, so all existing `/mine` calls are unchanged. Every `GET /communities/discover?...` case below is equivalent to `GET /communities/mine?scope=discover&...` and returns the identical `CommunityDiscoverResponseData`. The legacy `GET /communities/discover` route is kept as a **deprecated alias**. Params irrelevant to the active scope are ignored.
 
@@ -106,19 +106,19 @@
 
 ### TC-COMM-109 — List my communities (cursor, newest first)
 
-| Field                     | Value                                                                                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **Feature/Module**        | Communities / Listing                                                                                                                 |
-| **API/Event Name**        | `GET /api/v1/communities/mine?limit=20`                                                                                               |
-| **Test Scenario**         | First page of caller's communities by lastActivityAt                                                                                  |
-| **Category**              | Pagination/Filter/Sort                                                                                                                |
-| **Priority**              | High                                                                                                                                  |
-| **Preconditions**         | Caller is a member of ≥1 community                                                                                                    |
-| **Request Payload**       | no cursor                                                                                                                             |
-| **Expected Response**     | `200` items (id, name, handle, type, memberCount, avatarUrl, myRole, lastActivityAt) + `pagination.nextCursor` (epoch-ms) + `hasMore` |
-| **Expected DB Changes**   | None                                                                                                                                  |
-| **Expected Socket/Event** | None                                                                                                                                  |
-| **Notes**                 | Ordered by lastActivityAt (latest message else createdAt).                                                                            |
+| Field                     | Value                                                                                                                                                                |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                                                                                                                                                |
+| **API/Event Name**        | `GET /api/v1/communities/mine?before_ts=<ms>&limit=20`                                                                                                               |
+| **Test Scenario**         | First page of caller's communities by lastActivityAt (newest)                                                                                                        |
+| **Category**              | Pagination/Filter/Sort                                                                                                                                               |
+| **Priority**              | High                                                                                                                                                                 |
+| **Preconditions**         | Caller is a member of ≥1 community                                                                                                                                   |
+| **Request Payload**       | `before_ts` = now (or any ts ≥ newest)                                                                                                                               |
+| **Expected Response**     | `200` items (id, name, handle, type, memberCount, avatarUrl, myRole, lastActivityAt) + `pagination.nextCursor` (epoch-ms) + `hasMore`                                |
+| **Expected DB Changes**   | None                                                                                                                                                                 |
+| **Expected Socket/Event** | None                                                                                                                                                                 |
+| **Notes**                 | `lastActivityAt` is **epoch ms (number)**. Ordered by lastActivityAt (latest message else createdAt). Joined mode requires `before_ts`/`after_ts` (no bare `/mine`). |
 
 ### TC-COMM-110 — List my communities — before_ts pagination
 
@@ -173,49 +173,67 @@
 | Field                     | Value                                                                     |
 | ------------------------- | ------------------------------------------------------------------------- |
 | **Feature/Module**        | Communities / Listing                                                     |
-| **API/Event Name**        | `GET /api/v1/communities/mine`                                            |
-| **Test Scenario**         | Caller has no communities                                                 |
+| **API/Event Name**        | `GET /api/v1/communities/mine?before_ts=<ms>`                             |
+| **Test Scenario**         | Caller has no communities (joined mode, empty page)                       |
 | **Category**              | Edge Case                                                                 |
 | **Priority**              | Low                                                                       |
 | **Preconditions**         | New user                                                                  |
-| **Request Payload**       | —                                                                         |
+| **Request Payload**       | `before_ts` = now                                                         |
 | **Expected Response**     | `200` `{ data: [], pagination: { hasMore:false, nextCursor:null, ... } }` |
 | **Expected DB Changes**   | None                                                                      |
 | **Expected Socket/Event** | None                                                                      |
-| **Notes**                 | totalPage floors to 1.                                                    |
+| **Notes**                 | totalPage floors to 1. Bare `/mine` (no param) → `400` (see TC-COMM-116). |
 
 ---
 
-### TC-COMM-114 — Merged endpoint: discover via `/mine?scope=discover`
+### TC-COMM-114 — `/mine` search mode (q/categoryId, no pagination)
 
-| Field                     | Value                                                                                                        |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **Feature/Module**        | Communities / Listing                                                                                        |
-| **API/Event Name**        | `GET /api/v1/communities/mine?scope=discover&q=rust&categoryId=<24hex>&filter=all&page=1&limit=20`           |
-| **Test Scenario**         | `scope=discover` returns the SAME response as the legacy `GET /communities/discover` with identical params   |
-| **Category**              | Functional                                                                                                   |
-| **Priority**              | High                                                                                                         |
-| **Preconditions**         | At least one matching PUBLIC community the caller is not in                                                  |
-| **Request Payload**       | —                                                                                                            |
-| **Expected Response**     | `200` `CommunityDiscoverResponseData` (offset/page `pagination` + discover items); byte-equal to `/discover` |
-| **Expected DB Changes**   | None                                                                                                         |
-| **Expected Socket/Event** | None                                                                                                         |
-| **Notes**                 | `before_ts`/`after_ts` are ignored when `scope=discover`.                                                    |
+| Field                     | Value                                                                                                                                                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                                                                                                                                                                                                     |
+| **API/Event Name**        | `GET /api/v1/communities/mine?q=rust&categoryId=<24hex>&filter=all&page=1&limit=20`                                                                                                                                       |
+| **Test Scenario**         | Search mode: `q`/`categoryId` (no `before_ts`/`after_ts`) → PUBLIC communities PLUS PRIVATE ones the caller is an ACTIVE member of, filtered                                                                              |
+| **Category**              | Functional                                                                                                                                                                                                                |
+| **Priority**              | High                                                                                                                                                                                                                      |
+| **Preconditions**         | A matching PUBLIC community, and a matching PRIVATE community the caller is an ACTIVE member of                                                                                                                           |
+| **Request Payload**       | —                                                                                                                                                                                                                         |
+| **Expected Response**     | `200` `CommunityDiscoverResponseData` (offset/page `pagination` + discover items); includes the matching PRIVATE community the caller is in; joined PUBLIC communities are NOT excluded; `createdAt` is epoch ms (number) |
+| **Expected DB Changes**   | None                                                                                                                                                                                                                      |
+| **Expected Socket/Event** | None                                                                                                                                                                                                                      |
+| **Notes**                 | Differs from the deprecated `/discover` alias, which excludes ALL joined communities and is PUBLIC-only.                                                                                                                  |
 
 ---
 
-### TC-COMM-115 — Merged endpoint: `scope` defaults to `joined`
+### TC-COMM-115 — `/mine` joined mode takes precedence over q/categoryId
 
-| Field                     | Value                                                                                                        |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **Feature/Module**        | Communities / Listing                                                                                        |
-| **API/Event Name**        | `GET /api/v1/communities/mine?before_ts=<ms>&limit=20`                                                       |
-| **Test Scenario**         | Omitting `scope` behaves exactly as before — cursor pagination over my communities (no regression)           |
-| **Category**              | Functional                                                                                                   |
-| **Priority**              | High                                                                                                         |
-| **Preconditions**         | Caller is an ACTIVE member of ≥1 community                                                                   |
-| **Request Payload**       | —                                                                                                            |
-| **Expected Response**     | `200` `MyCommunitiesResponseData` ordered by `lastActivityAt` desc; `q`/`categoryId`/`filter`/`page` ignored |
-| **Expected DB Changes**   | None                                                                                                         |
-| **Expected Socket/Event** | None                                                                                                         |
-| **Notes**                 | `scope=discover` cannot mix with `before_ts`/`after_ts` cursoring; the two pagination styles never combine.  |
+| Field                     | Value                                                                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                                                                                                                             |
+| **API/Event Name**        | `GET /api/v1/communities/mine?before_ts=<ms>&q=rust&limit=20`                                                                                     |
+| **Test Scenario**         | When `before_ts`/`after_ts` is present, joined mode runs even if `q`/`categoryId` is also sent                                                    |
+| **Category**              | Functional                                                                                                                                        |
+| **Priority**              | High                                                                                                                                              |
+| **Preconditions**         | Caller is an ACTIVE member of ≥1 community                                                                                                        |
+| **Request Payload**       | —                                                                                                                                                 |
+| **Expected Response**     | `200` `MyCommunitiesResponseData` (cursor pagination over my communities); `q`/`categoryId`/`page` ignored; `lastActivityAt` is epoch ms (number) |
+| **Expected DB Changes**   | None                                                                                                                                              |
+| **Expected Socket/Event** | None                                                                                                                                              |
+| **Notes**                 | Pagination present → joined mode wins. The two pagination styles never combine.                                                                   |
+
+---
+
+### TC-COMM-116 — `/mine` with no filter or pagination param → 400
+
+| Field                     | Value                                                                                                      |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | Communities / Listing                                                                                      |
+| **API/Event Name**        | `GET /api/v1/communities/mine` (or only `?limit=20`)                                                       |
+| **Test Scenario**         | At least one of `before_ts`/`after_ts`/`q`/`categoryId` is required                                        |
+| **Category**              | Input Validation                                                                                           |
+| **Priority**              | High                                                                                                       |
+| **Preconditions**         | —                                                                                                          |
+| **Request Payload**       | none of the four required params                                                                           |
+| **Expected Response**     | `400` ("At least one filter or pagination parameter is required (before_ts, after_ts, q, or categoryId).") |
+| **Expected DB Changes**   | None                                                                                                       |
+| **Expected Socket/Event** | None                                                                                                       |
+| **Notes**                 | `myCommunitiesQuerySchema.refine` (path `before_ts`).                                                      |

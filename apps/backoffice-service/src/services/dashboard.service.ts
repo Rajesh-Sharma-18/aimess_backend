@@ -14,30 +14,28 @@ import {
 import { chatClient, getGroupCountBreaker } from "../grpc/chat.client.js";
 
 /**
- * Dashboard aggregation — live, read-only gRPC fan-out across services.
+ * Dashboard aggregation — live, read-only gRPC fan-out across services, split
+ * into three independently-cached sections: `getOverview` (stat cards),
+ * `getCharts(period)` (active-vs-churned series + communities/groups donut),
+ * and `getServiceStatus` (health panel). Each method fetches ONLY the upstreams
+ * its section needs so the sections can refresh on their own cadence.
  *
  * Resilience contract: one down service must NEVER 500 the dashboard. Every
  * upstream call goes through `Promise.allSettled`; a rejected field falls back
- * to 0 and is flagged in `stale`. (The grpc-utils breaker fallback THROWS
- * "<name> unavailable", so we cannot rely on a silent fallback — we catch.)
+ * to 0. (The grpc-utils breaker fallback THROWS "<name> unavailable", so we
+ * cannot rely on a silent fallback — we catch.)
  *
  * `totalLivestreams` and `openReports` have no backoffice gRPC client yet, so
- * they are STATIC stubs (0) always flagged stale. `churnedUsers` is likewise a
- * stub (0, stale.churned) — we do not fabricate churn.
+ * they are STATIC stubs (0). `churnedUsers` is likewise a stub (0) — we do not
+ * fabricate churn.
  */
 
-const DASHBOARD_CACHE_PREFIX = "backoffice:dashboard:full:";
+const OVERVIEW_CACHE_KEY = "backoffice:dashboard:overview";
+const CHARTS_CACHE_PREFIX = "backoffice:dashboard:charts:";
+const SERVICE_STATUS_CACHE_KEY = "backoffice:dashboard:service-status";
 const CACHE_TTL_SECONDS = 10;
 
 export type DashboardPeriod = "daily" | "weekly" | "monthly";
-
-/** The single merged dashboard payload (stat cards + chart + donut + health). */
-export interface Dashboard {
-  stats: DashboardStats;
-  activeVsChurned: ActiveVsChurned;
-  communitiesGroups: CommunitiesGroups;
-  serviceStatus: ServiceStatus;
-}
 
 export interface DashboardStats {
   totalUsers: number;
@@ -50,8 +48,6 @@ export interface DashboardStats {
   openReports: number;
   bannedUsers: number;
   churnedUsers: number;
-  asOf: string;
-  stale: Record<string, boolean>;
 }
 
 export interface CommunitiesGroups {
@@ -217,30 +213,25 @@ function periodToRange(period: DashboardPeriod): {
 
 export const dashboardService = {
   /**
-   * Single merged dashboard payload. Fetches every upstream count EXACTLY ONCE
-   * (auth user counts, auth active counts, community count, group count) and
-   * composes the stat cards, the active-vs-churned chart (filtered by `period`),
-   * the communities/groups donut, and the service-status panel from those same
-   * results. Cached per-period (10s). One down service never 500s the payload —
-   * each rejected upstream falls back to 0 and is flagged in `stats.stale`.
+   * Stat-card section only. Fetches EXACTLY the upstreams the cards need
+   * (auth user counts, auth active counts, community count, group count) — NOT
+   * the per-day series. Cached independently (10s) under a period-less key so
+   * the cards refresh on their own cadence. One down service never 500s the
+   * call — each rejected upstream falls back to 0.
    */
-  async getDashboard(period: DashboardPeriod): Promise<Dashboard> {
-    const cacheKey = `${DASHBOARD_CACHE_PREFIX}${period}`;
-    const cached = await readCache<Dashboard>(cacheKey);
+  async getOverview(): Promise<{ stats: DashboardStats }> {
+    const cached = await readCache<{ stats: DashboardStats }>(
+      OVERVIEW_CACHE_KEY
+    );
     if (cached) return cached;
 
-    const { startDate, endDate } = periodToRange(period);
-
-    const [userCounts, activeCounts, communityCount, groupCount, activeSeries] =
+    const [userCounts, activeCounts, communityCount, groupCount] =
       await Promise.allSettled([
         authClient.getUserCounts(),
         authClient.getActiveUserCounts(),
         communityClient.getCommunityCount(),
         chatClient.getGroupCount(),
-        authClient.getActiveUserSeries(startDate, endDate),
       ]);
-
-    const stale: Record<string, boolean> = {};
 
     let totalUsers = 0;
     let newUsersToday = 0;
@@ -249,10 +240,6 @@ export const dashboardService = {
       totalUsers = userCounts.value.totalUsers;
       newUsersToday = userCounts.value.newUsersToday;
       bannedUsers = userCounts.value.bannedUsers;
-    } else {
-      stale.totalUsers = true;
-      stale.newUsersToday = true;
-      stale.bannedUsers = true;
     }
 
     let dailyActiveUsers = 0;
@@ -260,29 +247,17 @@ export const dashboardService = {
     if (activeCounts.status === "fulfilled") {
       dailyActiveUsers = activeCounts.value.dailyActive;
       monthlyActiveUsers = activeCounts.value.monthlyActive;
-    } else {
-      stale.dailyActiveUsers = true;
-      stale.monthlyActiveUsers = true;
     }
 
     let totalCommunities = 0;
     if (communityCount.status === "fulfilled") {
       totalCommunities = communityCount.value;
-    } else {
-      stale.totalCommunities = true;
     }
 
     let totalGroups = 0;
     if (groupCount.status === "fulfilled") {
       totalGroups = groupCount.value;
-    } else {
-      stale.totalGroups = true;
     }
-
-    // Always-stub fields: no live source wired yet.
-    stale.totalLivestreams = true;
-    stale.openReports = true;
-    stale.churned = true;
 
     const stats: DashboardStats = {
       totalUsers,
@@ -291,13 +266,58 @@ export const dashboardService = {
       monthlyActiveUsers,
       totalCommunities,
       totalGroups,
+      // Static stubs — no live source wired yet.
       totalLivestreams: 0,
       openReports: 0,
       bannedUsers,
       churnedUsers: 0,
-      asOf: new Date().toISOString(),
-      stale,
     };
+
+    const overview = { stats };
+    await writeCache(OVERVIEW_CACHE_KEY, overview);
+    return overview;
+  },
+
+  /**
+   * Chart section: the active-vs-churned per-day series (date range driven by
+   * `period`) plus the communities/groups donut. Fetches EXACTLY the upstreams
+   * these charts need (community count, group count, period-driven active
+   * series) — NOT the user/active/banned counts. Cached per-period (10s). One
+   * down service never 500s the call — the series falls back to empty and the
+   * donut counts fall back to 0.
+   */
+  async getCharts(period: DashboardPeriod): Promise<{
+    activeVsChurned: ActiveVsChurned;
+    communitiesGroups: CommunitiesGroups;
+  }> {
+    const cacheKey = `${CHARTS_CACHE_PREFIX}${period}`;
+    const cached = await readCache<{
+      activeVsChurned: ActiveVsChurned;
+      communitiesGroups: CommunitiesGroups;
+    }>(cacheKey);
+    if (cached) return cached;
+
+    const { startDate, endDate } = periodToRange(period);
+
+    const [communityCount, groupCount, activeSeries] = await Promise.allSettled(
+      [
+        communityClient.getCommunityCount(),
+        chatClient.getGroupCount(),
+        authClient.getActiveUserSeries(startDate, endDate),
+      ]
+    );
+
+    // On upstream failure we fall back to 0 counts / an empty series rather
+    // than 500 the dashboard.
+    let totalCommunities = 0;
+    if (communityCount.status === "fulfilled") {
+      totalCommunities = communityCount.value;
+    }
+
+    let totalGroups = 0;
+    if (groupCount.status === "fulfilled") {
+      totalGroups = groupCount.value;
+    }
 
     const communitiesGroups: CommunitiesGroups = {
       communities: totalCommunities,
@@ -312,8 +332,6 @@ export const dashboardService = {
     let series: ActiveUserSeriesBucket[] = [];
     if (activeSeries.status === "fulfilled") {
       series = activeSeries.value;
-    } else {
-      stale.activeVsChurned = true;
     }
 
     const activeVsChurned: ActiveVsChurned = {
@@ -322,14 +340,23 @@ export const dashboardService = {
       note: "Live per-day active/churned series computed from session lastActiveAt over the period range (daily=today+15d, weekly=today+6d, monthly=1st-of-month→today; all UTC, day granularity). dailyActive=distinct users active that day; monthlyActive=distinct users active in the trailing 30d ending that day; churned=users in the prior 30d window who dropped out of the current one (approximate). CAVEAT: lastActiveAt stores only each session's most-recent activity, so older days undercount true history — the most recent days are the most accurate. Superseded later by a snapshot read-model.",
     };
 
-    const dashboard: Dashboard = {
-      stats,
-      activeVsChurned,
-      communitiesGroups,
-      serviceStatus: buildServiceStatus(),
-    };
+    const charts = { activeVsChurned, communitiesGroups };
+    await writeCache(cacheKey, charts);
+    return charts;
+  },
 
-    await writeCache(cacheKey, dashboard);
-    return dashboard;
+  /**
+   * Service-status panel. Pure/sync opossum-derived health, wrapped with a
+   * short-lived cache (10s) for consistency with the other sections.
+   */
+  async getServiceStatus(): Promise<{ serviceStatus: ServiceStatus }> {
+    const cached = await readCache<{ serviceStatus: ServiceStatus }>(
+      SERVICE_STATUS_CACHE_KEY
+    );
+    if (cached) return cached;
+
+    const result = { serviceStatus: buildServiceStatus() };
+    await writeCache(SERVICE_STATUS_CACHE_KEY, result);
+    return result;
   },
 };

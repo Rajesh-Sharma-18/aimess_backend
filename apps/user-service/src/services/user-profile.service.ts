@@ -83,6 +83,9 @@ type ProfileAuthSummary = {
   email: string | null;
   isGoogleLogin: boolean | null;
   isAppleLogin: boolean | null;
+  primaryAccount: SignInProvider | null;
+  googleEmail: string | null;
+  appleEmail: string | null;
 };
 
 async function toProfileData(
@@ -106,6 +109,11 @@ async function toProfileData(
     // synced-at-registration DB flag when auth-service is unavailable.
     isGoogleLogin: authSummary.isGoogleLogin ?? profile.isGoogleLogin,
     isAppleLogin: authSummary.isAppleLogin ?? false,
+    // Always present: null when unset, missing on older records, or auth down.
+    primaryAccount: authSummary.primaryAccount ?? null,
+    // Provider emails — non-null only while that provider is linked; null otherwise.
+    googleEmail: authSummary.googleEmail ?? null,
+    appleEmail: authSummary.appleEmail ?? null,
     dateOfBirth: formatDateOfBirth(profile.dateOfBirth),
     gender: profile.gender,
     avatarUrl: avatarView?.url ?? null,
@@ -126,6 +134,25 @@ function isProviderConnected(
   );
 }
 
+/**
+ * Email reported by a linked social provider. Reuses the providers already
+ * fetched in the auth account summary (no extra query). Returns null when the
+ * provider is not connected or reported no email — so googleEmail/appleEmail
+ * are non-null only while that provider is linked.
+ */
+function getProviderEmail(
+  account: Pick<AuthAccountSummary, "providers"> | null,
+  provider: SignInProvider
+): string | null {
+  if (!account?.providers) {
+    return null;
+  }
+  const entry = account.providers.find(
+    (item) => item.provider === provider && item.connected
+  );
+  return entry?.providerEmail ?? null;
+}
+
 async function resolveProfileAuthSummary(
   userId: string,
   accessToken: string
@@ -136,6 +163,9 @@ async function resolveProfileAuthSummary(
     email: account?.email ?? null,
     isGoogleLogin: isProviderConnected(account, "GOOGLE"),
     isAppleLogin: isProviderConnected(account, "APPLE"),
+    primaryAccount: account?.primaryAccount ?? null,
+    googleEmail: getProviderEmail(account, "GOOGLE"),
+    appleEmail: getProviderEmail(account, "APPLE"),
   };
 }
 

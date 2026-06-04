@@ -10,7 +10,11 @@ import type {
   RequestLinkEmailOtpInput,
   VerifyLinkEmailOtpInput,
 } from "../api/validators/email-link.validator.js";
-import { AccountStatus, OtpPurpose } from "../generated/prisma/client.js";
+import {
+  AccountStatus,
+  AuthProvider,
+  OtpPurpose,
+} from "../generated/prisma/client.js";
 import {
   generateOtpCode,
   hashOtpCode,
@@ -28,6 +32,7 @@ import { otpRepository } from "../repositories/otp.repository.js";
 export type LinkEmailResult = {
   userId: string;
   emailVerified: boolean;
+  primaryAccount: AuthProvider | null;
 };
 
 export type RequestLinkEmailOtpResult = {
@@ -135,9 +140,16 @@ export const emailLinkService = {
 
     const updated = await authRepository.linkVerifiedEmail(userId, email);
 
+    // First linked method wins: only sets EMAIL when primaryAccount is null.
+    const primaryAccount = await authRepository.setPrimaryAccountIfUnset(
+      userId,
+      AuthProvider.EMAIL
+    );
+
     return {
       userId: updated.id,
       emailVerified: updated.emailVerified,
+      primaryAccount,
     };
   },
 };

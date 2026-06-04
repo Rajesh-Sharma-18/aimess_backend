@@ -18,8 +18,7 @@ const envSchema = z.object({
   JWT_ADMIN_SECRET: z.string().min(1),
   /** Admin access-token lifetime in seconds (default 8h). */
   JWT_ADMIN_EXPIRES_IN: z.string().default("28800"),
-  JWT_ADMIN_REFRESH_SECRET: z.string().min(1),
-  /** Admin refresh-token lifetime in seconds (default 7d). */
+  /** Admin opaque refresh-token lifetime in seconds (default 7d). */
   JWT_ADMIN_REFRESH_EXPIRES_IN: z.string().default("604800"),
 
   RABBITMQ_URL: z.string().min(1),
@@ -50,9 +49,18 @@ const envSchema = z.object({
   ADMIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   ADMIN_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
 
+  // SMTP — direct OTP email delivery from the forgot-password flow. Optional
+  // with MailHog-style defaults so the service boots without mail config; set
+  // real provider creds (e.g. Gmail/SES) in .env to deliver to real inboxes.
+  SMTP_HOST: z.string().default("localhost"),
+  SMTP_PORT: z.coerce.number().default(1025),
+  SMTP_USER: z.string().default(""),
+  SMTP_PASS: z.string().default(""),
+  SMTP_FROM: z.string().default("AIMess Admin <no-reply@aimess.local>"),
+
   // Bootstrap super-admin (seed). If unset, no admin is auto-created.
   BOOTSTRAP_SUPER_ADMIN_EMAIL: z.string().email().optional(),
-  BOOTSTRAP_SUPER_ADMIN_PASSWORD: z.string().min(12).optional(),
+  BOOTSTRAP_SUPER_ADMIN_PASSWORD: z.string().min(6).optional(),
   BOOTSTRAP_SUPER_ADMIN_NAME: z.string().default("Super Admin"),
 
   // Admin password-reset (OTP + reset token) tunables.
@@ -69,6 +77,35 @@ const envSchema = z.object({
     .default(600),
   /** Dev-only fixed OTP code to skip email delivery while testing. */
   ADMIN_OTP_DEV_FIXED_CODE: z.string().optional(),
+
+  /**
+   * Base URL of the system default-avatar generator. A deterministic
+   * `?seed=<admin>` is appended for admins without a custom avatar. Defaults to
+   * DiceBear's keyless initials service; point at an internal CDN/generator in
+   * prod by overriding this.
+   */
+  ADMIN_DEFAULT_AVATAR_BASE_URL: z
+    .string()
+    .url()
+    .default("https://api.dicebear.com/9.x/initials/svg"),
+
+  // =========================
+  // MinIO — presign user-service avatar keys on the SHARED avatars bucket.
+  // Backoffice does NOT own this bucket; it only signs GET URLs (presign-only,
+  // no HEAD), mirroring community-service's member-avatar resolution.
+  // =========================
+  MINIO_ENDPOINT: z.string().url(),
+  /**
+   * Client-facing MinIO host used ONLY to sign view URLs. Falls back to
+   * MINIO_ENDPOINT when unset (same-machine setups).
+   */
+  MINIO_PUBLIC_ENDPOINT: z.string().url().optional(),
+  MINIO_ACCESS_KEY: z.string().min(1),
+  MINIO_SECRET_KEY: z.string().min(1),
+  MINIO_BUCKET_AVATARS: z.string().min(1).default("aimess-avatars"),
+  MINIO_REGION: z.string().default("us-east-1"),
+  /** Presigned GET lifetime for avatar display URLs (seconds). */
+  MINIO_AVATAR_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
 });
 
 const parsed = envSchema.safeParse(process.env);

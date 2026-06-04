@@ -54,20 +54,34 @@ function repeatableEnum<T extends z.ZodEnum>(schema: T) {
 // ---------------------------------------------------------------------------
 // List query.
 // ---------------------------------------------------------------------------
-export const listUsersQuerySchema = z.object({
-  search: z.string().trim().min(1).optional(),
-  status: repeatableEnum(userStatusEnum),
-  reports: reportsBucketEnum.optional(),
-  dateFrom: z.iso.date().optional(),
-  dateTo: z.iso.date().optional(),
-  sort: z
-    .string()
-    .regex(SORT_PATTERN, "sort must be <field>:<asc|desc> from the whitelist")
-    .default("joinedAt:desc"),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-  cursor: z.string().trim().min(1).optional(),
-});
+export const listUsersQuerySchema = z
+  .object({
+    // `q` is the public search param (case-insensitive partial match over
+    // username + email). `search` is kept as a backward-compatible alias.
+    q: z.string().trim().min(1).optional(),
+    search: z.string().trim().min(1).optional(),
+    status: repeatableEnum(userStatusEnum),
+    reports: reportsBucketEnum.optional(),
+    dateFrom: z.iso.date().optional(),
+    dateTo: z.iso.date().optional(),
+    sort: z
+      .string()
+      .regex(SORT_PATTERN, "sort must be <field>:<asc|desc> from the whitelist")
+      .default("joinedAt:desc"),
+    // `order` is a direction-only alias that overrides the sort direction
+    // (e.g. `?sort=username:asc&order=desc` → username:desc).
+    order: z.enum(["asc", "desc"]).optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    cursor: z.string().trim().min(1).optional(),
+  })
+  // Normalize the public params (`q`, `order`) onto the canonical fields the
+  // service/repository consume (`search`, `sort`) so downstream code is unchanged.
+  .transform(({ q, order, ...rest }) => ({
+    ...rest,
+    search: q ?? rest.search,
+    sort: order ? rest.sort.replace(/:(asc|desc)$/, `:${order}`) : rest.sort,
+  }));
 export type ListUsersQueryInput = z.infer<typeof listUsersQuerySchema>;
 
 // ---------------------------------------------------------------------------

@@ -1260,6 +1260,47 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
         }
       })();
     },
+
+    getCommunityChatSummaries: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId: string;
+            communityIds: string[];
+          };
+
+          const summaries = await deps.communityMessageService.getChatSummaries(
+            {
+              userId: req.userId,
+              communityIds: Array.isArray(req.communityIds)
+                ? req.communityIds
+                : [],
+            }
+          );
+
+          callback(null, {
+            summaries: summaries.map((s) => ({
+              communityId: s.communityId,
+              unreadMessageCount: s.unreadMessageCount,
+              hasLastMessage: s.hasLastMessage,
+              lastMessage: s.lastMessage
+                ? {
+                    username: s.lastMessage.username,
+                    message: s.lastMessage.message,
+                    dateTime: s.lastMessage.dateTime,
+                  }
+                : undefined,
+            })),
+          });
+        } catch (err) {
+          logger.error(`gRPC getCommunityChatSummaries error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
   };
 
   const notificationImpl: grpc.UntypedServiceImplementation = {

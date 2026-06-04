@@ -9,7 +9,7 @@ const emailSchema = z
 /** Admin password policy: min 12 chars with upper + lower + digit + special. */
 const adminPasswordSchema = z
   .string()
-  .min(12, "Password must be at least 12 characters")
+  .min(6, "Password must be at least 6 characters")
   .refine((v) => /[A-Z]/.test(v), {
     message: "Password must contain an uppercase letter",
   })

@@ -2,7 +2,6 @@ import { NotFoundError } from "@aimess/errors";
 import type { RequestHandler } from "express";
 
 import { getRequestContext } from "../../lib/request-context.js";
-import { buildMeta } from "../../lib/response-meta.js";
 import { communityService } from "../../services/index.js";
 import type { ListCommunitiesQuery } from "../../types/community.types.js";
 import type {
@@ -12,6 +11,7 @@ import type {
   ListCommunitiesQueryInput,
   ReopenCommunityInput,
 } from "../validators/index.js";
+import { HTTP_STATUS } from "@aimess/constants";
 
 /** GET /v1/communities — paginated, filtered list. */
 export const listCommunities: RequestHandler = (req, res, next) => {
@@ -21,11 +21,10 @@ export const listCommunities: RequestHandler = (req, res, next) => {
       const result = await communityService.listCommunities(
         query as ListCommunitiesQuery
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result.data,
         pagination: result.pagination,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -41,10 +40,9 @@ export const getCommunityDetails: RequestHandler = (req, res, next) => {
       const communityId = req.params.communityId as string;
       const community = await communityService.getCommunity(communityId);
       if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: community,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -65,10 +63,9 @@ export const closeCommunity: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -89,10 +86,9 @@ export const reopenCommunity: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -114,7 +110,6 @@ export const bulkCloseCommunities: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -136,7 +131,6 @@ export const bulkReopenCommunities: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);

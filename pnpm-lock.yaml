@@ -273,6 +273,9 @@ importers:
       "@aimess/shared-types":
         specifier: workspace:*
         version: link:../../packages/shared-types
+      "@aimess/storage":
+        specifier: workspace:*
+        version: link:../../packages/storage
       "@aimess/utils":
         specifier: workspace:*
         version: link:../../packages/utils
@@ -312,6 +315,9 @@ importers:
       jsonwebtoken:
         specifier: ^9.0.2
         version: 9.0.3
+      nodemailer:
+        specifier: ^8.0.7
+        version: 8.0.7
       pg:
         specifier: ^8.20.0
         version: 8.20.0
@@ -337,6 +343,9 @@ importers:
       "@types/node":
         specifier: ^25.6.2
         version: 25.6.2
+      "@types/nodemailer":
+        specifier: ^8.0.0
+        version: 8.0.0
       prisma:
         specifier: ^7.8.0
         version: 7.8.0(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
@@ -449,6 +458,9 @@ importers:
       "@aimess/errors":
         specifier: workspace:*
         version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger

@@ -22,7 +22,11 @@ export {
   bulkEndLivestreams,
   bulkReviewLivestreamReports,
 } from "./livestream.controller.js";
-export { getDashboard } from "./dashboard.controller.js";
+export {
+  getDashboardOverview,
+  getDashboardCharts,
+  getDashboardServiceStatus,
+} from "./dashboard.controller.js";
 export {
   listUsers,
   getUserDetails,

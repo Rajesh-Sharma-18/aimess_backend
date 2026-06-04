@@ -26,6 +26,8 @@ export type CommunityData = {
   creatorId: string;
   adminId: string;
   memberCount: number;
+  /** Static platform-wide max members per community (currently a fixed cap). */
+  memberLimit: number;
   /** Presigned GET URL (private bucket); null if no avatar. */
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
@@ -63,17 +65,30 @@ export type CommunityCategoryData = {
   slug: string;
 };
 
+/** Community-chat last-message preview for the list/discover screens. */
+export type CommunityLastMessageActivity = {
+  username: string;
+  message: string;
+  dateTime: number /* epoch ms */;
+};
+
 export type CommunityListItem = {
   id: string;
   name: string;
   handle: string;
   type: CommunityType;
   memberCount: number;
+  /** Static platform-wide max members per community (currently a fixed cap). */
+  memberLimit: number;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   myRole: CommunityMemberRole;
-  /** Latest activity (latest community message, else createdAt), ISO-8601. */
-  lastActivityAt: string;
+  /** Latest activity (latest community message, else createdAt), epoch milliseconds. */
+  lastActivityAt: number;
+  /** Unread community-chat messages for the caller (member-only); 0 otherwise. */
+  unreadMessageCount: number;
+  /** Last-message preview (member-only); null when none or non-member. */
+  lastMessageActivity: CommunityLastMessageActivity | null;
 };
 
 /**
@@ -92,9 +107,22 @@ export type CommunityDiscoverItem = {
     name: string;
   };
   memberCount: number;
+  /** Static platform-wide max members per community (currently a fixed cap). */
+  memberLimit: number;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
-  createdAt: string;
+  /** Creation time as epoch milliseconds. */
+  createdAt: number;
+  /**
+   * Unread community-chat messages for the caller. Only populated by the
+   * /communities/mine search mode (member-only); absent on the public alias.
+   */
+  unreadMessageCount?: number;
+  /**
+   * Last-message preview (member-only). Only populated by the /communities/mine
+   * search mode; absent on the public discover alias.
+   */
+  lastMessageActivity?: CommunityLastMessageActivity | null;
 };
 
 /** A single community member row returned by the member-listing endpoint. */
@@ -245,6 +273,8 @@ export type MyJoinRequestData = CommunityJoinRequestData & {
     handle: string;
     type: CommunityType;
     memberCount: number;
+    /** Static platform-wide max members per community (currently a fixed cap). */
+    memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
   };
@@ -280,6 +310,8 @@ export type MyInviteData = CommunityInviteData & {
     handle: string;
     type: CommunityType;
     memberCount: number;
+    /** Static platform-wide max members per community (currently a fixed cap). */
+    memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
   };
@@ -330,6 +362,8 @@ export type MyReportData = CommunityReportData & {
     handle: string;
     type: CommunityType;
     memberCount: number;
+    /** Static platform-wide max members per community (currently a fixed cap). */
+    memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
   };

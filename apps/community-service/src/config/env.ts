@@ -8,6 +8,9 @@ const envSchema = z.object({
   COMMUNITY_SERVICE_PORT: z.coerce.number().positive(),
   COMMUNITY_GRPC_PORT: z.coerce.number().positive().default(4003),
 
+  /** chat-service gRPC endpoint — community-chat summaries for GET /communities/mine. */
+  CHAT_GRPC_URL: z.string().default("0.0.0.0:4004"),
+
   COMMUNITY_DATABASE_URL: z.string(),
 
   REDIS_HOST: z.string(),

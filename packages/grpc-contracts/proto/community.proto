@@ -16,6 +16,30 @@ service CommunityService {
   rpc AdminListCommunities (AdminListCommunitiesRequest) returns (AdminListCommunitiesResponse);
   rpc AdminGetCommunity (AdminGetCommunityRequest) returns (AdminCommunityDetail);
   rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
+
+  // Bulk community-chat summaries for GET /communities/mine: per-community unread
+  // count + last-message preview for the calling user. Member-only previews.
+  rpc GetCommunityChatSummaries (GetCommunityChatSummariesRequest) returns (GetCommunityChatSummariesResponse);
+}
+
+// ---- Community chat summaries (GET /communities/mine enrichment) ----
+message GetCommunityChatSummariesRequest {
+  string userId = 1;
+  repeated string communityIds = 2;
+}
+message CommunityChatLastMessage {
+  string username = 1;
+  string message  = 2;
+  int64  dateTime = 3; // epoch ms
+}
+message CommunityChatSummary {
+  string communityId        = 1;
+  int32  unreadMessageCount = 2;
+  bool   hasLastMessage     = 3; // false => lastMessageActivity is null
+  CommunityChatLastMessage lastMessage = 4;
+}
+message GetCommunityChatSummariesResponse {
+  repeated CommunityChatSummary summaries = 1;
 }
 
 // ---- Backoffice Community Management ----

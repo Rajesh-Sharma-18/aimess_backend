@@ -1,14 +1,19 @@
 import { ForbiddenError, UnauthorizedError } from "@aimess/errors";
 
+import { env } from "../config/env.js";
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import type { RoleKey } from "../generated/prisma/client.js";
 import {
-  newJti,
+  parseExpiresInSeconds,
   signAdminAccessToken,
-  signAdminRefreshToken,
-  verifyAdminRefreshToken,
 } from "../lib/admin-jwt.js";
-import { blacklistJti } from "../lib/jti-blacklist.js";
+import {
+  markAdminSessionActive,
+  markAdminSessionRevoked,
+  markAdminSessionsRevoked,
+} from "../lib/admin-session-cache.js";
+import { resolveAdminAvatarUrl } from "../lib/admin-avatar.js";
+import { createRefreshTokenValue, hashToken } from "../lib/admin-token.js";
 import { verifyPassword } from "../lib/password.js";
 import {
   adminSessionRepository,
@@ -34,6 +39,8 @@ export type AdminProfile = {
   id: string;
   email: string;
   name: string;
+  /** Always present: custom avatar if set, otherwise a system-generated default. */
+  avatarUrl: string;
   role: RoleKey;
   status: string;
   lastLoginAt: Date | null;
@@ -51,6 +58,7 @@ type AdminProfileSource = {
   id: string;
   email: string;
   name: string;
+  avatarUrl: string | null;
   role: { key: RoleKey };
   status: string;
   lastLoginAt: Date | null;
@@ -64,6 +72,7 @@ function buildAdminProfile(
     id: admin.id,
     email: admin.email,
     name: admin.name,
+    avatarUrl: resolveAdminAvatarUrl(admin),
     role: admin.role.key,
     status: admin.status,
     lastLoginAt: admin.lastLoginAt,
@@ -79,31 +88,33 @@ async function issueAdminSession(
     admin.role.key
   );
 
-  const accessJti = newJti();
-  const refreshJti = newJti();
+  const refreshTokenExpiresIn = parseExpiresInSeconds(
+    env.JWT_ADMIN_REFRESH_EXPIRES_IN
+  );
+  const refreshToken = createRefreshTokenValue();
+  const refreshExpiresAt = new Date(Date.now() + refreshTokenExpiresIn * 1000);
+
+  const session = await adminSessionRepository.create({
+    adminId: admin.id,
+    refreshTokenHash: hashToken(refreshToken),
+    refreshExpiresAt,
+    ip: ctx.ip,
+    userAgent: ctx.userAgent ?? null,
+  });
 
   const access = signAdminAccessToken({
     adminId: admin.id,
-    role: admin.role.key,
-    permissions,
-    jti: accessJti,
+    sessionId: session.id,
   });
-  const refresh = signAdminRefreshToken({ adminId: admin.id, jti: refreshJti });
 
-  await adminSessionRepository.create({
-    adminId: admin.id,
-    jti: accessJti,
-    ip: ctx.ip,
-    userAgent: ctx.userAgent ?? null,
-    expiresAt: new Date(Date.now() + access.expiresInSeconds * 1000),
-  });
+  await markAdminSessionActive(session.id);
 
   return {
     tokens: {
       accessToken: access.token,
-      refreshToken: refresh.token,
+      refreshToken,
       accessTokenExpiresIn: access.expiresInSeconds,
-      refreshTokenExpiresIn: refresh.expiresInSeconds,
+      refreshTokenExpiresIn,
     },
     admin: buildAdminProfile(admin, permissions),
   };
@@ -112,7 +123,8 @@ async function issueAdminSession(
 export const adminAuthService = {
   /**
    * Single-step login: email + password. Verifies the credentials, issues the
-   * admin access + refresh tokens, persists the session, and records the login.
+   * admin access + opaque refresh token, persists the session, and records the
+   * login.
    */
   async login(
     email: string,
@@ -123,8 +135,8 @@ export const adminAuthService = {
     if (!admin) {
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
     }
-    if (admin.status === "DISABLED") {
-      throw new ForbiddenError("Account disabled");
+    if (admin.status !== "ACTIVE") {
+      throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
     }
 
     const ok = await verifyPassword(password, admin.passwordHash);
@@ -146,22 +158,80 @@ export const adminAuthService = {
     return result;
   },
 
-  /** Rotate the admin access/refresh pair from a valid refresh token. */
+  /**
+   * Rotate the admin access/refresh pair from a valid opaque refresh token.
+   * Implements rotation with reuse detection: a refresh token that was already
+   * rotated triggers a full revocation of the admin's sessions.
+   */
   async refresh(
     refreshToken: string,
     ctx: AdminRequestContext
   ): Promise<AdminAuthResult> {
-    const { adminId } = verifyAdminRefreshToken(refreshToken);
+    const stored = await adminSessionRepository.findByRefreshTokenHash(
+      hashToken(refreshToken)
+    );
+    if (!stored) {
+      throw new UnauthorizedError("AUTH_INVALID_TOKEN");
+    }
 
-    const admin = await adminUserRepository.findById(adminId);
+    // Reuse detection: this token was already rotated. Treat as compromise and
+    // revoke every active session for the admin.
+    if (stored.rotatedToId) {
+      const active = await adminSessionRepository.listActiveByAdmin(
+        stored.adminId
+      );
+      await adminSessionRepository.revokeAllForAdmin(stored.adminId);
+      await markAdminSessionsRevoked(active.map((r) => r.id));
+      throw new UnauthorizedError("AUTH_INVALID_TOKEN");
+    }
+
+    if (stored.revokedAt) {
+      throw new UnauthorizedError("AUTH_INVALID_TOKEN");
+    }
+    if (stored.refreshExpiresAt <= new Date()) {
+      throw new UnauthorizedError("AUTH_TOKEN_EXPIRED");
+    }
+
+    const admin = await adminUserRepository.findById(stored.adminId);
     if (!admin) {
       throw new UnauthorizedError("AUTH_INVALID_TOKEN");
     }
-    if (admin.status === "DISABLED") {
-      throw new ForbiddenError("Account disabled");
+    if (admin.status !== "ACTIVE") {
+      throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
     }
 
-    const result = await issueAdminSession(admin, ctx);
+    const permissions = await rbacService.getPermissionKeysForRole(
+      admin.role.key
+    );
+
+    const refreshTokenExpiresIn = parseExpiresInSeconds(
+      env.JWT_ADMIN_REFRESH_EXPIRES_IN
+    );
+    const newRefresh = createRefreshTokenValue();
+    const newRefreshExpiresAt = new Date(
+      Date.now() + refreshTokenExpiresIn * 1000
+    );
+
+    const newSession = await adminSessionRepository.rotate({
+      oldSessionId: stored.id,
+      adminId: stored.adminId,
+      newRefreshTokenHash: hashToken(newRefresh),
+      newRefreshExpiresAt,
+      ip: ctx.ip,
+      userAgent: ctx.userAgent ?? null,
+    });
+    if (!newSession) {
+      // Concurrent refresh already rotated this token.
+      throw new UnauthorizedError("AUTH_INVALID_TOKEN");
+    }
+
+    const access = signAdminAccessToken({
+      adminId: stored.adminId,
+      sessionId: newSession.id,
+    });
+
+    await markAdminSessionActive(newSession.id);
+
     await auditService.record({
       actorId: admin.id,
       action: AUDIT_ACTIONS.ADMIN_TOKEN_REFRESHED,
@@ -170,27 +240,26 @@ export const adminAuthService = {
       ip: ctx.ip,
       userAgent: ctx.userAgent ?? null,
     });
-    return result;
+
+    return {
+      tokens: {
+        accessToken: access.token,
+        refreshToken: newRefresh,
+        accessTokenExpiresIn: access.expiresInSeconds,
+        refreshTokenExpiresIn,
+      },
+      admin: buildAdminProfile(admin, permissions),
+    };
   },
 
-  /** Blacklist the current access jti + revoke its session row. */
+  /** Revoke the current session row + active-session cache entry. */
   async logout(
     adminId: string,
-    jti: string,
+    sessionId: string,
     ctx: AdminRequestContext
   ): Promise<void> {
-    const session = await adminSessionRepository.findByJti(jti);
-    if (session) {
-      const ttlSeconds = Math.max(
-        1,
-        Math.ceil((session.expiresAt.getTime() - Date.now()) / 1000)
-      );
-      await blacklistJti(jti, ttlSeconds);
-      await adminSessionRepository.revoke(jti);
-    } else {
-      // Fall back to a default TTL so logout still revokes a tokenless-session jti.
-      await blacklistJti(jti, 8 * 60 * 60);
-    }
+    await adminSessionRepository.revoke(sessionId);
+    await markAdminSessionRevoked(sessionId);
 
     await auditService.record({
       actorId: adminId,

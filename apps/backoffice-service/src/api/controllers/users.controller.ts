@@ -2,7 +2,6 @@ import { NotFoundError } from "@aimess/errors";
 import type { RequestHandler } from "express";
 
 import { getRequestContext } from "../../lib/request-context.js";
-import { buildMeta } from "../../lib/response-meta.js";
 import { userManagementService } from "../../services/index.js";
 import type { ListUsersQuery } from "../../types/user-management.types.js";
 import type {
@@ -13,6 +12,7 @@ import type {
   SuspendUserInput,
   UnbanUserInput,
 } from "../validators/index.js";
+import { HTTP_STATUS } from "@aimess/constants";
 
 /** GET /v1/users — paginated, filtered list. */
 export const listUsers: RequestHandler = (req, res, next) => {
@@ -22,11 +22,10 @@ export const listUsers: RequestHandler = (req, res, next) => {
       const result = await userManagementService.listUsers(
         query as ListUsersQuery
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result.data,
         pagination: result.pagination,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -42,10 +41,9 @@ export const getUserDetails: RequestHandler = (req, res, next) => {
       const userId = req.params.userId as string;
       const user = await userManagementService.getUser(userId);
       if (!user) throw new NotFoundError("USER_NOT_FOUND");
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: user,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -65,10 +63,9 @@ export const banUser: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -88,10 +85,9 @@ export const suspendUser: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -111,10 +107,9 @@ export const unbanUser: RequestHandler = (req, res, next) => {
         req.admin!,
         getRequestContext(req)
       );
-      res.status(200).json({
+      res.status(HTTP_STATUS.OK).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -136,7 +131,6 @@ export const bulkBanUsers: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);
@@ -158,7 +152,6 @@ export const bulkActivateUsers: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
-        meta: buildMeta(req),
       });
     } catch (error) {
       next(error);

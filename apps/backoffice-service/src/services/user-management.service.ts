@@ -30,6 +30,7 @@ import type {
   UserStatusResult,
 } from "../types/user-management.types.js";
 import { auditService } from "./audit.service.js";
+import { userAvatarService } from "./user-avatar.service.js";
 
 /** Audit/request context derived from `getRequestContext(req)`. */
 type RequestCtx = { ip: string; userAgent: string | null };
@@ -69,7 +70,20 @@ export const userManagementService = {
     pagination: PaginationMeta;
   }> {
     const page = await userDirectoryRepository.list(query);
-    return { data: page.data, pagination: page.pagination };
+    // Presign each raw avatar key into a short-lived GET URL the admin panel can
+    // render. Presigning is local signing (no MinIO round-trip) so mapping over
+    // the page — bounded by `limit` — is not an N+1.
+    const data = await Promise.all(
+      page.data.map(async (item) => {
+        const av = await userAvatarService.resolveViewUrl(item.avatarUrl);
+        return {
+          ...item,
+          avatarUrl: av?.url ?? null,
+          avatarUrlExpiresIn: av?.expiresIn ?? null,
+        };
+      })
+    );
+    return { data, pagination: page.pagination };
   },
 
   /** Compose the full detail view; null → 404 by the controller. */
@@ -77,9 +91,11 @@ export const userManagementService = {
     const row = await userDirectoryRepository.getById(userId);
     if (!row) return null;
 
-    const [reportsSummary, moderationHistory] = await Promise.all([
+    const [reportsSummary, moderationHistory, avatar] = await Promise.all([
       buildReportsSummary(userId),
       buildModerationHistory(userId),
+      // Presign the raw avatar key (from user-service via gRPC) into a GET URL.
+      userAvatarService.resolveViewUrl(row.avatarUrl),
     ]);
 
     return {
@@ -87,8 +103,9 @@ export const userManagementService = {
         userId: row.userId,
         username: row.username,
         email: row.email,
-        // Real avatar now sourced from user-service via gRPC (null when unset).
-        avatarUrl: row.avatarUrl,
+        // Presigned GET URL (null when unset / presign unavailable).
+        avatarUrl: avatar?.url ?? null,
+        avatarUrlExpiresIn: avatar?.expiresIn ?? null,
         joinedAt: row.joinedAt,
         lastActiveAt: row.lastActiveAt,
       },

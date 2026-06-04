@@ -55,12 +55,30 @@ export function buildOpenApiDocument(
     ...new Set(serverBaseUrls.filter(Boolean).map(normalizeGatewayBaseUrl)),
   ].map((url) => ({ url, description: "Admin surface (/admin)" }));
 
+  // Every admin endpoint honors the platform `x-lang`/Accept-Language locale
+  // mechanism (responses localized vi/en). Stamp the shared LanguageHeader at
+  // the PATH-ITEM level so it applies to all operations under each `/admin/`
+  // key without editing all 68 operations; operation-level params still merge.
+  const adminLanguageParam = {
+    $ref: "#/components/parameters/LanguageHeader",
+  };
+
   const paths = Object.fromEntries(
-    Object.entries(spec.paths).map(([key, item]) =>
-      key.startsWith("/admin/")
-        ? [key, { ...(item as Record<string, unknown>), servers: adminServers }]
-        : [key, item]
-    )
+    Object.entries(spec.paths).map(([key, item]) => {
+      if (!key.startsWith("/admin/")) return [key, item];
+      const pathItem = item as Record<string, unknown>;
+      const existingParams = Array.isArray(pathItem.parameters)
+        ? (pathItem.parameters as unknown[])
+        : [];
+      return [
+        key,
+        {
+          ...pathItem,
+          servers: adminServers,
+          parameters: [adminLanguageParam, ...existingParams],
+        },
+      ];
+    })
   );
 
   return {

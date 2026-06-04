@@ -17,6 +17,12 @@
  *   - IMPLEMENTED today: §4.0 auth/me (except PATCH /me/password) and §4.12 health.
  *   - PLANNED: everything else. Marked with `**(Planned — not yet implemented)**`
  *     in the description and `"x-implementation-status": "planned"`.
+ *
+ * Localization: every admin response `message` is localized (vi/en) via the
+ * platform locale mechanism — send `x-lang` or `Accept-Language` to pick the
+ * language (falls back to the default locale). The shared `LanguageHeader`
+ * parameter is stamped onto every `/admin/` path item at build time in
+ * `openapi-document.ts`, so it is NOT repeated per-operation here.
  */
 
 const adminTags = {
@@ -151,7 +157,7 @@ export const adminPaths = {
       tags: [adminTags.authAccount],
       summary: "Admin login",
       description:
-        "Public. Single-step admin login: verifies email + password and returns the admin JWT pair (access 8h, signed with `JWT_ADMIN_SECRET`; refresh 7d) plus the authenticated admin profile. Audited (login).",
+        "Public. Single-step admin login: verifies email + password and returns the admin token pair (access 8h, compact JWT signed with `JWT_ADMIN_SECRET`; opaque refresh token, 7d) plus the authenticated admin profile. Audited (login).",
       security: [],
       requestBody: jsonBody("#/components/schemas/AdminLoginRequest"),
       responses: {
@@ -171,8 +177,9 @@ export const adminPaths = {
       tags: [adminTags.authAccount],
       summary: "Rotate admin JWT",
       description:
-        "Public (uses the refresh cookie). Rotates the admin access token (8h).",
+        "Public. Rotates the admin token pair from the opaque refresh token sent in the JSON body.",
       security: [],
+      requestBody: jsonBody("#/components/schemas/AdminRefreshRequest"),
       responses: {
         "200": okRes(
           "New admin JWT issued",
@@ -188,7 +195,7 @@ export const adminPaths = {
       tags: [adminTags.authAccount],
       summary: "Admin logout",
       description:
-        "Blacklists the current token's `jti` in Redis. Audited. Requires a valid admin bearer.",
+        "Revokes the current admin session (by session id) in Redis + DB. Audited. Requires a valid admin bearer.",
       security: adminSecurity,
       responses: {
         "200": okRes("Signed out", "#/components/schemas/AdminProfile"),
@@ -317,12 +324,31 @@ export const adminPaths = {
   // ===========================================================================
   // §4.1 Dashboard  (PLANNED) — requires `dashboard.read`
   // ===========================================================================
-  "/admin/v1/dashboard/stats": {
+  "/admin/v1/dashboard/overview": {
     get: {
       tags: [adminTags.dashboard],
-      summary: "Full dashboard (cards + chart + donut + service status)",
+      summary: "Dashboard stat cards",
       description:
-        "The ENTIRE dashboard in one live gRPC-aggregated call. Returns four sections under `data`: `stats` (stat cards), `activeVsChurned` (chart, filtered by `?period=`), `communitiesGroups` (donut), and `serviceStatus` (health panel). User/active/banned counts come from auth-service, communities from community-service, groups from chat-service — each fetched once and reused across sections. `totalLivestreams`, `openReports`, and `churnedUsers` are STATIC stubs (0) flagged in `stats.stale`; any unreachable service degrades its field to 0 + a `stale` flag rather than failing the call. `activeVsChurned` is a REAL per-day series whose date range is driven by `?period=` (daily=today+15d=16 points, weekly=today+6d=7 points, monthly=1st-of-month→today), computed live from auth-service session activity; if auth-service is unreachable the series falls back to empty (flagged `stale.activeVsChurned`). Requires `dashboard.read`.",
+        "Stat-card section only. Returns `{ stats }` aggregated live over gRPC: user/active/banned counts from auth-service, communities from community-service, groups from chat-service. `totalLivestreams`, `openReports`, and `churnedUsers` are STATIC stubs (0) flagged in `stats.stale`; any unreachable service degrades its field to 0 + a `stale` flag rather than failing the call. Cached independently (10s). Requires `dashboard.read`.",
+      security: adminSecurity,
+      responses: {
+        "200": okRes(
+          "Dashboard overview",
+          "#/components/schemas/AdminDashboardOverview"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing dashboard.read"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/dashboard/charts": {
+    get: {
+      tags: [adminTags.dashboard],
+      summary:
+        "Dashboard charts (active-vs-churned + communities/groups donut)",
+      description:
+        "Chart section. Returns `{ activeVsChurned, communitiesGroups }`. `activeVsChurned` is a REAL per-day series whose date range is driven by `?period=` (daily=last 15 days, weekly=last 8 days, monthly=1st-of-month→last day), computed live from auth-service session activity; if auth-service is unreachable the series falls back to empty (flagged `stale.activeVsChurned`). `communitiesGroups` is the donut (`communities` from community-service, `groups` from chat-service, plus their `total`). Cached per-period (10s). Requires `dashboard.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -351,30 +377,32 @@ export const adminPaths = {
         },
       ],
       responses: {
-        "200": okRes("Full dashboard", "#/components/schemas/AdminDashboard"),
+        "200": okRes(
+          "Dashboard charts",
+          "#/components/schemas/AdminDashboardCharts"
+        ),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing dashboard.read"),
       },
       "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/dashboard/quick-links": {
+  "/admin/v1/dashboard/service-status": {
     get: {
       tags: [adminTags.dashboard],
-      summary: "Quick links counts",
+      summary: "Dashboard service-status panel",
       description:
-        PLANNED +
-        "Counts for the Quick Links panel (open reports, live livestreams). Optional — derivable from /dashboard/stats. Requires `dashboard.read`.",
+        "Service-status section. Returns `{ serviceStatus }` — per-service health derived from the backoffice opossum circuit breakers (auth/community/chat report operational/degraded/down + breaker state; media/notification/livestream have no health probe wired yet and report `degraded` with a note). Cached briefly (10s). Requires `dashboard.read`.",
       security: adminSecurity,
       responses: {
         "200": okRes(
-          "Quick-link counts",
-          "#/components/schemas/AdminQuickLinks"
+          "Dashboard service status",
+          "#/components/schemas/AdminDashboardServiceStatusResponse"
         ),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing dashboard.read"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 

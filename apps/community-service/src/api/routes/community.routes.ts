@@ -121,16 +121,17 @@ communityRoutes.get(
   checkHandleAvailable
 );
 
-// Unified list: scope=joined (default, cursor pagination) merges with
-// scope=discover (public browse/search, offset pagination).
+// Unified list: mode inferred from params. Pagination (before_ts/after_ts) →
+// my joined communities (cursor pagination); else q/categoryId → search across
+// public + my private communities (offset pagination). At least one required.
 communityRoutes.get(
   "/mine",
   validateQuery(myCommunitiesQuerySchema),
   listMyCommunities
 );
 
-// Deprecated alias — equivalent to `GET /mine?scope=discover`. Kept for
-// backward compatibility with existing clients; prefer `/mine?scope=discover`.
+// Deprecated alias — public browse/search excluding joined communities. Kept for
+// backward compatibility; prefer `GET /mine` with `q`/`categoryId`.
 communityRoutes.get(
   "/discover",
   validateQuery(discoverQuerySchema),

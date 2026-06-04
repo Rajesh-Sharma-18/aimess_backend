@@ -9,7 +9,7 @@ export type RequestAdmin = {
   id: string;
   role: string;
   permissions: string[];
-  jti: string;
+  sid: string;
 };
 
 declare global {

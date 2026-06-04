@@ -60,8 +60,8 @@ export {
 } from "./livestream.validator.js";
 
 export {
-  dashboardQuerySchema,
-  type DashboardQueryInput,
+  dashboardChartsQuerySchema,
+  type DashboardChartsQueryInput,
 } from "./dashboard.validator.js";
 
 export {

@@ -123,39 +123,43 @@ export const listCategories = asyncHandler(
 
 export const listMyCommunities = asyncHandler(
   async (req: Request, res: Response) => {
-    const { scope, before_ts, after_ts, q, categoryId, filter, page, limit } =
+    const { before_ts, after_ts, q, categoryId, filter, page, limit } =
       req.query as unknown as MyCommunitiesQuery;
 
-    // scope=discover → public browse/search (offset pagination).
-    if (scope === "discover") {
-      const result = await communityService.discover(req.auth.userId, {
-        q,
-        categoryId,
-        filter,
-        page,
+    // Pagination present → joined mode (the caller's communities, cursor
+    // pagination). Takes precedence over q/categoryId if both are sent.
+    if (before_ts != null || after_ts != null) {
+      const direction = after_ts != null ? "after" : "before";
+      const tsMs = after_ts ?? before_ts ?? Date.now();
+
+      const result = await communityService.listMine(req.auth.userId, {
+        direction,
+        ts: new Date(tsMs),
         limit,
       });
 
       return res
         .status(HTTP_STATUS.OK)
-        .json(
-          new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
-        );
+        .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
     }
 
-    // scope=joined (default) → the caller's communities (cursor pagination).
-    const direction = after_ts != null ? "after" : "before";
-    const tsMs = after_ts ?? before_ts ?? Date.now();
-
-    const result = await communityService.listMine(req.auth.userId, {
-      direction,
-      ts: new Date(tsMs),
+    // Else → search mode: PUBLIC communities plus PRIVATE ones the caller is an
+    // ACTIVE member of (offset pagination), filtered by q/categoryId.
+    const result = await communityService.discover(req.auth.userId, {
+      q,
+      categoryId,
+      filter,
+      page,
       limit,
+      includeJoined: true,
+      includeChatActivity: true,
     });
 
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
+      .json(
+        new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
+      );
   }
 );
 

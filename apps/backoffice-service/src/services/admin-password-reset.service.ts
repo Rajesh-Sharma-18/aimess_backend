@@ -18,9 +18,9 @@ import {
   createPasswordResetToken,
   hashPasswordResetToken,
 } from "../lib/admin-password-reset-token.js";
-import { blacklistJti } from "../lib/jti-blacklist.js";
+import { sendAdminPasswordResetOtpEmailSafe } from "../lib/admin-mailer.js";
+import { markAdminSessionsRevoked } from "../lib/admin-session-cache.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
-import { publishAdminPasswordResetOtpSafe } from "../messaging/publish-admin-password-reset-otp.js";
 import {
   adminOtpRepository,
   adminPasswordResetTokenRepository,
@@ -65,7 +65,7 @@ export const adminPasswordResetService = {
 
     const plainCode = generateOtpCode();
     const codeHash = await hashOtpCode(plainCode);
-    const expiresAt = new Date(Date.now() + env.ADMIN_OTP_TTL_SECONDS * 1000);
+    const expiresAt = new Date(Date.now() + env.ADMIN_OTP_TTL_SECONDS * 1000); // 60 seconds * 1000 ms/sec = 60000 ms = 1 minute
 
     await adminOtpRepository.consumeActiveForIdentifier(
       email,
@@ -83,12 +83,11 @@ export const adminPasswordResetService = {
 
     logDevOtp(email, plainCode);
 
-    publishAdminPasswordResetOtpSafe({
+    sendAdminPasswordResetOtpEmailSafe(
       email,
-      code: plainCode,
-      ttlSeconds: env.ADMIN_OTP_TTL_SECONDS,
-      requestedAt: new Date().toISOString(),
-    });
+      plainCode,
+      env.ADMIN_OTP_TTL_SECONDS
+    );
 
     await auditService.record({
       actorId: admin.id,
@@ -159,7 +158,7 @@ export const adminPasswordResetService = {
 
   /**
    * Consume a reset token, set the new password, and force-revoke every active
-   * session (blacklist each jti for its remaining TTL, then revoke the rows).
+   * session (revoke the rows + drop them from the active-session cache).
    */
   async resetPassword(
     ctx: AdminRequestContext,
@@ -194,17 +193,11 @@ export const adminPasswordResetService = {
     await adminUserRepository.updatePasswordHash(admin.id, passwordHash);
     await adminPasswordResetTokenRepository.markConsumed(record.id);
 
-    // Force-revoke all active sessions: blacklist each jti for its remaining
-    // TTL so the access token can no longer pass, then revoke the rows.
+    // Force-revoke all active sessions: revoke the rows and drop each one from
+    // the active-session cache so existing access tokens can no longer pass.
     const active = await adminSessionRepository.listActiveByAdmin(admin.id);
-    for (const row of active) {
-      const ttl = Math.max(
-        1,
-        Math.ceil((row.expiresAt.getTime() - Date.now()) / 1000)
-      );
-      await blacklistJti(row.jti, ttl);
-    }
     await adminSessionRepository.revokeAllForAdmin(admin.id);
+    await markAdminSessionsRevoked(active.map((r) => r.id));
 
     await auditService.record({
       actorId: admin.id,
