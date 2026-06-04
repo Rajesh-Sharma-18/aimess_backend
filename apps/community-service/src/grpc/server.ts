@@ -9,6 +9,7 @@ import {
   CommunityType,
 } from "../generated/prisma/index.js";
 import { communityRepository } from "../repositories/community.repository.js";
+import { communityService } from "../services/community.service.js";
 
 /** Resolve the admin moderation "status" string of a community row, treating an
  * unset moderationStatus (legacy rows) as ACTIVE. SUSPENDED → "CLOSED". */
@@ -333,7 +334,7 @@ const communityImpl: grpc.UntypedServiceImplementation = {
           return;
         }
 
-        const result = await communityRepository.adminSetModerationStatus(
+        const result = await communityService.adminSetModerationStatus(
           communityId,
           target,
           req.reasonCode?.trim() || null,

@@ -3242,6 +3242,17 @@ export const openApiSchemas = {
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       myRole: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+      myIsMuted: {
+        type: "boolean",
+        description: "True if the caller has any mute row for this community.",
+      },
+      myMuteUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the caller's mute expires; null = not muted OR muted indefinitely (use myIsMuted to disambiguate).",
+      },
       lastActivityAt: {
         type: "integer",
         format: "int64",
@@ -3271,6 +3282,8 @@ export const openApiSchemas = {
       "avatarUrl",
       "avatarUrlExpiresIn",
       "myRole",
+      "myIsMuted",
+      "myMuteUntil",
       "lastActivityAt",
       "unreadMessageCount",
       "lastMessageActivity",
@@ -3359,6 +3372,18 @@ export const openApiSchemas = {
         description:
           "Latest community-chat message preview (member-only). Only present via GET /communities/mine search mode; absent on the public /communities/discover alias.",
       },
+      myIsMuted: {
+        type: "boolean",
+        description:
+          "True if the caller has any mute row for this community. Discovered communities are ones the caller is not an active member of, so this is normally false (present for parity with the other community DTOs).",
+      },
+      myMuteUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the caller's mute expires; null = not muted OR muted indefinitely.",
+      },
     },
     required: [
       "id",
@@ -3371,6 +3396,8 @@ export const openApiSchemas = {
       "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
+      "myIsMuted",
+      "myMuteUntil",
       "createdAt",
     ],
   },

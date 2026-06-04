@@ -79,6 +79,8 @@ interface CommunityRoomSyncEvent {
     userId?: string;
     status?: string;
     role?: string;
+    // community.status.changed
+    communityStatus?: string;
   };
 }
 
@@ -131,6 +133,22 @@ export class CommunityRoomSyncConsumer {
           await this.memberRepo.markAllLeft(communityId);
           logger.debug(`Deactivated chat room for community ${communityId}`);
           break;
+
+        case "community.status.changed": {
+          const communityStatus = event.data.communityStatus;
+          if (communityStatus === "SUSPENDED") {
+            await this.roomRepo.suspendForCommunity(communityId);
+            logger.debug(`Suspended chat room for community ${communityId}`);
+          } else if (communityStatus === "ACTIVE") {
+            await this.roomRepo.unsuspendForCommunity(communityId);
+            logger.debug(`Unsuspended chat room for community ${communityId}`);
+          } else {
+            logger.warn(
+              `community.status.changed: unknown communityStatus="${String(communityStatus)}" for community ${communityId}`
+            );
+          }
+          break;
+        }
 
         case "community.member.synced": {
           const userId = event.data.userId;

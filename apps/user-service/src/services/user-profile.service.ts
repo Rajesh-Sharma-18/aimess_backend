@@ -53,13 +53,35 @@ function isUniqueViolationOnField(
   error: Prisma.PrismaClientKnownRequestError,
   field: string
 ): boolean {
+  // 1. Standard Prisma meta.target
   const target = error.meta?.target;
-  if (Array.isArray(target)) {
-    return target.includes(field);
+  if (Array.isArray(target) && target.includes(field)) {
+    return true;
   }
-  if (typeof target === "string") {
-    return target.includes(field);
+  if (typeof target === "string" && target.includes(field)) {
+    return true;
   }
+
+  // 2. Driver adapter pg unique constraint fields
+  const adapterError = error.meta?.driverAdapterError as
+    | { cause?: { constraint?: { fields?: unknown } } }
+    | undefined;
+  const adapterFields = adapterError?.cause?.constraint?.fields;
+  if (Array.isArray(adapterFields) && adapterFields.includes(field)) {
+    return true;
+  }
+
+  // 3. Fallback: Parse from error message
+  const message = error.message || "";
+  if (
+    message.includes(
+      `Unique constraint failed on the fields: (\`${field}\`)`
+    ) ||
+    message.includes(`Unique constraint failed on the fields: (${field})`)
+  ) {
+    return true;
+  }
+
   return false;
 }
 

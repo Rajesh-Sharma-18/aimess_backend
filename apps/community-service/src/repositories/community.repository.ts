@@ -516,6 +516,7 @@ export const communityRepository = {
           memberCount: true,
           avatarUrl: true,
           lastActivityAt: true,
+          moderationStatus: true,
           // At most one row per (communityId, userId) by unique constraint, so
           // no take needed (Prisma's mongodb provider doesn't support take on a
           // nested relation read anyway).
