@@ -23,7 +23,26 @@ function isProviderAccountConflict(
   error: Prisma.PrismaClientKnownRequestError
 ): boolean {
   const target = error.meta?.target;
-  return JSON.stringify(target ?? "").includes("providerUserId");
+  if (JSON.stringify(target ?? "").includes("providerUserId")) {
+    return true;
+  }
+
+  // Support driver adapters
+  const adapterError = error.meta?.driverAdapterError as
+    | { cause?: { constraint?: { fields?: unknown } } }
+    | undefined;
+  const adapterFields = adapterError?.cause?.constraint?.fields;
+  if (JSON.stringify(adapterFields ?? "").includes("providerUserId")) {
+    return true;
+  }
+
+  // Fallback: Parse from error message
+  const message = error.message || "";
+  if (message.includes("providerUserId")) {
+    return true;
+  }
+
+  return false;
 }
 import { loadActiveAuthUser } from "../lib/account-guard.js";
 import {

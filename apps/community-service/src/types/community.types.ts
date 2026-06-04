@@ -3,6 +3,7 @@ import type {
   CommunityJoinReqStatus,
   CommunityMemberRole,
   CommunityMemberStatus,
+  CommunityModerationStatus,
   CommunityReportStatus,
   CommunityType,
 } from "../generated/prisma/index.js";
@@ -38,6 +39,8 @@ export type CommunityData = {
   myIsMuted: boolean;
   /** ISO-8601; null when not muted or muted indefinitely. */
   myMuteUntil: string | null;
+  /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
+  moderationStatus: CommunityModerationStatus;
   createdAt: string;
   updatedAt: string;
 };
@@ -72,8 +75,14 @@ export type CommunityListItem = {
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
   myRole: CommunityMemberRole;
+  /** True if the caller has a mute row for this community (any state). */
+  myIsMuted: boolean;
+  /** ISO-8601; null when not muted or muted indefinitely. */
+  myMuteUntil: string | null;
   /** Latest activity (latest community message, else createdAt), ISO-8601. */
   lastActivityAt: string;
+  /** ACTIVE = open; SUSPENDED = closed by admin. */
+  moderationStatus: CommunityModerationStatus;
 };
 
 /**
@@ -94,6 +103,14 @@ export type CommunityDiscoverItem = {
   memberCount: number;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
+  /**
+   * True if the caller has a mute row for this community (any state). A
+   * discovered community is one the caller is not an active member of, so this
+   * is normally false — present for parity with the other community DTOs.
+   */
+  myIsMuted: boolean;
+  /** ISO-8601; null when not muted or muted indefinitely. */
+  myMuteUntil: string | null;
   createdAt: string;
 };
 
@@ -150,6 +167,12 @@ export type CommunityNotificationPreferenceData = {
   streamEnabled: boolean;
   chatEnabled: boolean;
   announcementEnabled: boolean;
+  /**
+   * Derived convenience flag for the FE mute badge: true when EVERY category
+   * toggle is off (stream + chat + announcement all disabled). Not stored —
+   * computed from the three toggles above.
+   */
+  isMuted: boolean;
   createdAt: string | null;
   updatedAt: string | null;
 };

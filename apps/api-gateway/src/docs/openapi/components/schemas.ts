@@ -3129,6 +3129,17 @@ export const openApiSchemas = {
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       myRole: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+      myIsMuted: {
+        type: "boolean",
+        description: "True if the caller has any mute row for this community.",
+      },
+      myMuteUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the caller's mute expires; null = not muted OR muted indefinitely (use myIsMuted to disambiguate).",
+      },
       lastActivityAt: {
         type: "string",
         format: "date-time",
@@ -3145,6 +3156,8 @@ export const openApiSchemas = {
       "avatarUrl",
       "avatarUrlExpiresIn",
       "myRole",
+      "myIsMuted",
+      "myMuteUntil",
       "lastActivityAt",
     ],
   },
@@ -3208,6 +3221,18 @@ export const openApiSchemas = {
       memberCount: { type: "integer" },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
+      myIsMuted: {
+        type: "boolean",
+        description:
+          "True if the caller has any mute row for this community. Discovered communities are ones the caller is not an active member of, so this is normally false (present for parity with the other community DTOs).",
+      },
+      myMuteUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the caller's mute expires; null = not muted OR muted indefinitely.",
+      },
       createdAt: { type: "string", format: "date-time" },
     },
     required: [
@@ -3220,6 +3245,8 @@ export const openApiSchemas = {
       "memberCount",
       "avatarUrl",
       "avatarUrlExpiresIn",
+      "myIsMuted",
+      "myMuteUntil",
       "createdAt",
     ],
   },

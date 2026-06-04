@@ -97,3 +97,26 @@ export function publishCommunityMemberSyncedForChatSafe(
     "community.member.synced (chat-sync)"
   );
 }
+
+export interface CommunityStatusChangedForChat {
+  communityId: string;
+  /** "SUSPENDED" = admin closed; "ACTIVE" = admin reopened. */
+  communityStatus: "ACTIVE" | "SUSPENDED";
+}
+
+/**
+ * Tells chat-service to suspend or unsuspend the community's chat room.
+ * The room's `status` field is updated to "suspended" / "active" so that
+ * sendMessage checks at the service layer can block new messages while the
+ * community is closed without adding any synchronous inter-service coupling
+ * to the hot send path.
+ */
+export function publishCommunityStatusChangedForChatSafe(
+  data: CommunityStatusChangedForChat
+): void {
+  publishSafe(
+    "community.status.changed",
+    data,
+    "community.status.changed (chat-sync)"
+  );
+}

@@ -52,7 +52,7 @@ const envSchema = z.object({
 
   // Bootstrap super-admin (seed). If unset, no admin is auto-created.
   BOOTSTRAP_SUPER_ADMIN_EMAIL: z.string().email().optional(),
-  BOOTSTRAP_SUPER_ADMIN_PASSWORD: z.string().min(12).optional(),
+  BOOTSTRAP_SUPER_ADMIN_PASSWORD: z.string().min(6).optional(),
   BOOTSTRAP_SUPER_ADMIN_NAME: z.string().default("Super Admin"),
 
   // Admin password-reset (OTP + reset token) tunables.

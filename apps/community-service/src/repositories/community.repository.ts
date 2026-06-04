@@ -516,6 +516,7 @@ export const communityRepository = {
           memberCount: true,
           avatarUrl: true,
           lastActivityAt: true,
+          moderationStatus: true,
           // At most one row per (communityId, userId) by unique constraint, so
           // no take needed (Prisma's mongodb provider doesn't support take on a
           // nested relation read anyway).
@@ -631,6 +632,8 @@ export const communityRepository = {
     const where: Prisma.CommunityWhereInput = {
       deletedAt: { isSet: false },
       type: CommunityType.PUBLIC,
+      // Suspended communities are closed — exclude them from public discovery.
+      NOT: { moderationStatus: CommunityModerationStatus.SUSPENDED },
     };
 
     if (params.excludeCommunityIds.length > 0) {

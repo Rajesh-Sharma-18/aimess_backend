@@ -44,7 +44,7 @@ model CommunityCategory {
 // -----------------------------------------------------------------------------
 model Community {
   id          String            @id @default(auto()) @map("_id") @db.ObjectId
-  name        String            @unique
+  name        String            
   handle      String            @unique
   description String?
   type        CommunityType     @default(PUBLIC)

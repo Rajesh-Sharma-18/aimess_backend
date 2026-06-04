@@ -132,4 +132,28 @@ export class GeneralRoomRepository {
       data: { status: "inactive" },
     });
   }
+
+  /**
+   * Suspend a community's chat room (driven by `community.status.changed` with
+   * status=SUSPENDED). Sets room status to "suspended" so `sendMessage` blocks
+   * new messages. Members can still read history.
+   */
+  async suspendForCommunity(communityId: string): Promise<void> {
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId, status: "active" },
+      data: { status: "suspended" },
+    });
+  }
+
+  /**
+   * Unsuspend a community's chat room (driven by `community.status.changed` with
+   * status=ACTIVE). Only transitions rooms that are currently "suspended" so a
+   * reopen can never accidentally reactivate a hard-deleted ("inactive") room.
+   */
+  async unsuspendForCommunity(communityId: string): Promise<void> {
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId, status: "suspended" },
+      data: { status: "active" },
+    });
+  }
 }

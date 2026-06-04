@@ -45,6 +45,18 @@ export class CommunityMessageService {
     }
     assertAttachmentsValid(params.messageType, params.attachments);
 
+    // Guard: block sends to suspended or deactivated rooms. "suspended" means
+    // the community was closed by an admin; "inactive" means it was deleted.
+    // This check runs before idempotency so a suspended-community retry never
+    // returns a previously-cached message as if the send succeeded.
+    const room = await this.roomRepo.findRoomById(params.roomId);
+    if (!room || room.status !== "active") {
+      if (room?.status === "suspended") {
+        throw new ForbiddenError("COMMUNITY_SUSPENDED");
+      }
+      throw new ForbiddenError("COMMUNITY_CHAT_DISABLED");
+    }
+
     // Check idempotency
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.sentBy}:${params.clientMessageId}`;
