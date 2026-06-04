@@ -5,6 +5,8 @@ package user;
 service UserService {
   rpc CheckFriendship (CheckFriendshipRequest) returns (CheckFriendshipResponse);
   rpc GetNotificationSettings (GetNotificationSettingsRequest) returns (NotificationSettings);
+  rpc AdminGetProfilesByIds (AdminGetProfilesRequest) returns (AdminProfilesResponse);
+  rpc AdminGetProfile (AdminGetProfileRequest) returns (AdminProfileRecord);
 }
 
 message CheckFriendshipRequest {
@@ -34,4 +36,26 @@ message NotificationSettings {
   string quiet_hours_end        = 9;
   // ISO weekday numbers the quiet-hours window applies to (1=Mon … 7=Sun).
   repeated int32 quiet_hours_days = 10;
+}
+
+// Admin Panel: enrich a user list with display profile data.
+message AdminGetProfilesRequest {
+  repeated string user_ids = 1;
+}
+
+message AdminProfileRecord {
+  string user_id    = 1;
+  string username   = 2;
+  string avatar_url = 3;  // "" when null
+  string first_name = 4;
+  string last_name  = 5;
+  string created_at = 6;  // ISO
+}
+
+message AdminProfilesResponse {
+  repeated AdminProfileRecord profiles = 1;
+}
+
+message AdminGetProfileRequest {
+  string user_id = 1;
 }

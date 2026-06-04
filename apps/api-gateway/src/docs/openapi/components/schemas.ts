@@ -1,4 +1,1829 @@
 export const openApiSchemas = {
+  // ===========================================================================
+  // Admin Panel (backoffice-service) schemas — surface reached at /admin/v1/*.
+  // ===========================================================================
+  AdminError: {
+    type: "object",
+    description:
+      "Standard admin error envelope. `code` is a stable `@aimess/errors` code the admin UI localizes; `message` is a human-readable hint.",
+    properties: {
+      success: { type: "boolean", example: false },
+      code: { type: "string", example: "ADMIN_FORBIDDEN" },
+      message: { type: "string", example: "Missing required permission" },
+      errors: {
+        type: "object",
+        description: "Present on validation errors (field → message).",
+      },
+    },
+    required: ["success", "message"],
+  },
+  AdminPagination: {
+    type: "object",
+    properties: {
+      page: { type: "integer", example: 1 },
+      limit: { type: "integer", example: 20 },
+      total: { type: "integer", example: 5234 },
+      totalPages: { type: "integer", example: 262 },
+    },
+    required: ["page", "limit", "total", "totalPages"],
+  },
+  AdminPaginated: {
+    type: "object",
+    description:
+      "Generic paginated list envelope: `{ data: [...], pagination }`.",
+    properties: {
+      data: { type: "array", items: { type: "object" } },
+      pagination: { $ref: "#/components/schemas/AdminPagination" },
+    },
+    required: ["data", "pagination"],
+  },
+
+  // ---- Auth & Account ----
+  AdminLoginRequest: {
+    type: "object",
+    required: ["email", "password"],
+    properties: {
+      email: { type: "string", format: "email", example: "ops@aimess.io" },
+      password: { type: "string", minLength: 1, example: "S3cret!pass" },
+    },
+  },
+  AdminTokens: {
+    type: "object",
+    description:
+      "Admin JWT pair — access (8h, JWT_ADMIN_SECRET) + refresh (7d, JWT_ADMIN_REFRESH_SECRET). Expiries are in seconds.",
+    properties: {
+      accessToken: { type: "string", example: "eyJhbGciOiJIUzI1NiIs..." },
+      refreshToken: { type: "string", example: "eyJhbGciOiJIUzI1NiIs..." },
+      accessTokenExpiresIn: { type: "integer", example: 28800 },
+      refreshTokenExpiresIn: { type: "integer", example: 604800 },
+    },
+    required: [
+      "accessToken",
+      "refreshToken",
+      "accessTokenExpiresIn",
+      "refreshTokenExpiresIn",
+    ],
+  },
+  AdminTokenResponse: {
+    type: "object",
+    description:
+      "Successful admin login / token refresh — standard `{ success, message, data }` envelope with the JWT pair and the authenticated admin profile.",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: { type: "string", example: "Login successful" },
+      data: {
+        type: "object",
+        properties: {
+          tokens: { $ref: "#/components/schemas/AdminTokens" },
+          admin: { $ref: "#/components/schemas/AdminProfile" },
+        },
+        required: ["tokens", "admin"],
+      },
+    },
+    required: ["success", "data"],
+  },
+  AdminProfile: {
+    type: "object",
+    description: "Current admin profile + effective permissions.",
+    properties: {
+      id: { type: "string", example: "adm_1" },
+      email: { type: "string", format: "email", example: "ops@aimess.io" },
+      name: { type: "string", example: "Ops Admin" },
+      role: {
+        type: "string",
+        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
+        example: "ADMIN",
+      },
+      permissions: {
+        type: "array",
+        items: { type: "string" },
+        example: ["dashboard.read", "users.read", "users.moderate"],
+      },
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "DISABLED", "INVITED"],
+        example: "ACTIVE",
+      },
+      lastLoginAt: { type: "string", format: "date-time", nullable: true },
+    },
+    required: ["id", "email", "role", "permissions"],
+  },
+  AdminChangePasswordRequest: {
+    type: "object",
+    required: ["current", "next"],
+    properties: {
+      current: { type: "string", example: "old-pass" },
+      next: { type: "string", minLength: 8, example: "new-stronger-pass" },
+    },
+  },
+
+  // ---- Forgot / reset password (public — a locked-out admin must reach these) ----
+  AdminForgotPasswordRequest: {
+    type: "object",
+    required: ["email"],
+    properties: {
+      email: { type: "string", format: "email", example: "ops@aimess.io" },
+    },
+  },
+  AdminForgotPasswordResponse: {
+    type: "object",
+    description:
+      "Neutral response — identical whether or not an admin account exists for `email` (no account enumeration).",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: {
+        type: "string",
+        example: "If an account exists for that email, an OTP has been sent.",
+      },
+      data: {
+        type: "object",
+        properties: {
+          email: { type: "string", format: "email", example: "ops@aimess.io" },
+        },
+        required: ["email"],
+      },
+    },
+    required: ["success", "message", "data"],
+  },
+  AdminVerifyOtpRequest: {
+    type: "object",
+    required: ["email", "code"],
+    properties: {
+      email: { type: "string", format: "email", example: "ops@aimess.io" },
+      code: {
+        type: "string",
+        pattern: "^[0-9]{6}$",
+        minLength: 6,
+        maxLength: 6,
+        example: "482915",
+        description: "6-digit password-reset OTP.",
+      },
+    },
+  },
+  AdminVerifyOtpResponse: {
+    type: "object",
+    description:
+      "Successful OTP verification — returns a short-lived single-use reset token to authorize the password change.",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: { type: "string", example: "OTP verified" },
+      data: {
+        type: "object",
+        properties: {
+          resetToken: {
+            type: "string",
+            example: "rst_3f9c1a2b8d4e7f0a...",
+          },
+          resetTokenExpiresIn: {
+            type: "integer",
+            example: 600,
+            description: "Reset-token lifetime in seconds.",
+          },
+        },
+        required: ["resetToken", "resetTokenExpiresIn"],
+      },
+    },
+    required: ["success", "message", "data"],
+  },
+  AdminResendOtpRequest: {
+    type: "object",
+    required: ["email"],
+    properties: {
+      email: { type: "string", format: "email", example: "ops@aimess.io" },
+    },
+  },
+  AdminResendOtpResponse: {
+    type: "object",
+    description:
+      "Neutral response — identical whether or not an admin account exists for `email`. Subject to a 60s cooldown (sliding window).",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: {
+        type: "string",
+        example:
+          "If an account exists for that email, a new OTP has been sent.",
+      },
+      data: {
+        type: "object",
+        properties: {
+          email: { type: "string", format: "email", example: "ops@aimess.io" },
+        },
+        required: ["email"],
+      },
+    },
+    required: ["success", "message", "data"],
+  },
+  AdminResetPasswordRequest: {
+    type: "object",
+    required: ["resetToken", "password", "confirmPassword"],
+    properties: {
+      resetToken: {
+        type: "string",
+        example: "rst_3f9c1a2b8d4e7f0a...",
+        description:
+          "Single-use reset token from POST /admin/v1/auth/verify-otp.",
+      },
+      password: {
+        type: "string",
+        minLength: 12,
+        example: "N3w$trongPass99!",
+        description:
+          "Min 12 chars, must include uppercase, lowercase, a digit and a special character.",
+      },
+      confirmPassword: {
+        type: "string",
+        minLength: 12,
+        example: "N3w$trongPass99!",
+        description: "Must match `password`.",
+      },
+    },
+  },
+  AdminResetPasswordResponse: {
+    type: "object",
+    description:
+      "Successful password reset — the reset token is consumed and all existing admin sessions may be revoked.",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: { type: "string", example: "Password reset successful" },
+      data: {
+        type: "object",
+        properties: {
+          reset: { type: "boolean", example: true },
+        },
+        required: ["reset"],
+      },
+    },
+    required: ["success", "message", "data"],
+  },
+
+  // ---- Dashboard ----
+  AdminDashboard: {
+    type: "object",
+    description:
+      "Merged dashboard payload returned by GET /admin/v1/dashboard/stats — all four widgets in one response.",
+    properties: {
+      stats: { $ref: "#/components/schemas/AdminDashboardStats" },
+      activeVsChurned: { $ref: "#/components/schemas/AdminActiveVsChurned" },
+      communitiesGroups: {
+        $ref: "#/components/schemas/AdminCommunitiesGroups",
+      },
+      serviceStatus: { $ref: "#/components/schemas/AdminServiceStatus" },
+    },
+    required: [
+      "stats",
+      "activeVsChurned",
+      "communitiesGroups",
+      "serviceStatus",
+    ],
+  },
+  AdminDashboardStats: {
+    type: "object",
+    properties: {
+      totalUsers: { type: "integer", example: 5234 },
+      newUsersToday: { type: "integer", example: 23 },
+      dailyActiveUsers: { type: "integer", example: 3456 },
+      monthlyActiveUsers: { type: "integer", example: 4821 },
+      totalCommunities: { type: "integer", example: 248 },
+      totalGroups: { type: "integer", example: 1342 },
+      totalLivestreams: {
+        type: "integer",
+        example: 17,
+        description: "STATIC stub for now — see `stale`.",
+      },
+      openReports: {
+        type: "integer",
+        example: 8,
+        description: "STATIC stub for now — see `stale`.",
+      },
+      bannedUsers: { type: "integer", example: 34 },
+      churnedUsers: {
+        type: "integer",
+        example: 0,
+        description: "STATIC stub (0) for now — see `stale.churned`.",
+      },
+      asOf: { type: "string", format: "date-time" },
+      stale: {
+        type: "object",
+        description:
+          "Flags fields currently served from static stubs OR degraded to 0 because their source service was unreachable.",
+        example: { totalLivestreams: true, openReports: true, churned: true },
+      },
+    },
+  },
+  AdminActiveVsChurned: {
+    type: "object",
+    properties: {
+      period: {
+        type: "string",
+        enum: ["daily", "weekly", "monthly"],
+        example: "monthly",
+        description:
+          "Drives the per-day date range (all UTC, day granularity): `daily`=last 15 days ending today (15 points), `weekly`=last 8 days ending today (8 points), `monthly`=1st → last day of the current month (days after today come back as 0).",
+      },
+      series: {
+        type: "array",
+        description:
+          "Real per-day series (oldest → newest, one point per day) computed live from session `lastActiveAt`. Length follows `period`: daily=15, weekly=8, monthly=days-in-current-month (future days = 0).",
+        items: {
+          type: "object",
+          properties: {
+            bucket: {
+              type: "string",
+              example: "2026-06-03",
+              description: "Day in YYYY-MM-DD (UTC).",
+            },
+            dailyActive: {
+              type: "integer",
+              example: 550,
+              description: "Distinct users active that day.",
+            },
+            monthlyActive: {
+              type: "integer",
+              example: 450,
+              description:
+                "Distinct users active in the trailing 30 days ending that day.",
+            },
+            churned: {
+              type: "integer",
+              example: 12,
+              description:
+                "Users active in the prior trailing-30d window who dropped out of the current one (approximate).",
+            },
+          },
+        },
+      },
+      note: {
+        type: "string",
+        description:
+          "Documents the live per-day series + the undercount caveat: `lastActiveAt` keeps only each session's most-recent activity, so older days undercount true history (most recent days are most accurate). Superseded later by a snapshot read-model.",
+      },
+    },
+  },
+  AdminCommunitiesGroups: {
+    type: "object",
+    properties: {
+      communities: { type: "integer", example: 248 },
+      groups: { type: "integer", example: 1342 },
+      total: { type: "integer", example: 1590 },
+    },
+  },
+  AdminServiceStatus: {
+    type: "object",
+    properties: {
+      services: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            key: { type: "string", example: "chat" },
+            label: { type: "string", example: "Chat Service" },
+            status: {
+              type: "string",
+              enum: ["operational", "degraded", "down"],
+              example: "operational",
+            },
+            latencyMs: { type: "integer", nullable: true, example: 21 },
+            breaker: {
+              type: "string",
+              nullable: true,
+              example: "half-open",
+              description: "opossum circuit-breaker state when not closed.",
+            },
+            note: {
+              type: "string",
+              description:
+                "Present for services with no backoffice gRPC client (status unknown, reported degraded).",
+            },
+          },
+        },
+      },
+      checkedAt: { type: "string", format: "date-time" },
+    },
+  },
+  AdminQuickLinks: {
+    type: "object",
+    properties: {
+      openReports: { type: "integer", example: 8 },
+      liveLivestreams: { type: "integer", example: 3 },
+    },
+  },
+
+  // ---- User Management ----
+  AdminUserListItem: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "u_8f3a" },
+      username: { type: "string", example: "brianna" },
+      email: { type: "string", nullable: true, example: "b@x.com" },
+      status: {
+        type: "string",
+        enum: ["active", "suspended", "banned", "pending_deletion"],
+        example: "active",
+      },
+      banned: { type: "boolean", example: false },
+      createdAt: { type: "string", format: "date-time" },
+      communities: { type: "integer", example: 4 },
+      lastActiveAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+      },
+    },
+    required: ["id", "username", "status"],
+  },
+  AdminUserDetail: {
+    type: "object",
+    description:
+      "Full user profile: identity (auth-service) + profile/stats (user-service) + moderation history (admin_db ModerationAction).",
+    properties: {
+      id: { type: "string", example: "u_8f3a" },
+      username: { type: "string", example: "brianna" },
+      email: { type: "string", nullable: true },
+      status: {
+        type: "string",
+        enum: ["active", "suspended", "banned", "pending_deletion"],
+      },
+      banned: { type: "boolean" },
+      profile: {
+        type: "object",
+        description: "Profile/stats projected from user-service.",
+      },
+      moderationHistory: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminModerationAction" },
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "username", "status"],
+  },
+  AdminModerationAction: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "ma_77" },
+      type: {
+        type: "string",
+        enum: [
+          "ban",
+          "unban",
+          "suspend",
+          "force_logout",
+          "delete",
+          "content_delete",
+        ],
+        example: "ban",
+      },
+      targetType: { type: "string", example: "user" },
+      targetId: { type: "string", example: "u_8f3a" },
+      reason: { type: "string", nullable: true },
+      actorId: { type: "string", example: "adm_1" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+  },
+  AdminSuspendRequest: {
+    type: "object",
+    required: ["reason"],
+    properties: {
+      reason: { type: "string", example: "Repeated harassment" },
+      until: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "Suspension end. Omit/null for an indefinite suspend.",
+      },
+      durationDays: {
+        type: "integer",
+        nullable: true,
+        example: 7,
+        description: "Alternative to `until`.",
+      },
+      notifyUser: { type: "boolean", example: true },
+    },
+  },
+  AdminBanRequest: {
+    type: "object",
+    required: ["reason"],
+    properties: {
+      reason: { type: "string", example: "Repeated harassment" },
+      evidenceReportIds: {
+        type: "array",
+        items: { type: "string" },
+        example: ["r_12"],
+      },
+      notifyUser: { type: "boolean", example: true },
+    },
+  },
+  AdminModerationResult: {
+    type: "object",
+    description:
+      "Result of a moderation mutation. Writes a ModerationAction (admin trail) and emits the matching admin.* event.",
+    properties: {
+      id: { type: "string", example: "u_8f3a" },
+      status: { type: "string", example: "banned" },
+      moderationActionId: { type: "string", example: "ma_77" },
+      until: { type: "string", format: "date-time", nullable: true },
+      emittedEvent: {
+        type: "string",
+        nullable: true,
+        example: "admin.user_banned",
+      },
+    },
+  },
+  AdminUserSession: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", format: "uuid" },
+      device: { type: "string", nullable: true, example: "iPhone 15" },
+      ip: { type: "string", example: "203.0.113.7" },
+      lastActiveAt: { type: "string", format: "date-time" },
+      isCurrent: { type: "boolean", example: false },
+    },
+  },
+
+  // ---- Communities (Community Management module — shipped contract) ----
+  // Source of truth: apps/backoffice-service/src/types/community.types.ts.
+  // Field names + casing MUST match those view-model types exactly.
+  AdminCommunityType: {
+    type: "string",
+    enum: ["PUBLIC", "PRIVATE"],
+    example: "PUBLIC",
+  },
+  AdminCommunityModerationStatus: {
+    type: "string",
+    description: '"Closed" in the UI maps to repo CLOSED.',
+    enum: ["ACTIVE", "CLOSED"],
+    example: "ACTIVE",
+  },
+  AdminCommunityCloseReasonCode: {
+    type: "string",
+    enum: [
+      "GUIDELINES_VIOLATION",
+      "SPAM",
+      "ILLEGAL_CONTENT",
+      "INACTIVE",
+      "ADMIN_ACTION",
+    ],
+    example: "GUIDELINES_VIOLATION",
+  },
+  AdminCommunityCategoryRef: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "cat_food" },
+      name: { type: "string", example: "Food & Drink" },
+      slug: { type: "string", example: "food-drink" },
+    },
+    required: ["id", "name", "slug"],
+  },
+  AdminCommunityAdminRef: {
+    type: "object",
+    description: "Compact owner/admin reference shown in the list table.",
+    properties: {
+      userId: { type: "string", example: "u_8f3a" },
+      name: { type: "string", example: "John Doe" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        example: "https://cdn.aimess.app/av/8f3.jpg",
+      },
+    },
+    required: ["userId", "name", "avatarUrl"],
+  },
+  AdminCommunityLivestreamCounter: {
+    type: "object",
+    description:
+      'Livestream counter projected onto the list ("value/max" in the UI).',
+    properties: {
+      value: { type: "integer", example: 1 },
+      max: { type: "integer", example: 5 },
+      stale: {
+        type: "boolean",
+        description:
+          "Phase 1 fixtures are not live data — always stale until stream-service gRPC.",
+        example: true,
+      },
+    },
+    required: ["value", "max", "stale"],
+  },
+  AdminCommunityActions: {
+    type: "object",
+    description:
+      "Row-level capability flags driving the action menu in the table.",
+    properties: {
+      canView: { type: "boolean", example: true },
+      canClose: { type: "boolean", example: true },
+      canReopen: { type: "boolean", example: false },
+    },
+    required: ["canView", "canClose", "canReopen"],
+  },
+  AdminCommunityListItem: {
+    type: "object",
+    description: "One row of the Communities table (list projection).",
+    properties: {
+      communityId: { type: "string", example: "comm_001" },
+      communityName: { type: "string", example: "Hanoi Foodies" },
+      admin: { $ref: "#/components/schemas/AdminCommunityAdminRef" },
+      type: { $ref: "#/components/schemas/AdminCommunityType" },
+      category: { $ref: "#/components/schemas/AdminCommunityCategoryRef" },
+      status: { $ref: "#/components/schemas/AdminCommunityModerationStatus" },
+      memberCount: { type: "integer", example: 1280 },
+      livestreamCount: {
+        $ref: "#/components/schemas/AdminCommunityLivestreamCounter",
+      },
+      createdAt: { type: "string", format: "date-time" },
+      actions: { $ref: "#/components/schemas/AdminCommunityActions" },
+    },
+    required: [
+      "communityId",
+      "communityName",
+      "admin",
+      "type",
+      "category",
+      "status",
+      "memberCount",
+      "livestreamCount",
+      "createdAt",
+      "actions",
+    ],
+  },
+  AdminCommunityListResponse: {
+    type: "object",
+    description:
+      "List envelope for the communities table: data[] + pagination + meta.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminCommunityListItem" },
+      },
+      pagination: { $ref: "#/components/schemas/AdminModerationPagination" },
+      meta: { $ref: "#/components/schemas/AdminResponseMeta" },
+    },
+    required: ["success", "data", "pagination", "meta"],
+  },
+  AdminCommunityOwner: {
+    type: "object",
+    description: "Full owner profile with moderation signals (detail view).",
+    properties: {
+      userId: { type: "string", example: "u_8f3a" },
+      displayName: { type: "string", example: "John Doe" },
+      username: { type: "string", example: "john_doe" },
+      avatarUrl: { type: "string", nullable: true },
+      email: { type: "string", nullable: true, example: "john@aimess.io" },
+      accountStatus: {
+        type: "string",
+        enum: ["ACTIVE", "SUSPENDED", "BANNED", "DELETED"],
+        example: "ACTIVE",
+      },
+    },
+    required: [
+      "userId",
+      "displayName",
+      "username",
+      "avatarUrl",
+      "email",
+      "accountStatus",
+    ],
+  },
+  AdminCommunityMemberStats: {
+    type: "object",
+    description: "Aggregated membership stats (detail view).",
+    properties: {
+      total: { type: "integer", example: 1280 },
+      active: { type: "integer", example: 1190 },
+      pending: { type: "integer", example: 12 },
+      banned: { type: "integer", example: 4 },
+      moderators: { type: "integer", example: 6 },
+      joinedLast7d: { type: "integer", example: 34 },
+    },
+    required: [
+      "total",
+      "active",
+      "pending",
+      "banned",
+      "moderators",
+      "joinedLast7d",
+    ],
+  },
+  AdminCommunityLivestreamStats: {
+    type: "object",
+    description:
+      "Aggregated livestream stats (detail view). null when stream-service has no data.",
+    properties: {
+      total: { type: "integer", example: 18 },
+      live: { type: "integer", example: 1 },
+      scheduled: { type: "integer", example: 2 },
+      maxConcurrent: { type: "integer", example: 5 },
+      stale: {
+        type: "boolean",
+        description:
+          "Phase 1 fixtures are not live data — always true until stream-service gRPC.",
+        example: true,
+      },
+    },
+    required: ["total", "live", "scheduled", "maxConcurrent", "stale"],
+  },
+  AdminCommunityModerationHistoryItem: {
+    type: "object",
+    description:
+      "One entry in the community's moderation timeline (detail view).",
+    properties: {
+      id: { type: "string", example: "mh_comm_001_1" },
+      type: { type: "string", example: "suspend_community" },
+      reason: { type: "string", example: "Repeated guideline violations" },
+      actor: {
+        type: "object",
+        properties: {
+          adminId: { type: "string", example: "adm_3" },
+          name: { type: "string", example: "Sara Admin" },
+        },
+        required: ["adminId", "name"],
+      },
+      createdAt: { type: "string", format: "date-time" },
+      metadata: { type: "object", additionalProperties: true },
+    },
+    required: ["id", "type", "reason", "actor", "createdAt", "metadata"],
+  },
+  AdminCommunitySettingsSummary: {
+    type: "object",
+    description: "Quick settings snapshot shown on the detail header.",
+    properties: {
+      joinPolicy: { type: "string", example: "OPEN" },
+      type: { $ref: "#/components/schemas/AdminCommunityType" },
+      memberCount: { type: "integer", example: 1280 },
+      inviteLinksActive: { type: "integer", example: 2 },
+      openReports: { type: "integer", example: 3 },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "joinPolicy",
+      "type",
+      "memberCount",
+      "inviteLinksActive",
+      "openReports",
+      "createdAt",
+    ],
+  },
+  AdminCommunityDetail: {
+    type: "object",
+    description:
+      "Full community detail returned by GET /admin/v1/communities/{communityId}.",
+    properties: {
+      community: {
+        type: "object",
+        properties: {
+          communityId: { type: "string", example: "comm_001" },
+          name: { type: "string", example: "Hanoi Foodies" },
+          handle: { type: "string", example: "hanoi-foodies" },
+          description: { type: "string", nullable: true },
+          type: { $ref: "#/components/schemas/AdminCommunityType" },
+          category: { $ref: "#/components/schemas/AdminCommunityCategoryRef" },
+          status: {
+            $ref: "#/components/schemas/AdminCommunityModerationStatus",
+          },
+          avatarUrl: { type: "string", nullable: true },
+          coverUrl: { type: "string", nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+          lastActivityAt: { type: "string", format: "date-time" },
+        },
+        required: [
+          "communityId",
+          "name",
+          "handle",
+          "description",
+          "type",
+          "category",
+          "status",
+          "avatarUrl",
+          "coverUrl",
+          "createdAt",
+          "lastActivityAt",
+        ],
+      },
+      owner: { $ref: "#/components/schemas/AdminCommunityOwner" },
+      memberStats: { $ref: "#/components/schemas/AdminCommunityMemberStats" },
+      livestreamStats: {
+        oneOf: [{ $ref: "#/components/schemas/AdminCommunityLivestreamStats" }],
+        nullable: true,
+      },
+      moderationHistory: {
+        type: "array",
+        items: {
+          $ref: "#/components/schemas/AdminCommunityModerationHistoryItem",
+        },
+      },
+      settingsSummary: {
+        $ref: "#/components/schemas/AdminCommunitySettingsSummary",
+      },
+      partial: {
+        type: "boolean",
+        description:
+          "True when one or more upstream sources (stream/user) could not be reached.",
+        example: false,
+      },
+    },
+    required: [
+      "community",
+      "owner",
+      "memberStats",
+      "livestreamStats",
+      "moderationHistory",
+      "settingsSummary",
+      "partial",
+    ],
+  },
+  AdminCommunityDetailResponse: {
+    type: "object",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: { $ref: "#/components/schemas/AdminCommunityDetail" },
+      meta: { $ref: "#/components/schemas/AdminResponseMeta" },
+    },
+    required: ["success", "data", "meta"],
+  },
+  AdminCommunityCloseRequest: {
+    type: "object",
+    required: ["reasonCode"],
+    properties: {
+      reasonCode: {
+        $ref: "#/components/schemas/AdminCommunityCloseReasonCode",
+      },
+      reasonNote: {
+        type: "string",
+        maxLength: 2000,
+        example: "Repeated guideline violations",
+      },
+      notifyOwner: { type: "boolean", default: true, example: true },
+    },
+  },
+  AdminCommunityReopenRequest: {
+    type: "object",
+    properties: {
+      reasonNote: {
+        type: "string",
+        maxLength: 2000,
+        example: "Appeal accepted",
+      },
+      notifyOwner: { type: "boolean", default: true, example: true },
+    },
+  },
+  AdminCommunityBulkCloseRequest: {
+    type: "object",
+    required: ["reasonCode", "communityIds"],
+    properties: {
+      communityIds: {
+        type: "array",
+        items: { type: "string", maxLength: 64 },
+        minItems: 1,
+        maxItems: 100,
+        example: ["comm_001", "comm_002"],
+      },
+      reasonCode: {
+        $ref: "#/components/schemas/AdminCommunityCloseReasonCode",
+      },
+      reasonNote: { type: "string", maxLength: 2000 },
+      notifyOwner: { type: "boolean", default: true },
+    },
+  },
+  AdminCommunityBulkReopenRequest: {
+    type: "object",
+    required: ["communityIds"],
+    properties: {
+      communityIds: {
+        type: "array",
+        items: { type: "string", maxLength: 64 },
+        minItems: 1,
+        maxItems: 100,
+        example: ["comm_001", "comm_002"],
+      },
+      reasonNote: { type: "string", maxLength: 2000 },
+      notifyOwner: { type: "boolean", default: true },
+    },
+  },
+  AdminCommunityCloseResult: {
+    type: "object",
+    description: "200 response data for a single close action.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "object",
+        properties: {
+          communityId: { type: "string", example: "comm_001" },
+          status: {
+            $ref: "#/components/schemas/AdminCommunityModerationStatus",
+          },
+          closedAt: { type: "string", format: "date-time" },
+          reasonCode: {
+            $ref: "#/components/schemas/AdminCommunityCloseReasonCode",
+          },
+          moderationActionId: { type: "string", example: "ma_01HZX" },
+          auditLogId: { type: "string", example: "al_01HZX" },
+        },
+        required: [
+          "communityId",
+          "status",
+          "closedAt",
+          "reasonCode",
+          "moderationActionId",
+          "auditLogId",
+        ],
+      },
+      meta: { $ref: "#/components/schemas/AdminResponseMeta" },
+    },
+    required: ["success", "data", "meta"],
+  },
+  AdminCommunityReopenResult: {
+    type: "object",
+    description: "200 response data for a single reopen action.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "object",
+        properties: {
+          communityId: { type: "string", example: "comm_001" },
+          status: {
+            $ref: "#/components/schemas/AdminCommunityModerationStatus",
+          },
+          reopenedAt: { type: "string", format: "date-time" },
+          moderationActionId: { type: "string", example: "ma_01HZX" },
+          auditLogId: { type: "string", example: "al_01HZX" },
+        },
+        required: [
+          "communityId",
+          "status",
+          "reopenedAt",
+          "moderationActionId",
+          "auditLogId",
+        ],
+      },
+      meta: { $ref: "#/components/schemas/AdminResponseMeta" },
+    },
+    required: ["success", "data", "meta"],
+  },
+  AdminCommunityBulkResult: {
+    type: "object",
+    description:
+      "207 Multi-Status — per-item close/reopen outcome; partial success is normal.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "object",
+        properties: {
+          requested: { type: "integer", example: 3 },
+          succeeded: { type: "integer", example: 2 },
+          failed: { type: "integer", example: 1 },
+          results: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                communityId: { type: "string", example: "comm_002" },
+                status: {
+                  $ref: "#/components/schemas/AdminCommunityModerationStatus",
+                },
+                ok: { type: "boolean", example: false },
+                error: {
+                  type: "object",
+                  nullable: true,
+                  properties: {
+                    code: {
+                      type: "string",
+                      description:
+                        "COMMUNITY_ALREADY_CLOSED | COMMUNITY_NOT_CLOSED | COMMUNITY_NOT_FOUND | BULK_ITEM_FAILED.",
+                      example: "COMMUNITY_ALREADY_CLOSED",
+                    },
+                    message: { type: "string" },
+                  },
+                  required: ["code", "message"],
+                },
+              },
+              required: ["communityId", "ok"],
+            },
+          },
+        },
+        required: ["requested", "succeeded", "failed", "results"],
+      },
+      meta: { $ref: "#/components/schemas/AdminResponseMeta" },
+    },
+    required: ["success", "data", "meta"],
+  },
+
+  // ---- Groups ----
+  AdminGroup: {
+    type: "object",
+    description: "Maps to a chat-service GroupRoom.",
+    properties: {
+      id: { type: "string", example: "grp_9a" },
+      name: { type: "string", example: "Project X" },
+      createdBy: { type: "string", example: "u_8f3a" },
+      memberCount: { type: "integer", example: 12 },
+      status: {
+        type: "string",
+        enum: ["active", "suspended", "disbanded"],
+        example: "active",
+      },
+      disbandedAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "name", "status"],
+  },
+  AdminModerateRequest: {
+    type: "object",
+    required: ["reason"],
+    properties: {
+      reason: { type: "string", example: "Policy violation" },
+      durationDays: { type: "integer", nullable: true, example: 7 },
+    },
+  },
+
+  // ---- Reports & Moderation ----
+  AdminReport: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "r_12" },
+      type: {
+        type: "string",
+        enum: ["user", "community", "message", "stream"],
+        example: "message",
+      },
+      status: {
+        type: "string",
+        enum: ["open", "reviewing", "resolved", "dismissed"],
+        example: "open",
+      },
+      priority: {
+        type: "string",
+        enum: ["low", "normal", "high", "urgent"],
+        nullable: true,
+        example: "high",
+      },
+      reporterId: { type: "string", example: "u_aa" },
+      targetType: { type: "string", example: "message" },
+      targetId: { type: "string", example: "m_99" },
+      assigneeId: { type: "string", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "type", "status"],
+  },
+  AdminReportAssignRequest: {
+    type: "object",
+    required: ["assigneeId"],
+    properties: { assigneeId: { type: "string", example: "adm_5" } },
+  },
+  AdminReportStatusRequest: {
+    type: "object",
+    required: ["status"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["open", "reviewing", "resolved", "dismissed"],
+        example: "reviewing",
+      },
+    },
+  },
+  AdminReportNoteRequest: {
+    type: "object",
+    required: ["note"],
+    properties: {
+      note: { type: "string", example: "Reviewed message context." },
+    },
+  },
+  AdminReportAction: {
+    type: "object",
+    description:
+      "Take action on a report — creates a ModerationAction and emits the matching admin.* event in one transaction.",
+    required: ["decision"],
+    properties: {
+      decision: {
+        type: "string",
+        enum: [
+          "ban_user",
+          "suspend_user",
+          "delete_content",
+          "suspend_community",
+          "dismiss",
+        ],
+        example: "ban_user",
+      },
+      targetId: { type: "string", example: "u_8f3a" },
+      reason: { type: "string", example: "Spam" },
+      resolveReport: { type: "boolean", example: true },
+    },
+  },
+  AdminReportActionResult: {
+    type: "object",
+    properties: {
+      reportId: { type: "string", example: "r_12" },
+      status: { type: "string", example: "resolved" },
+      moderationActionId: { type: "string", example: "ma_79" },
+      emittedEvent: { type: "string", example: "admin.user_banned" },
+    },
+  },
+
+  // ---- Reports & Moderation v1 (Reports & Moderation page — see
+  //      docs/REPORTS-MODERATION-API-SPEC.md). Phase 1 = static/mock data
+  //      behind the real contract; Phase 2 swaps the data source only. ----
+  AdminModerationPagination: {
+    type: "object",
+    description:
+      "Hybrid pagination: offset by default (page/limit) with an opt-in keyset `cursor`. `total` is exact when cheap to compute, else null; `totalApprox` is always present. `nextCursor` is only emitted when sorting by createdAt.",
+    properties: {
+      mode: { type: "string", enum: ["offset", "keyset"], example: "offset" },
+      page: { type: "integer", example: 1 },
+      limit: { type: "integer", example: 20 },
+      total: { type: "integer", nullable: true, example: 1284 },
+      totalApprox: { type: "integer", example: 1284 },
+      totalPages: { type: "integer", example: 65 },
+      hasNext: { type: "boolean", example: true },
+      hasPrev: { type: "boolean", example: false },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        example: "eyJjcmVhdGVkQXQiOiIyMD...",
+      },
+    },
+    required: [
+      "mode",
+      "page",
+      "limit",
+      "totalApprox",
+      "totalPages",
+      "hasNext",
+      "hasPrev",
+    ],
+  },
+  AdminResponseMeta: {
+    type: "object",
+    properties: {
+      requestId: { type: "string", nullable: true, example: "req_01HZXABC" },
+      generatedAt: { type: "string", format: "date-time" },
+    },
+    required: ["generatedAt"],
+  },
+  AdminModerationUserRef: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "u_8f3" },
+      username: { type: "string", example: "john_doe" },
+      displayName: { type: "string", example: "John Doe" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        example: "https://cdn.aimess.app/av/8f3.jpg",
+      },
+      accountStatus: { type: "string", nullable: true, example: "ACTIVE" },
+    },
+    required: ["id", "username", "displayName"],
+  },
+  AdminModeratorRef: {
+    type: "object",
+    nullable: true,
+    properties: {
+      id: { type: "string", example: "adm_3" },
+      name: { type: "string", example: "Sara Admin" },
+    },
+    required: ["id", "name"],
+  },
+  AdminModerationReportType: {
+    type: "string",
+    enum: [
+      "SPAM",
+      "HARASSMENT",
+      "HATE_SPEECH",
+      "NUDITY",
+      "VIOLENCE",
+      "SELF_HARM",
+      "IMPERSONATION",
+      "MISINFORMATION",
+      "ILLEGAL_CONTENT",
+      "CSAM",
+      "TERRORISM",
+      "OTHER",
+    ],
+    example: "HARASSMENT",
+  },
+  AdminModerationTargetType: {
+    type: "string",
+    enum: ["USER", "MESSAGE", "GROUP", "COMMUNITY", "POST", "COMMENT", "MEDIA"],
+    example: "MESSAGE",
+  },
+  AdminModerationStatus: {
+    type: "string",
+    enum: ["PENDING", "UNDER_REVIEW", "RESOLVED", "DISMISSED", "ESCALATED"],
+    example: "PENDING",
+  },
+  AdminModerationPriority: {
+    type: "string",
+    enum: ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+    example: "HIGH",
+  },
+  AdminModerationReportListItem: {
+    type: "object",
+    description: "One row of the Reports & Moderation table.",
+    properties: {
+      reportId: { type: "string", example: "RPT-2026-0001284" },
+      reportedUser: { $ref: "#/components/schemas/AdminModerationUserRef" },
+      reporterUser: { $ref: "#/components/schemas/AdminModerationUserRef" },
+      reportType: { $ref: "#/components/schemas/AdminModerationReportType" },
+      targetType: { $ref: "#/components/schemas/AdminModerationTargetType" },
+      status: { $ref: "#/components/schemas/AdminModerationStatus" },
+      priority: { $ref: "#/components/schemas/AdminModerationPriority" },
+      createdAt: { type: "string", format: "date-time" },
+      resolvedAt: { type: "string", format: "date-time", nullable: true },
+      moderator: { $ref: "#/components/schemas/AdminModeratorRef" },
+    },
+    required: [
+      "reportId",
+      "reportedUser",
+      "reporterUser",
+      "reportType",
+      "targetType",
+      "status",
+      "priority",
+      "createdAt",
+    ],
+  },
+  AdminModerationListResponse: {
+    type: "object",
+    description:
+      "List envelope for the moderation table: data[] + pagination + meta.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminModerationReportListItem" },
+      },
+      pagination: { $ref: "#/components/schemas/AdminModerationPagination" },
+      meta: { $ref: "#/components/schemas/AdminResponseMeta" },
+    },
+    required: ["success", "data", "pagination", "meta"],
+  },
+  AdminModerationEvidence: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "ev_2" },
+      type: {
+        type: "string",
+        enum: [
+          "MESSAGE_SNAPSHOT",
+          "ATTACHMENT",
+          "SCREENSHOT",
+          "PROFILE_SNAPSHOT",
+          "LINK",
+          "SYSTEM_LOG",
+        ],
+        example: "ATTACHMENT",
+      },
+      mimeType: { type: "string", nullable: true, example: "image/jpeg" },
+      url: {
+        type: "string",
+        nullable: true,
+        description: "Signed, short-TTL URL — never a public CDN link.",
+        example: "https://cdn.aimess.app/evidence/ev_2.jpg",
+      },
+      thumbnailUrl: { type: "string", nullable: true },
+      sizeBytes: { type: "integer", nullable: true, example: 84213 },
+      content: {
+        type: "object",
+        nullable: true,
+        description:
+          "Inline snapshot payload (e.g. message text) for non-binary evidence.",
+      },
+      restricted: {
+        type: "boolean",
+        description:
+          "CSAM/illegal — gated behind moderation:reports:evidence:restricted:view + access-logged.",
+        example: false,
+      },
+      capturedAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "type", "capturedAt"],
+  },
+  AdminModerationHistoryItem: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "h_2" },
+      action: { type: "string", example: "ASSIGNED" },
+      actorType: {
+        type: "string",
+        enum: ["USER", "ADMIN", "SYSTEM"],
+        example: "ADMIN",
+      },
+      actorId: { type: "string", nullable: true, example: "adm_3" },
+      actorName: { type: "string", nullable: true, example: "Sara Admin" },
+      at: { type: "string", format: "date-time" },
+      note: { type: "string", nullable: true },
+    },
+    required: ["id", "action", "actorType", "at"],
+  },
+  AdminModerationReportDetail: {
+    type: "object",
+    description: "Full report detail for the View Report Details drawer.",
+    properties: {
+      reportId: { type: "string", example: "RPT-2026-0001284" },
+      reportType: { $ref: "#/components/schemas/AdminModerationReportType" },
+      targetType: { $ref: "#/components/schemas/AdminModerationTargetType" },
+      status: { $ref: "#/components/schemas/AdminModerationStatus" },
+      priority: { $ref: "#/components/schemas/AdminModerationPriority" },
+      reason: {
+        type: "string",
+        example: "Sending threatening messages repeatedly",
+      },
+      reporterNote: { type: "string", nullable: true },
+      sourceService: { type: "string", example: "messaging-service" },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+      resolvedAt: { type: "string", format: "date-time", nullable: true },
+      slaDueAt: { type: "string", format: "date-time", nullable: true },
+      reportedUser: {
+        type: "object",
+        description: "Enriched reported-user profile with moderation signals.",
+      },
+      reporterUser: {
+        type: "object",
+        description:
+          "Enriched reporter profile with moderation signals (falseReportRate, etc.).",
+      },
+      target: {
+        type: "object",
+        description:
+          "The reported entity (message/post/user) snapshot + deep link.",
+      },
+      evidence: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminModerationEvidence" },
+      },
+      history: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminModerationHistoryItem" },
+      },
+      relatedReports: { type: "array", items: { type: "object" } },
+      availableActions: {
+        type: "array",
+        items: {
+          type: "string",
+          enum: ["RESOLVE", "DISMISS", "ESCALATE", "ASSIGN"],
+        },
+        description:
+          "Server-computed from status + the admin's RBAC. The UI must not hardcode this.",
+      },
+    },
+    required: [
+      "reportId",
+      "reportType",
+      "targetType",
+      "status",
+      "priority",
+      "reason",
+      "createdAt",
+      "reportedUser",
+      "reporterUser",
+      "evidence",
+      "history",
+      "availableActions",
+    ],
+  },
+  AdminResolveReportRequest: {
+    type: "object",
+    description:
+      "Resolve a report. The enforcement action is recorded as a decision and emitted as `moderation.action.requested` (RabbitMQ) — auth/user-service own actual account state.",
+    required: ["resolution"],
+    properties: {
+      resolution: {
+        type: "string",
+        enum: ["ACTION_TAKEN", "WARNING_ISSUED", "CONTENT_REMOVED"],
+        example: "ACTION_TAKEN",
+      },
+      actionOnReportedUser: {
+        type: "string",
+        enum: [
+          "NONE",
+          "WARN",
+          "CONTENT_REMOVE",
+          "MUTE",
+          "SUSPEND_7D",
+          "SUSPEND_30D",
+          "BAN",
+        ],
+        default: "NONE",
+        example: "SUSPEND_7D",
+      },
+      note: { type: "string", maxLength: 2000 },
+      notifyReporter: { type: "boolean", default: false },
+      notifyReportedUser: { type: "boolean", default: false },
+    },
+  },
+  AdminDismissReportRequest: {
+    type: "object",
+    required: ["reason"],
+    properties: {
+      reason: {
+        type: "string",
+        enum: [
+          "NO_VIOLATION",
+          "INSUFFICIENT_EVIDENCE",
+          "DUPLICATE",
+          "FALSE_REPORT",
+        ],
+        example: "NO_VIOLATION",
+      },
+      note: { type: "string", maxLength: 2000 },
+      notifyReporter: { type: "boolean", default: false },
+      flagFalseReport: {
+        type: "boolean",
+        default: false,
+        description:
+          "Phase 1: captured in the audit trail but not yet persisted to a reporter-reputation store.",
+      },
+    },
+  },
+  AdminModerationActionResult: {
+    type: "object",
+    description: "Result of resolve/dismiss.",
+    properties: {
+      reportId: { type: "string", example: "RPT-2026-0001284" },
+      status: { $ref: "#/components/schemas/AdminModerationStatus" },
+      resolution: { type: "string", nullable: true, example: "ACTION_TAKEN" },
+      dismissReason: { type: "string", nullable: true },
+      resolvedAt: { type: "string", format: "date-time" },
+      moderator: { $ref: "#/components/schemas/AdminModeratorRef" },
+      appliedActions: {
+        type: "array",
+        nullable: true,
+        items: {
+          type: "object",
+          properties: {
+            type: { type: "string", example: "SUSPEND_7D" },
+            targetUserId: { type: "string", example: "u_8f3" },
+            effectiveUntil: {
+              type: "string",
+              format: "date-time",
+              nullable: true,
+            },
+          },
+        },
+      },
+    },
+    required: ["reportId", "status", "resolvedAt", "moderator"],
+  },
+  AdminBulkResolveRequest: {
+    type: "object",
+    required: ["reportIds", "resolution"],
+    properties: {
+      reportIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 100,
+        example: ["RPT-2026-0001284", "RPT-2026-0001280"],
+      },
+      resolution: {
+        type: "string",
+        enum: ["ACTION_TAKEN", "WARNING_ISSUED", "CONTENT_REMOVED"],
+        example: "CONTENT_REMOVED",
+      },
+      actionOnReportedUser: {
+        type: "string",
+        enum: [
+          "NONE",
+          "WARN",
+          "CONTENT_REMOVE",
+          "MUTE",
+          "SUSPEND_7D",
+          "SUSPEND_30D",
+          "BAN",
+        ],
+        default: "NONE",
+      },
+      note: { type: "string", maxLength: 2000 },
+      notifyReporter: { type: "boolean", default: false },
+    },
+  },
+  AdminBulkDismissRequest: {
+    type: "object",
+    required: ["reportIds", "reason"],
+    properties: {
+      reportIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 100,
+      },
+      reason: {
+        type: "string",
+        enum: [
+          "NO_VIOLATION",
+          "INSUFFICIENT_EVIDENCE",
+          "DUPLICATE",
+          "FALSE_REPORT",
+        ],
+      },
+      note: { type: "string", maxLength: 2000 },
+      notifyReporter: { type: "boolean", default: false },
+      flagFalseReport: { type: "boolean", default: false },
+    },
+  },
+  AdminBulkActionResult: {
+    type: "object",
+    description:
+      "207 Multi-Status — per-item outcome; partial success is normal.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "object",
+        properties: {
+          requested: { type: "integer", example: 3 },
+          succeeded: { type: "integer", example: 2 },
+          failed: { type: "integer", example: 1 },
+          results: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                reportId: { type: "string", example: "RPT-2026-0001277" },
+                status: { $ref: "#/components/schemas/AdminModerationStatus" },
+                ok: { type: "boolean", example: false },
+                error: {
+                  type: "object",
+                  nullable: true,
+                  properties: {
+                    code: {
+                      type: "string",
+                      example: "REPORT_ALREADY_RESOLVED",
+                    },
+                    message: { type: "string" },
+                  },
+                },
+              },
+              required: ["reportId", "ok"],
+            },
+          },
+        },
+        required: ["requested", "succeeded", "failed", "results"],
+      },
+      meta: { $ref: "#/components/schemas/AdminResponseMeta" },
+    },
+    required: ["success", "data"],
+  },
+
+  // ---- Livestreams ----
+  AdminLivestream: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "ls_3" },
+      title: { type: "string", nullable: true },
+      status: {
+        type: "string",
+        enum: ["live", "ended", "scheduled"],
+        example: "live",
+      },
+      communityId: { type: "string", nullable: true },
+      hostId: { type: "string", example: "u_8f3a" },
+      viewers: { type: "integer", example: 134 },
+      startedAt: { type: "string", format: "date-time", nullable: true },
+    },
+    required: ["id", "status"],
+  },
+  AdminForceEndRequest: {
+    type: "object",
+    properties: { reason: { type: "string", example: "Policy violation" } },
+  },
+
+  // ---- Announcements ----
+  AdminAnnouncementTranslationInput: {
+    type: "object",
+    properties: {
+      title: { type: "string", example: "Scheduled maintenance" },
+      body: { type: "string", example: "We will be down 02:00–03:00 UTC." },
+    },
+    required: ["title", "body"],
+  },
+  AdminAnnouncement: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "an_5" },
+      status: {
+        type: "string",
+        enum: ["draft", "scheduled", "published"],
+        example: "draft",
+      },
+      audience: {
+        type: "string",
+        enum: ["all", "community", "role"],
+        example: "all",
+      },
+      publishAt: { type: "string", format: "date-time", nullable: true },
+      translations: {
+        type: "object",
+        properties: {
+          en: {
+            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
+          },
+          vi: {
+            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
+          },
+        },
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "status"],
+  },
+  AdminAnnouncementCreateRequest: {
+    type: "object",
+    required: ["translations", "audience"],
+    properties: {
+      translations: {
+        type: "object",
+        properties: {
+          en: {
+            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
+          },
+          vi: {
+            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
+          },
+        },
+      },
+      audience: {
+        type: "string",
+        enum: ["all", "community", "role"],
+        example: "all",
+      },
+      publishAt: { type: "string", format: "date-time", nullable: true },
+    },
+  },
+  AdminAnnouncementUpdateRequest: {
+    type: "object",
+    properties: {
+      translations: {
+        type: "object",
+        properties: {
+          en: {
+            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
+          },
+          vi: {
+            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
+          },
+        },
+      },
+      audience: { type: "string", enum: ["all", "community", "role"] },
+      publishAt: { type: "string", format: "date-time", nullable: true },
+    },
+  },
+
+  // ---- Categories ----
+  AdminCategory: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "cat_food" },
+      name: {
+        type: "object",
+        description: "Localized name per locale.",
+        example: { en: "Food", vi: "Ẩm thực" },
+      },
+      icon: { type: "string", nullable: true, example: "utensils" },
+      order: { type: "integer", example: 1 },
+    },
+    required: ["id", "name"],
+  },
+  AdminCategoryCreateRequest: {
+    type: "object",
+    required: ["name"],
+    properties: {
+      name: { type: "object", example: { en: "Food", vi: "Ẩm thực" } },
+      icon: { type: "string", nullable: true, example: "utensils" },
+      order: { type: "integer", example: 1 },
+    },
+  },
+  AdminCategoryUpdateRequest: {
+    type: "object",
+    properties: {
+      name: { type: "object", example: { en: "Food", vi: "Ẩm thực" } },
+      icon: { type: "string", nullable: true },
+      order: { type: "integer" },
+    },
+  },
+
+  // ---- Audit Logs ----
+  AdminAuditLog: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "al_900" },
+      actorId: { type: "string", example: "adm_1" },
+      actorEmail: { type: "string", example: "ops@x.com" },
+      action: { type: "string", example: "user.ban" },
+      targetType: { type: "string", example: "user" },
+      targetId: { type: "string", example: "u_8f3a" },
+      before: { type: "object", nullable: true, example: { status: "active" } },
+      after: { type: "object", nullable: true, example: { status: "banned" } },
+      ip: { type: "string", example: "203.0.113.7" },
+      userAgent: { type: "string", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "actorId", "action", "targetType", "createdAt"],
+  },
+  AdminAuditLogExport: {
+    type: "object",
+    properties: {
+      format: { type: "string", enum: ["csv", "json"], example: "csv" },
+      downloadUrl: {
+        type: "string",
+        description: "Presigned MinIO URL (private bucket) for large exports.",
+      },
+      expiresAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  // ---- Admin Accounts & Roles ----
+  AdminAccount: {
+    type: "object",
+    properties: {
+      id: { type: "string", example: "adm_5" },
+      email: { type: "string", format: "email", example: "mod@aimess.io" },
+      name: { type: "string", example: "Mod User" },
+      role: {
+        type: "string",
+        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
+        example: "MODERATOR",
+      },
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "DISABLED", "INVITED"],
+        example: "ACTIVE",
+      },
+      totpEnabled: { type: "boolean", example: true },
+      lastLoginAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["id", "email", "role", "status"],
+  },
+  AdminAccountCreateRequest: {
+    type: "object",
+    required: ["email", "name", "role"],
+    properties: {
+      email: { type: "string", format: "email", example: "mod@aimess.io" },
+      name: { type: "string", example: "Mod User" },
+      role: {
+        type: "string",
+        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
+        example: "MODERATOR",
+      },
+    },
+  },
+  AdminAccountRoleRequest: {
+    type: "object",
+    required: ["role"],
+    properties: {
+      role: {
+        type: "string",
+        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
+        example: "MODERATOR",
+      },
+    },
+  },
+  AdminRole: {
+    type: "object",
+    properties: {
+      key: {
+        type: "string",
+        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
+        example: "MODERATOR",
+      },
+      name: { type: "string", example: "Moderator" },
+      description: { type: "string", nullable: true },
+      permissions: {
+        type: "array",
+        items: { type: "string" },
+        example: ["dashboard.read", "users.read", "users.moderate"],
+      },
+    },
+    required: ["key", "permissions"],
+  },
+
+  // ---- System Health ----
+  AdminSystemQueues: {
+    type: "object",
+    properties: {
+      queues: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", example: "aimess.events" },
+            depth: { type: "integer", example: 4 },
+            dlqDepth: { type: "integer", example: 0 },
+          },
+        },
+      },
+      checkedAt: { type: "string", format: "date-time" },
+    },
+  },
+  AdminSystemMetrics: {
+    type: "object",
+    description: "Aggregate platform metrics snapshot (read-model + redis).",
+    properties: {
+      metrics: { type: "object" },
+      asOf: { type: "string", format: "date-time" },
+    },
+  },
+
   ApiSuccessResponse: {
     type: "object",
     properties: {

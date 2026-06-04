@@ -178,25 +178,48 @@ export const communityPaths = {
   "/communities/mine": {
     get: {
       tags: ["Communities"],
-      summary: "List communities I belong to",
+      summary: "List my communities (scope=joined) / discover (scope=discover)",
       description:
-        "Communities where you are an ACTIVE member, ordered by `lastActivityAt` " +
-        "(latest community message, else createdAt). Timestamp-cursor pagination: " +
-        "`before_ts` returns items with `lastActivityAt <= before_ts` (newest-first); " +
-        "`after_ts` returns items with `lastActivityAt >= after_ts` (oldest-first); " +
-        "mutually exclusive, omit both for the newest page. Boundaries are inclusive " +
-        "(consecutive pages can share the boundary item — de-duplicate by `id`). " +
-        "Page with `pagination.nextCursor` (epoch-ms) fed back as the same param.",
+        "Unified communities list. `scope` selects the dataset and pagination style:\n\n" +
+        "**scope=joined** (default) — communities where you are an ACTIVE member, " +
+        "ordered by `lastActivityAt` (latest community message, else createdAt). " +
+        "Timestamp-cursor pagination: `before_ts` returns items with " +
+        "`lastActivityAt <= before_ts` (newest-first); `after_ts` returns items with " +
+        "`lastActivityAt >= after_ts` (oldest-first); mutually exclusive, omit both for " +
+        "the newest page. Boundaries are inclusive (consecutive pages can share the " +
+        "boundary item — de-duplicate by `id`). Page with `pagination.nextCursor` " +
+        "(epoch-ms) fed back as the same param. Returns `MyCommunitiesResponseData`.\n\n" +
+        "**scope=discover** — public communities you are not already in (active, pending, " +
+        "and banned memberships excluded). Optional `q` searches name and handle " +
+        "(case-insensitive); optional `categoryId` filters by category. `filter` defaults " +
+        "to `all`; `live`/`upcoming` are reserved for livestream discovery and currently " +
+        "return an empty page. Newest-first offset/page pagination (`page` + `limit`). " +
+        "Returns `CommunityDiscoverResponseData`.\n\n" +
+        "Params not relevant to the active scope are ignored. (The legacy " +
+        "`GET /communities/discover` endpoint is a deprecated alias for `scope=discover`.)",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "scope",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["joined", "discover"],
+            default: "joined",
+          },
+          description:
+            "`joined` (default): my communities, cursor pagination. " +
+            "`discover`: public browse/search, offset pagination.",
+        },
         {
           name: "before_ts",
           in: "query",
           required: false,
           schema: { type: "integer", minimum: 1 },
           description:
-            "Epoch ms. Returns items with lastActivityAt <= before_ts.",
+            "scope=joined only. Epoch ms. Returns items with lastActivityAt <= before_ts.",
         },
         {
           name: "after_ts",
@@ -204,7 +227,43 @@ export const communityPaths = {
           required: false,
           schema: { type: "integer", minimum: 1 },
           description:
-            "Epoch ms. Returns items with lastActivityAt >= after_ts.",
+            "scope=joined only. Epoch ms. Returns items with lastActivityAt >= after_ts.",
+        },
+        {
+          name: "q",
+          in: "query",
+          required: false,
+          schema: { type: "string", minLength: 1, maxLength: 100 },
+          description:
+            "scope=discover only. Search term matched against community name and handle.",
+        },
+        {
+          name: "categoryId",
+          in: "query",
+          required: false,
+          schema: { type: "string", pattern: "^[a-f0-9]{24}$" },
+          description:
+            "scope=discover only. Filter to a single category (24-char hex ObjectId).",
+        },
+        {
+          name: "filter",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["all", "live", "upcoming"],
+            default: "all",
+          },
+          description:
+            "scope=discover only. `all` browses every public community. " +
+            "`live`/`upcoming` are reserved for livestream filtering and currently return an empty page.",
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+          description: "scope=discover only. 1-based page number.",
         },
         {
           name: "limit",
@@ -215,7 +274,8 @@ export const communityPaths = {
       ],
       responses: {
         "200": {
-          description: "My communities",
+          description:
+            "My communities (scope=joined) or discovered communities (scope=discover)",
           content: {
             "application/json": {
               schema: {
@@ -225,7 +285,14 @@ export const communityPaths = {
                     type: "object",
                     properties: {
                       data: {
-                        $ref: "#/components/schemas/MyCommunitiesResponseData",
+                        oneOf: [
+                          {
+                            $ref: "#/components/schemas/MyCommunitiesResponseData",
+                          },
+                          {
+                            $ref: "#/components/schemas/CommunityDiscoverResponseData",
+                          },
+                        ],
                       },
                     },
                   },
@@ -241,8 +308,10 @@ export const communityPaths = {
   "/communities/discover": {
     get: {
       tags: ["Communities"],
-      summary: "Discover / search / browse public communities",
+      summary: "Discover / search / browse public communities (deprecated)",
+      deprecated: true,
       description:
+        "**Deprecated** — use `GET /communities/mine?scope=discover` instead. " +
         "Public communities you are not already in (active, pending, and banned memberships are excluded). Optional `q` searches name and handle (case-insensitive); optional `categoryId` filters by category. `filter` defaults to `all`; `live` and `upcoming` are reserved for livestream-based discovery and currently return an empty page (no stream-service yet). Newest-first, offset/page pagination (`page` + `limit`); response carries `pagination` and `data`.",
       security: [{ bearerAuth: [] }],
       parameters: [

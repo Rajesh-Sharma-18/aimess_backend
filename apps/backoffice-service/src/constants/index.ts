@@ -1,3 +1,84 @@
-/** Service-scoped constants (replaced when scaffolding). */
+/** Service-scoped constants. */
 export const SERVICE_SLUG = "backoffice-service" as const;
 export const SERVICE_TITLE = "Backoffice Service" as const;
+
+/** Admin role keys — mirror the `RoleKey` enum in the Prisma schema. */
+export const ROLE_KEYS = {
+  SUPER_ADMIN: "SUPER_ADMIN",
+  ADMIN: "ADMIN",
+  MODERATOR: "MODERATOR",
+  SUPPORT_AGENT: "SUPPORT_AGENT",
+  ANALYST: "ANALYST",
+} as const;
+
+export type RoleKeyValue = (typeof ROLE_KEYS)[keyof typeof ROLE_KEYS];
+
+/**
+ * Permission catalogue (resource.action). Source of truth for the seed.
+ * See docs/ADMIN-SERVICE-DESIGN.md §5.
+ */
+export const PERMISSIONS = {
+  DASHBOARD_READ: "dashboard.read",
+  USERS_READ: "users.read",
+  USERS_MODERATE: "users.moderate",
+  USERS_DELETE: "users.delete",
+  REPORTS_READ: "reports.read",
+  REPORTS_ACTION: "reports.action",
+  COMMUNITIES_READ: "communities.read",
+  COMMUNITIES_MODERATE: "communities.moderate",
+  GROUPS_READ: "groups.read",
+  GROUPS_MODERATE: "groups.moderate",
+  LIVESTREAMS_READ: "livestreams.read",
+  LIVESTREAMS_MODERATE: "livestreams.moderate",
+  CATEGORIES_MANAGE: "categories.manage",
+  ANNOUNCEMENTS_MANAGE: "announcements.manage",
+  AUDITLOGS_READ: "auditlogs.read",
+  SYSTEMHEALTH_READ: "systemhealth.read",
+  ADMINS_MANAGE: "admins.manage",
+  SETTINGS_MANAGE: "settings.manage",
+} as const;
+
+export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
+
+/** Audit-log action names emitted by services. */
+export const AUDIT_ACTIONS = {
+  ADMIN_LOGIN: "admin.login",
+  ADMIN_LOGOUT: "admin.logout",
+  ADMIN_TOKEN_REFRESHED: "admin.token_refreshed",
+  ADMIN_PASSWORD_RESET_REQUESTED: "admin.password_reset_requested",
+  ADMIN_PASSWORD_RESET_COMPLETED: "admin.password_reset_completed",
+  USER_BANNED: "user.banned",
+  USER_SUSPENDED: "user.suspended",
+  USER_UNBANNED: "user.unbanned",
+  USER_BULK_BANNED: "user.bulk_banned",
+  USER_BULK_ACTIVATED: "user.bulk_activated",
+  REPORT_RESOLVED: "report.resolved",
+  REPORT_DISMISSED: "report.dismissed",
+  REPORT_BULK_RESOLVED: "report.bulk_resolved",
+  REPORT_BULK_DISMISSED: "report.bulk_dismissed",
+  COMMUNITY_CLOSED: "community.close",
+  COMMUNITY_REOPENED: "community.reopen",
+  COMMUNITY_BULK_CLOSED: "community.bulk_close",
+  COMMUNITY_BULK_REOPENED: "community.bulk_reopen",
+  LIVESTREAM_ENDED: "livestream.ended",
+  LIVESTREAM_BULK_ENDED: "livestream.bulk_ended",
+  LIVESTREAM_REPORTS_BULK_REVIEWED: "livestream.reports_bulk_reviewed",
+} as const;
+
+export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
+
+/**
+ * Cross-service event type strings / routing keys published by backoffice when
+ * an admin changes a user's account state. auth-service is the eventual
+ * consumer (it owns AuthUser status). A shared `@aimess/shared-types` admin
+ * events constant does not exist yet, so the keys live here locally — do NOT
+ * broadly edit shared packages for this.
+ */
+export const ADMIN_USER_EVENTS = {
+  USER_BANNED: "admin.user_banned",
+  USER_UNBANNED: "admin.user_unbanned",
+  USER_SUSPENDED: "admin.user_suspended",
+} as const;
+
+export type AdminUserEvent =
+  (typeof ADMIN_USER_EVENTS)[keyof typeof ADMIN_USER_EVENTS];

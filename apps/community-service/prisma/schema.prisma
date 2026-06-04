@@ -61,12 +61,21 @@ model Community {
   lastActivityAt DateTime       @default(now())
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
+  // Admin moderation state. DISTINCT from `deletedAt`: moderationStatus is an
+  // admin/backoffice "Close" (SUSPENDED) toggle, whereas `deletedAt` below is a
+  // user-initiated soft-delete. The two are independent — a community can be
+  // SUSPENDED without being deleted, and vice versa.
+  moderationStatus CommunityModerationStatus @default(ACTIVE)
+  closedAt         DateTime? // when an admin suspended/closed the community
+  closedReasonCode String? // CloseReasonCode from backoffice-service
+  closedByAdminId  String? // backoffice AdminUser.id who closed it
   deletedAt   DateTime?
   members     CommunityMember[]
 
   @@index([categoryId])
   @@index([creatorId])
   @@index([lastActivityAt])
+  @@index([moderationStatus, createdAt])
   @@map("communities")
 }
 
@@ -262,6 +271,13 @@ model CommunityInviteLink {
 enum CommunityType {
   PUBLIC
   PRIVATE
+}
+
+// Admin moderation state set from backoffice-service. SUSPENDED == admin "Closed"
+// in the admin panel. Distinct from `Community.deletedAt` (user soft-delete).
+enum CommunityModerationStatus {
+  ACTIVE
+  SUSPENDED
 }
 
 enum CommunityMemberRole {

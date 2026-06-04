@@ -8,6 +8,11 @@ Redis channel and the gateway re-emits to the matching room.
 
 > Source of truth: `apps/api-gateway/src/sockets/`. If code and this doc
 > disagree, code wins — then update this file in the same PR.
+>
+> **Machine-readable spec:** an AsyncAPI 3.0 description of every event lives at
+> `apps/api-gateway/asyncapi/asyncapi.yaml` (validate/preview/generate via
+> `pnpm --filter @aimess/api-gateway asyncapi:validate|asyncapi:preview|asyncapi:docs`).
+> Keep it in sync with this doc.
 
 ---
 

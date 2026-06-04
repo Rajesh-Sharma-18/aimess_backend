@@ -37,6 +37,11 @@ export class GroupRoomRepository {
     });
   }
 
+  /** Count of active group rooms — admin dashboard aggregate. */
+  async countActive(): Promise<number> {
+    return this.prisma.groupRoom.count({ where: { status: "ACTIVE" } });
+  }
+
   async allocateSequence(roomId: string): Promise<number> {
     const r = await this.prisma.groupRoom.update({
       where: { roomId },

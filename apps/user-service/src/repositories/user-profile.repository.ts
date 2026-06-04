@@ -207,4 +207,39 @@ export const userProfileRepository = {
       data: { deletedAt, status: ProfileStatus.DELETED },
     });
   },
+
+  /**
+   * Admin Panel: enrich a user list with display profile data.
+   * Returns rows for the subset of `userIds` that exist (no order guarantee).
+   * Guards empty input to avoid an unnecessary query.
+   */
+  adminGetProfilesByIds(userIds: string[]) {
+    if (userIds.length === 0) return Promise.resolve([]);
+    return prisma.userProfile.findMany({
+      where: { userId: { in: userIds } },
+      select: {
+        userId: true,
+        username: true,
+        avatarUrl: true,
+        firstName: true,
+        lastName: true,
+        createdAt: true,
+      },
+    });
+  },
+
+  /** Admin Panel: single profile lookup by id, or null when absent. */
+  adminGetProfile(userId: string) {
+    return prisma.userProfile.findUnique({
+      where: { userId },
+      select: {
+        userId: true,
+        username: true,
+        avatarUrl: true,
+        firstName: true,
+        lastName: true,
+        createdAt: true,
+      },
+    });
+  },
 };

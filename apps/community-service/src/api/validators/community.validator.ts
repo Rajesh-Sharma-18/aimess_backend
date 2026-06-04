@@ -101,19 +101,46 @@ export const handleAvailableQuerySchema = z.object({
 
 export type HandleAvailableQuery = z.infer<typeof handleAvailableQuerySchema>;
 
+/** Reusable discovery search query field (`q`). */
+const discoverSearchSchema = z
+  .string()
+  .trim()
+  .min(1, "Search query must not be empty")
+  .max(100, "Search query must be at most 100 characters");
+
 /**
- * `GET /communities/mine` — cursor pagination over the caller's communities,
- * ordered by `lastActivityAt` (latest community message, else createdAt).
- * Timestamps are epoch milliseconds and mutually exclusive:
- *   before_ts → lastActivityAt <= before_ts (newest-first)
- *   after_ts  → lastActivityAt >= after_ts  (oldest-first)
- * Omit both for the newest page.
+ * `GET /communities/mine` — a single endpoint that serves two scopes:
+ *
+ *   scope=joined (default) — the caller's own communities, ordered by
+ *     `lastActivityAt`, using **cursor (timestamp) pagination**. Timestamps are
+ *     epoch milliseconds and mutually exclusive:
+ *       before_ts → lastActivityAt <= before_ts (newest-first)
+ *       after_ts  → lastActivityAt >= after_ts  (oldest-first)
+ *     Omit both for the newest page.
+ *
+ *   scope=discover — public communities the caller is not in, browse/search,
+ *     using **offset (page) pagination** with `q` / `categoryId` / `filter`.
+ *     `filter`: "all" browses every public community; "live"/"upcoming" are
+ *     reserved for livestream filtering (no-op until stream-service exists).
+ *
+ * Both scopes share `limit`. Scope-irrelevant params are simply ignored, so a
+ * client switching tabs can keep `limit` and drop the rest. The two pagination
+ * styles never mix: `before_ts`/`after_ts` only apply to `joined`, and
+ * `page`/`q`/`categoryId`/`filter` only apply to `discover`.
  */
 export const myCommunitiesQuerySchema = z
   .object({
+    scope: z.enum(["joined", "discover"]).default("joined"),
+    // joined-scope cursor pagination
     before_ts: z.coerce.number().int().positive().optional(),
     after_ts: z.coerce.number().int().positive().optional(),
-    limit: z.coerce.number().int().positive().max(50).default(20),
+    // discover-scope filters + offset pagination
+    q: discoverSearchSchema.optional(),
+    categoryId: categoryIdSchema.optional(),
+    filter: z.enum(["all", "live", "upcoming"]).default("all"),
+    page: pageSchema,
+    // shared
+    limit: limitSchema,
   })
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
     message: "Provide either before_ts or after_ts, not both",
@@ -123,17 +150,12 @@ export const myCommunitiesQuerySchema = z
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
 
 /**
- * Public discovery / browse / search query.
- * `filter`: "all" browses every public community; "live"/"upcoming" are
- * reserved for livestream-based filtering (no-op until stream-service exists).
+ * Public discovery / browse / search query — backs the deprecated
+ * `GET /communities/discover` alias. New clients should call
+ * `GET /communities/mine?scope=discover` instead.
  */
 export const discoverQuerySchema = z.object({
-  q: z
-    .string()
-    .trim()
-    .min(1, "Search query must not be empty")
-    .max(100, "Search query must be at most 100 characters")
-    .optional(),
+  q: discoverSearchSchema.optional(),
   categoryId: categoryIdSchema.optional(),
   filter: z.enum(["all", "live", "upcoming"]).default("all"),
   page: pageSchema,

@@ -1,0 +1,315 @@
+// =============================================================================
+// backoffice-service  ·  PostgreSQL  ·  admin_db
+// Owns: admin identity, RBAC, admin sessions, audit logs, moderation trail,
+//       system settings, announcements (i18n), and event-fed read-models.
+// Does NOT own: any other service's domain data — referenced by shared ID only
+//               (no cross-DB FK). See docs/ADMIN-SERVICE-DESIGN.md §4.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AdminStatus {
+  ACTIVE
+  DISABLED
+  INVITED
+}
+
+enum AdminOtpPurpose {
+  PASSWORD_RESET
+}
+
+enum RoleKey {
+  SUPER_ADMIN
+  ADMIN
+  MODERATOR
+  SUPPORT_AGENT
+  ANALYST
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  DELETED
+}
+
+// -----------------------------------------------------------------------------
+// Identity & RBAC
+// -----------------------------------------------------------------------------
+model AdminUser {
+  id           String      @id @default(uuid()) @db.Uuid
+  email        String      @unique
+  passwordHash String
+  name         String
+  roleId       String      @db.Uuid
+  role         AdminRole   @relation(fields: [roleId], references: [id])
+  status       AdminStatus @default(ACTIVE)
+  lastLoginAt  DateTime?   @db.Timestamptz(3)
+  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @db.Timestamptz(3)
+
+  sessions            AdminSession[]
+  auditLogs           AuditLog[]
+  otpCodes            AdminOtpCode[]
+  passwordResetTokens AdminPasswordResetToken[]
+
+  @@index([roleId])
+}
+
+// -----------------------------------------------------------------------------
+// Admin password-reset (OTP + reset token)
+// -----------------------------------------------------------------------------
+model AdminOtpCode {
+  id          String          @id @default(uuid()) @db.Uuid
+  adminId     String          @db.Uuid
+  admin       AdminUser       @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  identifier  String // normalized lowercase email
+  purpose     AdminOtpPurpose
+  codeHash    String // bcrypt hash, never plaintext
+  attempts    Int             @default(0)
+  maxAttempts Int             @default(5)
+  expiresAt   DateTime        @db.Timestamptz(3)
+  consumedAt  DateTime?       @db.Timestamptz(3)
+  ip          String?
+  createdAt   DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@index([identifier, purpose, consumedAt])
+  @@index([adminId, purpose])
+  @@index([expiresAt])
+}
+
+model AdminPasswordResetToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  adminId    String    @db.Uuid
+  admin      AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime  @db.Timestamptz(3)
+  consumedAt DateTime? @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([adminId])
+  @@index([expiresAt])
+}
+
+model AdminRole {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         RoleKey @unique
+  name        String
+  description String?
+
+  permissions RolePermission[]
+  admins      AdminUser[]
+}
+
+model Permission {
+  id    String @id @default(uuid()) @db.Uuid
+  key   String @unique // e.g. "users.moderate"
+  group String // "users" | "reports" | ...
+
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String @db.Uuid
+  permissionId String @db.Uuid
+
+  role       AdminRole  @relation(fields: [roleId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+  scope      Json? // optional resource scope (e.g. { communityIds: [...] })
+
+  @@id([roleId, permissionId])
+}
+
+model AdminSession {
+  id        String    @id @default(uuid()) @db.Uuid
+  adminId   String    @db.Uuid
+  admin     AdminUser @relation(fields: [adminId], references: [id])
+  jti       String    @unique // matches JWT id; revoke via Redis blacklist
+  ip        String
+  userAgent String?
+  expiresAt DateTime  @db.Timestamptz(3)
+  revokedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([adminId])
+}
+
+// -----------------------------------------------------------------------------
+// Audit
+// -----------------------------------------------------------------------------
+model AuditLog {
+  id         String    @id @default(uuid()) @db.Uuid
+  actorId    String    @db.Uuid
+  actor      AdminUser @relation(fields: [actorId], references: [id])
+  action     String // "user.ban", "role.change", ...
+  targetType String // "user" | "community" | "group" | "stream" | "settings" | "admin"
+  targetId   String?
+  before     Json?
+  after      Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+  @@index([action, createdAt])
+}
+
+// -----------------------------------------------------------------------------
+// Moderation trail (admin side of truth)
+// -----------------------------------------------------------------------------
+model ModerationAction {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String   @db.Uuid
+  type       String // ban_user | suspend_user | suspend_community | delete_content | force_end_stream
+  targetType String
+  targetId   String
+  reason     String
+  metadata   Json?
+  reportId   String?   @db.Uuid // links to Report when action came from queue (future)
+  expiresAt  DateTime? @db.Timestamptz(3) // when a time-boxed action (suspend) lapses
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([targetType, targetId])
+  @@index([targetType, targetId, createdAt(sort: Desc)])
+}
+
+// -----------------------------------------------------------------------------
+// System settings
+// -----------------------------------------------------------------------------
+model SystemSetting {
+  key         String   @id // "feature.reports.enabled", "maintenance.banner"
+  value       Json
+  updatedById String?  @db.Uuid
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+}
+
+// -----------------------------------------------------------------------------
+// Announcements (i18n)
+// -----------------------------------------------------------------------------
+model Announcement {
+  id          String    @id @default(uuid()) @db.Uuid
+  status      String    @default("draft") // draft | scheduled | published
+  audience    String    @default("all")
+  publishAt   DateTime? @db.Timestamptz(3)
+  createdById String    @db.Uuid
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+
+  translations AnnouncementTranslation[]
+}
+
+model AnnouncementTranslation {
+  id             String       @id @default(uuid()) @db.Uuid
+  announcementId String       @db.Uuid
+  announcement   Announcement @relation(fields: [announcementId], references: [id])
+  locale         String // "en" | "vi"
+  title          String
+  body           String
+
+  @@unique([announcementId, locale])
+}
+
+// -----------------------------------------------------------------------------
+// Read-models (event-fed; eventually consistent)
+// -----------------------------------------------------------------------------
+model PlatformStats {
+  id               String   @id @default("singleton")
+  totalUsers       Int      @default(0)
+  newUsersToday    Int      @default(0)
+  bannedUsers      Int      @default(0)
+  totalCommunities Int      @default(0)
+  totalGroups      Int      @default(0)
+  totalLivestreams Int      @default(0) // STATIC for now
+  openReports      Int      @default(0) // STATIC for now
+  updatedAt        DateTime @updatedAt @db.Timestamptz(3)
+}
+
+model DailyActiveSnapshot {
+  date          DateTime @id @db.Date
+  dailyActive   Int
+  monthlyActive Int
+  churned       Int
+  newUsers      Int
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+}
+
+model CommunityIndex {
+  id          String   @id // community id (shared)
+  name        String
+  ownerId     String
+  memberCount Int      @default(0)
+  status      String   @default("active")
+  createdAt   DateTime @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([status])
+}
+
+model GroupIndex {
+  id          String   @id
+  name        String
+  ownerId     String
+  memberCount Int      @default(0)
+  status      String   @default("active")
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([status])
+}
+
+// Merged user read-model backing the admin User Management API. Seeded/backfilled
+// for now; event consumers (admin.user_* are published BY this service) and
+// auth/user-service projections will populate it later. NOT the source of truth
+// for account state — auth-service AuthUser is. We mirror status here for queries.
+model UserIndex {
+  userId         String     @id // shared id == AuthUser.id (UUID, no cross-DB FK)
+  username       String
+  email          String
+  status         UserStatus @default(ACTIVE)
+  reportCount    Int        @default(0)
+  joinedAt       DateTime   @db.Timestamptz(3)
+  lastActiveAt   DateTime?  @db.Timestamptz(3)
+  bannedAt       DateTime?  @db.Timestamptz(3)
+  banReason      String?
+  suspendedUntil DateTime?  @db.Timestamptz(3)
+  updatedAt      DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@index([status, joinedAt(sort: Desc)])
+  @@index([reportCount])
+  @@index([username])
+  @@index([email])
+}
+
+// -----------------------------------------------------------------------------
+// Future: report queue (counter static until built)
+// -----------------------------------------------------------------------------
+model Report {
+  id         String   @id @default(uuid()) @db.Uuid
+  type       String // user | community | message | stream
+  targetId   String
+  reporterId String
+  reason     String
+  status     String   @default("open") // open | reviewing | resolved | dismissed
+  priority   String   @default("normal")
+  assignedTo String?  @db.Uuid
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  notes ReportNote[]
+
+  @@index([status, type])
+}
+
+model ReportNote {
+  id        String   @id @default(uuid()) @db.Uuid
+  reportId  String   @db.Uuid
+  report    Report   @relation(fields: [reportId], references: [id])
+  authorId  String   @db.Uuid
+  body      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+}

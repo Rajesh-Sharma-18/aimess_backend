@@ -371,6 +371,7 @@ const startServer = async () => {
       privateMessageService,
       groupMessageService,
       groupMemberService,
+      groupRoomRepo,
       cacheRepo,
       userSnapshotService,
       callService,
@@ -416,14 +417,40 @@ const startServer = async () => {
     httpServer = createServer(app);
 
     // 6. Listen
-    httpServer.listen(env.CHAT_SERVICE_PORT, "0.0.0.0", () => {
-      logger.info(
-        `Chat service listening on port ${String(env.CHAT_SERVICE_PORT)}`
-      );
-      logger.info(
-        "HTTP routes: /api/chat/inbox, /api/chat/private, /api/chat/groups, /api/chat/group-members, /api/chat/invite-links, /api/chat/notifications, /api/chat/community, /api/chat/media"
-      );
-    });
+    //
+    // Bounded EADDRINUSE retry: under `tsx watch`, a packages/* rebuild restarts
+    // every service at once and the new instance can try to bind before the old
+    // one has released the port. listen() reports that as an async 'error' event
+    // (not a throwable) — without this handler it crashes the process for good
+    // and the watcher never recovers. Retry briefly, then exit cleanly.
+    const MAX_BIND_ATTEMPTS = 5;
+    let bindAttempt = 0;
+    const server = httpServer;
+    const tryListen = () => {
+      bindAttempt += 1;
+      server.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && bindAttempt < MAX_BIND_ATTEMPTS) {
+          logger.warn(
+            `Port ${String(env.CHAT_SERVICE_PORT)} busy (EADDRINUSE); retry ${bindAttempt}/${MAX_BIND_ATTEMPTS} in 500ms…`
+          );
+          setTimeout(tryListen, 500);
+          return;
+        }
+        logger.error(
+          `Chat service failed to bind port ${String(env.CHAT_SERVICE_PORT)}: ${err.message}`
+        );
+        process.exit(1);
+      });
+      server.listen(env.CHAT_SERVICE_PORT, "0.0.0.0", () => {
+        logger.info(
+          `Chat service listening on port ${String(env.CHAT_SERVICE_PORT)}`
+        );
+        logger.info(
+          "HTTP routes: /api/chat/inbox, /api/chat/private, /api/chat/groups, /api/chat/group-members, /api/chat/invite-links, /api/chat/notifications, /api/chat/community, /api/chat/media"
+        );
+      });
+    };
+    tryListen();
 
     // Boot-time reconciliation of community chat rooms (best-effort, non-blocking):
     // pull communities from community-service over gRPC and provision any missing

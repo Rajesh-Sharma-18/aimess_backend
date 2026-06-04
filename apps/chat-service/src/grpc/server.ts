@@ -12,6 +12,7 @@ import {
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
+import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
@@ -38,6 +39,7 @@ export interface GrpcDeps {
   privateMessageService: PrivateMessageService;
   groupMessageService: GroupMessageService;
   groupMemberService: GroupMemberService;
+  groupRoomRepo: GroupRoomRepository;
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
   callService: CallService;
@@ -1072,6 +1074,22 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
           });
         } catch (err) {
           logger.error(`gRPC catchupRoom error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin dashboard: count of active group rooms.
+    getGroupCount: (
+      _call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const total = await deps.groupRoomRepo.countActive();
+          callback(null, { total });
+        } catch (err) {
+          logger.error(`gRPC getGroupCount error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

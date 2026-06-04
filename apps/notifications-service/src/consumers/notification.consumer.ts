@@ -1,7 +1,8 @@
 import amqp from "amqplib";
-import { AuthEvents } from "@aimess/shared-types";
+import { AdminAuthEvents, AuthEvents } from "@aimess/shared-types";
 import { NotificationEvents } from "../events/notification.events.js";
 import {
+  handleAdminPasswordResetOtpRequested,
   handleChangeEmailOtpRequested,
   handleLinkEmailOtpRequested,
   handlePasswordResetOtpRequested,
@@ -140,6 +141,9 @@ export async function startConsumer() {
           break;
         case AuthEvents.CHANGE_EMAIL_OTP_REQUESTED:
           await handleChangeEmailOtpRequested(parsed.data);
+          break;
+        case AdminAuthEvents.PASSWORD_RESET_OTP_REQUESTED:
+          await handleAdminPasswordResetOtpRequested(parsed.data);
           break;
 
         default:

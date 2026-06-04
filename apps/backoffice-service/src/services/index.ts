@@ -1,1 +1,9 @@
-export { ExampleService } from "./example.service.js";
+export { adminAuthService } from "./admin-auth.service.js";
+export { adminPasswordResetService } from "./admin-password-reset.service.js";
+export { rbacService } from "./rbac.service.js";
+export { auditService } from "./audit.service.js";
+export { moderationService } from "./moderation.service.js";
+export { livestreamService } from "./livestream.service.js";
+export { dashboardService } from "./dashboard.service.js";
+export { userManagementService } from "./user-management.service.js";
+export { communityService } from "./community.service.js";

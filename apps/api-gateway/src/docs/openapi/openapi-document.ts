@@ -47,6 +47,22 @@ export function buildOpenApiDocument(
     ),
   ];
 
+  // Admin endpoints live at `{root}/admin/v1/...` (NOT under `/api/vN`). Their
+  // keys already carry the full `/admin/v1/...` prefix, so each admin path item
+  // gets a path-level `servers` override pointing at the gateway ROOT. Build a
+  // new paths object so non-admin entries are left untouched.
+  const adminServers = [
+    ...new Set(serverBaseUrls.filter(Boolean).map(normalizeGatewayBaseUrl)),
+  ].map((url) => ({ url, description: "Admin surface (/admin)" }));
+
+  const paths = Object.fromEntries(
+    Object.entries(spec.paths).map(([key, item]) =>
+      key.startsWith("/admin/")
+        ? [key, { ...(item as Record<string, unknown>), servers: adminServers }]
+        : [key, item]
+    )
+  );
+
   return {
     openapi: "3.0.3",
     info: {
@@ -66,7 +82,7 @@ export function buildOpenApiDocument(
         index === 0 ? `${version} — current host` : `${version} — ${url}`,
     })),
     tags: spec.tags,
-    paths: spec.paths,
+    paths,
     components: {
       ...spec.components,
       securitySchemes: {
@@ -76,6 +92,13 @@ export function buildOpenApiDocument(
           bearerFormat: "JWT",
           description:
             "Access token from POST /auth/login, /auth/register, or /auth/refresh (`type: access` in JWT payload).",
+        },
+        adminBearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+          description:
+            "Admin access token from POST /admin/v1/auth/login (signed with JWT_ADMIN_SECRET).",
         },
       },
     },

@@ -1,2 +1,3 @@
-/** Shared Express middleware — import from here in app.ts as you add files. */
-export {};
+/** Shared Express middleware. */
+export { errorHandler } from "./error-handler.js";
+export { notFound } from "./not-found.js";

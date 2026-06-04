@@ -3,17 +3,41 @@ import express, { type Express } from "express";
 import helmet from "helmet";
 
 import { env, getCorsAllowedOrigins } from "./config/env.js";
+import { setupAsyncApiDocs } from "./docs/asyncapi.js";
 import { setupSwagger } from "./docs/swagger.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { requestIdMiddleware } from "./middleware/request-id.js";
 import { rateLimiter } from "./middleware/rate-limit.js";
+import { createAdminRouter } from "./routes/admin.routes.js";
 import { createApiRouter } from "./routes/api.routes.js";
 import { healthRouter } from "./routes/health.routes.js";
 import type { MessagingClient } from "./grpc/clients/messaging.client.js";
 
+const allowedOrigins = getCorsAllowedOrigins();
+
 const corsOptions = {
-  origin: getCorsAllowedOrigins(),
+  origin: (
+    origin: string | undefined,
+    callback: (err: Error | null, allow?: boolean) => void
+  ) => {
+    // Allow requests with no origin (like mobile apps, curl requests, etc.)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (env.NODE_ENV === "development") {
+      // In development, allow any origin
+      callback(null, true);
+    } else if (allowedOrigins.includes(origin)) {
+      // In production, only allow configured origins
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   credentials: true,
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 } satisfies CorsOptions;
 
 export function createApp(messagingClient: MessagingClient): Express {
@@ -38,8 +62,13 @@ export function createApp(messagingClient: MessagingClient): Express {
   app.use(rateLimiter);
 
   setupSwagger(app);
+  setupAsyncApiDocs(app);
 
   app.use("/health", healthRouter);
+
+  // Admin surface — proxied to backoffice-service. Mounted BEFORE express.json
+  // (proxy must forward the raw body) and before the generic /api mount.
+  app.use("/admin", createAdminRouter());
 
   // Versioned API proxies (before body parser so POST JSON forwards correctly)
   app.use("/api", createApiRouter(messagingClient));

@@ -1,21 +1,57 @@
 import cors from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
+import { localeMiddleware } from "@aimess/utils";
 
 import { serviceRoutes } from "./api/routes/index.js";
+import { env } from "./config/env.js";
+import { errorHandler } from "./middleware/error-handler.js";
+import { notFound } from "./middleware/not-found.js";
 import { healthRouter } from "./routes/health.routes.js";
 
 export function createApp(): Express {
   const app = express();
 
   app.disable("x-powered-by");
+
+  if (env.TRUST_PROXY_HOPS > 0) {
+    app.set("trust proxy", env.TRUST_PROXY_HOPS);
+  }
+
   app.use(helmet());
-  app.use(cors());
+
+  // Allow all origins in development for admin panel access from different IPs
+  app.use(
+    cors({
+      origin:
+        env.NODE_ENV === "development"
+          ? true
+          : env.CORS_ALLOWED_ORIGINS.split(",")
+              .map((o) => o.trim())
+              .filter(Boolean),
+      credentials: true,
+      methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+    })
+  );
+
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+  app.use(localeMiddleware);
 
+  // Direct infra/k8s probes hit `/health`; the gateway-proxied admin surface
+  // reaches the same probes at `/v1/health` (it strips `/admin`, so the spec's
+  // `/admin/v1/health` lands here).
   app.use("/health", healthRouter);
-  app.use("/api/v1", serviceRoutes);
+  app.use("/v1/health", healthRouter);
+
+  // Gateway strips `/admin` and proxies to `:3010/v1/*`, so mount at `/v1`.
+  app.use("/v1", serviceRoutes);
+
+  // Terminal 404 for any unmatched route — JSON, never HTML.
+  app.use(notFound);
+
+  app.use(errorHandler);
 
   return app;
 }

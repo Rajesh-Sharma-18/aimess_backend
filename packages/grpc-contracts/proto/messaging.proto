@@ -25,6 +25,13 @@ service MessagingService {
   rpc GetCallHistory          (GetCallHistoryRequest)          returns (GetCallHistoryResponse);
   rpc GetRtcConfig            (GetRtcConfigRequest)            returns (GetRtcConfigResponse);
   rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
+  // Admin dashboard: count of active group rooms.
+  rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
+}
+
+message GetGroupCountRequest {}
+message GroupCount {
+  int64 total = 1;
 }
 
 message SendMessageRequest {

@@ -188,7 +188,10 @@ export type CommunityAuditAction =
   | "MEMBER_LEFT"
   | "INVITE_LINK_CREATED"
   | "INVITE_LINK_REVOKED"
-  | "INVITE_LINK_REDEEMED";
+  | "INVITE_LINK_REDEEMED"
+  // Backoffice (admin panel) moderation: close/reopen a community.
+  | "ADMIN_SUSPEND_COMMUNITY"
+  | "ADMIN_REOPEN_COMMUNITY";
 
 /** Shareable community invite link DTO (distinct from 1:1 CommunityInvite). */
 export type CommunityInviteLinkData = {

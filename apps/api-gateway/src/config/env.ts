@@ -12,6 +12,9 @@ const semverLike = z
   .regex(/^\d+(\.\d+){0,2}$/);
 
 const envSchema = z.object({
+  NODE_ENV: z
+    .enum(["development", "production", "test"])
+    .default("development"),
   API_GATEWAY_PORT: z.coerce.number().positive(),
   AUTH_SERVICE_URL: z.string().url(),
   USER_SERVICE_URL: z.string().url().optional(),
@@ -25,6 +28,19 @@ const envSchema = z.object({
   NOTIFICATION_GRPC_URL: z.string().min(1),
   /** Same JWT secret as auth-service — used by socket auth middleware. */
   JWT_ACCESS_SECRET: z.string().min(1),
+  /** Downstream backoffice (admin) service. */
+  BACKOFFICE_SERVICE_URL: z.string().url().optional(),
+  /** Admin JWT secret — edge signature/exp check on /admin/* (not jti blacklist). */
+  JWT_ADMIN_SECRET: z.string().min(1).optional(),
+  /** Comma-separated admin IP allowlist; empty = allow all (dev). */
+  ADMIN_IP_WHITELIST: z.string().default(""),
+  ADMIN_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15),
+  ADMIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
+  ADMIN_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   REDIS_URL: z.string(),
   CORS_ALLOWED_ORIGINS: z.string(),
   API_PUBLIC_URL: z.string().url().optional(),
@@ -85,6 +101,13 @@ export function getCorsAllowedOrigins(): string[] {
     .filter(Boolean);
 }
 
+/** Admin IP allowlist — comma-separated list from env (empty = allow all). */
+export function getAdminIpWhitelist(): string[] {
+  return env.ADMIN_IP_WHITELIST.split(",")
+    .map((ip) => ip.trim())
+    .filter(Boolean);
+}
+
 function normalizeGatewayBaseUrl(url: string): string {
   return url
     .trim()
@@ -114,7 +137,7 @@ export function getConfiguredSwaggerServerUrls(): string[] {
 
 /**
  * Swagger "Servers" list: current browser host first, then env-configured URLs.
- * Works for http://localhost:3000/docs and http://10.0.127.225:3000/docs alike.
+ * Works for http://localhost:3000/docs and http://10.0.127.224:3000/docs alike.
  */
 export function resolveSwaggerServerUrls(req: Request): string[] {
   const host = req.get("host");

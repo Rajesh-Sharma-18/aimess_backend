@@ -3,6 +3,8 @@
 **Source:** `apps/community-service/src/api/routes/community.routes.ts` (`GET /discover`, `GET /mine`), `controllers/community.controller.ts` (`discoverCommunities`, `listMyCommunities`), `validators/community.validator.ts` (`discoverQuerySchema`, `myCommunitiesQuerySchema`), `services/community.service.ts` (`discover`, `listMine`). Also chat-service room listing (see community-chat.md).
 
 > **Service:** community-service. `discover` = offset/page pagination over PUBLIC communities the caller is NOT already in. `mine` = cursor pagination ordered by `lastActivityAt`.
+>
+> **Merged endpoint (current):** `GET /communities/mine` now serves both datasets via a `scope` param — `scope=joined` (default) = my communities (cursor pagination, `before_ts`/`after_ts`); `scope=discover` = public browse/search (offset pagination, `q`/`categoryId`/`filter`/`page`). `scope` defaults to `joined`, so all existing `/mine` calls are unchanged. Every `GET /communities/discover?...` case below is equivalent to `GET /communities/mine?scope=discover&...` and returns the identical `CommunityDiscoverResponseData`. The legacy `GET /communities/discover` route is kept as a **deprecated alias**. Params irrelevant to the active scope are ignored.
 
 ---
 
@@ -181,3 +183,39 @@
 | **Expected DB Changes**   | None                                                                      |
 | **Expected Socket/Event** | None                                                                      |
 | **Notes**                 | totalPage floors to 1.                                                    |
+
+---
+
+### TC-COMM-114 — Merged endpoint: discover via `/mine?scope=discover`
+
+| Field                     | Value                                                                                                        |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **Feature/Module**        | Communities / Listing                                                                                        |
+| **API/Event Name**        | `GET /api/v1/communities/mine?scope=discover&q=rust&categoryId=<24hex>&filter=all&page=1&limit=20`           |
+| **Test Scenario**         | `scope=discover` returns the SAME response as the legacy `GET /communities/discover` with identical params   |
+| **Category**              | Functional                                                                                                   |
+| **Priority**              | High                                                                                                         |
+| **Preconditions**         | At least one matching PUBLIC community the caller is not in                                                  |
+| **Request Payload**       | —                                                                                                            |
+| **Expected Response**     | `200` `CommunityDiscoverResponseData` (offset/page `pagination` + discover items); byte-equal to `/discover` |
+| **Expected DB Changes**   | None                                                                                                         |
+| **Expected Socket/Event** | None                                                                                                         |
+| **Notes**                 | `before_ts`/`after_ts` are ignored when `scope=discover`.                                                    |
+
+---
+
+### TC-COMM-115 — Merged endpoint: `scope` defaults to `joined`
+
+| Field                     | Value                                                                                                        |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **Feature/Module**        | Communities / Listing                                                                                        |
+| **API/Event Name**        | `GET /api/v1/communities/mine?before_ts=<ms>&limit=20`                                                       |
+| **Test Scenario**         | Omitting `scope` behaves exactly as before — cursor pagination over my communities (no regression)           |
+| **Category**              | Functional                                                                                                   |
+| **Priority**              | High                                                                                                         |
+| **Preconditions**         | Caller is an ACTIVE member of ≥1 community                                                                   |
+| **Request Payload**       | —                                                                                                            |
+| **Expected Response**     | `200` `MyCommunitiesResponseData` ordered by `lastActivityAt` desc; `q`/`categoryId`/`filter`/`page` ignored |
+| **Expected DB Changes**   | None                                                                                                         |
+| **Expected Socket/Event** | None                                                                                                         |
+| **Notes**                 | `scope=discover` cannot mix with `before_ts`/`after_ts` cursoring; the two pagination styles never combine.  |

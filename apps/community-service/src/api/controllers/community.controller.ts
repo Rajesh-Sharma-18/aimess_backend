@@ -123,9 +123,27 @@ export const listCategories = asyncHandler(
 
 export const listMyCommunities = asyncHandler(
   async (req: Request, res: Response) => {
-    const { before_ts, after_ts, limit } =
+    const { scope, before_ts, after_ts, q, categoryId, filter, page, limit } =
       req.query as unknown as MyCommunitiesQuery;
 
+    // scope=discover → public browse/search (offset pagination).
+    if (scope === "discover") {
+      const result = await communityService.discover(req.auth.userId, {
+        q,
+        categoryId,
+        filter,
+        page,
+        limit,
+      });
+
+      return res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
+        );
+    }
+
+    // scope=joined (default) → the caller's communities (cursor pagination).
     const direction = after_ts != null ? "after" : "before";
     const tsMs = after_ts ?? before_ts ?? Date.now();
 

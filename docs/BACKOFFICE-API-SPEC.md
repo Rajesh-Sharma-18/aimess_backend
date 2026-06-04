@@ -1,6 +1,7 @@
 # Backoffice (Admin Panel) API — Module → Endpoint → Data-Source Spec
 
-> **Status:** DRAFT for review. No code yet. Review every route here before implementation begins.
+> **Companion doc:** [`ADMIN-SERVICE-DESIGN.md`](./ADMIN-SERVICE-DESIGN.md) — architecture rationale, RBAC (5 roles incl. Support Agent), DB schema, scalability, folder structure, diagram. **This file** is the route-by-route data-source map. Keep the two in sync.
+> **Status:** Spec for build. Foundation slice in progress.
 > **Service:** `backoffice-service` · HTTP **3010** · gRPC **4010** · Postgres **`admin_db`** (Prisma 7) + read-only Mongo views via gRPC.
 > **Public entry:** all routes exposed only through `api-gateway` at `/admin/*` (admin-JWT validation + IP whitelist at the edge).
 > Maps the admin dashboard design (Dashboard, User Mgmt, Communities, Groups, Reports, Livestreams, Announcements, Categories, Audit Logs, System Health, Admin Accounts, i18n EN/VI).
@@ -72,25 +73,30 @@ Every **mutating** route (POST/PATCH/PUT/DELETE) writes an `AuditLog` row (`admi
 
 ---
 
-## 3. RBAC permission matrix (draft)
+## 3. RBAC permission matrix
 
-| Permission                         | SUPER_ADMIN | ADMIN | MODERATOR | ANALYST (read-only) |
-| ---------------------------------- | :---------: | :---: | :-------: | :-----------------: |
-| `dashboard.read`                   |     ✅      |  ✅   |    ✅     |         ✅          |
-| `users.read`                       |     ✅      |  ✅   |    ✅     |         ✅          |
-| `users.moderate` (ban/suspend)     |     ✅      |  ✅   |    ✅     |          —          |
-| `users.delete`                     |     ✅      |  ✅   |     —     |          —          |
-| `reports.read`                     |     ✅      |  ✅   |    ✅     |         ✅          |
-| `reports.action`                   |     ✅      |  ✅   |    ✅     |          —          |
-| `communities.read`                 |     ✅      |  ✅   |    ✅     |         ✅          |
-| `communities.moderate`             |     ✅      |  ✅   |    ✅     |          —          |
-| `livestreams.read`                 |     ✅      |  ✅   |    ✅     |         ✅          |
-| `livestreams.moderate` (force-end) |     ✅      |  ✅   |    ✅     |          —          |
-| `categories.manage`                |     ✅      |  ✅   |     —     |          —          |
-| `announcements.manage`             |     ✅      |  ✅   |     —     |          —          |
-| `auditlogs.read`                   |     ✅      |  ✅   |     —     |         ✅          |
-| `systemhealth.read`                |     ✅      |  ✅   |     —     |         ✅          |
-| `admins.manage`                    |     ✅      |   —   |     —     |          —          |
+> Matches `ADMIN-SERVICE-DESIGN.md` §5 and the implemented seed (`prisma/seed/role-matrix.ts`). 18 permissions × 5 roles. Counts: SUPER_ADMIN 18 · ADMIN 16 · MODERATOR 11 · SUPPORT_AGENT 7 · ANALYST 8.
+
+| Permission                         | SUPER_ADMIN | ADMIN | MODERATOR | SUPPORT_AGENT | ANALYST |
+| ---------------------------------- | :---------: | :---: | :-------: | :-----------: | :-----: |
+| `dashboard.read`                   |     ✅      |  ✅   |    ✅     |      ✅       |   ✅    |
+| `users.read`                       |     ✅      |  ✅   |    ✅     |      ✅       |   ✅    |
+| `users.moderate` (ban/suspend)     |     ✅      |  ✅   |    ✅     |       —       |    —    |
+| `users.delete`                     |     ✅      |  ✅   |     —     |       —       |    —    |
+| `reports.read`                     |     ✅      |  ✅   |    ✅     |      ✅       |   ✅    |
+| `reports.action`                   |     ✅      |  ✅   |    ✅     |       —       |    —    |
+| `communities.read`                 |     ✅      |  ✅   |    ✅     |      ✅       |   ✅    |
+| `communities.moderate`             |     ✅      |  ✅   |    ✅     |       —       |    —    |
+| `groups.read`                      |     ✅      |  ✅   |    ✅     |      ✅       |   ✅    |
+| `groups.moderate`                  |     ✅      |  ✅   |    ✅     |       —       |    —    |
+| `livestreams.read`                 |     ✅      |  ✅   |    ✅     |      ✅       |   ✅    |
+| `livestreams.moderate` (force-end) |     ✅      |  ✅   |    ✅     |       —       |    —    |
+| `categories.manage`                |     ✅      |  ✅   |     —     |       —       |    —    |
+| `announcements.manage`             |     ✅      |  ✅   |     —     |       —       |    —    |
+| `auditlogs.read`                   |     ✅      |  ✅   |     —     |       —       |   ✅    |
+| `systemhealth.read`                |     ✅      |  ✅   |     —     |      ✅       |   ✅    |
+| `settings.manage`                  |     ✅      |   —   |     —     |       —       |    —    |
+| `admins.manage`                    |     ✅      |   —   |     —     |       —       |    —    |
 
 ---
 
@@ -98,26 +104,31 @@ Every **mutating** route (POST/PATCH/PUT/DELETE) writes an `AuditLog` row (`admi
 
 ### 4.0 Auth & session (public + self)
 
-| Method | Path               | Auth/Perm                   | Request                        | Data source | Notes                                                     |
-| ------ | ------------------ | --------------------------- | ------------------------------ | ----------- | --------------------------------------------------------- |
-| POST   | `/auth/login`      | **public**                  | `{ email, password }`          | 🟦 OWN      | Step 1. Returns `{ totpRequired: true, challengeToken }`. |
-| POST   | `/auth/login/totp` | **public** (challengeToken) | `{ challengeToken, totpCode }` | 🟦 OWN      | Step 2. Returns admin JWT (8h). 📝 audited (login).       |
-| POST   | `/auth/refresh`    | **public** (refresh cookie) | —                              | 🟦 OWN      | Rotate admin JWT.                                         |
-| POST   | `/auth/logout`     | self                        | —                              | 🟦 OWN      | Blacklist `jti` in Redis. 📝 audited.                     |
-| GET    | `/me`              | self                        | —                              | 🟦 OWN      | Current admin profile + permissions.                      |
-| POST   | `/me/totp/setup`   | self                        | —                              | 🟦 OWN      | Returns provisioning URI/QR secret.                       |
-| POST   | `/me/totp/verify`  | self                        | `{ totpCode }`                 | 🟦 OWN      | Activates 2FA. 📝 audited.                                |
-| PATCH  | `/me/password`     | self 🔐 step-up             | `{ current, next }`            | 🟦 OWN      | 📝 audited.                                               |
+> **Updated (single-step login):** mandatory TOTP/2FA was removed. `/auth/login` now returns the JWT pair + admin profile directly (no challenge step). The `/auth/login/totp`, `/me/totp/setup`, `/me/totp/verify` endpoints no longer exist.
+
+| Method | Path            | Auth/Perm                  | Request               | Data source | Status     | Notes                                                                                         |
+| ------ | --------------- | -------------------------- | --------------------- | ----------- | ---------- | --------------------------------------------------------------------------------------------- |
+| POST   | `/auth/login`   | **public**                 | `{ email, password }` | 🟦 OWN      | ✅ built   | Single-step. Returns `{ success, message, data: { tokens, admin } }` (8h access). 📝 audited. |
+| POST   | `/auth/refresh` | **public** (refresh token) | `{ refreshToken }`    | 🟦 OWN      | ✅ built   | Rotate the admin token pair. Returns `{ tokens, admin }`. 📝 audited.                         |
+| POST   | `/auth/logout`  | self                       | —                     | 🟦 OWN      | ✅ built   | Blacklist `jti` in Redis. 📝 audited.                                                         |
+| GET    | `/me`           | self                       | —                     | 🟦 OWN      | ✅ built   | Current admin profile + permissions.                                                          |
+| PATCH  | `/me/password`  | self 🔐 step-up            | `{ current, next }`   | 🟦 OWN      | ⏳ planned | 📝 audited.                                                                                   |
 
 ### 4.1 Dashboard (`dashboard.read`)
 
-| Method | Path                                                         | Request | Data source             | Notes                                                                                                                                                                                    |
-| ------ | ------------------------------------------------------------ | ------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/dashboard/stats`                                           | —       | 🟨 read-model           | The stat cards: totalUsers, newUsersToday, dailyActive, monthlyActive, totalCommunities, totalGroups, totalLivestreams, openReports, bannedUsers. Single fast read from `PlatformStats`. |
-| GET    | `/dashboard/active-vs-churned?period=monthly\|weekly\|daily` | query   | 🟨 read-model           | Time series for the chart (Daily Active / Monthly Active / Churned) from `DailyActiveSnapshot`.                                                                                          |
-| GET    | `/dashboard/communities-groups`                              | —       | 🟨 read-model           | Donut data: communities vs groups totals.                                                                                                                                                |
-| GET    | `/dashboard/service-status`                                  | —       | 🟪 redis + 🟩 gRPC-live | Chat / Media / Livestream / Notification operational status (health probes). Mirrors §4.10.                                                                                              |
-| GET    | `/dashboard/quick-links`                                     | —       | static/🟨               | Counts for the Quick Links panel (open reports, live livestreams). Optional — can be derived from `/dashboard/stats`.                                                                    |
+| Method                                                                                 | Path   | Request                                                                                                                                                                                                                                                                                                                   | Data source | Notes |
+| -------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----- |
+| > **Updated (4 widgets merged into one endpoint):** `GET /dashboard/stats?period=daily | weekly | monthly`now returns the **entire** dashboard in one response —`data: { stats, activeVsChurned, communitiesGroups, serviceStatus }`— fetching each upstream once. The former separate`/active-vs-churned`, `/communities-groups`, `/service-status`routes were removed;`period` selects the active-vs-churned granularity. |
+
+> **Built via live gRPC, not read-model:** the v1 dashboard aggregates **live read-only gRPC** fan-out (auth `GetUserCounts`/`GetActiveUserCounts`, community `GetCommunityCount`, chat `GetGroupCount`) with `Promise.allSettled` + per-field `stale` fallback (one down service never 500s the panel), Redis-cached 5–10s. The `PlatformStats`/`DailyActiveSnapshot` read-model tables remain for a future consumer-fed optimization. **DAU/MAU** come from auth `Session.lastActiveAt` (distinct users/window). **Churn**, **totalLivestreams**, **openReports** are stubbed `0` + flagged in `stale`.
+
+| Method                           | Path                             | Request | Data source             | Status     | Notes                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------- | -------------------------------- | ------- | ----------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET                              | `/dashboard/stats`               | —       | 🟩 gRPC-live (+stubs)   | ✅ built   | Stat cards: totalUsers, newUsersToday, dailyActive, monthlyActive, totalCommunities, totalGroups, bannedUsers (live); totalLivestreams/openReports/churned stubbed. `stale` flags stubbed fields.                                                                                                                                               |
+| (merged into `/dashboard/stats`) | `?period=daily\|weekly\|monthly` | query   | 🟩 gRPC-live            | ✅ built   | Per-day series via auth `GetActiveUserSeries`: daily=15d, weekly=8d, monthly=full month (1st→last day, future days=0). Each bucket `{date,dailyActive,monthlyActive,churned}` from `Session.lastActiveAt`. ⚠️ undercounts older days (lastActiveAt is last-activity-only); churn ≈0 until enough history. Snapshot read-model supersedes later. |
+| GET                              | `/dashboard/communities-groups`  | —       | 🟩 gRPC-live            | ✅ built   | Donut: communities (community-svc) vs groups (chat-svc) totals.                                                                                                                                                                                                                                                                                 |
+| GET                              | `/dashboard/service-status`      | —       | 🟪 redis + 🟩 gRPC-live | ✅ built   | Derived from opossum breaker state (open→down, half-open→degraded). Services without a probe → degraded/unknown. Redis-cached.                                                                                                                                                                                                                  |
+| GET                              | `/dashboard/quick-links`         | —       | static/🟨               | ⏳ planned | Counts for the Quick Links panel. Optional — derivable from `/dashboard/stats`.                                                                                                                                                                                                                                                                 |
 
 ### 4.2 User Management (`users.read` / `users.moderate` / `users.delete`)
 
@@ -147,9 +158,9 @@ Every **mutating** route (POST/PATCH/PUT/DELETE) writes an `AuditLog` row (`admi
 | POST   | `/communities/:id/unsuspend`          | moderate    | 🟥 publish                       | 📝 audited.                                                            |
 | DELETE | `/communities/:id/content/:contentId` | moderate 🔐 | 🟥 publish                       | `admin.content_deleted`. 📝 audited.                                   |
 
-### 4.4 Groups (`communities.read` / `communities.moderate`)
+### 4.4 Groups (`groups.read` / `groups.moderate`)
 
-> Groups are a sub-entity (see open question §6.3 — group = chat group vs community sub-group). Endpoints mirror communities.
+> **Resolved:** "Groups" = **chat-service group rooms** (`GroupRoom`/`GroupMember`/`GroupInviteLink`, MongoDB). No standalone Group Service. Backed by new read-only chat-service RPCs (`AdminListGroups`, `AdminGetGroup`, `AdminGetGroupMembers`); `GroupIndex` read-model fed by chat-service group lifecycle events. `DELETE /groups/:id` = disband (`disbandedAt`/`disbandedBy`).
 
 | Method | Path                  | Perm        | Data source                                     |
 | ------ | --------------------- | ----------- | ----------------------------------------------- |
@@ -252,7 +263,7 @@ Every **mutating** route (POST/PATCH/PUT/DELETE) writes an `AuditLog` row (`admi
 
 1. **Report ingestion path** — event-driven (`report.created` consumed) vs synchronous gateway POST into backoffice? _(Spec assumes event-driven.)_
 2. **Categories ownership** — does community-service own categories (backoffice manages via gRPC) or does backoffice own them (community-service reads via gRPC/event)? Affects §4.8.
-3. **"Groups" definition** — chat/messaging groups vs community sub-groups? Determines which service backs §4.4.
+3. ~~**"Groups" definition**~~ — **RESOLVED:** groups = chat-service group rooms (`GroupRoom`). §4.4 backed by chat-service.
 4. **DAU/MAU & churn computation** — derive in backoffice from events, or have a metrics job (Bull) compute daily snapshots? _(Spec assumes Bull job writing `DailyActiveSnapshot`.)_
 5. **Banned-users counter source** — read-model maintained from `user.locked`/`admin.user_banned`, confirm single source of truth.
 6. **Announcement delivery** — confirm notifications-service consumes `admin.announcement_published` and owns fan-out (push/in-app).
