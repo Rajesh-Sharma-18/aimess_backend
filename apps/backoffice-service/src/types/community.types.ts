@@ -205,6 +205,38 @@ export type BulkResult = {
   results: BulkResultItem[];
 };
 
+// ---------------------------------------------------------------------------
+// Community Member List (the "Community User List" grid on the User Management
+// detail screen). Read-through from community-service over gRPC.
+// ---------------------------------------------------------------------------
+
+/** Member role within a community. */
+export type CommunityMemberRole = "ADMIN" | "MODERATOR" | "MEMBER";
+
+/** Member lifecycle status within a community. */
+export type CommunityMemberStatus = "ACTIVE" | "PENDING" | "BANNED" | "LEFT";
+
+/** A single row in the community members grid. */
+export type CommunityMemberRow = {
+  userId: string;
+  /** Display name (falls back to the @handle when no display name). */
+  username: string;
+  /** The @handle (snapshot username). */
+  handle: string;
+  avatarUrl: string | null;
+  role: CommunityMemberRole;
+  status: CommunityMemberStatus;
+  joinedAt: string;
+};
+
+/** Normalized member-list query (post-validation/coercion). */
+export type ListCommunityMembersQuery = {
+  search?: string;
+  role?: CommunityMemberRole;
+  page: number;
+  limit: number;
+};
+
 /** Normalized list query (post-validation/coercion). */
 export type ListCommunitiesQuery = {
   search?: string;

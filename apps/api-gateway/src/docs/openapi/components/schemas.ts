@@ -20,10 +20,15 @@ export const openApiSchemas = {
   AdminPagination: {
     type: "object",
     properties: {
+      mode: { type: "string", enum: ["offset", "keyset"], example: "offset" },
       page: { type: "integer", example: 1 },
       limit: { type: "integer", example: 20 },
       total: { type: "integer", example: 5234 },
+      totalApprox: { type: "integer", example: 5234 },
       totalPages: { type: "integer", example: 262 },
+      hasNext: { type: "boolean", example: true },
+      hasPrev: { type: "boolean", example: false },
+      nextCursor: { type: "string", nullable: true },
     },
     required: ["page", "limit", "total", "totalPages"],
   },
@@ -443,10 +448,9 @@ export const openApiSchemas = {
       email: { type: "string", nullable: true, example: "b@x.com" },
       status: {
         type: "string",
-        enum: ["active", "suspended", "banned", "pending_deletion"],
-        example: "active",
+        enum: ["ACTIVE", "BANNED", "DELETED"],
+        example: "ACTIVE",
       },
-      banned: { type: "boolean", example: false },
       createdAt: { type: "string", format: "date-time" },
       communities: { type: "integer", example: 4 },
       lastActiveAt: {
@@ -456,6 +460,60 @@ export const openApiSchemas = {
       },
     },
     required: ["id", "username", "status"],
+  },
+  AdminCommunityMember: {
+    type: "object",
+    description:
+      "One row of a community's member roster (denormalized snapshot from community-service).",
+    properties: {
+      userId: { type: "string", example: "u_8f3a" },
+      username: {
+        type: "string",
+        description: "Display name (falls back to the @handle).",
+        example: "John Doe",
+      },
+      handle: { type: "string", example: "john_doe_02" },
+      avatarUrl: { type: "string", nullable: true },
+      role: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        example: "ADMIN",
+      },
+      status: { type: "string", example: "ACTIVE" },
+      joinedAt: { type: "string", format: "date-time" },
+    },
+    required: ["userId", "username", "role", "joinedAt"],
+  },
+  AdminUserReport: {
+    type: "object",
+    description:
+      "One row of the 'Reported Details' panel — a report filed against the user, with the reporter resolved.",
+    properties: {
+      reportId: { type: "string", example: "r_12" },
+      reason: { type: "string", example: "HARASSMENT" },
+      details: {
+        type: "string",
+        nullable: true,
+        description: "Reporter free-text ('Other Reason').",
+      },
+      status: {
+        type: "string",
+        enum: ["open", "reviewing", "resolved", "dismissed"],
+        example: "open",
+      },
+      createdAt: { type: "string", format: "date-time" },
+      reporter: {
+        type: "object",
+        properties: {
+          userId: { type: "string", example: "u_aa" },
+          username: { type: "string", nullable: true },
+          avatarUrl: { type: "string", nullable: true },
+          avatarUrlExpiresIn: { type: "integer", nullable: true },
+        },
+        required: ["userId"],
+      },
+    },
+    required: ["reportId", "reason", "status", "createdAt", "reporter"],
   },
   AdminUserDetail: {
     type: "object",
@@ -467,9 +525,8 @@ export const openApiSchemas = {
       email: { type: "string", nullable: true },
       status: {
         type: "string",
-        enum: ["active", "suspended", "banned", "pending_deletion"],
+        enum: ["ACTIVE", "BANNED", "DELETED"],
       },
-      banned: { type: "boolean" },
       profile: {
         type: "object",
         description: "Profile/stats projected from user-service.",
@@ -477,6 +534,19 @@ export const openApiSchemas = {
       moderationHistory: {
         type: "array",
         items: { $ref: "#/components/schemas/AdminModerationAction" },
+      },
+      reportCategories: {
+        type: "array",
+        description:
+          "Per-category report counts (all categories) for the 'Reported Details' chips.",
+        items: {
+          type: "object",
+          properties: {
+            reason: { type: "string", example: "SPAM" },
+            count: { type: "integer", example: 3 },
+          },
+          required: ["reason", "count"],
+        },
       },
       createdAt: { type: "string", format: "date-time" },
     },
@@ -1033,23 +1103,97 @@ export const openApiSchemas = {
   },
 
   // ---- Groups ----
+  AdminGroupAdmin: {
+    type: "object",
+    description:
+      "Group owner identity, composed from the chat-service group (role=OWNER member, fallback createdBy) + user-service (username/avatar) + auth-service (email). email/avatarUrl are null when the upstream identity could not be resolved.",
+    properties: {
+      userId: {
+        type: "string",
+        example: "9f3a1c2e-0b6d-4e2a-8b11-2c4d5e6f7a8b",
+      },
+      username: { type: "string", example: "ada.lovelace" },
+      email: {
+        type: "string",
+        format: "email",
+        nullable: true,
+        example: "ada@aimess.io",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        example: "avatars/u_9f3a.webp",
+      },
+    },
+    required: ["userId", "username"],
+  },
   AdminGroup: {
     type: "object",
-    description: "Maps to a chat-service GroupRoom.",
+    description:
+      "Admin view of a chat-service GroupRoom (gRPC-live). `id` is the group's roomId.",
     properties: {
       id: { type: "string", example: "grp_9a" },
       name: { type: "string", example: "Project X" },
-      createdBy: { type: "string", example: "u_8f3a" },
-      memberCount: { type: "integer", example: 12 },
-      status: {
+      avatarUrl: {
         type: "string",
-        enum: ["active", "suspended", "disbanded"],
-        example: "active",
+        nullable: true,
+        example: "group-avatars/grp_9a.webp",
       },
-      disbandedAt: { type: "string", format: "date-time", nullable: true },
+      description: { type: "string", example: "Sprint coordination room" },
+      memberCount: { type: "integer", example: 1250 },
       createdAt: { type: "string", format: "date-time" },
+      admin: { $ref: "#/components/schemas/AdminGroupAdmin" },
     },
-    required: ["id", "name", "status"],
+    required: ["id", "name", "memberCount", "createdAt", "admin"],
+  },
+  AdminGroupMember: {
+    type: "object",
+    description: "Admin view of a chat-service group member.",
+    properties: {
+      userId: {
+        type: "string",
+        example: "9f3a1c2e-0b6d-4e2a-8b11-2c4d5e6f7a8b",
+      },
+      username: { type: "string", example: "ada.lovelace" },
+      email: {
+        type: "string",
+        format: "email",
+        nullable: true,
+        example: "ada@aimess.io",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        example: "avatars/u_9f3a.webp",
+      },
+      role: {
+        type: "string",
+        enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+        example: "ADMIN",
+      },
+      joinedAt: { type: "string", format: "date-time" },
+    },
+    required: ["userId", "username", "role", "joinedAt"],
+  },
+  AdminGroupPagination: {
+    type: "object",
+    description: "Offset pagination meta for the group read endpoints.",
+    properties: {
+      page: { type: "integer", example: 1 },
+      limit: { type: "integer", example: 20 },
+      total: { type: "integer", example: 500 },
+      totalPages: { type: "integer", example: 25 },
+      hasNext: { type: "boolean", example: true },
+      hasPrevious: { type: "boolean", example: false },
+    },
+    required: [
+      "page",
+      "limit",
+      "total",
+      "totalPages",
+      "hasNext",
+      "hasPrevious",
+    ],
   },
   AdminModerateRequest: {
     type: "object",

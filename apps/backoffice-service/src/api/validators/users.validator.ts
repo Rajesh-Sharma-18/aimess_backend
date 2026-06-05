@@ -11,12 +11,62 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 // Enums.
 // ---------------------------------------------------------------------------
-export const userStatusEnum = z.enum([
-  "ACTIVE",
-  "SUSPENDED",
-  "BANNED",
-  "DELETED",
-]);
+/**
+ * Filterable user statuses surfaced by the admin panel's "Select Status"
+ * dropdown. The platform's internal account model also has a SUSPENDED state
+ * (produced by the ban-with-duration / suspend flows), but it is intentionally
+ * NOT a list filter option — the panel exposes only these three.
+ */
+export const userStatusEnum = z.enum(["ACTIVE", "BANNED", "DELETED"]);
+
+/**
+ * Tolerant status filter. The admin panel's "Select Status" dropdown sends the
+ * value with inconsistent casing (`active` vs `ACTIVE`) and uses
+ * `pending_deletion` for the deleted bucket. Normalize case + that alias before
+ * the enum check, and accept a single value or a repeated `?status=A&status=B`
+ * list → always a string[]. Without this, a lowercase value 400s the whole
+ * request and the list comes back empty, which reads as "the filter is broken".
+ */
+const STATUS_ALIASES: Record<string, z.infer<typeof userStatusEnum>> = {
+  ACTIVE: "ACTIVE",
+  BANNED: "BANNED",
+  DELETED: "DELETED",
+  PENDING_DELETION: "DELETED",
+};
+
+const userStatusFilter = z
+  .preprocess((v) => {
+    if (v == null) return undefined;
+    const arr = Array.isArray(v) ? v : [v];
+    return arr.map((s) => {
+      if (typeof s !== "string") return s;
+      const norm = s.trim().toUpperCase();
+      return STATUS_ALIASES[norm] ?? norm;
+    });
+  }, z.array(userStatusEnum).optional())
+  .optional();
+
+/**
+ * A calendar day accepted as `YYYY-MM-DD` OR a full ISO datetime (the date
+ * picker may emit either), normalized to `YYYY-MM-DD` since the repository
+ * builds the day-boundary range from it (`${date}T00:00:00.000Z`).
+ */
+const dateOnly = z
+  .string()
+  .trim()
+  .transform((s, ctx) => {
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(s);
+    const day = m?.[1];
+    if (!day || Number.isNaN(new Date(`${day}T00:00:00.000Z`).getTime())) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Invalid date (expected YYYY-MM-DD or an ISO datetime)",
+      });
+      return z.NEVER;
+    }
+    return day;
+  })
+  .optional();
 
 /** Moderation reason vocabulary — subset of the report reportType values. */
 export const moderationReasonEnum = z.enum([
@@ -43,14 +93,6 @@ const SORT_FIELDS = [
 ] as const;
 const SORT_PATTERN = new RegExp(`^(${SORT_FIELDS.join("|")}):(asc|desc)$`);
 
-/** Accept `?x=A` (single) or `?x=A&x=B` (repeated) → always an array. */
-function repeatableEnum<T extends z.ZodEnum>(schema: T) {
-  return z
-    .union([schema, z.array(schema)])
-    .transform((v) => (Array.isArray(v) ? v : [v]))
-    .optional();
-}
-
 // ---------------------------------------------------------------------------
 // List query.
 // ---------------------------------------------------------------------------
@@ -60,10 +102,14 @@ export const listUsersQuerySchema = z
     // username + email). `search` is kept as a backward-compatible alias.
     q: z.string().trim().min(1).optional(),
     search: z.string().trim().min(1).optional(),
-    status: repeatableEnum(userStatusEnum),
+    status: userStatusFilter,
     reports: reportsBucketEnum.optional(),
-    dateFrom: z.iso.date().optional(),
-    dateTo: z.iso.date().optional(),
+    dateFrom: dateOnly,
+    dateTo: dateOnly,
+    // `createdAfter` / `createdBefore` are accepted as aliases for the date
+    // range (the OpenAPI contract + some panel builds use these names).
+    createdAfter: dateOnly,
+    createdBefore: dateOnly,
     sort: z
       .string()
       .regex(SORT_PATTERN, "sort must be <field>:<asc|desc> from the whitelist")
@@ -75,11 +121,14 @@ export const listUsersQuerySchema = z
     limit: z.coerce.number().int().min(1).max(100).default(20),
     cursor: z.string().trim().min(1).optional(),
   })
-  // Normalize the public params (`q`, `order`) onto the canonical fields the
-  // service/repository consume (`search`, `sort`) so downstream code is unchanged.
-  .transform(({ q, order, ...rest }) => ({
+  // Normalize the public params (`q`, `order`, `createdAfter`/`createdBefore`)
+  // onto the canonical fields the service/repository consume (`search`, `sort`,
+  // `dateFrom`/`dateTo`) so downstream code is unchanged.
+  .transform(({ q, order, createdAfter, createdBefore, ...rest }) => ({
     ...rest,
     search: q ?? rest.search,
+    dateFrom: rest.dateFrom ?? createdAfter,
+    dateTo: rest.dateTo ?? createdBefore,
     sort: order ? rest.sort.replace(/:(asc|desc)$/, `:${order}`) : rest.sort,
   }));
 export type ListUsersQueryInput = z.infer<typeof listUsersQuerySchema>;
@@ -91,6 +140,15 @@ export const userIdParamSchema = z.object({
   userId: z.string().trim().min(1).max(64),
 });
 export type UserIdParam = z.infer<typeof userIdParamSchema>;
+
+// ---------------------------------------------------------------------------
+// Reported-details list query (GET /users/:userId/reports).
+// ---------------------------------------------------------------------------
+export const userReportsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type UserReportsQueryInput = z.infer<typeof userReportsQuerySchema>;
 
 // ---------------------------------------------------------------------------
 // Ban.

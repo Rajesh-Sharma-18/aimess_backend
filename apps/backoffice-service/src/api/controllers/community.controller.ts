@@ -3,12 +3,16 @@ import type { RequestHandler } from "express";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { communityService } from "../../services/index.js";
-import type { ListCommunitiesQuery } from "../../types/community.types.js";
+import type {
+  ListCommunitiesQuery,
+  ListCommunityMembersQuery,
+} from "../../types/community.types.js";
 import type {
   BulkCloseInput,
   BulkReopenInput,
   CloseCommunityInput,
   ListCommunitiesQueryInput,
+  ListCommunityMembersQueryInput,
   ReopenCommunityInput,
 } from "../validators/index.js";
 import { HTTP_STATUS } from "@aimess/constants";
@@ -43,6 +47,28 @@ export const getCommunityDetails: RequestHandler = (req, res, next) => {
       res.status(HTTP_STATUS.OK).json({
         success: true,
         data: community,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** GET /v1/communities/:communityId/members — paginated member grid. */
+export const listCommunityMembers: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by communityIdParamSchema on the route.
+      const communityId = req.params.communityId as string;
+      const query = req.query as unknown as ListCommunityMembersQueryInput;
+      const result = await communityService.listCommunityMembers(
+        communityId,
+        query as ListCommunityMembersQuery
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result.data,
+        pagination: result.pagination,
       });
     } catch (error) {
       next(error);

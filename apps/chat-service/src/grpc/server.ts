@@ -13,6 +13,7 @@ import type { PrivateMessageService } from "../services/private-message.service.
 import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
+import type { AdminGroupService } from "../services/admin-group.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
@@ -40,6 +41,7 @@ export interface GrpcDeps {
   groupMessageService: GroupMessageService;
   groupMemberService: GroupMemberService;
   groupRoomRepo: GroupRoomRepository;
+  adminGroupService: AdminGroupService;
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
   callService: CallService;
@@ -81,6 +83,13 @@ function parseMessageContent(req: {
   } catch {
     return fallback;
   }
+}
+
+/** Parse an admin filter date ("YYYY-MM-DD" or ISO); "" / invalid → undefined. */
+function parseAdminDate(value?: string): Date | undefined {
+  if (!value) return undefined;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
 function stringifyContent(content: unknown): string {
@@ -1090,6 +1099,112 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
           callback(null, { total });
         } catch (err) {
           logger.error(`gRPC getGroupCount error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Management: filterable/sortable/paginated active group list.
+    adminListGroups: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            q?: string;
+            fromDate?: string;
+            toDate?: string;
+            sortField?: string;
+            sortDir?: string;
+            page?: number;
+            limit?: number;
+          };
+
+          const limit = Math.min(Math.max(req.limit || 20, 1), 100);
+          const skip = (Math.max(req.page || 1, 1) - 1) * limit;
+          const sortField =
+            req.sortField === "memberCount" ? "memberCount" : "createdAt";
+          const sortDir = req.sortDir === "asc" ? "asc" : "desc";
+          const fromDate = parseAdminDate(req.fromDate);
+          const toDate = parseAdminDate(req.toDate);
+
+          const result = await deps.adminGroupService.listGroups({
+            q: req.q || undefined,
+            fromDate,
+            toDate,
+            sortField,
+            sortDir,
+            skip,
+            take: limit,
+          });
+
+          callback(null, {
+            groups: result.groups,
+            total: result.total,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminListGroups error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Management: single active group detail.
+    adminGetGroup: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { groupId?: string };
+          const result = await deps.adminGroupService.getGroup(
+            req.groupId ?? ""
+          );
+          callback(null, {
+            found: result.found,
+            ...(result.group ? { group: result.group } : {}),
+          });
+        } catch (err) {
+          logger.error(`gRPC adminGetGroup error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Management: filterable/paginated active member list.
+    adminListGroupMembers: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            q?: string;
+            role?: string;
+            page?: number;
+            limit?: number;
+          };
+
+          const limit = Math.min(Math.max(req.limit || 20, 1), 100);
+          const skip = (Math.max(req.page || 1, 1) - 1) * limit;
+
+          const result = await deps.adminGroupService.listGroupMembers({
+            groupId: req.groupId ?? "",
+            q: req.q || undefined,
+            role: req.role || undefined,
+            skip,
+            take: limit,
+          });
+
+          callback(null, {
+            found: result.found,
+            members: result.members,
+            total: result.total,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminListGroupMembers error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

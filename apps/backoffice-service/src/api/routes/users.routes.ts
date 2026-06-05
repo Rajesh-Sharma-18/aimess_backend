@@ -6,6 +6,7 @@ import {
   bulkActivateUsers,
   bulkBanUsers,
   getUserDetails,
+  listUserReports,
   listUsers,
   suspendUser,
   unbanUser,
@@ -25,6 +26,7 @@ import {
   suspendUserSchema,
   unbanUserSchema,
   userIdParamSchema,
+  userReportsQuerySchema,
 } from "../validators/index.js";
 
 /** Admin User Management API — self-prefixed with `/users` (→ /v1/users/*). */
@@ -62,6 +64,13 @@ usersRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ),
   validateParams(userIdParamSchema),
   getUserDetails
+);
+usersRoutes.get(
+  "/users/:userId/reports",
+  requirePermission(PERMISSIONS.USERS_READ),
+  validateParams(userIdParamSchema),
+  validateQuery(userReportsQuerySchema),
+  listUserReports
 );
 usersRoutes.post(
   "/users/:userId/ban",

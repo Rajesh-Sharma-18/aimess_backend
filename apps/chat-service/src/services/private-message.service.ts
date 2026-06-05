@@ -11,6 +11,7 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -328,7 +329,7 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_REPORT_OWN_MESSAGE");
 
     try {
-      return await this.reportRepo.create({
+      const report = await this.reportRepo.create({
         roomId: message.roomId,
         messageId: message.id,
         reporterId: params.reporterId,
@@ -336,6 +337,16 @@ export class PrivateMessageService {
         reason: params.reason,
         description: params.description ?? "",
       });
+      publishAdminReportIngestSafe({
+        type: "user",
+        targetId: message.senderId ?? "",
+        reporterId: params.reporterId,
+        reason: params.reason,
+        details: params.description?.trim() ? params.description.trim() : null,
+        eventAt: new Date().toISOString(),
+        sourceReportId: report.id,
+      });
+      return report;
     } catch (err) {
       if (
         typeof err === "object" &&

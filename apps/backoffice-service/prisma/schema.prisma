@@ -299,6 +299,7 @@ model Report {
   targetId   String
   reporterId String
   reason     String
+  details    String? // reporter free-text ("Other Reason")
   status     String   @default("open") // open | reviewing | resolved | dismissed
   priority   String   @default("normal")
   assignedTo String?  @db.Uuid
@@ -307,6 +308,8 @@ model Report {
   notes ReportNote[]
 
   @@index([status, type])
+  @@index([type, targetId, createdAt(sort: Desc)])
+  @@index([reporterId])
 }
 
 model ReportNote {

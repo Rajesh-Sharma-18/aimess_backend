@@ -95,6 +95,7 @@ import {
   publishCommunityDeletedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
+import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
 
 type CommunityWithCategory = Community & {
   category: { id: string; name: string };
@@ -2739,14 +2740,26 @@ export const communityService = {
         CommunityMemberRole.ADMIN,
         CommunityMemberRole.MODERATOR,
       ]);
+    // One timestamp for both events so they correlate for the same report.
+    const reportEventAt = new Date().toISOString();
     publishCommunityReportCreatedSafe({
       communityId,
-      eventAt: new Date().toISOString(),
+      eventAt: reportEventAt,
       reportId: row.id,
       reporterId: callerId,
       targetUserId,
       reason: input.reason,
       moderatorRecipientIds: reportModeratorRecipientIds,
+    });
+
+    publishAdminReportIngestSafe({
+      type: targetUserId ? "user" : "community",
+      targetId: targetUserId ?? communityId,
+      reporterId: callerId,
+      reason: input.reason,
+      details: null,
+      eventAt: reportEventAt,
+      sourceReportId: row.id,
     });
 
     return toReportData(row);

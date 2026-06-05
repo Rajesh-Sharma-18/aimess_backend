@@ -11,6 +11,7 @@ import type {
   ListUsersQueryInput,
   SuspendUserInput,
   UnbanUserInput,
+  UserReportsQueryInput,
 } from "../validators/index.js";
 import { HTTP_STATUS } from "@aimess/constants";
 
@@ -44,6 +45,28 @@ export const getUserDetails: RequestHandler = (req, res, next) => {
       res.status(HTTP_STATUS.OK).json({
         success: true,
         data: user,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** GET /v1/users/:userId/reports — paginated "Reported Details". */
+export const listUserReports: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const userId = req.params.userId as string;
+      const { page, limit } = req.query as unknown as UserReportsQueryInput;
+      const result = await userManagementService.listUserReports(
+        userId,
+        page,
+        limit
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result.data,
+        pagination: result.pagination,
       });
     } catch (error) {
       next(error);

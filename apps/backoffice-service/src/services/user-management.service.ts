@@ -7,6 +7,7 @@ import {
 } from "../messaging/publish-admin-user-event.js";
 import {
   moderationActionRepository,
+  reportDetailRepository,
   userDirectoryRepository,
 } from "../repositories/index.js";
 import type { RequestAdmin } from "../types/index.js";
@@ -22,6 +23,7 @@ import type {
   ListUsersQuery,
   ModerationHistoryItem,
   PaginationMeta,
+  ReportRow,
   ReportsSummary,
   StatusChange,
   UserDetail,
@@ -37,6 +39,21 @@ type RequestCtx = { ip: string; userAgent: string | null };
 
 /** The acting admin + a precomputed timestamp for this mutation. */
 type Actor = { actorId: string; at: string };
+
+/**
+ * One "Reported Details" row as returned to the client: the repo's `ReportRow`
+ * with the reporter's raw avatar key replaced by a presigned GET URL.
+ */
+type UserReportRow = Omit<ReportRow, "reporter"> & {
+  reporter: {
+    userId: string;
+    username: string | null;
+    /** Presigned GET URL for the reporter's avatar, or null. */
+    avatarUrl: string | null;
+    /** Lifetime of `avatarUrl` in seconds; null when avatarUrl is null. */
+    avatarUrlExpiresIn: number | null;
+  };
+};
 
 function buildActor(actor: RequestAdmin): Actor {
   return { actorId: actor.id, at: new Date().toISOString() };
@@ -91,12 +108,14 @@ export const userManagementService = {
     const row = await userDirectoryRepository.getById(userId);
     if (!row) return null;
 
-    const [reportsSummary, moderationHistory, avatar] = await Promise.all([
-      buildReportsSummary(userId),
-      buildModerationHistory(userId),
-      // Presign the raw avatar key (from user-service via gRPC) into a GET URL.
-      userAvatarService.resolveViewUrl(row.avatarUrl),
-    ]);
+    const [reportsSummary, reportCategories, moderationHistory, avatar] =
+      await Promise.all([
+        buildReportsSummary(userId),
+        reportDetailRepository.categoryCounts(userId),
+        buildModerationHistory(userId),
+        // Presign the raw avatar key (from user-service via gRPC) into a GET URL.
+        userAvatarService.resolveViewUrl(row.avatarUrl),
+      ]);
 
     return {
       profile: {
@@ -117,13 +136,55 @@ export const userManagementService = {
         appliedBy: moderationHistory[0]?.actorId ?? null,
       },
       reportsSummary,
-      // No per-user community client wired into backoffice yet.
+      reportCategories,
+      // Deliberately empty: the User Management Details screen sources community
+      // data from the dedicated endpoints (GET /communities/:id and
+      // /communities/:id/members). A user's *own* membership list needs a
+      // user→communities reverse-lookup RPC that community-service does not
+      // expose yet — deferred until that screen requires it.
       communities: [],
       moderationHistory,
       // reportCount mirrors the aggregated reports total (admin_db); the live
       // directory row no longer carries a denormalized count.
       stats: { reportCount: reportsSummary.total },
     };
+  },
+
+  /**
+   * Paginated "Reported Details" list for a user. Presigns each reporter avatar
+   * key into a short-lived GET URL (mapping over the page is bounded by `limit`,
+   * not an N+1 — same justification as `listUsers`). The raw key is dropped.
+   */
+  async listUserReports(
+    userId: string,
+    page: number,
+    limit: number
+  ): Promise<{
+    data: UserReportRow[];
+    pagination: PaginationMeta;
+  }> {
+    const result = await reportDetailRepository.listForUser(
+      userId,
+      page,
+      limit
+    );
+    const data = await Promise.all(
+      result.data.map(async (row) => {
+        const av = await userAvatarService.resolveViewUrl(
+          row.reporter.avatarKey
+        );
+        const { avatarKey: _avatarKey, ...reporter } = row.reporter;
+        return {
+          ...row,
+          reporter: {
+            ...reporter,
+            avatarUrl: av?.url ?? null,
+            avatarUrlExpiresIn: av?.expiresIn ?? null,
+          },
+        };
+      })
+    );
+    return { data, pagination: result.pagination };
   },
 
   async banUser(

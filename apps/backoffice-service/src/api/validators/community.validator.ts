@@ -61,6 +61,28 @@ export const communityIdParamSchema = z.object({
 export type CommunityIdParam = z.infer<typeof communityIdParamSchema>;
 
 // ---------------------------------------------------------------------------
+// Community Member List query (the "Community User List" grid).
+// ---------------------------------------------------------------------------
+export const communityMemberRoleEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
+
+/**
+ * `q` is the UI search box alias (mirrors the users list); it maps to `search`.
+ * Pass either `q` or `search` — `q` wins when both are present.
+ */
+export const listCommunityMembersQuerySchema = z
+  .object({
+    q: z.string().trim().min(1).optional(),
+    search: z.string().trim().min(1).optional(),
+    role: communityMemberRoleEnum.optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .transform(({ q, ...rest }) => ({ ...rest, search: q ?? rest.search }));
+export type ListCommunityMembersQueryInput = z.infer<
+  typeof listCommunityMembersQuerySchema
+>;
+
+// ---------------------------------------------------------------------------
 // Close.
 // ---------------------------------------------------------------------------
 export const closeCommunitySchema = z.object({

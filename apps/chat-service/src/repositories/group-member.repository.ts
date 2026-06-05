@@ -200,6 +200,87 @@ export class GroupMemberRepository {
     });
   }
 
+  /**
+   * Admin Group Management: map each given roomId → its ACTIVE owner userId.
+   * Rooms without an OWNER row are simply absent (callers fall back to
+   * GroupRoom.createdBy).
+   */
+  async findOwnersForRooms(roomIds: string[]): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    const ids = [...new Set(roomIds.filter(Boolean))];
+    if (!ids.length) return map;
+    const owners = await this.prisma.groupMember.findMany({
+      where: { role: "OWNER", status: "ACTIVE", roomId: { in: ids } },
+      select: { roomId: true, userId: true },
+    });
+    for (const o of owners) {
+      if (!map.has(o.roomId)) map.set(o.roomId, o.userId);
+    }
+    return map;
+  }
+
+  /**
+   * Admin Group Management: roomIds OWNED by any of the given userIds. Used to
+   * widen the group-list `q` search to owner identity matches.
+   */
+  async findRoomIdsByOwnerUserIds(userIds: string[]): Promise<string[]> {
+    const ids = [...new Set(userIds.filter(Boolean))];
+    if (!ids.length) return [];
+    const rows = await this.prisma.groupMember.findMany({
+      where: { role: "OWNER", userId: { in: ids } },
+      select: { roomId: true },
+    });
+    return [...new Set(rows.map((r) => r.roomId))];
+  }
+
+  /**
+   * Admin Group Management: filterable/paginated ACTIVE members of one room.
+   * `userIdsFromSearch` (free-text identity matches) and `qExactUserId` (a UUID
+   * pasted verbatim) both constrain to a userId set when present.
+   */
+  async adminListMembers(params: {
+    roomId: string;
+    role?: string;
+    userIdsFromSearch?: string[] | null;
+    qExactUserId?: string | null;
+    skip: number;
+    take: number;
+  }): Promise<{ rows: GroupMember[]; total: number }> {
+    const { roomId, role, userIdsFromSearch, qExactUserId, skip, take } =
+      params;
+
+    const and: Array<Record<string, unknown>> = [
+      { roomId },
+      { status: "ACTIVE" },
+    ];
+    if (role) and.push({ role });
+    if (userIdsFromSearch || qExactUserId) {
+      const dedup = [
+        ...new Set([
+          ...(userIdsFromSearch ?? []),
+          ...(qExactUserId ? [qExactUserId] : []),
+        ]),
+      ];
+      and.push({ userId: { in: dedup } });
+    }
+
+    type FindArgs = Parameters<typeof this.prisma.groupMember.findMany>[0];
+    type WhereArg = NonNullable<FindArgs>["where"];
+    const where = { AND: and } as WhereArg;
+
+    const [rows, total] = await Promise.all([
+      this.prisma.groupMember.findMany({
+        where,
+        orderBy: { joinedAt: "asc" },
+        skip,
+        take,
+      }),
+      this.prisma.groupMember.count({ where }),
+    ]);
+
+    return { rows, total };
+  }
+
   async upsert(
     roomId: string,
     userId: string,

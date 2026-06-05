@@ -15,6 +15,7 @@ service CommunityService {
   // close/reopen moderation command. backoffice-service is the only caller.
   rpc AdminListCommunities (AdminListCommunitiesRequest) returns (AdminListCommunitiesResponse);
   rpc AdminGetCommunity (AdminGetCommunityRequest) returns (AdminCommunityDetail);
+  rpc AdminListCommunityMembers (AdminListCommunityMembersRequest) returns (AdminListCommunityMembersResponse);
   rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
 
   // Bulk community-chat summaries for GET /communities/mine: per-community unread
@@ -111,6 +112,30 @@ message AdminCommunityDetail {
   // Owner extras (snapshot-sourced; "" / "ACTIVE" until enriched).
   string owner_email             = 15;
   string owner_account_status    = 16;
+}
+
+// ---- Backoffice Community Member List ----
+// The "Community User List" grid on the admin User Management detail screen.
+// Read-through, offset paginated; searchable by username/userId, role-filterable.
+message AdminListCommunityMembersRequest {
+  string community_id = 1;
+  string search       = 2;   // username or userId; "" = none
+  string role         = 3;   // ADMIN|MODERATOR|MEMBER; "" = all
+  int32  page         = 4;
+  int32  limit        = 5;
+}
+message AdminCommunityMemberRow {
+  string user_id     = 1;
+  string username    = 2;   // snapshotDisplayName (fallback snapshotUsername)
+  string handle      = 3;   // snapshotUsername (the @handle)
+  string avatar_url  = 4;   // resolved/presigned, "" when none
+  string role        = 5;
+  string status      = 6;
+  string joined_at   = 7;   // ISO 8601
+}
+message AdminListCommunityMembersResponse {
+  repeated AdminCommunityMemberRow members = 1;
+  int64 total = 2;
 }
 
 message AdminSetModerationStatusRequest {

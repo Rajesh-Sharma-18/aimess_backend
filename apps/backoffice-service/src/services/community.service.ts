@@ -1,5 +1,6 @@
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import {
+  communityMembersRepository,
   communityRepository,
   moderationActionRepository,
 } from "../repositories/index.js";
@@ -11,8 +12,11 @@ import type {
   CloseResult,
   CommunityDetail,
   CommunityListItem,
+  CommunityMemberRow,
   ListCommunitiesQuery,
+  ListCommunityMembersQuery,
   ModerationActor,
+  Paginated,
   PaginationMeta,
   ReopenInput,
   ReopenResult,
@@ -44,6 +48,14 @@ export const communityService = {
   /** Fetch one community; null is translated to 404 by the controller. */
   getCommunity(communityId: string): Promise<CommunityDetail | null> {
     return communityRepository.getById(communityId);
+  },
+
+  /** List a community's members (the "Community User List" grid). */
+  listCommunityMembers(
+    communityId: string,
+    query: ListCommunityMembersQuery
+  ): Promise<Paginated<CommunityMemberRow>> {
+    return communityMembersRepository.listMembers(communityId, query);
   },
 
   async closeCommunity(

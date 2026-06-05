@@ -1,5 +1,12 @@
 ﻿import type { PrismaClient, GroupRoom } from "../generated/prisma/index.js";
 
+/** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
+function endOfDay(d: Date): Date {
+  const end = new Date(d);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
 export class GroupRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -59,6 +66,75 @@ export class GroupRoomRepository {
     return this.prisma.groupRoom.findFirst({
       where: { roomId, status: "ACTIVE" },
     });
+  }
+
+  /** Admin Group Management: resolve a single ACTIVE group by its roomId. */
+  async adminFindByRoomId(roomId: string): Promise<GroupRoom | null> {
+    return this.findActiveByRoomId(roomId);
+  }
+
+  /**
+   * Admin Group Management: filterable/sortable/paginated list of ACTIVE groups.
+   * `idsFromUserSearch` are roomIds whose OWNER matched a free-text user search;
+   * they widen the `q` OR-clause so admins can find groups by owner identity.
+   */
+  async adminList(params: {
+    q?: string;
+    idsFromUserSearch?: string[] | null;
+    fromDate?: Date;
+    toDate?: Date;
+    sortField: "createdAt" | "memberCount";
+    sortDir: "asc" | "desc";
+    skip: number;
+    take: number;
+  }): Promise<{ rows: GroupRoom[]; total: number }> {
+    const {
+      q,
+      idsFromUserSearch,
+      fromDate,
+      toDate,
+      sortField,
+      sortDir,
+      skip,
+      take,
+    } = params;
+
+    const and: Array<Record<string, unknown>> = [{ status: "ACTIVE" }];
+
+    if (fromDate || toDate) {
+      const createdAt: Record<string, Date> = {};
+      if (fromDate) createdAt.gte = fromDate;
+      if (toDate) createdAt.lte = endOfDay(toDate);
+      and.push({ createdAt });
+    }
+
+    if (q) {
+      and.push({
+        OR: [
+          { name: { contains: q, mode: "insensitive" } },
+          { roomId: q },
+          ...(idsFromUserSearch?.length
+            ? [{ roomId: { in: idsFromUserSearch } }]
+            : []),
+        ],
+      });
+    }
+
+    type FindArgs = Parameters<typeof this.prisma.groupRoom.findMany>[0];
+    type WhereArg = NonNullable<FindArgs>["where"];
+    const where = { AND: and } as WhereArg;
+
+    const [rows, total] = await Promise.all([
+      this.prisma.groupRoom.findMany({
+        where,
+        orderBy: [{ [sortField]: sortDir }, { roomId: sortDir }],
+        skip,
+        take,
+      }),
+      this.prisma.groupRoom.count({ where }),
+    ]);
+
+    return { rows, total };
   }
 
   async updateRoom(

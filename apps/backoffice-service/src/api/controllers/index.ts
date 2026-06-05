@@ -30,6 +30,7 @@ export {
 export {
   listUsers,
   getUserDetails,
+  listUserReports,
   banUser,
   suspendUser,
   unbanUser,
@@ -39,8 +40,14 @@ export {
 export {
   listCommunities,
   getCommunityDetails,
+  listCommunityMembers,
   closeCommunity,
   reopenCommunity,
   bulkCloseCommunities,
   bulkReopenCommunities,
 } from "./community.controller.js";
+export {
+  listGroups,
+  getGroupDetails,
+  listGroupMembers,
+} from "./groups.controller.js";

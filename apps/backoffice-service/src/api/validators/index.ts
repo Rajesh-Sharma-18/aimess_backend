@@ -67,6 +67,7 @@ export {
 export {
   listUsersQuerySchema,
   userIdParamSchema,
+  userReportsQuerySchema,
   banUserSchema,
   suspendUserSchema,
   unbanUserSchema,
@@ -77,6 +78,7 @@ export {
   reportsBucketEnum,
   type ListUsersQueryInput,
   type UserIdParam,
+  type UserReportsQueryInput,
   type BanUserInput,
   type SuspendUserInput,
   type UnbanUserInput,
@@ -87,17 +89,32 @@ export {
 export {
   listCommunitiesQuerySchema,
   communityIdParamSchema,
+  listCommunityMembersQuerySchema,
   closeCommunitySchema,
   reopenCommunitySchema,
   bulkCloseSchema,
   bulkReopenSchema,
   communityTypeEnum,
   communityStatusEnum,
+  communityMemberRoleEnum,
   closeReasonEnum,
   type ListCommunitiesQueryInput,
   type CommunityIdParam,
+  type ListCommunityMembersQueryInput,
   type CloseCommunityInput,
   type ReopenCommunityInput,
   type BulkCloseInput,
   type BulkReopenInput,
 } from "./community.validator.js";
+
+export {
+  listGroupsQuerySchema,
+  groupIdParamSchema,
+  listGroupMembersQuerySchema,
+  groupSortByEnum,
+  groupSortOrderEnum,
+  groupRoleEnum,
+  type ListGroupsQueryInput,
+  type GroupIdParam,
+  type ListGroupMembersQueryInput,
+} from "./groups.validator.js";

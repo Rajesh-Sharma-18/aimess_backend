@@ -7,6 +7,7 @@ import {
   CommunityModerationStatus,
   CommunityReportStatus,
   CommunityType,
+  type CommunityMember,
   type Prisma,
 } from "../generated/prisma/index.js";
 import type { CommunityAuditAction } from "../types/community.types.js";
@@ -966,6 +967,56 @@ export const communityRepository = {
       openReports,
       activeInviteLinks,
     };
+  },
+
+  /**
+   * Admin Community Member List — offset/page pagination over a community's
+   * members, optionally filtered by role and/or a free-text search (snapshot
+   * username/display name OR exact userId). Fully denormalized rows (snapshot*),
+   * so NO user-service round-trip. Ordered by role (ADMIN→MODERATOR→MEMBER via
+   * enum asc) then joinedAt asc. `communityId` is an ObjectId — an invalid id
+   * would make Prisma throw, so we short-circuit to an empty page instead.
+   */
+  async adminListCommunityMembers(params: {
+    communityId: string;
+    search?: string;
+    role?: CommunityMemberRole;
+    page: number;
+    limit: number;
+  }): Promise<{ rows: CommunityMember[]; total: number }> {
+    // Guard a malformed ObjectId (mirrors how adminGetCommunityDetail tolerates a
+    // missing/invalid id by returning no result rather than throwing).
+    if (!/^[a-fA-F0-9]{24}$/.test(params.communityId)) {
+      return { rows: [], total: 0 };
+    }
+
+    const where: Prisma.CommunityMemberWhereInput = {
+      communityId: params.communityId,
+    };
+    if (params.role) {
+      where.role = params.role;
+    }
+    if (params.search) {
+      where.OR = [
+        { snapshotUsername: { contains: params.search, mode: "insensitive" } },
+        {
+          snapshotDisplayName: { contains: params.search, mode: "insensitive" },
+        },
+        { userId: params.search },
+      ];
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.communityMember.findMany({
+        where,
+        orderBy: [{ role: "asc" }, { joinedAt: "asc" }],
+        skip: (params.page - 1) * params.limit,
+        take: params.limit,
+      }),
+      prisma.communityMember.count({ where }),
+    ]);
+
+    return { rows, total };
   },
 
   /**

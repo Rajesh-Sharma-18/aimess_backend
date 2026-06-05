@@ -78,6 +78,92 @@ const listParams = [
   },
 ] as const;
 
+/** Group list params: page/limit + q, date range, and the whitelisted sort. */
+const groupListParams = [
+  {
+    name: "page",
+    in: "query",
+    required: false,
+    schema: { type: "integer", minimum: 1, default: 1 },
+  },
+  {
+    name: "limit",
+    in: "query",
+    required: false,
+    schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+  },
+  {
+    name: "q",
+    in: "query",
+    required: false,
+    schema: { type: "string" },
+    description:
+      "Case-insensitive search over group name, group id, admin username, and admin email.",
+  },
+  {
+    name: "fromDate",
+    in: "query",
+    required: false,
+    schema: { type: "string", format: "date" },
+    description: "Created-on-or-after (inclusive). `YYYY-MM-DD`.",
+  },
+  {
+    name: "toDate",
+    in: "query",
+    required: false,
+    schema: { type: "string", format: "date" },
+    description: "Created-on-or-before (inclusive, whole day). `YYYY-MM-DD`.",
+  },
+  {
+    name: "sortBy",
+    in: "query",
+    required: false,
+    schema: {
+      type: "string",
+      enum: ["createdAt", "memberCount"],
+      default: "createdAt",
+    },
+  },
+  {
+    name: "sortOrder",
+    in: "query",
+    required: false,
+    schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
+  },
+] as const;
+
+/** Group-members list params: page/limit + q + role filter. */
+const groupMemberListParams = [
+  {
+    name: "page",
+    in: "query",
+    required: false,
+    schema: { type: "integer", minimum: 1, default: 1 },
+  },
+  {
+    name: "limit",
+    in: "query",
+    required: false,
+    schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+  },
+  {
+    name: "q",
+    in: "query",
+    required: false,
+    schema: { type: "string" },
+    description: "Case-insensitive search over username, user id, and email.",
+  },
+  {
+    name: "role",
+    in: "query",
+    required: false,
+    schema: {
+      type: "string",
+      enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+    },
+  },
+] as const;
+
 const totpHeaderParam = {
   name: "X-Totp-Code",
   in: "header",
@@ -131,6 +217,62 @@ function listRes(description: string, itemRef: string) {
             pagination: { $ref: "#/components/schemas/AdminPagination" },
           },
           required: ["data", "pagination"],
+        },
+      },
+    },
+  };
+}
+
+/**
+ * 200 response for the group read endpoints, which return the
+ * `{ success, message, data: { items, pagination } }` envelope (data.items +
+ * hasNext/hasPrevious pagination) rather than the generic `{ data, pagination }`.
+ */
+function groupListRes(description: string, itemRef: string) {
+  return {
+    description,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: true },
+            message: { type: "string", example: "Groups fetched successfully" },
+            data: {
+              type: "object",
+              properties: {
+                items: { type: "array", items: { $ref: itemRef } },
+                pagination: {
+                  $ref: "#/components/schemas/AdminGroupPagination",
+                },
+              },
+              required: ["items", "pagination"],
+            },
+          },
+          required: ["success", "message", "data"],
+        },
+      },
+    },
+  };
+}
+
+/** 200 single-object envelope `{ success, message, data: <schemaRef> }`. */
+function groupOkRes(description: string, schemaRef: string) {
+  return {
+    description,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object",
+          properties: {
+            success: { type: "boolean", example: true },
+            message: {
+              type: "string",
+              example: "Group details fetched successfully",
+            },
+            data: { $ref: schemaRef },
+          },
+          required: ["success", "message", "data"],
         },
       },
     },
@@ -415,7 +557,10 @@ export const adminPaths = {
       summary: "List / search users",
       description:
         PLANNED +
-        "Aggregates `AdminListUsers` (auth-service) + `AdminListProfiles` (user-service) via gRPC-live. Filters: `status`, `banned`, `createdAfter`, `q`. Requires `users.read`.",
+        "Aggregates `AdminListUsers` (auth-service) + `AdminListProfiles` (user-service) via gRPC-live. " +
+        "Filters: `status` (repeatable, case-insensitive), `reports` bucket, a join-date range " +
+        "(`dateFrom`/`dateTo`, or `createdAfter`/`createdBefore` aliases), and `q` search " +
+        "(username/email). Requires `users.read`.",
       security: adminSecurity,
       parameters: [
         ...listParams,
@@ -423,22 +568,41 @@ export const adminPaths = {
           name: "status",
           in: "query",
           required: false,
+          style: "form",
+          explode: true,
+          description:
+            "Repeatable (`?status=ACTIVE&status=BANNED`). Case-insensitive; " +
+            "`pending_deletion` is accepted as an alias for `DELETED`.",
           schema: {
-            type: "string",
-            enum: ["active", "suspended", "banned", "pending_deletion"],
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["ACTIVE", "BANNED", "DELETED"],
+            },
           },
         },
         {
-          name: "banned",
+          name: "reports",
           in: "query",
           required: false,
-          schema: { type: "boolean" },
+          description: "Report-count bucket filter.",
+          schema: { type: "string", enum: ["none", "has", "gte_5", "gte_10"] },
         },
         {
-          name: "createdAfter",
+          name: "dateFrom",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date-time" },
+          description:
+            "Joined on/after (inclusive). `YYYY-MM-DD` or an ISO datetime. Alias: `createdAfter`.",
+          schema: { type: "string", format: "date" },
+        },
+        {
+          name: "dateTo",
+          in: "query",
+          required: false,
+          description:
+            "Joined on/before (inclusive, whole day, UTC). `YYYY-MM-DD` or an ISO datetime. Alias: `createdBefore`.",
+          schema: { type: "string", format: "date" },
         },
       ],
       responses: {
@@ -514,7 +678,7 @@ export const adminPaths = {
       security: adminSecurity,
       parameters: [idPathParam, ...listParams],
       responses: {
-        "200": listRes("Reports", "#/components/schemas/AdminReport"),
+        "200": listRes("Reports", "#/components/schemas/AdminUserReport"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.read"),
         "404": errRes("User not found"),
@@ -738,6 +902,65 @@ export const adminPaths = {
       "x-implementation-status": "implemented",
     },
   },
+  "/admin/v1/communities/{communityId}/members": {
+    get: {
+      tags: [adminTags.communities],
+      summary: "List community members",
+      description:
+        "Paginated member roster for a community (community-service gRPC, " +
+        "denormalized snapshot fields — no user-service round-trip). Supports " +
+        "`q`/`search` (username, display name, or exact userId) and a `role` " +
+        "filter. Requires `communities.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "communityId",
+          in: "path",
+          required: true,
+          schema: { type: "string", maxLength: 64 },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+        {
+          name: "q",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Search by username, display name, or exact userId.",
+        },
+        {
+          name: "role",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["ADMIN", "MODERATOR", "MEMBER"],
+          },
+          description: "Filter by member role (the 'Select Type' filter).",
+        },
+      ],
+      responses: {
+        "200": listRes(
+          "Community members",
+          "#/components/schemas/AdminCommunityMember"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing communities.read"),
+        "404": errRes("Community not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
   "/admin/v1/communities/{communityId}/close": {
     post: {
       tags: [adminTags.communities],
@@ -862,16 +1085,15 @@ export const adminPaths = {
       tags: [adminTags.groups],
       summary: "List groups",
       description:
-        PLANNED +
-        "Fast list from `GroupIndex` read-model → fallback gRPC `AdminListGroups` (chat-service). Requires `groups.read`.",
+        "Paginated, searchable, sortable list of chat-service groups (gRPC-live `AdminListGroups`). Search matches group name, group id, admin username, and admin email; sortable by `createdAt` or `memberCount`; filterable by created-date range. Requires `groups.read`.",
       security: adminSecurity,
-      parameters: [...listParams],
+      parameters: [...groupListParams],
       responses: {
-        "200": listRes("Groups", "#/components/schemas/AdminGroup"),
+        "200": groupListRes("Groups", "#/components/schemas/AdminGroup"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing groups.read"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/groups/{id}": {
@@ -879,17 +1101,16 @@ export const adminPaths = {
       tags: [adminTags.groups],
       summary: "Get group detail",
       description:
-        PLANNED +
         "Full group detail (gRPC-live, chat-service). Requires `groups.read`.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
-        "200": okRes("Group detail", "#/components/schemas/AdminGroup"),
+        "200": groupOkRes("Group detail", "#/components/schemas/AdminGroup"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing groups.read"),
         "404": errRes("Group not found"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     delete: {
       tags: [adminTags.groups],
@@ -916,17 +1137,16 @@ export const adminPaths = {
       tags: [adminTags.groups],
       summary: "List group members",
       description:
-        PLANNED +
-        "Paginated members (gRPC-live, chat-service). Requires `groups.read`.",
+        "Paginated, searchable members (gRPC-live, chat-service). Search matches username, user id, and email; filterable by role (OWNER/ADMIN/MODERATOR/MEMBER). Requires `groups.read`.",
       security: adminSecurity,
-      parameters: [idPathParam, ...listParams],
+      parameters: [idPathParam, ...groupMemberListParams],
       responses: {
-        "200": listRes("Members", "#/components/schemas/AdminUserListItem"),
+        "200": groupListRes("Members", "#/components/schemas/AdminGroupMember"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing groups.read"),
         "404": errRes("Group not found"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/groups/{id}/suspend": {

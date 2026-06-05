@@ -27,11 +27,74 @@ service MessagingService {
   rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
   // Admin dashboard: count of active group rooms.
   rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
+  // Admin Group Management: list/detail/members (owned by chat-service).
+  rpc AdminListGroups         (AdminListGroupsRequest)         returns (AdminListGroupsResponse);
+  rpc AdminGetGroup           (AdminGetGroupRequest)           returns (AdminGroupDetail);
+  rpc AdminListGroupMembers   (AdminListGroupMembersRequest)   returns (AdminListGroupMembersResponse);
 }
 
 message GetGroupCountRequest {}
 message GroupCount {
   int64 total = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Admin Group Management
+// ---------------------------------------------------------------------------
+message AdminGroupAdmin {
+  string user_id    = 1;
+  string username   = 2;
+  string email      = 3;
+  string avatar_url = 4;
+}
+message AdminGroupRow {
+  string          id           = 1;
+  string          name         = 2;
+  string          avatar_url   = 3;
+  string          description  = 4;
+  int32           member_count = 5;
+  int64           created_at    = 6;
+  AdminGroupAdmin admin        = 7;
+}
+message AdminListGroupsRequest {
+  string q          = 1;
+  string from_date  = 2;
+  string to_date    = 3;
+  string sort_field = 4;
+  string sort_dir   = 5;
+  int32  page       = 6;
+  int32  limit      = 7;
+}
+message AdminListGroupsResponse {
+  repeated AdminGroupRow groups = 1;
+  int32                  total  = 2;
+}
+message AdminGetGroupRequest {
+  string group_id = 1;
+}
+message AdminGroupDetail {
+  bool          found = 1;
+  AdminGroupRow group = 2;
+}
+message AdminGroupMemberRow {
+  string user_id    = 1;
+  string username   = 2;
+  string email      = 3;
+  string avatar_url = 4;
+  string role       = 5;
+  int64  joined_at   = 6;
+}
+message AdminListGroupMembersRequest {
+  string group_id = 1;
+  string q        = 2;
+  string role     = 3;
+  int32  page     = 4;
+  int32  limit    = 5;
+}
+message AdminListGroupMembersResponse {
+  bool                         found   = 1;
+  repeated AdminGroupMemberRow members = 2;
+  int32                        total   = 3;
 }
 
 message SendMessageRequest {

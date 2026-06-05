@@ -52,13 +52,38 @@ export type ModerationHistoryItem = {
   createdAt: string;
 };
 
-/** A community the user belongs to (populated once a community client is wired). */
+/**
+ * A community the user belongs to. Reserved for the user's own membership list,
+ * which needs a user→communities reverse-lookup RPC community-service does not
+ * expose yet — `UserDetail.communities` is currently always `[]`. (The screen's
+ * Community Details/member grid use the dedicated `/communities/*` endpoints.)
+ */
 export interface CommunityMembership {
   communityId: string;
   name: string;
   role: string;
   joinedAt: string;
 }
+
+/** One report-category count (ALL categories) shown on the detail view. */
+export type ReportCategoryCount = {
+  reason: string;
+  count: number;
+};
+
+/** One row in the paginated "Reported Details" list for a user. */
+export type ReportRow = {
+  reportId: string;
+  reason: string;
+  details: string | null;
+  status: string;
+  createdAt: string;
+  reporter: {
+    userId: string;
+    username: string | null;
+    avatarKey: string | null;
+  };
+};
 
 /** Aggregated reports filed against this user. */
 export type ReportsSummary = {
@@ -93,6 +118,8 @@ export type UserDetail = {
   };
   accountStatus: AccountStatusBlock;
   reportsSummary: ReportsSummary;
+  // All report categories filed against this user (not just the top-5 in summary).
+  reportCategories: ReportCategoryCount[];
   // Per-user community membership: no community client wired into backoffice yet.
   communities: CommunityMembership[];
   moderationHistory: ModerationHistoryItem[];

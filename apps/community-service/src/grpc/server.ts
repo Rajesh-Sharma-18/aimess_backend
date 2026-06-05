@@ -5,11 +5,13 @@ import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
 
 import {
+  CommunityMemberRole,
   CommunityModerationStatus,
   CommunityType,
 } from "../generated/prisma/index.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityService } from "../services/community.service.js";
+import { memberAvatarService } from "../services/member-avatar.service.js";
 
 /** Resolve the admin moderation "status" string of a community row, treating an
  * unset moderationStatus (legacy rows) as ACTIVE. SUSPENDED → "CLOSED". */
@@ -298,6 +300,71 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "adminGetCommunity failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Admin Community Member List — offset paginated, searchable (username/userId),
+  // role-filterable. Rows are fully denormalized snapshots; each member's avatar
+  // is presigned from its snapshotAvatarKey via the member-avatar service (shared
+  // avatars bucket) — "" when no key/presign.
+  adminListCommunityMembers: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          search?: string;
+          role?: string;
+          page?: number;
+          limit?: number;
+        };
+
+        const role =
+          req.role === "ADMIN"
+            ? CommunityMemberRole.ADMIN
+            : req.role === "MODERATOR"
+              ? CommunityMemberRole.MODERATOR
+              : req.role === "MEMBER"
+                ? CommunityMemberRole.MEMBER
+                : undefined;
+
+        const { rows, total } =
+          await communityRepository.adminListCommunityMembers({
+            communityId: (req.communityId || "").trim(),
+            search: req.search?.trim() || undefined,
+            role,
+            page: coercePage(req.page),
+            limit: coerceLimit(req.limit),
+          });
+
+        const members = await Promise.all(
+          rows.map(async (m) => {
+            const avatarView = await memberAvatarService.resolveViewUrl(
+              m.snapshotAvatarKey
+            );
+            return {
+              userId: m.userId,
+              username: m.snapshotDisplayName || m.snapshotUsername,
+              handle: m.snapshotUsername,
+              avatarUrl: avatarView?.url ?? "",
+              role: String(m.role),
+              status: String(m.status),
+              joinedAt:
+                m.joinedAt instanceof Date ? m.joinedAt.toISOString() : "",
+            };
+          })
+        );
+
+        callback(null, { members, total });
+      } catch (err) {
+        logger.error("adminListCommunityMembers gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminListCommunityMembers failed",
         } as grpc.ServiceError);
       }
     })();

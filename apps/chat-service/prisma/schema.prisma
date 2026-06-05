@@ -146,6 +146,8 @@ model GroupRoom {
   @@index([memberCount])
   @@index([status, lastMessageAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([status, memberCount(sort: Desc)])
   @@map("group_rooms")
 }
 
