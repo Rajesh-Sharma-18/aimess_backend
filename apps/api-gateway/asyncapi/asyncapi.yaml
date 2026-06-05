@@ -1,0 +1,1136 @@
+asyncapi: 3.0.0
+
+info:
+  title: AIMess Real-time API (Socket.IO)
+  version: 1.0.0
+  description: |
+    Real-time contract between AIMess mobile/web clients and the backend.
+
+    All Socket.IO traffic terminates at the **api-gateway**; the gateway
+    authenticates the handshake, validates payloads (Zod), calls the owning
+    microservice over gRPC, and fans events back out via the Redis adapter.
+    Backend services never hold sockets — they `publish` to a Redis channel and
+    the gateway re-emits to the matching room.
+
+    **Perspective.** This document is written from the **client** application's
+    point of view: `action: send` = the client emits to the server;
+    `action: receive` = the client receives a server push. Request/response
+    events declare a `reply` carrying the ack envelope.
+
+    **Transport note.** The wire protocol is **Socket.IO** (not raw WebSocket).
+    AsyncAPI has no official Socket.IO binding, so the protocol is modelled as
+    `ws`/`wss` and Socket.IO specifics (namespaces, rooms, acks, multiplexed
+    event names) are documented in descriptions and `x-socketio-*` extensions.
+    Each AsyncAPI **channel** maps to a Socket.IO **namespace**; each
+    **message** maps to a Socket.IO **event** (its `name` is the wire event).
+
+    Source of truth: `apps/api-gateway/src/sockets/` and `docs/SOCKET_EVENTS.md`.
+  contact:
+    name: AIMess Backend
+  tags:
+    - name: chat
+      description: 1-1 + group messaging, receipts, reactions, typing, presence, calls
+    - name: community
+      description: Many-member community chat
+    - name: notify
+      description: In-app notification feed + unread badge
+
+defaultContentType: application/json
+
+servers:
+  local:
+    host: localhost:8000
+    protocol: ws
+    pathname: /socket.io/
+    description: Local development gateway.
+    security:
+      - $ref: "#/components/securitySchemes/accessToken"
+  production:
+    host: api.aimess.example
+    protocol: wss
+    pathname: /socket.io/
+    description: Production gateway (replace host with the real origin).
+    security:
+      - $ref: "#/components/securitySchemes/accessToken"
+
+channels:
+  # ---------------------------------------------------------------- /chat
+  chat:
+    address: /chat
+    title: /chat namespace
+    description: |
+      1-1 messages, group messages, read/delivery receipts, reactions, typing,
+      presence, and 1-1 WebRTC call signaling. Delegates to chat-service over gRPC.
+      Rooms: `user:<userId>` (auto on connect), `conv:<conversationId>`
+      (via `conv:join`), `call:<callId>` (implicit via `call:*`).
+    x-socketio-namespace: /chat
+    messages:
+      convJoin: { $ref: "#/components/messages/ConvJoin" }
+      convLeave: { $ref: "#/components/messages/ConvLeave" }
+      messageSend: { $ref: "#/components/messages/MessageSend" }
+      messageRead: { $ref: "#/components/messages/MessageReadRequest" }
+      messageDelivered:
+        { $ref: "#/components/messages/MessageDeliveredRequest" }
+      messageReact: { $ref: "#/components/messages/MessageReact" }
+      messageReactionsGet: { $ref: "#/components/messages/MessageReactionsGet" }
+      messageEdit: { $ref: "#/components/messages/MessageEdit" }
+      messageForward: { $ref: "#/components/messages/MessageForward" }
+      messagesFetch: { $ref: "#/components/messages/MessagesFetch" }
+      chatCatchup: { $ref: "#/components/messages/ChatCatchup" }
+      typingStart: { $ref: "#/components/messages/TypingStartRequest" }
+      typingStop: { $ref: "#/components/messages/TypingStopRequest" }
+      presenceHeartbeat: { $ref: "#/components/messages/PresenceHeartbeat" }
+      presenceSubscribe: { $ref: "#/components/messages/PresenceSubscribe" }
+      presenceUnsubscribe: { $ref: "#/components/messages/PresenceUnsubscribe" }
+      callInitiate: { $ref: "#/components/messages/CallInitiate" }
+      callAnswer: { $ref: "#/components/messages/CallAnswer" }
+      callDecline: { $ref: "#/components/messages/CallDecline" }
+      callEnd: { $ref: "#/components/messages/CallEnd" }
+      callIceSend: { $ref: "#/components/messages/CallIceSend" }
+      # server -> client
+      messageNew: { $ref: "#/components/messages/MessageNew" }
+      messageEdited: { $ref: "#/components/messages/MessageEdited" }
+      convUpdated: { $ref: "#/components/messages/ConvUpdated" }
+      communityUpdated: { $ref: "#/components/messages/CommunityUpdated" }
+      chatCatchupResult: { $ref: "#/components/messages/ChatCatchupResult" }
+      messageReadReceipt: { $ref: "#/components/messages/MessageReadReceipt" }
+      messageDeliveredReceipt:
+        { $ref: "#/components/messages/MessageDeliveredReceipt" }
+      messageReaction: { $ref: "#/components/messages/MessageReaction" }
+      messageDelete: { $ref: "#/components/messages/MessageDelete" }
+      typingStartBroadcast:
+        { $ref: "#/components/messages/TypingStartBroadcast" }
+      typingStopBroadcast: { $ref: "#/components/messages/TypingStopBroadcast" }
+      presenceStatus: { $ref: "#/components/messages/PresenceStatus" }
+      callIncoming: { $ref: "#/components/messages/CallIncoming" }
+      callAnswered: { $ref: "#/components/messages/CallAnswered" }
+      callDeclined: { $ref: "#/components/messages/CallDeclined" }
+      callEnded: { $ref: "#/components/messages/CallEnded" }
+      callIceRecv: { $ref: "#/components/messages/CallIceRecv" }
+
+  # ----------------------------------------------------------- /community
+  community:
+    address: /community
+    title: /community namespace
+    description: |
+      Many-member community chat. Served by chat-service's CommunityService.
+      Sends publish `community:message:new` to Redis channel
+      `community:<communityId>`, re-emitted to the `community:<communityId>` room.
+      Note: community message *deletes* fan out as `message:delete` on
+      `conv:<roomId>` on the /chat namespace, and the `community:updated` list
+      bump is delivered on /chat (see those messages).
+    x-socketio-namespace: /community
+    messages:
+      communityJoin: { $ref: "#/components/messages/CommunityJoin" }
+      communityLeave: { $ref: "#/components/messages/CommunityLeave" }
+      communityMessageSend:
+        { $ref: "#/components/messages/CommunityMessageSend" }
+      communityMessagesFetch:
+        { $ref: "#/components/messages/CommunityMessagesFetch" }
+      communityMessageNew: { $ref: "#/components/messages/CommunityMessageNew" }
+      communityMemberJoined:
+        { $ref: "#/components/messages/CommunityMemberJoined" }
+
+  # -------------------------------------------------------------- /notify
+  notify:
+    address: /notify
+    title: /notify namespace
+    description: |
+      In-app notification feed + unread badge. Delegates to notifications-service.
+      Each connected user's `notify:<userId>` Redis channel is subscribed
+      (ref-counted) and re-emitted to `user:<userId>`.
+    x-socketio-namespace: /notify
+    messages:
+      notificationsFetch: { $ref: "#/components/messages/NotificationsFetch" }
+      notificationsMarkRead:
+        { $ref: "#/components/messages/NotificationsMarkRead" }
+      notificationCount: { $ref: "#/components/messages/NotificationCount" }
+      notificationForwarded:
+        { $ref: "#/components/messages/NotificationForwarded" }
+
+operations:
+  # =================================================== /chat client -> server
+  chat.convJoin:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "conv:join — join conv:<id> (fire-and-forget, no ack)"
+    messages: [{ $ref: "#/channels/chat/messages/convJoin" }]
+  chat.convLeave:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "conv:leave — leave conv:<id> (fire-and-forget)"
+    messages: [{ $ref: "#/channels/chat/messages/convLeave" }]
+  chat.messageSend:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:send — create a message (idempotent on clientMessageId)"
+    messages: [{ $ref: "#/channels/chat/messages/messageSend" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.messageRead:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:read — mark read up to a message"
+    messages: [{ $ref: "#/channels/chat/messages/messageRead" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.messageDelivered:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:delivered — delivered receipt (private only)"
+    messages: [{ $ref: "#/channels/chat/messages/messageDelivered" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.messageReact:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:react — toggle/add a reaction"
+    messages: [{ $ref: "#/channels/chat/messages/messageReact" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.messageReactionsGet:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:reactions:get — list who reacted"
+    messages: [{ $ref: "#/channels/chat/messages/messageReactionsGet" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.messageEdit:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:edit — edit own message"
+    messages: [{ $ref: "#/channels/chat/messages/messageEdit" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.messageForward:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:forward — forward into another conversation"
+    messages: [{ $ref: "#/channels/chat/messages/messageForward" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.messagesFetch:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "messages:fetch — cursor-paged history"
+    messages: [{ $ref: "#/channels/chat/messages/messagesFetch" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.catchup:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "chat:catchup — reconnect gap-fill by per-room sequenceNumber"
+    description: |
+      Replies with an aggregate ack AND one `chat:catchup:result` emit per room
+      (direct to the requesting socket). See the ChatCatchupResult message.
+    messages: [{ $ref: "#/channels/chat/messages/chatCatchup" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.typingStart:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "typing:start — broadcast to conv:<id> (fire-and-forget)"
+    messages: [{ $ref: "#/channels/chat/messages/typingStart" }]
+  chat.typingStop:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "typing:stop — broadcast to conv:<id> (fire-and-forget)"
+    messages: [{ $ref: "#/channels/chat/messages/typingStop" }]
+  chat.presenceHeartbeat:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "presence:heartbeat — keep presence alive (fire-and-forget)"
+    messages: [{ $ref: "#/channels/chat/messages/presenceHeartbeat" }]
+  chat.presenceSubscribe:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "presence:subscribe — watch peers' presence"
+    messages: [{ $ref: "#/channels/chat/messages/presenceSubscribe" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.presenceUnsubscribe:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "presence:unsubscribe — stop watching peers"
+    messages: [{ $ref: "#/channels/chat/messages/presenceUnsubscribe" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.callInitiate:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:initiate — start a call"
+    messages: [{ $ref: "#/channels/chat/messages/callInitiate" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.callAnswer:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:answer — accept a ringing call"
+    messages: [{ $ref: "#/channels/chat/messages/callAnswer" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.callDecline:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:decline — reject a ringing call"
+    messages: [{ $ref: "#/channels/chat/messages/callDecline" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.callEnd:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:end — hang up"
+    messages: [{ $ref: "#/channels/chat/messages/callEnd" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.callIce:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:ice — relay ICE candidate (Redis-only, fire-and-forget)"
+    messages: [{ $ref: "#/channels/chat/messages/callIceSend" }]
+
+  # =================================================== /chat server -> client
+  chat.onMessageNew:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:new — a message was created/forwarded, or a group system message"
+    messages: [{ $ref: "#/channels/chat/messages/messageNew" }]
+  chat.onMessageEdited:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:edited"
+    messages: [{ $ref: "#/channels/chat/messages/messageEdited" }]
+  chat.onConvUpdated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "conv:updated — chat list bump-to-top (to user:<id>)"
+    messages: [{ $ref: "#/channels/chat/messages/convUpdated" }]
+  chat.onCommunityUpdated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "community:updated — community list bump-to-top (delivered on /chat)"
+    messages: [{ $ref: "#/channels/chat/messages/communityUpdated" }]
+  chat.onCatchupResult:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "chat:catchup:result — reconnect gap-fill response, one per room"
+    messages: [{ $ref: "#/channels/chat/messages/chatCatchupResult" }]
+  chat.onMessageRead:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:read — read receipt"
+    messages: [{ $ref: "#/channels/chat/messages/messageReadReceipt" }]
+  chat.onMessageDelivered:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:delivered — delivery receipt (private)"
+    messages: [{ $ref: "#/channels/chat/messages/messageDeliveredReceipt" }]
+  chat.onMessageReaction:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:reaction — full current reaction set"
+    messages: [{ $ref: "#/channels/chat/messages/messageReaction" }]
+  chat.onMessageDelete:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "message:delete — message deleted (also used for community deletes)"
+    messages: [{ $ref: "#/channels/chat/messages/messageDelete" }]
+  chat.onTypingStart:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "typing:start — a peer starts typing"
+    messages: [{ $ref: "#/channels/chat/messages/typingStartBroadcast" }]
+  chat.onTypingStop:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "typing:stop — a peer stops typing"
+    messages: [{ $ref: "#/channels/chat/messages/typingStopBroadcast" }]
+  chat.onPresenceStatus:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "presence:status — a watched peer's online status changed"
+    messages: [{ $ref: "#/channels/chat/messages/presenceStatus" }]
+  chat.onCallIncoming:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:incoming — someone calls you"
+    messages: [{ $ref: "#/channels/chat/messages/callIncoming" }]
+  chat.onCallAnswered:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:answered"
+    messages: [{ $ref: "#/channels/chat/messages/callAnswered" }]
+  chat.onCallDeclined:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:declined"
+    messages: [{ $ref: "#/channels/chat/messages/callDeclined" }]
+  chat.onCallEnded:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:ended"
+    messages: [{ $ref: "#/channels/chat/messages/callEnded" }]
+  chat.onCallIce:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "call:ice — peer ICE candidate"
+    messages: [{ $ref: "#/channels/chat/messages/callIceRecv" }]
+
+  # ============================================== /community client -> server
+  community.join:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:join — join community:<id> (fire-and-forget)"
+    messages: [{ $ref: "#/channels/community/messages/communityJoin" }]
+  community.leave:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:leave (fire-and-forget)"
+    messages: [{ $ref: "#/channels/community/messages/communityLeave" }]
+  community.messageSend:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:send — post a message"
+    messages: [{ $ref: "#/channels/community/messages/communityMessageSend" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.messagesFetch:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:messages:fetch — cursor-paged history"
+    messages: [{ $ref: "#/channels/community/messages/communityMessagesFetch" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+
+  # ============================================== /community server -> client
+  community.onMessageNew:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:new"
+    messages: [{ $ref: "#/channels/community/messages/communityMessageNew" }]
+  community.onMemberJoined:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:member:joined"
+    messages: [{ $ref: "#/channels/community/messages/communityMemberJoined" }]
+
+  # ================================================= /notify client -> server
+  notify.fetch:
+    action: send
+    channel: { $ref: "#/channels/notify" }
+    summary: "notifications:fetch — cursor-paged feed"
+    messages: [{ $ref: "#/channels/notify/messages/notificationsFetch" }]
+    reply:
+      channel: { $ref: "#/channels/notify" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  notify.markRead:
+    action: send
+    channel: { $ref: "#/channels/notify" }
+    summary: "notifications:mark_read"
+    messages: [{ $ref: "#/channels/notify/messages/notificationsMarkRead" }]
+    reply:
+      channel: { $ref: "#/channels/notify" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+
+  # ================================================= /notify server -> client
+  notify.onCount:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "notification:count — unread count (emitted once on connect)"
+    messages: [{ $ref: "#/channels/notify/messages/notificationCount" }]
+  notify.onForwarded:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "forwarded notification events (verbatim from notify:<userId>)"
+    messages: [{ $ref: "#/channels/notify/messages/notificationForwarded" }]
+
+components:
+  securitySchemes:
+    accessToken:
+      type: httpApiKey
+      in: query
+      name: token
+      description: |
+        JWT **access token** supplied on the Socket.IO handshake via
+        `socket.handshake.auth.token` (preferred) or the
+        `Authorization: Bearer <token>` header. No anonymous sockets. On success
+        the socket carries `{ userId, sessionId }` derived from the token —
+        clients never send their own `userId`.
+
+  messages:
+    # -------- shared ack envelope --------
+    Ack:
+      name: ack
+      title: Acknowledgement
+      summary: Standard ack callback envelope for request/response events.
+      payload: { $ref: "#/components/schemas/AckEnvelope" }
+
+    # -------- /chat client -> server --------
+    ConvJoin:
+      name: "conv:join"
+      title: "conv:join"
+      payload: { $ref: "#/components/schemas/ConversationRef" }
+    ConvLeave:
+      name: "conv:leave"
+      title: "conv:leave"
+      payload: { $ref: "#/components/schemas/ConversationRef" }
+    MessageSend:
+      name: "message:send"
+      title: "message:send"
+      summary: Create a message. clientMessageId is the idempotency key.
+      payload: { $ref: "#/components/schemas/MessageSendPayload" }
+    MessageReadRequest:
+      name: "message:read"
+      title: "message:read (request)"
+      payload: { $ref: "#/components/schemas/ReadUpTo" }
+    MessageDeliveredRequest:
+      name: "message:delivered"
+      title: "message:delivered (request)"
+      payload: { $ref: "#/components/schemas/ReadUpTo" }
+    MessageReact:
+      name: "message:react"
+      title: "message:react"
+      payload: { $ref: "#/components/schemas/MessageReactPayload" }
+    MessageReactionsGet:
+      name: "message:reactions:get"
+      title: "message:reactions:get"
+      payload: { $ref: "#/components/schemas/MessageReactionsGetPayload" }
+    MessageEdit:
+      name: "message:edit"
+      title: "message:edit"
+      payload: { $ref: "#/components/schemas/MessageEditPayload" }
+    MessageForward:
+      name: "message:forward"
+      title: "message:forward"
+      payload: { $ref: "#/components/schemas/MessageForwardPayload" }
+    MessagesFetch:
+      name: "messages:fetch"
+      title: "messages:fetch"
+      payload: { $ref: "#/components/schemas/MessagesFetchPayload" }
+    ChatCatchup:
+      name: "chat:catchup"
+      title: "chat:catchup"
+      payload: { $ref: "#/components/schemas/ChatCatchupPayload" }
+    TypingStartRequest:
+      name: "typing:start"
+      title: "typing:start (request)"
+      payload: { $ref: "#/components/schemas/ConversationRef" }
+    TypingStopRequest:
+      name: "typing:stop"
+      title: "typing:stop (request)"
+      payload: { $ref: "#/components/schemas/ConversationRef" }
+    PresenceHeartbeat:
+      name: "presence:heartbeat"
+      title: "presence:heartbeat"
+      payload: { $ref: "#/components/schemas/PresenceHeartbeatPayload" }
+    PresenceSubscribe:
+      name: "presence:subscribe"
+      title: "presence:subscribe"
+      payload: { $ref: "#/components/schemas/PeerIds" }
+    PresenceUnsubscribe:
+      name: "presence:unsubscribe"
+      title: "presence:unsubscribe"
+      payload: { $ref: "#/components/schemas/PeerIds" }
+    CallInitiate:
+      name: "call:initiate"
+      title: "call:initiate"
+      payload: { $ref: "#/components/schemas/CallInitiatePayload" }
+    CallAnswer:
+      name: "call:answer"
+      title: "call:answer"
+      payload: { $ref: "#/components/schemas/CallRef" }
+    CallDecline:
+      name: "call:decline"
+      title: "call:decline"
+      payload: { $ref: "#/components/schemas/CallRef" }
+    CallEnd:
+      name: "call:end"
+      title: "call:end"
+      payload: { $ref: "#/components/schemas/CallRef" }
+    CallIceSend:
+      name: "call:ice"
+      title: "call:ice (send)"
+      payload: { $ref: "#/components/schemas/CallIceSendPayload" }
+
+    # -------- /chat server -> client --------
+    MessageNew:
+      name: "message:new"
+      title: "message:new"
+      payload: { $ref: "#/components/schemas/MessageNewPayload" }
+    MessageEdited:
+      name: "message:edited"
+      title: "message:edited"
+      payload: { $ref: "#/components/schemas/MessageEditedPayload" }
+    ConvUpdated:
+      name: "conv:updated"
+      title: "conv:updated"
+      payload: { $ref: "#/components/schemas/ConvUpdatedPayload" }
+    CommunityUpdated:
+      name: "community:updated"
+      title: "community:updated (on /chat)"
+      payload: { $ref: "#/components/schemas/CommunityUpdatedPayload" }
+    ChatCatchupResult:
+      name: "chat:catchup:result"
+      title: "chat:catchup:result"
+      payload: { $ref: "#/components/schemas/ChatCatchupResultPayload" }
+    MessageReadReceipt:
+      name: "message:read"
+      title: "message:read (receipt)"
+      payload: { $ref: "#/components/schemas/MessageReadReceiptPayload" }
+    MessageDeliveredReceipt:
+      name: "message:delivered"
+      title: "message:delivered (receipt)"
+      payload: { $ref: "#/components/schemas/MessageDeliveredReceiptPayload" }
+    MessageReaction:
+      name: "message:reaction"
+      title: "message:reaction"
+      payload: { $ref: "#/components/schemas/MessageReactionPayload" }
+    MessageDelete:
+      name: "message:delete"
+      title: "message:delete"
+      payload: { $ref: "#/components/schemas/MessageDeletePayload" }
+    TypingStartBroadcast:
+      name: "typing:start"
+      title: "typing:start (broadcast)"
+      payload: { $ref: "#/components/schemas/TypingBroadcastPayload" }
+    TypingStopBroadcast:
+      name: "typing:stop"
+      title: "typing:stop (broadcast)"
+      payload: { $ref: "#/components/schemas/TypingBroadcastPayload" }
+    PresenceStatus:
+      name: "presence:status"
+      title: "presence:status"
+      payload: { $ref: "#/components/schemas/PresenceStatusPayload" }
+    CallIncoming:
+      name: "call:incoming"
+      title: "call:incoming"
+      payload: { $ref: "#/components/schemas/CallIncomingPayload" }
+    CallAnswered:
+      name: "call:answered"
+      title: "call:answered"
+      payload: { $ref: "#/components/schemas/CallRef" }
+    CallDeclined:
+      name: "call:declined"
+      title: "call:declined"
+      payload: { $ref: "#/components/schemas/CallRef" }
+    CallEnded:
+      name: "call:ended"
+      title: "call:ended"
+      payload: { $ref: "#/components/schemas/CallEndedPayload" }
+    CallIceRecv:
+      name: "call:ice"
+      title: "call:ice (receive)"
+      payload: { $ref: "#/components/schemas/CallIceRecvPayload" }
+
+    # -------- /community --------
+    CommunityJoin:
+      name: "community:join"
+      title: "community:join"
+      payload: { $ref: "#/components/schemas/CommunityJoinPayload" }
+    CommunityLeave:
+      name: "community:leave"
+      title: "community:leave"
+      payload: { $ref: "#/components/schemas/CommunityRef" }
+    CommunityMessageSend:
+      name: "community:message:send"
+      title: "community:message:send"
+      payload: { $ref: "#/components/schemas/CommunityMessageSendPayload" }
+    CommunityMessagesFetch:
+      name: "community:messages:fetch"
+      title: "community:messages:fetch"
+      payload: { $ref: "#/components/schemas/CommunityMessagesFetchPayload" }
+    CommunityMessageNew:
+      name: "community:message:new"
+      title: "community:message:new"
+      payload: { $ref: "#/components/schemas/CommunityMessageNewPayload" }
+    CommunityMemberJoined:
+      name: "community:member:joined"
+      title: "community:member:joined"
+      payload: { $ref: "#/components/schemas/CommunityMemberDTO" }
+
+    # -------- /notify --------
+    NotificationsFetch:
+      name: "notifications:fetch"
+      title: "notifications:fetch"
+      payload: { $ref: "#/components/schemas/NotificationsFetchPayload" }
+    NotificationsMarkRead:
+      name: "notifications:mark_read"
+      title: "notifications:mark_read"
+      payload: { $ref: "#/components/schemas/NotificationsMarkReadPayload" }
+    NotificationCount:
+      name: "notification:count"
+      title: "notification:count"
+      payload: { $ref: "#/components/schemas/NotificationCountPayload" }
+    NotificationForwarded:
+      name: "notification:forwarded"
+      title: "forwarded notification event"
+      summary: |
+        Any event published to notify:<userId> is forwarded verbatim. The event
+        name and payload are defined by notifications-service; shape is open.
+      payload: { $ref: "#/components/schemas/AnyObject" }
+
+  schemas:
+    # -------- generic --------
+    AckEnvelope:
+      type: object
+      description: Ack callback envelope. `success` discriminates the two shapes.
+      properties:
+        success: { type: boolean }
+        data:
+          type: object
+          description: Present on success — the gRPC result (shape varies per event).
+          additionalProperties: true
+        error:
+          type: string
+          enum: [INVALID_PAYLOAD, SERVICE_ERROR]
+          description: Present on failure.
+      required: [success]
+    AnyObject:
+      type: object
+      additionalProperties: true
+    ConversationRef:
+      type: object
+      properties:
+        conversationId: { type: string }
+      required: [conversationId]
+    CommunityRef:
+      type: object
+      properties:
+        communityId: { type: string }
+      required: [communityId]
+    CallRef:
+      type: object
+      properties:
+        callId: { type: string }
+      required: [callId]
+    ConversationType:
+      type: string
+      enum: [private, group]
+      default: private
+      description: Case-insensitive; selects private vs group code path.
+    ContentType:
+      type: string
+      enum: [TEXT, IMAGE, VIDEO, FILE, AUDIO, LOCATION, CONTACT, SYSTEM]
+
+    # -------- chat send payloads --------
+    FileAttachment:
+      type: object
+      description: Either objectKey or url is expected.
+      properties:
+        objectKey: { type: string }
+        url: { type: string }
+        name: { type: string }
+        size: { type: integer }
+        mime: { type: string }
+        width: { type: integer }
+        height: { type: integer }
+        durationMs: { type: integer }
+    Location:
+      type: object
+      properties:
+        lat: { type: number }
+        lng: { type: number }
+        placeName: { type: string }
+        placeAddress: { type: string }
+    Contact:
+      type: object
+      properties:
+        name: { type: string }
+        phone: { type: string }
+        avatar: { type: string }
+        userId: { type: string }
+    MessageSendPayload:
+      type: object
+      properties:
+        conversationId: { type: string }
+        clientMessageId:
+          { type: string, description: Client-generated idempotency key. }
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        contentText: { type: string }
+        mediaKey: { type: string, description: Single object-key shorthand. }
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/FileAttachment" }
+        urls:
+          type: array
+          items: { type: string }
+        location: { $ref: "#/components/schemas/Location" }
+        contact: { $ref: "#/components/schemas/Contact" }
+        repliedToId: { type: string }
+        conversationType: { $ref: "#/components/schemas/ConversationType" }
+        receiverId: { type: string }
+        senderName: { type: string }
+        senderAvatar: { type: string }
+      required: [conversationId, clientMessageId, contentType]
+    ReadUpTo:
+      type: object
+      properties:
+        conversationId: { type: string }
+        upToMessageId: { type: string }
+      required: [conversationId, upToMessageId]
+    MessageReactPayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        conversationId: { type: string }
+        emoji: { type: string }
+      required: [messageId, conversationId, emoji]
+    MessageReactionsGetPayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        conversationId: { type: string }
+        conversationType: { $ref: "#/components/schemas/ConversationType" }
+      required: [messageId, conversationId]
+    MessageEditPayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        conversationId: { type: string }
+        contentText: { type: string }
+        contentJson: { type: string }
+        conversationType: { $ref: "#/components/schemas/ConversationType" }
+      required: [messageId, conversationId]
+    MessageForwardPayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        targetConversationId: { type: string }
+        clientMessageId: { type: string }
+        conversationType: { $ref: "#/components/schemas/ConversationType" }
+        receiverId: { type: string }
+        senderName: { type: string }
+        senderAvatar: { type: string }
+      required: [messageId, targetConversationId, clientMessageId]
+    MessagesFetchPayload:
+      type: object
+      properties:
+        conversationId: { type: string }
+        cursor: { type: string }
+        limit: { type: integer, maximum: 100 }
+        conversationType: { $ref: "#/components/schemas/ConversationType" }
+      required: [conversationId]
+    ChatCatchupPayload:
+      type: object
+      properties:
+        rooms:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            properties:
+              roomId: { type: string }
+              sinceSeq: { type: integer, minimum: 0, default: 0 }
+              conversationType:
+                { $ref: "#/components/schemas/ConversationType" }
+              limit: { type: integer, minimum: 1, maximum: 200, default: 100 }
+            required: [roomId]
+      required: [rooms]
+    PresenceHeartbeatPayload:
+      type: object
+      properties:
+        appState: { type: string, default: FOREGROUND }
+    PeerIds:
+      type: object
+      properties:
+        peerIds:
+          type: array
+          maxItems: 500
+          items: { type: string }
+      required: [peerIds]
+    CallInitiatePayload:
+      type: object
+      properties:
+        calleeId: { type: string }
+        type: { type: string, enum: [AUDIO, VIDEO] }
+        privateRoomId: { type: string }
+      required: [calleeId]
+    CallIceSendPayload:
+      type: object
+      properties:
+        callId: { type: string }
+        candidate:
+          description: WebRTC ICE candidate (opaque to the backend).
+          oneOf:
+            - { type: object, additionalProperties: true }
+            - { type: string }
+      required: [callId, candidate]
+
+    # -------- chat receive payloads --------
+    MessageNewPayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        conversationId: { type: string }
+        senderId: { type: string }
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        contentText: { type: string }
+        contentJson: { type: string }
+        sentAt: { type: integer, description: epoch ms (number in broadcast). }
+        sequenceNumber:
+          { type: integer, description: per-room monotonic sequence. }
+        isForwarded:
+          { type: boolean, description: present on forwarded messages. }
+        systemEvent:
+          type: string
+          description: Set when contentType=SYSTEM.
+          enum:
+            [
+              GROUP_CREATED,
+              MEMBER_ADDED,
+              MEMBER_JOINED,
+              MEMBER_LEFT,
+              MEMBER_REMOVED,
+              ROLE_CHANGED,
+              ROOM_RENAMED,
+              AVATAR_CHANGED,
+              DESCRIPTION_CHANGED,
+            ]
+        systemData:
+          type: object
+          description: actorId/actorName (+ targetUserId/targetName, newRole, newName where relevant).
+          additionalProperties: true
+      required:
+        [
+          messageId,
+          conversationId,
+          senderId,
+          contentType,
+          sentAt,
+          sequenceNumber,
+        ]
+    MessageEditedPayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        conversationId: { type: string }
+        contentText: { type: string }
+        contentJson: { type: string }
+        editedAt: { type: integer, description: epoch ms. }
+        sequenceNumber: { type: integer }
+      required: [messageId, conversationId]
+    ListBumpLastMessage:
+      type: object
+      properties:
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        text: { type: string }
+    ConvUpdatedPayload:
+      type: object
+      description: Chat list bump-to-top hint (idempotent). Delivered to user:<id>.
+      properties:
+        type: { type: string, enum: [PRIVATE, GROUP] }
+        roomId: { type: string }
+        lastMessageId: { type: string }
+        lastMessage: { $ref: "#/components/schemas/ListBumpLastMessage" }
+        lastMessageAt: { type: integer, description: epoch ms. }
+        senderId: { type: string }
+        unread:
+          {
+            type: boolean,
+            description: "v1 boolean hint: false on the sender's copy.",
+          }
+    CommunityUpdatedPayload:
+      type: object
+      description: Community list bump-to-top hint. Delivered on /chat to user:<id>.
+      properties:
+        communityId: { type: string }
+        roomId: { type: string }
+        lastMessageId: { type: string }
+        lastMessage: { $ref: "#/components/schemas/ListBumpLastMessage" }
+        lastMessageAt: { type: integer, description: epoch ms. }
+        senderId: { type: string }
+        unread: { type: boolean }
+    CatchupEvent:
+      type: object
+      properties:
+        messageId: { type: string }
+        conversationId: { type: string }
+        senderId: { type: string }
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        contentText: { type: string }
+        contentJson: { type: string }
+        sentAt: { type: integer, description: epoch ms. }
+        sequenceNumber: { type: integer }
+        isDeleted: { type: boolean }
+        deletedType:
+          {
+            type: string,
+            description: 'group tombstones only; "" for private.',
+          }
+        editedAt: { type: integer, description: "epoch ms, 0 if never edited." }
+        systemEvent:
+          {
+            type: string,
+            description: 'set for SYSTEM messages; "" otherwise.',
+          }
+        systemData:
+          {
+            type: string,
+            description: 'JSON-encoded object for SYSTEM messages; "" otherwise.',
+          }
+    ChatCatchupResultPayload:
+      type: object
+      description: One emit per room (direct to socket), plus an aggregate ack.
+      properties:
+        roomId: { type: string }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/CatchupEvent" }
+        hasMore:
+          { type: boolean, description: re-request with sinceSeq=lastSeq. }
+        lastSeq:
+          { type: integer, description: highest sequenceNumber in this page. }
+      required: [roomId, events, hasMore, lastSeq]
+    MessageReadReceiptPayload:
+      type: object
+      properties:
+        conversationId: { type: string }
+        readerId: { type: string }
+        upToMessageId: { type: string }
+    MessageDeliveredReceiptPayload:
+      type: object
+      properties:
+        conversationId: { type: string }
+        recipientId: { type: string }
+        upToMessageId: { type: string }
+        messageIds:
+          type: array
+          items: { type: string }
+    Reaction:
+      type: object
+      properties:
+        emoji: { type: string }
+        userId: { type: string }
+    MessageReactionPayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        conversationId: { type: string }
+        reactions:
+          type: array
+          items: { $ref: "#/components/schemas/Reaction" }
+    MessageDeletePayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        type: { type: string, enum: [forEveryone, forMe] }
+        deletedBy: { type: string }
+      required: [messageId, type, deletedBy]
+    TypingBroadcastPayload:
+      type: object
+      properties:
+        userId: { type: string }
+        conversationId: { type: string }
+    PresenceStatusPayload:
+      type: object
+      properties:
+        userId: { type: string }
+        isOnline: { type: boolean }
+        lastActiveAt: { type: string }
+        lastSeen: { type: string }
+    CallIncomingPayload:
+      type: object
+      properties:
+        callId: { type: string }
+        callerId: { type: string }
+        type: { type: string, enum: [AUDIO, VIDEO] }
+    CallEndedPayload:
+      type: object
+      properties:
+        callId: { type: string }
+        endedBy: { type: string }
+        durationSec: { type: integer }
+    CallIceRecvPayload:
+      type: object
+      properties:
+        callId: { type: string }
+        candidate:
+          oneOf:
+            - { type: object, additionalProperties: true }
+            - { type: string }
+        from: { type: string }
+
+    # -------- community payloads --------
+    CommunityJoinPayload:
+      type: object
+      properties:
+        communityId: { type: string }
+        roomId: { type: string }
+      required: [communityId, roomId]
+    CommunityMessageSendPayload:
+      type: object
+      properties:
+        communityId: { type: string }
+        roomId: { type: string }
+        clientMessageId: { type: string }
+        message:
+          {
+            type: string,
+            minLength: 1,
+            description: "min(1) — non-empty even for media.",
+          }
+        contentType: { type: string }
+        mediaKey: { type: string }
+      required: [communityId, roomId, clientMessageId, message, contentType]
+    CommunityMessagesFetchPayload:
+      type: object
+      properties:
+        roomId: { type: string }
+        cursor: { type: string }
+        limit: { type: integer, maximum: 100 }
+      required: [roomId]
+    CommunityMessageNewPayload:
+      type: object
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+        senderId: { type: string }
+        senderName: { type: string }
+        senderAvatar: { type: string }
+        message: { type: string }
+        contentType: { type: string }
+        mediaKey: { type: string }
+        clientMessageId: { type: string }
+        sentAt: { type: integer, description: epoch ms. }
+    CommunityMemberDTO:
+      type: object
+      description: Member DTO forwarded verbatim from the Redis channel.
+      additionalProperties: true
+
+    # -------- notify payloads --------
+    NotificationsFetchPayload:
+      type: object
+      properties:
+        cursor: { type: string }
+        limit: { type: integer, maximum: 100 }
+    NotificationsMarkReadPayload:
+      type: object
+      properties:
+        notificationIds:
+          type: array
+          description: Empty array allowed.
+          items: { type: string }
+      required: [notificationIds]
+    NotificationCountPayload:
+      type: object
+      properties:
+        count: { type: integer }
+      required: [count]

@@ -5,9 +5,12 @@ import { env } from "./config/env.js";
 import { prisma } from "./config/prisma.js";
 import { connectAuthRedis, redis } from "./config/redis.js";
 import { startProfileUpdatedConsumer } from "./messaging/profile-updated-consumer.js";
+import { startGrpcServer } from "./grpc/server.js";
 import { logger } from "@aimess/logger";
+import type * as grpc from "@grpc/grpc-js";
 
 let httpServer: Server | undefined;
+let grpcServer: grpc.Server | undefined;
 
 const startServer = async () => {
   logger.info("Auth service starting…");
@@ -57,6 +60,9 @@ const startServer = async () => {
         "Auth routes: accounts/validate, register, login, refresh, logout, sessions, google, apple, internal/account, forgot-password/*, link-email/*, change-email/*, change-password, social/*/link, social/unlink"
       );
     });
+
+    // Admin-dashboard aggregation gRPC server (read-only user/active counts).
+    grpcServer = startGrpcServer(env.AUTH_GRPC_PORT);
   } catch (error) {
     logger.error("Auth service startup failed");
     logger.error(error);
@@ -74,6 +80,10 @@ async function shutdown(signal: string): Promise<void> {
     }
     httpServer.close(() => resolve());
   });
+
+  if (grpcServer) {
+    grpcServer.forceShutdown();
+  }
 
   try {
     await prisma.$disconnect();

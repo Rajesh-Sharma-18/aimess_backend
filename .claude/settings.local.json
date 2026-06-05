@@ -84,7 +84,22 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "PowerShell(Invoke-WebRequest -Uri \"https://win.rustup.rs/x86_64\" -OutFile \"$env:TEMP\\\\rustup-init.exe\")",
-      "PowerShell(& \"$env:TEMP\\\\rustup-init.exe\" -y --default-toolchain stable)"
+      "PowerShell(& \"$env:TEMP\\\\rustup-init.exe\" -y --default-toolchain stable)",
+      "Bash(rtk grep *)",
+      "Bash(xargs cat)",
+      "Bash(graphify --help)",
+      "Bash(rtk ls *)",
+      "Bash(graphify cluster-only *)",
+      "Bash(GRAPHIFY_VIZ_NODE_LIMIT=30000 graphify cluster-only . --no-label)",
+      "Bash(graphify query *)",
+      "Bash(rtk read *)",
+      "Bash(graphify path *)",
+      "Bash(pnpm --filter community-service exec tsc --noEmit)",
+      "Bash(pnpm --filter api-gateway exec tsc --noEmit)",
+      "Bash(graphify update *)",
+      "Bash(pnpm --filter @aimess/backoffice-service exec tsc --noEmit)",
+      "Bash(rtk npx *)",
+      "Bash(rtk lint *)"
     ]
   }
 }

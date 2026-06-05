@@ -12,7 +12,7 @@ import {
   reportMessageSchema,
 } from "../validators/private-message.validator.js";
 import {
-  messageListQuerySchema,
+  messageTimelineQuerySchema,
   messageSearchQuerySchema,
   mediaListQuerySchema,
 } from "../validators/query.validator.js";
@@ -71,7 +71,7 @@ export function createPrivateMessageRoutes(
   router.get(
     "/rooms/:roomId/messages",
     authenticate,
-    validateQuery(messageListQuerySchema),
+    validateQuery(messageTimelineQuerySchema),
     messageCtrl.getMessages
   );
 

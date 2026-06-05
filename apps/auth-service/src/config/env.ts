@@ -7,6 +7,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]),
 
   AUTH_SERVICE_PORT: z.coerce.number(),
+  AUTH_GRPC_PORT: z.coerce.number().positive().default(4001),
 
   AUTH_DATABASE_URL: z.string(),
 

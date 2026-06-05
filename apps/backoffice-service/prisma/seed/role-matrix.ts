@@ -1,0 +1,92 @@
+/**
+ * Role → permission matrix. Source of truth: docs/ADMIN-SERVICE-DESIGN.md §5.
+ * Keys must match permissions.catalogue.ts.
+ */
+export type RoleDefinition = {
+  key: "SUPER_ADMIN" | "ADMIN" | "MODERATOR" | "SUPPORT_AGENT" | "ANALYST";
+  name: string;
+  description: string;
+  permissions: string[];
+};
+
+const READ_BASELINE = [
+  "dashboard.read",
+  "users.read",
+  "reports.read",
+  "communities.read",
+  "groups.read",
+  "livestreams.read",
+];
+
+const ALL_PERMISSIONS = [
+  ...READ_BASELINE,
+  "users.moderate",
+  "users.delete",
+  "reports.action",
+  "communities.moderate",
+  "groups.moderate",
+  "livestreams.moderate",
+  "categories.manage",
+  "announcements.manage",
+  "auditlogs.read",
+  "systemhealth.read",
+  "admins.manage",
+  "settings.manage",
+];
+
+export const ROLE_MATRIX: RoleDefinition[] = [
+  {
+    key: "SUPER_ADMIN",
+    name: "Super Admin",
+    description:
+      "Everything incl. managing admins, settings, and role changes.",
+    permissions: [...ALL_PERMISSIONS],
+  },
+  {
+    key: "ADMIN",
+    name: "Admin",
+    description:
+      "Full operations except managing other admins / global settings.",
+    permissions: [
+      ...READ_BASELINE,
+      "users.moderate",
+      "users.delete",
+      "reports.action",
+      "communities.moderate",
+      "groups.moderate",
+      "livestreams.moderate",
+      "categories.manage",
+      "announcements.manage",
+      "auditlogs.read",
+      "systemhealth.read",
+    ],
+  },
+  {
+    key: "MODERATOR",
+    name: "Moderator",
+    description:
+      "Acts on users/communities/groups/livestreams + works the report queue. No deletes, no config.",
+    permissions: [
+      ...READ_BASELINE,
+      "users.moderate",
+      "reports.action",
+      "communities.moderate",
+      "groups.moderate",
+      "livestreams.moderate",
+    ],
+  },
+  {
+    key: "SUPPORT_AGENT",
+    name: "Support Agent",
+    description:
+      "Read-heavy: views users/communities/groups and triages reports; cannot moderate.",
+    permissions: [...READ_BASELINE, "systemhealth.read"],
+  },
+  {
+    key: "ANALYST",
+    name: "Analyst",
+    description:
+      "Pure read/analytics: dashboard, lists, audit logs, system health. No mutations.",
+    permissions: [...READ_BASELINE, "auditlogs.read", "systemhealth.read"],
+  },
+];

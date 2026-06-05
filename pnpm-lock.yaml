@@ -100,6 +100,9 @@ importers:
       ioredis:
         specifier: ^5.10.1
         version: 5.10.1
+      jsonwebtoken:
+        specifier: ^9.0.2
+        version: 9.0.3
       lodash:
         specifier: ^4.18.1
         version: 4.18.1
@@ -125,6 +128,9 @@ importers:
       "@types/express":
         specifier: ^5.0.6
         version: 5.0.6
+      "@types/jsonwebtoken":
+        specifier: ^9.0.10
+        version: 9.0.10
       "@types/node":
         specifier: ^25.6.2
         version: 25.6.2
@@ -167,6 +173,12 @@ importers:
       "@aimess/utils":
         specifier: workspace:*
         version: link:../../packages/utils
+      "@grpc/grpc-js":
+        specifier: ^1.14.3
+        version: 1.14.3
+      "@grpc/proto-loader":
+        specifier: ^0.8.1
+        version: 0.8.1
       "@prisma/client":
         specifier: ^7.8.0
         version: 7.8.0(prisma@7.8.0(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3))(typescript@6.0.3)
@@ -225,6 +237,115 @@ importers:
       "@types/node":
         specifier: ^25.6.0
         version: 25.6.2
+      prisma:
+        specifier: ^7.8.0
+        version: 7.8.0(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  apps/backoffice-service:
+    dependencies:
+      "@aimess/auth-jwt":
+        specifier: workspace:*
+        version: link:../../packages/auth-jwt
+      "@aimess/constants":
+        specifier: workspace:*
+        version: link:../../packages/constants
+      "@aimess/errors":
+        specifier: workspace:*
+        version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
+      "@aimess/logger":
+        specifier: workspace:*
+        version: link:../../packages/logger
+      "@aimess/prisma-pg":
+        specifier: workspace:*
+        version: link:../../packages/prisma-pg
+      "@aimess/redis":
+        specifier: workspace:*
+        version: link:../../packages/redis
+      "@aimess/shared-types":
+        specifier: workspace:*
+        version: link:../../packages/shared-types
+      "@aimess/storage":
+        specifier: workspace:*
+        version: link:../../packages/storage
+      "@aimess/utils":
+        specifier: workspace:*
+        version: link:../../packages/utils
+      "@grpc/grpc-js":
+        specifier: ^1.14.3
+        version: 1.14.3
+      "@grpc/proto-loader":
+        specifier: ^0.8.1
+        version: 0.8.1
+      "@prisma/client":
+        specifier: ^7.8.0
+        version: 7.8.0(prisma@7.8.0(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3))(typescript@6.0.3)
+      amqplib:
+        specifier: ^2.0.1
+        version: 2.0.1
+      bcryptjs:
+        specifier: ^3.0.3
+        version: 3.0.3
+      cors:
+        specifier: ^2.8.6
+        version: 2.8.6
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
+      express:
+        specifier: ^5.2.1
+        version: 5.2.1
+      express-rate-limit:
+        specifier: ^8.5.1
+        version: 8.5.1(express@5.2.1)
+      helmet:
+        specifier: ^8.1.0
+        version: 8.1.0
+      ioredis:
+        specifier: ^5.10.1
+        version: 5.10.1
+      jsonwebtoken:
+        specifier: ^9.0.2
+        version: 9.0.3
+      nodemailer:
+        specifier: ^8.0.7
+        version: 8.0.7
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      "@types/amqplib":
+        specifier: ^0.10.7
+        version: 0.10.8
+      "@types/bcryptjs":
+        specifier: ^3.0.0
+        version: 3.0.0
+      "@types/cors":
+        specifier: ^2.8.19
+        version: 2.8.19
+      "@types/express":
+        specifier: ^5.0.6
+        version: 5.0.6
+      "@types/jsonwebtoken":
+        specifier: ^9.0.10
+        version: 9.0.10
+      "@types/node":
+        specifier: ^25.6.2
+        version: 25.6.2
+      "@types/nodemailer":
+        specifier: ^8.0.0
+        version: 8.0.0
       prisma:
         specifier: ^7.8.0
         version: 7.8.0(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
@@ -337,6 +458,9 @@ importers:
       "@aimess/errors":
         specifier: workspace:*
         version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
@@ -2200,6 +2324,13 @@ packages:
       {
         integrity: sha512-vtDp8Pk1wsE/AuQ8/Rgtm6KUZYqcnTgNvEHwzCkX8rL7AGsC6zqAfKAAJhUZXFhM/Pp++tbnUHiam/8vVpPztA==,
       }
+
+  "@types/bcryptjs@3.0.0":
+    resolution:
+      {
+        integrity: sha512-WRZOuCuaz8UcZZE4R5HXTco2goQSI2XxjGY3hbM/xDvwmqFWd4ivooImsMx65OKM6CtNKbnZ5YL+YwAwK7c1dg==,
+      }
+    deprecated: This is a stub types definition. bcryptjs provides its own type definitions, so you do not need this installed.
 
   "@types/body-parser@1.19.6":
     resolution:
@@ -6867,6 +6998,10 @@ snapshots:
   "@types/amqplib@0.10.8":
     dependencies:
       "@types/node": 25.6.2
+
+  "@types/bcryptjs@3.0.0":
+    dependencies:
+      bcryptjs: 3.0.3
 
   "@types/body-parser@1.19.6":
     dependencies:

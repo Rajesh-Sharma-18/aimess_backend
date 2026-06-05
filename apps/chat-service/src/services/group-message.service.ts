@@ -106,6 +106,12 @@ export class GroupMessageService {
       }
     }
 
+    // Allocate the per-room monotonic sequence AFTER the idempotency pre-check,
+    // immediately before insert. On the P2002 dup path below the allocated seq is
+    // discarded (an acceptable gap — we do not retry allocation).
+    const seq = await this.roomRepo.allocateSequence(params.roomId);
+    entity.sequenceNumber = seq;
+
     let message: GroupMessage;
     try {
       message = await this.messageRepo.create(
@@ -158,6 +164,15 @@ export class GroupMessageService {
     return message;
   }
 
+  /**
+   * Active member userIds for a group room — the recipient list for inbox
+   * "bump-to-top" (`conv:updated`) fan-out.
+   */
+  async getActiveMemberIds(roomId: string): Promise<string[]> {
+    const members = await this.memberRepo.findActiveMembers(roomId);
+    return members.map((m) => m.userId);
+  }
+
   async getMessages(params: {
     roomId: string;
     userId: string;
@@ -171,6 +186,41 @@ export class GroupMessageService {
       params.limit,
       params.userId
     );
+  }
+
+  /**
+   * Timestamp-paginated message page (before_ts / after_ts). Over-fetches one
+   * extra row in the repo so `hasMore` is exact; `nextCursor` is the boundary
+   * message's createdAt as epoch-ms (feed back as the next before_ts/after_ts).
+   * Matches `getMessages` visibility (no membership gate; deleted-for-everyone
+   * messages are returned for placeholder rendering).
+   */
+  async getMessagesTimeline(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<{
+    items: GroupMessage[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const rows = await this.messageRepo.findByRoomIdTimeline({
+      userId: params.userId,
+      roomId: params.roomId,
+      direction: params.direction,
+      ts: params.ts,
+      limit: params.limit,
+    });
+
+    const hasMore = rows.length > params.limit;
+    const items = rows.slice(0, params.limit);
+    const last = items[items.length - 1];
+    const nextCursor =
+      hasMore && last ? String(last.createdAt.getTime()) : null;
+
+    return { items, hasMore, nextCursor };
   }
 
   /**
@@ -404,6 +454,8 @@ export class GroupMessageService {
       originalContentType: source.messageType,
     };
 
+    const seq = await this.roomRepo.allocateSequence(params.targetRoomId);
+
     const message = await this.messageRepo.createForwardedMessage({
       roomId: params.targetRoomId,
       senderId: params.senderId,
@@ -413,6 +465,7 @@ export class GroupMessageService {
       messageType: source.messageType,
       forwardData,
       clientMessageId: params.clientMessageId ?? null,
+      sequenceNumber: seq,
     });
 
     // update room last message (fire and forget)
@@ -433,6 +486,50 @@ export class GroupMessageService {
       });
 
     return message;
+  }
+
+  /**
+   * Reconnect gap-fill for a group room: returns messages with
+   * sequenceNumber > sinceSeq. Includes tombstones (no isDeleted filter) so the
+   * client can reconcile deletes/edits missed while offline. Authorizes via the
+   * same active-membership check used by sendMessage.
+   */
+  async catchup(p: {
+    roomId: string;
+    userId: string;
+    sinceSeq: number;
+    limit: number;
+  }): Promise<{
+    authorized: boolean;
+    events: GroupMessage[];
+    hasMore: boolean;
+    lastSeq: number;
+  }> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      p.roomId,
+      p.userId
+    );
+    if (!member) {
+      return {
+        authorized: false,
+        events: [],
+        hasMore: false,
+        lastSeq: p.sinceSeq,
+      };
+    }
+
+    const rows = await this.messageRepo.findAfterSeq(
+      p.roomId,
+      p.sinceSeq,
+      p.limit
+    );
+    const hasMore = rows.length > p.limit;
+    const events = hasMore ? rows.slice(0, p.limit) : rows;
+    const lastSeq = events.length
+      ? events[events.length - 1]!.sequenceNumber
+      : p.sinceSeq;
+
+    return { authorized: true, events, hasMore, lastSeq };
   }
 
   async getMessageReactions(params: {

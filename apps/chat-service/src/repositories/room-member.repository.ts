@@ -79,6 +79,27 @@ export class RoomMemberRepository {
     });
   }
 
+  /** Advance lastReadAt to now for the user's active rows across many rooms. */
+  async bulkAdvanceReadToNow(
+    userId: string,
+    roomIds: string[]
+  ): Promise<number> {
+    if (!roomIds.length) return 0;
+    const result = await this.prisma.roomMember.updateMany({
+      where: { userId, status: "active", roomId: { in: roomIds } },
+      data: { lastReadAt: new Date() },
+    });
+    return result.count;
+  }
+
+  /** Mark every active member of a room as left (community disbanded/deleted). */
+  async markAllLeft(roomId: string): Promise<void> {
+    await this.prisma.roomMember.updateMany({
+      where: { roomId, status: "active" },
+      data: { status: "left", leftAt: new Date() },
+    });
+  }
+
   async isBanned(roomId: string, userId: string): Promise<boolean> {
     const member = await this.prisma.roomMember.findFirst({
       where: { roomId, userId, status: "banned" },
@@ -89,6 +110,20 @@ export class RoomMemberRepository {
   async findActiveByRoom(roomId: string): Promise<RoomMember[]> {
     return this.prisma.roomMember.findMany({
       where: { roomId, status: "active" },
+    });
+  }
+
+  /**
+   * Bulk: a user's ACTIVE member rows across many rooms — the basis for
+   * member-only community-chat summaries. One query, no N+1.
+   */
+  async findActiveByUserAndRooms(
+    userId: string,
+    roomIds: string[]
+  ): Promise<RoomMember[]> {
+    if (!roomIds.length) return [];
+    return this.prisma.roomMember.findMany({
+      where: { userId, status: "active", roomId: { in: roomIds } },
     });
   }
 

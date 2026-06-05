@@ -31,6 +31,19 @@ export function createServiceProxy(
       return `${downstreamPrefix}${normalizedSuffix}`;
     },
     on: {
+      proxyRes: (proxyRes) => {
+        // The gateway is the SINGLE CORS authority. Downstream services use a
+        // bare `cors()` → `Access-Control-Allow-Origin: *`. If that leaks back
+        // through the proxy it overrides the gateway's per-origin header and
+        // breaks credentialed cross-origin requests for any origin the gateway
+        // itself didn't echo (Safari/WebKit: "WildcardOriginNotAllowed").
+        // Strip every upstream CORS header so only the gateway's survive.
+        for (const key of Object.keys(proxyRes.headers)) {
+          if (key.toLowerCase().startsWith("access-control-")) {
+            delete proxyRes.headers[key];
+          }
+        }
+      },
       error: (error, _req, res) => {
         logger.error(`${options.serviceName} proxy error`);
         logger.error(error);

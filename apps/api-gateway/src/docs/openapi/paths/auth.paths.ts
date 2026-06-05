@@ -1156,7 +1156,7 @@ export const authPaths = {
                     type: "object",
                     properties: {
                       data: {
-                        $ref: "#/components/schemas/SocialLinkResponseData",
+                        $ref: "#/components/schemas/SocialUnlinkResponseData",
                       },
                     },
                   },

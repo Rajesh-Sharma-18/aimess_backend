@@ -7,6 +7,22 @@ export class GeneralRoomRepository {
     return this.prisma.generalRoom.findUnique({ where: { id: roomId } });
   }
 
+  /** Bulk fetch rooms by id (community-chat summaries enrichment). */
+  async findManyByIds(ids: string[]): Promise<GeneralRoom[]> {
+    if (!ids.length) return [];
+    return this.prisma.generalRoom.findMany({ where: { id: { in: ids } } });
+  }
+
+  /**
+   * All room ids with their status — the diff target for the boot reconciler so
+   * it can tell which communities already have a (de)activated chat room.
+   */
+  async listAllIdsWithStatus(): Promise<Array<{ id: string; status: string }>> {
+    return this.prisma.generalRoom.findMany({
+      select: { id: true, status: true },
+    });
+  }
+
   async findActiveRooms(): Promise<GeneralRoom[]> {
     return this.prisma.generalRoom.findMany({
       where: { status: "active" },
@@ -86,5 +102,64 @@ export class GeneralRoomRepository {
     // Community rooms are open -- membership is tracked in room_members
     // Return true as a default for general rooms (open communities)
     return true;
+  }
+
+  /**
+   * Provision (idempotently) the chat room backing a community-service Community.
+   * The room's `id` is the Community's id, so `roomId === communityId` across the
+   * whole community-chat path. Driven by the `community.created` sync event.
+   */
+  async provisionForCommunity(
+    communityId: string,
+    data: { name: string; owner?: string | null; logo?: string | null }
+  ): Promise<void> {
+    await this.prisma.generalRoom.upsert({
+      where: { id: communityId },
+      create: {
+        id: communityId,
+        name: data.name,
+        owner: data.owner ?? null,
+        logo: data.logo ?? null,
+        status: "active",
+      },
+      update: {
+        // Keep room metadata in sync, and re-activate if it was soft-removed.
+        name: data.name,
+        logo: data.logo ?? null,
+        status: "active",
+      },
+    });
+  }
+
+  /** Soft-deactivate a community's chat room (driven by `community.deleted`). */
+  async deactivateForCommunity(communityId: string): Promise<void> {
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId },
+      data: { status: "inactive" },
+    });
+  }
+
+  /**
+   * Suspend a community's chat room (driven by `community.status.changed` with
+   * status=SUSPENDED). Sets room status to "suspended" so `sendMessage` blocks
+   * new messages. Members can still read history.
+   */
+  async suspendForCommunity(communityId: string): Promise<void> {
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId, status: "active" },
+      data: { status: "suspended" },
+    });
+  }
+
+  /**
+   * Unsuspend a community's chat room (driven by `community.status.changed` with
+   * status=ACTIVE). Only transitions rooms that are currently "suspended" so a
+   * reopen can never accidentally reactivate a hard-deleted ("inactive") room.
+   */
+  async unsuspendForCommunity(communityId: string): Promise<void> {
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId, status: "suspended" },
+      data: { status: "active" },
+    });
   }
 }

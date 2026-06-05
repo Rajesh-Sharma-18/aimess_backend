@@ -3,13 +3,9 @@ import type { ConnectedAccountsResponse } from "../types/connected-accounts.type
 
 export const connectedAccountsService = {
   async getConnectedAccounts(
-    userId: string,
-    accessToken: string
+    userId: string
   ): Promise<ConnectedAccountsResponse> {
-    const { account, accountStatus } = await resolveAuthAccountSummary(
-      userId,
-      accessToken
-    );
+    const { account, accountStatus } = await resolveAuthAccountSummary(userId);
 
     return {
       providers: account?.providers ?? null,

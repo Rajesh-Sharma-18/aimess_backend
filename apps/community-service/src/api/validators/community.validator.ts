@@ -101,25 +101,71 @@ export const handleAvailableQuerySchema = z.object({
 
 export type HandleAvailableQuery = z.infer<typeof handleAvailableQuerySchema>;
 
-export const myCommunitiesQuerySchema = z.object({
-  page: pageSchema,
-  limit: limitSchema,
-});
+/** Reusable discovery search query field (`q`). */
+const discoverSearchSchema = z
+  .string()
+  .trim()
+  .min(1, "Search query must not be empty")
+  .max(100, "Search query must be at most 100 characters");
+
+/**
+ * `GET /communities/mine` — a single endpoint that serves two modes, inferred
+ * from the params (no `scope` flag). At least one of `before_ts`, `after_ts`,
+ * `q`, or `categoryId` must be present.
+ *
+ *   joined mode (before_ts OR after_ts present) — the caller's own communities,
+ *     ordered by `lastActivityAt`, using **cursor (timestamp) pagination**.
+ *     Timestamps are epoch milliseconds and mutually exclusive:
+ *       before_ts → lastActivityAt <= before_ts (newest-first)
+ *       after_ts  → lastActivityAt >= after_ts  (oldest-first)
+ *     Pagination takes precedence over `q`/`categoryId` if both are sent.
+ *
+ *   search mode (q and/or categoryId, no pagination) — PUBLIC communities plus
+ *     any PRIVATE community the caller is already an ACTIVE member of, filtered
+ *     by `q` / `categoryId`, using **offset (page) pagination**.
+ *     `filter`: "all" browses every public community; "live"/"upcoming" are
+ *     reserved for livestream filtering (no-op until stream-service exists).
+ *
+ * Both modes share `limit`.
+ */
+export const myCommunitiesQuerySchema = z
+  .object({
+    // joined-mode cursor pagination
+    before_ts: z.coerce.number().int().positive().optional(),
+    after_ts: z.coerce.number().int().positive().optional(),
+    // search-mode filters + offset pagination
+    q: discoverSearchSchema.optional(),
+    categoryId: categoryIdSchema.optional(),
+    filter: z.enum(["all", "live", "upcoming"]).default("all"),
+    page: pageSchema,
+    // shared
+    limit: limitSchema,
+  })
+  .refine((q) => !(q.before_ts != null && q.after_ts != null), {
+    message: "Provide either before_ts or after_ts, not both",
+    path: ["before_ts"],
+  })
+  .refine(
+    (q) =>
+      q.before_ts != null ||
+      q.after_ts != null ||
+      q.q != null ||
+      q.categoryId != null,
+    {
+      message:
+        "At least one filter or pagination parameter is required (before_ts, after_ts, q, or categoryId).",
+    }
+  );
 
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
 
 /**
- * Public discovery / browse / search query.
- * `filter`: "all" browses every public community; "live"/"upcoming" are
- * reserved for livestream-based filtering (no-op until stream-service exists).
+ * Public discovery / browse / search query — backs the deprecated
+ * `GET /communities/discover` alias. New clients should call
+ * `GET /communities/mine` with `q`/`categoryId` instead.
  */
 export const discoverQuerySchema = z.object({
-  q: z
-    .string()
-    .trim()
-    .min(1, "Search query must not be empty")
-    .max(100, "Search query must be at most 100 characters")
-    .optional(),
+  q: discoverSearchSchema.optional(),
   categoryId: categoryIdSchema.optional(),
   filter: z.enum(["all", "live", "upcoming"]).default("all"),
   page: pageSchema,
@@ -324,6 +370,35 @@ export type ReportResolutionInput = z.infer<typeof reportResolutionSchema>;
 
 // --- Mute -----------------------------------------------------------------
 
+const communityIdsSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .regex(OBJECT_ID_REGEX, "communityIds must be 24-character hex ObjectIds")
+  )
+  .min(1, "communityIds must have at least one entry")
+  .max(50, "communityIds must have at most 50 entries")
+  .transform((ids) => [...new Set(ids)]);
+
+export const bulkMarkReadSchema = z.object({
+  communityIds: communityIdsSchema,
+});
+export type BulkMarkReadInput = z.infer<typeof bulkMarkReadSchema>;
+
+export const bulkMuteSchema = z.object({
+  action: z.enum(["mute", "unmute"]),
+  communityIds: communityIdsSchema,
+  durationMinutes: z
+    .number()
+    .int()
+    .min(1, "durationMinutes must be at least 1")
+    .max(525_600, "durationMinutes must be at most 525600 (365 days)")
+    .nullable()
+    .optional(),
+});
+export type BulkMuteInput = z.infer<typeof bulkMuteSchema>;
+
 export const setMuteSchema = z.object({
   durationMinutes: z
     .number()
@@ -462,3 +537,48 @@ export const inviteLinkCodeParamsSchema = z.object({
     .regex(/^[A-Za-z0-9_-]+$/, "invalid code"),
 });
 export type InviteLinkCodeParams = z.infer<typeof inviteLinkCodeParamsSchema>;
+
+// ---------------------------------------------------------------------------
+// Admin category CRUD
+// ---------------------------------------------------------------------------
+
+const categoryNameSchema = z
+  .string()
+  .trim()
+  .min(2, "Category name must be at least 2 characters")
+  .max(80, "Category name must be at most 80 characters");
+
+export const adminCategoriesQuerySchema = z.object({
+  search: z.string().trim().min(1).optional(),
+  status: z.enum(["visible", "hidden", "all"]).optional().default("all"),
+  page: pageSchema,
+  limit: limitSchema,
+});
+
+export type AdminCategoriesQuery = z.infer<typeof adminCategoriesQuerySchema>;
+
+export const createCategorySchema = z.object({
+  name: categoryNameSchema,
+});
+
+export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
+
+export const updateCategorySchema = z
+  .object({
+    name: categoryNameSchema.optional(),
+    visible: z.boolean().optional(),
+  })
+  .refine((b) => b.name !== undefined || b.visible !== undefined, {
+    message: "At least one of name or visible must be provided",
+  });
+
+export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>;
+
+export const categoryIdParamSchema = z.object({
+  categoryId: z
+    .string()
+    .trim()
+    .regex(OBJECT_ID_REGEX, "categoryId must be a 24-character hex ObjectId"),
+});
+
+export type CategoryIdParams = z.infer<typeof categoryIdParamSchema>;

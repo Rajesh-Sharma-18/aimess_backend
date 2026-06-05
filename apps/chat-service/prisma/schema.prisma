@@ -41,6 +41,7 @@ model PrivateRoom {
   mutedBy                   Json     @default("{}")
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
+  lastSequence              Int      @default(0)
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
@@ -74,6 +75,7 @@ model PrivateMessage {
   isDeleted        Boolean   @default(false)
   deletedAt        DateTime?
   deletedBy        String?
+  sequenceNumber   Int       @default(0)
   createdAt        DateTime  @default(now())
   editedAt         DateTime?
   editHistory      Json      @default("[]")
@@ -84,6 +86,7 @@ model PrivateMessage {
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
+  @@index([roomId, sequenceNumber])
   @@index([systemEvent])
   @@index([clientMessageId])
   @@map("private_messages")
@@ -131,6 +134,7 @@ model GroupRoom {
   lastMessagePreview Json?
   pinnedCount        Int       @default(0)
   lastPinnedAt       DateTime?
+  lastSequence       Int       @default(0)
   disbandedAt        DateTime?
   disbandedBy        String?
   createdAt          DateTime  @default(now())
@@ -171,6 +175,7 @@ model GroupMessage {
   deletedAt          DateTime?
   deletedBy          String?
   deletedForUserIds  Json      @default("[]")
+  sequenceNumber     Int       @default(0)
   createdAt          DateTime  @default(now())
   editedAt           DateTime?
   editHistory        Json      @default("[]")
@@ -179,6 +184,7 @@ model GroupMessage {
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
+  @@index([roomId, sequenceNumber])
   @@index([clientMessageId])
   @@index([senderId])
   @@index([messageType])

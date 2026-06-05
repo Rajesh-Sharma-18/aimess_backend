@@ -37,10 +37,7 @@ const envSchema = z
     /** Same secret as auth-service — used to verify access tokens. */
     JWT_ACCESS_SECRET: z.string().min(1),
 
-    /** Internal base URL for auth-service (e.g. http://127.0.0.1:3001). */
-    AUTH_SERVICE_URL: z.string().url(),
-    /** Timeout for auth-service internal HTTP calls (ms). */
-    AUTH_SERVICE_TIMEOUT_MS: z.coerce.number().positive().default(3000),
+    AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),
 
     MINIO_ENDPOINT: z.string().url(),
     /**

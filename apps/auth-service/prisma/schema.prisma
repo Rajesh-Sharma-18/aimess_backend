@@ -30,33 +30,37 @@ model AuthUser {
   emailVerified        Boolean              @default(false)
   phoneVerified        Boolean              @default(false)
   ageVerified          Boolean              @default(false)
+  // The first sign-in method linked to this account becomes its "primary"
+  // account. Set once on the first successful link (email/Google/Apple) and
+  // never overwritten thereafter. null until the first link happens.
+  primaryAccount       AuthProvider?
   // Mirrored from user-service via the user.profile_updated event so the login
   // response can route the client to the edit-profile screen.
   isProfileCompleted   Boolean              @default(false)
   dateOfBirth          DateTime?            @db.Date // collected later (profile / compliance)
   // Legal acceptance — collected when user accepts terms (not required at minimal signup)
-  termsAcceptedAt      DateTime?
-  privacyAcceptedAt    DateTime?
+  termsAcceptedAt      DateTime?            @db.Timestamptz(3)
+  privacyAcceptedAt    DateTime?            @db.Timestamptz(3)
   termsVersion         String?
   privacyVersion       String?
   // Account lifecycle
   status               AccountStatus        @default(ACTIVE)
-  suspendedAt          DateTime?
+  suspendedAt          DateTime?            @db.Timestamptz(3)
   suspendedReason      String?
   suspendedBy          String?              @db.Uuid // ops user id
   // Soft delete with 30-day grace period (SOW §4)
-  deletionRequestedAt  DateTime?
-  scheduledDeletionAt  DateTime?
-  deletedAt            DateTime?
+  deletionRequestedAt  DateTime?            @db.Timestamptz(3)
+  scheduledDeletionAt  DateTime?            @db.Timestamptz(3)
+  deletedAt            DateTime?            @db.Timestamptz(3)
   // Security state
   failedLoginAttempts  Int                  @default(0)
-  lockedUntil          DateTime?
-  lastLoginAt          DateTime?
-  lastPasswordChangeAt DateTime?
+  lockedUntil          DateTime?            @db.Timestamptz(3)
+  lastLoginAt          DateTime?            @db.Timestamptz(3)
+  lastPasswordChangeAt DateTime?            @db.Timestamptz(3)
   // Push notifications
   fcmTokens            String[]             @default([])
-  createdAt            DateTime             @default(now())
-  updatedAt            DateTime             @updatedAt
+  createdAt            DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime             @updatedAt @db.Timestamptz(3)
   linkedAccounts       LinkedAccount[]
   refreshTokens        RefreshToken[]
   sessions             Session[]
@@ -80,7 +84,7 @@ model LinkedAccount {
   providerUserId String // Google `sub`, Apple `sub`, or "email"
   email          String? // email reported by the provider (may differ from primary)
   displayName    String?
-  linkedAt       DateTime     @default(now())
+  linkedAt       DateTime     @default(now()) @db.Timestamptz(3)
 
   @@unique([provider, providerUserId])
   @@unique([userId, provider]) // one provider link per user max
@@ -102,10 +106,10 @@ model OtpCode {
   codeHash    String // bcrypt hash of the OTP, NEVER plaintext
   attempts    Int        @default(0)
   maxAttempts Int        @default(5)
-  expiresAt   DateTime
-  consumedAt  DateTime?
+  expiresAt   DateTime   @db.Timestamptz(3)
+  consumedAt  DateTime?  @db.Timestamptz(3)
   ipAddress   String? // for abuse tracking
-  createdAt   DateTime   @default(now())
+  createdAt   DateTime   @default(now()) @db.Timestamptz(3)
 
   @@index([identifier, purpose, consumedAt])
   @@index([userId, purpose])
@@ -121,9 +125,9 @@ model PasswordResetToken {
   userId     String    @db.Uuid
   user       AuthUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
   tokenHash  String    @unique
-  expiresAt  DateTime
-  consumedAt DateTime?
-  createdAt  DateTime  @default(now())
+  expiresAt  DateTime  @db.Timestamptz(3)
+  consumedAt DateTime? @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([userId])
   @@index([expiresAt])
@@ -145,10 +149,10 @@ model Session {
   ipAddress     String?
   userAgent     String?
   countryCode   String? // GeoIP
-  lastActiveAt  DateTime             @default(now())
-  revokedAt     DateTime?
+  lastActiveAt  DateTime             @default(now()) @db.Timestamptz(3)
+  revokedAt     DateTime?            @db.Timestamptz(3)
   revokedReason SessionRevokeReason?
-  createdAt     DateTime             @default(now())
+  createdAt     DateTime             @default(now()) @db.Timestamptz(3)
 
   refreshTokens RefreshToken[]
 
@@ -169,10 +173,10 @@ model RefreshToken {
   sessionId   String    @db.Uuid
   session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   tokenHash   String    @unique // SHA-256 of the refresh token
-  expiresAt   DateTime
-  revokedAt   DateTime?
+  expiresAt   DateTime  @db.Timestamptz(3)
+  revokedAt   DateTime? @db.Timestamptz(3)
   rotatedToId String?   @db.Uuid // points to the successor token after refresh
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([userId])
   @@index([sessionId])
@@ -191,7 +195,7 @@ model LoginAttempt {
   userAgent     String?
   success       Boolean
   failureReason LoginFailureReason?
-  attemptedAt   DateTime            @default(now())
+  attemptedAt   DateTime            @default(now()) @db.Timestamptz(3)
 
   @@index([identifier, attemptedAt])
   @@index([ipAddress, attemptedAt])

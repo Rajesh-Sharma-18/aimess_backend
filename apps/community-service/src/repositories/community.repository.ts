@@ -4,11 +4,13 @@ import {
   CommunityJoinReqStatus,
   CommunityMemberRole,
   CommunityMemberStatus,
+  CommunityModerationStatus,
   CommunityReportStatus,
   CommunityType,
   type Prisma,
 } from "../generated/prisma/index.js";
 import type { CommunityAuditAction } from "../types/community.types.js";
+import { publishCommunityMemberSyncedForChatSafe } from "../messaging/publish-community-chat.js";
 
 export const communityRepository = {
   // ---------------------------------------------------------------------------
@@ -27,6 +29,128 @@ export const communityRepository = {
       where: { id: categoryId, active: true },
       select: { id: true, name: true },
     });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Admin category CRUD
+  // ---------------------------------------------------------------------------
+  async listCategoriesAdmin(params: {
+    search?: string;
+    active?: boolean;
+    page: number;
+    limit: number;
+  }) {
+    const where: Prisma.CommunityCategoryWhereInput = {};
+    if (params.search) {
+      where.name = { contains: params.search, mode: "insensitive" };
+    }
+    if (params.active !== undefined) {
+      where.active = params.active;
+    }
+    const skip = (params.page - 1) * params.limit;
+    return Promise.all([
+      prisma.communityCategory.findMany({
+        where,
+        orderBy: [{ order: "asc" }, { name: "asc" }],
+        skip,
+        take: params.limit,
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          active: true,
+          order: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.communityCategory.count({ where }),
+    ]);
+  },
+
+  findCategoryByIdAdmin(id: string) {
+    return prisma.communityCategory.findFirst({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        active: true,
+        order: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  },
+
+  findCategoryByName(name: string, excludeId?: string) {
+    return prisma.communityCategory.findFirst({
+      where: {
+        name: { equals: name, mode: "insensitive" },
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+  },
+
+  createCategory(data: { name: string; slug: string }) {
+    return prisma.communityCategory.create({
+      data: { name: data.name, slug: data.slug, active: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        active: true,
+        order: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  },
+
+  updateCategoryById(
+    id: string,
+    data: { name?: string; slug?: string; active?: boolean }
+  ) {
+    return prisma.communityCategory.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        active: true,
+        order: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  },
+
+  deleteCategoryById(id: string) {
+    return prisma.communityCategory.delete({
+      where: { id },
+      select: { id: true, name: true, slug: true },
+    });
+  },
+
+  countCommunitiesWithCategory(categoryId: string) {
+    return prisma.community.count({
+      where: { categoryId, deletedAt: { isSet: false } },
+    });
+  },
+
+  /**
+   * Resolve an admin "category" filter token (slug OR ObjectId) to a category id.
+   * The admin list filter accepts either form; communities store `categoryId`, so
+   * a slug must be resolved before filtering. Returns null when no match.
+   */
+  async findActiveCategoryBySlugOrId(slugOrId: string) {
+    const row = await prisma.communityCategory.findFirst({
+      where: { OR: [{ id: slugOrId }, { slug: slugOrId }] },
+      select: { id: true },
+    });
+    return row?.id ?? null;
   },
 
   // ---------------------------------------------------------------------------
@@ -108,13 +232,25 @@ export const communityRepository = {
   },
 
   deleteCommunityHard(id: string) {
-    return prisma.community.delete({ where: { id } });
+    return prisma.$transaction([
+      prisma.communityMember.deleteMany({ where: { communityId: id } }),
+      prisma.community.delete({ where: { id } }),
+    ]);
+  },
+
+  /**
+   * Count of active (non-soft-deleted) communities — admin dashboard aggregate.
+   * Mongo: a soft delete sets `deletedAt` to a Date and the field is unset on
+   * active rows, so `{ isSet: false }` matches active (NEVER `{ deletedAt: null }`).
+   */
+  countActiveCommunities() {
+    return prisma.community.count({ where: { deletedAt: { isSet: false } } });
   },
 
   // ---------------------------------------------------------------------------
   // Members
   // ---------------------------------------------------------------------------
-  createMember(data: {
+  async createMember(data: {
     communityId: string;
     userId: string;
     role: CommunityMemberRole;
@@ -123,11 +259,18 @@ export const communityRepository = {
     snapshotDisplayName: string;
     snapshotAvatarKey: string | null;
   }) {
-    return prisma.communityMember.create({ data });
+    const row = await prisma.communityMember.create({ data });
+    publishCommunityMemberSyncedForChatSafe({
+      communityId: data.communityId,
+      userId: data.userId,
+      status: data.status,
+      role: data.role,
+    });
+    return row;
   },
 
   /** Bulk insert members (single-collection — safe without a replica set). */
-  createManyMembers(
+  async createManyMembers(
     communityId: string,
     members: Array<{
       userId: string;
@@ -138,9 +281,18 @@ export const communityRepository = {
       snapshotAvatarKey: string | null;
     }>
   ) {
-    return prisma.communityMember.createMany({
+    const result = await prisma.communityMember.createMany({
       data: members.map((m) => ({ communityId, ...m })),
     });
+    for (const m of members) {
+      publishCommunityMemberSyncedForChatSafe({
+        communityId,
+        userId: m.userId,
+        status: m.status,
+        role: m.role,
+      });
+    }
+    return result;
   },
 
   deleteMembersForCommunity(communityId: string) {
@@ -203,6 +355,17 @@ export const communityRepository = {
     return prisma.communityMember.updateMany({
       where: { communityId, status: CommunityMemberStatus.ACTIVE },
       data: { status: CommunityMemberStatus.LEFT },
+    });
+  },
+
+  findActiveMembershipsByCommunityIds(userId: string, communityIds: string[]) {
+    return prisma.communityMember.findMany({
+      where: {
+        userId,
+        communityId: { in: communityIds },
+        status: CommunityMemberStatus.ACTIVE,
+      },
+      select: { communityId: true },
     });
   },
 
@@ -298,12 +461,12 @@ export const communityRepository = {
   },
 
   /** Single-document role update keyed by the (communityId, userId) unique. */
-  updateMemberRole(
+  async updateMemberRole(
     communityId: string,
     userId: string,
     role: CommunityMemberRole
   ) {
-    return prisma.communityMember.update({
+    const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: { role },
       select: {
@@ -320,6 +483,8 @@ export const communityRepository = {
         banReason: true,
       },
     });
+    publishCommunityMemberSyncedForChatSafe({ communityId, userId, role });
+    return row;
   },
 
   /**
@@ -327,7 +492,7 @@ export const communityRepository = {
    * Optionally also sets/clears the ban metadata (bannedAt/bannedBy/banReason)
    * in the same write — used by banMember (set) and unbanMember (clear to null).
    */
-  updateMemberStatus(
+  async updateMemberStatus(
     communityId: string,
     userId: string,
     status: CommunityMemberStatus,
@@ -337,7 +502,7 @@ export const communityRepository = {
       banReason: string | null;
     }
   ) {
-    return prisma.communityMember.update({
+    const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: banMeta ? { status, ...banMeta } : { status },
       select: {
@@ -354,6 +519,8 @@ export const communityRepository = {
         banReason: true,
       },
     });
+    publishCommunityMemberSyncedForChatSafe({ communityId, userId, status });
+    return row;
   },
 
   /**
@@ -426,45 +593,124 @@ export const communityRepository = {
   },
 
   /**
-   * Communities where the caller is an ACTIVE member — offset/page pagination
-   * on id. Returns the page rows plus the total matching count.
+   * Communities where the caller is an ACTIVE member, timestamp-cursor paginated
+   * on `Community.lastActivityAt` (latest message, else createdAt). Queried from
+   * the Community side so we can order by the native `lastActivityAt` field and
+   * apply the time bound at the DB level; the caller's role is pulled via a
+   * filtered include on `members`.
+   *
+   * - direction "before": lastActivityAt <= ts, newest-first (desc)
+   * - direction "after" : lastActivityAt >= ts, oldest-first (asc)
+   *
+   * Fetches `limit` rows (caller over-fetches by +1 for an exact hasMore).
+   * Returns rows + the caller's total active-community count.
    */
-  async listMyMemberships(params: {
+  async listMineByActivity(params: {
     userId: string;
-    page: number;
+    direction: "before" | "after";
+    ts: Date;
     limit: number;
   }) {
+    const dir = params.direction === "before" ? "desc" : "asc";
+    const bound =
+      params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
+
     const where = {
-      userId: params.userId,
-      status: CommunityMemberStatus.ACTIVE,
-      community: { deletedAt: { isSet: false } },
+      deletedAt: { isSet: false },
+      lastActivityAt: bound,
+      members: {
+        some: {
+          userId: params.userId,
+          status: CommunityMemberStatus.ACTIVE,
+        },
+      },
     };
 
     const [rows, total] = await Promise.all([
-      prisma.communityMember.findMany({
+      prisma.community.findMany({
         where,
-        orderBy: { id: "asc" },
-        skip: (params.page - 1) * params.limit,
+        orderBy: [{ lastActivityAt: dir }, { id: dir }],
         take: params.limit,
         select: {
           id: true,
-          role: true,
-          community: {
-            select: {
-              id: true,
-              name: true,
-              handle: true,
-              type: true,
-              memberCount: true,
-              avatarUrl: true,
+          name: true,
+          handle: true,
+          type: true,
+          memberCount: true,
+          avatarUrl: true,
+          lastActivityAt: true,
+          moderationStatus: true,
+          // At most one row per (communityId, userId) by unique constraint, so
+          // no take needed (Prisma's mongodb provider doesn't support take on a
+          // nested relation read anyway).
+          members: {
+            where: { userId: params.userId },
+            select: { role: true },
+          },
+        },
+      }),
+      prisma.community.count({
+        where: {
+          deletedAt: { isSet: false },
+          members: {
+            some: {
+              userId: params.userId,
+              status: CommunityMemberStatus.ACTIVE,
             },
           },
         },
       }),
-      prisma.communityMember.count({ where }),
     ]);
 
     return { rows, total };
+  },
+
+  /**
+   * Forward-only bump of a community's `lastActivityAt` (denormalized from a
+   * chat-service community message). No-op if the stored value is already newer
+   * (out-of-order/duplicate event).
+   */
+  async bumpLastActivityAt(
+    communityId: string,
+    activityAt: Date
+  ): Promise<void> {
+    await prisma.community.updateMany({
+      where: { id: communityId, lastActivityAt: { lt: activityAt } },
+      data: { lastActivityAt: activityAt },
+    });
+  },
+
+  /**
+   * Cursor-paginated list of communities (+ all their members) for chat-service's
+   * boot reconciliation of community chat rooms. Cursor is the community `id`
+   * (ObjectId, time-ordered), ascending for stable paging. Includes soft-deleted
+   * communities (carries `deletedAt`) so the reconciler can deactivate their rooms.
+   * All member statuses/roles are returned so RoomMember rows map correctly.
+   */
+  async listForReconciliation(params: {
+    afterId?: string | null;
+    limit: number;
+  }) {
+    return prisma.community.findMany({
+      ...(params.afterId ? { cursor: { id: params.afterId }, skip: 1 } : {}),
+      orderBy: { id: "asc" },
+      take: params.limit,
+      select: {
+        id: true,
+        name: true,
+        adminId: true,
+        avatarUrl: true,
+        deletedAt: true,
+        members: {
+          select: {
+            userId: true,
+            status: true,
+            role: true,
+            joinedAt: true,
+          },
+        },
+      },
+    });
   },
 
   // ---------------------------------------------------------------------------
@@ -494,35 +740,69 @@ export const communityRepository = {
   },
 
   /**
-   * Public, non-deleted communities for discovery/browse, optionally filtered by
-   * a name/handle search term and/or category, excluding the given community ids.
+   * Community ids where the user is an ACTIVE member. Used by the search mode of
+   * `GET /communities/mine` to widen visibility to PRIVATE communities the
+   * caller already belongs to. The (userId, status) index backs this.
+   */
+  async listActiveMemberCommunityIds(userId: string): Promise<string[]> {
+    const rows = await prisma.communityMember.findMany({
+      where: {
+        userId,
+        status: CommunityMemberStatus.ACTIVE,
+      },
+      select: { communityId: true },
+    });
+    return rows.map((r) => r.communityId);
+  },
+
+  /**
+   * Communities for discovery/browse, optionally filtered by a name/handle
+   * search term and/or category. Serves two callers:
+   *   - discover alias: PUBLIC communities, excluding ids the caller relates to
+   *     (`excludeCommunityIds`).
+   *   - /communities/mine search mode: PUBLIC communities PLUS any community in
+   *     `includeMemberCommunityIds` (the caller's ACTIVE PRIVATE memberships).
    * Newest-first (ObjectId is time-ordered) with offset/page pagination on `id`.
    * Returns the page rows plus the total matching count.
    */
   async listDiscoverable(params: {
     q?: string;
     categoryId?: string;
-    excludeCommunityIds: string[];
+    includeMemberCommunityIds?: string[];
+    excludeCommunityIds?: string[];
     page: number;
     limit: number;
   }) {
-    const where: Prisma.CommunityWhereInput = {
-      deletedAt: { isSet: false },
-      type: CommunityType.PUBLIC,
-    };
+    const and: Prisma.CommunityWhereInput[] = [];
 
-    if (params.excludeCommunityIds.length > 0) {
-      where.id = { notIn: params.excludeCommunityIds };
+    // Visibility: PUBLIC, plus any community the caller is an ACTIVE member of.
+    const visibilityOr: Prisma.CommunityWhereInput[] = [
+      { type: CommunityType.PUBLIC },
+    ];
+    if (params.includeMemberCommunityIds?.length) {
+      visibilityOr.push({ id: { in: params.includeMemberCommunityIds } });
+    }
+    and.push({ OR: visibilityOr });
+
+    if (params.excludeCommunityIds?.length) {
+      and.push({ id: { notIn: params.excludeCommunityIds } });
     }
     if (params.categoryId) {
-      where.categoryId = params.categoryId;
+      and.push({ categoryId: params.categoryId });
     }
     if (params.q) {
-      where.OR = [
-        { name: { contains: params.q, mode: "insensitive" } },
-        { handle: { contains: params.q, mode: "insensitive" } },
-      ];
+      and.push({
+        OR: [
+          { name: { contains: params.q, mode: "insensitive" } },
+          { handle: { contains: params.q, mode: "insensitive" } },
+        ],
+      });
     }
+
+    const where: Prisma.CommunityWhereInput = {
+      deletedAt: { isSet: false },
+      AND: and,
+    };
 
     const [rows, total] = await Promise.all([
       prisma.community.findMany({
@@ -546,6 +826,364 @@ export const communityRepository = {
     ]);
 
     return { rows, total };
+  },
+
+  // ---------------------------------------------------------------------------
+  // Backoffice (admin panel) Community Management
+  // ---------------------------------------------------------------------------
+  /**
+   * Admin Community Management list — offset/page pagination with filters over
+   * non-soft-deleted communities. `status` is the admin moderation lifecycle:
+   * existing rows predate `moderationStatus` so a MISSING value counts as ACTIVE
+   * ({ isSet: false }); SUSPENDED == the admin "CLOSED" state. Search matches the
+   * community name OR the admin's snapshot display name (resolved via a CommunityMember
+   * pre-query, since the admin name lives on a different collection). Admin identity
+   * is batch-resolved post-page (no N+1). Returns enriched rows + total.
+   */
+  async adminListCommunities(params: {
+    search?: string;
+    type?: CommunityType;
+    category?: string;
+    status?: "ACTIVE" | "CLOSED";
+    createdFrom?: Date;
+    createdTo?: Date;
+    sortField: string;
+    sortDir: "asc" | "desc";
+    page: number;
+    limit: number;
+  }) {
+    const dir: Prisma.SortOrder = params.sortDir === "asc" ? "asc" : "desc";
+
+    const where: Prisma.CommunityWhereInput = {
+      deletedAt: { isSet: false },
+    };
+
+    if (params.type) {
+      where.type = params.type;
+    }
+
+    // moderationStatus is unset on legacy rows → treat missing as ACTIVE. The
+    // generated enum filter has no `isSet` (the field is non-optional with a
+    // default), so we match "ACTIVE-or-missing" as `not: SUSPENDED` — Mongo's
+    // `$ne` matches absent fields too, so this also covers legacy rows. CLOSED is
+    // the exact SUSPENDED match.
+    if (params.status === "ACTIVE") {
+      where.moderationStatus = { not: CommunityModerationStatus.SUSPENDED };
+    } else if (params.status === "CLOSED") {
+      where.moderationStatus = CommunityModerationStatus.SUSPENDED;
+    }
+
+    // Category filter accepts slug OR id; resolve to the stored categoryId.
+    if (params.category) {
+      const categoryId = await this.findActiveCategoryBySlugOrId(
+        params.category
+      );
+      // No matching category → no rows can match this filter.
+      where.categoryId = categoryId ?? "__no_such_category__";
+    }
+
+    if (params.createdFrom || params.createdTo) {
+      where.createdAt = {
+        ...(params.createdFrom ? { gte: params.createdFrom } : {}),
+        ...(params.createdTo ? { lte: params.createdTo } : {}),
+      };
+    }
+
+    // Search over community name OR admin (snapshot) display name. The admin name
+    // is on the CommunityMember collection, so first collect communityIds whose
+    // ADMIN member's snapshotDisplayName matches, then OR that into the name match.
+    if (params.search) {
+      const adminMatches = await prisma.communityMember.findMany({
+        where: {
+          role: CommunityMemberRole.ADMIN,
+          snapshotDisplayName: {
+            contains: params.search,
+            mode: "insensitive",
+          },
+        },
+        select: { communityId: true },
+      });
+      const adminMatchedCommunityIds = adminMatches.map((m) => m.communityId);
+
+      const searchOr: Prisma.CommunityWhereInput[] = [
+        { name: { contains: params.search, mode: "insensitive" } },
+      ];
+      if (adminMatchedCommunityIds.length > 0) {
+        searchOr.push({ id: { in: adminMatchedCommunityIds } });
+      }
+      where.OR = searchOr;
+    }
+
+    // Sort mapping. `livestreamCount` has no backing column (stubbed) → fall back
+    // to createdAt. Always append a stable secondary on id.
+    let primaryOrderBy: Prisma.CommunityOrderByWithRelationInput;
+    switch (params.sortField) {
+      case "name":
+        primaryOrderBy = { name: dir };
+        break;
+      case "memberCount":
+        primaryOrderBy = { memberCount: dir };
+        break;
+      case "createdAt":
+        primaryOrderBy = { createdAt: dir };
+        break;
+      case "livestreamCount":
+        // No backing column yet (stream-service not wired) → sort by createdAt.
+        primaryOrderBy = { createdAt: dir };
+        break;
+      default:
+        primaryOrderBy = { createdAt: dir };
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.community.findMany({
+        where,
+        orderBy: [primaryOrderBy, { id: dir }],
+        skip: (params.page - 1) * params.limit,
+        take: params.limit,
+        select: {
+          id: true,
+          name: true,
+          handle: true,
+          type: true,
+          categoryId: true,
+          memberCount: true,
+          createdAt: true,
+          adminId: true,
+          moderationStatus: true,
+          avatarUrl: true,
+          category: { select: { id: true, name: true, slug: true } },
+        },
+      }),
+      prisma.community.count({ where }),
+    ]);
+
+    // Batch-resolve admin identity from the CommunityMember snapshot (no N+1).
+    const pageIds = rows.map((r) => r.id);
+    const adminIds = rows.map((r) => r.adminId);
+    const adminMemberRows =
+      pageIds.length > 0
+        ? await prisma.communityMember.findMany({
+            where: {
+              communityId: { in: pageIds },
+              userId: { in: adminIds },
+            },
+            select: {
+              communityId: true,
+              userId: true,
+              snapshotDisplayName: true,
+              snapshotUsername: true,
+              snapshotAvatarKey: true,
+            },
+          })
+        : [];
+    const adminMap = new Map<
+      string,
+      {
+        snapshotDisplayName: string;
+        snapshotUsername: string;
+        snapshotAvatarKey: string | null;
+      }
+    >();
+    for (const m of adminMemberRows) {
+      adminMap.set(`${m.communityId}:${m.userId}`, {
+        snapshotDisplayName: m.snapshotDisplayName,
+        snapshotUsername: m.snapshotUsername,
+        snapshotAvatarKey: m.snapshotAvatarKey,
+      });
+    }
+
+    const enriched = rows.map((r) => {
+      const admin = adminMap.get(`${r.id}:${r.adminId}`);
+      return {
+        ...r,
+        adminName: admin?.snapshotDisplayName ?? "",
+        adminUsername: admin?.snapshotUsername ?? "",
+        adminAvatar: admin?.snapshotAvatarKey ?? "",
+      };
+    });
+
+    return { rows: enriched, total };
+  },
+
+  /**
+   * Admin Community Management detail — the community core + member statistics,
+   * open-report count, active invite-link count, and the admin snapshot. Excludes
+   * soft-deleted. Returns null when not found. `sevenDaysAgo` is the join cutoff
+   * for the "joined last 7d" stat (runtime Date — not a fixture).
+   */
+  async adminGetCommunityDetail(communityId: string) {
+    const community = await prisma.community.findFirst({
+      where: { id: communityId, deletedAt: { isSet: false } },
+      include: { category: { select: { id: true, name: true, slug: true } } },
+    });
+    if (!community) return null;
+
+    const now = new Date();
+    const sevenDaysAgo = new Date(Date.now() - 7 * 864e5);
+
+    const [
+      membersTotal,
+      membersActive,
+      membersPending,
+      membersBanned,
+      membersModerators,
+      membersJoinedLast7d,
+      openReports,
+      activeInviteLinks,
+      adminMember,
+    ] = await Promise.all([
+      prisma.communityMember.count({ where: { communityId } }),
+      prisma.communityMember.count({
+        where: { communityId, status: CommunityMemberStatus.ACTIVE },
+      }),
+      prisma.communityMember.count({
+        where: { communityId, status: CommunityMemberStatus.PENDING },
+      }),
+      prisma.communityMember.count({
+        where: { communityId, status: CommunityMemberStatus.BANNED },
+      }),
+      prisma.communityMember.count({
+        where: {
+          communityId,
+          status: CommunityMemberStatus.ACTIVE,
+          role: {
+            in: [CommunityMemberRole.MODERATOR, CommunityMemberRole.ADMIN],
+          },
+        },
+      }),
+      prisma.communityMember.count({
+        where: { communityId, joinedAt: { gte: sevenDaysAgo } },
+      }),
+      prisma.communityReport.count({
+        where: { communityId, status: CommunityReportStatus.OPEN },
+      }),
+      prisma.communityInviteLink.count({
+        where: {
+          communityId,
+          revokedAt: null,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+      }),
+      prisma.communityMember.findFirst({
+        where: { communityId, userId: community.adminId },
+        select: {
+          snapshotDisplayName: true,
+          snapshotUsername: true,
+          snapshotAvatarKey: true,
+        },
+      }),
+    ]);
+
+    return {
+      community,
+      adminName: adminMember?.snapshotDisplayName ?? "",
+      adminUsername: adminMember?.snapshotUsername ?? "",
+      adminAvatar: adminMember?.snapshotAvatarKey ?? "",
+      membersTotal,
+      membersActive,
+      membersPending,
+      membersBanned,
+      membersModerators,
+      membersJoinedLast7d,
+      openReports,
+      activeInviteLinks,
+    };
+  },
+
+  /**
+   * Admin moderation toggle: close (SUSPENDED) or reopen (ACTIVE) a community.
+   * Legacy rows have an unset moderationStatus → treated as ACTIVE. No
+   * $transaction (standalone Mongo); the audit-log append is a sequential write.
+   * Returns a business-result envelope (ok + errorCode) rather than throwing, so
+   * the gRPC handler can return 404/409-mappable codes on the wire.
+   */
+  async adminSetModerationStatus(
+    communityId: string,
+    status: CommunityModerationStatus,
+    reasonCode: string | null,
+    actorAdminId: string | null
+  ): Promise<{
+    ok: boolean;
+    status: "ACTIVE" | "CLOSED";
+    closedAt: number;
+    errorCode: string;
+  }> {
+    const community = await prisma.community.findFirst({
+      where: { id: communityId, deletedAt: { isSet: false } },
+      select: { id: true, moderationStatus: true },
+    });
+    if (!community) {
+      return {
+        ok: false,
+        status: "ACTIVE",
+        closedAt: 0,
+        errorCode: "COMMUNITY_NOT_FOUND",
+      };
+    }
+
+    // Missing moderationStatus (legacy rows) counts as ACTIVE.
+    const isCurrentlySuspended =
+      community.moderationStatus === CommunityModerationStatus.SUSPENDED;
+
+    if (status === CommunityModerationStatus.SUSPENDED) {
+      if (isCurrentlySuspended) {
+        return {
+          ok: false,
+          status: "CLOSED",
+          closedAt: 0,
+          errorCode: "COMMUNITY_ALREADY_CLOSED",
+        };
+      }
+      const closedAt = new Date();
+      await prisma.community.update({
+        where: { id: communityId },
+        data: {
+          moderationStatus: CommunityModerationStatus.SUSPENDED,
+          closedAt,
+          closedReasonCode: reasonCode || null,
+          closedByAdminId: actorAdminId || null,
+        },
+      });
+      await this.createAuditLog({
+        communityId,
+        actorId: actorAdminId || "system",
+        action: "ADMIN_SUSPEND_COMMUNITY",
+        reason: reasonCode || undefined,
+      });
+      return {
+        ok: true,
+        status: "CLOSED",
+        closedAt: closedAt.getTime(),
+        errorCode: "",
+      };
+    }
+
+    // Target ACTIVE (reopen).
+    if (!isCurrentlySuspended) {
+      return {
+        ok: false,
+        status: "ACTIVE",
+        closedAt: 0,
+        errorCode: "COMMUNITY_NOT_CLOSED",
+      };
+    }
+    await prisma.community.update({
+      where: { id: communityId },
+      data: {
+        moderationStatus: CommunityModerationStatus.ACTIVE,
+        closedAt: null,
+        closedReasonCode: null,
+        closedByAdminId: null,
+      },
+    });
+    await this.createAuditLog({
+      communityId,
+      actorId: actorAdminId || "system",
+      action: "ADMIN_REOPEN_COMMUNITY",
+      reason: reasonCode || undefined,
+    });
+    return { ok: true, status: "ACTIVE", closedAt: 0, errorCode: "" };
   },
 
   // ---------------------------------------------------------------------------
@@ -954,6 +1592,26 @@ export const communityRepository = {
    */
   findMutesByUserAndCommunityIds(userId: string, communityIds: string[]) {
     return prisma.communityMuteSetting.findMany({
+      where: { userId, communityId: { in: communityIds } },
+    });
+  },
+
+  bulkCreateMute(
+    userId: string,
+    communityIds: string[],
+    mutedUntil: Date | null
+  ) {
+    return prisma.communityMuteSetting.createMany({
+      data: communityIds.map((communityId) => ({
+        userId,
+        communityId,
+        mutedUntil,
+      })),
+    });
+  },
+
+  bulkClearMute(userId: string, communityIds: string[]) {
+    return prisma.communityMuteSetting.deleteMany({
       where: { userId, communityId: { in: communityIds } },
     });
   },

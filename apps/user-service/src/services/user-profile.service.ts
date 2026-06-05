@@ -53,13 +53,35 @@ function isUniqueViolationOnField(
   error: Prisma.PrismaClientKnownRequestError,
   field: string
 ): boolean {
+  // 1. Standard Prisma meta.target
   const target = error.meta?.target;
-  if (Array.isArray(target)) {
-    return target.includes(field);
+  if (Array.isArray(target) && target.includes(field)) {
+    return true;
   }
-  if (typeof target === "string") {
-    return target.includes(field);
+  if (typeof target === "string" && target.includes(field)) {
+    return true;
   }
+
+  // 2. Driver adapter pg unique constraint fields
+  const adapterError = error.meta?.driverAdapterError as
+    | { cause?: { constraint?: { fields?: unknown } } }
+    | undefined;
+  const adapterFields = adapterError?.cause?.constraint?.fields;
+  if (Array.isArray(adapterFields) && adapterFields.includes(field)) {
+    return true;
+  }
+
+  // 3. Fallback: Parse from error message
+  const message = error.message || "";
+  if (
+    message.includes(
+      `Unique constraint failed on the fields: (\`${field}\`)`
+    ) ||
+    message.includes(`Unique constraint failed on the fields: (${field})`)
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -83,6 +105,9 @@ type ProfileAuthSummary = {
   email: string | null;
   isGoogleLogin: boolean | null;
   isAppleLogin: boolean | null;
+  primaryAccount: SignInProvider | null;
+  googleEmail: string | null;
+  appleEmail: string | null;
 };
 
 async function toProfileData(
@@ -106,6 +131,11 @@ async function toProfileData(
     // synced-at-registration DB flag when auth-service is unavailable.
     isGoogleLogin: authSummary.isGoogleLogin ?? profile.isGoogleLogin,
     isAppleLogin: authSummary.isAppleLogin ?? false,
+    // Always present: null when unset, missing on older records, or auth down.
+    primaryAccount: authSummary.primaryAccount ?? null,
+    // Provider emails — non-null only while that provider is linked; null otherwise.
+    googleEmail: authSummary.googleEmail ?? null,
+    appleEmail: authSummary.appleEmail ?? null,
     dateOfBirth: formatDateOfBirth(profile.dateOfBirth),
     gender: profile.gender,
     avatarUrl: avatarView?.url ?? null,
@@ -126,16 +156,37 @@ function isProviderConnected(
   );
 }
 
+/**
+ * Email reported by a linked social provider. Reuses the providers already
+ * fetched in the auth account summary (no extra query). Returns null when the
+ * provider is not connected or reported no email — so googleEmail/appleEmail
+ * are non-null only while that provider is linked.
+ */
+function getProviderEmail(
+  account: Pick<AuthAccountSummary, "providers"> | null,
+  provider: SignInProvider
+): string | null {
+  if (!account?.providers) {
+    return null;
+  }
+  const entry = account.providers.find(
+    (item) => item.provider === provider && item.connected
+  );
+  return entry?.providerEmail ?? null;
+}
+
 async function resolveProfileAuthSummary(
-  userId: string,
-  accessToken: string
+  userId: string
 ): Promise<ProfileAuthSummary> {
-  const { account } = await resolveAuthAccountSummary(userId, accessToken);
+  const { account } = await resolveAuthAccountSummary(userId);
   return {
     account: account?.account ?? null,
     email: account?.email ?? null,
     isGoogleLogin: isProviderConnected(account, "GOOGLE"),
     isAppleLogin: isProviderConnected(account, "APPLE"),
+    primaryAccount: account?.primaryAccount ?? null,
+    googleEmail: getProviderEmail(account, "GOOGLE"),
+    appleEmail: getProviderEmail(account, "APPLE"),
   };
 }
 
@@ -156,12 +207,9 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
 }
 
 export const userProfileService = {
-  async getMyProfile(
-    userId: string,
-    accessToken: string
-  ): Promise<UserProfileData> {
+  async getMyProfile(userId: string): Promise<UserProfileData> {
     const profile = await loadProfileRecord(userId);
-    const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+    const authSummary = await resolveProfileAuthSummary(userId);
     return toProfileData(profile, authSummary);
   },
 
@@ -285,7 +333,6 @@ export const userProfileService = {
 
   async updateProfile(
     userId: string,
-    accessToken: string,
     input: UpdateProfileInput
   ): Promise<UserProfileData> {
     const profile = await userProfileRepository.findByUserId(userId);
@@ -373,7 +420,7 @@ export const userProfileService = {
     // returns the current profile without an unnecessary auth-service hop on
     // the mutate path.
     if (Object.keys(updateData).length === 0) {
-      const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+      const authSummary = await resolveProfileAuthSummary(userId);
       return toProfileData(profile, authSummary);
     }
 
@@ -398,7 +445,7 @@ export const userProfileService = {
       await userCache.onUsernameClaimed(updateData.username);
     }
 
-    const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+    const authSummary = await resolveProfileAuthSummary(userId);
     return toProfileData(updated, authSummary);
   },
 };

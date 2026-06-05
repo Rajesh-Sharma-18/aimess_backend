@@ -1,0 +1,77 @@
+import { Router, type IRouter } from "express";
+
+import { PERMISSIONS } from "../../constants/index.js";
+import {
+  bulkEndLivestreams,
+  bulkReviewLivestreamReports,
+  endLivestream,
+  getLivestreamDetails,
+  listLivestreamReports,
+  listLivestreams,
+} from "../controllers/index.js";
+import {
+  adminAuth,
+  requirePermission,
+  validateBody,
+  validateParams,
+  validateQuery,
+} from "../middleware/index.js";
+import {
+  bulkEndSchema,
+  bulkReviewReportsSchema,
+  endLivestreamSchema,
+  listLivestreamReportsQuerySchema,
+  listLivestreamsQuerySchema,
+  livestreamIdParamSchema,
+} from "../validators/index.js";
+
+/** Livestream Management admin API — self-prefixed with `/livestreams`. */
+export const livestreamRoutes: IRouter = Router();
+
+// Every route requires a valid admin bearer.
+livestreamRoutes.use(adminAuth);
+
+// Read.
+livestreamRoutes.get(
+  "/livestreams",
+  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  validateQuery(listLivestreamsQuerySchema),
+  listLivestreams
+);
+
+// Bulk actions — MUST be declared before the `/:livestreamId/*` routes so
+// Express does not capture "bulk" as a livestreamId path param.
+livestreamRoutes.post(
+  "/livestreams/bulk/end",
+  requirePermission(PERMISSIONS.LIVESTREAMS_MODERATE),
+  validateBody(bulkEndSchema),
+  bulkEndLivestreams
+);
+livestreamRoutes.post(
+  "/livestreams/bulk/review-reports",
+  requirePermission(PERMISSIONS.LIVESTREAMS_MODERATE),
+  validateBody(bulkReviewReportsSchema),
+  bulkReviewLivestreamReports
+);
+
+// Single-livestream detail + actions.
+livestreamRoutes.get(
+  "/livestreams/:livestreamId",
+  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  validateParams(livestreamIdParamSchema),
+  getLivestreamDetails
+);
+livestreamRoutes.get(
+  "/livestreams/:livestreamId/reports",
+  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  validateParams(livestreamIdParamSchema),
+  validateQuery(listLivestreamReportsQuerySchema),
+  listLivestreamReports
+);
+livestreamRoutes.post(
+  "/livestreams/:livestreamId/end",
+  requirePermission(PERMISSIONS.LIVESTREAMS_MODERATE),
+  validateParams(livestreamIdParamSchema),
+  validateBody(endLivestreamSchema),
+  endLivestream
+);

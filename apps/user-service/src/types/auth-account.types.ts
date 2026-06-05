@@ -17,5 +17,7 @@ export type AuthAccountSummary = {
   email: string | null;
   emailVerified: boolean;
   hasPassword: boolean;
+  /** First sign-in method ever linked; null until the first link (or if absent). */
+  primaryAccount: SignInProvider | null;
   providers: ConnectedProviderInfo[];
 };

@@ -1,0 +1,110 @@
+syntax = "proto3";
+package auth;
+
+service AuthService {
+  rpc GetUserCounts (GetUserCountsRequest) returns (UserCounts);
+  rpc GetActiveUserCounts (GetActiveUserCountsRequest) returns (ActiveUserCounts);
+  rpc GetActiveUserSeries (ActiveUserSeriesRequest) returns (ActiveUserSeries);
+  rpc AdminListUsers (AdminListUsersRequest) returns (AdminListUsersResponse);
+  rpc AdminGetUser (AdminGetUserRequest) returns (AdminUserRecord);
+  rpc GetAccountSummary (GetAccountSummaryRequest) returns (AccountSummary);
+  rpc BulkGetAccounts (BulkGetAccountsRequest) returns (BulkGetAccountsResponse);
+}
+
+message GetUserCountsRequest {}
+message UserCounts {
+  int64 total_users      = 1;
+  int64 new_users_today  = 2;
+  int64 banned_users     = 3;
+}
+
+message GetActiveUserCountsRequest {
+  int32 dau_window_hours = 1;
+  int32 mau_window_days  = 2;
+}
+message ActiveUserCounts {
+  int64 daily_active   = 1;
+  int64 monthly_active = 2;
+}
+
+// Per-day active/churned series for the admin dashboard chart.
+// Dates are inclusive YYYY-MM-DD (UTC, DAY granularity).
+message ActiveUserSeriesRequest {
+  string start_date = 1; // inclusive YYYY-MM-DD (UTC)
+  string end_date   = 2; // inclusive YYYY-MM-DD (UTC)
+}
+message ActiveUserSeries {
+  repeated ActiveUserSeriesBucket buckets = 1;
+}
+message ActiveUserSeriesBucket {
+  string date           = 1; // YYYY-MM-DD (UTC)
+  int64  daily_active    = 2;
+  int64  monthly_active  = 3;
+  int64  churned         = 4;
+}
+
+// Admin Panel: list/fetch real users from auth-service.
+message AdminListUsersRequest {
+  string search = 1;            // case-insensitive contains over email + account
+  repeated string status = 2;   // admin statuses: ACTIVE|SUSPENDED|BANNED|DELETED
+  string created_after = 3;     // ISO datetime, inclusive (filter createdAt >=)
+  string created_before = 4;    // ISO datetime, inclusive (filter createdAt <=)
+  string sort_field = 5;        // createdAt|email|account|status  (default createdAt)
+  string sort_dir = 6;          // asc|desc (default desc)
+  int32  limit = 7;             // page size (default 20, clamp 1..100)
+  int32  offset = 8;            // offset pagination
+  repeated string user_ids = 9; // OPTIONAL: when non-empty, constrain to these ids (used by backoffice reports-bucket prefilter)
+}
+message AdminUserRecord {
+  string id = 1;
+  string account = 2;
+  string email = 3;             // "" when null
+  string status = 4;            // normalized admin status (see mapping)
+  string created_at = 5;        // ISO
+  string suspended_at = 6;      // ISO or ""
+  string suspended_reason = 7;  // or ""
+  string deleted_at = 8;        // ISO or ""
+  string last_login_at = 9;     // ISO or ""
+}
+message AdminListUsersResponse {
+  repeated AdminUserRecord users = 1;
+  int64 total = 2;              // total matching the filter (for pagination)
+}
+message AdminGetUserRequest { string user_id = 1; }
+
+// Internal: user-service fetches full account summary by userId (replaces HTTP GET /api/auth/internal/account)
+message GetAccountSummaryRequest {
+  string user_id = 1;
+}
+
+message LinkedAccountInfo {
+  string provider        = 1; // EMAIL | GOOGLE | APPLE
+  bool   connected       = 2;
+  string provider_user_id = 3; // "" when null
+  string provider_email  = 4;  // "" when null
+  string linked_at       = 5;  // ISO or ""
+}
+
+message AccountSummary {
+  string user_id        = 1;
+  string account        = 2;
+  string email          = 3;  // "" when null
+  bool   email_verified = 4;
+  bool   has_password   = 5;
+  repeated LinkedAccountInfo providers = 6;
+  string primary_account = 7; // "" when null; first sign-in method ever linked
+}
+
+// Internal: chat-service fetches account names in bulk (replaces HTTP GET /api/internal/accounts)
+message BulkGetAccountsRequest {
+  repeated string user_ids = 1;
+}
+
+message AccountEntry {
+  string user_id  = 1;
+  string account  = 2;
+}
+
+message BulkGetAccountsResponse {
+  repeated AccountEntry accounts = 1;
+}

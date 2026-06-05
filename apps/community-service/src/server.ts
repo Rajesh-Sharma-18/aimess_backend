@@ -11,6 +11,7 @@ import {
   disableCommunityCache,
 } from "./config/redis.js";
 import { startUserProfileUpdatedConsumer } from "./consumers/user-profile-updated.consumer.js";
+import { startCommunityActivityConsumer } from "./consumers/community-activity.consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
 
 async function start() {
@@ -47,6 +48,16 @@ async function start() {
     } catch (error) {
       logger.warn(
         "RabbitMQ unavailable on boot — user profile snapshot sync will not run until reconnected"
+      );
+      logger.warn(error);
+    }
+
+    try {
+      await startCommunityActivityConsumer();
+      logger.info("RabbitMQ consumer ready (community.activity.queue)");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable on boot — community lastActivityAt sync will not run until reconnected"
       );
       logger.warn(error);
     }

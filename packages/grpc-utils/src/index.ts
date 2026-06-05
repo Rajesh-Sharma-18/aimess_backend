@@ -2,6 +2,11 @@ import * as grpc from "@grpc/grpc-js";
 import CircuitBreaker from "opossum";
 import { logger } from "@aimess/logger";
 
+/** Circuit breaker over a single-arg call: `fire(arg)` → `Promise<R>`. */
+export type Breaker<T, R> = CircuitBreaker<[T], R>;
+/** Circuit breaker over a no-arg call: `fire()` → `Promise<R>`. */
+export type NoArgBreaker<R> = CircuitBreaker<[], R>;
+
 export const BREAKER_OPTS = {
   timeout: 2000,
   errorThresholdPercentage: 50,
@@ -13,7 +18,7 @@ export function makeBreaker<T, R>(
   name: string,
   fn: (p: T) => Promise<R>,
   breakerOpts?: Partial<CircuitBreaker.Options>
-): CircuitBreaker<[T], R> {
+): Breaker<T, R> {
   const breaker = new CircuitBreaker(fn, {
     ...BREAKER_OPTS,
     ...breakerOpts,
@@ -31,7 +36,7 @@ export function makeBreakerNoArgs<R>(
   name: string,
   fn: () => Promise<R>,
   breakerOpts?: Partial<CircuitBreaker.Options>
-): CircuitBreaker<[], R> {
+): NoArgBreaker<R> {
   const breaker = new CircuitBreaker(fn, {
     ...BREAKER_OPTS,
     ...breakerOpts,

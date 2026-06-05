@@ -8,6 +8,21 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 
+export interface PrivateRoomPeer {
+  id: string;
+  displayName: string;
+  memberId: string;
+  avatar: string;
+  isDeletedUser: boolean;
+  isOnline: boolean;
+}
+
+export type EnrichedPrivateRoom = PrivateRoom & {
+  isMuted: boolean;
+  peerId: string;
+  peer: PrivateRoomPeer;
+};
+
 export class PrivateRoomService {
   constructor(
     private readonly privateRoomRepo: PrivateRoomRepository,
@@ -45,15 +60,36 @@ export class PrivateRoomService {
     userId: string;
     limit: number;
     cursor?: string | null;
-  }) {
+  }): Promise<EnrichedPrivateRoom[]> {
     const rooms = await this.privateRoomRepo.getConversationList(params);
+    return this.enrichConversations(rooms, params.userId);
+  }
 
-    // Enrich with peer info
+  /**
+   * Timestamp-bounded conversation fetch for the unified inbox, enriched with
+   * peer snapshot + mute state (same shape as getConversationList).
+   */
+  async getInboxConversations(params: {
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<EnrichedPrivateRoom[]> {
+    const rooms = await this.privateRoomRepo.getInboxConversations(params);
+    return this.enrichConversations(rooms, params.userId);
+  }
+
+  /**
+   * Attach the peer's user snapshot + the viewer's mute state to each room.
+   * Shared by the cursor conversation list and the unified inbox so both expose
+   * an identical private-room item shape.
+   */
+  private async enrichConversations(
+    rooms: PrivateRoom[],
+    userId: string
+  ): Promise<EnrichedPrivateRoom[]> {
     const peerIds = rooms
-      .map((room) => {
-        const participants = room.participants || [];
-        return participants.find((p) => p !== params.userId) || "";
-      })
+      .map((room) => (room.participants || []).find((p) => p !== userId) || "")
       .filter(Boolean);
 
     const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
@@ -62,15 +98,14 @@ export class PrivateRoomService {
     );
 
     const now = Date.now();
-    const enrichedRooms = rooms.map((room) => {
-      const peerId =
-        (room.participants || []).find((p) => p !== params.userId) || "";
-      const snapshot = snapshots.get(peerId) || {};
+    return rooms.map((room) => {
+      const peerId = (room.participants || []).find((p) => p !== userId) || "";
+      const snapshot = (snapshots.get(peerId) || {}) as Record<string, unknown>;
       const mutedBy = (room.mutedBy ?? {}) as Record<
         string,
         { muteUntil?: string | null }
       >;
-      const myMute = mutedBy[params.userId];
+      const myMute = mutedBy[userId];
       const isMuted =
         myMute != null &&
         (myMute.muteUntil == null ||
@@ -81,17 +116,14 @@ export class PrivateRoomService {
         peerId,
         peer: {
           id: peerId,
-          displayName: (snapshot as Record<string, unknown>).displayName || "",
-          memberId: (snapshot as Record<string, unknown>).memberId || "",
-          avatar: (snapshot as Record<string, unknown>).avatar || "",
-          isDeletedUser:
-            (snapshot as Record<string, unknown>).isDeletedUser === true,
-          isOnline: (snapshot as Record<string, unknown>).isOnline || false,
+          displayName: (snapshot.displayName as string) || "",
+          memberId: (snapshot.memberId as string) || "",
+          avatar: (snapshot.avatar as string) || "",
+          isDeletedUser: snapshot.isDeletedUser === true,
+          isOnline: Boolean(snapshot.isOnline),
         },
       };
     });
-
-    return enrichedRooms;
   }
 
   async countConversations(userId: string): Promise<number> {

@@ -23,7 +23,26 @@ function isProviderAccountConflict(
   error: Prisma.PrismaClientKnownRequestError
 ): boolean {
   const target = error.meta?.target;
-  return JSON.stringify(target ?? "").includes("providerUserId");
+  if (JSON.stringify(target ?? "").includes("providerUserId")) {
+    return true;
+  }
+
+  // Support driver adapters
+  const adapterError = error.meta?.driverAdapterError as
+    | { cause?: { constraint?: { fields?: unknown } } }
+    | undefined;
+  const adapterFields = adapterError?.cause?.constraint?.fields;
+  if (JSON.stringify(adapterFields ?? "").includes("providerUserId")) {
+    return true;
+  }
+
+  // Fallback: Parse from error message
+  const message = error.message || "";
+  if (message.includes("providerUserId")) {
+    return true;
+  }
+
+  return false;
 }
 import { loadActiveAuthUser } from "../lib/account-guard.js";
 import {
@@ -31,9 +50,15 @@ import {
   toSocialAuthProvider,
   type SocialLinkProvider,
 } from "../lib/sign-in-methods.js";
+import { authRepository } from "../repositories/auth.repository.js";
 import { linkedAccountRepository } from "../repositories/linked-account.repository.js";
 
 export type SocialLinkResult = {
+  provider: "GOOGLE" | "APPLE";
+  primaryAccount: AuthProvider | null;
+};
+
+export type SocialUnlinkResult = {
   provider: "GOOGLE" | "APPLE";
 };
 
@@ -89,13 +114,19 @@ async function linkProvider(
     throw error;
   }
 
-  return { provider: socialProvider };
+  // First linked method wins: only sets this provider when primaryAccount is null.
+  const primaryAccount = await authRepository.setPrimaryAccountIfUnset(
+    userId,
+    provider
+  );
+
+  return { provider: socialProvider, primaryAccount };
 }
 
 async function unlinkProvider(
   userId: string,
   provider: SocialLinkProvider
-): Promise<SocialLinkResult> {
+): Promise<SocialUnlinkResult> {
   const user = await loadActiveAuthUser(userId);
   const socialProvider = toSocialAuthProvider(provider);
 
@@ -151,7 +182,7 @@ export const socialLinkService = {
   async unlink(
     userId: string,
     input: UnlinkSocialInput
-  ): Promise<SocialLinkResult> {
+  ): Promise<SocialUnlinkResult> {
     const provider =
       input.provider === "GOOGLE" ? AuthProvider.GOOGLE : AuthProvider.APPLE;
 

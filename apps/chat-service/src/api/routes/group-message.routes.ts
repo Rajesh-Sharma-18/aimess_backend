@@ -10,7 +10,7 @@ import {
   editGroupMessageSchema,
 } from "../validators/group-message.validator.js";
 import {
-  messageListQuerySchema,
+  messageTimelineQuerySchema,
   messageSearchQuerySchema,
   mediaListQuerySchema,
   conversationQuerySchema,
@@ -35,7 +35,7 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   router.get(
     "/:roomId/messages",
     authenticate,
-    validateQuery(messageListQuerySchema),
+    validateQuery(messageTimelineQuerySchema),
     ctrl.getMessages
   );
   router.get(

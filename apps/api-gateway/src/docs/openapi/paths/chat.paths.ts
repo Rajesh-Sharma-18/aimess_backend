@@ -68,6 +68,31 @@ function cursorParam(description = "Cursor for pagination") {
   };
 }
 
+/**
+ * before_ts / after_ts pair for the timestamp-paginated message endpoints.
+ * Epoch ms, mutually exclusive; omit both for the newest page.
+ */
+function messageTimelineParams() {
+  return [
+    {
+      name: "before_ts",
+      in: "query" as const,
+      required: false,
+      schema: { type: "integer" as const, minimum: 1 },
+      description:
+        "Epoch ms. Returns messages with createdAt <= before_ts (newest-first).",
+    },
+    {
+      name: "after_ts",
+      in: "query" as const,
+      required: false,
+      schema: { type: "integer" as const, minimum: 1 },
+      description:
+        "Epoch ms. Returns messages with createdAt >= after_ts (oldest-first).",
+    },
+  ];
+}
+
 function limitParam(defaultVal: number, max = 100) {
   return {
     name: "limit",
@@ -294,6 +319,43 @@ const privateConversations = {
   },
 };
 
+const chatInbox = {
+  get: {
+    tags: ["Chat — Inbox"],
+    summary: "Unified inbox (private + group)",
+    description:
+      "Merged, timestamp-ordered list of the authenticated user's private rooms and group chats. " +
+      "Timestamps are epoch milliseconds and mutually exclusive: `before_ts` returns items with " +
+      "`lastMessageAt <= before_ts` (newest-first); `after_ts` returns items with `lastMessageAt >= after_ts` " +
+      "(oldest-first). Omit both for the newest page. Boundaries are inclusive, so consecutive pages can " +
+      "share the boundary item — de-duplicate by `roomId`. Continue paging with `pagination.nextCursor` " +
+      "(epoch-ms string) fed back as the same `before_ts`/`after_ts` you used.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "before_ts",
+        in: "query" as const,
+        required: false,
+        schema: { type: "integer" as const, minimum: 1 },
+        description: "Epoch ms. Returns items with lastMessageAt <= before_ts.",
+      },
+      {
+        name: "after_ts",
+        in: "query" as const,
+        required: false,
+        schema: { type: "integer" as const, minimum: 1 },
+        description: "Epoch ms. Returns items with lastMessageAt >= after_ts.",
+      },
+      limitParam(20),
+    ],
+    responses: {
+      ...successResponse("Inbox list", "ChatInboxList"),
+      "400": badRequest,
+      "401": unauthorized,
+    },
+  },
+};
+
 const privateRoomByPeer = {
   post: {
     tags: ["Chat — Private"],
@@ -345,7 +407,14 @@ const privateMessages = {
   get: {
     tags: ["Chat — Private"],
     summary: "Get private messages",
-    description: "Cursor-paginated message history for a private room.",
+    description:
+      "Timestamp-paginated message history for a private room. Timestamps are epoch " +
+      "milliseconds and mutually exclusive: `before_ts` returns messages with " +
+      "`createdAt <= before_ts` (newest-first); `after_ts` returns messages with " +
+      "`createdAt >= after_ts` (oldest-first). Omit both for the newest page. " +
+      "Boundaries are inclusive, so consecutive pages can share the boundary message — " +
+      "de-duplicate by message id. Continue paging with `pagination.nextCursor` " +
+      "(epoch-ms string) fed back as the same `before_ts`/`after_ts` you used.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -354,7 +423,7 @@ const privateMessages = {
         required: true,
         schema: { type: "string" },
       },
-      cursorParam(),
+      ...messageTimelineParams(),
       limitParam(30),
     ],
     responses: {
@@ -681,7 +750,14 @@ const groupMessages = {
   get: {
     tags: ["Chat — Groups"],
     summary: "Get group messages",
-    description: "Cursor-paginated message history for a group room.",
+    description:
+      "Timestamp-paginated message history for a group room. Timestamps are epoch " +
+      "milliseconds and mutually exclusive: `before_ts` returns messages with " +
+      "`createdAt <= before_ts` (newest-first); `after_ts` returns messages with " +
+      "`createdAt >= after_ts` (oldest-first). Omit both for the newest page. " +
+      "Boundaries are inclusive, so consecutive pages can share the boundary message — " +
+      "de-duplicate by message id. Continue paging with `pagination.nextCursor` " +
+      "(epoch-ms string) fed back as the same `before_ts`/`after_ts` you used.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -690,7 +766,7 @@ const groupMessages = {
         required: true,
         schema: { type: "string" },
       },
-      cursorParam(),
+      ...messageTimelineParams(),
       limitParam(30),
     ],
     responses: {
@@ -1480,6 +1556,9 @@ const rtcConfig = {
 // Assemble all chat paths
 // =============================================================================
 export const chatPaths = {
+  // Unified inbox
+  "/chat/inbox": chatInbox,
+
   // Private messaging
   "/chat/private/conversations": privateConversations,
   "/chat/private/rooms/{peerId}": privateRoomByPeer,

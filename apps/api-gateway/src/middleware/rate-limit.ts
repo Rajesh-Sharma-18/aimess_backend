@@ -61,6 +61,39 @@ export const sensitiveAuthRateLimiter = rateLimit({
 });
 
 /**
+ * Per-IP limiter for the whole admin surface. Admin traffic is low-volume but
+ * high-privilege; this isolates it from the user-facing global limiter.
+ */
+export const adminRateLimiter = rateLimit({
+  windowMs: env.ADMIN_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
+  max: env.ADMIN_RATE_LIMIT_MAX,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: {
+    trustProxy: env.TRUST_PROXY_HOPS > 0,
+  },
+  message: {
+    success: false,
+    message: "Too many requests, please try again later.",
+  },
+});
+
+/** Stricter per-IP limiter for admin login/refresh (credential-stuffing guard). */
+export const adminLoginRateLimiter = rateLimit({
+  windowMs: env.ADMIN_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
+  max: env.ADMIN_LOGIN_RATE_LIMIT_MAX,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: {
+    trustProxy: env.TRUST_PROXY_HOPS > 0,
+  },
+  message: {
+    success: false,
+    message: "Too many attempts, please try again later.",
+  },
+});
+
+/**
  * Lenient per-IP limiter for forgot-password OTP endpoints.
  * Tighter than the global limit but looser than sensitiveAuthRateLimiter
  * since users legitimately retry during password-reset flows.

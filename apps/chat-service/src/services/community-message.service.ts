@@ -18,6 +18,30 @@ import type { RoomMemberRepository } from "../repositories/room-member.repositor
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { GeneralRoomMessage } from "../generated/prisma/index.js";
+import { communityMessagePreview } from "../utils/community-message-preview.js";
+
+/** Per-community chat summary for the GET /communities/mine enrichment. */
+export interface CommunityChatSummary {
+  communityId: string;
+  unreadMessageCount: number;
+  /** false => the caller should render lastMessageActivity as null. */
+  hasLastMessage: boolean;
+  lastMessage?: {
+    username: string;
+    message: string;
+    /** epoch ms */
+    dateTime: number;
+  };
+}
+
+/** Denormalized last-message JSON stored on a GeneralRoom. */
+interface RoomLastMessageJson {
+  content?: string;
+  senderId?: string;
+  senderName?: string;
+  messageType?: string;
+  createdAt?: string | Date;
+}
 
 export class CommunityMessageService {
   constructor(
@@ -44,6 +68,18 @@ export class CommunityMessageService {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     }
     assertAttachmentsValid(params.messageType, params.attachments);
+
+    // Guard: block sends to suspended or deactivated rooms. "suspended" means
+    // the community was closed by an admin; "inactive" means it was deleted.
+    // This check runs before idempotency so a suspended-community retry never
+    // returns a previously-cached message as if the send succeeded.
+    const room = await this.roomRepo.findRoomById(params.roomId);
+    if (!room || room.status !== "active") {
+      if (room?.status === "suspended") {
+        throw new ForbiddenError("COMMUNITY_SUSPENDED");
+      }
+      throw new ForbiddenError("COMMUNITY_CHAT_DISABLED");
+    }
 
     // Check idempotency
     if (params.clientMessageId) {
@@ -134,6 +170,100 @@ export class CommunityMessageService {
         );
       });
     return message;
+  }
+
+  /**
+   * Active member userIds for a community room — the recipient list for the
+   * community list "bump-to-top" (`community:updated`) fan-out.
+   */
+  async getActiveMemberIds(roomId: string): Promise<string[]> {
+    const members = await this.memberRepo.findActiveByRoom(roomId);
+    return members.map((m) => m.userId);
+  }
+
+  /**
+   * Bulk community-chat summaries for GET /communities/mine. For each requested
+   * communityId (roomId === communityId): unread count + last-message preview,
+   * but ONLY for communities the user is an ACTIVE member of (member-only
+   * previews). Non-member communities get `unreadMessageCount: 0` +
+   * `hasLastMessage: false`. Single bulk query per concern — no N+1.
+   */
+  async getChatSummaries(params: {
+    userId: string;
+    communityIds: string[];
+  }): Promise<CommunityChatSummary[]> {
+    const ids = [...new Set(params.communityIds.filter(Boolean))];
+    if (!ids.length) return [];
+
+    // 1. Active membership rows → member roomIds + per-room read threshold.
+    const members = await this.memberRepo.findActiveByUserAndRooms(
+      params.userId,
+      ids
+    );
+    const readMap = new Map<string, Date | null>(
+      members.map((m) => [m.roomId, m.lastReadAt])
+    );
+    const memberRoomIds = members.map((m) => m.roomId);
+
+    // 2/3. In parallel: member rooms (lastMessage JSON) + bulk unread counts.
+    const [rooms, unreadMap] = await Promise.all([
+      this.roomRepo.findManyByIds(memberRoomIds),
+      memberRoomIds.length
+        ? this.messageRepo.countUnreadBulk({
+            userId: params.userId,
+            thresholds: memberRoomIds.map((roomId) => ({
+              roomId,
+              afterDate: readMap.get(roomId) ?? new Date(0),
+            })),
+          })
+        : Promise.resolve<Record<string, number>>({}),
+    ]);
+    const roomById = new Map(rooms.map((r) => [r.id, r]));
+
+    // 4. Build a summary for EVERY requested community.
+    return ids.map((communityId) => {
+      if (!readMap.has(communityId)) {
+        // Not an active member → no preview, zero unread (member-only previews).
+        return {
+          communityId,
+          unreadMessageCount: 0,
+          hasLastMessage: false,
+        };
+      }
+
+      const room = roomById.get(communityId);
+      const last = (room?.lastMessage ?? null) as RoomLastMessageJson | null;
+      const unreadMessageCount = unreadMap[communityId] ?? 0;
+
+      if (!last || !last.createdAt) {
+        return { communityId, unreadMessageCount, hasLastMessage: false };
+      }
+
+      const createdAt =
+        last.createdAt instanceof Date
+          ? last.createdAt
+          : new Date(last.createdAt);
+
+      return {
+        communityId,
+        unreadMessageCount,
+        hasLastMessage: true,
+        lastMessage: {
+          username: last.senderName ?? "",
+          message: communityMessagePreview({
+            messageType: last.messageType,
+            content: last.content,
+          }),
+          dateTime: Number.isNaN(createdAt.getTime()) ? 0 : createdAt.getTime(),
+        },
+      };
+    });
+  }
+
+  async bulkMarkRead(userId: string, communityIds: string[]): Promise<number> {
+    const ids = [...new Set(communityIds.filter(Boolean))];
+    if (!ids.length) return 0;
+    return this.memberRepo.bulkAdvanceReadToNow(userId, ids);
   }
 
   async getMessages(params: {

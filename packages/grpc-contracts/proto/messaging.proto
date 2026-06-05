@@ -24,6 +24,18 @@ service MessagingService {
   rpc EndCall                 (EndCallRequest)                 returns (EndCallResponse);
   rpc GetCallHistory          (GetCallHistoryRequest)          returns (GetCallHistoryResponse);
   rpc GetRtcConfig            (GetRtcConfigRequest)            returns (GetRtcConfigResponse);
+  rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
+  // Admin dashboard: count of active group rooms.
+  rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
+  // Admin: paginated group list with filters.
+  rpc AdminListGroups         (AdminListGroupsRequest)         returns (AdminListGroupsResponse);
+  // Admin: single group detail + paginated member table.
+  rpc AdminGetGroup           (AdminGetGroupRequest)           returns (AdminGetGroupResponse);
+}
+
+message GetGroupCountRequest {}
+message GroupCount {
+  int64 total = 1;
 }
 
 message SendMessageRequest {
@@ -45,6 +57,7 @@ message SendMessageResponse {
   string conversation_id = 2;
   int64  sent_at         = 3;
   bool   already_sent    = 4;
+  int64  sequence_number = 5;
 }
 message GetConversationMessagesRequest {
   string           conversation_id    = 1;
@@ -70,6 +83,7 @@ message MessageDto {
   repeated ReactionDto reactions = 9;
   bool   is_read         = 10;
   string content_json    = 11;
+  int64  sequence_number = 12;
 }
 message ReactionDto {
   string user_id = 1;
@@ -84,9 +98,10 @@ message EditMessageRequest {
   ConversationType conversation_type = 6;
 }
 message EditMessageResponse {
-  string message_id   = 1;
-  int64  edited_at    = 2;
-  string content_json = 3;
+  string message_id      = 1;
+  int64  edited_at       = 2;
+  string content_json    = 3;
+  int64  sequence_number = 4;
 }
 message MarkMessagesReadRequest {
   string           conversation_id    = 1;
@@ -151,6 +166,7 @@ message ForwardMessageResponse {
   string message_id      = 1;
   string conversation_id = 2;
   int64  sent_at         = 3;
+  int64  sequence_number = 4;
 }
 
 message GetMessageReactionsRequest {
@@ -254,4 +270,87 @@ message GetRtcConfigRequest {
 
 message GetRtcConfigResponse {
   RtcConfiguration rtc_config = 1;
+}
+
+message CatchupRoomRequest {
+  string           conversation_id   = 1;
+  string           requester_id      = 2;
+  int64            since_seq         = 3;
+  int32            limit             = 4;
+  ConversationType conversation_type = 5;
+}
+message CatchupEventDto {
+  string message_id      = 1;
+  string conversation_id = 2;
+  string sender_id       = 3;
+  string content_type    = 4;
+  string content_text    = 5;
+  string content_json    = 6;
+  int64  sent_at         = 7;
+  int64  sequence_number = 8;
+  bool   is_deleted      = 9;
+  string deleted_type    = 10;
+  int64  edited_at       = 11;
+  // SYSTEM messages (group lifecycle) carry structured data so reconnecting
+  // clients can localize/render them, matching the realtime message:new event.
+  string system_event    = 12;
+  string system_data     = 13; // JSON-encoded object ("" for non-system messages)
+}
+message CatchupRoomResponse {
+  string conversation_id           = 1;
+  repeated CatchupEventDto events  = 2;
+  bool   has_more                  = 3;
+  int64  last_seq                  = 4;
+  bool   authorized                = 5;
+}
+
+// ---- Admin group RPCs -------------------------------------------------------
+
+message AdminListGroupsRequest {
+  string search       = 1;
+  string status       = 2;
+  string created_from = 3;
+  string created_to   = 4;
+  string sort_field   = 5;
+  string sort_dir     = 6;
+  int32  page         = 7;
+  int32  limit        = 8;
+}
+
+message AdminGroupRow {
+  string room_id         = 1;
+  string name            = 2;
+  string avatar          = 3;
+  string description     = 4;
+  string created_by      = 5;
+  string status          = 6;
+  int32  member_count    = 7;
+  int32  member_limit    = 8;
+  int64  created_at      = 9;
+  int64  last_message_at = 10;
+}
+
+message AdminListGroupsResponse {
+  repeated AdminGroupRow groups = 1;
+  int32                  total  = 2;
+}
+
+message AdminGetGroupRequest {
+  string room_id = 1;
+  int32  page    = 2;
+  int32  limit   = 3;
+}
+
+message AdminGroupMember {
+  string user_id   = 1;
+  string role      = 2;
+  string status    = 3;
+  int64  joined_at = 4;
+}
+
+message AdminGetGroupResponse {
+  bool                      found         = 1;
+  AdminGroupRow             group         = 2;
+  repeated AdminGroupMember members       = 3;
+  int32                     members_total = 4;
 }

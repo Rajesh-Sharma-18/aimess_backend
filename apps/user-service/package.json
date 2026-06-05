@@ -20,6 +20,7 @@
   "type": "module",
   "dependencies": {
     "@aimess/auth-jwt": "workspace:*",
+    "@aimess/grpc-utils": "workspace:*",
     "@aimess/constants": "workspace:*",
     "@aimess/errors": "workspace:*",
     "@aimess/logger": "workspace:*",

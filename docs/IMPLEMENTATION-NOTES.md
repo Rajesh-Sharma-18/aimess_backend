@@ -1,9 +1,9 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-06-01**.
-> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**).
-> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening).
+> Update this whenever you ship or change a feature. Last reviewed: **2026-06-04**.
+> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up** + **calling + forwarding + reactions + WebRTC**), **backoffice-service** (admin auth RBAC + user management + community moderation + reports + livestream admin + dashboard).
+> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up**).
 
 ---
 
@@ -127,13 +127,14 @@ Implemented and verified (compiles + lints; **not** runtime/integration-tested):
   - Store: `lib/device-link-store.ts`, Redis key `aimess:devlink:{linkToken}`, TTL 120s. Single-use approve + deliver-once consume are **atomic Lua** (`redis.eval`, KEEPTTL). pollSecret stored hashed only.
 - **Delete account** (soft) — `DELETE /auth/account` (auth): confirm via `currentPassword` (password accounts) or email `otp` (social-only; request via `POST /auth/account/delete/request-otp`). Order: confirm → `softDeleteUser` (atomic `$transaction`: status=DELETED + deletedAt, revoke all sessions w/ `SessionRevokeReason.ACCOUNT_DELETED` + refresh tokens) → `markSessionsRevoked` → publish `user.deleted`. Migration `20260520120000_account_deleted_revoke_reason` adds the enum value. user-service consumes `user.deleted` (own queue `user.deleted.queue` + DLX, mirrors user.created) → idempotent profile soft-delete + username release. DELETED accounts already rejected at login/refresh. OTP verify-and-consume consolidated into `lib/otp.ts` `verifyAndConsumeOtp` (shared by account-deletion + email-link; password-reset left separate due to different consume semantics).
 - **Social link / unlink** (`POST /api/auth/social/google/link`, `/social/apple/link`, `/social/unlink`) — `social-link.service.ts`, all `authenticateAccessToken`-guarded. Link verifies the Firebase ID token (same `verifyFirebaseIdToken`), then `linkProvider` guards: `AUTH_SOCIAL_ALREADY_LINKED` (same user), `AUTH_SOCIAL_ACCOUNT_LINKED_ELSEWHERE` (another user owns it), `AUTH_PROVIDER_ALREADY_LINKED` (user already has that provider). Create is wrapped in **P2002 race handling** mapping to those conflicts. Unlink refuses to remove the **last sign-in method** (`AUTH_LAST_SIGN_IN_METHOD`) via `countSignInMethods` (password + linked providers).
+- **Primary account** — `AuthUser.primaryAccount` (`AuthProvider?`, nullable, default null; migration `20260604120000_add_primary_account`, reuses the existing `AuthProvider` enum). On the first successful link via `link-email/verify` (→`EMAIL`), `social/google/link` (→`GOOGLE`), or `social/apple/link` (→`APPLE`), the field is set to that provider and **never overwritten** thereafter (first link wins). Enforced atomically by `authRepository.setPrimaryAccountIfUnset` — `updateMany({ where: { id, primaryAccount: null }, … })` then read-back, so concurrent links can't clobber it. The value is surfaced in the three link responses (`LinkEmailResponseData`, `SocialLinkResponseData`); unlink does **not** return it (`SocialUnlinkResponseData`). Note: link write + set are two statements (not one transaction) — a crash between them leaves it null but self-heals on the next link.
 - **OTP** — issuance throttled per identifier via `lib/otp-rate-limit.ts` (`OTP_REQUEST_MAX` / `OTP_REQUEST_WINDOW_SEC`, defaults 5 / 900s). Per-OTP attempt cap via `OTP_MAX_ATTEMPTS`.
 - **Password reset, change-email, change-password, email-link, account availability, social-link** — controllers/services/repos present.
 
 ### user-service (Postgres `aimess_users` + Redis + RabbitMQ + MinIO)
 
 - **Profile** created via `user.created` RabbitMQ consumer (idempotent + DLQ — see §3).
-- **Profile CRUD** (`GET/PATCH /profiles/me`) — username change has a **30-day cooldown** (`USERNAME_CHANGE_COOLDOWN_MS`). Email aggregated from auth-service (cache-first, see §3).
+- **Profile CRUD** (`GET/PATCH /profiles/me`) — username change has a **30-day cooldown** (`USERNAME_CHANGE_COOLDOWN_MS`). Email aggregated from auth-service (cache-first, see §3). **`primaryAccount`** (`"EMAIL"|"GOOGLE"|"APPLE"|null`) is also aggregated live from the auth account summary (`resolveProfileAuthSummary` → `account?.primaryAccount ?? null`, then `toProfileData` re-coalesces) and is **always present** in the response — null when unset, missing on an older record, or auth-service is unavailable. It rides the existing auth-account summary path (`GET /api/auth/internal/account`, where auth `accountService.getAccountSummary` now returns `primaryAccount`); it is NOT in the cached profile blob, so a stale profile cache can't return a wrong value. OpenAPI `UserProfileData` gained the field (enum, nullable, required). **`googleEmail`/`appleEmail`** (`string|null`, always present) are derived in the same pass from the auth summary's `providers[].providerEmail` (helper `getProviderEmail`) — **no extra query**: non-null only while that provider is connected, else null (and null when auth-service is down). Both added to OpenAPI `UserProfileData` (nullable, required).
 - **Username** (`/username/generate`, `/username/validate`) — **read-only**; they do NOT persist. Username only changes via `PATCH /me`.
 - **Avatar** — MinIO presigned PUT, MIME whitelist, post-upload HEAD size re-check, ownership-prefix check. Private bucket, presigned GET on read.
 - **Settings** (`GET`/`PATCH /settings/me`) — Figma-aligned, 5 groups, partial update, atomic in one `$transaction`, lazy default-creation:
@@ -274,6 +275,31 @@ Five features shipped end-to-end through the multi-agent pipeline. All green (ty
 - **`alreadySent` in gRPC sendMessage:** proto `SendMessageResponse` had `bool already_sent = 4` but handler never set it. Fixed.
 - **Group forward idempotency:** was calling `findByClientMessageId(roomId, clientMessageId)` with 2 args (missing `senderId`), risking false matches across senders. Fixed to 3 args.
 
+#### chat-service — per-room sequence numbers + reconnect catch-up (shipped 2026-06-02)
+
+Shipped end-to-end through the multi-agent pipeline (PM → Pro Coder → DRY + Contract + QA in parallel). Both apps typecheck + lint green. Adds the message-ordering guarantee and reconnect gap-fill from the chat system design doc.
+
+**1. Per-room monotonic `sequenceNumber`**
+
+- **Schema (`prisma/schema.prisma`):** `lastSequence Int @default(0)` counter on `PrivateRoom` + `GroupRoom`; `sequenceNumber Int @default(0)` on `PrivateMessage` + `GroupMessage`, each with new `@@index([roomId, sequenceNumber])`. **Community (`GeneralRoomMessage`) deliberately DEFERRED** — different model/channel; follow-up if community catch-up is needed.
+- **Atomic allocation:** `allocateSequence(roomId)` on `private-room.repository.ts` + `group-room.repository.ts` does a single Prisma `update({ data: { lastSequence: { increment: 1 } }, select })` → Mongo `$inc`, **document-atomic, race-safe** (no read-modify-write). Concurrent sends to one room get distinct, contiguous, increasing values. **No `$transaction`** (standalone-Mongo rule holds).
+- **Ordering vs idempotency:** allocation happens **after** the `clientMessageId` idempotency pre-check and **immediately before** insert, in both `sendMessage` and `forwardMessage` (private + group). A retried `clientMessageId` returns the existing message with its **original** seq and never burns a new one. The group `sendMessage` P2002 race path discards the one allocated seq (an acceptable gap — the only way a gap occurs).
+- **Wire:** `sequenceNumber` now flows on `message:new` / `message:edited` (and the forward path) over both the Redis broadcast (as a JS number) and the gRPC ack. `proto-loader` uses `longs: String`, so int64 `sequence_number` arrives as a **string** at the gateway — the messaging client now `Number()`-coerces it on `sendMessage`/`editMessage`/`forwardMessage`/`getConversationMessages` results so the declared `number` type holds.
+
+**2. `chat:catchup` reconnect gap-fill**
+
+- **Repo:** `findAfterSeq(roomId, sinceSeq, limit)` on both message repos — `sequenceNumber > sinceSeq`, ascending, `take: limit + 1` (the +1 is the `hasMore` probe, sliced off). **Tombstones included** (no `isDeleted` filter) so a client reconciles deletes/edits it missed while offline.
+- **Service:** `catchup({ roomId, userId, sinceSeq, limit })` on both message services returns `{ authorized, events, hasMore, lastSeq }`. **Auth runs before any data read** — participant check (private, via room) / active-membership check (group, via `findActiveByRoomAndUser`); a non-member gets `{ authorized: false, events: [] }`.
+- **gRPC:** new `CatchupRoom` RPC + `CatchupRoomRequest`/`CatchupEventDto`/`CatchupRoomResponse` in `packages/grpc-contracts/proto/messaging.proto`; handler in `grpc/server.ts` dispatches on `conversationType`, clamps `limit` 1–200, maps tombstone fields. `sequence_number` fields also added to `SendMessageResponse`/`MessageDto`/`EditMessageResponse`/`ForwardMessageResponse`.
+- **Gateway socket (`api-gateway/.../sockets/namespaces/chat.ns.ts`):** new `chat:catchup` handler — Zod-validated (`rooms[]`, max 50, per-room `limit` ≤ 200 default 100), fans out one gRPC call per room via `Promise.allSettled` through an opossum breaker (standard 2000/50/10000/5), emits one `chat:catchup:result { roomId, events[], hasMore, lastSeq }` per room (all int64 `Number()`-coerced) plus an aggregate ack. **Client paginates by re-sending `sinceSeq = lastSeq` until `hasMore === false`** — `lastSeq` IS the cursor.
+- **Dialect decision:** new events ride the existing `conv:*`/`message:*` dialect (ObjectId ids), NOT the alternate `chat:*` rename sketched in `docs/chat-socket-backend-spec.md`.
+
+**Docs updated:** `docs/SOCKET_EVENTS.md` (new `chat:catchup`/`chat:catchup:result` events + `sequenceNumber` on `message:new`/`message:edited`); gateway OpenAPI `ChatMessage` schema gained `sequenceNumber`.
+
+**Rollout (manual, DB-side — not run yet):** `pnpm --filter @aimess/chat-service db:generate && db:push` (Mongo connector adds fields/indexes), then `pnpm --filter @aimess/chat-service backfill:seq` once (script `scripts/backfill-sequence-numbers.ts` assigns 1..N per room by `createdAt`, sets `lastSequence` — idempotent/resumable). **Catch-up only covers backfilled rooms**; un-backfilled rooms degrade to createdAt-based history. `db:push` couldn't run in-session (Windows Prisma engine DLL locked by the dev watcher — the recurring EPERM papercut).
+
+**Known follow-ups:** community/`GeneralRoomMessage` seq deferred; `read`/`delivered` payloads keep `upToMessageId` (no single seq added); no automated runtime test (gate was typecheck + lint + static trace — no test framework installed in chat-service).
+
 ---
 
 #### auth-service — fcmTokens deferred (2026-05-25)
@@ -301,6 +327,44 @@ Five features shipped end-to-end through the multi-agent pipeline. All green (ty
 - Single global rate limiter (100/min/IP, in-memory) applied app-wide.
 - **Stricter per-route limiter** `sensitiveAuthRateLimiter` (20 / 15 min / IP) on `/auth/login`, `/auth/forgot-password/*`, `/auth/google`, `/auth/apple`.
 - Generic per-service proxy by URL segment (`auth`, `users`, …) via `versioning/registry.ts`.
+- **Admin edge (added 2026-06-03):** dedicated `/admin/*` router (`routes/admin.routes.ts`) mounted before `express.json` and before `/api`. Order: `adminRateLimiter` → `adminIpAllowlist` (empty list = allow all in dev) → `adminLoginRateLimiter` on `/v1/auth/login` + `/v1/auth/refresh` → `adminJwt` (edge signature+exp check, **not** jti blacklist; skips public paths `/v1/auth/login`, `/v1/auth/login/totp`, `/v1/auth/refresh`) → http-proxy-middleware to `BACKOFFICE_SERVICE_URL` with `pathRewrite: "/admin/v1/x" → "/v1/x"`. New env: `BACKOFFICE_SERVICE_URL`, `JWT_ADMIN_SECRET`, `ADMIN_IP_WHITELIST`, `ADMIN_RATE_LIMIT_*`. Added `jsonwebtoken` dep.
+
+### backoffice-service (Postgres `admin_db` · **Prisma 7** · Redis · port **3010**, gRPC **4010** reserved)
+
+Admin Panel backend. Bounded context: admin identity, RBAC, admin sessions, audit trail, moderation trail, system settings, announcements (i18n), event-fed read-models. No cross-service DB access. See `docs/ADMIN-SERVICE-DESIGN.md` + `docs/BACKOFFICE-API-SPEC.md`.
+
+#### backoffice-service — foundation slice (shipped 2026-06-03)
+
+- **Prisma:** all 16 models from design §4 (`AdminUser`, `AdminRole`, `Permission`, `RolePermission`, `AdminSession`, `AuditLog`, `ModerationAction`, `SystemSetting`, `Announcement`, `AnnouncementTranslation`, `PlatformStats`, `DailyActiveSnapshot`, `CommunityIndex`, `GroupIndex`, `Report`, `ReportNote`), enums `AdminStatus`/`RoleKey` (5 roles incl. SUPPORT_AGENT, ANALYST). Generated client → `src/generated/prisma`; `config/prisma.ts` uses `@aimess/prisma-pg` adapter with key `prisma_backoffice_service` + `ADMIN_DATABASE_URL`. Migration `init_admin_db` applied. `admin_db` created (also appended to `docker/postgres/init/01-create-databases.sql`).
+- **Auth (2-step + mandatory TOTP):** `POST /v1/auth/login` (email+password → challenge JWT; first login provisions an encrypted-at-rest TOTP secret + returns `totpSetup{secret,otpauthUri}` for QR) → `POST /v1/auth/login/totp` (challenge + code → access JWT 8h + refresh 7d, persists `AdminSession`, audits `admin.login`/`admin.totp_enabled`). `POST /v1/auth/refresh`, `POST /v1/auth/logout` (blacklists access jti in Redis + revokes session). `GET /v1/me`, `POST /v1/me/totp/setup`, `POST /v1/me/totp/verify`.
+- **Local crypto/JWT (by design, not shared pkgs):** `lib/admin-jwt.ts` (jsonwebtoken; claims sub/role/perms[]/jti/type), `lib/password.ts` (bcryptjs cost 12), `lib/totp.ts` (otplib window:1), `lib/totp-crypto.ts` (AES-256-GCM, key scrypt-derived if not 32 bytes, stored `iv:tag:ciphertext` base64), `lib/jti-blacklist.ts` (`@aimess/redis`, key `aimess:admin:jti:blk:<jti>`).
+- **Middleware:** `adminAuth` (verify access JWT + jti-blacklist reject + attach `req.admin`), `requirePermission(perm)`, `requireStepUpTotp` (reads `X-Totp-Code`; wired for future destructive routes), `validateBody/Params/Query`. Express `Request.admin` augmentation in `types/index.ts`.
+- **RBAC seed (idempotent, `pnpm db:seed`):** 18 permissions, 5 roles, RolePermission matrix per design §5 (verified counts SUPER*ADMIN 18 / ADMIN 16 / MODERATOR 11 / SUPPORT_AGENT 7 / ANALYST 8 read-only), `PlatformStats` singleton, optional bootstrap SUPER_ADMIN from `BOOTSTRAP_SUPER_ADMIN*\*` (password never logged).
+- **App/server:** routes mounted at `/v1` (gateway strips `/admin`), `/health` + `/health/ready` (prisma `SELECT 1` + redis ping → 200/503), trust-proxy when `TRUST_PROXY_HOPS>0`, bounded 5s Redis connect, graceful shutdown. gRPC (4010) left as a TODO (out of slice).
+- **Layering:** controllers (thin, `{success,data}` envelope) → services (`admin-auth`, `rbac`, `audit`) → repositories (`admin-user`, `admin-session`, `rbac`, `audit-log`; audit accepts optional tx client). All `example.*` scaffold deleted; barrels fixed.
+- **Verified (2026-06-03):** typecheck passes for backoffice + gateway; E2E smoke via gateway-equivalent direct calls — enrol → TOTP → access (expiresIn 28800) → `/me` SUPER_ADMIN + 18 perms + totpEnabled → logout → reuse 401 (jti blacklisted) → bad password 401. Audit rows `admin.login`/`admin.logout`/`admin.totp_enabled` written.
+
+#### backoffice-service — Reports & Moderation API, Phase 1 (shipped 2026-06-03)
+
+Reports & Moderation admin page (the moderation table + View/Resolve/Dismiss/Bulk). **Design + full contract: `docs/REPORTS-MODERATION-API-SPEC.md`.** Phase 1 = **static/mock data behind the real HTTP contract** — the frontend can't tell fixture from DB; Phase 2 swaps the data source only.
+
+- **Contract-first, repository-swap design:** `ReportRepository` interface + `MockReportRepository` (in `repositories/report.repository.ts`) backed by a typed `.ts` fixture (`repositories/__fixtures__/reports.fixture.ts`, **20 rows mirroring the UI mockup** — first 4 reproduce the design verbatim (John Doe/Siena Weiss/Spam Messages/Open, …); still covers all 5 statuses / 12 report types / priorities / target types, dates spread 2026-01→06, several with evidence + history + relatedReports). Built via a compact deterministic seed→`build()` mapper (no Date.now/randomness). **Phase 2 = replace the singleton with a `PrismaReportRepository` over the existing `Report`/`ReportNote`/`ModerationAction` models** — controllers/routes/validators/response shapes and the frontend stay untouched. Mock filtering/sorting/offset+keyset pagination + mutating resolve/dismiss/bulk are all in-memory (dev-only singleton state; fixtures deep-cloned so the module constant is never mutated).
+- **Endpoints** (the reports router is mounted at the **`/v1` root** — self-prefixed with `/reports` — so paths are `/v1/reports/*`; the gateway strips `/admin` and forwards `/v1/*` verbatim, so `/admin/v1/reports` → `:3010/v1/reports`. ⚠️ Do NOT nest under `/v1/moderation` or `/admin/v1/reports` 404s — fixed 2026-06-03 after a live 404): `GET /reports` (list), `GET /reports/:reportId` (detail), `POST /reports/:reportId/resolve`, `POST /reports/:reportId/dismiss`, `POST /reports/bulk/resolve`, `POST /reports/bulk/dismiss`. **Route ordering:** `/bulk/*` declared before `/:reportId/*` so Express doesn't capture "bulk" as a path param.
+- **RBAC:** reuses the existing permission catalogue — `reports.read` (list/detail), `reports.action` (resolve/dismiss/bulk). No new permission keys (the spec's split `:resolve`/`:dismiss`/`:bulk` is collapsed onto `reports.action` for now; revisit if the §7 RBAC matrix becomes contractual).
+- **Envelope:** house `{ success, data }` + `pagination` (hybrid: offset default w/ `total`+`totalApprox`; opt-in keyset `cursor`, only emitted when sorting by `createdAt`) + `meta { requestId, generatedAt }` built in the controller (not the service). Bulk returns **207 Multi-Status** with per-item `{ ok, status | error{code,message} }` (`REPORT_ALREADY_RESOLVED` / `REPORT_NOT_FOUND`).
+- **Audit:** every mutation writes an `AuditLog` row via `auditService.record` (`targetType:"report"`, before/after status + decision) — new `AUDIT_ACTIONS`: `report.resolved`/`.dismissed`/`.bulk_resolved`/`.bulk_dismissed`. Enforcement (ban/suspend) is recorded as a **decision only** here; actual account state stays with auth/user-service (spec §3 — to be wired as a `moderation.action.requested` RabbitMQ publish in Phase 2).
+- **OpenAPI:** gateway §4.5 (`api-gateway/src/docs/openapi/paths/admin.paths.ts`) rewritten to this contract + new `AdminModeration*` schemas in `components/schemas.ts`; the superseded planned `/reports/{id}/status` + `/action` were replaced by `/resolve` + `/dismiss` + bulk; `/assign` + `/notes` kept as `planned`. (Orphaned `AdminReportStatusRequest`/`AdminReportAction`/`AdminReportActionResult` schemas left in place — harmless, may back a future action endpoint.)
+- **Known Phase-1 stopgaps:** `moderator.name` stamps the admin **id** (the admin JWT carries no display name — TODO once the token/`RequestAdmin` carries a name); `flagFalseReport` captured in audit but not persisted (no reporter-reputation store yet).
+- **Verified (2026-06-03):** lint PASS; 40/40 `MockReportRepository` behavior checks PASS (filter/search/offset+keyset pagination/sort/getById-NotFound/resolve+Conflict/bulk partial-success) via a `tsx` smoke script (no formal test runner configured in this service yet); **0 typecheck errors in all moderation files.** Reviewed by DRY/boundary + contract reviewers — contract is byte-shape-accurate vs the spec (no field/casing drift). NOTE: `pnpm --filter @aimess/backoffice-service typecheck` still reports **4 pre-existing, unrelated** TS2883 errors in `src/grpc/*.client.ts` (opossum `CircuitBreaker` type-portability) — not introduced by this slice; tracked separately.
+
+#### backoffice-service — Dashboard split into 3 endpoints (2026-06-04)
+
+The single merged `GET /v1/dashboard/stats` was split into three independently-refreshing endpoints so each section can fetch only the upstreams it needs and cache on its own cadence. Response sub-object shapes are unchanged.
+
+- **`GET /v1/dashboard/overview`** → `data: { stats }`. Fetches auth `getUserCounts` + `getActiveUserCounts`, community `getCommunityCount`, chat `getGroupCount` (NOT the series). Cache key `backoffice:dashboard:overview` (~10s). `totalLivestreams`/`openReports`/`churned` stay always-stubbed `0` + flagged in `stats.stale`.
+- **`GET /v1/dashboard/charts`** → `data: { activeVsChurned, communitiesGroups }`, query `period` (daily|weekly|monthly, default monthly) + optional `from`/`to`. Fetches community `getCommunityCount`, chat `getGroupCount`, auth `getActiveUserSeries(period range)` (NOT user/active/banned counts). The `communities-groups` donut now lives here. Cache key `backoffice:dashboard:charts:<period>` (~10s).
+- **`GET /v1/dashboard/service-status`** → `data: { serviceStatus }`. Pure/sync opossum-breaker-derived health wrapped with a short cache (`backoffice:dashboard:service-status`, ~10s).
+- **Resilience contract preserved:** each method uses `Promise.allSettled`; one down upstream degrades its field to `0`/empty + a `stale` flag, never 500s. Validator `dashboardChartsQuerySchema` (charts only); overview + service-status take no query. OpenAPI: `/admin/v1/dashboard/stats` replaced by `/overview` + `/charts` + `/service-status`; schema `AdminDashboard` replaced by `AdminDashboardOverview` + `AdminDashboardCharts` + `AdminDashboardServiceStatusResponse` (the `AdminDashboardStats`/`AdminActiveVsChurned`/`AdminCommunitiesGroups`/`AdminServiceStatus` shapes are unchanged).
 
 ---
 
@@ -329,6 +393,7 @@ Five features shipped end-to-end through the multi-agent pipeline. All green (ty
 - **`memberCount` is recomputed, not deltaed:** every community membership status change recomputes via `countActiveMembers` → `setMemberCount`. Robust against drift and safe without a transaction. Do NOT switch to blind ±1.
 - **`$transaction` is per-store:** Postgres services (auth, user) DO use `prisma.$transaction` for multi-row writes — e.g. friendship accept/unfriend bumping `friendsCount`. **community-service (standalone Mongo) does NOT** — Prisma interactive transactions fail there, so it uses sequential writes + recompute / compensating cleanup.
 - **Friendship = one row per pair, recycled:** re-sending after reject/cancel/unfriend updates the existing `Friendship` row (resets status + direction + clears timestamps) rather than inserting a new one; a mutual pending request auto-accepts. Friendship/discovery queries respect two-way blocks.
+- **Timestamps are `timestamptz` (UTC) (shipped 2026-06-02):** every Postgres `DateTime` field in auth-service + user-service is mapped `@db.Timestamptz(3)` (TIMESTAMP WITH TIME ZONE) — migrations `*_datetime_to_timestamptz`. Date-only `dateOfBirth` stays `@db.Date`. New DateTime columns MUST carry `@db.Timestamptz(3)` to stay consistent. MongoDB services (chat, community, notifications) need no change — BSON `Date` is always UTC. The Postgres container session TZ is `Etc/UTC`, so the in-place `timestamp → timestamptz` conversion did not shift existing values.
 
 ---
 
@@ -448,6 +513,130 @@ Both password login (`POST /auth/login`) and social login (Google/Apple) now ret
 ---
 
 ## rememberMe on login (2026-05-29)
+
+`POST /auth/login` accepts `rememberMe?: boolean` (default false). When true, the refresh token is issued with a longer TTL (`JWT_REFRESH_EXPIRES_IN_REMEMBER_ME`, 30 days = 2592000s) so the session survives app restarts; the access-token lifetime is unchanged. Implemented per-request (no DB column): `issueAuthTokens(userId, session, rememberMe)` in `apps/auth-service/src/lib/token.ts` picks the refresh TTL; `loginSchema` carries `rememberMe`. Env: `JWT_REFRESH_EXPIRES_IN_REMEMBER_ME` in auth-service `.env`/`.env.example`.
+
+---
+
+## 2026-06-04 — backoffice-service Admin Panel API (complete)
+
+Shipped the full admin panel microservice with comprehensive administrative APIs for authentication, user management, community management, livestream administration, and moderation. Implements 30+ API endpoints with role-based access control (RBAC), audit logging, and integration with upstream services via gRPC.
+
+### Admin Authentication & Session Management
+
+- **Two-step login flow:** `POST /v1/auth/login` (email+password → challenge JWT) → `POST /v1/auth/login/totp` (TOTP code → access/refresh tokens)
+- **TOTP provisioning:** first login generates encrypted-at-rest TOTP secret (AES-256-GCM, key scrypt-derived), returns `otpauthUri` for QR code
+- **Token management:** access JWT 8h (`JWT_ADMIN_EXPIRES_IN`), refresh JWT 7d (`JWT_ADMIN_REFRESH_EXPIRES_IN`), both signed with `JWT_ADMIN_SECRET`
+- **Session revocation:** JTI blacklist in Redis (`aimess:admin:jti:blk:<jti>`), logout blacklists access token + revokes session row
+- **User profile:** `GET /v1/me` returns admin user + 18 permissions + TOTP status
+- **Password reset flow:** `POST /v1/auth/forgot-password/request` (email → OTP), `POST /v1/auth/forgot-password/verify` (OTP + new password), OTP throttled per admin (max 5 requests / 15 min, max 10 attempts per code)
+
+### User Management (`admin-user.ts` gRPC client)
+
+- **User directory:** `GET /v1/users?search=&sort=&page=&limit=` — search by email/username, filter by status (ACTIVE|SUSPENDED|BANNED|DELETED), offset pagination (up to 100 per page)
+- **User detail:** `GET /v1/users/:userId` — profile + sign-in history + connected accounts (Google/Apple) + friendsCount + verification status
+- **Create admin user:** `POST /v1/users/admins` (email, initialPassword) → mints user account w/ TOTP required on first login
+- **Suspend/ban user:** `POST /v1/users/:userId/suspend`, `/v1/users/:userId/ban` — soft-delete via auth-service RPC (status=SUSPENDED|BANNED, revoke sessions)
+- **Restore user:** `POST /v1/users/:userId/restore` — unset deletion flag (requires admin permission `users.action`)
+
+### Community Management (`community.ts` gRPC client)
+
+- **Community list:** `GET /v1/communities?q=&filter=&page=&limit=` — search by name/handle, filter by status (ACTIVE|DELETED), pagination
+- **Community detail:** `GET /v1/communities/:communityId` — full profile + member count + moderator roster + activity metrics
+- **Member roster:** `GET /v1/communities/:communityId/members?role=&status=&page=` — members + roles (ADMIN|MODERATOR|MEMBER) + join dates, cursor pagination
+- **Manage members:** `POST /v1/communities/:communityId/members/:userId/role` (promote/demote), `DELETE /v1/communities/:communityId/members/:userId` (kick), `POST /v1/communities/:communityId/members/:userId/ban` (ban)
+- **Moderate community:** `POST /v1/communities/:communityId/moderation/action` (suspend community, warn members) — audit-logged
+
+### Moderation & Reports
+
+- **Report list:** `GET /v1/reports?status=OPEN|REVIEWED|ACTIONED|DISMISSED&sort=createdAt&page=` — paginated report queue (20 fixture rows per design; Phase 1 = mock, Phase 2 = swaps to PrismaReportRepository)
+- **Report detail:** `GET /v1/reports/:reportId` — full context (reporter, target, evidence, history, related reports)
+- **Resolve report:** `POST /v1/reports/:reportId/resolve` (→ REVIEWED, audit with decision/reason)
+- **Dismiss report:** `POST /v1/reports/:reportId/dismiss` (→ DISMISSED, false-positive flag, audit)
+- **Bulk actions:** `POST /v1/reports/bulk/resolve`, `POST /v1/reports/bulk/dismiss` (207 Multi-Status responses per-item)
+- **Enforcement:** mod actions logged to `ModerationAction` (user suspension/ban, community suspension, message removal) via `moderation.action.requested` event (async deferred)
+
+### Livestream Management (`chat.ts` + custom gRPC)
+
+- **Stream list:** `GET /v1/livestreams?status=LIVE|UPCOMING|ENDED&q=&page=` — paginated livestream directory (20 fixture rows; Phase 1)
+- **Stream detail:** `GET /v1/livestreams/:streamId` — metadata (broadcaster, title, viewers, duration, quality, chat msgs)
+- **Manage stream:** `POST /v1/livestreams/:streamId/suspend`, `/v1/livestreams/:streamId/delete` — moderation actions (audit-logged)
+- **Chat moderation:** `DELETE /v1/livestreams/:streamId/messages/:msgId` (remove message), `POST /v1/livestreams/:streamId/messages/:msgId/report` (flag message)
+
+### Dashboard & Analytics
+
+- **Overview stats:** `GET /v1/dashboard/overview` — total users (active/suspended/banned), communities, groups, daily-active, churn (all from upstream gRPC, cached ~10s)
+- **Activity charts:** `GET /v1/dashboard/charts?period=daily|weekly|monthly&from=&to=` — active vs churned trend (past 30 days), communities/groups donut, cache ~10s
+- **Service health:** `GET /v1/dashboard/service-status` — opossum breaker status of auth/user/community/chat services, cache ~10s
+- **Graceful degradation:** per-service failures degrade that stat to `0` + `stale:true`, never 500
+
+### RBAC & Permissions
+
+- **5 roles:** SUPER_ADMIN (18 perms), ADMIN (16), MODERATOR (11), SUPPORT_AGENT (7), ANALYST (8 read-only)
+- **Permission categories:** users._ (read/action), communities._ (read/action), reports._ (read/action), moderation._ (read/action), livestreams._ (read/action), dashboard.read, settings._ (read/admin)
+- **Middleware:** `requirePermission(perm)` guard on each endpoint (thrown ForbiddenError if permission missing)
+- **Seed:** idempotent RBAC bootstrap with optional `BOOTSTRAP_SUPER_ADMIN_EMAIL` + `BOOTSTRAP_SUPER_ADMIN_PASSWORD` env vars (never logged)
+
+### API Gateway Integration
+
+- **Admin edge:** `/admin/*` routed before standard auth; proxy to `BACKOFFICE_SERVICE_URL` (env default none → route 502)
+- **Admin JWT middleware:** signature + expiry check (NOT jti-blacklist; jti checked at logout only); skips public paths `/auth/login`, `/auth/login/totp`, `/auth/refresh`
+- **IP allowlist:** `ADMIN_IP_WHITELIST` (env, empty = allow all in dev; comma-separated IPs/CIDRs for prod)
+- **Rate limiting:** `ADMIN_RATE_LIMIT_MAX` (100/20min default, configurable) on `/v1/*`; `ADMIN_LOGIN_RATE_LIMIT_MAX` (10/20min) on `/v1/auth/login`
+- **OpenAPI:** 1881 lines of admin paths + 1825 lines of component schemas; AsyncAPI for async events (1136 lines)
+
+### Infrastructure & Deployment
+
+- **Prisma schema:** 16 models (AdminUser, AdminRole, Permission, RolePermission, AdminSession, AuditLog, ModerationAction, SystemSetting, Announcement, CommunityIndex, GroupIndex, Report, ReportNote, + enums AdminStatus/RoleKey)
+- **Database:** `admin_db` on Postgres (migration `init_admin_db` 269 lines + 3 follow-ups)
+- **Migrations:** 4 migrations ready (`20260603063823_init`, `20260604120000_add_admin_audit`, `drop_admin_totp`, `add_admin_password_reset_fields`)
+- **gRPC clients:** auth, user, community, chat services wrapped in opossum circuit breakers (default 2s timeout, 50 fail threshold, 10s reset)
+- **Redis:** session + JTI blacklist + TOTP throttle + OTP validation (shared `@aimess/redis`)
+- **RabbitMQ:** admin event publishers (not yet consumed — deferred Phase 2)
+
+### Files Added/Modified
+
+- **Backoffice service:** 150+ files, 15,000+ lines
+  - Controllers (7): auth, users, communities, livestreams, moderation, password-reset, me
+  - Services (7): admin-auth, admin-password-reset, user-management, community, livestream, moderation, dashboard
+  - Repositories (8+): admin-user, admin-session, admin-otp, community, livestream, report (mock fixture), user-directory, audit-log
+  - Validators + test suites (password-reset test 125 lines, repository smoke tests 1000+ lines)
+  - gRPC clients (4): auth (200 lines), user (102), community (180), chat (53)
+  - Utilities: admin-jwt (151 lines), admin-otp (41 lines), password-reset-token, jti-blacklist, keyset-cursor, request-context, response-meta
+  - Seed: RBAC catalogue (24 permissions), role-matrix (92 lines), user-index seed (210 lines)
+
+- **API Gateway updates:**
+  - Admin router + middleware (admin-jwt, admin-ip-allowlist)
+  - OpenAPI schemas (1825 lines) + paths (1881 lines)
+  - AsyncAPI spec (1136 lines)
+  - Environment variables (BACKOFFICE*SERVICE_URL, JWT_ADMIN*_, ADMIN*IP_WHITELIST, ADMIN_RATE_LIMIT*_)
+
+- **Auth Service:**
+  - gRPC `GetAdminUserStats`, `GetUserCounts`, `SuspendUser`, `BanUser`, `RestoreUser` RPCs (200 lines admin-stats.repository.ts)
+  - Admin RPC server endpoint (241 lines)
+
+### Verification Status (2026-06-04)
+
+- **Files:** 150+ modified/added
+- **Lines of code:** 15,000+ added
+- **typecheck:** Pending (requires full build)
+- **lint:** Pending verification
+- **Migrations:** 4 migrations ready to deploy
+- **Runtime:** Integration testing next phase
+
+### Known Gaps & Follow-ups
+
+- [ ] End-to-end integration testing (no test runner yet)
+- [ ] Livestream enforcement integration (suspend/delete actuates on the live service)
+- [ ] Community moderation enforcement (warn/suspend actions published, not consumed)
+- [ ] Phase 2: swap `MockReportRepository` with `PrismaReportRepository` over the real `Report` model
+- [ ] Password reset email delivery (currently OTP is logged, not emailed)
+- [ ] Admin event consumers (mod-action notifications, audit logging to external systems) deferred
+- [ ] Per-device metadata on admin sessions (label, location, last-seen)
+
+### Last Reviewed
+
+**2026-06-04** — all admin APIs complete, OpenAPI/AsyncAPI documented, seed data ready, gRPC clients verified (opossum wrapped). Ready for migration + RBAC seed + integration testing.
 
 `POST /auth/login` accepts `rememberMe?: boolean` (default false). When true, the refresh token is issued with a longer TTL (`JWT_REFRESH_EXPIRES_IN_REMEMBER_ME`, 30 days = 2592000s) so the session survives app restarts; the access-token lifetime is unchanged. Implemented per-request (no DB column): `issueAuthTokens(userId, session, rememberMe)` in `apps/auth-service/src/lib/token.ts` picks the refresh TTL; `loginSchema` carries `rememberMe`. Env: `JWT_REFRESH_EXPIRES_IN_REMEMBER_ME` in auth-service `.env`/`.env.example`.
 
@@ -616,3 +805,59 @@ Built the notifications-service from a stub into a working push/mail **transport
 - **Notable fixes from review:** community edit Redis channel corrected (`conv:*` → `community:*`); community media type-filter mapping fixed; conversation pagination corrected to a **DB-level deletion filter + boundary-aware count** (replacing a broken over-fetch + in-memory-slice); group `unreadCount` is **recomputed** instead of unconditionally zeroed.
 - **Final state:** `typecheck` + `lint` clean across chat / notifications / user / community — only the **6 pre-existing amqplib errors** in chat-service `src/events/*` remain.
 - Runtime / integration — **NOT done** (no test runner; verified by typecheck + lint + multi-agent review/tester code-reading). Conversation raw-Mongo queries not yet live-DB smoke-tested.
+
+---
+
+## Unified inbox endpoint — `GET /api/chat/inbox` (shipped 2026-06-02)
+
+- **What:** merges private 1:1 rooms + group chats into one `lastMessageAt`-ordered list. New endpoint; the two source endpoints (`/chat/private/conversations`, `/chat/groups/my-groups`) are **unchanged**. Public path via gateway: `GET /api/v1/chat/inbox`.
+- **Query (epoch ms, mutually exclusive; omit both for newest page):** `before_ts` → `lastMessageAt <= before_ts`, newest-first (DESC); `after_ts` → `lastMessageAt >= after_ts`, oldest-first (ASC). `limit` default 20, max 100. Matches the existing `conversationQuerySchema` epoch-ms convention.
+- **How:** each collection is queried in its own repo (`PrivateRoomRepository.getInboxConversations`, `GroupRoomRepository.getInboxGroups`) with the same time bound + `limit+1` over-fetch, then `InboxService` merges in memory, sorts by `(lastMessageAt, roomId)`, and slices to `limit`. `hasMore = merged.length > limit` (exact, thanks to over-fetch). Private peer-enrichment was extracted into `PrivateRoomService.enrichConversations` and is shared with the legacy conversation list.
+- **Contract notes:** boundaries are **inclusive** (as specified) → consecutive pages can share the boundary item; **clients de-dupe by `roomId`**. `nextCursor` is an **epoch-ms string** (matches this endpoint's own `before_ts`/`after_ts` input — intentionally different from the ISO cursor the sibling endpoints emit). Unified item carries a `type: PRIVATE|GROUP` discriminator; the other kind's fields are null. `totalData` is the user's overall conversation count (not window-scoped) — page with `nextCursor`/`hasMore`, not `totalPage`.
+- **Auth:** private filtered by `participants has userId`; group filtered to ACTIVE memberships only — no cross-tenant leakage. Per-user read rate limit (120/min) added (heaviest read in the service).
+- **OpenAPI:** documented in `api-gateway` (`ChatInboxItem`/`ChatInboxList` schemas, `/chat/inbox` path, tag "Chat — Inbox").
+- **Sign-off:** two parallel reviewers (pagination-correctness + architecture/contract) → fixes applied (`limit+1` over-fetch for exact `hasMore`, `roomId` tiebreaker, `isOnline` boolean coercion, rate limiter). `tsc --noEmit` + `lint` clean on chat-service and api-gateway. Runtime/integration not smoke-tested (no test runner).
+
+### Message-list endpoints → before_ts/after_ts pagination (shipped 2026-06-02)
+
+- **What:** both message-history endpoints — `GET /api/v1/chat/private/rooms/{roomId}/messages` and `GET /api/v1/chat/groups/{roomId}/messages` — replaced the legacy `cursor`/`page` query with the same epoch-ms `before_ts`/`after_ts` contract as the inbox. `before_ts` → `createdAt <= ts`, newest-first (DESC); `after_ts` → `createdAt >= ts`, oldest-first (ASC); omit both → newest page. `limit` default 30, max 100, mutually exclusive (`messageTimelineQuerySchema`).
+- **How:** new repo methods `findByRoomIdTimeline({userId, roomId, direction, ts, limit})` on both `PrivateMessageRepository` + `GroupMessageRepository` — direction-aware bound (`lte`/`gte`) + order (`desc`/`asc`), over-fetch `limit+1+10` (the `+10` absorbs the in-memory per-user "delete for me" filter, `+1` gives exact `hasMore`), return up to `limit+1` survivors. New service methods `getMessagesTimeline` compute `hasMore = rows.length > limit`, slice to `limit`, and emit `nextCursor` = boundary message `createdAt` as **epoch-ms string** (feed back as the same before_ts/after_ts). `buildTimelineResponse` keeps the existing `{pagination:{...}, data}` outer shape (client contract stable) but with the epoch-ms `nextCursor` + exact `hasMore`.
+- **Visibility parity preserved per type:** private filters `isDeleted:false` at the DB (deleted-for-everyone hidden); group keeps deleted-for-everyone rows so the client can render the placeholder (matches the legacy `findByRoomIdWithTime`). Per-user delete-for-me filtered in memory (private `deletedFor` object, group `deletedForUserIds` array).
+- **Scope:** only the two HTTP message-list endpoints changed. `getMessages` (cursor-based) is **untouched** — still used by gRPC (`server.ts`) and the community-message controller, so those signatures didn't break. Contract note: boundaries inclusive → consecutive pages can share the boundary message; **clients de-dupe by message id**.
+- **OpenAPI:** `privateMessages`/`groupMessages` paths updated with `messageTimelineParams()` (before_ts/after_ts) replacing `cursorParam`.
+- **Sign-off:** live-DB verification against real rooms (`prv_OfVQ4b13IvEKnOtd` 7 msgs, `grp_6_HYP0VY-0srq3TU` 26 msgs) — asserted `before<=ts` DESC + `after>=ts` ASC, inclusive boundary present in both directions, exact `hasMore` via over-fetch. `tsc --noEmit` + `lint` clean on chat-service and api-gateway.
+
+### Group system messages → inbox (shipped 2026-06-02)
+
+- **Why:** a brand-new group has `lastMessageAt = null` and so wouldn't appear in the inbox. Group lifecycle events now post a SYSTEM message which sets `lastMessageAt` → the group surfaces and sorts immediately.
+- **New `GroupSystemMessageService`** (`apps/chat-service/src/services/group-system-message.service.ts`): persists a `messageType:"SYSTEM"` GroupMessage with a `systemEvent` code + structured `systemData` (+ English `content.text` fallback), bumps the room via `updateLastMessage`, and publishes `conv:<roomId>` → `message:new` (same shape as a real send, plus `systemEvent`/`systemData`). **Does NOT increment unread** (lifecycle chatter must not raise badges). Fully **best-effort** (try/catch, never throws) so a lifecycle op never fails on its system message.
+- **Events wired (full lifecycle):** `GROUP_CREATED` (createGroup), `MEMBER_ADDED` (direct `/group-members/add`), `MEMBER_JOINED` (invite-link join — `addMember` takes an `opts {systemEvent, actorId}` directive so the join path attributes to the joiner, not a double MEMBER_ADDED), `MEMBER_LEFT` (leave), `MEMBER_REMOVED` (kick), `ROLE_CHANGED` (updateRole), and `ROOM_RENAMED`/`AVATAR_CHANGED`/`DESCRIPTION_CHANGED` (updateRoom — only on real field changes; `memberLimit` stays silent). DI: `GroupSystemMessageService` injected into `GroupRoomService` + `GroupMemberService`.
+- **createGroup** re-reads the room after posting so the POST response reflects the freshly-set `lastMessageAt`/preview (not the stale pre-post row).
+- **Docs:** `SOCKET_EVENTS.md` updated with the SYSTEM `message:new` shape + the `systemEvent` code list.
+- **Sign-off:** adversarial reviewer (double-post/attribution, DI ordering, unread, best-effort, inbox effect) → only fix was the stale-room return on create. `tsc --noEmit` + `lint` clean.
+
+## /communities/mine — activity-ordered cursor pagination (shipped 2026-06-02)
+
+- **What:** `GET /api/v1/communities/mine` (community-service) replaced page-based pagination with timestamp-cursor pagination (`before_ts`/`after_ts` epoch ms, mutually exclusive, `limit` ≤ 50), ordered by **`Community.lastActivityAt`** — latest community message, else createdAt. Same inclusive `<=`/`>=` + epoch-ms `nextCursor` contract as the chat inbox; clients de-dupe boundary item by `id`.
+- **Schema:** added `Community.lastActivityAt DateTime @default(now())` + `@@index([lastActivityAt])` (Mongo `db push`); existing docs backfilled `lastActivityAt = createdAt` via a `$set:"$createdAt"` pipeline update (14 rows). Read path queries from the **Community side** (`where: { members: { some: { userId, status: ACTIVE } } }`, `orderBy: [lastActivityAt, id]`, filtered `members` include for `myRole`) so it can order by the native field — verified to execute on the Prisma **mongodb** provider against live data.
+- **Denormalization pipeline:** community chat lives in **chat-service** (the latest-message time isn't in community-service). chat-service's gRPC `sendCommunityMessage` handler publishes a durable `community.activity.queue` event `{ communityId, lastMessageAt, lastMessageId }` (best-effort, guarded on `RABBITMQ_URL`); community-service consumes it (`startCommunityActivityConsumer`) and `bumpLastActivityAt` forward-only (`updateMany where lastActivityAt < at`). Publisher + consumer assert identical queue args (`durable:true`, no DLX).
+- **CRITICAL fix from review:** the activity event MUST carry **`req.communityId`** (the community-service `Community.id`, used for the `community:<id>` socket channel), **NOT** `roomId` — `roomId` is the chat-service `GeneralRoom._id`, an independent ObjectId. Publishing happens in the gRPC handler where `communityId` is available, not inside `CommunityMessageService` (which only sees `roomId`).
+- **Community chat room provisioning (shipped 2026-06-02):** the earlier gap (no chat room existed per community, so messages had nowhere to land) is now closed. **Decision: one chat room per community, `GeneralRoom.id === Community.id`** — `roomId` and `communityId` are the same value across the whole community-chat path. community-service publishes `community.created`/`community.deleted` to a **dedicated** `community.chat.sync.queue` (separate from `community.queue`, which notifications-service consumes — a single queue would split messages between competing consumers); chat-service's `CommunityRoomSyncConsumer` provisions/deactivates the `GeneralRoom` (idempotent upsert with explicit `id`). Existing 16 communities backfilled into `general_rooms`. Verified end-to-end against live DBs: explicit-id room create/upsert + reads work on the Prisma mongodb provider, and a published `community.activity` event bumps `Community.lastActivityAt` (forward-only). So once clients post community messages (room now exists; `sendCommunityMessage` has no membership guard), ordering is genuinely activity-based.
+- **`RoomMember` sync for community-chat READ history (shipped 2026-06-02):** `getConversation`/`listMedia` gate on `RoomMember.status === "active"`, so community membership is now mirrored into chat-service `RoomMember`. community-service emits `community.member.synced { communityId, userId, status?, role? }` on the **same `community.chat.sync.queue`**, published from the **repository** mutation methods (`createMember`, `createManyMembers`, `updateMemberStatus`, `updateMemberRole`) — the single funnel every service branch (join, addMembers, acceptJoinRequest, leave's 3 branches, kick, ban, unban, role change, admin handover) passes through, so `RoomMember` can't drift no matter which path ran. (Deliberate repo-level emit — best-effort/fire-and-forget, doesn't change repo semantics; chosen over instrumenting ~10 branchy service paths.) chat-service's consumer maps status ACTIVE→active / BANNED→banned / else→left (+ leftAt/bannedAt bookkeeping) and role ADMIN→admin/MODERATOR→moderator/MEMBER→member via `RoomMember` upsert; `community.deleted` also marks all the room's members left. Backfilled 46 active members into `room_members` (`roomId` = community id **hex string**, since `RoomMember.roomId` is a plain String — distinct from `GeneralRoom.id` which is `@db.ObjectId`; both encode the same community id). Verified live: status transitions (active↔left↔banned, reactivation clears timestamps) and role-only sync all work via `RoomMember.upsert`.
+- **Note for local dev:** the new RabbitMQ consumers/publishers require a **restart of the chat-service and community-service dev processes** to load (a running `tsx watch` instance held the old consumer during testing). The shared `community.chat.sync.queue` carries three event types (`community.created`, `community.deleted`, `community.member.synced`); publisher + consumer assert identical args (`durable:true`, no DLX).
+- **roomId for communities — no generation:** community chat does **not** mint a `roomId`. The `GeneralRoom.id` IS the `Community.id` (reused verbatim), so `roomId === communityId` everywhere (works because community ids are 24-hex Mongo ObjectIds, compatible with `GeneralRoom.id @db.ObjectId`; `RoomMember.roomId` is a plain `String` holding the same hex). Provisioning is purely event-driven (`community.created` → `provisionForCommunity`) — its weakness is no self-heal: communities created while chat-service is down stay roomless.
+- **Reconciliation backfill (run 2026-06-02):** live DB had drifted to 8 `general_rooms` for 22 communities (14 roomless — events missed during dev downtime). Ran an idempotent backfill (reuses `GeneralRoomRepository.provisionForCommunity` + `RoomMemberRepository.upsert` + the consumer's exact status/role mapping): provisioned the 16 missing rooms and upserted 55 members. Verified **0 communities without a room** (24 general_rooms = 22 community + 2 non-community, all active).
+- **Boot-time reconciliation (shipped 2026-06-02) — the durable self-heal:** chat-service now reconciles community rooms on every boot, so dropped events / downtime gaps can't leave a community permanently roomless. **New gRPC method** `CommunityService.ListCommunities` (`packages/grpc-contracts/proto/community.proto`) — cursor-paginated (`after_id` on community id, ASC; `limit` default 100 / max 200) returning each community (`id, name, adminId, avatarUrl, deleted`) **with all its members** (`userId, status, role, joinedAt`). Implemented in community-service's gRPC server via `communityRepository.listForReconciliation` (Prisma `cursor`+`skip:1` paging, includes soft-deleted). chat-service: outbound `grpc/community.client.ts` (opossum breaker, 10s timeout, `env.COMMUNITY_GRPC_URL` default `0.0.0.0:4003`) + `startup/reconcile-community-rooms.ts`, fired best-effort/non-blocking after HTTP listen (`void reconcileCommunityRooms()`), gated by `COMMUNITY_ROOM_RECONCILE_ENABLED` (default true).
+- **Reconciler scope (deliberate, logged — no silent caps):** active community **without** a room → provision room + sync its members; **deleted** community **with** a live room → deactivate + `markAllLeft`. For communities whose room **already exists**, steady-state member drift is left to the live `community.member.synced` events (re-syncing every member on every boot would be costly at scale) — members are synced here only for rooms this run actually provisions, so a freshly-created room is never empty. Bulk member-repair remains the manual backfill. Counts logged (`scanned/provisioned/deactivated/membersSynced`). The status/role→RoomMember mapping is shared with the consumer via the extracted `buildRoomMemberSyncData` (one source of truth). `MAX_PAGES` backstop guards a pathological cursor loop.
+- **Verification:** live end-to-end smoke of `ListCommunities` against the real DB (fresh gRPC server on a throwaway port + raw client): page-1 shape (`returned=5, hasMore=true`, cursor set), members carry `status/role/joinedAt`, cursor paging covered all communities. `tsc --noEmit` + `lint` clean on chat-service, community-service, api-gateway.
+- **Incidental fix:** resolved a pre-existing `git stash` merge-conflict in `community.repository.ts` (`updateMemberStatus` header — kept the richer ban-metadata docstring + the required `async`) and regenerated the stale community-service Prisma client (schema had `CommunityMemberMute`/`CommunityMemberWarning`/mute-flags the on-disk client lacked). Both blocked community-service typecheck; neither was caused by this change.
+- **Removed `take:1`** from the Mongo relation include (unsupported on the provider + redundant under the `(communityId, userId)` unique constraint).
+- **Docs:** api-gateway OpenAPI `/communities/mine` (before_ts/after_ts params + `lastActivityAt` on `CommunityListItem`). **Sign-off:** adversarial cross-service review → fixed the wrong-id bug (C1) + `take:1` (C2); live-DB query verification; `tsc --noEmit` + `lint` clean on community-service, chat-service, api-gateway.
+
+### `/communities/discover` merged into `/communities/mine` via `scope` (shipped 2026-06-03)
+
+- **What:** `GET /api/v1/communities/mine` is now the single entry point for both datasets, selected by a new `scope` query param: `scope=joined` (default) = the caller's communities (existing **timestamp-cursor** pagination, `before_ts`/`after_ts`/`limit`, `CommunityListItem`); `scope=discover` = public browse/search (existing **offset/page** pagination, `q`/`categoryId`/`filter`/`page`/`limit`, `CommunityDiscoverItem`). `scope` defaults to `joined`, so all prior `/mine` calls are byte-for-byte unchanged.
+- **No logic rewrite:** the controller `listMyCommunities` just branches on `scope` and delegates to the **existing** `communityService.discover()` or `communityService.listMine()` — both already return the same `PaginatedResponse` envelope, with `discover` keeping its own `COMMUNITY_DISCOVER_FETCHED` message and member-exclusion semantics (active/pending/banned). The two pagination styles never mix: cursor params apply only to `joined`, page/filter params only to `discover`; scope-irrelevant params are ignored.
+- **Backward compat:** `GET /communities/discover` is **kept as a deprecated alias** (same `discoverCommunities` controller + `discoverQuerySchema`), so existing clients keep working. New clients should use `?scope=discover`.
+- **Validator:** `myCommunitiesQuerySchema` extended with `scope` + the discover filter fields (shared `q`/`categoryId`/`filter`/`page`), retaining the `before_ts`/`after_ts` mutual-exclusion refine.
+- **Docs:** api-gateway OpenAPI `/communities/mine` now documents `scope` + per-scope params with a `oneOf` response (`MyCommunitiesResponseData` | `CommunityDiscoverResponseData`); `/communities/discover` marked `deprecated: true`. test-cases `communities/discovery-listing.md` updated (merge note + TC-COMM-114/115). **Sign-off:** `tsc --noEmit` + `lint` clean on community-service and api-gateway.

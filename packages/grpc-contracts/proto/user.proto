@@ -5,6 +5,10 @@ package user;
 service UserService {
   rpc CheckFriendship (CheckFriendshipRequest) returns (CheckFriendshipResponse);
   rpc GetNotificationSettings (GetNotificationSettingsRequest) returns (NotificationSettings);
+  rpc AdminGetProfilesByIds (AdminGetProfilesRequest) returns (AdminProfilesResponse);
+  rpc AdminGetProfile (AdminGetProfileRequest) returns (AdminProfileRecord);
+  rpc BulkGetUserSnapshots (BulkGetUserSnapshotsRequest) returns (BulkGetUserSnapshotsResponse);
+  rpc CheckFriendships (CheckFriendshipsRequest) returns (CheckFriendshipsResponse);
 }
 
 message CheckFriendshipRequest {
@@ -34,4 +38,52 @@ message NotificationSettings {
   string quiet_hours_end        = 9;
   // ISO weekday numbers the quiet-hours window applies to (1=Mon … 7=Sun).
   repeated int32 quiet_hours_days = 10;
+}
+
+// Admin Panel: enrich a user list with display profile data.
+message AdminGetProfilesRequest {
+  repeated string user_ids = 1;
+}
+
+message AdminProfileRecord {
+  string user_id    = 1;
+  string username   = 2;
+  string avatar_url = 3;  // "" when null
+  string first_name = 4;
+  string last_name  = 5;
+  string created_at = 6;  // ISO
+}
+
+message AdminProfilesResponse {
+  repeated AdminProfileRecord profiles = 1;
+}
+
+message AdminGetProfileRequest {
+  string user_id = 1;
+}
+
+// Internal: community-service + chat-service fetch profiles in bulk (replaces HTTP GET /api/v1/users/internal/bulk-snapshot)
+message BulkGetUserSnapshotsRequest {
+  repeated string user_ids = 1;
+}
+
+message UserSnapshotRecord {
+  string user_id         = 1;
+  string username        = 2;
+  string display_name    = 3;
+  string avatar_object_key = 4; // "" when null
+}
+
+message BulkGetUserSnapshotsResponse {
+  repeated UserSnapshotRecord users = 1;
+}
+
+// Internal: community-service validates friendships in bulk (replaces HTTP GET /api/v1/users/internal/friendship-check)
+message CheckFriendshipsRequest {
+  string caller_id              = 1;
+  repeated string candidate_ids = 2;
+}
+
+message CheckFriendshipsResponse {
+  repeated string friend_ids = 1;
 }

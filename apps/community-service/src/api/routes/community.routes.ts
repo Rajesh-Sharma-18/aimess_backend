@@ -4,8 +4,14 @@ import {
   acceptCommunityInvite,
   actionCommunityReport,
   addCommunityMembers,
+  adminCreateCategory,
+  adminDeleteCategory,
+  adminListCategories,
+  adminUpdateCategory,
   approveCommunityJoinRequest,
   banCommunityMember,
+  bulkMarkReadCommunities,
+  bulkMuteCommunities,
   cancelCommunityJoinRequest,
   checkHandleAvailable,
   checkNameAvailable,
@@ -61,9 +67,14 @@ import { validateQuery } from "../middleware/validate-query.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
 import {
   addMembersSchema,
+  adminCategoriesQuerySchema,
+  bulkMarkReadSchema,
+  bulkMuteSchema,
   auditLogsQuerySchema,
+  categoryIdParamSchema,
   communityIdParamsSchema,
   communityMemberParamsSchema,
+  createCategorySchema,
   createCommunitySchema,
   createInviteLinkSchema,
   createInviteSchema,
@@ -94,6 +105,7 @@ import {
   setMuteSchema,
   setNotificationPrefsSchema,
   transferAdminSchema,
+  updateCategorySchema,
   updateCommunitySchema,
   updateMemberRoleSchema,
   warningsQuerySchema,
@@ -107,7 +119,36 @@ export const communityRoutes: IRouter = Router();
 communityRoutes.use(authenticateAccessToken);
 
 // Static / specific routes MUST be registered before the `/:id` param route.
+
+// GET /categories — public (active only, no query params) stays backward-compatible.
+// Admin CRUD on /categories uses the admin sub-handlers below.
 communityRoutes.get("/categories", listCategories);
+
+// Admin category CRUD — these MUST be before the `/:id` param route.
+communityRoutes.get(
+  "/categories/admin",
+  validateQuery(adminCategoriesQuerySchema),
+  adminListCategories
+);
+
+communityRoutes.post(
+  "/categories",
+  validateBody(createCategorySchema),
+  adminCreateCategory
+);
+
+communityRoutes.patch(
+  "/categories/:categoryId",
+  validateParams(categoryIdParamSchema),
+  validateBody(updateCategorySchema),
+  adminUpdateCategory
+);
+
+communityRoutes.delete(
+  "/categories/:categoryId",
+  validateParams(categoryIdParamSchema),
+  adminDeleteCategory
+);
 
 communityRoutes.get(
   "/name-available",
@@ -121,12 +162,17 @@ communityRoutes.get(
   checkHandleAvailable
 );
 
+// Unified list: mode inferred from params. Pagination (before_ts/after_ts) →
+// my joined communities (cursor pagination); else q/categoryId → search across
+// public + my private communities (offset pagination). At least one required.
 communityRoutes.get(
   "/mine",
   validateQuery(myCommunitiesQuerySchema),
   listMyCommunities
 );
 
+// Deprecated alias — public browse/search excluding joined communities. Kept for
+// backward compatibility; prefer `GET /mine` with `q`/`categoryId`.
 communityRoutes.get(
   "/discover",
   validateQuery(discoverQuerySchema),
@@ -177,6 +223,20 @@ communityRoutes.post(
   "/invite-links/:code/redeem",
   validateParams(inviteLinkCodeParamsSchema),
   redeemCommunityInviteLink
+);
+
+// --- Bulk mute / unmute / mark-as-read (static, must be before /:id) ---
+
+communityRoutes.post(
+  "/mute/bulk",
+  validateBody(bulkMuteSchema),
+  bulkMuteCommunities
+);
+
+communityRoutes.post(
+  "/read/bulk",
+  validateBody(bulkMarkReadSchema),
+  bulkMarkReadCommunities
 );
 
 communityRoutes.post("/", validateBody(createCommunitySchema), createCommunity);

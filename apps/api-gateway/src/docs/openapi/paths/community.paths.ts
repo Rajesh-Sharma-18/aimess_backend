@@ -7,6 +7,15 @@ const unauthorized = {
   },
 };
 
+const validationError = {
+  description: "Query validation failed (e.g. no filter/pagination param)",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
 export const communityPaths = {
   "/communities": {
     post: {
@@ -66,8 +75,9 @@ export const communityPaths = {
   "/communities/categories": {
     get: {
       tags: ["Communities"],
-      summary: "List community categories",
-      description: "Active categories sorted by order then name.",
+      summary: "List community categories (active only)",
+      description:
+        "Active categories sorted by order then name. For mobile clients.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
@@ -92,6 +102,276 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+      },
+    },
+    post: {
+      tags: ["Communities — Admin Categories"],
+      summary: "Create a community category",
+      description:
+        "Admin: create a new community category. The `slug` is auto-derived from `name`. Returns the created category with `visible` (mapped from `active`) flag.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["name"],
+              properties: {
+                name: {
+                  type: "string",
+                  minLength: 2,
+                  maxLength: 80,
+                  example: "Technology",
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Category created",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/AdminCategoryData" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Validation failed",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "409": {
+          description: "Category name already taken",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/categories/admin": {
+    get: {
+      tags: ["Communities — Admin Categories"],
+      summary: "List all categories (admin)",
+      description:
+        "Admin: paginated list of all community categories including hidden ones. Filter by `status=visible|hidden|all` (default `all`). Search by name with `?search=`. Results include `visible` flag (mapped from the `active` field).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["visible", "hidden", "all"],
+            default: "all",
+          },
+          description:
+            "Filter by visibility. `all` returns both visible and hidden.",
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string", minLength: 1 },
+          description: "Case-insensitive name search.",
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Paginated category list",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/AdminCategoryListResult",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
+  "/communities/categories/{categoryId}": {
+    patch: {
+      tags: ["Communities — Admin Categories"],
+      summary: "Update a community category",
+      description:
+        "Admin: update a category's `name` and/or `visible` flag. At least one field must be provided. Updating `name` regenerates the `slug`.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "categoryId",
+          in: "path",
+          required: true,
+          schema: {
+            type: "string",
+            pattern: "^[a-f0-9]{24}$",
+            example: "664f1a2b3c4d5e6f7a8b9c0d",
+          },
+          description: "MongoDB ObjectId of the category.",
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              minProperties: 1,
+              properties: {
+                name: {
+                  type: "string",
+                  minLength: 2,
+                  maxLength: 80,
+                  example: "Science & Nature",
+                },
+                visible: {
+                  type: "boolean",
+                  description: "true = visible to users; false = hidden.",
+                  example: false,
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Category updated",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/AdminCategoryData" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Validation failed",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "Category not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "409": {
+          description: "Category name already taken",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    delete: {
+      tags: ["Communities — Admin Categories"],
+      summary: "Delete a community category",
+      description:
+        "Admin: hard-delete a category. Returns 409 if any active community still uses this category.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "categoryId",
+          in: "path",
+          required: true,
+          schema: {
+            type: "string",
+            pattern: "^[a-f0-9]{24}$",
+            example: "664f1a2b3c4d5e6f7a8b9c0d",
+          },
+          description: "MongoDB ObjectId of the category.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Category deleted",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "Category not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "409": {
+          description: "Category is in use by one or more communities",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
       },
     },
   },
@@ -178,18 +458,96 @@ export const communityPaths = {
   "/communities/mine": {
     get: {
       tags: ["Communities"],
-      summary: "List communities I belong to",
+      summary: "List my communities (joined) / search communities",
       description:
-        "Communities where you are an ACTIVE member. Offset/page pagination (`page` + `limit`); response carries `pagination` (totalData, totalPage, currentPage, limit, hasMore) and `data`.",
+        "Unified communities list. The mode is inferred from the params — there " +
+        "is no `scope` flag. **At least one of `before_ts`, `after_ts`, `q`, or " +
+        "`categoryId` must be present**, else a 400 validation error.\n\n" +
+        "**Joined mode** (`before_ts` or `after_ts` present) — communities where " +
+        "you are an ACTIVE member, ordered by `lastActivityAt` (latest community " +
+        "message, else createdAt). Timestamp-cursor pagination: `before_ts` " +
+        "returns items with `lastActivityAt <= before_ts` (newest-first); " +
+        "`after_ts` returns items with `lastActivityAt >= after_ts` (oldest-first); " +
+        "mutually exclusive. Boundaries are inclusive (consecutive pages can share " +
+        "the boundary item — de-duplicate by `id`). Page with " +
+        "`pagination.nextCursor` (epoch-ms) fed back as the same param. Pagination " +
+        "takes precedence over `q`/`categoryId` if both are sent. Returns " +
+        "`MyCommunitiesResponseData`.\n\n" +
+        "**Search mode** (`q` and/or `categoryId`, no pagination) — communities " +
+        "matching the filters across **PUBLIC communities PLUS any PRIVATE " +
+        "community you are already an ACTIVE member of** (joined communities are " +
+        "NOT excluded). Optional `q` searches name and handle (case-insensitive); " +
+        "optional `categoryId` filters by category. `filter` defaults to `all`; " +
+        "`live`/`upcoming` are reserved for livestream discovery and currently " +
+        "return an empty page. Newest-first offset/page pagination (`page` + " +
+        "`limit`). Returns `CommunityDiscoverResponseData`.\n\n" +
+        "All datetime response fields are epoch milliseconds (number). (The legacy " +
+        "`GET /communities/discover` endpoint is a deprecated alias for search " +
+        "with the original 'exclude joined' filtering.)\n\n" +
+        "**Community-chat fields (both modes).** Every item carries " +
+        "`unreadMessageCount` (integer, default 0) and `lastMessageActivity` " +
+        "(object or null). These are **member-only**: a real unread count and " +
+        "last-message preview are returned only for communities you are an ACTIVE " +
+        "member of; for any non-member community surfaced by search mode they are " +
+        "`0` / `null`. `lastMessageActivity` is `{ username, message, dateTime }` " +
+        "where `dateTime` is **epoch milliseconds** and `message` is a list-screen " +
+        "preview (text content, or a placeholder like '📷 Photo' for media). If " +
+        "chat-service is unavailable the endpoint degrades gracefully (all items " +
+        "get `0` / `null`).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "before_ts",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1 },
+          description:
+            "Joined mode. Epoch ms. Returns items with lastActivityAt <= before_ts (newest-first).",
+        },
+        {
+          name: "after_ts",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1 },
+          description:
+            "Joined mode. Epoch ms. Returns items with lastActivityAt >= after_ts (oldest-first).",
+        },
+        {
+          name: "q",
+          in: "query",
+          required: false,
+          schema: { type: "string", minLength: 1, maxLength: 100 },
+          description:
+            "Search mode. Search term matched against community name and handle (case-insensitive).",
+        },
+        {
+          name: "categoryId",
+          in: "query",
+          required: false,
+          schema: { type: "string", pattern: "^[a-f0-9]{24}$" },
+          description:
+            "Search mode. Filter to a single category (24-char hex ObjectId).",
+        },
+        {
+          name: "filter",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["all", "live", "upcoming"],
+            default: "all",
+          },
+          description:
+            "Search mode. `all` browses every matching community. " +
+            "`live`/`upcoming` are reserved for livestream filtering and currently return an empty page.",
+        },
         {
           name: "page",
           in: "query",
           required: false,
           schema: { type: "integer", minimum: 1, default: 1 },
-          description: "1-based page number.",
+          description: "Search mode. 1-based page number.",
         },
         {
           name: "limit",
@@ -200,7 +558,8 @@ export const communityPaths = {
       ],
       responses: {
         "200": {
-          description: "My communities",
+          description:
+            "My communities (joined mode) or matching communities (search mode)",
           content: {
             "application/json": {
               schema: {
@@ -210,7 +569,14 @@ export const communityPaths = {
                     type: "object",
                     properties: {
                       data: {
-                        $ref: "#/components/schemas/MyCommunitiesResponseData",
+                        oneOf: [
+                          {
+                            $ref: "#/components/schemas/MyCommunitiesResponseData",
+                          },
+                          {
+                            $ref: "#/components/schemas/MyCommunitiesSearchResponseData",
+                          },
+                        ],
                       },
                     },
                   },
@@ -219,6 +585,7 @@ export const communityPaths = {
             },
           },
         },
+        "400": validationError,
         "401": unauthorized,
       },
     },
@@ -226,9 +593,11 @@ export const communityPaths = {
   "/communities/discover": {
     get: {
       tags: ["Communities"],
-      summary: "Discover / search / browse public communities",
+      summary: "Discover / search / browse public communities (deprecated)",
+      deprecated: true,
       description:
-        "Public communities you are not already in (active, pending, and banned memberships are excluded). Optional `q` searches name and handle (case-insensitive); optional `categoryId` filters by category. `filter` defaults to `all`; `live` and `upcoming` are reserved for livestream-based discovery and currently return an empty page (no stream-service yet). Newest-first, offset/page pagination (`page` + `limit`); response carries `pagination` and `data`.",
+        "**Deprecated** — use `GET /communities/mine` with `q`/`categoryId` instead. " +
+        "Public communities you are not already in (active, pending, and banned memberships are excluded). Optional `q` searches name and handle (case-insensitive); optional `categoryId` filters by category. `filter` defaults to `all`; `live` and `upcoming` are reserved for livestream-based discovery and currently return an empty page (no stream-service yet). Newest-first, offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. `createdAt` in each item is now epoch milliseconds (filtering is unchanged).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3173,6 +3542,89 @@ export const communityPaths = {
             },
           },
         },
+      },
+    },
+  },
+
+  // --- Bulk mute / unmute --------------------------------------------------
+  "/communities/mute/bulk": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk mute or unmute communities",
+      description:
+        'Mute or unmute multiple communities at once. Set `action` to `"mute"` or `"unmute"`. For mute: communities already muted or where the caller is not an ACTIVE member are silently skipped; `durationMinutes` null/omitted → indefinite mute. For unmute: communities not currently muted are silently skipped.',
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/BulkMuteRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Bulk mute/unmute result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/BulkMuteResult" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": validationError,
+        "401": unauthorized,
+      },
+    },
+  },
+
+  "/communities/read/bulk": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk mark community chats as read",
+      description:
+        "Zero the unread count for multiple communities at once. Updates `lastReadAt` on the caller's room-member rows in chat-service. Communities not joined or where chat is not enabled are silently skipped (updatedCount reflects only rows actually updated).",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/BulkMarkReadRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Bulk mark-as-read result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/BulkMarkReadResult" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": validationError,
+        "401": unauthorized,
       },
     },
   },

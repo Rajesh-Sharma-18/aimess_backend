@@ -12,7 +12,7 @@
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
     "lint": "eslint .",
-    "test": "node -e \"process.exit(0)\""
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "keywords": [],
   "author": "",
@@ -22,6 +22,7 @@
     "@aimess/auth-jwt": "workspace:*",
     "@aimess/constants": "workspace:*",
     "@aimess/errors": "workspace:*",
+    "@aimess/grpc-utils": "workspace:*",
     "@aimess/logger": "workspace:*",
     "@aimess/redis": "workspace:*",
     "@aimess/shared-types": "workspace:*",

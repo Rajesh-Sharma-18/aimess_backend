@@ -3,3 +3,4 @@ CREATE DATABASE aimess_auth;
 CREATE DATABASE aimess_users;
 CREATE DATABASE aimess_communities;
 CREATE DATABASE aimess_moderation;
+CREATE DATABASE admin_db;

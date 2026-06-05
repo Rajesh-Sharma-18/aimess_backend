@@ -8,7 +8,9 @@ import {
   buildPaginatedResponse,
   buildListResponse,
   buildCursorResponse,
+  buildTimelineResponse,
 } from "../../lib/pagination.js";
+import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import type { GroupMessageService } from "../../services/group-message.service.js";
 import type { GroupPinService } from "../../services/group-pin.service.js";
 
@@ -22,19 +24,33 @@ export class GroupMessageController {
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const cursor = req.query.cursor as string | undefined;
+    // Timestamp pagination (epoch ms). before_ts → createdAt <= ts (newest-first);
+    // after_ts → createdAt >= ts (oldest-first); neither → newest page.
+    const beforeTs =
+      req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
+    const afterTs =
+      req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
     const limit = Number(req.query.limit) || 30;
-    const page = Number(req.query.page) || 1;
-    const [messages, totalCount] = await Promise.all([
-      this.messageService.getMessages({ roomId, userId, cursor, limit }),
+    const direction = afterTs != null ? "after" : "before";
+    const tsMs =
+      afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
+
+    const [result, totalCount] = await Promise.all([
+      this.messageService.getMessagesTimeline({
+        roomId,
+        userId,
+        direction,
+        ts: new Date(tsMs),
+        limit,
+      }),
       this.messageService.countMessages(roomId),
     ]);
-    const paginated = buildPaginatedResponse(
-      messages as unknown as Record<string, unknown>[],
+    const paginated = buildTimelineResponse(
+      result.items as unknown as Record<string, unknown>[],
       totalCount,
-      page,
       limit,
-      "createdAt"
+      result.hasMore,
+      result.nextCursor
     );
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
@@ -223,6 +239,18 @@ export class GroupMessageController {
         },
       })
     );
+    // Fire-and-forget bump (incl. member fetch) — must never delay the HTTP response.
+    publishConvUpdatedSafe({
+      redis: this.redis,
+      type: "GROUP",
+      roomId: targetRoomId,
+      fetchRecipients: () =>
+        this.messageService.getActiveMemberIds(targetRoomId),
+      senderId: userId,
+      lastMessageId: result.id,
+      lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
+      preview: { contentType: result.messageType, text: "" },
+    });
     res
       .status(HTTP_STATUS.CREATED)
       .json(new ApiResponse(result, t("CHAT_MESSAGE_FORWARDED", req.locale)));

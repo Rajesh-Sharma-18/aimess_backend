@@ -50,10 +50,15 @@ const envSchema = z.object({
   CONVERSATION_PAGE_SIZE: z.coerce.number().positive().default(20),
   PIN_LIMIT_PER_ROOM: z.coerce.number().positive().default(50),
 
-  USER_SERVICE_URL: z.string().url().optional(),
-  AUTH_SERVICE_URL: z.string().url().optional(),
-
   USER_SERVICE_GRPC_URL: z.string().default("0.0.0.0:4002"),
+  AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),
+  COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
+  // Boot-time reconciliation of community chat rooms (pull from community-service
+  // over gRPC). Disable to skip the reconciler entirely.
+  COMMUNITY_ROOM_RECONCILE_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
 
   FRIENDSHIP_CACHE_TTL_SEC: z.coerce.number().positive().default(600), // 10 minutes
 

@@ -4,6 +4,146 @@ package community;
 service CommunityService {
   rpc SendCommunityMessage (SendCommunityMessageRequest) returns (SendCommunityMessageResponse);
   rpc GetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
+  // Reconciliation: chat-service pulls communities (+ members) on boot to
+  // provision any missing community chat rooms / sync RoomMember rows.
+  rpc ListCommunities (ListCommunitiesRequest) returns (ListCommunitiesResponse);
+  // Admin dashboard: count of active (non-soft-deleted) communities.
+  rpc GetCommunityCount (GetCommunityCountRequest) returns (CommunityCount);
+
+  // ---- Backoffice (admin panel) Community Management ----
+  // Read-through queries for the admin Community Management screen + the
+  // close/reopen moderation command. backoffice-service is the only caller.
+  rpc AdminListCommunities (AdminListCommunitiesRequest) returns (AdminListCommunitiesResponse);
+  rpc AdminGetCommunity (AdminGetCommunityRequest) returns (AdminCommunityDetail);
+  rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
+
+  // Bulk community-chat summaries for GET /communities/mine: per-community unread
+  // count + last-message preview for the calling user. Member-only previews.
+  rpc GetCommunityChatSummaries (GetCommunityChatSummariesRequest) returns (GetCommunityChatSummariesResponse);
+
+  // Bulk mark-as-read: advances lastReadAt to now for the caller's active
+  // member rows across the given communities. Non-member rooms are silently skipped.
+  rpc BulkMarkCommunityRead (BulkMarkCommunityReadRequest) returns (BulkMarkCommunityReadResponse);
+}
+
+// ---- Bulk mark-as-read ----
+message BulkMarkCommunityReadRequest {
+  string userId = 1;
+  repeated string communityIds = 2;
+}
+message BulkMarkCommunityReadResponse {
+  int32 updatedCount = 1; // number of member rows actually updated
+}
+
+// ---- Community chat summaries (GET /communities/mine enrichment) ----
+message GetCommunityChatSummariesRequest {
+  string userId = 1;
+  repeated string communityIds = 2;
+}
+message CommunityChatLastMessage {
+  string username = 1;
+  string message  = 2;
+  int64  dateTime = 3; // epoch ms
+}
+message CommunityChatSummary {
+  string communityId        = 1;
+  int32  unreadMessageCount = 2;
+  bool   hasLastMessage     = 3; // false => lastMessageActivity is null
+  CommunityChatLastMessage lastMessage = 4;
+}
+message GetCommunityChatSummariesResponse {
+  repeated CommunityChatSummary summaries = 1;
+}
+
+// ---- Backoffice Community Management ----
+// "status" = admin moderation lifecycle: ACTIVE | CLOSED (CLOSED == the
+// Community.moderationStatus SUSPENDED). Distinct from user soft-delete
+// (deletedAt) — soft-deleted communities are excluded from these results.
+message AdminListCommunitiesRequest {
+  string search       = 1;  // matches community name OR admin name; "" = no filter
+  string type         = 2;  // "PUBLIC" | "PRIVATE" | "" (any)
+  string category     = 3;  // category slug OR id; "" = any
+  string status       = 4;  // "ACTIVE" | "CLOSED" | "" (any)
+  string created_from = 5;  // ISO date YYYY-MM-DD, inclusive; "" = none
+  string created_to   = 6;  // ISO date YYYY-MM-DD, inclusive; "" = none
+  string sort_field   = 7;  // createdAt | name | memberCount | livestreamCount
+  string sort_dir     = 8;  // asc | desc
+  int32  page         = 9;  // 1-based
+  int32  limit        = 10; // page size
+}
+
+// One community row, shared by the list + the detail core. Admin identity is
+// sourced from the CommunityMember snapshot of Community.adminId.
+message AdminCommunityRow {
+  string community_id     = 1;
+  string name             = 2;
+  string handle           = 3;
+  string admin_id         = 4;
+  string admin_name       = 5;  // snapshotDisplayName of the admin member; "" if missing
+  string admin_username   = 6;  // snapshotUsername; "" if missing
+  string admin_avatar_url = 7;  // snapshotAvatarKey/url; "" if none
+  string type             = 8;  // PUBLIC | PRIVATE
+  string category_id      = 9;
+  string category_name    = 10;
+  string category_slug    = 11;
+  string status           = 12; // ACTIVE | CLOSED
+  int32  member_count     = 13;
+  int32  livestream_count = 14; // STUB (0) until stream-service is wired
+  int64  created_at       = 15; // epoch ms
+}
+
+message AdminListCommunitiesResponse {
+  repeated AdminCommunityRow communities = 1;
+  int32 total = 2; // total matching the filter (for offset pagination)
+}
+
+message AdminGetCommunityRequest {
+  string community_id = 1;
+}
+
+// Detail payload. Moderation history is NOT here — backoffice composes it from
+// its own admin_db ModerationAction rows. owner_email / owner_account_status are
+// best-effort ("" / "ACTIVE") until enriched cross-service.
+message AdminCommunityDetail {
+  bool   found                  = 1;
+  AdminCommunityRow community    = 2;
+  string description             = 3;  // "" if none
+  string cover_url               = 4;  // "" if none
+  int64  last_activity_at        = 5;  // epoch ms
+  // Member statistics.
+  int32  members_total           = 6;
+  int32  members_active          = 7;
+  int32  members_pending         = 8;
+  int32  members_banned          = 9;
+  int32  members_moderators      = 10; // ACTIVE members with role MODERATOR or ADMIN
+  int32  members_joined_last_7d  = 11;
+  // Settings summary.
+  int32  open_reports            = 12; // CommunityReport status=OPEN count
+  int32  active_invite_links     = 13; // non-revoked, non-expired invite links
+  string join_policy             = 14; // "OPEN" (PUBLIC) | "REQUEST" (PRIVATE)
+  // Owner extras (snapshot-sourced; "" / "ACTIVE" until enriched).
+  string owner_email             = 15;
+  string owner_account_status    = 16;
+}
+
+message AdminSetModerationStatusRequest {
+  string community_id   = 1;
+  string status         = 2; // "ACTIVE" (reopen) | "SUSPENDED" (close)
+  string reason_code    = 3; // close reason code; "" for reopen
+  string actor_admin_id = 4; // backoffice AdminUser.id (stored on close)
+}
+
+message AdminSetModerationStatusResponse {
+  bool   ok         = 1;
+  string status     = 2; // resulting moderation status: ACTIVE | CLOSED
+  int64  closed_at  = 3; // epoch ms; 0 when ACTIVE
+  // "" on success, else COMMUNITY_NOT_FOUND | COMMUNITY_ALREADY_CLOSED | COMMUNITY_NOT_CLOSED
+  string error_code = 4;
+}
+
+message GetCommunityCountRequest {}
+message CommunityCount {
+  int64 total = 1;
 }
 
 message SendCommunityMessageRequest {
@@ -39,4 +179,29 @@ message CommunityMessageDto {
   string content_type = 5;
   string media_key    = 6;
   int64  sent_at      = 7;
+}
+
+// ---- Reconciliation (ListCommunities) ----
+message ListCommunitiesRequest {
+  string after_id = 1; // exclusive cursor on community id; empty = from start
+  int32  limit    = 2; // page size; 0 = server default
+}
+message ReconcileMemberDto {
+  string user_id   = 1;
+  string status    = 2; // ACTIVE | PENDING | BANNED | LEFT
+  string role      = 3; // ADMIN | MODERATOR | MEMBER
+  int64  joined_at = 4; // epoch ms
+}
+message ReconcileCommunityDto {
+  string id         = 1;
+  string name       = 2;
+  string admin_id   = 3;
+  string avatar_url = 4;
+  bool   deleted    = 5; // deletedAt is set (soft-deleted)
+  repeated ReconcileMemberDto members = 6;
+}
+message ListCommunitiesResponse {
+  repeated ReconcileCommunityDto communities = 1;
+  string next_after_id = 2; // pass back as after_id for the next page
+  bool   has_more      = 3;
 }

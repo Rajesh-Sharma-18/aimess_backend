@@ -19,13 +19,19 @@ import {
   buildPaginatedResponse,
   type PaginatedResponse,
 } from "../lib/pagination.js";
-import { normalizeHandle, normalizeName } from "../lib/community-slug.util.js";
+import {
+  normalizeHandle,
+  normalizeName,
+  slugifyCategoryName,
+} from "../lib/community-slug.util.js";
+import { COMMUNITY_MEMBER_LIMIT } from "../constants/index.js";
 import { env } from "../config/env.js";
 import {
   CommunityInviteStatus,
   CommunityJoinReqStatus,
   CommunityMemberRole,
   CommunityMemberStatus,
+  CommunityModerationStatus,
   CommunityReportStatus,
   CommunityType,
   Prisma,
@@ -37,12 +43,15 @@ import {
 } from "../generated/prisma/index.js";
 import type {
   AddMembersResult,
+  AdminCategoryData,
+  AdminCategoryListResult,
   CommunityAuditAction,
   CommunityAuditLogData,
   CommunityAvailability,
   CommunityCategoryData,
   CommunityData,
   CommunityDiscoverItem,
+  CommunityLastMessageActivity,
   CommunityInviteData,
   CommunityInviteLinkData,
   CommunityInviteWithUserData,
@@ -62,6 +71,7 @@ import type {
 } from "../types/community.types.js";
 import { communityImageService } from "./community-image.service.js";
 import { memberAvatarService } from "./member-avatar.service.js";
+import { getChatClient } from "../grpc/chat.client.js";
 import {
   fetchAcceptedFriendIds,
   fetchUserSnapshots,
@@ -86,6 +96,11 @@ import {
   publishCommunityReportActionedSafe,
   publishCommunityReportCreatedSafe,
 } from "../messaging/publish-community.js";
+import {
+  publishCommunityCreatedForChatSafe,
+  publishCommunityDeletedForChatSafe,
+  publishCommunityStatusChangedForChatSafe,
+} from "../messaging/publish-community-chat.js";
 
 type CommunityWithCategory = Community & {
   category: { id: string; name: string };
@@ -116,6 +131,21 @@ function uniqueViolationToConflict(
   return new ConflictError("COMMUNITY_NAME_TAKEN");
 }
 
+/**
+ * Guard: throws 403 COMMUNITY_SUSPENDED when a community has been closed by an
+ * admin. Call this after the community is loaded in any write path that should
+ * be blocked while the community is suspended (join, update, add members, etc.).
+ * Read-only paths and existing-member moderation actions (kick/ban/mute/leave)
+ * are intentionally NOT blocked.
+ */
+function assertCommunityNotSuspended(community: {
+  moderationStatus: CommunityModerationStatus;
+}): void {
+  if (community.moderationStatus === CommunityModerationStatus.SUSPENDED) {
+    throw new ForbiddenError("COMMUNITY_SUSPENDED");
+  }
+}
+
 async function toCommunityData(
   community: CommunityWithCategory,
   myRole: CommunityMemberRole | null,
@@ -124,10 +154,6 @@ async function toCommunityData(
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
-
-  const myIsMuted = !!muteRow;
-  const myMuteUntil =
-    muteRow && muteRow.mutedUntil ? muteRow.mutedUntil.toISOString() : null;
 
   return {
     id: community.id,
@@ -139,30 +165,62 @@ async function toCommunityData(
     creatorId: community.creatorId,
     adminId: community.adminId,
     memberCount: community.memberCount,
+    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     coverUrl: null,
     coverUrlExpiresIn: null,
     myRole,
-    myIsMuted,
-    myMuteUntil,
+    ...muteFields(muteRow),
+    moderationStatus: community.moderationStatus,
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
   };
 }
 
+/**
+ * Batch-load the caller's mute rows for a set of communities, keyed by
+ * communityId. One indexed query for the whole page — avoids N+1 when listing.
+ */
+async function loadMuteMap(
+  userId: string,
+  communityIds: string[]
+): Promise<Map<string, { mutedUntil: Date | null }>> {
+  if (communityIds.length === 0) return new Map();
+  const rows = await communityRepository.findMutesByUserAndCommunityIds(
+    userId,
+    communityIds
+  );
+  return new Map(rows.map((row) => [row.communityId, row]));
+}
+
+/** Derive the caller-facing mute fields from a (possibly absent) mute row. */
+function muteFields(muteRow: { mutedUntil: Date | null } | null | undefined): {
+  myIsMuted: boolean;
+  myMuteUntil: string | null;
+} {
+  return {
+    myIsMuted: !!muteRow,
+    myMuteUntil:
+      muteRow && muteRow.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
+  };
+}
+
 /** Map a community row to the discovery/browse DTO (resolves avatar URL). */
-async function toDiscoverItem(community: {
-  id: string;
-  name: string;
-  handle: string;
-  description: string | null;
-  type: CommunityType;
-  memberCount: number;
-  avatarUrl: string | null;
-  createdAt: Date;
-  category: { id: string; name: string };
-}): Promise<CommunityDiscoverItem> {
+async function toDiscoverItem(
+  community: {
+    id: string;
+    name: string;
+    handle: string;
+    description: string | null;
+    type: CommunityType;
+    memberCount: number;
+    avatarUrl: string | null;
+    createdAt: Date;
+    category: { id: string; name: string };
+  },
+  muteRow: { mutedUntil: Date | null } | null
+): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
@@ -175,9 +233,11 @@ async function toDiscoverItem(community: {
     type: community.type,
     category: { id: community.category.id, name: community.category.name },
     memberCount: community.memberCount,
+    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-    createdAt: community.createdAt.toISOString(),
+    ...muteFields(muteRow),
+    createdAt: community.createdAt.getTime(),
   };
 }
 
@@ -211,66 +271,6 @@ async function toMemberData(member: {
     bannedBy: member.bannedBy ?? null,
     banReason: member.banReason ?? null,
   };
-}
-
-/** Map an audit-log row to the API DTO (createdAt → ISO string). */
-/**
- * Auto-handover sequence used when an admin leaves. Promotes `successorUserId`
- * to ADMIN, transfers ownership, demotes the leaving admin to MEMBER, marks
- * them LEFT, recomputes memberCount, audits, logs. No `$transaction`: standalone
- * Mongo does not support interactive transactions — order matters so the
- * community always has a valid admin.
- */
-async function handoverAdminTo(
-  community: CommunityWithCategory,
-  callerId: string,
-  successorUserId: string
-): Promise<CommunityMemberData> {
-  // 1. Promote the successor → ADMIN.
-  await communityRepository.updateMemberRole(
-    community.id,
-    successorUserId,
-    CommunityMemberRole.ADMIN
-  );
-  // 2. Transfer community ownership.
-  await communityRepository.setCommunityAdmin(community.id, successorUserId);
-  // 3. Demote the leaving admin's row to MEMBER.
-  await communityRepository.updateMemberRole(
-    community.id,
-    callerId,
-    CommunityMemberRole.MEMBER
-  );
-  // 4. Mark the leaving admin LEFT.
-  const updated = await communityRepository.updateMemberStatus(
-    community.id,
-    callerId,
-    CommunityMemberStatus.LEFT
-  );
-  // 5. Recompute memberCount (robust against drift).
-  const count = await communityRepository.countActiveMembers(community.id);
-  await communityRepository.setMemberCount(community.id, count);
-  // 6. Audit the handover.
-  await communityService.recordAudit({
-    communityId: community.id,
-    actorId: callerId,
-    action: "ADMIN_TRANSFERRED",
-    targetUserId: successorUserId,
-    metadata: { reason: "admin_left_auto_handover" },
-  });
-  // 7. Structured log.
-  logger.info(
-    `Community admin auto-handover on leave: community=${community.id} from=${callerId} to=${successorUserId}`
-  );
-
-  publishCommunityAdminTransferredSafe({
-    communityId: community.id,
-    eventAt: new Date().toISOString(),
-    actorId: callerId,
-    targetUserId: successorUserId,
-    reason: "admin_left_auto_handover",
-  });
-
-  return toMemberData(updated);
 }
 
 function toJoinRequestData(
@@ -338,6 +338,7 @@ async function toEmbeddedCommunitySummary(community: {
     handle: community.handle,
     type: community.type,
     memberCount: community.memberCount,
+    memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
   };
@@ -420,9 +421,158 @@ function toAuditLogData(log: {
   };
 }
 
+/** Resolved chat enrichment for one community: unread count + preview-or-null. */
+type ChatEnrichment = {
+  unreadMessageCount: number;
+  lastMessageActivity: CommunityLastMessageActivity | null;
+};
+
+/**
+ * Bulk-fetch community-chat summaries (unread + last message) for the caller and
+ * index them by communityId. Member-only previews are enforced in chat-service;
+ * non-member / missing ids resolve to `{ unreadMessageCount: 0,
+ * lastMessageActivity: null }`. Always degrades gracefully (empty map on chat
+ * failure — the gRPC client already falls back to []).
+ */
+async function fetchChatEnrichment(
+  userId: string,
+  communityIds: string[]
+): Promise<Map<string, ChatEnrichment>> {
+  const map = new Map<string, ChatEnrichment>();
+  if (!communityIds.length) return map;
+
+  const summaries = await getChatClient().getCommunityChatSummaries({
+    userId,
+    communityIds,
+  });
+  for (const s of summaries) {
+    map.set(s.communityId, {
+      unreadMessageCount: s.unreadMessageCount ?? 0,
+      lastMessageActivity:
+        s.hasLastMessage && s.lastMessage
+          ? {
+              username: s.lastMessage.username,
+              message: s.lastMessage.message,
+              dateTime: s.lastMessage.dateTime,
+            }
+          : null,
+    });
+  }
+  return map;
+}
+
+const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
+  unreadMessageCount: 0,
+  lastMessageActivity: null,
+};
+
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
     return communityRepository.listActiveCategories();
+  },
+
+  async listCategoriesAdmin(query: {
+    search?: string;
+    status?: "visible" | "hidden" | "all";
+    page: number;
+    limit: number;
+  }): Promise<AdminCategoryListResult> {
+    const active =
+      query.status === "visible"
+        ? true
+        : query.status === "hidden"
+          ? false
+          : undefined;
+
+    const [rows, total] = await communityRepository.listCategoriesAdmin({
+      search: query.search,
+      active,
+      page: query.page,
+      limit: query.limit,
+    });
+
+    const totalPages = total === 0 ? 0 : Math.ceil(total / query.limit);
+    return {
+      categories: rows.map((c) => ({
+        id: c.id,
+        name: c.name,
+        slug: c.slug,
+        visible: c.active,
+        order: c.order,
+        createdAt: c.createdAt.toISOString(),
+        updatedAt: c.updatedAt.toISOString(),
+      })),
+      pagination: {
+        page: query.page,
+        limit: query.limit,
+        total,
+        totalPages,
+        hasNext: query.page < totalPages,
+        hasPrev: query.page > 1,
+      },
+    };
+  },
+
+  async createCategory(input: { name: string }): Promise<AdminCategoryData> {
+    const name = normalizeName(input.name);
+    const slug = slugifyCategoryName(name);
+
+    const existing = await communityRepository.findCategoryByName(name);
+    if (existing) throw new ConflictError("CATEGORY_NAME_TAKEN");
+
+    const category = await communityRepository.createCategory({ name, slug });
+    return {
+      id: category.id,
+      name: category.name,
+      slug: category.slug,
+      visible: category.active,
+      order: category.order,
+      createdAt: category.createdAt.toISOString(),
+      updatedAt: category.updatedAt.toISOString(),
+    };
+  },
+
+  async updateCategory(
+    id: string,
+    input: { name?: string; visible?: boolean }
+  ): Promise<AdminCategoryData> {
+    const category = await communityRepository.findCategoryByIdAdmin(id);
+    if (!category) throw new NotFoundError("CATEGORY_NOT_FOUND");
+
+    const updates: { name?: string; slug?: string; active?: boolean } = {};
+
+    if (input.name !== undefined) {
+      const name = normalizeName(input.name);
+      const duplicate = await communityRepository.findCategoryByName(name, id);
+      if (duplicate) throw new ConflictError("CATEGORY_NAME_TAKEN");
+      updates.name = name;
+      updates.slug = slugifyCategoryName(name);
+    }
+
+    if (input.visible !== undefined) {
+      updates.active = input.visible;
+    }
+
+    const updated = await communityRepository.updateCategoryById(id, updates);
+    return {
+      id: updated.id,
+      name: updated.name,
+      slug: updated.slug,
+      visible: updated.active,
+      order: updated.order,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+    };
+  },
+
+  async deleteCategory(id: string): Promise<void> {
+    const category = await communityRepository.findCategoryByIdAdmin(id);
+    if (!category) throw new NotFoundError("CATEGORY_NOT_FOUND");
+
+    const inUse = await communityRepository.countCommunitiesWithCategory(id);
+    if (inUse > 0) throw new ConflictError("CATEGORY_IN_USE");
+
+    await communityRepository.deleteCategoryById(id);
   },
 
   async checkNameAvailability(
@@ -595,6 +745,15 @@ export const communityService = {
     await communityCache.invalidateNameAvailability(name);
     await communityCache.invalidateHandleAvailability(handle);
 
+    // Provision the community's chat room in chat-service (GeneralRoom id ===
+    // community.id) so community chat works and drives lastActivityAt ordering.
+    publishCommunityCreatedForChatSafe({
+      communityId: community.id,
+      name: community.name,
+      avatarUrl: community.avatarUrl ?? null,
+      ownerId: creatorId,
+    });
+
     // A brand-new community has no mute row for the creator.
     return toCommunityData(community, CommunityMemberRole.ADMIN, null);
   },
@@ -649,6 +808,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(membership, CommunityMemberRole.ADMIN);
+    assertCommunityNotSuspended(community);
 
     const data: Prisma.CommunityUpdateInput = {};
     let nextName: string | undefined;
@@ -733,45 +893,83 @@ export const communityService = {
 
   async listMine(
     userId: string,
-    params: { page: number; limit: number }
+    params: { direction: "before" | "after"; ts: Date; limit: number }
   ): Promise<PaginatedResponse<CommunityListItem>> {
-    const { rows, total } = await communityRepository.listMyMemberships({
+    // Over-fetch one extra row so hasMore is exact.
+    const { rows, total } = await communityRepository.listMineByActivity({
       userId,
-      page: params.page,
-      limit: params.limit,
+      direction: params.direction,
+      ts: params.ts,
+      limit: params.limit + 1,
     });
 
+    const hasMore = rows.length > params.limit;
+    const pageRows = rows.slice(0, params.limit);
+
+    const communityIds = pageRows.map((row) => row.id);
+
+    // Bulk-fetch chat enrichment and mute settings in parallel.
+    const [chatMap, muteRows] = await Promise.all([
+      fetchChatEnrichment(userId, communityIds),
+      communityRepository.findMutesByUserAndCommunityIds(userId, communityIds),
+    ]);
+
+    const mutedSet = new Set(muteRows.map((m) => m.communityId));
+
     const communities: CommunityListItem[] = await Promise.all(
-      rows.map(async (row) => {
+      pageRows.map(async (row) => {
         const avatarView = await communityImageService.resolveViewUrlForClient(
-          row.community.avatarUrl
+          row.avatarUrl
         );
+        const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
         return {
-          id: row.community.id,
-          name: row.community.name,
-          handle: row.community.handle,
-          type: row.community.type,
-          memberCount: row.community.memberCount,
+          id: row.id,
+          name: row.name,
+          handle: row.handle,
+          type: row.type,
+          memberCount: row.memberCount,
+          memberLimit: COMMUNITY_MEMBER_LIMIT,
           avatarUrl: avatarView?.url ?? null,
           avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-          myRole: row.role,
+          myRole: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
+          lastActivityAt: row.lastActivityAt.getTime(),
+          unreadMessageCount: chat.unreadMessageCount,
+          lastMessageActivity: chat.lastMessageActivity,
+          myIsMuted: mutedSet.has(row.id),
         };
       })
     );
 
-    return buildPaginatedResponse(
-      communities,
-      total,
-      params.page,
-      params.limit
-    );
+    // Inclusive boundary (as specified) → consecutive pages can share the
+    // boundary community; clients de-duplicate by id. nextCursor is epoch-ms to
+    // feed straight back as before_ts/after_ts.
+    const lastRow = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && lastRow ? String(lastRow.lastActivityAt.getTime()) : null;
+
+    return {
+      pagination: {
+        totalData: total,
+        totalPage: Math.ceil(total / params.limit) || 1,
+        currentPage: 1,
+        limit: params.limit,
+        nextCursor,
+        hasMore,
+      },
+      data: communities,
+    };
   },
 
   /**
-   * Public discovery / browse / search. Returns PUBLIC communities the caller is
-   * not already in (active/pending/banned are excluded). The "live"/"upcoming"
-   * filters depend on livestream data (stream-service), which does not exist
-   * yet, so they return an empty page rather than misleading results.
+   * Public discovery / browse / search. Two membership strategies:
+   *   - default (discover alias): PUBLIC communities the caller is not already
+   *     in (active/pending/banned excluded).
+   *   - `includeJoined` (/communities/mine search mode): PUBLIC communities PLUS
+   *     any community the caller is an ACTIVE member of (so PRIVATE communities
+   *     they belong to surface), without excluding joined communities.
+   * The "live"/"upcoming" filters depend on livestream data (stream-service),
+   * which does not exist yet, so they return an empty page rather than
+   * misleading results.
    */
   async discover(
     userId: string,
@@ -781,6 +979,8 @@ export const communityService = {
       filter: "all" | "live" | "upcoming";
       page: number;
       limit: number;
+      includeJoined?: boolean;
+      includeChatActivity?: boolean;
     }
   ): Promise<PaginatedResponse<CommunityDiscoverItem>> {
     if (params.filter !== "all") {
@@ -788,20 +988,58 @@ export const communityService = {
       return buildPaginatedResponse([], 0, params.page, params.limit);
     }
 
-    const excludeCommunityIds =
-      await communityRepository.listExcludedCommunityIds(userId);
+    // Visibility strategy differs by caller: search mode (`includeJoined`) widens
+    // to PUBLIC + the caller's ACTIVE memberships; the discover alias narrows to
+    // PUBLIC and excludes communities the caller already relates to.
+    const [includeMemberCommunityIds, excludeCommunityIds] =
+      params.includeJoined
+        ? [
+            await communityRepository.listActiveMemberCommunityIds(userId),
+            undefined,
+          ]
+        : [
+            undefined,
+            await communityRepository.listExcludedCommunityIds(userId),
+          ];
 
     const { rows, total } = await communityRepository.listDiscoverable({
       q: params.q,
       categoryId: params.categoryId,
+      includeMemberCommunityIds,
       excludeCommunityIds,
       page: params.page,
       limit: params.limit,
     });
 
-    const communities: CommunityDiscoverItem[] = await Promise.all(
-      rows.map((row) => toDiscoverItem(row))
+    // Discovered communities are ones the caller isn't an active member of, so
+    // a mute row is unusual (only a stale row from a community they left) — but
+    // resolve it for parity. One batched query.
+    const muteByCommunityId = await loadMuteMap(
+      userId,
+      rows.map((row) => row.id)
     );
+
+    const communities: CommunityDiscoverItem[] = await Promise.all(
+      rows.map((row) =>
+        toDiscoverItem(row, muteByCommunityId.get(row.id) ?? null)
+      )
+    );
+
+    // /communities/mine search mode: enrich with community-chat activity. Non-
+    // member rows naturally resolve to 0 unread + null preview (member-only
+    // previews enforced in chat-service). The public /discover alias passes
+    // includeChatActivity=false and the fields stay absent (contract unchanged).
+    if (params.includeChatActivity && communities.length > 0) {
+      const chatMap = await fetchChatEnrichment(
+        userId,
+        communities.map((c) => c.id)
+      );
+      for (const item of communities) {
+        const chat = chatMap.get(item.id) ?? EMPTY_CHAT_ENRICHMENT;
+        item.unreadMessageCount = chat.unreadMessageCount;
+        item.lastMessageActivity = chat.lastMessageActivity;
+      }
+    }
 
     return buildPaginatedResponse(
       communities,
@@ -1135,6 +1373,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+    assertCommunityNotSuspended(community);
 
     // Server-side friend validation BEFORE existing-row partitioning. Any
     // candidate not an ACCEPTED friend of the caller is skipped as NOT_FRIEND.
@@ -1300,86 +1539,23 @@ export const communityService = {
       membership.role === CommunityMemberRole.ADMIN;
 
     if (isAdmin) {
-      // 1) Prefer the longest-tenured ACTIVE moderator as successor.
-      const modSuccessor =
-        await communityRepository.findOldestActiveModerator(communityId);
-      if (modSuccessor) {
-        // Record "user left" BEFORE the handover audit/publish (order: user
-        // left, then admin transferred).
-        await this.recordAudit({
-          communityId,
-          actorId: callerId,
-          action: "MEMBER_LEFT",
-          targetUserId: callerId,
-          metadata: leaveMeta,
+      if (community.memberCount === 1) {
+        // Admin is the only member → delete the community (members first, then
+        // community in a transaction). No audit needed since the community
+        // ceases to exist; member rows are removed by the transaction.
+        await communityRepository.deleteCommunityHard(communityId);
+        logger.info(
+          `Community deleted as last member left: community=${communityId} by=${callerId}`
+        );
+        // Member row is gone — synthesise the return value from the snapshot
+        // fetched before deletion.
+        return toMemberData({
+          ...membership,
+          status: CommunityMemberStatus.LEFT,
         });
-        return handoverAdminTo(community, callerId, modSuccessor.userId);
       }
 
-      // 2) Fall back to the longest-tenured ACTIVE member (excluding the
-      // leaving admin).
-      const memberSuccessor = await communityRepository.findOldestActiveMember(
-        communityId,
-        callerId
-      );
-      if (memberSuccessor) {
-        await this.recordAudit({
-          communityId,
-          actorId: callerId,
-          action: "MEMBER_LEFT",
-          targetUserId: callerId,
-          metadata: leaveMeta,
-        });
-        return handoverAdminTo(community, callerId, memberSuccessor.userId);
-      }
-
-      // 3) No successor at all — the admin is the only active member. Soft-
-      // delete the community. ORDER MATTERS (no $transaction): soft-delete
-      // first so any concurrent reader gets COMMUNITY_NOT_FOUND.
-      await communityRepository.updateCommunity(communityId, {
-        deletedAt: new Date(),
-      });
-      const updated = await communityRepository.updateMemberStatus(
-        communityId,
-        callerId,
-        CommunityMemberStatus.LEFT
-      );
-      await communityRepository.setMemberCount(communityId, 0);
-
-      // MEMBER_LEFT recorded BEFORE COMMUNITY_DELETED so the order in the
-      // audit log reads "user left → community deleted".
-      await this.recordAudit({
-        communityId,
-        actorId: callerId,
-        action: "MEMBER_LEFT",
-        targetUserId: callerId,
-        metadata: leaveMeta,
-      });
-
-      await this.recordAudit({
-        communityId,
-        actorId: callerId,
-        action: "COMMUNITY_DELETED",
-        metadata: { reason: "admin_left_no_successor" },
-      });
-
-      await communityCache.invalidateNameAvailability(community.name);
-      await communityCache.invalidateHandleAvailability(community.handle);
-
-      logger.info(
-        `Community auto-deleted on admin leave (no successor): community=${communityId} by=${callerId}`
-      );
-
-      publishCommunityDeletedSafe({
-        communityId,
-        eventAt: new Date().toISOString(),
-        actorId: callerId,
-        reason: "admin_left_no_successor",
-        // No successor exists — the leaving admin is the only active member.
-        memberIds: [callerId],
-      });
-
-      return toMemberData(updated);
+      throw new BadRequestError("ADMIN_CANNOT_LEAVE_COMMUNITY");
     }
 
     // Non-admin leave: status → LEFT + recompute. Single-document update +
@@ -1726,6 +1902,8 @@ export const communityService = {
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
+    assertCommunityNotSuspended(community);
+
     // For PUBLIC communities, create a join request (PENDING) rather than
     // immediately adding the member. PRIVATE communities still require an
     // explicit invite/add by an admin.
@@ -1865,6 +2043,7 @@ export const communityService = {
       reason: "explicit_delete",
       memberIds,
     });
+    publishCommunityDeletedForChatSafe(communityId);
   },
 
   async listAuditLogs(
@@ -1907,6 +2086,8 @@ export const communityService = {
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
+
+    assertCommunityNotSuspended(community);
 
     // Join requests are allowed for both PUBLIC and PRIVATE communities.
     // PUBLIC: user-initiated joins create a PENDING request for moderators
@@ -2076,6 +2257,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+    assertCommunityNotSuspended(community);
 
     const request = await communityRepository.findJoinRequestById(requestId);
     if (!request || request.communityId !== communityId) {
@@ -2291,6 +2473,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+    assertCommunityNotSuspended(community);
 
     if (inviteeId === callerId) {
       throw new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_SELF");
@@ -2455,6 +2638,7 @@ export const communityService = {
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
+    assertCommunityNotSuspended(community);
 
     if (invite.status === CommunityInviteStatus.ACCEPTED) {
       const existing = await communityRepository.findMemberByUserId(
@@ -3082,6 +3266,74 @@ export const communityService = {
     await communityRepository.clearMute(callerId, communityId);
   },
 
+  async bulkMute(
+    callerId: string,
+    communityIds: string[],
+    durationMinutes: number | null | undefined
+  ): Promise<{ muted: string[]; skipped: string[] }> {
+    // Fetch active memberships and existing mutes in parallel.
+    const [memberships, existingMutes] = await Promise.all([
+      communityRepository.findActiveMembershipsByCommunityIds(
+        callerId,
+        communityIds
+      ),
+      communityRepository.findMutesByUserAndCommunityIds(
+        callerId,
+        communityIds
+      ),
+    ]);
+
+    const activeMemberSet = new Set(memberships.map((m) => m.communityId));
+    const alreadyMutedSet = new Set(existingMutes.map((m) => m.communityId));
+
+    const toMute = communityIds.filter(
+      (id) => activeMemberSet.has(id) && !alreadyMutedSet.has(id)
+    );
+    const skipped = communityIds.filter((id) => !toMute.includes(id));
+
+    if (toMute.length > 0) {
+      const mutedUntil =
+        durationMinutes == null
+          ? null
+          : new Date(Date.now() + durationMinutes * 60_000);
+      await communityRepository.bulkCreateMute(callerId, toMute, mutedUntil);
+    }
+
+    return { muted: toMute, skipped };
+  },
+
+  async bulkUnmute(
+    callerId: string,
+    communityIds: string[]
+  ): Promise<{ unmuted: string[]; skipped: string[] }> {
+    const existingMutes =
+      await communityRepository.findMutesByUserAndCommunityIds(
+        callerId,
+        communityIds
+      );
+
+    const mutedSet = new Set(existingMutes.map((m) => m.communityId));
+    const toUnmute = communityIds.filter((id) => mutedSet.has(id));
+    const skipped = communityIds.filter((id) => !mutedSet.has(id));
+
+    if (toUnmute.length > 0) {
+      await communityRepository.bulkClearMute(callerId, toUnmute);
+    }
+
+    return { unmuted: toUnmute, skipped };
+  },
+
+  async bulkMarkRead(
+    callerId: string,
+    communityIds: string[]
+  ): Promise<{ updatedCount: number }> {
+    const updatedCount = await getChatClient().bulkMarkCommunityRead({
+      userId: callerId,
+      communityIds,
+    });
+    return { updatedCount };
+  },
+
   // ---------------------------------------------------------------------------
   // Per-community notification preferences (toggles on the mute-setting row)
   // ---------------------------------------------------------------------------
@@ -3115,6 +3367,7 @@ export const communityService = {
         streamEnabled: true,
         chatEnabled: true,
         announcementEnabled: true,
+        isMuted: false,
         createdAt: null,
         updatedAt: null,
       };
@@ -3126,6 +3379,8 @@ export const communityService = {
       streamEnabled: row.streamEnabled,
       chatEnabled: row.chatEnabled,
       announcementEnabled: row.announcementEnabled,
+      isMuted:
+        !row.streamEnabled && !row.chatEnabled && !row.announcementEnabled,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -3165,9 +3420,54 @@ export const communityService = {
       streamEnabled: row.streamEnabled,
       chatEnabled: row.chatEnabled,
       announcementEnabled: row.announcementEnabled,
+      isMuted:
+        !row.streamEnabled && !row.chatEnabled && !row.announcementEnabled,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
+  },
+
+  // ---------------------------------------------------------------------------
+  // Admin moderation: close / reopen a community
+  // ---------------------------------------------------------------------------
+  /**
+   * Called from the gRPC handler (adminSetModerationStatus RPC). Persists the
+   * new moderation status via the repository and — on success — publishes a
+   * `community.status.changed` event so chat-service can suspend or unsuspend
+   * the community's chat room asynchronously.
+   */
+  async adminSetModerationStatus(
+    communityId: string,
+    target: CommunityModerationStatus,
+    reasonCode: string | null,
+    actorAdminId: string | null
+  ): Promise<{
+    ok: boolean;
+    status: string;
+    closedAt: number;
+    errorCode: string;
+  }> {
+    const result = await communityRepository.adminSetModerationStatus(
+      communityId,
+      target,
+      reasonCode,
+      actorAdminId
+    );
+
+    if (result.ok) {
+      publishCommunityStatusChangedForChatSafe({
+        communityId,
+        communityStatus:
+          target === CommunityModerationStatus.SUSPENDED
+            ? "SUSPENDED"
+            : "ACTIVE",
+      });
+      logger.info(
+        `Community moderation status changed: community=${communityId} status=${String(target)} actor=${actorAdminId ?? "unknown"}`
+      );
+    }
+
+    return result;
   },
 
   // ---------------------------------------------------------------------------
@@ -3192,6 +3492,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    assertCommunityNotSuspended(community);
 
     // Invite links are only supported for PUBLIC communities per policy.
     if (community.type !== CommunityType.PUBLIC) {
@@ -3332,6 +3633,7 @@ export const communityService = {
 
     const community = await communityRepository.findById(link.communityId);
     if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    assertCommunityNotSuspended(community);
 
     // Invite links allowed only for PUBLIC communities.
     if (community.type !== CommunityType.PUBLIC) {

@@ -44,7 +44,7 @@ model CommunityCategory {
 // -----------------------------------------------------------------------------
 model Community {
   id          String            @id @default(auto()) @map("_id") @db.ObjectId
-  name        String            @unique
+  name        String            
   handle      String            @unique
   description String?
   type        CommunityType     @default(PUBLIC)
@@ -55,13 +55,27 @@ model Community {
   avatarUrl   String? // MinIO object key (community/avatar/{userId}/{uuid}.ext)
   coverUrl    String? // MinIO object key (community/cover/{userId}/{uuid}.ext)
   memberCount Int               @default(1)
+  // Latest activity for inbox-style ordering: bumped to a community message's
+  // timestamp (denormalized from chat-service via the community.activity event),
+  // initialized to createdAt so message-less communities still sort by age.
+  lastActivityAt DateTime       @default(now())
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
+  // Admin moderation state. DISTINCT from `deletedAt`: moderationStatus is an
+  // admin/backoffice "Close" (SUSPENDED) toggle, whereas `deletedAt` below is a
+  // user-initiated soft-delete. The two are independent — a community can be
+  // SUSPENDED without being deleted, and vice versa.
+  moderationStatus CommunityModerationStatus @default(ACTIVE)
+  closedAt         DateTime? // when an admin suspended/closed the community
+  closedReasonCode String? // CloseReasonCode from backoffice-service
+  closedByAdminId  String? // backoffice AdminUser.id who closed it
   deletedAt   DateTime?
   members     CommunityMember[]
 
   @@index([categoryId])
   @@index([creatorId])
+  @@index([lastActivityAt])
+  @@index([moderationStatus, createdAt])
   @@map("communities")
 }
 
@@ -257,6 +271,13 @@ model CommunityInviteLink {
 enum CommunityType {
   PUBLIC
   PRIVATE
+}
+
+// Admin moderation state set from backoffice-service. SUSPENDED == admin "Closed"
+// in the admin panel. Distinct from `Community.deletedAt` (user soft-delete).
+enum CommunityModerationStatus {
+  ACTIVE
+  SUSPENDED
 }
 
 enum CommunityMemberRole {

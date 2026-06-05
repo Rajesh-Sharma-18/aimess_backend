@@ -12,16 +12,11 @@ export type ResolvedAuthAccount = {
   accountStatus: AccountLoadStatus;
 };
 
-/**
- * Loads sign-in provider data live from auth-service on every call.
- * On auth outage: omits account data without failing the request.
- */
 export async function resolveAuthAccountSummary(
-  userId: string,
-  accessToken: string
+  userId: string
 ): Promise<ResolvedAuthAccount> {
   try {
-    const summary = await fetchAuthAccountSummary(accessToken);
+    const summary = await fetchAuthAccountSummary(userId);
     return { account: summary, accountStatus: "live" };
   } catch (error) {
     if (error instanceof UnauthorizedError) {

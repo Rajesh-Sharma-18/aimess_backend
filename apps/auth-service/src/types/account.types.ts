@@ -16,5 +16,7 @@ export type AccountSummaryResponse = {
   email: string | null;
   emailVerified: boolean;
   hasPassword: boolean;
+  /** First sign-in method ever linked; set once and never overwritten. */
+  primaryAccount: SignInProvider | null;
   providers: ConnectedProviderInfo[];
 };

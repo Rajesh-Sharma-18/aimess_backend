@@ -1,36 +1,28 @@
-import { UnauthorizedError } from "@aimess/errors";
-
-import { env } from "../config/env.js";
+import { authGrpcClient } from "../grpc/auth.client.js";
 import type { AuthAccountSummary } from "../types/auth-account.types.js";
 
-type AuthApiEnvelope<T> = {
-  success: boolean;
-  message?: string;
-  data?: T;
-};
-
 export async function fetchAuthAccountSummary(
-  accessToken: string
+  userId: string
 ): Promise<AuthAccountSummary> {
-  const url = `${env.AUTH_SERVICE_URL.replace(/\/$/, "")}/api/auth/internal/account`;
+  const result = await authGrpcClient.getAccountSummary(userId);
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
-    signal: AbortSignal.timeout(env.AUTH_SERVICE_TIMEOUT_MS),
-  });
-
-  const body = (await response.json()) as AuthApiEnvelope<AuthAccountSummary>;
-
-  if (response.status === 401) {
-    throw new UnauthorizedError("AUTH_UNAUTHORIZED");
-  }
-
-  if (!response.ok || !body.success || !body.data) {
-    throw new Error(`Auth account fetch failed with status ${response.status}`);
-  }
-
-  return body.data;
+  // Map proto response to the existing AuthAccountSummary shape.
+  return {
+    userId: result.userId,
+    account: result.account,
+    email: result.email === "" ? null : result.email,
+    emailVerified: result.emailVerified,
+    hasPassword: result.hasPassword,
+    primaryAccount:
+      result.primaryAccount === ""
+        ? null
+        : (result.primaryAccount as "EMAIL" | "GOOGLE" | "APPLE"),
+    providers: result.providers.map((p) => ({
+      provider: p.provider as "EMAIL" | "GOOGLE" | "APPLE",
+      connected: p.connected,
+      providerUserId: p.providerUserId === "" ? null : p.providerUserId,
+      providerEmail: p.providerEmail === "" ? null : p.providerEmail,
+      linkedAt: p.linkedAt === "" ? null : p.linkedAt,
+    })),
+  };
 }

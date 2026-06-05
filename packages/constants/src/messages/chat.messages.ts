@@ -7,6 +7,10 @@ export const CHAT_MESSAGES = {
     vi: "Lấy danh sách cuộc trò chuyện thành công",
     en: "Conversations fetched successfully",
   },
+  CHAT_INBOX_FETCHED: {
+    vi: "Lấy danh sách hộp thư thành công",
+    en: "Inbox fetched successfully",
+  },
   CHAT_MESSAGES_FETCHED: {
     vi: "Lấy tin nhắn thành công",
     en: "Messages fetched successfully",
@@ -64,6 +68,10 @@ export const CHAT_MESSAGES = {
   CHAT_NO_CONVERSATIONS_FOUND: {
     vi: "Không tìm thấy cuộc trò chuyện nào",
     en: "No conversations found",
+  },
+  CHAT_NO_INBOX_FOUND: {
+    vi: "Không tìm thấy cuộc trò chuyện hoặc nhóm nào",
+    en: "No conversations or groups found",
   },
   CHAT_NO_MESSAGES_FOUND: {
     vi: "Không tìm thấy tin nhắn nào",

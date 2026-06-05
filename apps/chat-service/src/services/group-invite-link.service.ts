@@ -1,6 +1,8 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { nanoid } from "nanoid";
 
+import { SystemEvent } from "../types/enums.js";
+
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
@@ -117,11 +119,14 @@ export class GroupInviteLinkService {
     const room = await this.roomRepo.findActiveByRoomId(link.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NO_LONGER_EXISTS");
 
-    await memberService.addMember({
-      roomId: link.roomId,
-      userId,
-      invitedBy: link.createdBy,
-    });
+    await memberService.addMember(
+      {
+        roomId: link.roomId,
+        userId,
+        invitedBy: link.createdBy,
+      },
+      { systemEvent: SystemEvent.MEMBER_JOINED, actorId: userId }
+    );
 
     await this.inviteLinkRepo.incrementUsedCount(token);
 

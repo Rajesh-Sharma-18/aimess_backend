@@ -79,6 +79,7 @@ export const accountService = {
       email: summary.email,
       emailVerified: summary.emailVerified,
       hasPassword: Boolean(user.passwordHash),
+      primaryAccount: summary.primaryAccount ?? null,
       providers: buildProvidersList(
         summary.email,
         emailConnected,
