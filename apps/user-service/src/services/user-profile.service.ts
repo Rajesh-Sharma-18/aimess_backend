@@ -176,10 +176,9 @@ function getProviderEmail(
 }
 
 async function resolveProfileAuthSummary(
-  userId: string,
-  accessToken: string
+  userId: string
 ): Promise<ProfileAuthSummary> {
-  const { account } = await resolveAuthAccountSummary(userId, accessToken);
+  const { account } = await resolveAuthAccountSummary(userId);
   return {
     account: account?.account ?? null,
     email: account?.email ?? null,
@@ -208,12 +207,9 @@ async function loadProfileRecord(userId: string): Promise<ProfileRecord> {
 }
 
 export const userProfileService = {
-  async getMyProfile(
-    userId: string,
-    accessToken: string
-  ): Promise<UserProfileData> {
+  async getMyProfile(userId: string): Promise<UserProfileData> {
     const profile = await loadProfileRecord(userId);
-    const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+    const authSummary = await resolveProfileAuthSummary(userId);
     return toProfileData(profile, authSummary);
   },
 
@@ -337,7 +333,6 @@ export const userProfileService = {
 
   async updateProfile(
     userId: string,
-    accessToken: string,
     input: UpdateProfileInput
   ): Promise<UserProfileData> {
     const profile = await userProfileRepository.findByUserId(userId);
@@ -425,7 +420,7 @@ export const userProfileService = {
     // returns the current profile without an unnecessary auth-service hop on
     // the mutate path.
     if (Object.keys(updateData).length === 0) {
-      const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+      const authSummary = await resolveProfileAuthSummary(userId);
       return toProfileData(profile, authSummary);
     }
 
@@ -450,7 +445,7 @@ export const userProfileService = {
       await userCache.onUsernameClaimed(updateData.username);
     }
 
-    const authSummary = await resolveProfileAuthSummary(userId, accessToken);
+    const authSummary = await resolveProfileAuthSummary(userId);
     return toProfileData(updated, authSummary);
   },
 };

@@ -7,6 +7,7 @@ import { env } from "../config/env.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userSettingsRepository } from "../repositories/user-settings.repository.js";
+import { buildDisplayName } from "../lib/profile-fields.util.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -141,6 +142,70 @@ export function startUserGrpcServer(): grpc.Server {
           callback(null, toAdminProfileRecord(row));
         } catch (err) {
           logger.error(`gRPC adminGetProfile error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Internal: bulk user profile snapshot (replaces HTTP /api/v1/users/internal/bulk-snapshot)
+    bulkGetUserSnapshots: (
+      call: grpc.ServerUnaryCall<{ userIds: string[] }, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { userIds?: string[] };
+          const userIds = req.userIds ?? [];
+          if (userIds.length === 0) {
+            callback(null, { users: [] });
+            return;
+          }
+          const profiles = await userProfileRepository.findManyByUserIds(
+            userIds.slice(0, 500)
+          );
+          callback(null, {
+            users: profiles.map((p) => ({
+              userId: p.userId,
+              username: p.username,
+              displayName: buildDisplayName(p.firstName, p.lastName),
+              avatarObjectKey: p.avatarUrl ?? "",
+            })),
+          });
+        } catch (err) {
+          logger.error(`gRPC bulkGetUserSnapshots error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Internal: bulk friendship check (replaces HTTP /api/v1/users/internal/friendship-check)
+    checkFriendships: (
+      call: grpc.ServerUnaryCall<
+        { callerId: string; candidateIds: string[] },
+        unknown
+      >,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            callerId?: string;
+            candidateIds?: string[];
+          };
+          const callerId = req.callerId ?? "";
+          const candidateIds = req.candidateIds ?? [];
+          if (!callerId || candidateIds.length === 0) {
+            callback(null, { friendIds: [] });
+            return;
+          }
+          const friendIds =
+            await friendshipRepository.findAcceptedFriendIdsForUser(
+              callerId,
+              candidateIds.slice(0, 500)
+            );
+          callback(null, { friendIds });
+        } catch (err) {
+          logger.error(`gRPC checkFriendships error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

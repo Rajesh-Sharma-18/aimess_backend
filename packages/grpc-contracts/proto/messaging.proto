@@ -27,6 +27,10 @@ service MessagingService {
   rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
   // Admin dashboard: count of active group rooms.
   rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
+  // Admin: paginated group list with filters.
+  rpc AdminListGroups         (AdminListGroupsRequest)         returns (AdminListGroupsResponse);
+  // Admin: single group detail + paginated member table.
+  rpc AdminGetGroup           (AdminGetGroupRequest)           returns (AdminGetGroupResponse);
 }
 
 message GetGroupCountRequest {}
@@ -298,4 +302,55 @@ message CatchupRoomResponse {
   bool   has_more                  = 3;
   int64  last_seq                  = 4;
   bool   authorized                = 5;
+}
+
+// ---- Admin group RPCs -------------------------------------------------------
+
+message AdminListGroupsRequest {
+  string search       = 1;
+  string status       = 2;
+  string created_from = 3;
+  string created_to   = 4;
+  string sort_field   = 5;
+  string sort_dir     = 6;
+  int32  page         = 7;
+  int32  limit        = 8;
+}
+
+message AdminGroupRow {
+  string room_id         = 1;
+  string name            = 2;
+  string avatar          = 3;
+  string description     = 4;
+  string created_by      = 5;
+  string status          = 6;
+  int32  member_count    = 7;
+  int32  member_limit    = 8;
+  int64  created_at      = 9;
+  int64  last_message_at = 10;
+}
+
+message AdminListGroupsResponse {
+  repeated AdminGroupRow groups = 1;
+  int32                  total  = 2;
+}
+
+message AdminGetGroupRequest {
+  string room_id = 1;
+  int32  page    = 2;
+  int32  limit   = 3;
+}
+
+message AdminGroupMember {
+  string user_id   = 1;
+  string role      = 2;
+  string status    = 3;
+  int64  joined_at = 4;
+}
+
+message AdminGetGroupResponse {
+  bool                      found         = 1;
+  AdminGroupRow             group         = 2;
+  repeated AdminGroupMember members       = 3;
+  int32                     members_total = 4;
 }

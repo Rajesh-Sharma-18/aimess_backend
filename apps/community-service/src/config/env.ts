@@ -30,8 +30,7 @@ const envSchema = z.object({
   /** Optional base URL used to build shareable community invite links. */
   INVITE_LINK_BASE_URL: z.string().url().optional(),
 
-  USER_SERVICE_URL: z.string().url(),
-  USER_SERVICE_TIMEOUT_MS: z.coerce.number().positive().default(3000),
+  USER_GRPC_URL: z.string().default("0.0.0.0:4002"),
 
   /** Same secret as auth-service — used to verify access tokens. */
   JWT_ACCESS_SECRET: z.string().min(1),

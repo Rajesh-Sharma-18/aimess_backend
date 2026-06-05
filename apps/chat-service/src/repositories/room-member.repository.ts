@@ -79,6 +79,19 @@ export class RoomMemberRepository {
     });
   }
 
+  /** Advance lastReadAt to now for the user's active rows across many rooms. */
+  async bulkAdvanceReadToNow(
+    userId: string,
+    roomIds: string[]
+  ): Promise<number> {
+    if (!roomIds.length) return 0;
+    const result = await this.prisma.roomMember.updateMany({
+      where: { userId, status: "active", roomId: { in: roomIds } },
+      data: { lastReadAt: new Date() },
+    });
+    return result.count;
+  }
+
   /** Mark every active member of a room as left (community disbanded/deleted). */
   async markAllLeft(roomId: string): Promise<void> {
     await this.prisma.roomMember.updateMany({

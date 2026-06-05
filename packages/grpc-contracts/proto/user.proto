@@ -7,6 +7,8 @@ service UserService {
   rpc GetNotificationSettings (GetNotificationSettingsRequest) returns (NotificationSettings);
   rpc AdminGetProfilesByIds (AdminGetProfilesRequest) returns (AdminProfilesResponse);
   rpc AdminGetProfile (AdminGetProfileRequest) returns (AdminProfileRecord);
+  rpc BulkGetUserSnapshots (BulkGetUserSnapshotsRequest) returns (BulkGetUserSnapshotsResponse);
+  rpc CheckFriendships (CheckFriendshipsRequest) returns (CheckFriendshipsResponse);
 }
 
 message CheckFriendshipRequest {
@@ -58,4 +60,30 @@ message AdminProfilesResponse {
 
 message AdminGetProfileRequest {
   string user_id = 1;
+}
+
+// Internal: community-service + chat-service fetch profiles in bulk (replaces HTTP GET /api/v1/users/internal/bulk-snapshot)
+message BulkGetUserSnapshotsRequest {
+  repeated string user_ids = 1;
+}
+
+message UserSnapshotRecord {
+  string user_id         = 1;
+  string username        = 2;
+  string display_name    = 3;
+  string avatar_object_key = 4; // "" when null
+}
+
+message BulkGetUserSnapshotsResponse {
+  repeated UserSnapshotRecord users = 1;
+}
+
+// Internal: community-service validates friendships in bulk (replaces HTTP GET /api/v1/users/internal/friendship-check)
+message CheckFriendshipsRequest {
+  string caller_id              = 1;
+  repeated string candidate_ids = 2;
+}
+
+message CheckFriendshipsResponse {
+  repeated string friend_ids = 1;
 }

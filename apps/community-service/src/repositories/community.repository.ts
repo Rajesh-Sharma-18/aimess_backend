@@ -31,6 +31,115 @@ export const communityRepository = {
     });
   },
 
+  // ---------------------------------------------------------------------------
+  // Admin category CRUD
+  // ---------------------------------------------------------------------------
+  async listCategoriesAdmin(params: {
+    search?: string;
+    active?: boolean;
+    page: number;
+    limit: number;
+  }) {
+    const where: Prisma.CommunityCategoryWhereInput = {};
+    if (params.search) {
+      where.name = { contains: params.search, mode: "insensitive" };
+    }
+    if (params.active !== undefined) {
+      where.active = params.active;
+    }
+    const skip = (params.page - 1) * params.limit;
+    return Promise.all([
+      prisma.communityCategory.findMany({
+        where,
+        orderBy: [{ order: "asc" }, { name: "asc" }],
+        skip,
+        take: params.limit,
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          active: true,
+          order: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.communityCategory.count({ where }),
+    ]);
+  },
+
+  findCategoryByIdAdmin(id: string) {
+    return prisma.communityCategory.findFirst({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        active: true,
+        order: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  },
+
+  findCategoryByName(name: string, excludeId?: string) {
+    return prisma.communityCategory.findFirst({
+      where: {
+        name: { equals: name, mode: "insensitive" },
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+  },
+
+  createCategory(data: { name: string; slug: string }) {
+    return prisma.communityCategory.create({
+      data: { name: data.name, slug: data.slug, active: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        active: true,
+        order: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  },
+
+  updateCategoryById(
+    id: string,
+    data: { name?: string; slug?: string; active?: boolean }
+  ) {
+    return prisma.communityCategory.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        active: true,
+        order: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  },
+
+  deleteCategoryById(id: string) {
+    return prisma.communityCategory.delete({
+      where: { id },
+      select: { id: true, name: true, slug: true },
+    });
+  },
+
+  countCommunitiesWithCategory(categoryId: string) {
+    return prisma.community.count({
+      where: { categoryId, deletedAt: { isSet: false } },
+    });
+  },
+
   /**
    * Resolve an admin "category" filter token (slug OR ObjectId) to a category id.
    * The admin list filter accepts either form; communities store `categoryId`, so
@@ -123,7 +232,10 @@ export const communityRepository = {
   },
 
   deleteCommunityHard(id: string) {
-    return prisma.community.delete({ where: { id } });
+    return prisma.$transaction([
+      prisma.communityMember.deleteMany({ where: { communityId: id } }),
+      prisma.community.delete({ where: { id } }),
+    ]);
   },
 
   /**
@@ -243,6 +355,17 @@ export const communityRepository = {
     return prisma.communityMember.updateMany({
       where: { communityId, status: CommunityMemberStatus.ACTIVE },
       data: { status: CommunityMemberStatus.LEFT },
+    });
+  },
+
+  findActiveMembershipsByCommunityIds(userId: string, communityIds: string[]) {
+    return prisma.communityMember.findMany({
+      where: {
+        userId,
+        communityId: { in: communityIds },
+        status: CommunityMemberStatus.ACTIVE,
+      },
+      select: { communityId: true },
     });
   },
 
@@ -1469,6 +1592,26 @@ export const communityRepository = {
    */
   findMutesByUserAndCommunityIds(userId: string, communityIds: string[]) {
     return prisma.communityMuteSetting.findMany({
+      where: { userId, communityId: { in: communityIds } },
+    });
+  },
+
+  bulkCreateMute(
+    userId: string,
+    communityIds: string[],
+    mutedUntil: Date | null
+  ) {
+    return prisma.communityMuteSetting.createMany({
+      data: communityIds.map((communityId) => ({
+        userId,
+        communityId,
+        mutedUntil,
+      })),
+    });
+  },
+
+  bulkClearMute(userId: string, communityIds: string[]) {
+    return prisma.communityMuteSetting.deleteMany({
       where: { userId, communityId: { in: communityIds } },
     });
   },

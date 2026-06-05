@@ -6,6 +6,8 @@ import { logger } from "@aimess/logger";
 import { adminStatsRepository } from "../repositories/admin-stats.repository.js";
 import { adminUsersRepository } from "../repositories/admin-users.repository.js";
 import type { AuthUser } from "../generated/prisma/client.js";
+import { accountService } from "../services/account.service.js";
+import { prisma } from "../config/prisma.js";
 
 // Map an AuthUser row to the wire AdminUserRecord. Status is normalized for the
 // admin view: PENDING_DELETION → "DELETED", and any row with deletedAt set is
@@ -185,6 +187,72 @@ const authImpl: grpc.UntypedServiceImplementation = {
         callback(null, toAdminUserRecord(row));
       } catch (err) {
         logger.error(`gRPC adminGetUser error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  // Internal: user-service fetches account summary by userId over gRPC (replaces HTTP /api/auth/internal/account)
+  getAccountSummary: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { userId?: string };
+        const userId = req.userId ?? "";
+        if (!userId) {
+          callback({
+            code: grpc.status.INVALID_ARGUMENT,
+            message: "user_id required",
+          });
+          return;
+        }
+        const summary = await accountService.getAccountSummary(userId);
+        callback(null, {
+          userId: summary.userId,
+          account: summary.account,
+          email: summary.email ?? "",
+          emailVerified: summary.emailVerified,
+          hasPassword: summary.hasPassword,
+          primaryAccount: summary.primaryAccount ?? "",
+          providers: summary.providers.map((p) => ({
+            provider: p.provider,
+            connected: p.connected,
+            providerUserId: p.providerUserId ?? "",
+            providerEmail: p.providerEmail ?? "",
+            linkedAt: p.linkedAt ?? "",
+          })),
+        });
+      } catch (err) {
+        logger.error(`gRPC getAccountSummary error: ${String(err)}`);
+        callback({ code: grpc.status.INTERNAL, message: String(err) });
+      }
+    })();
+  },
+
+  // Internal: chat-service fetches account names in bulk (replaces HTTP /api/internal/accounts)
+  bulkGetAccounts: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { userIds?: string[] };
+        const userIds = req.userIds ?? [];
+        if (userIds.length === 0) {
+          callback(null, { accounts: [] });
+          return;
+        }
+        const users = await prisma.authUser.findMany({
+          where: { id: { in: userIds.slice(0, 500) } },
+          select: { id: true, account: true },
+        });
+        callback(null, {
+          accounts: users.map((u) => ({ userId: u.id, account: u.account })),
+        });
+      } catch (err) {
+        logger.error(`gRPC bulkGetAccounts error: ${String(err)}`);
         callback({ code: grpc.status.INTERNAL, message: String(err) });
       }
     })();

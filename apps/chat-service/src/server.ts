@@ -372,6 +372,7 @@ const startServer = async () => {
       groupMessageService,
       groupMemberService,
       groupRoomRepo,
+      groupMemberRepo,
       cacheRepo,
       userSnapshotService,
       callService,

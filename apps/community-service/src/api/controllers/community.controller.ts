@@ -7,6 +7,8 @@ import { communityService } from "../../services/community.service.js";
 import type {
   AddMembersInput,
   AuditLogsQuery,
+  BulkMarkReadInput,
+  BulkMuteInput,
   CommunityIdParams,
   CommunityMemberParams,
   CreateCommunityInput,
@@ -37,8 +39,12 @@ import type {
   ReportResolutionInput,
   SetMemberMuteInput,
   SetMuteInput,
+  AdminCategoriesQuery,
+  CategoryIdParams,
+  CreateCategoryInput,
   SetNotificationPrefsInput,
   TransferAdminInput,
+  UpdateCategoryInput,
   UpdateCommunityInput,
   UpdateMemberRoleInput,
   WarningsQuery,
@@ -834,6 +840,46 @@ export const clearMuteSetting = asyncHandler(
   }
 );
 
+export const bulkMuteCommunities = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { action, communityIds, durationMinutes } = req.body as BulkMuteInput;
+
+    if (action === "unmute") {
+      const result = await communityService.bulkUnmute(
+        req.auth.userId,
+        communityIds
+      );
+      return res
+        .status(HTTP_STATUS.OK)
+        .json(new ApiResponse(result, t("COMMUNITY_MUTE_CLEARED", req.locale)));
+    }
+
+    const result = await communityService.bulkMute(
+      req.auth.userId,
+      communityIds,
+      durationMinutes
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("COMMUNITY_MUTE_UPDATED", req.locale)));
+  }
+);
+
+export const bulkMarkReadCommunities = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { communityIds } = req.body as BulkMarkReadInput;
+    const result = await communityService.bulkMarkRead(
+      req.auth.userId,
+      communityIds
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(result, t("COMMUNITY_MARK_READ_UPDATED", req.locale))
+      );
+  }
+);
+
 // --- Notification preferences ----------------------------------------------
 
 export const getNotificationPreferences = asyncHandler(
@@ -938,5 +984,57 @@ export const redeemCommunityInviteLink = asyncHandler(
       .json(
         new ApiResponse(result, t("COMMUNITY_INVITE_LINK_REDEEMED", req.locale))
       );
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Admin category CRUD
+// ---------------------------------------------------------------------------
+
+export const adminListCategories = asyncHandler(
+  async (req: Request, res: Response) => {
+    const query = req.query as unknown as AdminCategoriesQuery;
+    const result = await communityService.listCategoriesAdmin({
+      search: query.search,
+      status: query.status,
+      page: query.page,
+      limit: query.limit,
+    });
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(result, t("COMMUNITY_CATEGORIES_FETCHED", req.locale))
+      );
+  }
+);
+
+export const adminCreateCategory = asyncHandler(
+  async (req: Request, res: Response) => {
+    const body = req.body as CreateCategoryInput;
+    const category = await communityService.createCategory(body);
+    return res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(category, "Category created"));
+  }
+);
+
+export const adminUpdateCategory = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { categoryId } = req.params as CategoryIdParams;
+    const body = req.body as UpdateCategoryInput;
+    const category = await communityService.updateCategory(categoryId, body);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(category, "Category updated"));
+  }
+);
+
+export const adminDeleteCategory = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { categoryId } = req.params as CategoryIdParams;
+    await communityService.deleteCategory(categoryId);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, "Category deleted"));
   }
 );

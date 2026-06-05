@@ -370,6 +370,35 @@ export type ReportResolutionInput = z.infer<typeof reportResolutionSchema>;
 
 // --- Mute -----------------------------------------------------------------
 
+const communityIdsSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .regex(OBJECT_ID_REGEX, "communityIds must be 24-character hex ObjectIds")
+  )
+  .min(1, "communityIds must have at least one entry")
+  .max(50, "communityIds must have at most 50 entries")
+  .transform((ids) => [...new Set(ids)]);
+
+export const bulkMarkReadSchema = z.object({
+  communityIds: communityIdsSchema,
+});
+export type BulkMarkReadInput = z.infer<typeof bulkMarkReadSchema>;
+
+export const bulkMuteSchema = z.object({
+  action: z.enum(["mute", "unmute"]),
+  communityIds: communityIdsSchema,
+  durationMinutes: z
+    .number()
+    .int()
+    .min(1, "durationMinutes must be at least 1")
+    .max(525_600, "durationMinutes must be at most 525600 (365 days)")
+    .nullable()
+    .optional(),
+});
+export type BulkMuteInput = z.infer<typeof bulkMuteSchema>;
+
 export const setMuteSchema = z.object({
   durationMinutes: z
     .number()
@@ -508,3 +537,48 @@ export const inviteLinkCodeParamsSchema = z.object({
     .regex(/^[A-Za-z0-9_-]+$/, "invalid code"),
 });
 export type InviteLinkCodeParams = z.infer<typeof inviteLinkCodeParamsSchema>;
+
+// ---------------------------------------------------------------------------
+// Admin category CRUD
+// ---------------------------------------------------------------------------
+
+const categoryNameSchema = z
+  .string()
+  .trim()
+  .min(2, "Category name must be at least 2 characters")
+  .max(80, "Category name must be at most 80 characters");
+
+export const adminCategoriesQuerySchema = z.object({
+  search: z.string().trim().min(1).optional(),
+  status: z.enum(["visible", "hidden", "all"]).optional().default("all"),
+  page: pageSchema,
+  limit: limitSchema,
+});
+
+export type AdminCategoriesQuery = z.infer<typeof adminCategoriesQuerySchema>;
+
+export const createCategorySchema = z.object({
+  name: categoryNameSchema,
+});
+
+export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
+
+export const updateCategorySchema = z
+  .object({
+    name: categoryNameSchema.optional(),
+    visible: z.boolean().optional(),
+  })
+  .refine((b) => b.name !== undefined || b.visible !== undefined, {
+    message: "At least one of name or visible must be provided",
+  });
+
+export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>;
+
+export const categoryIdParamSchema = z.object({
+  categoryId: z
+    .string()
+    .trim()
+    .regex(OBJECT_ID_REGEX, "categoryId must be a 24-character hex ObjectId"),
+});
+
+export type CategoryIdParams = z.infer<typeof categoryIdParamSchema>;

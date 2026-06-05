@@ -150,6 +150,47 @@ export class GroupRoomRepository {
     });
   }
 
+  async adminList(params: {
+    search?: string;
+    status?: string;
+    createdFrom?: Date;
+    createdTo?: Date;
+    sortField: string;
+    sortDir: "asc" | "desc";
+    skip: number;
+    take: number;
+  }): Promise<{ rooms: GroupRoom[]; total: number }> {
+    const where: Record<string, unknown> = {};
+    if (params.search) {
+      where["name"] = { contains: params.search };
+    }
+    if (params.status) {
+      where["status"] = params.status;
+    }
+    if (params.createdFrom ?? params.createdTo) {
+      const createdAt: Record<string, Date> = {};
+      if (params.createdFrom) createdAt["gte"] = params.createdFrom;
+      if (params.createdTo) createdAt["lte"] = params.createdTo;
+      where["createdAt"] = createdAt;
+    }
+    const orderBy = { [params.sortField]: params.sortDir };
+    const [rooms, total] = await Promise.all([
+      this.prisma.groupRoom.findMany({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        where: where as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        orderBy: orderBy as any,
+        skip: params.skip,
+        take: params.take,
+      }),
+      this.prisma.groupRoom.count({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        where: where as any,
+      }),
+    ]);
+    return { rooms, total };
+  }
+
   /**
    * Timestamp-bounded group fetch for the unified inbox.
    * - direction "before": lastMessageAt <= ts, newest-first (desc).

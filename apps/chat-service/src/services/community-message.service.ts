@@ -260,6 +260,12 @@ export class CommunityMessageService {
     });
   }
 
+  async bulkMarkRead(userId: string, communityIds: string[]): Promise<number> {
+    const ids = [...new Set(communityIds.filter(Boolean))];
+    if (!ids.length) return 0;
+    return this.memberRepo.bulkAdvanceReadToNow(userId, ids);
+  }
+
   async getMessages(params: {
     roomId: string;
     userId: string;

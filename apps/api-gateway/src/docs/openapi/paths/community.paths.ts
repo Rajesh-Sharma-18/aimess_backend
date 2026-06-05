@@ -75,8 +75,9 @@ export const communityPaths = {
   "/communities/categories": {
     get: {
       tags: ["Communities"],
-      summary: "List community categories",
-      description: "Active categories sorted by order then name.",
+      summary: "List community categories (active only)",
+      description:
+        "Active categories sorted by order then name. For mobile clients.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
@@ -101,6 +102,276 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+      },
+    },
+    post: {
+      tags: ["Communities — Admin Categories"],
+      summary: "Create a community category",
+      description:
+        "Admin: create a new community category. The `slug` is auto-derived from `name`. Returns the created category with `visible` (mapped from `active`) flag.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["name"],
+              properties: {
+                name: {
+                  type: "string",
+                  minLength: 2,
+                  maxLength: 80,
+                  example: "Technology",
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Category created",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/AdminCategoryData" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Validation failed",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "409": {
+          description: "Category name already taken",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/categories/admin": {
+    get: {
+      tags: ["Communities — Admin Categories"],
+      summary: "List all categories (admin)",
+      description:
+        "Admin: paginated list of all community categories including hidden ones. Filter by `status=visible|hidden|all` (default `all`). Search by name with `?search=`. Results include `visible` flag (mapped from the `active` field).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["visible", "hidden", "all"],
+            default: "all",
+          },
+          description:
+            "Filter by visibility. `all` returns both visible and hidden.",
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string", minLength: 1 },
+          description: "Case-insensitive name search.",
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Paginated category list",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/AdminCategoryListResult",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
+  "/communities/categories/{categoryId}": {
+    patch: {
+      tags: ["Communities — Admin Categories"],
+      summary: "Update a community category",
+      description:
+        "Admin: update a category's `name` and/or `visible` flag. At least one field must be provided. Updating `name` regenerates the `slug`.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "categoryId",
+          in: "path",
+          required: true,
+          schema: {
+            type: "string",
+            pattern: "^[a-f0-9]{24}$",
+            example: "664f1a2b3c4d5e6f7a8b9c0d",
+          },
+          description: "MongoDB ObjectId of the category.",
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              minProperties: 1,
+              properties: {
+                name: {
+                  type: "string",
+                  minLength: 2,
+                  maxLength: 80,
+                  example: "Science & Nature",
+                },
+                visible: {
+                  type: "boolean",
+                  description: "true = visible to users; false = hidden.",
+                  example: false,
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Category updated",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/AdminCategoryData" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Validation failed",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "Category not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "409": {
+          description: "Category name already taken",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    delete: {
+      tags: ["Communities — Admin Categories"],
+      summary: "Delete a community category",
+      description:
+        "Admin: hard-delete a category. Returns 409 if any active community still uses this category.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "categoryId",
+          in: "path",
+          required: true,
+          schema: {
+            type: "string",
+            pattern: "^[a-f0-9]{24}$",
+            example: "664f1a2b3c4d5e6f7a8b9c0d",
+          },
+          description: "MongoDB ObjectId of the category.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Category deleted",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "Category not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "409": {
+          description: "Category is in use by one or more communities",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
       },
     },
   },
@@ -3271,6 +3542,89 @@ export const communityPaths = {
             },
           },
         },
+      },
+    },
+  },
+
+  // --- Bulk mute / unmute --------------------------------------------------
+  "/communities/mute/bulk": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk mute or unmute communities",
+      description:
+        'Mute or unmute multiple communities at once. Set `action` to `"mute"` or `"unmute"`. For mute: communities already muted or where the caller is not an ACTIVE member are silently skipped; `durationMinutes` null/omitted → indefinite mute. For unmute: communities not currently muted are silently skipped.',
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/BulkMuteRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Bulk mute/unmute result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/BulkMuteResult" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": validationError,
+        "401": unauthorized,
+      },
+    },
+  },
+
+  "/communities/read/bulk": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk mark community chats as read",
+      description:
+        "Zero the unread count for multiple communities at once. Updates `lastReadAt` on the caller's room-member rows in chat-service. Communities not joined or where chat is not enabled are silently skipped (updatedCount reflects only rows actually updated).",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/BulkMarkReadRequest" },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Bulk mark-as-read result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/BulkMarkReadResult" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": validationError,
+        "401": unauthorized,
       },
     },
   },

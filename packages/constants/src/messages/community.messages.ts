@@ -328,6 +328,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Cộng đồng này hiện không bị tắt thông báo",
     en: "Community is not muted",
   },
+  COMMUNITY_MARK_READ_UPDATED: {
+    vi: "Đã đánh dấu đọc thành công",
+    en: "Marked as read",
+  },
 
   // --- Invite links --------------------------------------------------------
   COMMUNITY_INVITE_LINK_CREATED: {

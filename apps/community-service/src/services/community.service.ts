@@ -19,7 +19,11 @@ import {
   buildPaginatedResponse,
   type PaginatedResponse,
 } from "../lib/pagination.js";
-import { normalizeHandle, normalizeName } from "../lib/community-slug.util.js";
+import {
+  normalizeHandle,
+  normalizeName,
+  slugifyCategoryName,
+} from "../lib/community-slug.util.js";
 import { COMMUNITY_MEMBER_LIMIT } from "../constants/index.js";
 import { env } from "../config/env.js";
 import {
@@ -39,6 +43,8 @@ import {
 } from "../generated/prisma/index.js";
 import type {
   AddMembersResult,
+  AdminCategoryData,
+  AdminCategoryListResult,
   CommunityAuditAction,
   CommunityAuditLogData,
   CommunityAvailability,
@@ -465,6 +471,110 @@ export const communityService = {
     return communityRepository.listActiveCategories();
   },
 
+  async listCategoriesAdmin(query: {
+    search?: string;
+    status?: "visible" | "hidden" | "all";
+    page: number;
+    limit: number;
+  }): Promise<AdminCategoryListResult> {
+    const active =
+      query.status === "visible"
+        ? true
+        : query.status === "hidden"
+          ? false
+          : undefined;
+
+    const [rows, total] = await communityRepository.listCategoriesAdmin({
+      search: query.search,
+      active,
+      page: query.page,
+      limit: query.limit,
+    });
+
+    const totalPages = total === 0 ? 0 : Math.ceil(total / query.limit);
+    return {
+      categories: rows.map((c) => ({
+        id: c.id,
+        name: c.name,
+        slug: c.slug,
+        visible: c.active,
+        order: c.order,
+        createdAt: c.createdAt.toISOString(),
+        updatedAt: c.updatedAt.toISOString(),
+      })),
+      pagination: {
+        page: query.page,
+        limit: query.limit,
+        total,
+        totalPages,
+        hasNext: query.page < totalPages,
+        hasPrev: query.page > 1,
+      },
+    };
+  },
+
+  async createCategory(input: { name: string }): Promise<AdminCategoryData> {
+    const name = normalizeName(input.name);
+    const slug = slugifyCategoryName(name);
+
+    const existing = await communityRepository.findCategoryByName(name);
+    if (existing) throw new ConflictError("CATEGORY_NAME_TAKEN");
+
+    const category = await communityRepository.createCategory({ name, slug });
+    return {
+      id: category.id,
+      name: category.name,
+      slug: category.slug,
+      visible: category.active,
+      order: category.order,
+      createdAt: category.createdAt.toISOString(),
+      updatedAt: category.updatedAt.toISOString(),
+    };
+  },
+
+  async updateCategory(
+    id: string,
+    input: { name?: string; visible?: boolean }
+  ): Promise<AdminCategoryData> {
+    const category = await communityRepository.findCategoryByIdAdmin(id);
+    if (!category) throw new NotFoundError("CATEGORY_NOT_FOUND");
+
+    const updates: { name?: string; slug?: string; active?: boolean } = {};
+
+    if (input.name !== undefined) {
+      const name = normalizeName(input.name);
+      const duplicate = await communityRepository.findCategoryByName(name, id);
+      if (duplicate) throw new ConflictError("CATEGORY_NAME_TAKEN");
+      updates.name = name;
+      updates.slug = slugifyCategoryName(name);
+    }
+
+    if (input.visible !== undefined) {
+      updates.active = input.visible;
+    }
+
+    const updated = await communityRepository.updateCategoryById(id, updates);
+    return {
+      id: updated.id,
+      name: updated.name,
+      slug: updated.slug,
+      visible: updated.active,
+      order: updated.order,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+    };
+  },
+
+  async deleteCategory(id: string): Promise<void> {
+    const category = await communityRepository.findCategoryByIdAdmin(id);
+    if (!category) throw new NotFoundError("CATEGORY_NOT_FOUND");
+
+    const inUse = await communityRepository.countCommunitiesWithCategory(id);
+    if (inUse > 0) throw new ConflictError("CATEGORY_IN_USE");
+
+    await communityRepository.deleteCategoryById(id);
+  },
+
   async checkNameAvailability(
     name: string,
     excludeId?: string
@@ -796,11 +906,15 @@ export const communityService = {
     const hasMore = rows.length > params.limit;
     const pageRows = rows.slice(0, params.limit);
 
-    // Bulk community-chat enrichment (unread + last-message preview) for the page.
-    const chatMap = await fetchChatEnrichment(
-      userId,
-      pageRows.map((row) => row.id)
-    );
+    const communityIds = pageRows.map((row) => row.id);
+
+    // Bulk-fetch chat enrichment and mute settings in parallel.
+    const [chatMap, muteRows] = await Promise.all([
+      fetchChatEnrichment(userId, communityIds),
+      communityRepository.findMutesByUserAndCommunityIds(userId, communityIds),
+    ]);
+
+    const mutedSet = new Set(muteRows.map((m) => m.communityId));
 
     const communities: CommunityListItem[] = await Promise.all(
       pageRows.map(async (row) => {
@@ -821,6 +935,7 @@ export const communityService = {
           lastActivityAt: row.lastActivityAt.getTime(),
           unreadMessageCount: chat.unreadMessageCount,
           lastMessageActivity: chat.lastMessageActivity,
+          myIsMuted: mutedSet.has(row.id),
         };
       })
     );
@@ -1425,20 +1540,19 @@ export const communityService = {
 
     if (isAdmin) {
       if (community.memberCount === 1) {
-        // Admin is the only member → delete the community. No audit needed since
-        // the community ceases to exist, and the member row is auto-deleted by
-        // cascade.
+        // Admin is the only member → delete the community (members first, then
+        // community in a transaction). No audit needed since the community
+        // ceases to exist; member rows are removed by the transaction.
         await communityRepository.deleteCommunityHard(communityId);
         logger.info(
           `Community deleted as last member left: community=${communityId} by=${callerId}`
         );
-        const updated = await communityRepository.updateMemberStatus(
-          communityId,
-          callerId,
-          CommunityMemberStatus.LEFT
-        );
-
-        return toMemberData(updated);
+        // Member row is gone — synthesise the return value from the snapshot
+        // fetched before deletion.
+        return toMemberData({
+          ...membership,
+          status: CommunityMemberStatus.LEFT,
+        });
       }
 
       throw new BadRequestError("ADMIN_CANNOT_LEAVE_COMMUNITY");
@@ -3150,6 +3264,74 @@ export const communityService = {
     }
 
     await communityRepository.clearMute(callerId, communityId);
+  },
+
+  async bulkMute(
+    callerId: string,
+    communityIds: string[],
+    durationMinutes: number | null | undefined
+  ): Promise<{ muted: string[]; skipped: string[] }> {
+    // Fetch active memberships and existing mutes in parallel.
+    const [memberships, existingMutes] = await Promise.all([
+      communityRepository.findActiveMembershipsByCommunityIds(
+        callerId,
+        communityIds
+      ),
+      communityRepository.findMutesByUserAndCommunityIds(
+        callerId,
+        communityIds
+      ),
+    ]);
+
+    const activeMemberSet = new Set(memberships.map((m) => m.communityId));
+    const alreadyMutedSet = new Set(existingMutes.map((m) => m.communityId));
+
+    const toMute = communityIds.filter(
+      (id) => activeMemberSet.has(id) && !alreadyMutedSet.has(id)
+    );
+    const skipped = communityIds.filter((id) => !toMute.includes(id));
+
+    if (toMute.length > 0) {
+      const mutedUntil =
+        durationMinutes == null
+          ? null
+          : new Date(Date.now() + durationMinutes * 60_000);
+      await communityRepository.bulkCreateMute(callerId, toMute, mutedUntil);
+    }
+
+    return { muted: toMute, skipped };
+  },
+
+  async bulkUnmute(
+    callerId: string,
+    communityIds: string[]
+  ): Promise<{ unmuted: string[]; skipped: string[] }> {
+    const existingMutes =
+      await communityRepository.findMutesByUserAndCommunityIds(
+        callerId,
+        communityIds
+      );
+
+    const mutedSet = new Set(existingMutes.map((m) => m.communityId));
+    const toUnmute = communityIds.filter((id) => mutedSet.has(id));
+    const skipped = communityIds.filter((id) => !mutedSet.has(id));
+
+    if (toUnmute.length > 0) {
+      await communityRepository.bulkClearMute(callerId, toUnmute);
+    }
+
+    return { unmuted: toUnmute, skipped };
+  },
+
+  async bulkMarkRead(
+    callerId: string,
+    communityIds: string[]
+  ): Promise<{ updatedCount: number }> {
+    const updatedCount = await getChatClient().bulkMarkCommunityRead({
+      userId: callerId,
+      communityIds,
+    });
+    return { updatedCount };
   },
 
   // ---------------------------------------------------------------------------

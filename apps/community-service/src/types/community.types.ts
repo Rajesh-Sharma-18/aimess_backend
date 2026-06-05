@@ -67,12 +67,33 @@ export type CommunityCategoryData = {
   name: string;
   slug: string;
 };
-
 /** Community-chat last-message preview for the list/discover screens. */
 export type CommunityLastMessageActivity = {
   username: string;
   message: string;
   dateTime: number /* epoch ms */;
+};
+export type AdminCategoryData = {
+  id: string;
+  name: string;
+  slug: string;
+  /** true = visible to users; false = hidden */
+  visible: boolean;
+  order: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AdminCategoryListResult = {
+  categories: AdminCategoryData[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    hasNext: boolean;
+    hasPrev: boolean;
+  };
 };
 
 export type CommunityListItem = {
@@ -92,6 +113,8 @@ export type CommunityListItem = {
   unreadMessageCount: number;
   /** Last-message preview (member-only); null when none or non-member. */
   lastMessageActivity: CommunityLastMessageActivity | null;
+  /** True when the caller has an active mute-setting row for this community. */
+  myIsMuted: boolean;
 };
 
 /**

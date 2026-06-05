@@ -3225,6 +3225,65 @@ export const openApiSchemas = {
     },
     required: ["username", "message", "dateTime"],
   },
+  AdminCategoryData: {
+    type: "object",
+    description: "Full category record as seen by admins.",
+    properties: {
+      id: { type: "string", example: "664f1a2b3c4d5e6f7a8b9c0d" },
+      name: { type: "string", example: "Technology" },
+      slug: { type: "string", example: "technology" },
+      visible: {
+        type: "boolean",
+        description: "true = shown to users; false = hidden from pickers.",
+        example: true,
+      },
+      order: {
+        type: "integer",
+        description: "Display order (ascending).",
+        example: 0,
+      },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "name",
+      "slug",
+      "visible",
+      "order",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  AdminCategoryListResult: {
+    type: "object",
+    properties: {
+      categories: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminCategoryData" },
+      },
+      pagination: {
+        type: "object",
+        properties: {
+          page: { type: "integer", example: 1 },
+          limit: { type: "integer", example: 20 },
+          total: { type: "integer", example: 42 },
+          totalPages: { type: "integer", example: 3 },
+          hasNext: { type: "boolean" },
+          hasPrev: { type: "boolean" },
+        },
+        required: [
+          "page",
+          "limit",
+          "total",
+          "totalPages",
+          "hasNext",
+          "hasPrev",
+        ],
+      },
+    },
+    required: ["categories", "pagination"],
+  },
   CommunityListItem: {
     type: "object",
     properties: {
@@ -4073,6 +4132,85 @@ export const openApiSchemas = {
         nullable: true,
       },
     },
+  },
+  BulkMuteRequest: {
+    type: "object",
+    required: ["action", "communityIds"],
+    properties: {
+      action: {
+        type: "string",
+        enum: ["mute", "unmute"],
+        description: "Whether to mute or unmute the given communities.",
+      },
+      communityIds: {
+        type: "array",
+        items: { type: "string", pattern: "^[a-f0-9]{24}$" },
+        minItems: 1,
+        maxItems: 50,
+        description:
+          "List of community ObjectIds (duplicates are deduplicated).",
+      },
+      durationMinutes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 525600,
+        nullable: true,
+        description:
+          'Only used when action is "mute". null or omitted → indefinite mute; positive integer → mute for N minutes.',
+      },
+    },
+  },
+  BulkMuteResult: {
+    type: "object",
+    description:
+      'When action is "mute": `muted` is present. When action is "unmute": `unmuted` is present. `skipped` is always present.',
+    properties: {
+      muted: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          'Community IDs that were successfully muted (present when action is "mute").',
+      },
+      unmuted: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          'Community IDs that were successfully unmuted (present when action is "unmute").',
+      },
+      skipped: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Community IDs skipped — already in target state or caller is not an active member.",
+      },
+    },
+    required: ["skipped"],
+  },
+
+  BulkMarkReadRequest: {
+    type: "object",
+    required: ["communityIds"],
+    properties: {
+      communityIds: {
+        type: "array",
+        items: { type: "string", pattern: "^[a-f0-9]{24}$" },
+        minItems: 1,
+        maxItems: 50,
+        description:
+          "List of community ObjectIds to mark as read (duplicates are deduplicated).",
+      },
+    },
+  },
+  BulkMarkReadResult: {
+    type: "object",
+    properties: {
+      updatedCount: {
+        type: "integer",
+        description:
+          "Number of room-member rows whose lastReadAt was advanced.",
+      },
+    },
+    required: ["updatedCount"],
   },
 
   // --- Member moderation: mute / warn -------------------------------------

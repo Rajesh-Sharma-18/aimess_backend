@@ -200,6 +200,23 @@ export class GroupMemberRepository {
     });
   }
 
+  async adminListByRoom(
+    roomId: string,
+    skip: number,
+    take: number
+  ): Promise<{ members: GroupMember[]; total: number }> {
+    const [members, total] = await Promise.all([
+      this.prisma.groupMember.findMany({
+        where: { roomId },
+        orderBy: { joinedAt: "asc" },
+        skip,
+        take,
+      }),
+      this.prisma.groupMember.count({ where: { roomId } }),
+    ]);
+    return { members, total };
+  }
+
   async upsert(
     roomId: string,
     userId: string,

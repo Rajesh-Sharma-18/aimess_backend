@@ -20,6 +20,19 @@ service CommunityService {
   // Bulk community-chat summaries for GET /communities/mine: per-community unread
   // count + last-message preview for the calling user. Member-only previews.
   rpc GetCommunityChatSummaries (GetCommunityChatSummariesRequest) returns (GetCommunityChatSummariesResponse);
+
+  // Bulk mark-as-read: advances lastReadAt to now for the caller's active
+  // member rows across the given communities. Non-member rooms are silently skipped.
+  rpc BulkMarkCommunityRead (BulkMarkCommunityReadRequest) returns (BulkMarkCommunityReadResponse);
+}
+
+// ---- Bulk mark-as-read ----
+message BulkMarkCommunityReadRequest {
+  string userId = 1;
+  repeated string communityIds = 2;
+}
+message BulkMarkCommunityReadResponse {
+  int32 updatedCount = 1; // number of member rows actually updated
 }
 
 // ---- Community chat summaries (GET /communities/mine enrichment) ----

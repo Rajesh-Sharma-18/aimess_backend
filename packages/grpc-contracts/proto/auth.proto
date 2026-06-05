@@ -7,6 +7,8 @@ service AuthService {
   rpc GetActiveUserSeries (ActiveUserSeriesRequest) returns (ActiveUserSeries);
   rpc AdminListUsers (AdminListUsersRequest) returns (AdminListUsersResponse);
   rpc AdminGetUser (AdminGetUserRequest) returns (AdminUserRecord);
+  rpc GetAccountSummary (GetAccountSummaryRequest) returns (AccountSummary);
+  rpc BulkGetAccounts (BulkGetAccountsRequest) returns (BulkGetAccountsResponse);
 }
 
 message GetUserCountsRequest {}
@@ -69,3 +71,40 @@ message AdminListUsersResponse {
   int64 total = 2;              // total matching the filter (for pagination)
 }
 message AdminGetUserRequest { string user_id = 1; }
+
+// Internal: user-service fetches full account summary by userId (replaces HTTP GET /api/auth/internal/account)
+message GetAccountSummaryRequest {
+  string user_id = 1;
+}
+
+message LinkedAccountInfo {
+  string provider        = 1; // EMAIL | GOOGLE | APPLE
+  bool   connected       = 2;
+  string provider_user_id = 3; // "" when null
+  string provider_email  = 4;  // "" when null
+  string linked_at       = 5;  // ISO or ""
+}
+
+message AccountSummary {
+  string user_id        = 1;
+  string account        = 2;
+  string email          = 3;  // "" when null
+  bool   email_verified = 4;
+  bool   has_password   = 5;
+  repeated LinkedAccountInfo providers = 6;
+  string primary_account = 7; // "" when null; first sign-in method ever linked
+}
+
+// Internal: chat-service fetches account names in bulk (replaces HTTP GET /api/internal/accounts)
+message BulkGetAccountsRequest {
+  repeated string user_ids = 1;
+}
+
+message AccountEntry {
+  string user_id  = 1;
+  string account  = 2;
+}
+
+message BulkGetAccountsResponse {
+  repeated AccountEntry accounts = 1;
+}

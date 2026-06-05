@@ -33,6 +33,10 @@ export interface ChatClient {
     userId: string;
     communityIds: string[];
   }): Promise<CommunityChatSummary[]>;
+  bulkMarkCommunityRead(params: {
+    userId: string;
+    communityIds: string[];
+  }): Promise<number>;
 }
 
 export function createChatClient(): ChatClient {
@@ -65,6 +69,17 @@ export function createChatClient(): ChatClient {
   // enrichment (every item falls back to 0 unread + null lastMessageActivity).
   summariesBreaker.fallback(() => ({ summaries: [] }));
 
+  const bulkMarkBreaker = makeBreaker(
+    "chat.bulkMarkCommunityRead",
+    (p: { userId: string; communityIds: string[] }) =>
+      makeGrpcCall<unknown, { updatedCount?: number }>(
+        client,
+        "bulkMarkCommunityRead",
+        { userId: p.userId, communityIds: p.communityIds }
+      )
+  );
+  bulkMarkBreaker.fallback(() => ({ updatedCount: 0 }));
+
   return {
     getCommunityChatSummaries: async (params) => {
       if (!params.communityIds.length) return [];
@@ -91,6 +106,19 @@ export function createChatClient(): ChatClient {
           `chat.getCommunityChatSummaries failed; degrading to no chat activity: ${String(err)}`
         );
         return [];
+      }
+    },
+
+    bulkMarkCommunityRead: async (params) => {
+      if (!params.communityIds.length) return 0;
+      try {
+        const res = await bulkMarkBreaker.fire(params);
+        return Number(res.updatedCount ?? 0);
+      } catch (err) {
+        logger.warn(
+          `chat.bulkMarkCommunityRead failed; degrading to no-op: ${String(err)}`
+        );
+        return 0;
       }
     },
   };
