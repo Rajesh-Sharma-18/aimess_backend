@@ -1,3 +1,5 @@
+import type { MediaObject } from "@aimess/shared-types";
+
 import type { ProfileGenderValue } from "../lib/profile-fields.util.js";
 
 import type { SignInProvider } from "./auth-account.types.js";
@@ -33,5 +35,10 @@ export type UserProfileData = {
   avatarUrl: string | null;
   /** Seconds until `avatarUrl` expires; null if no avatar. */
   avatarUrlExpiresIn: number | null;
+  /**
+   * Nested media object for the avatar. Inner fields are all null when no avatar
+   * is set. Additive alongside the legacy `avatarUrl`/`avatarUrlExpiresIn`.
+   */
+  avatar: MediaObject;
   updatedAt: string;
 };

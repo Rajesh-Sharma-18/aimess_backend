@@ -1,5 +1,8 @@
+import { logger } from "@aimess/logger";
+
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import {
+  communityMembersRepository,
   communityRepository,
   moderationActionRepository,
 } from "../repositories/index.js";
@@ -11,8 +14,11 @@ import type {
   CloseResult,
   CommunityDetail,
   CommunityListItem,
+  CommunityMemberRow,
   ListCommunitiesQuery,
+  ListCommunityMembersQuery,
   ModerationActor,
+  Paginated,
   PaginationMeta,
   ReopenInput,
   ReopenResult,
@@ -30,11 +36,48 @@ function toModerator(actor: RequestAdmin): ModerationActor {
 
 export const communityService = {
   /** List communities; controller attaches the response `meta` envelope. */
-  async listCommunities(query: ListCommunitiesQuery): Promise<{
+  async listCommunities(
+    query: ListCommunitiesQuery,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<{
     data: CommunityListItem[];
     pagination: PaginationMeta;
   }> {
     const page = await communityRepository.list(query);
+
+    // Audit the list view with the resolved sort + active filters (mirrors the
+    // USER_LIST_VIEWED / GROUP_LIST_VIEWED precedent). `targetId` is null — this
+    // is a collection view. Best-effort + non-blocking: a READ must never 500
+    // because an audit insert failed, so we fire-and-forget and log-and-continue
+    // on error. (Moderation mutations keep the blocking audit model.)
+    void auditService
+      .record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.COMMUNITY_LIST_VIEWED,
+        targetType: "community",
+        targetId: null,
+        after: {
+          sortBy: query.sortBy,
+          sortOrder: query.sortOrder,
+          page: query.page,
+          limit: query.limit,
+          filters: {
+            search: query.search ?? null,
+            type: query.type ?? null,
+            category: query.category ?? null,
+            status: query.status ?? null,
+            createdFrom: query.createdFrom ?? null,
+            createdTo: query.createdTo ?? null,
+          },
+        },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      })
+      .catch((err: unknown) => {
+        logger.warn("Failed to record COMMUNITY_LIST_VIEWED audit", { err });
+      });
+
     return {
       data: page.data,
       pagination: page.pagination,
@@ -44,6 +87,14 @@ export const communityService = {
   /** Fetch one community; null is translated to 404 by the controller. */
   getCommunity(communityId: string): Promise<CommunityDetail | null> {
     return communityRepository.getById(communityId);
+  },
+
+  /** List a community's members (the "Community User List" grid). */
+  listCommunityMembers(
+    communityId: string,
+    query: ListCommunityMembersQuery
+  ): Promise<Paginated<CommunityMemberRow>> {
+    return communityMembersRepository.listMembers(communityId, query);
   },
 
   async closeCommunity(

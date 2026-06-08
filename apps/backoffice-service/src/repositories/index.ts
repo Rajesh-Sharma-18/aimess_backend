@@ -24,6 +24,19 @@ export {
   type CommunityRepository,
 } from "./community.repository.js";
 export {
+  communityMembersRepository,
+  type CommunityMembersRepository,
+} from "./community-members.repository.js";
+export {
+  userCommunitiesRepository,
+  type UserCommunitiesRepository,
+} from "./user-communities.repository.js";
+export {
   moderationActionRepository,
   type ModerationActionInput,
 } from "./moderation-action.repository.js";
+export {
+  groupRepository,
+  GrpcGroupRepository,
+} from "./group.grpc.repository.js";
+export { reportDetailRepository } from "./report-detail.repository.js";

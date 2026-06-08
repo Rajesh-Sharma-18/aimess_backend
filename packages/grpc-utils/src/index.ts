@@ -67,3 +67,32 @@ export function makeGrpcCall<TReq, TRes>(
     });
   });
 }
+
+/**
+ * Like {@link makeGrpcCall} but applies a per-call deadline (absolute `Date` or
+ * relative ms timestamp). Use for clients that need an explicit timeout without
+ * a circuit breaker — e.g. graceful-degradation reads that must bound latency
+ * yet stay decoupled from the callee's availability.
+ */
+export function makeGrpcCallWithDeadline<TReq, TRes>(
+  client: grpc.Client,
+  method: string,
+  req: TReq,
+  deadline: grpc.Deadline
+): Promise<TRes> {
+  return new Promise((resolve, reject) => {
+    (
+      client as unknown as Record<
+        string,
+        (
+          r: TReq,
+          options: grpc.CallOptions,
+          cb: (e: grpc.ServiceError | null, res: TRes) => void
+        ) => void
+      >
+    )[method](req, { deadline }, (err, res) => {
+      if (err) reject(err);
+      else resolve(res);
+    });
+  });
+}

@@ -14,6 +14,7 @@ import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { AdminGroupService } from "../services/admin-group.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
@@ -42,6 +43,7 @@ export interface GrpcDeps {
   groupMemberService: GroupMemberService;
   groupRoomRepo: GroupRoomRepository;
   groupMemberRepo: GroupMemberRepository;
+  adminGroupService: AdminGroupService;
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
   callService: CallService;
@@ -83,6 +85,13 @@ function parseMessageContent(req: {
   } catch {
     return fallback;
   }
+}
+
+/** Parse an admin filter date ("YYYY-MM-DD" or ISO); "" / invalid → undefined. */
+function parseAdminDate(value?: string): Date | undefined {
+  if (!value) return undefined;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? undefined : d;
 }
 
 function stringifyContent(content: unknown): string {
@@ -1097,6 +1106,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
       })();
     },
 
+    // Admin Group Management: filterable/sortable/paginated active group list.
     adminListGroups: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -1104,45 +1114,36 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
       void (async () => {
         try {
           const req = call.request as {
-            search?: string;
-            status?: string;
-            createdFrom?: string;
-            createdTo?: string;
+            q?: string;
+            fromDate?: string;
+            toDate?: string;
             sortField?: string;
             sortDir?: string;
             page?: number;
             limit?: number;
           };
-          const page = Math.max(req.page || 1, 1);
+
           const limit = Math.min(Math.max(req.limit || 20, 1), 100);
-          const { rooms, total } = await deps.groupRoomRepo.adminList({
-            search: req.search || undefined,
-            status: req.status || undefined,
-            createdFrom: req.createdFrom
-              ? new Date(req.createdFrom)
-              : undefined,
-            createdTo: req.createdTo ? new Date(req.createdTo) : undefined,
-            sortField: req.sortField || "createdAt",
-            sortDir: req.sortDir === "asc" ? "asc" : "desc",
-            skip: (page - 1) * limit,
+          const skip = (Math.max(req.page || 1, 1) - 1) * limit;
+          const sortField =
+            req.sortField === "memberCount" ? "memberCount" : "createdAt";
+          const sortDir = req.sortDir === "asc" ? "asc" : "desc";
+          const fromDate = parseAdminDate(req.fromDate);
+          const toDate = parseAdminDate(req.toDate);
+
+          const result = await deps.adminGroupService.listGroups({
+            q: req.q || undefined,
+            fromDate,
+            toDate,
+            sortField,
+            sortDir,
+            skip,
             take: limit,
           });
+
           callback(null, {
-            groups: rooms.map((r) => ({
-              roomId: r.roomId,
-              name: r.name,
-              avatar: r.avatar,
-              description: r.description,
-              createdBy: r.createdBy,
-              status: r.status,
-              memberCount: r.memberCount,
-              memberLimit: r.memberLimit,
-              createdAt:
-                r.createdAt instanceof Date ? r.createdAt.getTime() : 0,
-              lastMessageAt:
-                r.lastMessageAt instanceof Date ? r.lastMessageAt.getTime() : 0,
-            })),
-            total,
+            groups: result.groups,
+            total: result.total,
           });
         } catch (err) {
           logger.error(`gRPC adminListGroups error: ${String(err)}`);
@@ -1151,59 +1152,61 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
       })();
     },
 
+    // Admin Group Management: single active group detail.
     adminGetGroup: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
     ) => {
       void (async () => {
         try {
-          const req = call.request as {
-            roomId?: string;
-            page?: number;
-            limit?: number;
-          };
-          const roomId = req.roomId ?? "";
-          const page = Math.max(req.page || 1, 1);
-          const limit = Math.min(Math.max(req.limit || 20, 1), 100);
-          const room = await deps.groupRoomRepo.findByRoomId(roomId);
-          if (!room) {
-            callback(null, { found: false });
-            return;
-          }
-          const { members, total: membersTotal } =
-            await deps.groupMemberRepo.adminListByRoom(
-              roomId,
-              (page - 1) * limit,
-              limit
-            );
+          const req = call.request as { groupId?: string };
+          const result = await deps.adminGroupService.getGroup(
+            req.groupId ?? ""
+          );
           callback(null, {
-            found: true,
-            group: {
-              roomId: room.roomId,
-              name: room.name,
-              avatar: room.avatar,
-              description: room.description,
-              createdBy: room.createdBy,
-              status: room.status,
-              memberCount: room.memberCount,
-              memberLimit: room.memberLimit,
-              createdAt:
-                room.createdAt instanceof Date ? room.createdAt.getTime() : 0,
-              lastMessageAt:
-                room.lastMessageAt instanceof Date
-                  ? room.lastMessageAt.getTime()
-                  : 0,
-            },
-            members: members.map((m) => ({
-              userId: m.userId,
-              role: m.role,
-              status: m.status,
-              joinedAt: m.joinedAt instanceof Date ? m.joinedAt.getTime() : 0,
-            })),
-            membersTotal,
+            found: result.found,
+            ...(result.group ? { group: result.group } : {}),
           });
         } catch (err) {
           logger.error(`gRPC adminGetGroup error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Admin Group Management: filterable/paginated active member list.
+    adminListGroupMembers: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            groupId?: string;
+            q?: string;
+            role?: string;
+            page?: number;
+            limit?: number;
+          };
+
+          const limit = Math.min(Math.max(req.limit || 20, 1), 100);
+          const skip = (Math.max(req.page || 1, 1) - 1) * limit;
+
+          const result = await deps.adminGroupService.listGroupMembers({
+            groupId: req.groupId ?? "",
+            q: req.q || undefined,
+            role: req.role || undefined,
+            skip,
+            take: limit,
+          });
+
+          callback(null, {
+            found: result.found,
+            members: result.members,
+            total: result.total,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminListGroupMembers error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

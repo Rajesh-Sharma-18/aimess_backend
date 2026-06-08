@@ -1,5 +1,43 @@
 export const openApiSchemas = {
   // ===========================================================================
+  // Shared media descriptor — reusable object-storage reference returned
+  // ADDITIVELY alongside the legacy flat avatarUrl/coverUrl/objectKey/... fields.
+  // ===========================================================================
+  MediaObject: {
+    type: "object",
+    description:
+      "Reusable media descriptor for an object-storage asset. Returned ADDITIVELY alongside the legacy flat fields (avatarUrl/coverUrl/objectKey/downloadUrl/uploadUrl, etc.). All nine scalar fields are always present (may be null); `uploadHeaders` is only present on upload-url responses.",
+    properties: {
+      fileId: { type: "string", nullable: true },
+      objectKey: { type: "string", nullable: true },
+      fileName: { type: "string", nullable: true },
+      contentType: { type: "string", nullable: true },
+      size: { type: "integer", nullable: true },
+      downloadUrl: { type: "string", nullable: true },
+      downloadUrlExpiresIn: { type: "integer", nullable: true },
+      uploadUrl: { type: "string", nullable: true },
+      uploadUrlExpiresIn: { type: "integer", nullable: true },
+      uploadHeaders: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description:
+          "Headers the client must send on the PUT to uploadUrl. Present only on upload-url responses.",
+      },
+    },
+    required: [
+      "fileId",
+      "objectKey",
+      "fileName",
+      "contentType",
+      "size",
+      "downloadUrl",
+      "downloadUrlExpiresIn",
+      "uploadUrl",
+      "uploadUrlExpiresIn",
+    ],
+  },
+
+  // ===========================================================================
   // Admin Panel (backoffice-service) schemas — surface reached at /admin/v1/*.
   // ===========================================================================
   AdminError: {
@@ -20,10 +58,15 @@ export const openApiSchemas = {
   AdminPagination: {
     type: "object",
     properties: {
+      mode: { type: "string", enum: ["offset", "keyset"], example: "offset" },
       page: { type: "integer", example: 1 },
       limit: { type: "integer", example: 20 },
       total: { type: "integer", example: 5234 },
+      totalApprox: { type: "integer", example: 5234 },
       totalPages: { type: "integer", example: 262 },
+      hasNext: { type: "boolean", example: true },
+      hasPrev: { type: "boolean", example: false },
+      nextCursor: { type: "string", nullable: true },
     },
     required: ["page", "limit", "total", "totalPages"],
   },
@@ -443,10 +486,9 @@ export const openApiSchemas = {
       email: { type: "string", nullable: true, example: "b@x.com" },
       status: {
         type: "string",
-        enum: ["active", "suspended", "banned", "pending_deletion"],
-        example: "active",
+        enum: ["ACTIVE", "BANNED", "DELETED"],
+        example: "ACTIVE",
       },
-      banned: { type: "boolean", example: false },
       createdAt: { type: "string", format: "date-time" },
       communities: { type: "integer", example: 4 },
       lastActiveAt: {
@@ -456,6 +498,167 @@ export const openApiSchemas = {
       },
     },
     required: ["id", "username", "status"],
+  },
+  AdminCommunityMember: {
+    type: "object",
+    description:
+      "One row of a community's member roster (denormalized snapshot from community-service).",
+    properties: {
+      userId: { type: "string", example: "u_8f3a" },
+      username: {
+        type: "string",
+        description: "Display name (falls back to the @handle).",
+        example: "John Doe",
+      },
+      handle: { type: "string", example: "john_doe_02" },
+      avatarUrl: { type: "string", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
+      role: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        example: "ADMIN",
+      },
+      status: { type: "string", example: "ACTIVE" },
+      joinedAt: { type: "string", format: "date-time" },
+    },
+    required: ["userId", "username", "role", "joinedAt"],
+  },
+  AdminUserCommunity: {
+    type: "object",
+    description:
+      "One row of the user's 'Communities' grid — a community the user is an ACTIVE member of (denormalized snapshot from community-service; avatar already presigned).",
+    properties: {
+      communityId: { type: "string", example: "comm_001" },
+      name: { type: "string", example: "Indie Game Devs" },
+      avatarUrl: { type: "string", nullable: true },
+      category: {
+        type: "object",
+        properties: {
+          id: { type: "string", example: "cat_07" },
+          name: { type: "string", example: "Gaming" },
+        },
+        required: ["id", "name"],
+      },
+      description: { type: "string", example: "" },
+      memberCount: { type: "integer", example: 1240 },
+      role: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        example: "MEMBER",
+      },
+      joinedAt: { type: "string", format: "date-time" },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "communityId",
+      "name",
+      "category",
+      "memberCount",
+      "role",
+      "joinedAt",
+      "createdAt",
+    ],
+  },
+  AdminUserCommunityListResponse: {
+    type: "object",
+    description:
+      "Envelope for the user's communities grid: `{ success, data: { items, pagination } }`.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "object",
+        properties: {
+          items: {
+            type: "array",
+            items: { $ref: "#/components/schemas/AdminUserCommunity" },
+          },
+          pagination: { $ref: "#/components/schemas/AdminPagination" },
+        },
+        required: ["items", "pagination"],
+      },
+    },
+    required: ["success", "data"],
+  },
+  AdminOtherCommunityMember: {
+    type: "object",
+    description:
+      "One row of the co-member grid — another member of a community the viewed user belongs to (the viewed user is excluded). Email hydrated from auth-service (null when unavailable).",
+    properties: {
+      userId: { type: "string", example: "u_8f3a" },
+      username: { type: "string", example: "John Doe" },
+      email: { type: "string", nullable: true, example: "john@example.com" },
+      avatarUrl: { type: "string", nullable: true },
+      role: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        example: "MEMBER",
+      },
+      joinedAt: { type: "string", format: "date-time" },
+    },
+    required: ["userId", "username", "role", "joinedAt"],
+  },
+  AdminOtherCommunityMembersResponse: {
+    type: "object",
+    description:
+      "Envelope for the co-member grid: `{ success, data: { community, items, pagination } }`.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "object",
+        properties: {
+          community: {
+            type: "object",
+            properties: {
+              communityId: { type: "string", example: "comm_001" },
+              name: { type: "string", example: "Indie Game Devs" },
+              memberCount: { type: "integer", example: 1240 },
+            },
+            required: ["communityId", "name", "memberCount"],
+          },
+          items: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/AdminOtherCommunityMember",
+            },
+          },
+          pagination: { $ref: "#/components/schemas/AdminPagination" },
+        },
+        required: ["community", "items", "pagination"],
+      },
+    },
+    required: ["success", "data"],
+  },
+  AdminUserReport: {
+    type: "object",
+    description:
+      "One row of the 'Reported Details' panel — a report filed against the user, with the reporter resolved.",
+    properties: {
+      reportId: { type: "string", example: "r_12" },
+      reason: { type: "string", example: "HARASSMENT" },
+      details: {
+        type: "string",
+        nullable: true,
+        description: "Reporter free-text ('Other Reason').",
+      },
+      status: {
+        type: "string",
+        enum: ["open", "reviewing", "resolved", "dismissed"],
+        example: "open",
+      },
+      createdAt: { type: "string", format: "date-time" },
+      reporter: {
+        type: "object",
+        properties: {
+          userId: { type: "string", example: "u_aa" },
+          username: { type: "string", nullable: true },
+          avatarUrl: { type: "string", nullable: true },
+          avatarUrlExpiresIn: { type: "integer", nullable: true },
+          avatar: { $ref: "#/components/schemas/MediaObject" },
+        },
+        required: ["userId"],
+      },
+    },
+    required: ["reportId", "reason", "status", "createdAt", "reporter"],
   },
   AdminUserDetail: {
     type: "object",
@@ -467,9 +670,8 @@ export const openApiSchemas = {
       email: { type: "string", nullable: true },
       status: {
         type: "string",
-        enum: ["active", "suspended", "banned", "pending_deletion"],
+        enum: ["ACTIVE", "BANNED", "DELETED"],
       },
-      banned: { type: "boolean" },
       profile: {
         type: "object",
         description: "Profile/stats projected from user-service.",
@@ -477,6 +679,19 @@ export const openApiSchemas = {
       moderationHistory: {
         type: "array",
         items: { $ref: "#/components/schemas/AdminModerationAction" },
+      },
+      reportCategories: {
+        type: "array",
+        description:
+          "Per-category report counts (all categories) for the 'Reported Details' chips.",
+        items: {
+          type: "object",
+          properties: {
+            reason: { type: "string", example: "SPAM" },
+            count: { type: "integer", example: 3 },
+          },
+          required: ["reason", "count"],
+        },
       },
       createdAt: { type: "string", format: "date-time" },
     },
@@ -1033,23 +1248,97 @@ export const openApiSchemas = {
   },
 
   // ---- Groups ----
+  AdminGroupAdmin: {
+    type: "object",
+    description:
+      "Group owner identity, composed from the chat-service group (role=OWNER member, fallback createdBy) + user-service (username/avatar) + auth-service (email). email/avatarUrl are null when the upstream identity could not be resolved.",
+    properties: {
+      userId: {
+        type: "string",
+        example: "9f3a1c2e-0b6d-4e2a-8b11-2c4d5e6f7a8b",
+      },
+      username: { type: "string", example: "ada.lovelace" },
+      email: {
+        type: "string",
+        format: "email",
+        nullable: true,
+        example: "ada@aimess.io",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        example: "avatars/u_9f3a.webp",
+      },
+    },
+    required: ["userId", "username"],
+  },
   AdminGroup: {
     type: "object",
-    description: "Maps to a chat-service GroupRoom.",
+    description:
+      "Admin view of a chat-service GroupRoom (gRPC-live). `id` is the group's roomId.",
     properties: {
       id: { type: "string", example: "grp_9a" },
       name: { type: "string", example: "Project X" },
-      createdBy: { type: "string", example: "u_8f3a" },
-      memberCount: { type: "integer", example: 12 },
-      status: {
+      avatarUrl: {
         type: "string",
-        enum: ["active", "suspended", "disbanded"],
-        example: "active",
+        nullable: true,
+        example: "group-avatars/grp_9a.webp",
       },
-      disbandedAt: { type: "string", format: "date-time", nullable: true },
+      description: { type: "string", example: "Sprint coordination room" },
+      memberCount: { type: "integer", example: 1250 },
       createdAt: { type: "string", format: "date-time" },
+      admin: { $ref: "#/components/schemas/AdminGroupAdmin" },
     },
-    required: ["id", "name", "status"],
+    required: ["id", "name", "memberCount", "createdAt", "admin"],
+  },
+  AdminGroupMember: {
+    type: "object",
+    description: "Admin view of a chat-service group member.",
+    properties: {
+      userId: {
+        type: "string",
+        example: "9f3a1c2e-0b6d-4e2a-8b11-2c4d5e6f7a8b",
+      },
+      username: { type: "string", example: "ada.lovelace" },
+      email: {
+        type: "string",
+        format: "email",
+        nullable: true,
+        example: "ada@aimess.io",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        example: "avatars/u_9f3a.webp",
+      },
+      role: {
+        type: "string",
+        enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+        example: "ADMIN",
+      },
+      joinedAt: { type: "string", format: "date-time" },
+    },
+    required: ["userId", "username", "role", "joinedAt"],
+  },
+  AdminGroupPagination: {
+    type: "object",
+    description: "Offset pagination meta for the group read endpoints.",
+    properties: {
+      page: { type: "integer", example: 1 },
+      limit: { type: "integer", example: 20 },
+      total: { type: "integer", example: 500 },
+      totalPages: { type: "integer", example: 25 },
+      hasNext: { type: "boolean", example: true },
+      hasPrevious: { type: "boolean", example: false },
+    },
+    required: [
+      "page",
+      "limit",
+      "total",
+      "totalPages",
+      "hasNext",
+      "hasPrevious",
+    ],
   },
   AdminModerateRequest: {
     type: "object",
@@ -2395,6 +2684,7 @@ export const openApiSchemas = {
         },
         required: ["Content-Type"],
       },
+      media: { $ref: "#/components/schemas/MediaObject" },
     },
     required: [
       "uploadUrl",
@@ -2526,6 +2816,7 @@ export const openApiSchemas = {
         nullable: true,
         example: 3600,
       },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
       updatedAt: { type: "string", format: "date-time" },
     },
     required: [
@@ -2945,6 +3236,7 @@ export const openApiSchemas = {
         nullable: true,
         description: "Presigned GET URL (private MinIO); null if no avatar.",
       },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
       section: {
         type: "string",
         description:
@@ -3000,6 +3292,7 @@ export const openApiSchemas = {
         nullable: true,
         description: "Seconds until avatarUrl expires; null if no avatar.",
       },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
       isOnline: { type: "boolean" },
       relationshipStatus: {
         type: "string",
@@ -3076,6 +3369,7 @@ export const openApiSchemas = {
         description: "Presigned GET URL (private MinIO).",
       },
       avatarUrlExpiresIn: { type: "integer", nullable: true, example: 3600 },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
       coverUrl: {
         type: "string",
         format: "uri",
@@ -3083,6 +3377,7 @@ export const openApiSchemas = {
         description: "Presigned GET URL (private MinIO).",
       },
       coverUrlExpiresIn: { type: "integer", nullable: true, example: 3600 },
+      cover: { $ref: "#/components/schemas/MediaObject" },
       myRole: {
         type: "string",
         nullable: true,
@@ -3300,6 +3595,7 @@ export const openApiSchemas = {
       },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
       myRole: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
       myIsMuted: {
         type: "boolean",
@@ -3414,6 +3710,7 @@ export const openApiSchemas = {
       },
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
       createdAt: {
         type: "integer",
         format: "int64",
@@ -3530,6 +3827,7 @@ export const openApiSchemas = {
       snapshotDisplayName: { type: "string" },
       snapshotAvatarUrl: { type: "string", nullable: true },
       snapshotAvatarUrlExpiresIn: { type: "integer", nullable: true },
+      snapshotAvatar: { $ref: "#/components/schemas/MediaObject" },
       bannedAt: {
         type: "string",
         format: "date-time",
@@ -3760,6 +4058,7 @@ export const openApiSchemas = {
       displayName: { type: "string" },
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
     },
     required: [
       "userId",
@@ -3797,6 +4096,7 @@ export const openApiSchemas = {
       },
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
     },
     required: [
       "id",
@@ -3891,6 +4191,7 @@ export const openApiSchemas = {
       displayName: { type: "string" },
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
     },
     required: [
       "userId",
@@ -4023,6 +4324,7 @@ export const openApiSchemas = {
       displayName: { type: "string" },
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
     },
     required: [
       "userId",
@@ -4223,6 +4525,7 @@ export const openApiSchemas = {
       displayName: { type: "string" },
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
       mutedBy: {
         type: "string",
         format: "uuid",
@@ -4986,6 +5289,7 @@ export const openApiSchemas = {
         description:
           "Short-lived presigned GET URL for playing/downloading the object.",
       },
+      media: { $ref: "#/components/schemas/MediaObject" },
     },
     required: ["objectKey", "downloadUrl"],
   },
@@ -5019,6 +5323,7 @@ export const openApiSchemas = {
       objectKey: { type: "string", example: "chat-uploads/user123/abc.jpg" },
       uploadUrl: { type: "string", format: "uri" },
       contentType: { type: "string", example: "image/jpeg" },
+      media: { $ref: "#/components/schemas/MediaObject" },
     },
     required: ["objectKey", "uploadUrl", "contentType"],
   },

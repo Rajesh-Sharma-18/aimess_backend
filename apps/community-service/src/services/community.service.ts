@@ -8,7 +8,10 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import { toMediaObject } from "@aimess/storage";
+import type { MediaObject } from "@aimess/shared-types";
 
+import { mediaUrlStrategy } from "../config/storage.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityCache } from "../lib/community-cache.js";
 import {
@@ -101,6 +104,7 @@ import {
   publishCommunityDeletedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
+import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
 
 type CommunityWithCategory = Community & {
   category: { id: string; name: string };
@@ -146,6 +150,42 @@ function assertCommunityNotSuspended(community: {
   }
 }
 
+const COMMUNITY_IMAGE_PREFIXES = ["community/avatar", "community/cover"];
+const AVATAR_PREFIXES = ["avatars"];
+
+/**
+ * Build the additive nested {@link MediaObject} for a community image (avatar or
+ * cover) from the RAW stored DB value (object key or legacy URL). Resolves the
+ * presigned download URL via the shared strategy; a null/empty value yields an
+ * all-null MediaObject.
+ */
+function buildCommunityImageMedia(
+  stored: string | null | undefined
+): Promise<MediaObject> {
+  return toMediaObject({
+    bucket: env.MINIO_BUCKET_COMMUNITY,
+    stored: stored ?? null,
+    prefixes: COMMUNITY_IMAGE_PREFIXES,
+    strategy: mediaUrlStrategy,
+  });
+}
+
+/**
+ * Build the additive nested {@link MediaObject} for a member's snapshot avatar
+ * from the RAW stored object key. The key lives in the shared avatars bucket
+ * (cross-service). HEAD-free, like the legacy member-avatar resolver.
+ */
+function buildAvatarMedia(
+  stored: string | null | undefined
+): Promise<MediaObject> {
+  return toMediaObject({
+    bucket: env.MINIO_BUCKET_AVATARS,
+    stored: stored ?? null,
+    prefixes: AVATAR_PREFIXES,
+    strategy: mediaUrlStrategy,
+  });
+}
+
 async function toCommunityData(
   community: CommunityWithCategory,
   myRole: CommunityMemberRole | null,
@@ -154,6 +194,8 @@ async function toCommunityData(
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
+  const avatar = await buildCommunityImageMedia(community.avatarUrl);
+  const cover = await buildCommunityImageMedia(community.coverUrl);
 
   return {
     id: community.id,
@@ -168,8 +210,10 @@ async function toCommunityData(
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
     coverUrl: null,
     coverUrlExpiresIn: null,
+    cover,
     myRole,
     ...muteFields(muteRow),
     moderationStatus: community.moderationStatus,
@@ -224,6 +268,7 @@ async function toDiscoverItem(
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
+  const avatar = await buildCommunityImageMedia(community.avatarUrl);
 
   return {
     id: community.id,
@@ -236,6 +281,7 @@ async function toDiscoverItem(
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
     ...muteFields(muteRow),
     createdAt: community.createdAt.getTime(),
   };
@@ -257,6 +303,7 @@ async function toMemberData(member: {
   const avatarView = await memberAvatarService.resolveViewUrl(
     member.snapshotAvatarKey
   );
+  const snapshotAvatar = await buildAvatarMedia(member.snapshotAvatarKey);
 
   return {
     userId: member.userId,
@@ -267,6 +314,7 @@ async function toMemberData(member: {
     snapshotDisplayName: member.snapshotDisplayName,
     snapshotAvatarUrl: avatarView?.url ?? null,
     snapshotAvatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    snapshotAvatar,
     bannedAt: member.bannedAt ? member.bannedAt.toISOString() : null,
     bannedBy: member.bannedBy ?? null,
     banReason: member.banReason ?? null,
@@ -332,6 +380,7 @@ async function toEmbeddedCommunitySummary(community: {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
+  const avatar = await buildCommunityImageMedia(community.avatarUrl);
   return {
     id: community.id,
     name: community.name,
@@ -341,6 +390,7 @@ async function toEmbeddedCommunitySummary(community: {
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
   };
 }
 
@@ -356,12 +406,14 @@ async function buildUserSnapshotView(
   const avatarView = await memberAvatarService.resolveViewUrl(
     snapshot.avatarObjectKey
   );
+  const avatar = await buildAvatarMedia(snapshot.avatarObjectKey);
   return {
     userId,
     username: snapshot.username,
     displayName: snapshot.displayName,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
   };
 }
 
@@ -684,6 +736,8 @@ export const communityService = {
         description: input.description ?? null,
         type: input.type as CommunityType,
         categoryId: input.categoryId,
+        // Denormalize the category name for the admin list's DB-level sort.
+        categoryName: category.name,
         creatorId,
         adminId: creatorId,
         avatarUrl,
@@ -852,6 +906,8 @@ export const communityService = {
         throw new BadRequestError("COMMUNITY_CATEGORY_INVALID");
       }
       data.category = { connect: { id: input.categoryId } };
+      // Keep the denormalized category name (admin-list sort key) in sync.
+      data.categoryName = category.name;
     }
 
     if (input.description !== undefined) {
@@ -921,6 +977,7 @@ export const communityService = {
         const avatarView = await communityImageService.resolveViewUrlForClient(
           row.avatarUrl
         );
+        const avatar = await buildCommunityImageMedia(row.avatarUrl);
         const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
         return {
           id: row.id,
@@ -931,6 +988,7 @@ export const communityService = {
           memberLimit: COMMUNITY_MEMBER_LIMIT,
           avatarUrl: avatarView?.url ?? null,
           avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+          avatar,
           myRole: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
           lastActivityAt: row.lastActivityAt.getTime(),
           unreadMessageCount: chat.unreadMessageCount,
@@ -1702,6 +1760,7 @@ export const communityService = {
       displayName: view.displayName,
       avatarUrl: view.avatarUrl,
       avatarUrlExpiresIn: view.avatarUrlExpiresIn,
+      avatar: view.avatar,
       mutedBy: row.mutedBy,
       reason: row.reason,
       mutedAt: row.createdAt.toISOString(),
@@ -1795,12 +1854,16 @@ export const communityService = {
         const avatarView = await memberAvatarService.resolveViewUrl(
           member?.snapshotAvatarKey ?? null
         );
+        const avatar = await buildAvatarMedia(
+          member?.snapshotAvatarKey ?? null
+        );
         items.push({
           userId: row.userId,
           username: member?.snapshotUsername ?? "",
           displayName: member?.snapshotDisplayName ?? "",
           avatarUrl: avatarView?.url ?? null,
           avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+          avatar,
           mutedBy: row.mutedBy,
           reason: row.reason,
           mutedAt: row.createdAt.toISOString(),
@@ -2853,14 +2916,26 @@ export const communityService = {
         CommunityMemberRole.ADMIN,
         CommunityMemberRole.MODERATOR,
       ]);
+    // One timestamp for both events so they correlate for the same report.
+    const reportEventAt = new Date().toISOString();
     publishCommunityReportCreatedSafe({
       communityId,
-      eventAt: new Date().toISOString(),
+      eventAt: reportEventAt,
       reportId: row.id,
       reporterId: callerId,
       targetUserId,
       reason: input.reason,
       moderatorRecipientIds: reportModeratorRecipientIds,
+    });
+
+    publishAdminReportIngestSafe({
+      type: targetUserId ? "user" : "community",
+      targetId: targetUserId ?? communityId,
+      reporterId: callerId,
+      reason: input.reason,
+      details: null,
+      eventAt: reportEventAt,
+      sourceReportId: row.id,
     });
 
     return toReportData(row);

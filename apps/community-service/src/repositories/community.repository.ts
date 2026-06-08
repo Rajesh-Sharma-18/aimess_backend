@@ -7,6 +7,7 @@ import {
   CommunityModerationStatus,
   CommunityReportStatus,
   CommunityType,
+  type CommunityMember,
   type Prisma,
 } from "../generated/prisma/index.js";
 import type { CommunityAuditAction } from "../types/community.types.js";
@@ -194,6 +195,9 @@ export const communityRepository = {
     description: string | null;
     type: CommunityType;
     categoryId: string;
+    // Denormalized category name (kept in sync with categoryId) — backs the
+    // admin list's DB-level category sort.
+    categoryName: string;
     creatorId: string;
     adminId: string;
     avatarUrl: string | null;
@@ -924,6 +928,13 @@ export const communityRepository = {
       case "memberCount":
         primaryOrderBy = { memberCount: dir };
         break;
+      case "categoryName":
+        // Denormalized, indexed column — index-backed DB-level sort (Prisma's
+        // Mongo connector can't orderBy the related category collection). Legacy
+        // rows with a null categoryName sort first (asc) / last (desc) until the
+        // backfill runs; the id tiebreak keeps paging deterministic regardless.
+        primaryOrderBy = { categoryName: dir };
+        break;
       case "createdAt":
         primaryOrderBy = { createdAt: dir };
         break;
@@ -1089,6 +1100,210 @@ export const communityRepository = {
       openReports,
       activeInviteLinks,
     };
+  },
+
+  /**
+   * Admin Community Member List — offset/page pagination over a community's
+   * members, optionally filtered by role and/or a free-text search (snapshot
+   * username/display name OR exact userId). Fully denormalized rows (snapshot*),
+   * so NO user-service round-trip. Default order is role (ADMIN→MODERATOR→MEMBER
+   * via enum asc) then joinedAt asc; `sortField` overrides this. `excludeUserId`
+   * removes a userId at the DB level (the excluded user MUST NEVER appear — never
+   * filter in memory). `communityId` is an ObjectId — an invalid id would make
+   * Prisma throw, so we short-circuit to an empty page instead.
+   */
+  async adminListCommunityMembers(params: {
+    communityId: string;
+    search?: string;
+    role?: CommunityMemberRole;
+    excludeUserId?: string;
+    sortField?: string;
+    sortDir?: "asc" | "desc";
+    page: number;
+    limit: number;
+  }): Promise<{ rows: CommunityMember[]; total: number }> {
+    // Guard a malformed ObjectId (mirrors how adminGetCommunityDetail tolerates a
+    // missing/invalid id by returning no result rather than throwing).
+    if (!/^[a-fA-F0-9]{24}$/.test(params.communityId)) {
+      return { rows: [], total: 0 };
+    }
+
+    const where: Prisma.CommunityMemberWhereInput = {
+      communityId: params.communityId,
+    };
+    if (params.role) {
+      where.role = params.role;
+    }
+    // DB-level exclusion — the excluded user must never surface in the page. If it
+    // collides with a search userId, the `not` still wins (the user stays hidden).
+    if (params.excludeUserId) {
+      where.userId = { not: params.excludeUserId };
+    }
+    if (params.search) {
+      where.OR = [
+        { snapshotUsername: { contains: params.search, mode: "insensitive" } },
+        {
+          snapshotDisplayName: { contains: params.search, mode: "insensitive" },
+        },
+        { userId: params.search },
+      ];
+    }
+
+    // Dynamic sort. "username" sorts on the snapshot @handle then joinedAt;
+    // "joinedAt" sorts on join time then role; default is role asc → joinedAt asc.
+    const dir: Prisma.SortOrder = params.sortDir === "desc" ? "desc" : "asc";
+    let orderBy: Prisma.CommunityMemberOrderByWithRelationInput[];
+    if (params.sortField === "username") {
+      orderBy = [{ snapshotUsername: dir }, { joinedAt: "asc" }];
+    } else if (params.sortField === "joinedAt") {
+      orderBy = [{ joinedAt: dir }, { role: "asc" }];
+    } else {
+      orderBy = [{ role: "asc" }, { joinedAt: "asc" }];
+    }
+
+    const [rows, total] = await Promise.all([
+      prisma.communityMember.findMany({
+        where,
+        orderBy,
+        skip: (params.page - 1) * params.limit,
+        take: params.limit,
+      }),
+      prisma.communityMember.count({ where }),
+    ]);
+
+    return { rows, total };
+  },
+
+  /**
+   * Admin User Management → Communities grid: the communities the given user is an
+   * ACTIVE member of. The driving filter is the user's ACTIVE memberships (uses
+   * `@@index([userId, status])`). Name search + sort live on the Community
+   * collection (Prisma's Mongo connector can't orderBy/filter the related
+   * collection from the member side), so we use a 2-step batch (NO N+1):
+   *   1. Fetch the user's ACTIVE memberships → {communityId, role, joinedAt}.
+   *   2. Hydrate the matching communities in ONE `findMany` (id IN [...] + optional
+   *      name/id search), applying sort + offset pagination at the DB level, then
+   *      merge each member's role/joinedAt back by communityId.
+   * Soft-deleted communities are excluded (matches `adminListCommunities`, which
+   * does NOT exclude SUSPENDED by default — so neither do we). Short-circuits to an
+   * empty page when the user has no memberships. Two queries + one count, no N+1.
+   */
+  async adminListUserCommunities(params: {
+    userId: string;
+    search?: string;
+    sortField?: string;
+    sortDir?: "asc" | "desc";
+    page: number;
+    limit: number;
+  }): Promise<{
+    rows: Array<{
+      id: string;
+      name: string;
+      avatarUrl: string | null;
+      categoryId: string;
+      categoryName: string | null;
+      description: string | null;
+      memberCount: number;
+      role: CommunityMemberRole;
+      joinedAt: Date;
+      createdAt: Date;
+    }>;
+    total: number;
+  }> {
+    // 1. The user's ACTIVE memberships (bounded cardinality — userId is the driver).
+    const memberships = await prisma.communityMember.findMany({
+      where: { userId: params.userId, status: CommunityMemberStatus.ACTIVE },
+      select: { communityId: true, role: true, joinedAt: true },
+    });
+    if (memberships.length === 0) {
+      return { rows: [], total: 0 };
+    }
+
+    const memberByCommunity = new Map<
+      string,
+      { role: CommunityMemberRole; joinedAt: Date }
+    >();
+    for (const m of memberships) {
+      memberByCommunity.set(m.communityId, {
+        role: m.role,
+        joinedAt: m.joinedAt,
+      });
+    }
+    const communityIds = [...memberByCommunity.keys()];
+
+    // Build the community-side where: bounded to the user's communities, exclude
+    // soft-deleted. Optional search matches community name (insensitive contains)
+    // OR an exact ObjectId match when the search term looks like a 24-hex id.
+    const where: Prisma.CommunityWhereInput = {
+      id: { in: communityIds },
+      deletedAt: { isSet: false },
+    };
+    if (params.search) {
+      const searchOr: Prisma.CommunityWhereInput[] = [
+        { name: { contains: params.search, mode: "insensitive" } },
+      ];
+      if (/^[a-fA-F0-9]{24}$/.test(params.search)) {
+        searchOr.push({ id: params.search });
+      }
+      where.AND = [{ OR: searchOr }];
+    }
+
+    // Sort mapping (DB-level on the Community collection). Default createdAt desc.
+    const dir: Prisma.SortOrder = params.sortDir === "asc" ? "asc" : "desc";
+    let primaryOrderBy: Prisma.CommunityOrderByWithRelationInput;
+    switch (params.sortField) {
+      case "name":
+        primaryOrderBy = { name: dir };
+        break;
+      case "memberCount":
+        primaryOrderBy = { memberCount: dir };
+        break;
+      case "createdAt":
+        primaryOrderBy = { createdAt: dir };
+        break;
+      default:
+        primaryOrderBy = { createdAt: dir };
+    }
+
+    // 2. Hydrate communities in ONE query (+ count). Apply sort + offset paging here.
+    const [communities, total] = await Promise.all([
+      prisma.community.findMany({
+        where,
+        orderBy: [primaryOrderBy, { id: dir }],
+        skip: (params.page - 1) * params.limit,
+        take: params.limit,
+        select: {
+          id: true,
+          name: true,
+          avatarUrl: true,
+          categoryId: true,
+          categoryName: true,
+          description: true,
+          memberCount: true,
+          createdAt: true,
+        },
+      }),
+      prisma.community.count({ where }),
+    ]);
+
+    const rows = communities.map((c) => {
+      const membership = memberByCommunity.get(c.id);
+      return {
+        id: c.id,
+        name: c.name,
+        avatarUrl: c.avatarUrl,
+        categoryId: c.categoryId,
+        categoryName: c.categoryName,
+        description: c.description,
+        memberCount: c.memberCount,
+        // membership is always present (communityIds came from the membership map).
+        role: membership?.role ?? CommunityMemberRole.MEMBER,
+        joinedAt: membership?.joinedAt ?? c.createdAt,
+        createdAt: c.createdAt,
+      };
+    });
+
+    return { rows, total };
   },
 
   /**

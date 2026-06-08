@@ -5,6 +5,7 @@ import { dashboardRoutes } from "./dashboard.routes.js";
 import { livestreamRoutes } from "./livestream.routes.js";
 import { meRoutes } from "./me.routes.js";
 import { communityRoutes } from "./community.routes.js";
+import { groupRoutes } from "./groups.routes.js";
 import { moderationRoutes } from "./moderation.routes.js";
 import { usersRoutes } from "./users.routes.js";
 
@@ -33,4 +34,9 @@ serviceRoutes.use(livestreamRoutes);
 // `/admin/v1/communities` (the gateway strips `/admin` and forwards `/v1/*`
 // verbatim). Self-prefixed, NOT nested under a base path — same as moderation.
 serviceRoutes.use(communityRoutes);
+// Group Management routes are self-prefixed with `/groups` so they resolve at
+// `/v1/groups/*` — matching the documented gateway path `/admin/v1/groups` (the
+// gateway strips `/admin` and forwards `/v1/*` verbatim). Self-prefixed, NOT
+// nested under a base path — same as community.
+serviceRoutes.use(groupRoutes);
 serviceRoutes.use("/dashboard", dashboardRoutes);

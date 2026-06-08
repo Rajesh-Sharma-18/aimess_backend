@@ -84,6 +84,75 @@ export interface AdminCommunityDetailRes {
   ownerAccountStatus: string;
 }
 
+/** AdminListCommunityMembersRequest (camelCase; "" means "no filter"). */
+export interface AdminListCommunityMembersReq {
+  communityId: string;
+  search: string;
+  role: string;
+  page: number;
+  limit: number;
+  // "" = no exclusion. When set, this userId is excluded at the DB level and
+  // MUST NEVER appear in the page (hides the viewed user from their own
+  // co-member grid). Never filtered in memory.
+  excludeUserId: string;
+  // "username" | "joinedAt" | "" (default — role asc then joinedAt asc).
+  sortField: string;
+  // "asc" | "desc" | "" (default asc).
+  sortDir: string;
+}
+
+/** AdminCommunityMemberRow — avatar already presigned by community-service. */
+interface RawAdminCommunityMemberRow {
+  userId: string;
+  username: string;
+  handle: string;
+  avatarUrl: string;
+  role: string;
+  status: string;
+  joinedAt: string;
+}
+
+// int64 total arrives as a STRING (longs: String) — coerce on read.
+export interface AdminListCommunityMembersRes {
+  members: RawAdminCommunityMemberRow[];
+  total: string | number;
+}
+
+/** AdminListUserCommunitiesRequest (camelCase; "" means "no filter"). */
+export interface AdminListUserCommunitiesReq {
+  userId: string;
+  search: string;
+  // "name" | "memberCount" | "createdAt" (default createdAt).
+  sortField: string;
+  // "asc" | "desc" (default desc).
+  sortDir: string;
+  page: number;
+  limit: number;
+}
+
+/**
+ * AdminUserCommunityRow — avatarUrl already presigned ("" = none); createdAt is
+ * an int64 epoch-ms that arrives as a STRING (longs: String).
+ */
+interface RawAdminUserCommunityRow {
+  communityId: string;
+  name: string;
+  avatarUrl: string;
+  categoryId: string;
+  categoryName: string;
+  description: string;
+  memberCount: number;
+  role: string;
+  joinedAt: string;
+  createdAt: string;
+}
+
+// int64 total arrives as a STRING (longs: String) — coerce on read.
+export interface AdminListUserCommunitiesRes {
+  communities: RawAdminUserCommunityRow[];
+  total: string | number;
+}
+
 export interface AdminSetModerationStatusReq {
   communityId: string;
   status: string;
@@ -98,8 +167,12 @@ export interface AdminSetModerationStatusRes {
   errorCode: string;
 }
 
-// Re-export the row shape so the repository can type its mappers.
-export type { RawAdminCommunityRow };
+// Re-export the row shapes so the repositories can type their mappers.
+export type {
+  RawAdminCommunityRow,
+  RawAdminCommunityMemberRow,
+  RawAdminUserCommunityRow,
+};
 
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
@@ -147,6 +220,30 @@ export const adminGetCommunityBreaker: Breaker<
   )
 );
 
+export const adminListCommunityMembersBreaker: Breaker<
+  AdminListCommunityMembersReq,
+  AdminListCommunityMembersRes
+> = makeBreaker(
+  "community.adminListCommunityMembers",
+  (req: AdminListCommunityMembersReq) =>
+    call<AdminListCommunityMembersReq, AdminListCommunityMembersRes>(
+      "adminListCommunityMembers",
+      req
+    )
+);
+
+export const adminListUserCommunitiesBreaker: Breaker<
+  AdminListUserCommunitiesReq,
+  AdminListUserCommunitiesRes
+> = makeBreaker(
+  "community.adminListUserCommunities",
+  (req: AdminListUserCommunitiesReq) =>
+    call<AdminListUserCommunitiesReq, AdminListUserCommunitiesRes>(
+      "adminListUserCommunities",
+      req
+    )
+);
+
 export const adminSetModerationStatusBreaker: Breaker<
   AdminSetModerationStatusReq,
   AdminSetModerationStatusRes
@@ -171,6 +268,18 @@ export const communityClient = {
   },
   adminGetCommunity(communityId: string): Promise<AdminCommunityDetailRes> {
     return adminGetCommunityBreaker.fire({ communityId });
+  },
+  async adminListCommunityMembers(
+    req: AdminListCommunityMembersReq
+  ): Promise<{ members: RawAdminCommunityMemberRow[]; total: number }> {
+    const r = await adminListCommunityMembersBreaker.fire(req);
+    return { members: r.members, total: Number(r.total) };
+  },
+  async adminListUserCommunities(
+    req: AdminListUserCommunitiesReq
+  ): Promise<{ communities: RawAdminUserCommunityRow[]; total: number }> {
+    const r = await adminListUserCommunitiesBreaker.fire(req);
+    return { communities: r.communities ?? [], total: Number(r.total) };
   },
   adminSetModerationStatus(
     req: AdminSetModerationStatusReq
