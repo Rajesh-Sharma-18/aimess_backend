@@ -55,7 +55,14 @@ function eq<T>(name: string, actual: T, expected: T): void {
 function q(
   overrides: Partial<ListCommunitiesQuery> = {}
 ): ListCommunitiesQuery {
-  return { sort: "createdAt:desc", page: 1, limit: 20, ...overrides };
+  return {
+    sort: "createdAt:desc",
+    sortBy: "createdDate",
+    sortOrder: "desc",
+    page: 1,
+    limit: 20,
+    ...overrides,
+  };
 }
 
 const actor: ActorRef = {

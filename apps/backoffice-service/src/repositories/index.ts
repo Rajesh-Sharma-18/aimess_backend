@@ -28,6 +28,10 @@ export {
   type CommunityMembersRepository,
 } from "./community-members.repository.js";
 export {
+  userCommunitiesRepository,
+  type UserCommunitiesRepository,
+} from "./user-communities.repository.js";
+export {
   moderationActionRepository,
   type ModerationActionInput,
 } from "./moderation-action.repository.js";

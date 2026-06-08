@@ -22,6 +22,20 @@ const ADMIN_REPORT_INGEST_DLQ_ROUTING_KEY = "admin.report.ingest.dead";
 
 const VALID_TYPES = new Set(["user", "community", "message", "stream"]);
 
+/**
+ * True when `error` is a Prisma unique-constraint violation (P2002). We
+ * duck-type the `code` instead of importing the error class so the handler stays
+ * trivially testable (the unit tests patch the prisma singleton with a fake).
+ */
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
 export async function handleReportIngest(
   data: AdminReportIngestPayload
 ): Promise<void> {
@@ -34,20 +48,35 @@ export async function handleReportIngest(
   ) {
     throw new Error("Malformed admin.report.ingest payload");
   }
-  const created = await prisma.report.create({
-    data: {
-      type: data.type,
-      targetId: data.targetId,
-      reporterId: data.reporterId,
-      reason: data.reason,
-      details: data.details ?? null,
-      status: "open",
-    },
-  });
-  // sourceReportId ties this admin_db row back to the upstream report row.
-  logger.info(
-    `Ingested report ${created.id} (type=${data.type} target=${data.targetId} source=${data.sourceReportId})`
-  );
+  // sourceReportId ties this admin_db row back to the upstream report row and
+  // carries a unique index, making ingestion exactly-once: if the consumer
+  // crashed after committing this write but before acking, RabbitMQ redelivers
+  // the message and the re-insert hits P2002, which we swallow as a no-op so the
+  // redelivery acks instead of dead-lettering or duplicating the row.
+  try {
+    const created = await prisma.report.create({
+      data: {
+        type: data.type,
+        targetId: data.targetId,
+        reporterId: data.reporterId,
+        reason: data.reason,
+        details: data.details ?? null,
+        status: "open",
+        sourceReportId: data.sourceReportId,
+      },
+    });
+    logger.info(
+      `Ingested report ${created.id} (type=${data.type} target=${data.targetId} source=${data.sourceReportId})`
+    );
+  } catch (error) {
+    if (isUniqueConstraintViolation(error)) {
+      logger.info(
+        `Skipped duplicate admin.report.ingest (source=${data.sourceReportId}) — already ingested`
+      );
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function startAdminReportIngestConsumer(): Promise<void> {

@@ -1,3 +1,6 @@
+import { logger } from "@aimess/logger";
+import type { MediaObject } from "@aimess/shared-types";
+
 import { prisma } from "../config/prisma.js";
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import {
@@ -6,11 +9,21 @@ import {
   publishUserUnbannedSafe,
 } from "../messaging/publish-admin-user-event.js";
 import {
+  communityMembersRepository,
   moderationActionRepository,
   reportDetailRepository,
+  userCommunitiesRepository,
   userDirectoryRepository,
 } from "../repositories/index.js";
+import { authClient } from "../grpc/auth.client.js";
+import { communityClient } from "../grpc/community.client.js";
 import type { RequestAdmin } from "../types/index.js";
+import type {
+  ListCommunityMembersQuery,
+  ListUserCommunitiesQuery,
+  Paginated as CommunityPaginated,
+  UserCommunityRow,
+} from "../types/community.types.js";
 import type {
   BanUserInput,
   BulkActivateInput,
@@ -37,6 +50,32 @@ import { userAvatarService } from "./user-avatar.service.js";
 /** Audit/request context derived from `getRequestContext(req)`. */
 type RequestCtx = { ip: string; userAgent: string | null };
 
+/**
+ * Normalized co-member query as the validator emits it (post-transform): the
+ * canonical member-query fields plus `searchIsEmail` flagging an email search to
+ * resolve upstream. `sortField`/`sortDir` are "" when no explicit sort is chosen.
+ */
+type ListOtherMembersQuery = {
+  search?: string;
+  searchIsEmail: boolean;
+  role?: "ADMIN" | "MODERATOR" | "MEMBER";
+  sortField: string;
+  sortDir: string;
+  page: number;
+  limit: number;
+};
+
+/** One row of the co-member grid (member view + hydrated email). */
+type OtherCommunityMemberRow = {
+  userId: string;
+  username: string;
+  /** Email hydrated from auth-service; null when unavailable. */
+  email: string | null;
+  avatarUrl: string | null;
+  role: string;
+  joinedAt: string;
+};
+
 /** The acting admin + a precomputed timestamp for this mutation. */
 type Actor = { actorId: string; at: string };
 
@@ -52,6 +91,13 @@ type UserReportRow = Omit<ReportRow, "reporter"> & {
     avatarUrl: string | null;
     /** Lifetime of `avatarUrl` in seconds; null when avatarUrl is null. */
     avatarUrlExpiresIn: number | null;
+    /**
+     * Nested media descriptor for the reporter's avatar (additive, always
+     * present). Inner fields are null when the avatar is unset / presign
+     * failed. Wraps the same presigned GET the legacy `avatarUrl` carries via
+     * the shared media layer.
+     */
+    avatar: MediaObject;
   };
 };
 
@@ -82,7 +128,11 @@ function addDays(iso: string, days: number): Date {
  */
 export const userManagementService = {
   /** List users; controller attaches the response `meta` envelope. */
-  async listUsers(query: ListUsersQuery): Promise<{
+  async listUsers(
+    query: ListUsersQuery,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<{
     data: UserListItem[];
     pagination: PaginationMeta;
   }> {
@@ -92,14 +142,53 @@ export const userManagementService = {
     // the page — bounded by `limit` — is not an N+1.
     const data = await Promise.all(
       page.data.map(async (item) => {
-        const av = await userAvatarService.resolveViewUrl(item.avatarUrl);
+        // Legacy flat fields + the additive nested `avatar: MediaObject` are
+        // resolved from the SAME stored value. Both are presign-only (no HEAD),
+        // so this stays a local-signing map (bounded by `limit`), not an N+1.
+        const [av, avatar] = await Promise.all([
+          userAvatarService.resolveViewUrl(item.avatarUrl),
+          userAvatarService.resolveMediaObject(item.avatarUrl),
+        ]);
         return {
           ...item,
           avatarUrl: av?.url ?? null,
           avatarUrlExpiresIn: av?.expiresIn ?? null,
+          avatar,
         };
       })
     );
+
+    // Audit the list view with the resolved sort + active filters (mirrors the
+    // GROUP_LIST_VIEWED precedent). `targetId` is null — this is a collection view.
+    // Best-effort + non-blocking: a READ must never 500 because an audit insert
+    // failed, so we fire-and-forget and log-and-continue on error. (Mutation
+    // paths deliberately keep the blocking model — an unaudited ban is not OK.)
+    void auditService
+      .record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.USER_LIST_VIEWED,
+        targetType: "user",
+        targetId: null,
+        after: {
+          sortBy: query.sortBy ?? "joinedDate",
+          sortOrder: query.sortOrder ?? "desc",
+          page: query.page,
+          limit: query.limit,
+          filters: {
+            search: query.search ?? null,
+            status: query.status ?? null,
+            reports: query.reports ?? null,
+            dateFrom: query.dateFrom ?? null,
+            dateTo: query.dateTo ?? null,
+          },
+        },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      })
+      .catch((err: unknown) => {
+        logger.warn("Failed to record USER_LIST_VIEWED audit", { err });
+      });
+
     return { data, pagination: page.pagination };
   },
 
@@ -108,14 +197,22 @@ export const userManagementService = {
     const row = await userDirectoryRepository.getById(userId);
     if (!row) return null;
 
-    const [reportsSummary, reportCategories, moderationHistory, avatar] =
-      await Promise.all([
-        buildReportsSummary(userId),
-        reportDetailRepository.categoryCounts(userId),
-        buildModerationHistory(userId),
-        // Presign the raw avatar key (from user-service via gRPC) into a GET URL.
-        userAvatarService.resolveViewUrl(row.avatarUrl),
-      ]);
+    const [
+      reportsSummary,
+      reportCategories,
+      moderationHistory,
+      avatarView,
+      avatar,
+    ] = await Promise.all([
+      buildReportsSummary(userId),
+      reportDetailRepository.categoryCounts(userId),
+      buildModerationHistory(userId),
+      // Legacy flat fields: presign the raw avatar key (from user-service via
+      // gRPC) into a GET URL.
+      userAvatarService.resolveViewUrl(row.avatarUrl),
+      // Additive nested descriptor from the SAME stored value (presign-only).
+      userAvatarService.resolveMediaObject(row.avatarUrl),
+    ]);
 
     return {
       profile: {
@@ -123,8 +220,10 @@ export const userManagementService = {
         username: row.username,
         email: row.email,
         // Presigned GET URL (null when unset / presign unavailable).
-        avatarUrl: avatar?.url ?? null,
-        avatarUrlExpiresIn: avatar?.expiresIn ?? null,
+        avatarUrl: avatarView?.url ?? null,
+        avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+        // Additive nested media descriptor wrapping the same presigned GET.
+        avatar,
         joinedAt: row.joinedAt,
         lastActiveAt: row.lastActiveAt,
       },
@@ -137,12 +236,6 @@ export const userManagementService = {
       },
       reportsSummary,
       reportCategories,
-      // Deliberately empty: the User Management Details screen sources community
-      // data from the dedicated endpoints (GET /communities/:id and
-      // /communities/:id/members). A user's *own* membership list needs a
-      // user→communities reverse-lookup RPC that community-service does not
-      // expose yet — deferred until that screen requires it.
-      communities: [],
       moderationHistory,
       // reportCount mirrors the aggregated reports total (admin_db); the live
       // directory row no longer carries a denormalized count.
@@ -170,9 +263,14 @@ export const userManagementService = {
     );
     const data = await Promise.all(
       result.data.map(async (row) => {
-        const av = await userAvatarService.resolveViewUrl(
-          row.reporter.avatarKey
-        );
+        // Legacy flat fields + the additive nested `avatar: MediaObject` are
+        // resolved from the SAME raw stored avatar key. Both are presign-only
+        // (no HEAD), so this stays a local-signing map (bounded by `limit`),
+        // not an N+1 — same justification as `listUsers`.
+        const [av, avatar] = await Promise.all([
+          userAvatarService.resolveViewUrl(row.reporter.avatarKey),
+          userAvatarService.resolveMediaObject(row.reporter.avatarKey),
+        ]);
         const { avatarKey: _avatarKey, ...reporter } = row.reporter;
         return {
           ...row,
@@ -180,11 +278,161 @@ export const userManagementService = {
             ...reporter,
             avatarUrl: av?.url ?? null,
             avatarUrlExpiresIn: av?.expiresIn ?? null,
+            avatar,
           },
         };
       })
     );
     return { data, pagination: result.pagination };
+  },
+
+  /**
+   * "Communities" grid on the User Management detail screen: the communities
+   * the user is an ACTIVE member of (read-through from community-service over
+   * gRPC; avatar already presigned upstream). Best-effort, non-blocking audit
+   * (a READ must never 500 because an audit insert failed).
+   */
+  async listUserCommunities(
+    userId: string,
+    query: ListUserCommunitiesQuery,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<CommunityPaginated<UserCommunityRow>> {
+    const result = await userCommunitiesRepository.listUserCommunities(
+      userId,
+      query
+    );
+
+    void auditService
+      .record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.USER_COMMUNITIES_VIEWED,
+        targetType: "user",
+        targetId: userId,
+        after: {
+          page: query.page,
+          limit: query.limit,
+          sortField: query.sortField,
+          sortDir: query.sortDir,
+          filters: { search: query.search ?? null },
+        },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      })
+      .catch((err: unknown) => {
+        logger.warn("Failed to record USER_COMMUNITIES_VIEWED audit", { err });
+      });
+
+    return result;
+  },
+
+  /**
+   * Co-member grid: the OTHER members of a community the viewed user belongs to
+   * (the viewed user is excluded at the DB level via `excludeUserId`, never in
+   * memory). Reuses the shared member read-through pipeline, then:
+   *   - resolves an email search (`q` containing `@`) to a userId via
+   *     auth-service BEFORE the member query (so it filters on the wire), and
+   *   - hydrates each returned member's email with ONE batch auth-service call
+   *     keyed by the page's userIds (no N+1).
+   * Also fetches the community {name, memberCount} block via adminGetCommunity
+   * (one extra read; documented). Best-effort, non-blocking audit.
+   */
+  async listOtherCommunityMembers(
+    userId: string,
+    communityId: string,
+    query: ListOtherMembersQuery,
+    actor: RequestAdmin,
+    ctx: RequestCtx
+  ): Promise<{
+    community: { communityId: string; name: string; memberCount: number };
+    items: OtherCommunityMemberRow[];
+    pagination: PaginationMeta;
+  }> {
+    // Email → userId resolution. An `@`-bearing search is an email; resolve it
+    // to a single userId via auth-service (the email owner) and pass THAT as the
+    // member-query search (userId match). No match → an empty, valid page.
+    let memberSearch = query.search;
+    let emailResolvedEmpty = false;
+    if (query.searchIsEmail && query.search) {
+      const resolvedId = await resolveEmailToUserId(query.search);
+      if (resolvedId) {
+        memberSearch = resolvedId;
+      } else {
+        emailResolvedEmpty = true;
+      }
+    }
+
+    // The community {name, memberCount} header block. One extra read — cheapest
+    // source that carries both (adminGetCommunity → community.name + membersTotal).
+    const detailPromise = communityClient.adminGetCommunity(communityId);
+
+    const memberQuery: ListCommunityMembersQuery = {
+      search: memberSearch,
+      role: query.role,
+      page: query.page,
+      limit: query.limit,
+      excludeUserId: userId,
+      sortField: query.sortField,
+      sortDir: query.sortDir,
+    };
+
+    // When an email search resolved to nobody, skip the member round-trip and
+    // return an empty page (the header block is still fetched/awaited below).
+    const membersPromise = emailResolvedEmpty
+      ? Promise.resolve({
+          data: [],
+          pagination: emptyOffsetMeta(query.page, query.limit),
+        })
+      : communityMembersRepository.listMembers(communityId, memberQuery);
+
+    const [detail, members] = await Promise.all([
+      detailPromise,
+      membersPromise,
+    ]);
+
+    // Email hydration: ONE batch auth-service call keyed by the page's userIds.
+    const ids = members.data.map((m) => m.userId);
+    const emailMap = await emailMapForUserIds(ids);
+
+    const items: OtherCommunityMemberRow[] = members.data.map((m) => ({
+      userId: m.userId,
+      username: m.username,
+      email: emailMap.get(m.userId) ?? null,
+      avatarUrl: m.avatarUrl,
+      role: m.role,
+      joinedAt: m.joinedAt,
+    }));
+
+    const community = {
+      communityId,
+      name: detail.community?.name ?? "",
+      memberCount: detail.membersTotal,
+    };
+
+    void auditService
+      .record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.USER_COMMUNITY_MEMBERS_VIEWED,
+        targetType: "user",
+        targetId: userId,
+        after: {
+          communityId,
+          page: query.page,
+          limit: query.limit,
+          sortField: query.sortField || null,
+          sortDir: query.sortDir || null,
+          filters: { search: query.search ?? null, role: query.role ?? null },
+        },
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      })
+      .catch((err: unknown) => {
+        logger.warn("Failed to record USER_COMMUNITY_MEMBERS_VIEWED audit", {
+          err,
+        });
+      });
+
+    return { community, items, pagination: members.pagination };
   },
 
   async banUser(
@@ -500,6 +748,73 @@ export const userManagementService = {
 // ---------------------------------------------------------------------------
 // Detail composition + moderation-trail persistence (admin_db).
 // ---------------------------------------------------------------------------
+
+/**
+ * Resolve an email to its owning userId via auth-service. auth-service's
+ * `adminListUsers.search` matches account/email; we take the FIRST exact
+ * (case-insensitive) email match. Returns null when nobody owns the email.
+ * One gRPC call (opossum-wrapped); no N+1.
+ */
+async function resolveEmailToUserId(email: string): Promise<string | null> {
+  const needle = email.trim().toLowerCase();
+  let users: Awaited<ReturnType<typeof authClient.adminListUsers>>["users"];
+  try {
+    ({ users } = await authClient.adminListUsers({
+      search: needle,
+      limit: 10,
+      offset: 0,
+    }));
+  } catch (err: unknown) {
+    logger.warn(
+      "Failed to resolve email search via auth-service; degrading to no match",
+      { err }
+    );
+    return null;
+  }
+  const hit = users.find((u) => u.email.toLowerCase() === needle);
+  return hit?.id ?? null;
+}
+
+/**
+ * Build a userId → email map for a page of members with ONE batch auth-service
+ * call (the `userIds` filter), so email hydration is never an N+1. Empty input
+ * skips the round-trip.
+ */
+async function emailMapForUserIds(
+  userIds: string[]
+): Promise<Map<string, string>> {
+  if (userIds.length === 0) return new Map();
+  let users: Awaited<ReturnType<typeof authClient.adminListUsers>>["users"];
+  try {
+    ({ users } = await authClient.adminListUsers({
+      userIds,
+      limit: userIds.length,
+      offset: 0,
+    }));
+  } catch (err: unknown) {
+    logger.warn(
+      "Failed to hydrate member emails from auth-service; degrading to null",
+      { err }
+    );
+    return new Map();
+  }
+  return new Map(users.map((u) => [u.id, u.email]));
+}
+
+/** Empty offset-mode PaginationMeta (zero results) for short-circuit pages. */
+function emptyOffsetMeta(page: number, limit: number): PaginationMeta {
+  return {
+    mode: "offset",
+    page,
+    limit,
+    total: 0,
+    totalApprox: 0,
+    totalPages: 0,
+    hasNext: false,
+    hasPrev: page > 1,
+    nextCursor: null,
+  };
+}
 
 /** Build the ModerationAction.metadata JSON (note + bulk marker), or undefined. */
 function buildMetadata(

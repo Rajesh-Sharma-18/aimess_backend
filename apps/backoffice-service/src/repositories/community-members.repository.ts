@@ -51,6 +51,12 @@ export class GrpcCommunityMembersRepository implements CommunityMembersRepositor
       role: query.role ?? "",
       page,
       limit,
+      // DB-level exclusion of the viewed user from their own co-member grid;
+      // "" = no exclusion. Never filtered in memory (see proto contract).
+      excludeUserId: query.excludeUserId ?? "",
+      // "" = community-service default order (role asc then joinedAt asc).
+      sortField: query.sortField ?? "",
+      sortDir: query.sortDir ?? "",
     });
 
     const data = members.map(toRow);

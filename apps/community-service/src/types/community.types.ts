@@ -1,3 +1,5 @@
+import type { MediaObject } from "@aimess/shared-types";
+
 import type {
   CommunityInviteStatus,
   CommunityJoinReqStatus,
@@ -32,9 +34,13 @@ export type CommunityData = {
   /** Presigned GET URL (private bucket); null if no avatar. */
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
+  /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+  avatar: MediaObject;
   /** Presigned GET URL (private bucket); null if no cover. */
   coverUrl: string | null;
   coverUrlExpiresIn: number | null;
+  /** Nested media object for the cover (additive; mirrors coverUrl). */
+  cover: MediaObject;
   /** Caller's membership role, or null if not a member. */
   myRole: CommunityMemberRole | null;
   /** True if the caller has a mute row for this community (any state). */
@@ -85,6 +91,8 @@ export type CommunityListItem = {
   memberLimit: number;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
+  /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+  avatar: MediaObject;
   myRole: CommunityMemberRole;
   /** Latest activity (latest community message, else createdAt), epoch milliseconds. */
   lastActivityAt: number;
@@ -114,6 +122,8 @@ export type CommunityDiscoverItem = {
   memberLimit: number;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
+  /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+  avatar: MediaObject;
   /** Creation time as epoch milliseconds. */
   createdAt: number;
   /**
@@ -140,6 +150,8 @@ export type CommunityMemberData = {
   /** Presigned GET URL for the member's avatar (private bucket); null if none. */
   snapshotAvatarUrl: string | null;
   snapshotAvatarUrlExpiresIn: number | null;
+  /** Nested media object for the snapshot avatar (additive; mirrors snapshotAvatarUrl). */
+  snapshotAvatar: MediaObject;
   /** ISO-8601 timestamp of when the member was banned; null when not banned. */
   bannedAt: string | null;
   /** AuthUser.id of the admin who banned the member; null when not banned. */
@@ -155,6 +167,8 @@ export type CommunityMutedMemberData = {
   displayName: string;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
+  /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+  avatar: MediaObject;
   /** AuthUser.id of the moderator/admin who muted the member. */
   mutedBy: string;
   reason: string | null;
@@ -271,6 +285,8 @@ export type CommunityJoinRequestWithUserData = CommunityJoinRequestData & {
     displayName: string;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
+    /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+    avatar: MediaObject;
   };
 };
 
@@ -286,6 +302,8 @@ export type MyJoinRequestData = CommunityJoinRequestData & {
     memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
+    /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+    avatar: MediaObject;
   };
 };
 
@@ -308,6 +326,8 @@ export type CommunityInviteWithUserData = CommunityInviteData & {
     displayName: string;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
+    /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+    avatar: MediaObject;
   };
 };
 
@@ -323,6 +343,8 @@ export type MyInviteData = CommunityInviteData & {
     memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
+    /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+    avatar: MediaObject;
   };
 };
 
@@ -353,6 +375,8 @@ export type CommunityReportWithUsersData = CommunityReportData & {
     displayName: string;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
+    /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+    avatar: MediaObject;
   };
   target: {
     userId: string;
@@ -360,6 +384,8 @@ export type CommunityReportWithUsersData = CommunityReportData & {
     displayName: string;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
+    /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+    avatar: MediaObject;
   } | null;
 };
 
@@ -375,6 +401,8 @@ export type MyReportData = CommunityReportData & {
     memberLimit: number;
     avatarUrl: string | null;
     avatarUrlExpiresIn: number | null;
+    /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+    avatar: MediaObject;
   };
 };
 

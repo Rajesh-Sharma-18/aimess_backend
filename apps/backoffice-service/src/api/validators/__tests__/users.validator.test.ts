@@ -132,6 +132,121 @@ describe("listUsersQuerySchema — status filter (case-insensitive)", () => {
   });
 });
 
+describe("listUsersQuerySchema — sortBy / sortOrder", () => {
+  it("maps sortBy=username onto the canonical sort token", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "username",
+      sortOrder: "asc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "username:asc");
+    assert.equal(r.data?.sortBy, "username");
+    assert.equal(r.data?.sortOrder, "asc");
+  });
+
+  it("maps sortBy=joinedDate onto the joinedAt column", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "joinedDate",
+      sortOrder: "desc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "joinedAt:desc");
+    assert.equal(r.data?.sortBy, "joinedDate");
+  });
+
+  it("maps sortBy=reports onto the reportCount column", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "reports",
+      sortOrder: "desc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "reportCount:desc");
+    assert.equal(r.data?.sortBy, "reports");
+  });
+
+  it("defaults sortOrder to desc when only sortBy is given", () => {
+    const r = listUsersQuerySchema.safeParse({ sortBy: "email" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "email:desc");
+    assert.equal(r.data?.sortOrder, "desc");
+  });
+
+  it("is case-insensitive and tolerates the canonical column names", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "ReportCount",
+      sortOrder: "ASC",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "reportCount:asc");
+    assert.equal(r.data?.sortBy, "reports");
+  });
+
+  it("prefers sortBy over the legacy sort param", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sort: "email:asc",
+      sortBy: "username",
+      sortOrder: "desc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "username:desc");
+  });
+
+  it("echoes the UI sort pair even when the legacy sort param is used", () => {
+    const r = listUsersQuerySchema.safeParse({ sort: "reportCount:asc" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "reportCount:asc");
+    assert.equal(r.data?.sortBy, "reports");
+    assert.equal(r.data?.sortOrder, "asc");
+  });
+
+  it("ignores sortOrder when sortBy is absent — falls back to the legacy/default sort", () => {
+    // `sortOrder` only takes effect alongside `sortBy`. On its own it must NOT
+    // hijack the default `joinedAt:desc`, and the echoed UI pair must reflect
+    // the resolved (default) sort, not the orphaned sortOrder.
+    const r = listUsersQuerySchema.safeParse({ sortOrder: "asc" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "joinedAt:desc");
+    assert.equal(r.data?.sortBy, "joinedDate");
+    assert.equal(r.data?.sortOrder, "desc");
+  });
+
+  it("accepts a bare `sort` field (no :dir) + `order` — the Swagger form shape", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sort: "username",
+      order: "desc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "username:desc");
+    assert.equal(r.data?.sortBy, "username");
+    assert.equal(r.data?.sortOrder, "desc");
+  });
+
+  it("defaults a bare `sort` field with no order to desc", () => {
+    const r = listUsersQuerySchema.safeParse({ sort: "reportCount" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "reportCount:desc");
+    assert.equal(r.data?.sortBy, "reports");
+  });
+
+  it("rejects an unknown sortBy column", () => {
+    const r = listUsersQuerySchema.safeParse({ sortBy: "karma" });
+    assert.equal(r.success, false);
+  });
+
+  it("still rejects an unknown bare `sort` field", () => {
+    const r = listUsersQuerySchema.safeParse({ sort: "karma" });
+    assert.equal(r.success, false);
+  });
+
+  it("rejects an invalid sortOrder", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "username",
+      sortOrder: "sideways",
+    });
+    assert.equal(r.success, false);
+  });
+});
+
 describe("listUsersQuerySchema — date range filter", () => {
   it("accepts a YYYY-MM-DD range", () => {
     const r = listUsersQuerySchema.safeParse({

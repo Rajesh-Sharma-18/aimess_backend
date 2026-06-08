@@ -560,10 +560,35 @@ export const adminPaths = {
         "Aggregates `AdminListUsers` (auth-service) + `AdminListProfiles` (user-service) via gRPC-live. " +
         "Filters: `status` (repeatable, case-insensitive), `reports` bucket, a join-date range " +
         "(`dateFrom`/`dateTo`, or `createdAfter`/`createdBefore` aliases), and `q` search " +
-        "(username/email). Requires `users.read`.",
+        "(username/email). Sort via `sortBy` + `sortOrder` (default `joinedDate`/`desc`). " +
+        "**Note:** `sortBy=reports` is DB-sorted on the read-model; in the live gRPC path it " +
+        "falls back to join-date order — your `sortOrder` is still applied (report counts " +
+        "live in admin_db only). Requires `users.read`.",
       security: adminSecurity,
       parameters: [
         ...listParams,
+        {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          description:
+            "Column to sort by. `joinedDate`→join date, `reports`→report count. " +
+            "Case-insensitive; canonical column names (`joinedAt`, `reportCount`) are " +
+            "also accepted as aliases. Default `joinedDate`. Takes precedence over the " +
+            "legacy `sort`/`order` pair (kept for older callers / saved links).",
+          schema: {
+            type: "string",
+            enum: ["username", "email", "joinedDate", "reports"],
+            default: "joinedDate",
+          },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          description: "Sort direction. Default `desc`.",
+          schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
+        },
         {
           name: "status",
           in: "query",
@@ -686,15 +711,183 @@ export const adminPaths = {
       "x-implementation-status": "planned",
     },
   },
+  "/admin/v1/users/{userId}/communities": {
+    get: {
+      tags: [adminTags.users],
+      summary: "List the user's communities",
+      description:
+        "The 'Communities' grid on the User Management detail screen — the " +
+        "communities the user is an ACTIVE member of (community-service gRPC; " +
+        "avatar already presigned). Supports `q`/`search` (community name OR " +
+        "exact communityId) and the sort pair `sortBy` " +
+        "(`name`|`members`|`createdDate`) / `sortOrder` (default " +
+        "`createdDate`/`desc`). Offset pagination. Response = " +
+        "`{ success, data: { items, pagination } }`. Requires `users.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          schema: { type: "string", maxLength: 64 },
+        },
+        {
+          name: "q",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Community name (contains) OR exact communityId.",
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Alias of `q` (q wins when both are present).",
+        },
+        {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["name", "members", "createdDate"],
+            default: "createdDate",
+          },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": okRes(
+          "User communities page",
+          "#/components/schemas/AdminUserCommunityListResponse"
+        ),
+        "400": errRes("Validation failed (bad sort/enum)"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.read"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/{userId}/communities/{communityId}/members": {
+    get: {
+      tags: [adminTags.users],
+      summary: "List the OTHER members of a community the user belongs to",
+      description:
+        "The co-member grid on the User Management detail screen — the other " +
+        "members of `communityId` (community-service gRPC). The viewed user " +
+        "(`userId`) is excluded at the DB level and NEVER appears. Supports " +
+        "`q`/`search` (username, userId, OR email — an email is resolved to a " +
+        "userId via auth-service), a `role` filter (incl. `OWNER`, folded onto " +
+        "`ADMIN`), and the sort pair `sortBy` (`username`|`joinedDate`) / " +
+        "`sortOrder`. Each member's email is hydrated from auth-service in one " +
+        "batch call (null when unavailable). The `community` block " +
+        "(`name`/`memberCount`) is fetched via a single adminGetCommunity read. " +
+        "Response = `{ success, data: { community, items, pagination } }`. " +
+        "Requires `users.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          schema: { type: "string", maxLength: 64 },
+        },
+        {
+          name: "communityId",
+          in: "path",
+          required: true,
+          schema: { type: "string", maxLength: 64 },
+        },
+        {
+          name: "q",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Username, userId, OR email (an `@` routes to email lookup).",
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Alias of `q` (q wins when both are present).",
+        },
+        {
+          name: "role",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["OWNER", "ADMIN", "MODERATOR", "MEMBER"],
+          },
+          description: "Member role filter (OWNER is folded onto ADMIN).",
+        },
+        {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["username", "joinedDate"] },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"] },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": okRes(
+          "Co-member page",
+          "#/components/schemas/AdminOtherCommunityMembersResponse"
+        ),
+        "400": errRes("Validation failed (bad sort/enum)"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.read"),
+        "404": errRes("Community not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
   "/admin/v1/users/{id}/suspend": {
     post: {
       tags: [adminTags.users],
       summary: "Suspend a user",
       description:
         PLANNED +
-        "Temp suspend (with `reason`, `until`). Writes `ModerationAction` and emits `admin.user_suspended`. 🔐 step-up TOTP. Audited. Requires `users.moderate`.",
+        "Temp suspend (with `reason`, `until`). Writes `ModerationAction` and emits `admin.user_suspended`. Audited. Requires `users.moderate`. (Step-up TOTP auth for sensitive mutations planned for Phase 2.)",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
+      parameters: [idPathParam],
       requestBody: jsonBody("#/components/schemas/AdminSuspendRequest"),
       responses: {
         "200": okRes(
@@ -702,7 +895,7 @@ export const adminPaths = {
           "#/components/schemas/AdminModerationResult"
         ),
         "400": errRes("Validation failed"),
-        "401": errRes("Unauthorized / invalid TOTP"),
+        "401": errRes("Unauthorized"),
         "403": errRes("Missing users.moderate"),
         "404": errRes("User not found"),
       },
@@ -715,9 +908,9 @@ export const adminPaths = {
       summary: "Ban a user",
       description:
         PLANNED +
-        "Writes `ModerationAction` and emits `admin.user_banned`; auth-service locks the account. 🔐 step-up TOTP. Audited. Requires `users.moderate`.",
+        "Writes `ModerationAction` and emits `admin.user_banned`; auth-service locks the account. Audited. Requires `users.moderate`. (Step-up TOTP auth for sensitive mutations planned for Phase 2.)",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
+      parameters: [idPathParam],
       requestBody: jsonBody("#/components/schemas/AdminBanRequest"),
       responses: {
         "200": okRes(
@@ -725,7 +918,7 @@ export const adminPaths = {
           "#/components/schemas/AdminModerationResult"
         ),
         "400": errRes("Validation failed"),
-        "401": errRes("Unauthorized / invalid TOTP"),
+        "401": errRes("Unauthorized"),
         "403": errRes("Missing users.moderate"),
         "404": errRes("User not found"),
       },

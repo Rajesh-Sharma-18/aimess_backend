@@ -73,6 +73,9 @@ export {
   unbanUserSchema,
   bulkBanSchema,
   bulkActivateSchema,
+  listUserCommunitiesQuerySchema,
+  listOtherMembersQuerySchema,
+  userCommunityMembersParamSchema,
   userStatusEnum,
   moderationReasonEnum,
   reportsBucketEnum,
@@ -84,6 +87,9 @@ export {
   type UnbanUserInput,
   type BulkBanInput,
   type BulkActivateInput,
+  type ListUserCommunitiesQueryInput,
+  type ListOtherMembersQueryInput,
+  type UserCommunityMembersParam,
 } from "./users.validator.js";
 
 export {

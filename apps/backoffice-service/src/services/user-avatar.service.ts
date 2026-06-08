@@ -1,10 +1,14 @@
-import { createPresignedViewUrl } from "@aimess/storage";
+import { createPresignedViewUrl, toMediaObject } from "@aimess/storage";
+import type { MediaObject } from "@aimess/shared-types";
 import { logger } from "@aimess/logger";
 
-import { presignClient } from "../config/storage.js";
+import { mediaUrlStrategy, presignClient } from "../config/storage.js";
 import { env } from "../config/env.js";
 
 const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
+
+/** Storage-key prefix the shared media layer strips/validates for avatars. */
+const AVATAR_PREFIXES = ["avatars"];
 
 export type AdminUserAvatarView = {
   url: string;
@@ -50,6 +54,29 @@ export class UserAvatarService {
       logger.warn(error);
       return null;
     }
+  }
+
+  /**
+   * Nested {@link MediaObject} for a stored avatar value, routed through the
+   * shared media layer. Handles all three `toMediaObject` cases uniformly:
+   *   - a bare MinIO object key (user avatar) → presigned `downloadUrl`,
+   *   - a legacy full MinIO URL → normalized then presigned,
+   *   - an EXTERNAL http(s) URL (e.g. an admin's DiceBear default) → passed
+   *     through as `downloadUrl` with null `objectKey`/`fileId`/expiry.
+   *
+   * `stored` null/empty yields an all-null MediaObject. Presign-only (no HEAD),
+   * matching {@link resolveViewUrl}; `toMediaObject` swallows resolve failures
+   * internally so a broken avatar never throws into the admin response.
+   */
+  async resolveMediaObject(
+    stored: string | null | undefined
+  ): Promise<MediaObject> {
+    return toMediaObject({
+      bucket: AVATAR_BUCKET,
+      stored: stored ?? null,
+      prefixes: AVATAR_PREFIXES,
+      strategy: mediaUrlStrategy,
+    });
   }
 }
 

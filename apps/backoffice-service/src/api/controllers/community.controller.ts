@@ -23,7 +23,9 @@ export const listCommunities: RequestHandler = (req, res, next) => {
     try {
       const query = req.query as unknown as ListCommunitiesQueryInput;
       const result = await communityService.listCommunities(
-        query as ListCommunitiesQuery
+        query as ListCommunitiesQuery,
+        req.admin!,
+        getRequestContext(req)
       );
       res.status(HTTP_STATUS.OK).json({
         success: true,

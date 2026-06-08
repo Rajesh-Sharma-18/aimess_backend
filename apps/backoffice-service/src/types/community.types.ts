@@ -235,6 +235,48 @@ export type ListCommunityMembersQuery = {
   role?: CommunityMemberRole;
   page: number;
   limit: number;
+  /**
+   * userId excluded at the DB level (community-service) — used to hide the
+   * viewed user from their own co-member grid. Never filtered in memory.
+   * Absent/"" on the standalone `/communities/:id/members` endpoint.
+   */
+  excludeUserId?: string;
+  /** "username" | "joinedAt" — passed through to community-service ("" = default). */
+  sortField?: string;
+  /** "asc" | "desc" — passed through to community-service ("" = default asc). */
+  sortDir?: string;
+};
+
+// ---------------------------------------------------------------------------
+// User → Communities reverse lookup (the "Communities" grid on the admin User
+// Management detail screen). Read-through from community-service over gRPC.
+// ---------------------------------------------------------------------------
+
+/** A single row in the user's communities grid. */
+export type UserCommunityRow = {
+  communityId: string;
+  name: string;
+  /** Presigned community avatar GET URL (already signed by community-service), or null. */
+  avatarUrl: string | null;
+  category: { id: string; name: string };
+  description: string;
+  memberCount: number;
+  /** This user's role within the community (ADMIN|MODERATOR|MEMBER). */
+  role: string;
+  /** This user's joinedAt (ISO 8601). */
+  joinedAt: string;
+  /** Community createdAt as an ISO 8601 string (from epoch-ms int64). */
+  createdAt: string;
+};
+
+/** Normalized user-communities query (post-validation/coercion). */
+export type ListUserCommunitiesQuery = {
+  search?: string;
+  /** Canonical field consumed by community-service: name|memberCount|createdAt. */
+  sortField: "name" | "memberCount" | "createdAt";
+  sortDir: "asc" | "desc";
+  page: number;
+  limit: number;
 };
 
 /** Normalized list query (post-validation/coercion). */
@@ -243,7 +285,12 @@ export type ListCommunitiesQuery = {
   type?: CommunityType;
   category?: string;
   status?: CommunityModerationStatus;
+  /** Canonical `<field>:<dir>` token the repo consumes (e.g. `categoryName:asc`). */
   sort: string;
+  /** Resolved UI sort column (`category` | `members` | `createdDate`) — audit echo. */
+  sortBy: string;
+  /** Resolved UI sort direction (`asc` | `desc`) — audit echo. */
+  sortOrder: "asc" | "desc";
   page: number;
   limit: number;
   createdFrom?: string;

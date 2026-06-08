@@ -11,6 +11,7 @@ import {
 } from "../generated/prisma/index.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityService } from "../services/community.service.js";
+import { communityImageService } from "../services/community-image.service.js";
 import { memberAvatarService } from "../services/member-avatar.service.js";
 
 /** Resolve the admin moderation "status" string of a community row, treating an
@@ -321,6 +322,9 @@ const communityImpl: grpc.UntypedServiceImplementation = {
           role?: string;
           page?: number;
           limit?: number;
+          excludeUserId?: string;
+          sortField?: string;
+          sortDir?: string;
         };
 
         const role =
@@ -332,11 +336,19 @@ const communityImpl: grpc.UntypedServiceImplementation = {
                 ? CommunityMemberRole.MEMBER
                 : undefined;
 
+        const sortField =
+          req.sortField === "username" || req.sortField === "joinedAt"
+            ? req.sortField
+            : undefined;
+
         const { rows, total } =
           await communityRepository.adminListCommunityMembers({
             communityId: (req.communityId || "").trim(),
             search: req.search?.trim() || undefined,
             role,
+            excludeUserId: req.excludeUserId?.trim() || undefined,
+            sortField,
+            sortDir: req.sortDir === "desc" ? "desc" : "asc",
             page: coercePage(req.page),
             limit: coerceLimit(req.limit),
           });
@@ -365,6 +377,80 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "adminListCommunityMembers failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Admin User Management → Communities reverse lookup: communities the user is an
+  // ACTIVE member of. Offset paginated, searchable by community name/id, sortable.
+  // Each row's avatar is the community avatar presigned via the community-image
+  // service (private community bucket) — "" when no key/presign.
+  adminListUserCommunities: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          userId?: string;
+          search?: string;
+          sortField?: string;
+          sortDir?: string;
+          page?: number;
+          limit?: number;
+        };
+
+        const userId = (req.userId || "").trim();
+        if (!userId) {
+          callback(null, { communities: [], total: 0 });
+          return;
+        }
+
+        const sortField =
+          req.sortField === "name" ||
+          req.sortField === "memberCount" ||
+          req.sortField === "createdAt"
+            ? req.sortField
+            : undefined;
+
+        const { rows, total } =
+          await communityRepository.adminListUserCommunities({
+            userId,
+            search: req.search?.trim() || undefined,
+            sortField,
+            sortDir: req.sortDir === "asc" ? "asc" : "desc",
+            page: coercePage(req.page),
+            limit: coerceLimit(req.limit),
+          });
+
+        const communities = await Promise.all(
+          rows.map(async (r) => {
+            const avatarView =
+              await communityImageService.resolveViewUrlForClient(r.avatarUrl);
+            return {
+              communityId: r.id,
+              name: r.name,
+              avatarUrl: avatarView?.url ?? "",
+              categoryId: r.categoryId,
+              categoryName: r.categoryName ?? "",
+              description: r.description ?? "",
+              memberCount: r.memberCount,
+              role: String(r.role),
+              joinedAt:
+                r.joinedAt instanceof Date ? r.joinedAt.toISOString() : "",
+              createdAt:
+                r.createdAt instanceof Date ? r.createdAt.getTime() : 0,
+            };
+          })
+        );
+
+        callback(null, { communities, total });
+      } catch (err) {
+        logger.error("adminListUserCommunities gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminListUserCommunities failed",
         } as grpc.ServiceError);
       }
     })();

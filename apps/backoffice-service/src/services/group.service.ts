@@ -1,3 +1,5 @@
+import { logger } from "@aimess/logger";
+
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import { groupRepository } from "../repositories/index.js";
 import type { RequestAdmin } from "../types/index.js";
@@ -26,14 +28,21 @@ export const groupService = {
   ): Promise<{ items: GroupItem[]; pagination: GroupPagination }> {
     const result = await groupRepository.list(query);
 
-    await auditService.record({
-      actorId: actor.id,
-      action: AUDIT_ACTIONS.GROUP_LIST_VIEWED,
-      targetType: "group",
-      targetId: null,
-      ip: ctx.ip,
-      userAgent: ctx.userAgent,
-    });
+    // Best-effort + non-blocking: a READ must never 500 because an audit insert
+    // failed, so we fire-and-forget and log-and-continue on error. (Mutation
+    // paths deliberately keep the blocking model — an unaudited action is not OK.)
+    void auditService
+      .record({
+        actorId: actor.id,
+        action: AUDIT_ACTIONS.GROUP_LIST_VIEWED,
+        targetType: "group",
+        targetId: null,
+        ip: ctx.ip,
+        userAgent: ctx.userAgent,
+      })
+      .catch((err: unknown) => {
+        logger.warn("Failed to record GROUP_LIST_VIEWED audit", { err });
+      });
 
     return result;
   },
@@ -46,16 +55,22 @@ export const groupService = {
   ): Promise<GroupItem | null> {
     const group = await groupRepository.getById(groupId);
 
-    // Only audit a successful detail view.
+    // Only audit a successful detail view. Best-effort + non-blocking: a READ
+    // must never 500 because an audit insert failed, so we fire-and-forget and
+    // log-and-continue on error. (Mutation paths keep the blocking model.)
     if (group) {
-      await auditService.record({
-        actorId: actor.id,
-        action: AUDIT_ACTIONS.GROUP_VIEWED,
-        targetType: "group",
-        targetId: groupId,
-        ip: ctx.ip,
-        userAgent: ctx.userAgent,
-      });
+      void auditService
+        .record({
+          actorId: actor.id,
+          action: AUDIT_ACTIONS.GROUP_VIEWED,
+          targetType: "group",
+          targetId: groupId,
+          ip: ctx.ip,
+          userAgent: ctx.userAgent,
+        })
+        .catch((err: unknown) => {
+          logger.warn("Failed to record GROUP_VIEWED audit", { err });
+        });
     }
 
     return group;
@@ -74,16 +89,22 @@ export const groupService = {
   }> {
     const result = await groupRepository.listMembers(groupId, query);
 
-    // Only audit when the group exists.
+    // Only audit when the group exists. Best-effort + non-blocking: a READ must
+    // never 500 because an audit insert failed, so we fire-and-forget and
+    // log-and-continue on error. (Mutation paths keep the blocking model.)
     if (result.found) {
-      await auditService.record({
-        actorId: actor.id,
-        action: AUDIT_ACTIONS.GROUP_MEMBERS_VIEWED,
-        targetType: "group",
-        targetId: groupId,
-        ip: ctx.ip,
-        userAgent: ctx.userAgent,
-      });
+      void auditService
+        .record({
+          actorId: actor.id,
+          action: AUDIT_ACTIONS.GROUP_MEMBERS_VIEWED,
+          targetType: "group",
+          targetId: groupId,
+          ip: ctx.ip,
+          userAgent: ctx.userAgent,
+        })
+        .catch((err: unknown) => {
+          logger.warn("Failed to record GROUP_MEMBERS_VIEWED audit", { err });
+        });
     }
 
     return result;

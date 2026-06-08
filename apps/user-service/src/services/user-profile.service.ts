@@ -30,6 +30,9 @@ import { isProfileComplete } from "../lib/profile-completion.util.js";
 import { normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import type { UserProfileData } from "../types/user-profile.types.js";
+import { toMediaObject } from "@aimess/storage";
+import { env } from "../config/env.js";
+import { mediaUrlStrategy } from "../config/storage.js";
 import { avatarService } from "./avatar.service.js";
 import { usernameService } from "./username.service.js";
 import { publishProfileUpdatedSafe } from "../messaging/publish-profile-updated.js";
@@ -118,6 +121,13 @@ async function toProfileData(
     profile.avatarUrl
   );
 
+  const avatar = await toMediaObject({
+    bucket: env.MINIO_BUCKET_AVATARS,
+    stored: profile.avatarUrl,
+    prefixes: ["avatars"],
+    strategy: mediaUrlStrategy,
+  });
+
   return {
     userId: profile.userId,
     username: profile.username,
@@ -140,6 +150,7 @@ async function toProfileData(
     gender: profile.gender,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
     updatedAt: profile.updatedAt.toISOString(),
   };
 }

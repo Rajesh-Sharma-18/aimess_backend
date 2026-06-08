@@ -7,6 +7,8 @@
  * Pagination shapes are reused verbatim from moderation.types.ts so list
  * endpoints stay envelope-compatible across modules.
  */
+import type { MediaObject } from "@aimess/shared-types";
+
 import type { Paginated, PaginationMeta } from "./moderation.types.js";
 
 export type { Paginated, PaginationMeta };
@@ -38,6 +40,27 @@ export type UserListItem = {
   avatarUrl?: string | null;
   /** Lifetime of `avatarUrl` in seconds; null when avatarUrl is null. */
   avatarUrlExpiresIn?: number | null;
+  /**
+   * Nested media descriptor for the avatar (additive, always present). Inner
+   * fields are null when the avatar is unset / presign failed. Wraps the same
+   * presigned GET the legacy `avatarUrl` carries via the shared media layer.
+   */
+  avatar: MediaObject;
+};
+
+/**
+ * The repository's pre-resolution list row. Here `avatarUrl` carries the RAW
+ * stored avatar value (object key from user-service), NOT a presigned URL — the
+ * user-management service resolves it into the legacy presigned `avatarUrl`/
+ * `avatarUrlExpiresIn` fields AND the nested `avatar: MediaObject` before the
+ * row becomes a public {@link UserListItem}.
+ */
+export type UserListItemRaw = Omit<
+  UserListItem,
+  "avatarUrl" | "avatarUrlExpiresIn" | "avatar"
+> & {
+  /** Raw stored avatar value (object key), or null. */
+  avatarUrl?: string | null;
 };
 
 /** One moderation-trail entry shown on the detail view. */
@@ -51,19 +74,6 @@ export type ModerationHistoryItem = {
   expiresAt: string | null;
   createdAt: string;
 };
-
-/**
- * A community the user belongs to. Reserved for the user's own membership list,
- * which needs a user→communities reverse-lookup RPC community-service does not
- * expose yet — `UserDetail.communities` is currently always `[]`. (The screen's
- * Community Details/member grid use the dedicated `/communities/*` endpoints.)
- */
-export interface CommunityMembership {
-  communityId: string;
-  name: string;
-  role: string;
-  joinedAt: string;
-}
 
 /** One report-category count (ALL categories) shown on the detail view. */
 export type ReportCategoryCount = {
@@ -113,6 +123,12 @@ export type UserDetail = {
     avatarUrl: string | null;
     /** Lifetime of `avatarUrl` in seconds; null when avatarUrl is null. */
     avatarUrlExpiresIn: number | null;
+    /**
+     * Nested media descriptor for the avatar (additive, always present). Inner
+     * fields are null when the avatar is unset / presign failed. Wraps the same
+     * presigned GET the legacy `avatarUrl` carries via the shared media layer.
+     */
+    avatar: MediaObject;
     joinedAt: string;
     lastActiveAt: string | null;
   };
@@ -120,8 +136,6 @@ export type UserDetail = {
   reportsSummary: ReportsSummary;
   // All report categories filed against this user (not just the top-5 in summary).
   reportCategories: ReportCategoryCount[];
-  // Per-user community membership: no community client wired into backoffice yet.
-  communities: CommunityMembership[];
   moderationHistory: ModerationHistoryItem[];
   stats: {
     reportCount: number;
@@ -176,7 +190,15 @@ export type ListUsersQuery = {
   reports?: "none" | "has" | "gte_5" | "gte_10";
   dateFrom?: string;
   dateTo?: string;
+  /** Canonical `<field>:<dir>` token consumed by the repository's orderBy. */
   sort: string;
+  /**
+   * Resolved UI-facing sort column (`username|email|joinedDate|reports|status`)
+   * and direction. Derived from `sort` by the validator; consumed ONLY by the
+   * list-view audit log — the repository sorts off `sort`, not these.
+   */
+  sortBy?: string;
+  sortOrder?: "asc" | "desc";
   page: number;
   limit: number;
   cursor?: string;

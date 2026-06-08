@@ -19,7 +19,7 @@ import type {
   PaginationMeta,
   StatusChange,
   UserDirectoryRow,
-  UserListItem,
+  UserListItemRaw,
   UserStatus,
   UserStatusResult,
 } from "../types/user-management.types.js";
@@ -34,7 +34,7 @@ import type {
  * `admin.user_*` event that auth-service eventually consumes.
  */
 export interface UserDirectoryRepository {
-  list(query: ListUsersQuery): Promise<Paginated<UserListItem>>;
+  list(query: ListUsersQuery): Promise<Paginated<UserListItemRaw>>;
   getById(userId: string): Promise<UserDirectoryRow | null>;
   setStatus(userId: string, change: StatusChange): Promise<UserStatusResult>;
   bulkSetStatus(userIds: string[], change: StatusChange): Promise<BulkResult>;
@@ -202,7 +202,7 @@ function toListItem(r: {
   status: UserStatus;
   reportCount: number;
   joinedAt: Date;
-}): UserListItem {
+}): UserListItemRaw {
   return {
     userId: r.userId,
     username: r.username,
@@ -219,7 +219,7 @@ function toListItem(r: {
 // Prisma implementation.
 // ---------------------------------------------------------------------------
 export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
-  async list(query: ListUsersQuery): Promise<Paginated<UserListItem>> {
+  async list(query: ListUsersQuery): Promise<Paginated<UserListItemRaw>> {
     const where = buildWhere(query);
     const orderBy = buildOrderBy(query.sort);
     // The keyset cursor is only valid when sorting by joinedAt (its sort key).
@@ -337,7 +337,7 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
     orderBy: Prisma.UserIndexOrderByWithRelationInput[],
     query: ListUsersQuery,
     cursorable: boolean
-  ): Promise<Paginated<UserListItem>> {
+  ): Promise<Paginated<UserListItemRaw>> {
     const { page, limit } = query;
     const skip = (page - 1) * limit;
 
@@ -374,7 +374,7 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
     where: Prisma.UserIndexWhereInput,
     orderBy: Prisma.UserIndexOrderByWithRelationInput[],
     query: ListUsersQuery
-  ): Promise<Paginated<UserListItem>> {
+  ): Promise<Paginated<UserListItemRaw>> {
     const { limit } = query;
     const cursor = query.cursor ? decodeCursor(query.cursor) : null;
     const { dir } = parseSort(query.sort);
@@ -492,10 +492,25 @@ function bucketMatches(
 export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
   constructor(private readonly fallback: UserDirectoryRepository) {}
 
-  async list(query: ListUsersQuery): Promise<Paginated<UserListItem>> {
+  async list(query: ListUsersQuery): Promise<Paginated<UserListItemRaw>> {
     const { page, limit } = query;
     const offset = (page - 1) * limit;
     const { field, dir } = parseSort(query.sort);
+
+    // reportCount lives only in admin_db (Report), but the live list is DRIVEN by
+    // auth-service, which cannot ORDER BY a count it does not store. Rather than
+    // sort the page in-memory (which would only order the current page, not the
+    // whole set), we deterministically fall back to createdAt and flag it. True
+    // DB-level reportCount sorting is available on the Prisma read-model path;
+    // making it work live needs auth-service to carry a denormalized count (or
+    // the list to be driven from the UserIndex mirror). See toAuthSortField().
+    if (field === "reportCount") {
+      // debug, not warn: a panel defaulting to reports-sort would otherwise
+      // flood logs on every page. This is an expected, documented fallback.
+      logger.debug(
+        "sortBy=reports is not DB-sortable in the live gRPC path (reportCount is admin_db-only); falling back to createdAt order (sortOrder still applied)"
+      );
+    }
 
     // 1. Base request mapping.
     const req: AdminListUsersRequest = {
@@ -547,7 +562,7 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
     ]);
     const profileMap = new Map(profiles.map((p) => [p.userId, p]));
 
-    let data: UserListItem[] = users.map((u) => {
+    let data: UserListItemRaw[] = users.map((u) => {
       const profile = profileMap.get(u.id);
       return {
         userId: u.id,

@@ -22,6 +22,16 @@ import { handleReportIngest } from "../consume-admin-report-ingest.js";
 
 // Capture every prisma.report.create call without touching a DB.
 let createCalls: Array<{ data: Record<string, unknown> }>;
+// When set, the next prisma.report.create rejects with this error instead of
+// resolving — used to simulate a P2002 unique-constraint violation on redelivery.
+let nextCreateError: unknown;
+
+/** A minimal stand-in for Prisma's PrismaClientKnownRequestError (P2002). */
+function uniqueConstraintError(): Error & { code: string } {
+  return Object.assign(new Error("Unique constraint failed"), {
+    code: "P2002",
+  });
+}
 
 // Cast through unknown: the handler only ever touches `prisma.report.create`.
 (
@@ -31,6 +41,11 @@ let createCalls: Array<{ data: Record<string, unknown> }>;
 ).report = {
   create: (args: unknown) => {
     createCalls.push(args as { data: Record<string, unknown> });
+    if (nextCreateError !== undefined) {
+      const err = nextCreateError;
+      nextCreateError = undefined;
+      return Promise.reject(err);
+    }
     return Promise.resolve({ id: "rep_1" });
   },
 };
@@ -52,6 +67,7 @@ function validPayload(
 
 beforeEach(() => {
   createCalls = [];
+  nextCreateError = undefined;
 });
 
 describe("handleReportIngest — happy path", () => {
@@ -66,15 +82,16 @@ describe("handleReportIngest — happy path", () => {
       reason: "spam",
       details: null,
       status: "open",
+      sourceReportId: "src_1",
     });
   });
 
-  it("does NOT forward eventAt / sourceReportId to the Report row", async () => {
+  it("forwards sourceReportId (idempotency key) but NOT eventAt to the Report row", async () => {
     await handleReportIngest(validPayload({ details: "hi" }));
 
     const data = createCalls[0]!.data;
     assert.equal("eventAt" in data, false);
-    assert.equal("sourceReportId" in data, false);
+    assert.equal(data.sourceReportId, "src_1");
   });
 
   it("null details passes through as null", async () => {
@@ -136,6 +153,29 @@ describe("handleReportIngest — malformed payloads throw (→ nack/DLQ)", () =>
       assert.equal(createCalls.length, 0, "no Report row written");
     });
   }
+});
+
+describe("handleReportIngest — exactly-once on RabbitMQ redelivery", () => {
+  it("swallows a P2002 unique-constraint violation (duplicate sourceReportId) as a no-op", async () => {
+    // Simulate the redelivery: the row already exists, so the re-insert hits the
+    // unique index on sourceReportId. The handler must NOT throw — throwing would
+    // nack → dead-letter a message that was already successfully ingested.
+    nextCreateError = uniqueConstraintError();
+
+    await assert.doesNotReject(() => handleReportIngest(validPayload()));
+    assert.equal(createCalls.length, 1, "create attempted exactly once");
+  });
+
+  it("re-throws non-P2002 errors so the consumer can nack/DLQ them", async () => {
+    nextCreateError = Object.assign(new Error("connection lost"), {
+      code: "P1001",
+    });
+
+    await assert.rejects(
+      () => handleReportIngest(validPayload()),
+      /connection lost/
+    );
+  });
 });
 
 /** Return a shallow clone of `obj` with `key` removed. */

@@ -1,4 +1,8 @@
-import { createStorageClient, type StorageClient } from "@aimess/storage";
+import {
+  createMediaUrlStrategy,
+  createStorageClient,
+  type StorageClient,
+} from "@aimess/storage";
 
 import { env } from "./env.js";
 
@@ -23,4 +27,14 @@ export const presignClient: StorageClient = createStorageClient({
   accessKey: env.MINIO_ACCESS_KEY,
   secretKey: env.MINIO_SECRET_KEY,
   region: env.MINIO_REGION,
+});
+
+/**
+ * Shared media-URL strategy for building nested `MediaObject` fields. Signs view
+ * URLs via the same public-endpoint `presignClient` used for legacy avatar URLs.
+ */
+export const mediaUrlStrategy = createMediaUrlStrategy({
+  client: presignClient,
+  defaultViewExpiresIn: env.MINIO_AVATAR_VIEW_EXPIRES_IN,
+  cdnBaseUrl: null,
 });

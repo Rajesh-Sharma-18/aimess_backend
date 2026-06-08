@@ -91,6 +91,14 @@ export interface AdminListCommunityMembersReq {
   role: string;
   page: number;
   limit: number;
+  // "" = no exclusion. When set, this userId is excluded at the DB level and
+  // MUST NEVER appear in the page (hides the viewed user from their own
+  // co-member grid). Never filtered in memory.
+  excludeUserId: string;
+  // "username" | "joinedAt" | "" (default — role asc then joinedAt asc).
+  sortField: string;
+  // "asc" | "desc" | "" (default asc).
+  sortDir: string;
 }
 
 /** AdminCommunityMemberRow — avatar already presigned by community-service. */
@@ -110,6 +118,41 @@ export interface AdminListCommunityMembersRes {
   total: string | number;
 }
 
+/** AdminListUserCommunitiesRequest (camelCase; "" means "no filter"). */
+export interface AdminListUserCommunitiesReq {
+  userId: string;
+  search: string;
+  // "name" | "memberCount" | "createdAt" (default createdAt).
+  sortField: string;
+  // "asc" | "desc" (default desc).
+  sortDir: string;
+  page: number;
+  limit: number;
+}
+
+/**
+ * AdminUserCommunityRow — avatarUrl already presigned ("" = none); createdAt is
+ * an int64 epoch-ms that arrives as a STRING (longs: String).
+ */
+interface RawAdminUserCommunityRow {
+  communityId: string;
+  name: string;
+  avatarUrl: string;
+  categoryId: string;
+  categoryName: string;
+  description: string;
+  memberCount: number;
+  role: string;
+  joinedAt: string;
+  createdAt: string;
+}
+
+// int64 total arrives as a STRING (longs: String) — coerce on read.
+export interface AdminListUserCommunitiesRes {
+  communities: RawAdminUserCommunityRow[];
+  total: string | number;
+}
+
 export interface AdminSetModerationStatusReq {
   communityId: string;
   status: string;
@@ -125,7 +168,11 @@ export interface AdminSetModerationStatusRes {
 }
 
 // Re-export the row shapes so the repositories can type their mappers.
-export type { RawAdminCommunityRow, RawAdminCommunityMemberRow };
+export type {
+  RawAdminCommunityRow,
+  RawAdminCommunityMemberRow,
+  RawAdminUserCommunityRow,
+};
 
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
@@ -185,6 +232,18 @@ export const adminListCommunityMembersBreaker: Breaker<
     )
 );
 
+export const adminListUserCommunitiesBreaker: Breaker<
+  AdminListUserCommunitiesReq,
+  AdminListUserCommunitiesRes
+> = makeBreaker(
+  "community.adminListUserCommunities",
+  (req: AdminListUserCommunitiesReq) =>
+    call<AdminListUserCommunitiesReq, AdminListUserCommunitiesRes>(
+      "adminListUserCommunities",
+      req
+    )
+);
+
 export const adminSetModerationStatusBreaker: Breaker<
   AdminSetModerationStatusReq,
   AdminSetModerationStatusRes
@@ -215,6 +274,12 @@ export const communityClient = {
   ): Promise<{ members: RawAdminCommunityMemberRow[]; total: number }> {
     const r = await adminListCommunityMembersBreaker.fire(req);
     return { members: r.members, total: Number(r.total) };
+  },
+  async adminListUserCommunities(
+    req: AdminListUserCommunitiesReq
+  ): Promise<{ communities: RawAdminUserCommunityRow[]; total: number }> {
+    const r = await adminListUserCommunitiesBreaker.fire(req);
+    return { communities: r.communities ?? [], total: Number(r.total) };
   },
   adminSetModerationStatus(
     req: AdminSetModerationStatusReq

@@ -1,7 +1,7 @@
 import type { RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 
-import { env } from "../config/env.ts";
+import { env } from "../config/env.js";
 
 /**
  * Public admin paths (relative to the `/admin` mount) that must NOT require a
