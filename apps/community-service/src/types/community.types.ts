@@ -43,14 +43,25 @@ export type CommunityData = {
   cover: MediaObject;
   /** Caller's membership role, or null if not a member. */
   myRole: CommunityMemberRole | null;
+  /** True when the caller is an active member of this community. */
+  isJoined: boolean;
   /** True if the caller has a mute row for this community (any state). */
-  myIsMuted: boolean;
+  isMuted: boolean;
   /** ISO-8601; null when not muted or muted indefinitely. */
-  myMuteUntil: string | null;
+  muteUntil: string | null;
+  streamEnabled: boolean;
+  chatEnabled: boolean;
+  announcementEnabled: boolean;
+  /**
+   * True when the community has at least one active livestream right now.
+   * Always false until stream-service ships; wire to stream-service gRPC in Phase 2.
+   */
+  isLive: boolean;
   /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
   moderationStatus: CommunityModerationStatus;
   createdAt: string;
   updatedAt: string;
+  lastActivity: CommunityLastActivity;
 };
 
 /** Per-user mute config for a community. Returned by `GET /:id/mute`. */
@@ -58,6 +69,9 @@ export type CommunityMuteData = {
   communityId: string;
   /** null = indefinite mute. */
   mutedUntil: string | null;
+  streamEnabled: boolean;
+  chatEnabled: boolean;
+  announcementEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -73,12 +87,11 @@ export type CommunityCategoryData = {
   name: string;
   slug: string;
 };
-/** Community-chat last-message preview for the list/discover screens. */
-export type CommunityLastMessageActivity = {
-  username: string;
-  message: string;
-  dateTime: number /* epoch ms */;
-};
+export type CommunityLastActivity =
+  | { type: "message"; username: string; preview: string; dateTime: number }
+  | { type: "join"; username: string; preview: string; dateTime: number }
+  | { type: "removal"; username: string; preview: string; dateTime: number }
+  | { type: "created"; username: null; preview: string; dateTime: number };
 export type AdminCategoryData = {
   id: string;
   name: string;
@@ -115,20 +128,32 @@ export type CommunityListItem = {
   /** Nested media object for the avatar (additive; mirrors avatarUrl). */
   avatar: MediaObject;
   myRole: CommunityMemberRole;
+  /** True when the caller is an active member of this community. Always true for listMine results. */
+  isJoined: boolean;
   /** Latest activity (latest community message, else createdAt), epoch milliseconds. */
   lastActivityAt: number;
   /** Unread community-chat messages for the caller (member-only); 0 otherwise. */
   unreadMessageCount: number;
-  /** Last-message preview (member-only); null when none or non-member. */
-  lastMessageActivity: CommunityLastMessageActivity | null;
+  /** Last activity for this community (denormalized). */
+  lastActivity: CommunityLastActivity;
   /** True when the caller has an active mute-setting row for this community. */
-  myIsMuted: boolean;
+  isMuted: boolean;
+  /** ISO-8601; null when not muted or muted indefinitely. */
+  muteUntil: string | null;
+  streamEnabled: boolean;
+  chatEnabled: boolean;
+  announcementEnabled: boolean;
+  /** True when the community has at least one active livestream right now. */
+  isLive: boolean;
 };
 
 /**
  * A public community surfaced by discovery/browse. The caller is, by
  * definition, not a member — so there is no `myRole`. Includes description and
  * category to render browse cards.
+ *
+ * Exception: when used by the /communities/mine search alias (includeJoined=true),
+ * results may include communities the caller already belongs to — `isJoined` reflects that.
  */
 export type CommunityDiscoverItem = {
   id: string;
@@ -155,10 +180,19 @@ export type CommunityDiscoverItem = {
    */
   unreadMessageCount?: number;
   /**
-   * Last-message preview (member-only). Only populated by the /communities/mine
+   * Last activity for this community. Only populated by the /communities/mine
    * search mode; absent on the public discover alias.
    */
-  lastMessageActivity?: CommunityLastMessageActivity | null;
+  lastActivity?: CommunityLastActivity;
+  /** True when the caller is an active member of this community. */
+  isJoined: boolean;
+  isMuted: boolean;
+  muteUntil: string | null;
+  streamEnabled: boolean;
+  chatEnabled: boolean;
+  announcementEnabled: boolean;
+  /** True when the community has at least one active livestream right now. */
+  isLive: boolean;
 };
 
 /** A single community member row returned by the member-listing endpoint. */

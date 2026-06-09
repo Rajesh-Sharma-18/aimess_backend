@@ -65,6 +65,9 @@ model Community {
   // timestamp (denormalized from chat-service via the community.activity event),
   // initialized to createdAt so message-less communities still sort by age.
   lastActivityAt DateTime       @default(now())
+  lastActivityType     String?
+  lastActivityPreview  String?
+  lastActivityUsername String?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   // Admin moderation state. DISTINCT from `deletedAt`: moderationStatus is an

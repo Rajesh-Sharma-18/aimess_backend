@@ -55,6 +55,8 @@ const envSchema = z.object({
   /** Proxy hops to trust for rate limiting IP detection (0 = no proxy, 1+ = trust X-Forwarded-For). */
   TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(0),
 
+  CORS_ALLOWED_ORIGINS: z.string().default(""),
+
   /**
    * Google OAuth 2.0 client IDs (Google Cloud Console → Credentials), one per
    * mobile platform. Both are passed to `google-auth-library` as the accepted

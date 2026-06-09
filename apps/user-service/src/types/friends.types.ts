@@ -20,4 +20,6 @@ export type FriendListItem = {
 export type FriendsListResult = {
   friends: FriendListItem[];
   nextCursor: string | null;
+  /** Total number of accepted friends for the caller (not just this page). */
+  totalCount: number;
 };

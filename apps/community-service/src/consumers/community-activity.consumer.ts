@@ -19,7 +19,13 @@ const PREFETCH = 10;
 
 interface CommunityActivityMessage {
   type: string;
-  data: { communityId: string; lastMessageAt: string; lastMessageId: string };
+  data: {
+    communityId: string;
+    lastMessageAt: string;
+    lastMessageId: string;
+    senderUsername?: string;
+    messagePreview?: string;
+  };
 }
 
 export async function startCommunityActivityConsumer(): Promise<void> {
@@ -53,9 +59,12 @@ export async function startCommunityActivityConsumer(): Promise<void> {
         if (parsed.type === ACTIVITY_EVENT) {
           const at = new Date(parsed.data.lastMessageAt);
           if (parsed.data.communityId && !Number.isNaN(at.getTime())) {
-            await communityRepository.bumpLastActivityAt(
+            await communityRepository.updateLastActivity(
               parsed.data.communityId,
-              at
+              at,
+              "message",
+              parsed.data.messagePreview ?? "",
+              parsed.data.senderUsername ?? null
             );
           }
         } else {

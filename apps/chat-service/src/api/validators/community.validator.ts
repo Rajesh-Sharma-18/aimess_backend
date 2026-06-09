@@ -85,3 +85,12 @@ export const reportMessageSchema = z.object({
 export const searchRoomsSchema = z.object({
   query: z.string().min(1).max(100),
 });
+
+export const pinCommunityMessageSchema = z.object({
+  messageId: z.string().min(1),
+  communityId: z.string().min(1),
+});
+
+export const unpinCommunityMessageQuerySchema = z.object({
+  communityId: z.string().min(1),
+});

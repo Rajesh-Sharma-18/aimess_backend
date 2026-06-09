@@ -1282,6 +1282,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
           // can order by latest message. Uses req.communityId (the
           // community-service Community.id), NOT roomId (chat GeneralRoom.id).
           if (req.communityId) {
+            const messageText = saved.message ?? "";
             publishCommunityActivitySafe({
               communityId: req.communityId,
               lastMessageAt:
@@ -1289,6 +1290,11 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                   ? saved.createdAt.toISOString()
                   : new Date(sentAt).toISOString(),
               lastMessageId: saved.id,
+              senderUsername: senderName,
+              messagePreview:
+                messageText.length > 80
+                  ? messageText.slice(0, 80)
+                  : messageText,
             });
           }
 

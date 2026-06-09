@@ -207,6 +207,9 @@ export const communityRepository = {
       data: {
         ...data,
         memberCount: 1,
+        lastActivityType: "created",
+        lastActivityPreview: "Community created successfully",
+        lastActivityUsername: null,
       },
       include: { category: { select: { id: true, name: true } } },
     });
@@ -643,6 +646,10 @@ export const communityRepository = {
           memberCount: true,
           avatarUrl: true,
           lastActivityAt: true,
+          lastActivityType: true,
+          lastActivityPreview: true,
+          lastActivityUsername: true,
+          createdAt: true,
           moderationStatus: true,
           // At most one row per (communityId, userId) by unique constraint, so
           // no take needed (Prisma's mongodb provider doesn't support take on a
@@ -669,18 +676,21 @@ export const communityRepository = {
     return { rows, total };
   },
 
-  /**
-   * Forward-only bump of a community's `lastActivityAt` (denormalized from a
-   * chat-service community message). No-op if the stored value is already newer
-   * (out-of-order/duplicate event).
-   */
-  async bumpLastActivityAt(
+  async updateLastActivity(
     communityId: string,
-    activityAt: Date
+    activityAt: Date,
+    type: string,
+    preview: string,
+    username: string | null
   ): Promise<void> {
     await prisma.community.updateMany({
       where: { id: communityId, lastActivityAt: { lt: activityAt } },
-      data: { lastActivityAt: activityAt },
+      data: {
+        lastActivityAt: activityAt,
+        lastActivityType: type,
+        lastActivityPreview: preview,
+        lastActivityUsername: username,
+      },
     });
   },
 
@@ -823,6 +833,10 @@ export const communityRepository = {
           memberCount: true,
           avatarUrl: true,
           createdAt: true,
+          lastActivityAt: true,
+          lastActivityType: true,
+          lastActivityPreview: true,
+          lastActivityUsername: true,
           category: { select: { id: true, name: true } },
         },
       }),

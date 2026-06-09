@@ -3384,17 +3384,20 @@ export const openApiSchemas = {
         enum: ["ADMIN", "MODERATOR", "MEMBER"],
         description: "Caller's membership role; null if not a member.",
       },
-      myIsMuted: {
+      isMuted: {
         type: "boolean",
         description: "True if the caller has any mute row for this community.",
       },
-      myMuteUntil: {
+      muteUntil: {
         type: "string",
         format: "date-time",
         nullable: true,
         description:
-          "When the caller's mute expires; null = not muted OR muted indefinitely (use myIsMuted to disambiguate).",
+          "When the caller's mute expires; null = not muted OR muted indefinitely (use isMuted to disambiguate).",
       },
+      streamEnabled: { type: "boolean" },
+      chatEnabled: { type: "boolean" },
+      announcementEnabled: { type: "boolean" },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
@@ -3414,8 +3417,11 @@ export const openApiSchemas = {
       "coverUrl",
       "coverUrlExpiresIn",
       "myRole",
-      "myIsMuted",
-      "myMuteUntil",
+      "isMuted",
+      "muteUntil",
+      "streamEnabled",
+      "chatEnabled",
+      "announcementEnabled",
       "createdAt",
       "updatedAt",
     ],
@@ -3597,17 +3603,20 @@ export const openApiSchemas = {
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
       myRole: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
-      myIsMuted: {
+      isMuted: {
         type: "boolean",
         description: "True if the caller has any mute row for this community.",
       },
-      myMuteUntil: {
+      muteUntil: {
         type: "string",
         format: "date-time",
         nullable: true,
         description:
-          "When the caller's mute expires; null = not muted OR muted indefinitely (use myIsMuted to disambiguate).",
+          "When the caller's mute expires; null = not muted OR muted indefinitely (use isMuted to disambiguate).",
       },
+      streamEnabled: { type: "boolean" },
+      chatEnabled: { type: "boolean" },
+      announcementEnabled: { type: "boolean" },
       lastActivityAt: {
         type: "integer",
         format: "int64",
@@ -3637,8 +3646,11 @@ export const openApiSchemas = {
       "avatarUrl",
       "avatarUrlExpiresIn",
       "myRole",
-      "myIsMuted",
-      "myMuteUntil",
+      "isMuted",
+      "muteUntil",
+      "streamEnabled",
+      "chatEnabled",
+      "announcementEnabled",
       "lastActivityAt",
       "unreadMessageCount",
       "lastMessageActivity",
@@ -3728,18 +3740,21 @@ export const openApiSchemas = {
         description:
           "Latest community-chat message preview (member-only). Only present via GET /communities/mine search mode; absent on the public /communities/discover alias.",
       },
-      myIsMuted: {
+      isMuted: {
         type: "boolean",
         description:
           "True if the caller has any mute row for this community. Discovered communities are ones the caller is not an active member of, so this is normally false (present for parity with the other community DTOs).",
       },
-      myMuteUntil: {
+      muteUntil: {
         type: "string",
         format: "date-time",
         nullable: true,
         description:
           "When the caller's mute expires; null = not muted OR muted indefinitely.",
       },
+      streamEnabled: { type: "boolean" },
+      chatEnabled: { type: "boolean" },
+      announcementEnabled: { type: "boolean" },
     },
     required: [
       "id",
@@ -3752,8 +3767,11 @@ export const openApiSchemas = {
       "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
-      "myIsMuted",
-      "myMuteUntil",
+      "isMuted",
+      "muteUntil",
+      "streamEnabled",
+      "chatEnabled",
+      "announcementEnabled",
       "createdAt",
     ],
   },
@@ -4417,10 +4435,21 @@ export const openApiSchemas = {
         nullable: true,
         description: "null = muted indefinitely.",
       },
+      streamEnabled: { type: "boolean" },
+      chatEnabled: { type: "boolean" },
+      announcementEnabled: { type: "boolean" },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
-    required: ["communityId", "mutedUntil", "createdAt", "updatedAt"],
+    required: [
+      "communityId",
+      "mutedUntil",
+      "streamEnabled",
+      "chatEnabled",
+      "announcementEnabled",
+      "createdAt",
+      "updatedAt",
+    ],
   },
   SetMuteRequest: {
     type: "object",

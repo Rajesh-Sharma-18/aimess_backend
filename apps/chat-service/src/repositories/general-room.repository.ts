@@ -131,6 +131,19 @@ export class GeneralRoomRepository {
     });
   }
 
+  async incPinnedCount(
+    roomId: string,
+    inc: number
+  ): Promise<GeneralRoom | null> {
+    return this.prisma.generalRoom.update({
+      where: { id: roomId },
+      data: {
+        pinnedCount: { increment: inc },
+        ...(inc > 0 ? { lastPinnedAt: new Date() } : {}),
+      },
+    });
+  }
+
   /** Soft-deactivate a community's chat room (driven by `community.deleted`). */
   async deactivateForCommunity(communityId: string): Promise<void> {
     await this.prisma.generalRoom.updateMany({

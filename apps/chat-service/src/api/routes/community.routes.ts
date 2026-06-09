@@ -10,7 +10,11 @@ import {
   mediaListQuerySchema,
   conversationQuerySchema,
 } from "../validators/query.validator.js";
-import { editCommunityMessageSchema } from "../validators/community.validator.js";
+import {
+  editCommunityMessageSchema,
+  pinCommunityMessageSchema,
+  unpinCommunityMessageQuerySchema,
+} from "../validators/community.validator.js";
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
 
@@ -70,6 +74,27 @@ export function createCommunityRoutes(
     validateBody(editCommunityMessageSchema),
     messageCtrl.editMessage
   );
+
+  // Pin a community message (MODERATOR+)
+  router.post(
+    "/rooms/:roomId/pins",
+    authenticate,
+    messageLimit,
+    validateBody(pinCommunityMessageSchema),
+    messageCtrl.pinMessage
+  );
+
+  // Unpin a community message (MODERATOR+)
+  router.delete(
+    "/rooms/:roomId/pins/:messageId",
+    authenticate,
+    messageLimit,
+    validateQuery(unpinCommunityMessageQuerySchema),
+    messageCtrl.unpinMessage
+  );
+
+  // List pinned messages (any authenticated user)
+  router.get("/rooms/:roomId/pins", authenticate, messageCtrl.getPins);
 
   return router;
 }

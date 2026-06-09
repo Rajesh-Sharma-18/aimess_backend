@@ -7,8 +7,8 @@ const OBJECT_ID_REGEX = /^[a-f0-9]{24}$/i;
 const nameSchema = z
   .string()
   .trim()
-  .min(3, "Name must be at least 3 characters")
-  .max(50, "Name must be at most 50 characters");
+  .min(3, "Community name must be at least 3 characters long.")
+  .max(50, "Community name cannot exceed 50 characters.");
 
 const handleSchema = z
   .string()
@@ -17,18 +17,18 @@ const handleSchema = z
   .pipe(
     z
       .string()
-      .min(3, "Handle must be at least 3 characters")
-      .max(32, "Handle must be at most 32 characters")
+      .min(3, "Community handle must be at least 3 characters long.")
+      .max(32, "Community handle cannot exceed 32 characters.")
       .regex(
         /^[a-z0-9_]+$/,
-        "Handle may only contain lowercase letters, numbers, and underscores"
+        "Community handle may only contain lowercase letters, numbers, and underscores."
       )
   );
 
 const descriptionSchema = z
   .string()
   .trim()
-  .max(500, "Description must be at most 500 characters");
+  .max(500, "Description cannot exceed 500 characters.");
 
 const categoryIdSchema = z
   .string()
@@ -144,18 +144,7 @@ export const myCommunitiesQuerySchema = z
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
     message: "Provide either before_ts or after_ts, not both",
     path: ["before_ts"],
-  })
-  .refine(
-    (q) =>
-      q.before_ts != null ||
-      q.after_ts != null ||
-      q.q != null ||
-      q.categoryId != null,
-    {
-      message:
-        "At least one filter or pagination parameter is required (before_ts, after_ts, q, or categoryId).",
-    }
-  );
+  });
 
 export type MyCommunitiesQuery = z.infer<typeof myCommunitiesQuerySchema>;
 
@@ -537,6 +526,35 @@ export const inviteLinkCodeParamsSchema = z.object({
     .regex(/^[A-Za-z0-9_-]+$/, "invalid code"),
 });
 export type InviteLinkCodeParams = z.infer<typeof inviteLinkCodeParamsSchema>;
+
+export const bulkSendInviteLinkSchema = z.object({
+  /**
+   * IDs of users who should receive the invite-link DM.
+   * Min 1, max 50 per request to keep fan-out bounded.
+   */
+  userIds: z
+    .array(
+      z
+        .string()
+        .trim()
+        .regex(
+          OBJECT_ID_REGEX,
+          "each userId must be a 24-character hex ObjectId"
+        )
+    )
+    .min(1, "At least one user ID is required")
+    .max(50, "At most 50 user IDs per request"),
+  /**
+   * Optional: reuse a specific invite link. When omitted the service fetches the
+   * first active link or creates one on the fly.
+   */
+  linkId: z
+    .string()
+    .trim()
+    .regex(OBJECT_ID_REGEX, "linkId must be a 24-character hex ObjectId")
+    .optional(),
+});
+export type BulkSendInviteLinkInput = z.infer<typeof bulkSendInviteLinkSchema>;
 
 // ---------------------------------------------------------------------------
 // Admin category CRUD

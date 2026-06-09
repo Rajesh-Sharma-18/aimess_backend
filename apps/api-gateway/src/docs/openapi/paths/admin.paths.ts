@@ -1505,11 +1505,11 @@ export const adminPaths = {
       tags: [adminTags.reports],
       summary: "Get report detail",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Full report detail for the View " +
-        "Report Details drawer: enriched reported/reporter users (with moderation signals), the " +
-        "reported target snapshot + deep link, typed `evidence[]` (media via signed short-TTL URLs; " +
-        "restricted CSAM/illegal items access-logged), `history[]` timeline, `relatedReports[]`, and " +
-        "`availableActions[]` (server-computed from status + RBAC). Requires `reports.read`.",
+        "**(Phase 1 — mock data behind the real contract)** Core report detail: enriched " +
+        "reported/reporter users (with moderation signals), the reported target snapshot + deep link, " +
+        "status/priority/resolution fields, and `availableActions[]` (server-computed from status + RBAC). " +
+        "Sub-resources are served by dedicated paginated sub-routes: evidence → `/evidence`, action " +
+        "history → `/history`, related reports → `/related`. Requires `reports.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -1524,6 +1524,129 @@ export const adminPaths = {
         "200": okRes(
           "Report detail",
           "#/components/schemas/AdminModerationReportDetail"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing reports.read"),
+        "404": errRes("Report not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/reports/{reportId}/evidence": {
+    get: {
+      tags: [adminTags.reports],
+      summary: "List report evidence",
+      description:
+        "**(Phase 1 — mock data behind the real contract)** Paginated list of evidence items " +
+        "attached to this report (media snapshots, screenshots, system logs, etc.). " +
+        "Requires `reports.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "reportId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+          description: "Public report id, e.g. RPT-2026-0001284.",
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": listRes(
+          "Evidence items",
+          "#/components/schemas/AdminModerationEvidence"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing reports.read"),
+        "404": errRes("Report not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/reports/{reportId}/history": {
+    get: {
+      tags: [adminTags.reports],
+      summary: "List report action history",
+      description:
+        "**(Phase 1 — mock data behind the real contract)** Paginated action/event history " +
+        "timeline for this report (admin actions, status changes, notes). " +
+        "Requires `reports.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "reportId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": listRes(
+          "History items",
+          "#/components/schemas/AdminModerationHistoryItem"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing reports.read"),
+        "404": errRes("Report not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/reports/{reportId}/related": {
+    get: {
+      tags: [adminTags.reports],
+      summary: "List related reports",
+      description:
+        "**(Phase 1 — mock data behind the real contract)** Paginated list of reports " +
+        "related to this one (same reported user or target). Requires `reports.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "reportId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": listRes(
+          "Related reports",
+          "#/components/schemas/AdminModerationRelatedReport"
         ),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing reports.read"),

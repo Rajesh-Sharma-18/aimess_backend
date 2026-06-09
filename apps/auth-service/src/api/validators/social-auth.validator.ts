@@ -16,7 +16,7 @@ export const appleLoginSchema = z.object({
     .string()
     .trim()
     .toLowerCase()
-    .email("Invalid email address")
+    .email("Please enter a valid email address.")
     .optional(),
   fullName: z.string().trim().min(1).max(100).optional(),
   fcmTokens: fcmTokensSchema.optional().default([]),

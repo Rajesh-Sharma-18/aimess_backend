@@ -120,3 +120,27 @@ export function publishCommunityStatusChangedForChatSafe(
     "community.status.changed (chat-sync)"
   );
 }
+
+export interface CommunityInviteLinkSharedForChat {
+  communityId: string;
+  communityName: string;
+  linkCode: string;
+  inviterId: string;
+  recipientId: string;
+  eventAt: string;
+}
+
+/**
+ * Tells chat-service to deliver a system DM containing the invite link to one
+ * recipient. Called once per userId from the bulk-send endpoint.
+ * Routed to `community.chat.sync.queue` so chat-service handles it directly.
+ */
+export function publishCommunityInviteLinkSharedForChatSafe(
+  data: CommunityInviteLinkSharedForChat
+): void {
+  publishSafe(
+    "community.invite_link_shared",
+    data,
+    "community.invite_link_shared (chat-sync)"
+  );
+}

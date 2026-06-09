@@ -9,6 +9,9 @@ import type {
   BulkResolveInput,
   DismissReportInput,
   ListReportsQueryInput,
+  ReportEvidenceQueryInput,
+  ReportHistoryQueryInput,
+  ReportRelatedQueryInput,
   ResolveReportInput,
 } from "../validators/index.js";
 import { HTTP_STATUS } from "@aimess/constants";
@@ -38,7 +41,7 @@ export const getReportDetails: RequestHandler = (req, res, next) => {
     try {
       // Narrowed by reportIdParamSchema on the route.
       const reportId = req.params.reportId as string;
-      const report = await moderationService.getReport(reportId);
+      const report = await moderationService.getReportCore(reportId);
       if (!report) throw new NotFoundError("REPORT_NOT_FOUND");
       res.status(HTTP_STATUS.OK).json({
         success: true,
@@ -132,6 +135,69 @@ export const bulkDismissReports: RequestHandler = (req, res, next) => {
         success: true,
         data: result,
       });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** GET /v1/moderation/reports/:reportId/evidence */
+export const getReportEvidence: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const reportId = req.params.reportId as string;
+      const query = req.query as unknown as ReportEvidenceQueryInput;
+      const result = await moderationService.listReportEvidence(
+        reportId,
+        query
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json({
+          success: true,
+          data: result.data,
+          pagination: result.pagination,
+        });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** GET /v1/moderation/reports/:reportId/history */
+export const getReportHistory: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const reportId = req.params.reportId as string;
+      const query = req.query as unknown as ReportHistoryQueryInput;
+      const result = await moderationService.listReportHistory(reportId, query);
+      res
+        .status(HTTP_STATUS.OK)
+        .json({
+          success: true,
+          data: result.data,
+          pagination: result.pagination,
+        });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** GET /v1/moderation/reports/:reportId/related */
+export const getReportRelated: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const reportId = req.params.reportId as string;
+      const query = req.query as unknown as ReportRelatedQueryInput;
+      const result = await moderationService.listReportRelated(reportId, query);
+      res
+        .status(HTTP_STATUS.OK)
+        .json({
+          success: true,
+          data: result.data,
+          pagination: result.pagination,
+        });
     } catch (error) {
       next(error);
     }

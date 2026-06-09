@@ -19,6 +19,7 @@ import { GroupMessageRepository } from "./repositories/group-message.repository.
 import { GroupMemberRepository } from "./repositories/group-member.repository.js";
 import { GroupInviteLinkRepository } from "./repositories/group-invite-link.repository.js";
 import { GroupMessagePinRepository } from "./repositories/group-message-pin.repository.js";
+import { CommunityMessagePinRepository } from "./repositories/community-message-pin.repository.js";
 import { GeneralRoomRepository } from "./repositories/general-room.repository.js";
 import { GeneralRoomMessageRepository } from "./repositories/general-room-message.repository.js";
 import { RoomMemberRepository } from "./repositories/room-member.repository.js";
@@ -38,6 +39,7 @@ import { GroupMessageService } from "./services/group-message.service.js";
 import { GroupMemberService } from "./services/group-member.service.js";
 import { GroupInviteLinkService } from "./services/group-invite-link.service.js";
 import { GroupPinService } from "./services/group-pin.service.js";
+import { CommunityPinService } from "./services/community-pin.service.js";
 import { NotificationService } from "./services/notification.service.js";
 import { CommunityRoomService } from "./services/community-room.service.js";
 import { CommunityMessageService } from "./services/community-message.service.js";
@@ -273,6 +275,7 @@ const startServer = async () => {
     const groupMemberRepo = new GroupMemberRepository(prisma);
     const groupInviteLinkRepo = new GroupInviteLinkRepository(prisma);
     const groupMessagePinRepo = new GroupMessagePinRepository(prisma);
+    const communityMessagePinRepo = new CommunityMessagePinRepository(prisma);
     const generalRoomRepo = new GeneralRoomRepository(prisma);
     const generalRoomMessageRepo = new GeneralRoomMessageRepository(prisma);
     const roomMemberRepo = new RoomMemberRepository(prisma);
@@ -372,6 +375,13 @@ const startServer = async () => {
       userSnapshotService
     );
 
+    const communityPinService = new CommunityPinService(
+      communityMessagePinRepo,
+      generalRoomMessageRepo,
+      generalRoomRepo,
+      roomMemberRepo
+    );
+
     const webRtcConfigService = new WebRtcConfigService();
     const presenceService = new PresenceService(cacheRepo, redis);
 
@@ -419,6 +429,7 @@ const startServer = async () => {
       communityCtrl: new CommunityController(communityRoomService),
       communityMessageCtrl: new CommunityMessageController(
         communityMessageService,
+        communityPinService,
         redis
       ),
       mediaCtrl: new MediaController(),

@@ -13,6 +13,9 @@ export {
   dismissReport,
   bulkResolveReports,
   bulkDismissReports,
+  getReportEvidence,
+  getReportHistory,
+  getReportRelated,
 } from "./moderation.controller.js";
 export {
   listLivestreams,

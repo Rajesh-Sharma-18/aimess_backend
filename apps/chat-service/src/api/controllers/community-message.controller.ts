@@ -10,10 +10,12 @@ import {
   buildCursorResponse,
 } from "../../lib/pagination.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
+import type { CommunityPinService } from "../../services/community-pin.service.js";
 
 export class CommunityMessageController {
   constructor(
     private readonly service: CommunityMessageService,
+    private readonly pinService: CommunityPinService,
     private readonly redis: Redis | Cluster
   ) {}
 
@@ -186,5 +188,73 @@ export class CommunityMessageController {
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+  });
+
+  pinMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { messageId, communityId } = req.body as {
+      messageId: string;
+      communityId: string;
+    };
+    const result = await this.pinService.pin({
+      roomId,
+      messageId,
+      userId,
+      communityId,
+    });
+    await this.redis.publish(
+      `community:${communityId}`,
+      JSON.stringify({
+        event: "community:message:pinned",
+        data: {
+          roomId,
+          communityId,
+          pin: result.pin,
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_PINNED", req.locale)));
+  });
+
+  unpinMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const communityId = req.query.communityId as string;
+    const result = await this.pinService.unpin({ roomId, messageId, userId });
+    await this.redis.publish(
+      `community:${communityId}`,
+      JSON.stringify({
+        event: "community:message:unpinned",
+        data: {
+          roomId,
+          communityId,
+          messageId,
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_UNPINNED", req.locale)));
+  });
+
+  getPins = asyncHandler(async (req: Request, res: Response) => {
+    const roomId = req.params.roomId as string;
+    const cursor = req.query.cursor as string | undefined;
+    const limit = Number(req.query.limit) || 20;
+    const pins = await this.pinService.list(roomId, { limit, cursor });
+    const paginated = buildCursorResponse(
+      pins as unknown as Record<string, unknown>[],
+      limit,
+      "pinnedAt"
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(paginated, t("CHAT_PINS_FETCHED", req.locale)));
   });
 }

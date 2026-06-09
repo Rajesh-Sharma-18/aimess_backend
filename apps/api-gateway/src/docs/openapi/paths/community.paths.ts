@@ -3966,6 +3966,119 @@ export const communityPaths = {
       },
     },
   },
+  "/communities/{id}/invite-links/bulk-send": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk-share an invite link via system DMs",
+      description:
+        "MODERATOR/ADMIN only. Resolves or auto-creates one active invite link for this community, then fires a system DM to each unique recipient via chat-service (RabbitMQ fan-out). " +
+        "The caller is automatically excluded from the recipient list. " +
+        "Pass `linkId` to reuse a specific link; omit to auto-pick the first active link (or create one if none exists). " +
+        "Recipients receive a `SYSTEM` / `COMMUNITY_INVITE` message in their private conversation with the inviter.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["userIds"],
+              properties: {
+                userIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  minItems: 1,
+                  maxItems: 50,
+                  description:
+                    "List of user IDs to send the invite link to (max 50 per request).",
+                },
+                linkId: {
+                  type: "string",
+                  description:
+                    "Optional. Reuse this specific invite link. If omitted, the first active link is used (or a new one is created).",
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description:
+            "Invite link DMs queued. `queued` is the number of recipients notified; `skipped` is the count excluded (caller excluded themselves).",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        type: "object",
+                        properties: {
+                          link: {
+                            $ref: "#/components/schemas/CommunityInviteLinkData",
+                          },
+                          queued: {
+                            type: "integer",
+                            description: "Number of system DMs enqueued.",
+                          },
+                          skipped: {
+                            type: "integer",
+                            description:
+                              "Number of userIds skipped (caller sent to themselves, duplicates).",
+                          },
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description:
+            "Validation error — userIds is empty or linkId is invalid",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Caller lacks MODERATOR rank, community is suspended, or specified link is inactive",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community or specified invite link not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+
   "/communities/invite-links/{code}/redeem": {
     post: {
       tags: ["Communities"],

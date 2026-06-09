@@ -291,6 +291,8 @@ model GeneralRoom {
   lastMessageAt    DateTime?
   lastMessage      Json?
   listPinedMessage Json      @default("[]")
+  pinnedCount      Int       @default(0)
+  lastPinnedAt     DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -482,4 +484,24 @@ model PrivateMessageReport {
   @@index([status, createdAt(sort: Desc)])
   @@index([reportedUserId])
   @@map("private_message_reports")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityMessagePin
+// -----------------------------------------------------------------------------
+model CommunityMessagePin {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomId            String
+  messageId         String   @db.ObjectId
+  pinnedBy          String
+  pinnedAt          DateTime @default(now())
+  messageCreatedAt  DateTime
+  senderId          String
+  senderDisplayName String   @default("")
+  senderAvatar      String   @default("")
+  contentPinned     Json     @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+
+  @@unique([roomId, messageId])
+  @@index([roomId, pinnedAt(sort: Desc)])
+  @@map("community_message_pins")
 }
