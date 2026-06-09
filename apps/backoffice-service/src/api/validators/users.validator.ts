@@ -60,7 +60,7 @@ const dateOnly = z
     if (!day || Number.isNaN(new Date(`${day}T00:00:00.000Z`).getTime())) {
       ctx.addIssue({
         code: "custom",
-        message: "Invalid date format. Expected YYYY-MM-DD",
+        message: "Please enter a valid date in YYYY-MM-DD format.",
       });
       return z.NEVER;
     }

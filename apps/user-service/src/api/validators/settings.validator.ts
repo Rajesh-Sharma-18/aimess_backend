@@ -34,7 +34,7 @@ const liveStreamQualitySchema = z.enum([
   "DATA_SAVER_480P",
 ]);
 
-const uuidSchema = z.string().uuid("Invalid user ID format.");
+const uuidSchema = z.string().uuid("Please provide a valid user ID.");
 
 // "HH:mm" 24-hour clock, e.g. "22:00".
 const timeOfDaySchema = z

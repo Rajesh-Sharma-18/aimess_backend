@@ -722,7 +722,7 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Get a community",
       description:
-        "Returns the community with its category, member count, your role (`myRole`, null if not a member), and presigned avatar/cover URLs.",
+        "Returns the community with its category, member count, your role (`role`, null if not a member), and presigned avatar/cover URLs.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

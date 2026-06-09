@@ -53,6 +53,7 @@ export const authService = {
       user: {
         userId: user.id,
         account: user.account,
+        role: user.role,
         createdAt: user.createdAt.toISOString(),
       },
       tokens,
@@ -113,6 +114,7 @@ export const authService = {
     return {
       tokens,
       isProfileCompleted: user.isProfileCompleted,
+      role: user.role,
     };
   },
 };

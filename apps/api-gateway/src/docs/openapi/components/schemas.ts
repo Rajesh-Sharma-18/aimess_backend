@@ -3378,7 +3378,7 @@ export const openApiSchemas = {
       },
       coverUrlExpiresIn: { type: "integer", nullable: true, example: 3600 },
       cover: { $ref: "#/components/schemas/MediaObject" },
-      myRole: {
+      role: {
         type: "string",
         nullable: true,
         enum: ["ADMIN", "MODERATOR", "MEMBER"],
@@ -3416,7 +3416,7 @@ export const openApiSchemas = {
       "avatarUrlExpiresIn",
       "coverUrl",
       "coverUrlExpiresIn",
-      "myRole",
+      "role",
       "isMuted",
       "muteUntil",
       "streamEnabled",
@@ -3602,7 +3602,7 @@ export const openApiSchemas = {
       avatarUrl: { type: "string", format: "uri", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
-      myRole: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+      role: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
       isMuted: {
         type: "boolean",
         description: "True if the caller has any mute row for this community.",
@@ -3645,7 +3645,7 @@ export const openApiSchemas = {
       "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
-      "myRole",
+      "role",
       "isMuted",
       "muteUntil",
       "streamEnabled",

@@ -42,7 +42,7 @@ export type CommunityData = {
   /** Nested media object for the cover (additive; mirrors coverUrl). */
   cover: MediaObject;
   /** Caller's membership role, or null if not a member. */
-  myRole: CommunityMemberRole | null;
+  role: CommunityMemberRole | null;
   /** True when the caller is an active member of this community. */
   isJoined: boolean;
   /** True if the caller has a mute row for this community (any state). */
@@ -127,7 +127,7 @@ export type CommunityListItem = {
   avatarUrlExpiresIn: number | null;
   /** Nested media object for the avatar (additive; mirrors avatarUrl). */
   avatar: MediaObject;
-  myRole: CommunityMemberRole;
+  role: CommunityMemberRole;
   /** True when the caller is an active member of this community. Always true for listMine results. */
   isJoined: boolean;
   /** Latest activity (latest community message, else createdAt), epoch milliseconds. */
@@ -149,7 +149,7 @@ export type CommunityListItem = {
 
 /**
  * A public community surfaced by discovery/browse. The caller is, by
- * definition, not a member — so there is no `myRole`. Includes description and
+ * definition, not a member — so there is no `role`. Includes description and
  * category to render browse cards.
  *
  * Exception: when used by the /communities/mine search alias (includeJoined=true),
