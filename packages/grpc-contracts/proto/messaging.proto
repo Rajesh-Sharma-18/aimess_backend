@@ -367,16 +367,16 @@ message CatchupRoomResponse {
 
 // ---- Admin group RPCs -------------------------------------------------------
 
-message AdminListGroupsRequest {
-  string search       = 1;
-  string status       = 2;
-  string created_from = 3;
-  string created_to   = 4;
-  string sort_field   = 5;
-  string sort_dir     = 6;
-  int32  page         = 7;
-  int32  limit        = 8;
-}
+// message AdminListGroupsRequest {
+//  string search       = 1;
+//  string status       = 2;
+//  string created_from = 3;
+//  string created_to   = 4;
+//  string sort_field   = 5;
+//  string sort_dir     = 6;
+//  int32  page         = 7;
+//  int32  limit        = 8;
+// }
 
 message AdminGroupRow {
   string room_id         = 1;
