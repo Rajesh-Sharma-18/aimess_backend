@@ -2,7 +2,11 @@ import cors, { type CorsOptions } from "cors";
 import express, { type Express } from "express";
 import helmet from "helmet";
 
-import { env, getCorsAllowedOrigins } from "./config/env.js";
+import {
+  env,
+  getCorsAllowedHeaders,
+  getCorsAllowedOrigins,
+} from "./config/env.js";
 import { setupAsyncApiDocs } from "./docs/asyncapi.js";
 import { setupSwagger } from "./docs/swagger.js";
 import { errorHandler } from "./middleware/error-handler.js";
@@ -14,6 +18,7 @@ import { healthRouter } from "./routes/health.routes.js";
 import type { MessagingClient } from "./grpc/clients/messaging.client.js";
 
 const allowedOrigins = getCorsAllowedOrigins();
+const allowedHeaders = getCorsAllowedHeaders();
 
 const corsOptions = {
   origin: (
@@ -37,7 +42,9 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  // Driven by CORS_ALLOWED_HEADERS (defaults include `x-lang`). Every custom
+  // header the browser sends must be listed here, or the preflight is rejected.
+  allowedHeaders,
 } satisfies CorsOptions;
 
 export function createApp(messagingClient: MessagingClient): Express {

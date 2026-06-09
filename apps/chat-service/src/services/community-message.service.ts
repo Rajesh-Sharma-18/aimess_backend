@@ -277,6 +277,61 @@ export class CommunityMessageService {
   }
 
   /**
+   * Timestamp-keyset page (before_ts / after_ts). Over-fetches one extra row so
+   * `hasMore` is exact; `nextCursor` is the boundary createdAt as epoch-ms.
+   */
+  async getMessagesTimeline(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<{
+    items: GeneralRoomMessage[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const rows = await this.messageRepo.findByRoomIdTimeline({
+      roomId: params.roomId,
+      userId: params.userId,
+      direction: params.direction,
+      ts: params.ts,
+      limit: params.limit,
+    });
+
+    const hasMore = rows.length > params.limit;
+    const items = rows.slice(0, params.limit);
+    const last = items[items.length - 1];
+    const nextCursor =
+      hasMore && last ? String(last.createdAt.getTime()) : null;
+
+    return { items, hasMore, nextCursor };
+  }
+
+  /**
+   * Jump-to-message window: resolves the anchor's createdAt, then fetches a
+   * window of `limit` messages centered around it.
+   */
+  async getMessagesAround(params: {
+    roomId: string;
+    userId: string;
+    messageId: string;
+    limit: number;
+  }): Promise<{ items: GeneralRoomMessage[] }> {
+    const anchor = await this.messageRepo.findById(params.messageId);
+    if (!anchor) {
+      return { items: [] };
+    }
+    const items = await this.messageRepo.findAroundDate({
+      roomId: params.roomId,
+      userId: params.userId,
+      anchorDate: anchor.createdAt,
+      limit: params.limit,
+    });
+    return { items };
+  }
+
+  /**
    * Paginated conversation page for a community room + mark-as-read side effect.
    * Enforces active membership first (same check as listMedia), fetches the
    * offset page (createdAt < timestamp, newest first), then advances the

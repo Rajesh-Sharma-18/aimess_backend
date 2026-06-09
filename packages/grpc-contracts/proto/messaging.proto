@@ -110,6 +110,8 @@ message SendMessageRequest {
   string           sender_name        = 10;
   string           sender_avatar      = 11;
   string           content_json       = 12;
+  // §5.1: client compose time (epoch ms), display-only; never overwrites server_ts.
+  int64            client_ts          = 13;
 }
 message SendMessageResponse {
   string message_id      = 1;

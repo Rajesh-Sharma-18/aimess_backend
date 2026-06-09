@@ -91,7 +91,7 @@ export function buildOpenApiDocument(
         "",
         "All paths below are relative to the selected server (e.g. `http://localhost:3000/api/v1`).",
         "",
-        "When **v2** is introduced, use `/docs/v2` — **v1** routes remain available at `/api/v1/...`.",
+        "All current routes are available at `/api/v1/...`.",
       ].join("\n"),
     },
     servers: uniqueServers.map((url, index) => ({

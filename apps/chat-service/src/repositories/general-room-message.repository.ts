@@ -84,6 +84,82 @@ export class GeneralRoomMessageRepository {
   }
 
   /**
+   * Timestamp-keyset page for community messages. Over-fetches by 1 so the
+   * caller can detect `hasMore` without a separate count query.
+   * `direction="before"` → createdAt <= ts, newest-first (the default load).
+   * `direction="after"`  → createdAt >= ts, oldest-first (upward scroll).
+   * Per-user deletedBy filtering is done in memory (Prisma/Mongo limitation).
+   */
+  async findByRoomIdTimeline(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<GeneralRoomMessage[]> {
+    const messages = await this.prisma.generalRoomMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        deletedForAll: false,
+        createdAt:
+          params.direction === "before"
+            ? { lte: params.ts }
+            : { gte: params.ts },
+      },
+      orderBy: {
+        createdAt: params.direction === "before" ? "desc" : "asc",
+      },
+      take: params.limit + 1,
+    });
+
+    return messages.filter((msg) => {
+      const deletedBy = (msg.deletedBy ?? []) as string[];
+      return !deletedBy.includes(params.userId);
+    });
+  }
+
+  /**
+   * Jump-to-message window for community rooms (no sequenceNumber, anchors on
+   * createdAt). Fetches ~half the limit on each side of the anchor message.
+   */
+  async findAroundDate(params: {
+    roomId: string;
+    userId: string;
+    anchorDate: Date;
+    limit: number;
+  }): Promise<GeneralRoomMessage[]> {
+    const half = Math.floor(params.limit / 2);
+
+    const [older, newer] = await Promise.all([
+      // anchor-inclusive older half (desc → reversed to asc before merge)
+      this.prisma.generalRoomMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          deletedForAll: false,
+          createdAt: { lte: params.anchorDate },
+        },
+        orderBy: { createdAt: "desc" },
+        take: half + 1,
+      }),
+      // strictly newer half
+      this.prisma.generalRoomMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          deletedForAll: false,
+          createdAt: { gt: params.anchorDate },
+        },
+        orderBy: { createdAt: "asc" },
+        take: half,
+      }),
+    ]);
+
+    return [...older.reverse(), ...newer].filter((msg) => {
+      const deletedBy = (msg.deletedBy ?? []) as string[];
+      return !deletedBy.includes(params.userId);
+    });
+  }
+
+  /**
    * Mongo `$match` for a community conversation page: not deleted-for-all, older
    * than `beforeMs`, and not deleted-for-me by this user. `deletedBy` is a Json
    * array (not a Prisma scalar list), so the per-user exclusion can't use the typed

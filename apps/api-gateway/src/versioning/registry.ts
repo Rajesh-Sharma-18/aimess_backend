@@ -50,6 +50,18 @@ if (env.CHAT_SERVICE_URL) {
   });
 }
 
+if (env.NOTIFICATION_SERVICE_URL) {
+  // FCM/APNs device-token registration. Public `/api/v1/devices` proxies to
+  // notifications-service `/v1/devices` (register/upsert) + `/v1/devices/:token`
+  // (unregister on logout).
+  v1Services.push({
+    segment: "devices",
+    target: env.NOTIFICATION_SERVICE_URL,
+    downstreamPrefix: "/v1/devices",
+    swaggerTag: "Devices",
+  });
+}
+
 const servicesByVersion: Record<ApiVersion, VersionedServiceConfig[]> = {
   v1: v1Services,
 };

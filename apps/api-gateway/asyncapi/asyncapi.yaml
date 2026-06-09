@@ -24,6 +24,18 @@ info:
     Each AsyncAPI **channel** maps to a Socket.IO **namespace**; each
     **message** maps to a Socket.IO **event** (its `name` is the wire event).
 
+    **Contract highlights.**
+    - `message:new`, `message:edited`, and forwards all emit the **same canonical
+      `ChatMessage`** (field names match REST `ChatMessage`) plus legacy V1 aliases —
+      the client uses one mapper.
+    - `messageType` is UPPER-CASE on every surface; `contentType` is a same-value
+      V1 alias.
+    - Reactions broadcast as grouped `ChatReactionGroup[]`; presence timestamps are
+      epoch-ms integers; `message:delete` carries `conversationId` + `sequenceNumber`.
+    - Multi-device: `read_sync` clears unread across a user's own devices and
+      `pin:updated` syncs the pinned banner.
+    - Handshake query optionally carries `platform` / `clientType` (recorded in presence).
+
     Source of truth: `apps/api-gateway/src/sockets/` and `docs/SOCKET_EVENTS.md`.
   contact:
     name: AIMess Backend
@@ -34,12 +46,14 @@ info:
       description: Many-member community chat
     - name: notify
       description: In-app notification feed + unread badge
+    - name: multi-device
+      description: "Own-device sync: read_sync (unread high-water mark) + presence"
 
 defaultContentType: application/json
 
 servers:
   local:
-    host: localhost:8000
+    host: 127.0.0.1:3000
     protocol: ws
     pathname: /socket.io/
     description: Local development gateway.
@@ -98,6 +112,8 @@ channels:
         { $ref: "#/components/messages/MessageDeliveredReceipt" }
       messageReaction: { $ref: "#/components/messages/MessageReaction" }
       messageDelete: { $ref: "#/components/messages/MessageDelete" }
+      readSync: { $ref: "#/components/messages/ReadSync" }
+      pinUpdated: { $ref: "#/components/messages/PinUpdated" }
       typingStartBroadcast:
         { $ref: "#/components/messages/TypingStartBroadcast" }
       typingStopBroadcast: { $ref: "#/components/messages/TypingStopBroadcast" }
@@ -333,7 +349,7 @@ operations:
   chat.onMessageRead:
     action: receive
     channel: { $ref: "#/channels/chat" }
-    summary: "message:read — read receipt"
+    summary: "message:read — read receipt (private)"
     messages: [{ $ref: "#/channels/chat/messages/messageReadReceipt" }]
   chat.onMessageDelivered:
     action: receive
@@ -350,6 +366,16 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "message:delete — message deleted (also used for community deletes)"
     messages: [{ $ref: "#/channels/chat/messages/messageDelete" }]
+  chat.onReadSync:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "read_sync — §5.5 multi-device read high-water mark (own devices)"
+    messages: [{ $ref: "#/channels/chat/messages/readSync" }]
+  chat.onPinUpdated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "pin:updated — §2.5 pinned banner change"
+    messages: [{ $ref: "#/channels/chat/messages/pinUpdated" }]
   chat.onTypingStart:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -423,7 +449,7 @@ operations:
   community.onMessageNew:
     action: receive
     channel: { $ref: "#/channels/community" }
-    summary: "community:message:new"
+    summary: "community:message:new — new community message (canonical sender + content)"
     messages: [{ $ref: "#/channels/community/messages/communityMessageNew" }]
   community.onMemberJoined:
     action: receive
@@ -470,9 +496,16 @@ components:
       description: |
         JWT **access token** supplied on the Socket.IO handshake via
         `socket.handshake.auth.token` (preferred) or the
-        `Authorization: Bearer <token>` header. No anonymous sockets. On success
-        the socket carries `{ userId, sessionId }` derived from the token —
-        clients never send their own `userId`.
+        `Authorization: Bearer <token>` header. No anonymous sockets.
+
+        **Handshake query parameters (optional, `/chat` — recorded in presence):**
+        | Param        | Values                        | Example    |
+        |--------------|-------------------------------|------------|
+        | `platform`   | `ios` \| `android` \| `web`   | `ios`      |
+        | `clientType` | `mobile` \| `web` \| `desktop`| `mobile`   |
+
+        On success the socket carries `{ userId, sessionId }` derived from the
+        token — clients must never send their own `userId`.
 
   messages:
     # -------- shared ack envelope --------
@@ -606,6 +639,14 @@ components:
       name: "message:delete"
       title: "message:delete"
       payload: { $ref: "#/components/schemas/MessageDeletePayload" }
+    ReadSync:
+      name: "read_sync"
+      title: "read_sync (multi-device read high-water mark)"
+      payload: { $ref: "#/components/schemas/ReadSyncPayload" }
+    PinUpdated:
+      name: "pin:updated"
+      title: "pin:updated (pinned banner change)"
+      payload: { $ref: "#/components/schemas/PinUpdatedPayload" }
     TypingStartBroadcast:
       name: "typing:start"
       title: "typing:start (broadcast)"
@@ -742,6 +783,15 @@ components:
         width: { type: integer }
         height: { type: integer }
         durationMs: { type: integer }
+        blurhash:
+          {
+            type: string,
+            description: "§3.5: blur preview for image/video (instant aspect-ratio render).",
+          }
+        waveform:
+          type: array
+          items: { type: number }
+          description: "§3.5: voice-note amplitude samples (render bars pre-download)."
     Location:
       type: object
       properties:
@@ -758,6 +808,10 @@ components:
         userId: { type: string }
     MessageSendPayload:
       type: object
+      description: |
+        Message send payload (client → server). The server derives sender
+        identity from the authenticated socket — clients never stamp their own
+        `senderId`. `clientTs` (epoch ms) is the optional display-only compose time.
       properties:
         conversationId: { type: string }
         clientMessageId:
@@ -778,6 +832,11 @@ components:
         receiverId: { type: string }
         senderName: { type: string }
         senderAvatar: { type: string }
+        clientTs:
+          {
+            type: integer,
+            description: "§5.1: client compose time (epoch ms), display-only.",
+          }
       required: [conversationId, clientMessageId, contentType]
     ReadUpTo:
       type: object
@@ -791,6 +850,7 @@ components:
         messageId: { type: string }
         conversationId: { type: string }
         emoji: { type: string }
+        conversationType: { $ref: "#/components/schemas/ConversationType" }
       required: [messageId, conversationId, emoji]
     MessageReactionsGetPayload:
       type: object
@@ -874,23 +934,95 @@ components:
       required: [callId, candidate]
 
     # -------- chat receive payloads --------
-    MessageNewPayload:
+    QuoteData:
       type: object
+      description: "§9: canonical reply snapshot (survives parent eviction)."
+      nullable: true
       properties:
         messageId: { type: string }
-        conversationId: { type: string }
         senderId: { type: string }
+        senderName: { type: string }
+        messageType: { $ref: "#/components/schemas/ContentType" }
+        preview: { type: string }
+        isDeleted: { type: boolean }
+    ReactionGroup:
+      type: object
+      description: "§2.4: grouped reaction (selfReacted derived client-side from users[])."
+      properties:
+        emoji: { type: string }
+        count: { type: integer }
+        users:
+          type: array
+          items:
+            type: object
+            properties:
+              userId: { type: string }
+              displayName: { type: string }
+              avatar: { type: string }
+    MessageNewPayload:
+      type: object
+      description: |
+        Server → client broadcast for every new message (§1/§9 canonical
+        ChatMessage). Field names match the REST `ChatMessage` so the client uses
+        ONE mapper; the legacy V1 aliases (messageId, conversationId, contentType,
+        contentText, contentJson, sentAt) are kept for back-compat. The SAME shape
+        is emitted on `message:edited`.
+      properties:
+        # ── canonical (REST ChatMessage names) ──
+        id: { type: string, description: server id (== messageId). }
+        clientMessageId:
+          {
+            type: string,
+            description: "§2.1: echoed on the sender's own message for dedupe.",
+          }
+        roomId: { type: string }
+        conversationType: { type: string, enum: [PRIVATE, GROUP] }
+        senderId: { type: string }
+        senderName: { type: string }
+        senderAvatar: { type: string }
+        senderRole:
+          {
+            type: string,
+            description: "§2.2: ADMIN|MEMBER|… for groups; '' for private.",
+          }
+        receiverId: { type: string, description: private only; '' for groups. }
+        messageType: { $ref: "#/components/schemas/ContentType" }
+        content:
+          type: object
+          description: "structured body { text, files[], location, contact, sticker }."
+          additionalProperties: true
+        parentMessageId: { type: string }
+        quoteData: { $ref: "#/components/schemas/QuoteData" }
+        reactions:
+          type: array
+          items: { $ref: "#/components/schemas/ReactionGroup" }
+        isForwarded:
+          { type: boolean, description: present on forwarded messages. }
+        isDeleted: { type: boolean }
+        deletedType: { type: string, description: 'forEveryone | forMe | "".' }
+        editedAt: { type: integer, description: "epoch ms, 0 = never edited." }
+        clientTs:
+          {
+            type: integer,
+            description: "§5.1: client compose time (epoch ms), display-only.",
+          }
+        serverTs:
+          { type: integer, description: server-authoritative time (epoch ms). }
+        sequenceNumber:
+          {
+            type: integer,
+            description: per-room monotonic sequence (sole ordering key).,
+          }
+        # ── V1-compat aliases ──
+        messageId: { type: string }
+        conversationId: { type: string }
         contentType: { $ref: "#/components/schemas/ContentType" }
         contentText: { type: string }
         contentJson: { type: string }
-        sentAt: { type: integer, description: epoch ms (number in broadcast). }
-        sequenceNumber:
-          { type: integer, description: per-room monotonic sequence. }
-        isForwarded:
-          { type: boolean, description: present on forwarded messages. }
+        sentAt: { type: integer, description: epoch ms (== serverTs). }
         systemEvent:
           type: string
-          description: Set when contentType=SYSTEM.
+          description: Set when messageType=SYSTEM.
           enum:
             [
               GROUP_CREATED,
@@ -909,23 +1041,22 @@ components:
           additionalProperties: true
       required:
         [
-          messageId,
-          conversationId,
+          id,
+          roomId,
+          conversationType,
           senderId,
-          contentType,
-          sentAt,
+          messageType,
+          content,
+          serverTs,
           sequenceNumber,
         ]
     MessageEditedPayload:
-      type: object
-      properties:
-        messageId: { type: string }
-        conversationId: { type: string }
-        contentText: { type: string }
-        contentJson: { type: string }
-        editedAt: { type: integer, description: epoch ms. }
-        sequenceNumber: { type: integer }
-      required: [messageId, conversationId]
+      description: |
+        §9: emits the FULL canonical ChatMessage shape (identical to
+        MessageNewPayload), not a thin {contentText,contentJson}. A client
+        re-renders the edited bubble with the same mapper.
+      allOf:
+        - { $ref: "#/components/schemas/MessageNewPayload" }
     ListBumpLastMessage:
       type: object
       properties:
@@ -1000,10 +1131,38 @@ components:
       required: [roomId, events, hasMore, lastSeq]
     MessageReadReceiptPayload:
       type: object
+      description: Read receipt broadcast to the conversation room (private only).
       properties:
         conversationId: { type: string }
         readerId: { type: string }
         upToMessageId: { type: string }
+    ReadSyncPayload:
+      type: object
+      description: |
+        §5.5: multi-device read high-water mark. Delivered to the reader's OWN
+        devices (channel user:<readerId>) so every screen clears unread together.
+      properties:
+        conversationId: { type: string }
+        readerId: { type: string }
+        read_to_seq:
+          {
+            type: integer,
+            description: highest read sequenceNumber for this room.,
+          }
+        unreadCount: { type: integer }
+        conversationType: { type: string, enum: [PRIVATE, GROUP] }
+    PinUpdatedPayload:
+      type: object
+      description: "§2.5: pin/unpin banner broadcast to conv:<roomId>."
+      properties:
+        roomId: { type: string }
+        conversationId: { type: string }
+        messageId: { type: string }
+        action: { type: string, enum: [pinned, unpinned] }
+        pinnedBy: { type: string, description: present on action=pinned. }
+        unpinnedBy: { type: string, description: present on action=unpinned. }
+        pinnedAt: { type: integer, description: epoch ms (action=pinned). }
+        pinnedCount: { type: integer }
     MessageDeliveredReceiptPayload:
       type: object
       properties:
@@ -1013,26 +1172,35 @@ components:
         messageIds:
           type: array
           items: { type: string }
-    Reaction:
-      type: object
-      properties:
-        emoji: { type: string }
-        userId: { type: string }
     MessageReactionPayload:
       type: object
+      description: |
+        §2.4: emits the grouped ChatReactionGroup[] shape (emoji/count/users)
+        so the live reaction bar renders without a refetch. `selfReacted` is
+        intentionally omitted — derive it client-side from users[].userId.
       properties:
         messageId: { type: string }
         conversationId: { type: string }
         reactions:
           type: array
-          items: { $ref: "#/components/schemas/Reaction" }
+          items: { $ref: "#/components/schemas/ReactionGroup" }
     MessageDeletePayload:
       type: object
+      description: |
+        §2.3: self-describing tombstone. conversationId lets a client route the
+        delete even if the room isn't loaded; sequenceNumber locates the message.
       properties:
         messageId: { type: string }
+        conversationId: { type: string }
         type: { type: string, enum: [forEveryone, forMe] }
+        deletedType:
+          {
+            type: string,
+            description: "group/community: SELF_DELETE | ADMIN_DELETE.",
+          }
         deletedBy: { type: string }
-      required: [messageId, type, deletedBy]
+        sequenceNumber: { type: integer }
+      required: [messageId, conversationId, type, deletedBy]
     TypingBroadcastPayload:
       type: object
       properties:
@@ -1043,8 +1211,14 @@ components:
       properties:
         userId: { type: string }
         isOnline: { type: boolean }
-        lastActiveAt: { type: string }
-        lastSeen: { type: string }
+        # §2.7: epoch-ms INTEGERS (match REST ChatPresence.lastSeen), not strings.
+        lastActiveAt: { type: integer, description: epoch ms. }
+        lastSeen:
+          {
+            type: integer,
+            nullable: true,
+            description: "epoch ms; null while online.",
+          }
     CallIncomingPayload:
       type: object
       properties:
@@ -1098,18 +1272,32 @@ components:
       required: [roomId]
     CommunityMessageNewPayload:
       type: object
+      description: |
+        Server → client broadcast for every new community message. Sender
+        identity (senderName/senderAvatar) is resolved server-side; messageType
+        is UPPER-CASE (§1) with `contentType` as a same-value V1 alias.
       properties:
+        id: { type: string, description: server id (== messageId). }
         messageId: { type: string }
         communityId: { type: string }
         roomId: { type: string }
         senderId: { type: string }
         senderName: { type: string }
         senderAvatar: { type: string }
-        message: { type: string }
-        contentType: { type: string }
+        messageType: { $ref: "#/components/schemas/ContentType" }
+        content:
+          type: object
+          description: "structured body { text, files[] }."
+          additionalProperties: true
+        reactions:
+          type: array
+          items: { $ref: "#/components/schemas/ReactionGroup" }
+        message: { type: string, description: V1 alias for content.text. }
+        contentType: { $ref: "#/components/schemas/ContentType" }
         mediaKey: { type: string }
         clientMessageId: { type: string }
-        sentAt: { type: integer, description: epoch ms. }
+        serverTs: { type: integer, description: epoch ms. }
+        sentAt: { type: integer, description: epoch ms (== serverTs). }
     CommunityMemberDTO:
       type: object
       description: Member DTO forwarded verbatim from the Redis channel.

@@ -9,8 +9,6 @@ export function createApiRouter(messagingClient: MessagingClient): IRouter {
 
   apiRouter.use("/v1", createV1Router(messagingClient));
 
-  /** Reserved: mount `v2Router` at `/v2` when breaking changes ship. */
-
   return apiRouter;
 }
 

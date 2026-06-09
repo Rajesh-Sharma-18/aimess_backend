@@ -7,44 +7,36 @@ import type { Express, Request, Response } from "express";
 import { logger } from "@aimess/logger";
 
 /**
- * Serves the Socket.IO real-time contract (AsyncAPI 3.1) as a live, browsable
- * page — the WebSocket equivalent of the Swagger UI mounted at `/docs/v1`.
+ * Serves the Socket.IO real-time contract as a live, browsable page.
  *
- *   GET /docs/socket              → AsyncAPI React viewer (HTML)
- *   GET /docs/socket/asyncapi.yaml → the raw spec (served verbatim)
- *
- * The spec is read from `apps/api-gateway/asyncapi/asyncapi.yaml`. That folder
- * sits at the gateway root (outside `src/`), so the same relative path resolves
- * whether we run from `src/` (tsx) or `dist/` (built) — both are two levels
- * below the gateway root.
+ *     GET /docs/socket              → AsyncAPI React viewer
+ *     GET /docs/socket/asyncapi.yaml → raw spec
  */
 
-// src/docs/asyncapi.ts → ../../ = gateway root; dist/docs/asyncapi.js → ../../ = gateway root.
-const SPEC_PATH = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../asyncapi/asyncapi.yaml"
-);
+// src/docs/asyncapi.ts → ../../ = gateway root
+const GATEWAY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../");
 
-// Pinned versions of the standalone AsyncAPI React component (loaded from CDN;
-// the gateway disables CSP for the docs surface, same as Swagger UI).
+const SPEC_PATH = resolve(GATEWAY_ROOT, "asyncapi/asyncapi.yaml");
+
+// Pinned version of the standalone AsyncAPI React component (CDN).
 const REACT_COMPONENT_VERSION = "2";
 
-function loadSpec(): string | null {
+function loadSpec(path: string, label: string): string | null {
   try {
-    return readFileSync(SPEC_PATH, "utf8");
+    return readFileSync(path, "utf8");
   } catch (err) {
-    logger.warn(`AsyncAPI spec not found at ${SPEC_PATH}: ${String(err)}`);
+    logger.warn(`AsyncAPI ${label} spec not found at ${path}: ${String(err)}`);
     return null;
   }
 }
 
-function viewerHtml(): string {
+function viewerHtml(specUrl: string, title: string): string {
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AIMess Real-time API (Socket.IO)</title>
+    <title>${title}</title>
     <link
       rel="stylesheet"
       href="https://unpkg.com/@asyncapi/react-component@${REACT_COMPONENT_VERSION}/styles/default.min.css"
@@ -59,7 +51,7 @@ function viewerHtml(): string {
     <script>
       AsyncApiStandalone.render(
         {
-          schema: { url: "/docs/socket/asyncapi.yaml" },
+          schema: { url: "${specUrl}" },
           config: {
             show: { sidebar: true, errors: true },
             expand: { messageExamples: true },
@@ -73,11 +65,10 @@ function viewerHtml(): string {
 }
 
 export function setupAsyncApiDocs(app: Express): void {
-  // Raw spec — the viewer fetches this; also handy for tooling/imports.
   app.get(
     ["/docs/socket/asyncapi.yaml", "/docs/socket/asyncapi.yml"],
     (_req: Request, res: Response) => {
-      const spec = loadSpec();
+      const spec = loadSpec(SPEC_PATH, "socket");
       if (!spec) {
         res.status(404).json({ error: "ASYNCAPI_SPEC_NOT_FOUND" });
         return;
@@ -86,8 +77,14 @@ export function setupAsyncApiDocs(app: Express): void {
     }
   );
 
-  // Browsable viewer (HTML).
   app.get(["/docs/socket", "/docs/socket/"], (_req: Request, res: Response) => {
-    res.type("html").send(viewerHtml());
+    res
+      .type("html")
+      .send(
+        viewerHtml(
+          "/docs/socket/asyncapi.yaml",
+          "AIMess Real-time API (Socket.IO)"
+        )
+      );
   });
 }

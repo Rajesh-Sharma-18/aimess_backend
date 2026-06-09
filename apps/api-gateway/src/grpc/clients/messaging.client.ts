@@ -28,6 +28,8 @@ export interface SendMessageParams {
   receiverId?: string;
   senderName?: string;
   senderAvatar?: string;
+  /** §5.1: client compose time (epoch ms), display-only. */
+  clientTs?: number;
 }
 export interface SendMessageResult {
   messageId: string;
@@ -116,6 +118,8 @@ export interface SendReactionParams {
   conversationId: string;
   userId: string;
   emoji: string;
+  /** §2.4: route group reactions to the group collection (default private). */
+  conversationType?: string;
 }
 export interface SendReactionResult {
   messageId: string;
@@ -326,6 +330,7 @@ export function createMessagingClient(): MessagingClient {
         receiverId: p.receiverId ?? "",
         senderName: p.senderName ?? "",
         senderAvatar: p.senderAvatar ?? "",
+        clientTs: p.clientTs ?? 0,
         // int64 sequence_number arrives as a string (proto-loader longs:String);
         // coerce so the relayed ack matches the declared `number` type.
       }).then((r) => ({ ...r, sequenceNumber: Number(r.sequenceNumber) }));
@@ -438,13 +443,18 @@ export function createMessagingClient(): MessagingClient {
 
   const sendReactionBreaker = makeBreaker(
     "messaging.sendReaction",
-    (p: SendReactionParams) =>
-      call<unknown, SendReactionResult>("sendReaction", {
+    (p: SendReactionParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, SendReactionResult>("sendReaction", {
         messageId: p.messageId,
         conversationId: p.conversationId,
         userId: p.userId,
         emoji: p.emoji,
-      })
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+      });
+    }
   );
 
   const forwardMessageBreaker = makeBreaker(

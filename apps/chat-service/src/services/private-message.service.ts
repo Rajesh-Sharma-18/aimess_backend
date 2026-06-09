@@ -12,6 +12,11 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
+import {
+  normalizeMessageType,
+  buildCanonicalQuote,
+  groupStoredReactions,
+} from "../lib/chat-message.serializer.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -46,6 +51,8 @@ export class PrivateMessageService {
     messageType: string;
     parentMessageId?: string | null;
     clientMessageId?: string | null;
+    /** Client compose time (epoch ms) — display only; never overwrites serverTs. */
+    clientTs?: number | null;
   }): Promise<PrivateMessage> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
     if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
@@ -76,31 +83,40 @@ export class PrivateMessageService {
       senderId: params.senderId,
       receiverId: params.receiverId,
       content: params.content,
-      messageType: params.messageType || "TEXT",
+      messageType: normalizeMessageType(params.messageType),
       parentMessageId: params.parentMessageId || null,
       clientMessageId: params.clientMessageId ?? null,
+      // §5.1: persist the client compose time alongside (never instead of) the
+      // server createdAt, so the client can show its original send time offline.
+      ...(params.clientTs ? { clientInfo: { clientTs: params.clientTs } } : {}),
     };
 
-    // If reply, attach quote data
+    // If reply, attach the canonical quote snapshot (§1/§9):
+    // { messageId, senderId, senderName, messageType, preview, isDeleted }.
     if (params.parentMessageId) {
       const originalMsg = await this.messageRepo.findById(
         params.parentMessageId
       );
-      if (originalMsg?.content) {
+      if (originalMsg) {
         const originSenderId = originalMsg.senderId || "";
         const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
           [originSenderId],
           this.cacheRepo
         );
-        const senderSnap = snapshots.get(originSenderId) || {};
+        const senderSnap =
+          (snapshots.get(originSenderId) as Record<string, unknown>) || {};
         entity.quoteData = {
-          message:
-            (originalMsg.content as unknown as Record<string, unknown>)?.text ||
-            "",
+          messageId: originalMsg.id,
+          senderId: originSenderId,
           senderName:
-            ((senderSnap as Record<string, unknown>).displayName as string) ||
-            ((senderSnap as Record<string, unknown>).memberId as string) ||
+            (senderSnap.displayName as string) ||
+            (senderSnap.memberId as string) ||
             "",
+          messageType: normalizeMessageType(originalMsg.messageType),
+          preview:
+            ((originalMsg.content as Record<string, unknown> | null)
+              ?.text as string) || "",
+          isDeleted: Boolean(originalMsg.isDeleted),
         };
       }
     }
@@ -193,6 +209,65 @@ export class PrivateMessageService {
     return { items, hasMore, nextCursor };
   }
 
+  /**
+   * V2 §3.2: seq-keyset page. `nextCursor` is the boundary `sequenceNumber`
+   * (feed back as before_seq when paging older, after_seq when paging newer).
+   */
+  async getMessagesSeq(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    seq: number;
+    limit: number;
+  }): Promise<{
+    items: PrivateMessage[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const room = await this.roomRepo.findByRoomId(params.roomId, {
+      projection: { roomId: 1, deletedFor: 1 },
+    });
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    const rows = await this.messageRepo.findByRoomIdSeq({
+      userId: params.userId,
+      roomId: room.roomId,
+      direction: params.direction,
+      seq: params.seq,
+      limit: params.limit,
+    });
+    const hasMore = rows.length > params.limit;
+    const items = rows.slice(0, params.limit);
+    const last = items[items.length - 1];
+    const nextCursor = hasMore && last ? String(last.sequenceNumber) : null;
+    return { items, hasMore, nextCursor };
+  }
+
+  /**
+   * V2 §3.2: jump-to-message window centered on a message id (reply-tap, search
+   * navigation). Resolves the anchor's sequenceNumber, then fetches the window.
+   */
+  async getMessagesAround(params: {
+    roomId: string;
+    userId: string;
+    messageId: string;
+    limit: number;
+  }): Promise<{ items: PrivateMessage[]; anchorSeq: number }> {
+    const room = await this.roomRepo.findByRoomId(params.roomId, {
+      projection: { roomId: 1, deletedFor: 1 },
+    });
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const anchor = await this.messageRepo.findById(params.messageId);
+    if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const items = await this.messageRepo.findAroundSeq({
+      userId: params.userId,
+      roomId: room.roomId,
+      anchorSeq: anchor.sequenceNumber,
+      limit: params.limit,
+    });
+    return { items, anchorSeq: anchor.sequenceNumber };
+  }
+
   async searchMessages(params: {
     roomId: string;
     userId: string;
@@ -244,6 +319,18 @@ export class PrivateMessageService {
       userId: params.userId,
       upToMessageId: params.lastMessageId,
     });
+  }
+
+  /**
+   * Resolve a message's per-room `sequenceNumber` from its id (O(1) indexed PK
+   * lookup). Used by the read_sync fan-out to publish a `read_to_seq` high-water
+   * mark to the reader's other devices. Returns 0 if the message is missing.
+   */
+  async getMessageSequence(messageId: string): Promise<number> {
+    if (!messageId) return 0;
+    const msg = await this.messageRepo.findById(messageId);
+    const seq = (msg as { sequenceNumber?: number } | null)?.sequenceNumber;
+    return typeof seq === "number" ? seq : 0;
   }
 
   async deleteForMe(
@@ -564,15 +651,31 @@ export class PrivateMessageService {
     );
 
     return messages.map((message) => {
-      const snapshot = snapshots.get(message.senderId || "") || {};
+      const snapshot = (snapshots.get(message.senderId || "") || {}) as Record<
+        string,
+        unknown
+      >;
+      const row = message as unknown as Record<string, unknown>;
+      const displayName = (snapshot.displayName as string) || "";
+      const avatar = (snapshot.avatar as string) || "";
       return {
-        ...(message as unknown as Record<string, unknown>),
-        senderDisplayName:
-          (snapshot as Record<string, unknown>).displayName || "",
-        senderAvatar: (snapshot as Record<string, unknown>).avatar || "",
-        senderMemberId: (snapshot as Record<string, unknown>).memberId || "",
-        isDeletedUser:
-          (snapshot as Record<string, unknown>).isDeletedUser === true,
+        ...row,
+        senderDisplayName: displayName,
+        senderAvatar: avatar,
+        senderMemberId: (snapshot.memberId as string) || "",
+        isDeletedUser: snapshot.isDeletedUser === true,
+        // §1: additive canonical aliases so REST history can be read with the
+        // SAME mapper as the socket message:new (legacy fields kept untouched).
+        senderName: displayName,
+        conversationType: "PRIVATE",
+        messageType: normalizeMessageType(message.messageType),
+        quoteData: buildCanonicalQuote(row.quoteData),
+        reactionGroups: groupStoredReactions(row.reactions),
+        clientTs: Number(
+          (row.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+        ),
+        serverTs:
+          message.createdAt instanceof Date ? message.createdAt.getTime() : 0,
       };
     });
   }

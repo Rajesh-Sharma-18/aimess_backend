@@ -39,7 +39,7 @@ export class GeneralRoomRepository {
         OR: [
           { name: { contains: query, mode: "insensitive" } },
           { title: { contains: query, mode: "insensitive" } },
-          { tags: { has: query.toLowerCase() } },
+          { tags: { has: query?.toLowerCase() } },
         ],
       },
       orderBy: { memberNumber: "desc" },
