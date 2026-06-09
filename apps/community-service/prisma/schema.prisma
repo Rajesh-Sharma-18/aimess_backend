@@ -50,6 +50,12 @@ model Community {
   type        CommunityType     @default(PUBLIC)
   categoryId  String            @db.ObjectId
   category    CommunityCategory @relation(fields: [categoryId], references: [id])
+  // Denormalized category display name, kept in sync on create + category change.
+  // Exists ONLY to make the admin list sortable by category at the DB level —
+  // Prisma's MongoDB connector can't `orderBy` the related category collection.
+  // Optional so legacy rows (pre-denormalization) read cleanly until backfilled
+  // (run `pnpm --filter @aimess/community-service db:backfill:category-name`).
+  categoryName String?
   creatorId   String // AuthUser.id of the original creator
   adminId     String // AuthUser.id of the current admin/owner
   avatarUrl   String? // MinIO object key (community/avatar/{userId}/{uuid}.ext)
@@ -76,6 +82,10 @@ model Community {
   @@index([creatorId])
   @@index([lastActivityAt])
   @@index([moderationStatus, createdAt])
+  // Backs the admin list's category-name sort (orderBy categoryName, _id tiebreak).
+  @@index([categoryName])
+  // Backs the admin user→communities list's name sort (orderBy name, _id tiebreak).
+  @@index([name])
   @@map("communities")
 }
 
@@ -102,6 +112,9 @@ model CommunityMember {
   @@unique([communityId, userId])
   @@index([userId, status])
   @@index([communityId, status])
+  // Backs the admin member list's username sort (orderBy snapshotUsername within a
+  // community); the exclusion + role/search filter is covered by [communityId, status].
+  @@index([communityId, status, snapshotUsername])
   @@map("community_members")
 }
 

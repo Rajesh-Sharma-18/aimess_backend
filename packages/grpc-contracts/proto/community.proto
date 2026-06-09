@@ -15,6 +15,10 @@ service CommunityService {
   // close/reopen moderation command. backoffice-service is the only caller.
   rpc AdminListCommunities (AdminListCommunitiesRequest) returns (AdminListCommunitiesResponse);
   rpc AdminGetCommunity (AdminGetCommunityRequest) returns (AdminCommunityDetail);
+  rpc AdminListCommunityMembers (AdminListCommunityMembersRequest) returns (AdminListCommunityMembersResponse);
+  // Reverse lookup for the admin User Management detail screen: the communities a
+  // given user is an ACTIVE member of. Searchable by community name/id, sortable.
+  rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
   rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
 
   // Bulk community-chat summaries for GET /communities/mine: per-community unread
@@ -66,7 +70,7 @@ message AdminListCommunitiesRequest {
   string status       = 4;  // "ACTIVE" | "CLOSED" | "" (any)
   string created_from = 5;  // ISO date YYYY-MM-DD, inclusive; "" = none
   string created_to   = 6;  // ISO date YYYY-MM-DD, inclusive; "" = none
-  string sort_field   = 7;  // createdAt | name | memberCount | livestreamCount
+  string sort_field   = 7;  // createdAt | name | memberCount | categoryName | livestreamCount
   string sort_dir     = 8;  // asc | desc
   int32  page         = 9;  // 1-based
   int32  limit        = 10; // page size
@@ -124,6 +128,68 @@ message AdminCommunityDetail {
   // Owner extras (snapshot-sourced; "" / "ACTIVE" until enriched).
   string owner_email             = 15;
   string owner_account_status    = 16;
+}
+
+// ---- Backoffice Community Member List ----
+// The "Community User List" grid on the admin User Management detail screen.
+// Read-through, offset paginated; searchable by username/userId, role-filterable.
+message AdminListCommunityMembersRequest {
+  string community_id    = 1;
+  string search          = 2;  // username or userId; "" = none
+  string role            = 3;  // ADMIN|MODERATOR|MEMBER; "" = all
+  int32  page            = 4;
+  int32  limit           = 5;
+  // "" = no exclusion. When set, this userId is excluded at the DB level and MUST
+  // NEVER appear in the page (used to hide the user being viewed from their own
+  // co-member grid). Never filtered in memory.
+  string exclude_user_id = 6;
+  // "username" | "joinedAt" | "" (default). Default order is role asc then joinedAt asc.
+  string sort_field      = 7;
+  // "asc" | "desc" | "" (default asc).
+  string sort_dir        = 8;
+}
+message AdminCommunityMemberRow {
+  string user_id     = 1;
+  string username    = 2;   // snapshotDisplayName (fallback snapshotUsername)
+  string handle      = 3;   // snapshotUsername (the @handle)
+  string avatar_url  = 4;   // resolved/presigned, "" when none
+  string role        = 5;
+  string status      = 6;
+  string joined_at   = 7;   // ISO 8601
+}
+message AdminListCommunityMembersResponse {
+  repeated AdminCommunityMemberRow members = 1;
+  int64 total = 2;
+}
+
+// ---- Backoffice User → Communities reverse lookup ----
+// The "Communities" grid on the admin User Management detail screen: the
+// communities the given user is an ACTIVE member of. Driving filter is the
+// user's ACTIVE memberships; name search + sort apply to the Community fields.
+// Excludes soft-deleted communities. Read-through, offset paginated.
+message AdminListUserCommunitiesRequest {
+  string user_id    = 1;
+  string search     = 2; // community name (insensitive contains) OR communityId (exact); "" = none
+  string sort_field = 3; // "name" | "memberCount" | "createdAt" (default createdAt)
+  string sort_dir   = 4; // "asc" | "desc" (default desc)
+  int32  page       = 5;
+  int32  limit      = 6;
+}
+message AdminUserCommunityRow {
+  string community_id  = 1;
+  string name          = 2;
+  string avatar_url    = 3; // presigned community avatar GET URL, "" when none/unavailable
+  string category_id   = 4;
+  string category_name = 5; // "" if none
+  string description   = 6; // "" if none
+  int32  member_count  = 7;
+  string role          = 8; // this user's role in the community (ADMIN|MODERATOR|MEMBER)
+  string joined_at     = 9; // ISO 8601 (this user's joinedAt)
+  int64  created_at    = 10; // community createdAt epoch ms
+}
+message AdminListUserCommunitiesResponse {
+  repeated AdminUserCommunityRow communities = 1;
+  int64 total = 2;
 }
 
 message AdminSetModerationStatusRequest {

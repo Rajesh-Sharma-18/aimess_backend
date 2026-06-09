@@ -17,6 +17,7 @@ export class GroupMessageRepository {
         roomId: data.roomId,
         sequenceNumber: (data.sequenceNumber as number) ?? 0,
         clientMessageId: (data.clientMessageId as string) ?? null,
+        clientInfo: (data.clientInfo as object) ?? null,
         senderId: (data.senderId as string) ?? null,
         senderName: (data.senderName as string) ?? "",
         senderAvatar: (data.senderAvatar as string) ?? "",
@@ -115,6 +116,75 @@ export class GroupMessageRepository {
         return !deletedFor.includes(params.userId);
       })
       .slice(0, params.limit + 1);
+  }
+
+  /**
+   * V2 §3.2/§5.2: seq-based keyset page (see private-message.repository for the
+   * rationale). before → sequenceNumber < seq desc; after → > seq asc.
+   */
+  async findByRoomIdSeq(params: {
+    userId: string;
+    roomId: string;
+    direction: "before" | "after";
+    seq: number;
+    limit: number;
+  }): Promise<GroupMessage[]> {
+    const bound =
+      params.direction === "before" ? { lt: params.seq } : { gt: params.seq };
+    const order = params.direction === "before" ? "desc" : "asc";
+    const messages = await this.prisma.groupMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        sequenceNumber: bound,
+      },
+      orderBy: { sequenceNumber: order },
+      take: params.limit + 1 + 10,
+    });
+    return messages
+      .filter((msg) => {
+        const raw = msg as unknown as { deletedForUserIds?: unknown };
+        const deletedFor = (raw.deletedForUserIds ?? []) as string[];
+        return !deletedFor.includes(params.userId);
+      })
+      .slice(0, params.limit + 1);
+  }
+
+  /**
+   * V2 §3.2: jump-to-message anchor window centered on `anchorSeq`.
+   */
+  async findAroundSeq(params: {
+    userId: string;
+    roomId: string;
+    anchorSeq: number;
+    limit: number;
+  }): Promise<GroupMessage[]> {
+    const half = Math.max(1, Math.floor(params.limit / 2));
+    const keep = (msg: GroupMessage): boolean => {
+      const raw = msg as unknown as { deletedForUserIds?: unknown };
+      const deletedFor = (raw.deletedForUserIds ?? []) as string[];
+      return !deletedFor.includes(params.userId);
+    };
+    const [before, anchorAndAfter] = await Promise.all([
+      this.prisma.groupMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          sequenceNumber: { lt: params.anchorSeq },
+        },
+        orderBy: { sequenceNumber: "desc" },
+        take: half + 10,
+      }),
+      this.prisma.groupMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          sequenceNumber: { gte: params.anchorSeq },
+        },
+        orderBy: { sequenceNumber: "asc" },
+        take: half + 1 + 10,
+      }),
+    ]);
+    const beforeKept = before.filter(keep).slice(0, half).reverse();
+    const afterKept = anchorAndAfter.filter(keep).slice(0, half + 1);
+    return [...beforeKept, ...afterKept];
   }
 
   /**

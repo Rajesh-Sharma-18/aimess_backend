@@ -1,4 +1,9 @@
-import { createStorageClient, type StorageClient } from "@aimess/storage";
+import {
+  createMediaUrlStrategy,
+  createStorageClient,
+  type MediaUrlStrategy,
+  type StorageClient,
+} from "@aimess/storage";
 
 import { env } from "./env.js";
 
@@ -23,4 +28,15 @@ export const presignClient: StorageClient = createStorageClient({
   accessKey: env.MINIO_ACCESS_KEY,
   secretKey: env.MINIO_SECRET_KEY,
   region: env.MINIO_REGION,
+});
+
+/**
+ * Shared MediaObject URL strategy — resolves stored object keys into presigned
+ * GET URLs (no CDN configured). Used to build the additive nested `MediaObject`
+ * fields (avatar / cover / snapshotAvatar) alongside the legacy *_Url fields.
+ */
+export const mediaUrlStrategy: MediaUrlStrategy = createMediaUrlStrategy({
+  client: presignClient,
+  defaultViewExpiresIn: env.MINIO_IMAGE_VIEW_EXPIRES_IN,
+  cdnBaseUrl: null,
 });

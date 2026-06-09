@@ -4,6 +4,7 @@ import { app } from "./app.js";
 import { env } from "./config/env.js";
 import { connectDatabase } from "./config/prisma.js";
 import { redis } from "./config/redis.js";
+import { startChatConsumer } from "./consumers/chat.consumer.js";
 import { startCommunityConsumer } from "./consumers/community.consumer.js";
 import { startConsumer } from "./consumers/notification.consumer.js";
 import { startFriendConsumer } from "./consumers/friend.consumer.js";
@@ -47,6 +48,7 @@ async function start() {
     }
 
     await startConsumerSafe("notification consumer", startConsumer);
+    await startConsumerSafe("chat push consumer", startChatConsumer);
     await startConsumerSafe("community consumer", startCommunityConsumer);
     await startConsumerSafe("friend consumer", startFriendConsumer);
     await startConsumerSafe("settings consumer", startSettingsConsumer);

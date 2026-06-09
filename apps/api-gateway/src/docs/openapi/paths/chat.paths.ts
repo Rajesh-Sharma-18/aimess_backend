@@ -1193,6 +1193,15 @@ const communityMessages = {
   get: {
     tags: ["Chat — Community"],
     summary: "Get community room messages",
+    description:
+      "Timestamp-paginated message history for a community room. Timestamps are epoch " +
+      "milliseconds and mutually exclusive: `before_ts` returns messages with " +
+      "`createdAt <= before_ts` (newest-first); `after_ts` returns messages with " +
+      "`createdAt >= after_ts` (oldest-first). Omit both for the newest page. " +
+      "Boundaries are inclusive, so consecutive pages can share the boundary message — " +
+      "de-duplicate by message id. Continue paging with `pagination.nextCursor` " +
+      "(epoch-ms string) fed back as the same `before_ts`/`after_ts` you used. " +
+      "Use `around=<messageId>` to fetch a window centered on a specific message (jump-to-message / reply-tap).",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -1201,11 +1210,20 @@ const communityMessages = {
         required: true,
         schema: { type: "string" },
       },
-      cursorParam(),
+      ...messageTimelineParams(),
+      {
+        name: "around",
+        in: "query",
+        required: false,
+        schema: { type: "string", minLength: 1, maxLength: 100 },
+        description:
+          "Message ID to anchor a jump-to-message window. Returns ~limit/2 messages on each side. Mutually exclusive with before_ts/after_ts.",
+      },
       limitParam(30),
     ],
     responses: {
       ...successResponse("Messages", "ChatCommunityMessageList"),
+      "400": badRequest,
       "401": unauthorized,
       "404": notFound,
     },

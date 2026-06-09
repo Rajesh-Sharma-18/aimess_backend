@@ -113,6 +113,20 @@ export function createPrivateMessageRoutes(
   // Get pins in a room
   router.get("/rooms/:roomId/pins", authenticate, messageCtrl.getPins);
 
+  // Pin / unpin a message (V2 — broadcasts pin:updated to pin:<roomId>)
+  router.post(
+    "/rooms/:roomId/messages/:messageId/pin",
+    authenticate,
+    sendLimit,
+    messageCtrl.pin
+  );
+  router.delete(
+    "/rooms/:roomId/messages/:messageId/pin",
+    authenticate,
+    sendLimit,
+    messageCtrl.unpin
+  );
+
   // Forward a private message to another private room
   router.post(
     "/rooms/:roomId/messages/:messageId/forward",

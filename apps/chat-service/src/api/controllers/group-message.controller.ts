@@ -11,6 +11,10 @@ import {
   buildTimelineResponse,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
+import {
+  buildChatMessageEvent,
+  groupStoredReactions,
+} from "../../lib/chat-message.serializer.js";
 import type { GroupMessageService } from "../../services/group-message.service.js";
 import type { GroupPinService } from "../../services/group-pin.service.js";
 
@@ -24,13 +28,81 @@ export class GroupMessageController {
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    // Timestamp pagination (epoch ms). before_ts → createdAt <= ts (newest-first);
-    // after_ts → createdAt >= ts (oldest-first); neither → newest page.
+    const limit = Number(req.query.limit) || 30;
+
+    // V2 §3.2: prefer seq-based keyset cursors (gap-safe) when present.
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+    const around = req.query.around as string | undefined;
+
+    if (around) {
+      const { items } = await this.messageService.getMessagesAround({
+        roomId,
+        userId,
+        messageId: around,
+        limit,
+      });
+      const totalCount = await this.messageService.countMessages(roomId);
+      const paginated = buildTimelineResponse(
+        items as unknown as Record<string, unknown>[],
+        totalCount,
+        limit,
+        false,
+        null
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            paginated,
+            paginated.data.length
+              ? t("CHAT_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
+    if (beforeSeq != null || afterSeq != null) {
+      const direction = afterSeq != null ? "after" : "before";
+      const seq = afterSeq != null ? afterSeq : (beforeSeq as number);
+      const [result, totalCount] = await Promise.all([
+        this.messageService.getMessagesSeq({
+          roomId,
+          userId,
+          direction,
+          seq,
+          limit,
+        }),
+        this.messageService.countMessages(roomId),
+      ]);
+      const paginated = buildTimelineResponse(
+        result.items as unknown as Record<string, unknown>[],
+        totalCount,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            paginated,
+            paginated.data.length
+              ? t("CHAT_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
+    // Timestamp pagination (epoch ms) — V1 fallback.
     const beforeTs =
       req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
     const afterTs =
       req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
-    const limit = Number(req.query.limit) || 30;
     const direction = afterTs != null ? "after" : "before";
     const tsMs =
       afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
@@ -122,28 +194,40 @@ export class GroupMessageController {
       content,
     });
     if (result.roomId) {
+      // §9: emit the FULL canonical ChatMessage shape on message:edited (groups
+      // denormalize senderName/senderAvatar on the row).
+      const full = result as unknown as Record<string, unknown>;
       await this.redis.publish(
         `conv:${result.roomId}`,
         JSON.stringify({
           event: "message:edited",
-          data: {
-            messageId: result.id,
-            conversationId: result.roomId,
-            contentText:
-              ((result.content as Record<string, unknown>)?.text as string) ??
-              "",
-            contentJson: ((): string => {
-              try {
-                return JSON.stringify(result.content ?? {});
-              } catch {
-                return "{}";
-              }
-            })(),
+          data: buildChatMessageEvent({
+            id: result.id,
+            clientMessageId: (full.clientMessageId as string) ?? "",
+            roomId: result.roomId,
+            conversationType: "GROUP",
+            senderId: (full.senderId as string) ?? "",
+            senderName: (full.senderName as string) ?? "",
+            senderAvatar: (full.senderAvatar as string) ?? "",
+            messageType: (full.messageType as string) ?? "TEXT",
+            content: result.content ?? null,
+            parentMessageId: (full.parentMessageId as string) || "",
+            quoteData: full.quoteData ?? null,
+            reactions: groupStoredReactions(full.reactions),
+            isDeleted: Boolean(full.isDeleted),
             editedAt:
               result.editedAt instanceof Date
                 ? result.editedAt.getTime()
                 : Date.now(),
-          },
+            clientTs: Number(
+              (full.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+            ),
+            serverTs:
+              result.createdAt instanceof Date
+                ? result.createdAt.getTime()
+                : Date.now(),
+            sequenceNumber: (full.sequenceNumber as number) ?? 0,
+          }),
         })
       );
     }
@@ -160,6 +244,27 @@ export class GroupMessageController {
       userId,
       roomId
     );
+    // §2.3: groups previously broadcast NOTHING on delete — other members only
+    // saw the tombstone after a refetch. Emit a self-describing message:delete so
+    // every member hides/tombstones the message live (mirrors private/community).
+    if (result?.roomId) {
+      await this.redis.publish(
+        `conv:${result.roomId}`,
+        JSON.stringify({
+          event: "message:delete",
+          data: {
+            messageId: result.id,
+            conversationId: result.roomId,
+            // SELF_DELETE / ADMIN_DELETE are both delete-for-everyone.
+            type: "forEveryone",
+            deletedType:
+              (result as { deletedType?: string }).deletedType ?? "SELF_DELETE",
+            deletedBy: userId,
+            sequenceNumber: result.sequenceNumber,
+          },
+        })
+      );
+    }
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
@@ -183,6 +288,60 @@ export class GroupMessageController {
       ? t("CHAT_PINS_FETCHED", req.locale)
       : t("CHAT_NO_PINS_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+  });
+
+  // V2 §2.5: pin a group message and broadcast pin:updated to conv:<roomId>.
+  pin = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const result = await this.pinService.pin({ roomId, messageId, userId });
+    const pinnedAt =
+      result.pin.pinnedAt instanceof Date
+        ? result.pin.pinnedAt.getTime()
+        : Date.now();
+    await this.redis.publish(
+      `conv:${roomId}`,
+      JSON.stringify({
+        event: "pin:updated",
+        data: {
+          roomId,
+          conversationId: roomId,
+          messageId,
+          pinnedBy: userId,
+          pinnedAt,
+          action: "pinned",
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(result, "Message pinned"));
+  });
+
+  unpin = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const result = await this.pinService.unpin({ roomId, messageId, userId });
+    await this.redis.publish(
+      `conv:${roomId}`,
+      JSON.stringify({
+        event: "pin:updated",
+        data: {
+          roomId,
+          conversationId: roomId,
+          messageId,
+          unpinnedBy: userId,
+          action: "unpinned",
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, "Message unpinned"));
   });
 
   searchMessages = asyncHandler(async (req: Request, res: Response) => {
@@ -226,19 +385,32 @@ export class GroupMessageController {
       senderAvatar: senderAvatar ?? "",
       clientMessageId: clientMessageId ?? null,
     });
-    await this.redis.publish(
-      `conv:${targetRoomId}`,
-      JSON.stringify({
-        event: "message:new",
-        data: {
-          messageId: result.id,
-          conversationId: targetRoomId,
-          senderId: userId,
-          contentType: result.messageType,
-          isForwarded: true,
-        },
-      })
-    );
+    {
+      // §1/§9: emit the canonical ChatMessage shape on the forward broadcast.
+      const full = result as unknown as Record<string, unknown>;
+      await this.redis.publish(
+        `conv:${targetRoomId}`,
+        JSON.stringify({
+          event: "message:new",
+          data: buildChatMessageEvent({
+            id: result.id,
+            clientMessageId: (full.clientMessageId as string) ?? "",
+            roomId: targetRoomId,
+            conversationType: "GROUP",
+            senderId: userId,
+            senderName: senderName ?? (full.senderName as string) ?? "",
+            senderAvatar: senderAvatar ?? (full.senderAvatar as string) ?? "",
+            senderRole: (full.senderRole as string) ?? "",
+            messageType: result.messageType,
+            content: result.content ?? null,
+            reactions: [],
+            isForwarded: true,
+            serverTs: result.createdAt?.getTime() ?? Date.now(),
+            sequenceNumber: (full.sequenceNumber as number) ?? 0,
+          }),
+        })
+      );
+    }
     // Fire-and-forget bump (incl. member fetch) — must never delay the HTTP response.
     publishConvUpdatedSafe({
       redis: this.redis,

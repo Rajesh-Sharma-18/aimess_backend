@@ -5,3 +5,6 @@ export * from "./object-key.js";
 export * from "./validation.js";
 export * from "./upload.js";
 export * from "./types.js";
+export * from "./object-key-parse.js";
+export * from "./media-url-strategy.js";
+export * from "./media-object.js";

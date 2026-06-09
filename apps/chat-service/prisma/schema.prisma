@@ -146,6 +146,8 @@ model GroupRoom {
   @@index([memberCount])
   @@index([status, lastMessageAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([status, memberCount(sort: Desc)])
   @@map("group_rooms")
 }
 
@@ -156,6 +158,7 @@ model GroupMessage {
   id                 String    @id @default(auto()) @map("_id") @db.ObjectId
   roomId             String
   clientMessageId    String?
+  clientInfo         Json?
   senderId           String?
   senderName         String    @default("")
   senderAvatar       String    @default("")

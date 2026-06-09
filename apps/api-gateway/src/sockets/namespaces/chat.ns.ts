@@ -10,6 +10,9 @@ const ConvJoinSchema = z.object({ conversationId: z.string().min(1) });
 const ConvLeaveSchema = z.object({ conversationId: z.string().min(1) });
 const TypingSchema = z.object({
   conversationId: z.string().min(1),
+  // V2 §2.8: client supplies its own display name so recipients can show
+  // "Alice is typing…" without an extra profile fetch.
+  senderName: z.string().max(100).optional(),
 });
 const FileAttachmentSchema = z.object({
   objectKey: z.string().min(1).max(500).optional(),
@@ -20,6 +23,10 @@ const FileAttachmentSchema = z.object({
   width: z.number().positive().optional(),
   height: z.number().positive().optional(),
   durationMs: z.number().nonnegative().optional(),
+  // §3.5: instant-preview metadata — blurhash (image/video) renders the bubble
+  // at the right aspect ratio before download; waveform (voice) paints the bars.
+  blurhash: z.string().max(120).optional(),
+  waveform: z.array(z.number()).max(2048).optional(),
 });
 const LocationSchema = z.object({
   lat: z.number().min(-90).max(90),
@@ -52,6 +59,8 @@ const MessageSendSchema = z.object({
   receiverId: z.string().optional(),
   senderName: z.string().optional(),
   senderAvatar: z.string().optional(),
+  // §5.1: client compose time (epoch ms) — display only, never overwrites serverTs.
+  clientTs: z.number().int().nonnegative().optional(),
 });
 const MessageReadSchema = z.object({
   conversationId: z.string().min(1),
@@ -61,6 +70,11 @@ const MessageReactSchema = z.object({
   messageId: z.string().min(1),
   conversationId: z.string().min(1),
   emoji: z.string(),
+  // §2.4: route group reactions to the group collection (default private).
+  conversationType: z.preprocess(
+    (v) => (typeof v === "string" ? v.toLowerCase() : v),
+    z.enum(["private", "group"]).default("private")
+  ),
 });
 const MessagesFetchSchema = z.object({
   conversationId: z.string().min(1),
@@ -96,12 +110,45 @@ interface RedisSocketEvent {
   data: unknown;
 }
 
+// V2: richer ack error taxonomy so clients can distinguish permanent vs transient
+type AckErrorCode =
+  | "INVALID_PAYLOAD"
+  | "SERVICE_ERROR"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "RATE_LIMITED"
+  | "CONFLICT";
+
+interface AckError {
+  success: false;
+  error: AckErrorCode;
+  retryable: boolean;
+}
+
+const ACK_RETRYABLE: Record<AckErrorCode, boolean> = {
+  INVALID_PAYLOAD: false,
+  FORBIDDEN: false,
+  NOT_FOUND: false,
+  CONFLICT: false,
+  SERVICE_ERROR: true,
+  RATE_LIMITED: true,
+};
+
 type SocketAck = ((res: unknown) => void) | undefined;
 
 function ack(callback: SocketAck, response: unknown): void {
   if (typeof callback === "function") {
     callback(response);
   }
+}
+
+function ackError(callback: SocketAck, code: AckErrorCode): void {
+  const err: AckError = {
+    success: false,
+    error: code,
+    retryable: ACK_RETRYABLE[code],
+  };
+  ack(callback, err);
 }
 
 export function registerChatNamespace(
@@ -113,9 +160,10 @@ export function registerChatNamespace(
   const chat: Namespace = io.of("/chat");
   chat.use(gatewaySocketAuthMiddleware);
 
-  // Dedicated subscriber for conversation channels.
-  // Backend services publish: { event: "message:new"|"message:edited"|"message:reaction"|"message:read", data: {...} }
-  // to Redis channel conv:<conversationId>.
+  // Dedicated subscriber for conversation, call, and user channels.
+  // Backend services publish: { event: "message:new"|"message:edited"|..., data: {...} }
+  // to the matching Redis channel. V2 events (pin:updated, read_sync) ride the
+  // existing conv:* / user:* channels — no new subscription needed.
   void redisSub.psubscribe("conv:*");
   void redisSub.psubscribe("call:*");
   void redisSub.psubscribe("user:*");
@@ -126,6 +174,20 @@ export function registerChatNamespace(
       if (!allowedPatterns.includes(pattern)) return;
       try {
         const parsed = JSON.parse(message) as RedisSocketEvent;
+
+        // V2 §2.3 fix: inject conversationId into message:delete so clients can
+        // route the tombstone even if the conversation isn't currently loaded.
+        // The channel is always "conv:<conversationId>", so we parse it here.
+        if (parsed.event === "message:delete" && pattern === "conv:*") {
+          const conversationId = channel.slice("conv:".length);
+          const enriched = {
+            conversationId,
+            ...(parsed.data as object),
+          };
+          chat.to(channel).emit(parsed.event, enriched);
+          return;
+        }
+
         chat.to(channel).emit(parsed.event, parsed.data);
       } catch (err) {
         logger.warn(
@@ -231,7 +293,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = MessageSendSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         const files = [...(r.data.files ?? [])];
@@ -263,7 +325,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat message:send gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -273,7 +335,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = MessageReadSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -281,7 +343,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat message:read gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -291,7 +353,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = MessageReactSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -299,7 +361,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat message:react gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -309,7 +371,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = MessagesFetchSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -317,7 +379,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat messages:fetch gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -328,7 +390,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const parsed = CatchupSchema.safeParse(payload);
         if (!parsed.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         void (async () => {
@@ -393,7 +455,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = MessageEditSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -401,7 +463,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat message:edit gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -412,7 +474,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = MessageDeliveredSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -420,7 +482,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat message:delivered gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -442,7 +504,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = PresenceSubscribeSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         for (const peerId of r.data.peerIds) {
@@ -457,7 +519,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = PresenceSubscribeSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         for (const peerId of r.data.peerIds) {
@@ -473,6 +535,9 @@ export function registerChatNamespace(
       chat.to(`conv:${r.data.conversationId}`).emit("typing:start", {
         userId,
         conversationId: r.data.conversationId,
+        // V2 §2.8: include sender name when supplied so recipients don't need a
+        // profile fetch to render "Alice is typing…"
+        ...(r.data.senderName ? { senderName: r.data.senderName } : {}),
       });
     });
 
@@ -482,6 +547,7 @@ export function registerChatNamespace(
       chat.to(`conv:${r.data.conversationId}`).emit("typing:stop", {
         userId,
         conversationId: r.data.conversationId,
+        ...(r.data.senderName ? { senderName: r.data.senderName } : {}),
       });
     });
 
@@ -491,7 +557,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = MessageForwardSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -508,7 +574,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat message:forward gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -519,7 +585,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = MessageReactionsGetSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -529,7 +595,7 @@ export function registerChatNamespace(
             logger.warn(
               `/chat message:reactions:get gRPC error: ${String(err)}`
             );
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -540,7 +606,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = CallInitiateSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -558,7 +624,7 @@ export function registerChatNamespace(
           })
           .catch((err: unknown) => {
             logger.warn(`/chat call:initiate gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -568,7 +634,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = CallAnswerSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -576,7 +642,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat call:answer gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -586,7 +652,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = CallDeclineSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -594,7 +660,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat call:decline gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );
@@ -604,7 +670,7 @@ export function registerChatNamespace(
       (payload: unknown, callback?: (res: unknown) => void) => {
         const r = CallEndSchema.safeParse(payload);
         if (!r.success) {
-          ack(callback, { success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD");
           return;
         }
         messagingClient
@@ -612,7 +678,7 @@ export function registerChatNamespace(
           .then((result) => ack(callback, { success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/chat call:end gRPC error: ${String(err)}`);
-            ack(callback, { success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR");
           });
       }
     );

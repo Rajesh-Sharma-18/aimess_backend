@@ -7,6 +7,7 @@ import {
   closeCommunity,
   getCommunityDetails,
   listCommunities,
+  listCommunityMembers,
   reopenCommunity,
 } from "../controllers/index.js";
 import {
@@ -22,6 +23,7 @@ import {
   closeCommunitySchema,
   communityIdParamSchema,
   listCommunitiesQuerySchema,
+  listCommunityMembersQuerySchema,
   reopenCommunitySchema,
 } from "../validators/index.js";
 
@@ -60,6 +62,13 @@ communityRoutes.get(
   requirePermission(PERMISSIONS.COMMUNITIES_READ),
   validateParams(communityIdParamSchema),
   getCommunityDetails
+);
+communityRoutes.get(
+  "/communities/:communityId/members",
+  requirePermission(PERMISSIONS.COMMUNITIES_READ),
+  validateParams(communityIdParamSchema),
+  validateQuery(listCommunityMembersQuerySchema),
+  listCommunityMembers
 );
 communityRoutes.post(
   "/communities/:communityId/close",

@@ -7,3 +7,4 @@ export { livestreamService } from "./livestream.service.js";
 export { dashboardService } from "./dashboard.service.js";
 export { userManagementService } from "./user-management.service.js";
 export { communityService } from "./community.service.js";
+export { groupService } from "./group.service.js";

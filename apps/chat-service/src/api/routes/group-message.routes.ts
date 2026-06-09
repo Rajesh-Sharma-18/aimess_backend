@@ -68,6 +68,20 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
   );
   router.get("/:roomId/pins", authenticate, ctrl.getPins);
 
+  // Pin / unpin a group message (V2 — broadcasts pin:updated to pin:<roomId>)
+  router.post(
+    "/:roomId/messages/:messageId/pin",
+    authenticate,
+    sendLimit,
+    ctrl.pin
+  );
+  router.delete(
+    "/:roomId/messages/:messageId/pin",
+    authenticate,
+    sendLimit,
+    ctrl.unpin
+  );
+
   // Forward a group message
   router.post(
     "/:roomId/messages/:messageId/forward",

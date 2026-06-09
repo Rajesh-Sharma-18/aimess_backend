@@ -28,16 +28,7 @@ import {
   type RepoReopenResult,
 } from "./community.repository.js";
 import { moderationActionRepository } from "./moderation-action.repository.js";
-
-/** epoch-ms-as-string (longs:String) → ISO 8601. */
-function msToIso(ms: string | number): string {
-  return new Date(Number(ms)).toISOString();
-}
-
-/** "" → null normaliser for optional string fields the proto sends as "". */
-function orNull(s: string | undefined): string | null {
-  return s ? s : null;
-}
+import { msToIso, orNull } from "../lib/grpc-view.js";
 
 /** Map an AdminCommunityRow → the list-table view model. */
 function rowToListItem(r: RawAdminCommunityRow): CommunityListItem {
