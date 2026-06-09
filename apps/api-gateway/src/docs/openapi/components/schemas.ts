@@ -4879,14 +4879,34 @@ export const openApiSchemas = {
             items: {
               type: "object",
               properties: {
+                objectKey: { type: "string" },
                 url: { type: "string", format: "uri" },
                 name: { type: "string" },
                 size: { type: "number" },
                 mime: { type: "string" },
+                width: {
+                  type: "number",
+                  description: "Pixel width (image/video).",
+                },
+                height: {
+                  type: "number",
+                  description: "Pixel height (image/video).",
+                },
                 durationMs: {
                   type: "number",
                   description:
                     "Playback duration in milliseconds (video/voice).",
+                },
+                blurhash: {
+                  type: "string",
+                  description:
+                    "§3.5: blur preview for image/video (instant aspect-ratio render before download).",
+                },
+                waveform: {
+                  type: "array",
+                  items: { type: "number" },
+                  description:
+                    "§3.5: voice-note amplitude samples (render bars before download).",
                 },
               },
             },

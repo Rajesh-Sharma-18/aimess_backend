@@ -8,7 +8,9 @@ import {
   buildPaginatedResponse,
   buildListResponse,
   buildCursorResponse,
+  buildTimelineResponse,
 } from "../../lib/pagination.js";
+import { normalizeMessageType } from "../../lib/chat-message.serializer.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
 
@@ -22,19 +24,63 @@ export class CommunityMessageController {
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const cursor = req.query.cursor as string | undefined;
-    const limit = Number(req.query.limit) || 20;
-    const page = Number(req.query.page) || 1;
-    const [messages, totalCount] = await Promise.all([
-      this.service.getMessages({ roomId, userId, cursor, limit }),
+    const limit = Number(req.query.limit) || 30;
+    const around = req.query.around as string | undefined;
+
+    if (around) {
+      const { items } = await this.service.getMessagesAround({
+        roomId,
+        userId,
+        messageId: around,
+        limit,
+      });
+      const totalCount = await this.service.countMessages(roomId);
+      const paginated = buildTimelineResponse(
+        items as unknown as Record<string, unknown>[],
+        totalCount,
+        limit,
+        false,
+        null
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            paginated,
+            items.length
+              ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
+    // Timestamp pagination (epoch ms). before_ts → newest-first; after_ts →
+    // oldest-first; neither → newest page.
+    const beforeTs =
+      req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
+    const afterTs =
+      req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
+    const direction = afterTs != null ? "after" : "before";
+    const tsMs =
+      afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
+
+    const [result, totalCount] = await Promise.all([
+      this.service.getMessagesTimeline({
+        roomId,
+        userId,
+        direction,
+        ts: new Date(tsMs),
+        limit,
+      }),
       this.service.countMessages(roomId),
     ]);
-    const paginated = buildPaginatedResponse(
-      messages as unknown as Record<string, unknown>[],
+    const paginated = buildTimelineResponse(
+      result.items as unknown as Record<string, unknown>[],
       totalCount,
-      page,
       limit,
-      "createdAt"
+      result.hasMore,
+      result.nextCursor
     );
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
@@ -119,7 +165,10 @@ export class CommunityMessageController {
           roomId: result.roomId,
           senderId: result.sentBy,
           message: result.message ?? "",
-          contentType: result.messageType,
+          // §1: unified UPPER casing — match community:message:new (which emits
+          // both messageType and contentType in UPPER), not the raw lower value.
+          messageType: normalizeMessageType(result.messageType),
+          contentType: normalizeMessageType(result.messageType),
           editedAt:
             result.editedAt instanceof Date
               ? result.editedAt.getTime()
@@ -149,10 +198,15 @@ export class CommunityMessageController {
         `conv:${result.roomId}`,
         JSON.stringify({
           event: "message:delete",
+          // §2.3: self-describing tombstone — conversationId so a client can route
+          // the delete even if the room isn't currently loaded.
           data: {
             messageId: result.id,
+            conversationId: result.roomId,
             type: type === "forEveryone" ? "forEveryone" : "forMe",
             deletedBy: userId,
+            sequenceNumber:
+              (result as { sequenceNumber?: number }).sequenceNumber ?? 0,
           },
         })
       );

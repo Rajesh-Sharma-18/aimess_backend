@@ -75,36 +75,38 @@ export function registerCommunityNamespace(
 
     socket.on(
       "community:message:send",
-      (payload: unknown, callback: (res: unknown) => void) => {
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgSendSchema.safeParse(payload);
         if (!r.success) {
-          callback({ success: false, error: "INVALID_PAYLOAD" });
+          ack({ success: false, error: "INVALID_PAYLOAD" });
           return;
         }
         communityClient
           .sendCommunityMessage({ ...r.data, senderId: userId })
-          .then((result) => callback({ success: true, data: result }))
+          .then((result) => ack({ success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/community message:send gRPC error: ${String(err)}`);
-            callback({ success: false, error: "SERVICE_ERROR" });
+            ack({ success: false, error: "SERVICE_ERROR" });
           });
       }
     );
 
     socket.on(
       "community:messages:fetch",
-      (payload: unknown, callback: (res: unknown) => void) => {
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgsFetchSchema.safeParse(payload);
         if (!r.success) {
-          callback({ success: false, error: "INVALID_PAYLOAD" });
+          ack({ success: false, error: "INVALID_PAYLOAD" });
           return;
         }
         communityClient
           .getCommunityMessages({ ...r.data, requesterId: userId })
-          .then((result) => callback({ success: true, data: result }))
+          .then((result) => ack({ success: true, data: result }))
           .catch((err: unknown) => {
             logger.warn(`/community messages:fetch gRPC error: ${String(err)}`);
-            callback({ success: false, error: "SERVICE_ERROR" });
+            ack({ success: false, error: "SERVICE_ERROR" });
           });
       }
     );

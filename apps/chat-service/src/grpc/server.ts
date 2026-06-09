@@ -9,6 +9,10 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import {
+  publishMessageSentSafe,
+  buildPushPreview,
+} from "../events/publish-message-sent.js";
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
@@ -22,6 +26,12 @@ import type { WebRtcConfigService } from "../services/webrtc-config.service.js";
 import type { PresenceService } from "../services/presence.service.js";
 import type { CommunityMessageService } from "../services/community-message.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
+import {
+  buildChatMessageEvent,
+  groupStoredReactions,
+  flattenStoredReactions,
+  normalizeMessageType,
+} from "../lib/chat-message.serializer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -163,7 +173,11 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             conversationType: string;
             senderName: string;
             senderAvatar: string;
+            clientTs?: string | number;
           };
+
+          // proto-loader delivers int64 client_ts as a STRING (longs: String).
+          const clientTs = Number(req.clientTs ?? 0) || 0;
 
           let msg: {
             id: string;
@@ -171,6 +185,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             content: unknown;
             createdAt: unknown;
             sequenceNumber: number;
+            senderRole?: string;
           };
           // Track whether this was an idempotency hit (message already existed).
           // Set by comparing createdAt to now after the service call.
@@ -190,6 +205,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               messageType: req.contentType || "TEXT",
               parentMessageId: req.repliedToId || null,
               clientMessageId: req.clientMessageId || null,
+              clientTs,
             });
           } else {
             msg = await deps.privateMessageService.sendMessage({
@@ -200,30 +216,43 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               messageType: req.contentType || "TEXT",
               parentMessageId: req.repliedToId || null,
               clientMessageId: req.clientMessageId || null,
+              clientTs,
             });
           }
 
-          await redis.publish(
-            `conv:${req.conversationId}`,
-            JSON.stringify({
-              event: "message:new",
-              data: {
-                messageId: msg.id,
-                conversationId: req.conversationId,
-                senderId: req.senderId,
-                contentType: msg.messageType,
-                contentText:
-                  ((msg.content as Record<string, unknown>)?.text as string) ??
-                  "",
-                contentJson: stringifyContent(msg.content),
-                sentAt:
-                  msg.createdAt instanceof Date
-                    ? msg.createdAt.getTime()
-                    : Date.now(),
-                sequenceNumber: msg.sequenceNumber,
-              },
-            })
-          );
+          {
+            const serverTs =
+              msg.createdAt instanceof Date
+                ? msg.createdAt.getTime()
+                : Date.now();
+            const full = msg as Record<string, unknown>;
+            await redis.publish(
+              `conv:${req.conversationId}`,
+              JSON.stringify({
+                event: "message:new",
+                data: buildChatMessageEvent({
+                  id: msg.id,
+                  clientMessageId: req.clientMessageId,
+                  roomId: req.conversationId,
+                  conversationType:
+                    conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+                  senderId: req.senderId,
+                  senderName: req.senderName,
+                  senderAvatar: req.senderAvatar,
+                  senderRole: msg.senderRole,
+                  receiverId: req.receiverId,
+                  messageType: msg.messageType,
+                  content: msg.content ?? null,
+                  parentMessageId: (full.parentMessageId as string) || "",
+                  quoteData: full.quoteData ?? null,
+                  reactions: [],
+                  clientTs,
+                  serverTs,
+                  sequenceNumber: msg.sequenceNumber,
+                }),
+              })
+            );
+          }
 
           // Bump-to-top: fan out conv:updated to every participant's inbox.
           // Fire-and-forget — must never delay the send callback.
@@ -267,6 +296,47 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             Date.now() - msg.createdAt.getTime() > 5000
           ) {
             alreadySent = true;
+          }
+
+          // V2 §4: trigger an FCM/APNs push (fallback wake for app-killed
+          // recipients) via notifications-service. Skipped on idempotent replays.
+          // Fire-and-forget — never blocks the send callback. The sender is
+          // excluded inside the publisher.
+          if (!alreadySent) {
+            const pushSentAt =
+              msg.createdAt instanceof Date
+                ? msg.createdAt.getTime()
+                : Date.now();
+            const pushText =
+              ((msg.content as Record<string, unknown>)?.text as string) ?? "";
+            const pushBase = {
+              conversationId: req.conversationId,
+              conversationType: (conversationType === "GROUP"
+                ? "GROUP"
+                : "PRIVATE") as "GROUP" | "PRIVATE",
+              messageId: msg.id,
+              clientMessageId: req.clientMessageId || "",
+              senderId: req.senderId,
+              senderName: req.senderName || "",
+              senderAvatar: req.senderAvatar || "",
+              preview: buildPushPreview(msg.messageType, pushText),
+              messageType: msg.messageType,
+              sentAt: pushSentAt,
+            };
+            if (conversationType === "GROUP") {
+              publishMessageSentSafe({
+                ...pushBase,
+                fetchRecipients: () =>
+                  deps.groupMessageService.getActiveMemberIds(
+                    req.conversationId
+                  ),
+              });
+            } else {
+              publishMessageSentSafe({
+                ...pushBase,
+                recipientIds: [req.receiverId],
+              });
+            }
           }
 
           callback(null, {
@@ -326,21 +396,39 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               ? updated.editedAt.getTime()
               : Date.now();
           const contentJson = stringifyContent(updated.content);
+          const updatedFull = updated as Record<string, unknown>;
 
+          // §9: message:edited carries the FULL canonical ChatMessage shape (not
+          // a thin {contentText,contentJson}) so a client can re-render the bubble
+          // with one mapper. Reactions are grouped from the stored map.
           await redis.publish(
             `conv:${req.conversationId}`,
             JSON.stringify({
               event: "message:edited",
-              data: {
-                messageId: updated.id,
-                conversationId: req.conversationId,
-                contentText:
-                  ((updated.content as Record<string, unknown>)
-                    ?.text as string) ?? "",
-                contentJson,
+              data: buildChatMessageEvent({
+                id: updated.id,
+                clientMessageId: (updatedFull.clientMessageId as string) ?? "",
+                roomId: req.conversationId,
+                conversationType: "PRIVATE",
+                senderId: updated.senderId ?? "",
+                receiverId: (updatedFull.receiverId as string) ?? "",
+                messageType: updated.messageType,
+                content: updated.content ?? null,
+                parentMessageId: (updatedFull.parentMessageId as string) || "",
+                quoteData: updatedFull.quoteData ?? null,
+                reactions: groupStoredReactions(updatedFull.reactions),
+                isDeleted: Boolean(updatedFull.isDeleted),
                 editedAt: editedAtMs,
+                clientTs: Number(
+                  (updatedFull.clientInfo as Record<string, unknown> | null)
+                    ?.clientTs ?? 0
+                ),
+                serverTs:
+                  updated.createdAt instanceof Date
+                    ? updated.createdAt.getTime()
+                    : Date.now(),
                 sequenceNumber: updated.sequenceNumber,
-              },
+              }),
             })
           );
 
@@ -389,13 +477,15 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                 messageId: m.id,
                 conversationId: req.conversationId,
                 senderId: m.senderId,
-                contentType: m.messageType,
+                contentType: normalizeMessageType(m.messageType),
                 contentText:
                   ((m.content as Record<string, unknown>)?.text as string) ??
                   "",
                 contentJson: stringifyContent(m.content),
                 sentAt: m.createdAt instanceof Date ? m.createdAt.getTime() : 0,
-                reactions: [],
+                reactions: flattenStoredReactions(
+                  (m as Record<string, unknown>).reactions
+                ),
                 isRead: false,
               })),
               nextCursor:
@@ -425,12 +515,14 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               messageId: m.id,
               conversationId: req.conversationId,
               senderId: m.senderId,
-              contentType: m.messageType,
+              contentType: normalizeMessageType(m.messageType as string),
               contentText:
                 ((m.content as Record<string, unknown>)?.text as string) ?? "",
               contentJson: stringifyContent(m.content),
               sentAt: m.createdAt instanceof Date ? m.createdAt.getTime() : 0,
-              reactions: [],
+              reactions: flattenStoredReactions(
+                (m as Record<string, unknown>).reactions
+              ),
               isRead: false,
             })),
             nextCursor:
@@ -468,20 +560,28 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
 
+          let readToSeq = 0;
           if (conversationType === "GROUP") {
             await deps.groupMemberService.markRead({
               roomId: req.conversationId,
               userId: req.readerId,
               lastMessageId: req.upToMessageId,
             });
+            readToSeq = await deps.groupMessageService
+              .getMessageSequence(req.upToMessageId)
+              .catch(() => 0);
           } else {
             await deps.privateMessageService.markRead({
               roomId: req.conversationId,
               userId: req.readerId,
               lastMessageId: req.upToMessageId,
             });
+            readToSeq = await deps.privateMessageService
+              .getMessageSequence(req.upToMessageId)
+              .catch(() => 0);
           }
 
+          // Read receipt to the conversation room (V1, unchanged).
           await redis.publish(
             `conv:${req.conversationId}`,
             JSON.stringify({
@@ -493,6 +593,27 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               },
             })
           );
+
+          // V2 §2.6/§5.5: read_sync to the reader's OWN other devices so their
+          // unread badge clears too. Published to user:<readerId> (every device of
+          // that user joins this room on connect). Fire-and-forget.
+          void redis
+            .publish(
+              `user:${req.readerId}`,
+              JSON.stringify({
+                event: "read_sync",
+                data: {
+                  conversationId: req.conversationId,
+                  readerId: req.readerId,
+                  read_to_seq: readToSeq,
+                  unreadCount: 0,
+                  conversationType,
+                },
+              })
+            )
+            .catch((e: unknown) =>
+              logger.warn(`read_sync publish failed: ${String(e)}`)
+            );
 
           callback(null, { updatedCount: 1 });
         } catch (err) {
@@ -632,7 +753,18 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             conversationId: string;
             userId: string;
             emoji: string;
+            conversationType?: string;
           };
+
+          // §2.4: route group reactions to the group collection. The two services
+          // expose identical react/getMessageReactions signatures.
+          const reactConversationType = String(
+            req.conversationType ?? ""
+          ).toUpperCase();
+          const reactionService =
+            reactConversationType === "GROUP"
+              ? deps.groupMessageService
+              : deps.privateMessageService;
 
           // reactions shape: Record<emoji, Array<{userId, userName, avatar, memberId}>>
           const reactionsMap: Record<
@@ -648,12 +780,10 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               { userId: req.userId, userName: "", avatar: "", memberId: "" },
             ],
           };
-          const msg = await deps.privateMessageService.react(
-            req.messageId,
-            reactionsMap
-          );
+          const msg = await reactionService.react(req.messageId, reactionsMap);
 
-          // Flatten stored reactions for the pub/sub broadcast
+          // Flatten stored reactions for the gRPC ack (V1 thin shape — the
+          // ReactionDto proto carries {userId, emoji}; the gateway maps it).
           const stored = (msg as Record<string, unknown>).reactions as
             | Record<string, Array<{ userId: string }>>
             | undefined;
@@ -665,6 +795,48 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             }
           }
 
+          // V2 §2.4: broadcast the full ChatReactionGroup[] shape (emoji, count,
+          // users[displayName+avatar]) so the live push renders the reaction bar
+          // without a refetch. Reuse the snapshot-enriched grouping the REST/gRPC
+          // getMessageReactions path already builds. `selfReacted` is intentionally
+          // omitted from the broadcast — it is per-viewer, so each client derives
+          // it from users[].userId === myUserId.
+          let reactionGroups: Array<{
+            emoji: string;
+            count: number;
+            users: unknown[];
+          }> = [];
+          try {
+            const grouped = await reactionService.getMessageReactions({
+              messageId: req.messageId,
+              roomId: req.conversationId,
+              requesterId: req.userId,
+            });
+            reactionGroups = Object.entries(grouped.reactions).map(
+              ([emoji, d]) => ({
+                emoji,
+                count: d.count,
+                users: d.users,
+              })
+            );
+          } catch (groupErr) {
+            // Non-fatal: fall back to a thin grouping derived from stored ids so
+            // the broadcast still carries something renderable.
+            logger.warn(
+              `sendReaction grouping failed, using thin fallback: ${String(groupErr)}`
+            );
+            const byEmoji = new Map<string, Set<string>>();
+            for (const r of reactions) {
+              if (!byEmoji.has(r.emoji)) byEmoji.set(r.emoji, new Set());
+              byEmoji.get(r.emoji)!.add(r.userId);
+            }
+            reactionGroups = [...byEmoji.entries()].map(([emoji, ids]) => ({
+              emoji,
+              count: ids.size,
+              users: [...ids].map((userId) => ({ userId })),
+            }));
+          }
+
           await redis.publish(
             `conv:${req.conversationId}`,
             JSON.stringify({
@@ -672,7 +844,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               data: {
                 messageId: req.messageId,
                 conversationId: req.conversationId,
-                reactions,
+                reactions: reactionGroups,
               },
             })
           );
@@ -739,20 +911,39 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             });
           }
 
-          await redis.publish(
-            `conv:${req.targetConversationId ?? ""}`,
-            JSON.stringify({
-              event: "message:new",
-              data: {
-                messageId: message.id,
-                conversationId: req.targetConversationId,
-                senderId: req.senderId,
-                contentType: message.messageType,
-                isForwarded: true,
-                sequenceNumber: message.sequenceNumber,
-              },
-            })
-          );
+          {
+            const serverTs =
+              message.createdAt instanceof Date
+                ? message.createdAt.getTime()
+                : Date.now();
+            const full = message as Record<string, unknown>;
+            await redis.publish(
+              `conv:${req.targetConversationId ?? ""}`,
+              JSON.stringify({
+                event: "message:new",
+                data: buildChatMessageEvent({
+                  id: message.id,
+                  clientMessageId: req.clientMessageId,
+                  roomId: req.targetConversationId ?? "",
+                  conversationType:
+                    conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+                  senderId: req.senderId ?? "",
+                  senderName: req.senderName,
+                  senderAvatar: req.senderAvatar,
+                  senderRole: (full.senderRole as string) ?? "",
+                  receiverId: req.receiverId,
+                  messageType: message.messageType,
+                  content: full.content ?? null,
+                  parentMessageId: (full.parentMessageId as string) || "",
+                  quoteData: full.quoteData ?? null,
+                  reactions: [],
+                  isForwarded: true,
+                  serverTs,
+                  sequenceNumber: message.sequenceNumber,
+                }),
+              })
+            );
+          }
 
           // Bump-to-top: fan out conv:updated to every participant's inbox.
           // Fire-and-forget — must never delay the send callback.
@@ -1063,7 +1254,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               messageId: e.id,
               conversationId: req.conversationId,
               senderId: e.senderId ?? "",
-              contentType: e.messageType,
+              contentType: normalizeMessageType(e.messageType),
               contentText: (content as { text?: string })?.text ?? "",
               contentJson: stringifyContent(content),
               sentAt: e.createdAt instanceof Date ? e.createdAt.getTime() : 0,
@@ -1263,16 +1454,27 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             JSON.stringify({
               event: "community:message:new",
               data: {
+                // V2 canonical fields
+                id: saved.id,
                 messageId: saved.id,
                 communityId: req.communityId,
                 roomId: saved.roomId,
                 senderId: saved.sentBy,
                 senderName,
                 senderAvatar,
+                // §1: unified UPPER-CASE casing on BOTH messageType and the
+                // contentType alias (no within-event lower/upper split).
+                messageType: normalizeMessageType(saved.messageType),
+                content: {
+                  text: saved.message ?? "",
+                  files: attachments ?? [],
+                },
+                reactions: [],
                 message: saved.message ?? "",
-                contentType: saved.messageType,
+                contentType: normalizeMessageType(saved.messageType),
                 mediaKey: req.mediaKey ?? "",
                 clientMessageId: req.clientMessageId ?? "",
+                serverTs: sentAt,
                 sentAt,
               },
             })
@@ -1362,7 +1564,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               roomId: m.roomId,
               senderId: m.sentBy,
               message: m.message ?? "",
-              contentType: m.messageType,
+              contentType: normalizeMessageType(m.messageType),
               mediaKey: (() => {
                 const att = Array.isArray(m.attachments)
                   ? (m.attachments[0] as Record<string, unknown> | undefined)

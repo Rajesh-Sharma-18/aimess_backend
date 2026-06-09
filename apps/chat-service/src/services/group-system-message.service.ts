@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
 import { SystemEvent } from "../types/enums.js";
+import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
@@ -104,27 +105,32 @@ export class GroupSystemMessageService {
         createdAt: message.createdAt,
       });
 
-      // Real-time fan-out (best-effort) — same channel/event as a real send.
+      // Real-time fan-out (best-effort) — same channel/event AND canonical
+      // ChatMessage shape as a real send (§1/§9), with the SYSTEM extras.
+      const sysServerTs =
+        message.createdAt instanceof Date
+          ? message.createdAt.getTime()
+          : Date.now();
       this.redis
         .publish(
           `conv:${roomId}`,
           JSON.stringify({
             event: "message:new",
-            data: {
-              messageId: message.id,
-              conversationId: roomId,
-              senderId: actorId,
-              contentType: "SYSTEM",
-              contentText: text,
-              contentJson: JSON.stringify(message.content),
+            data: buildChatMessageEvent({
+              id: message.id,
+              roomId,
+              conversationType: "GROUP",
+              senderId: actorId ?? "",
+              senderName: actorName,
+              senderAvatar: actorAvatar,
+              messageType: "SYSTEM",
+              content: message.content ?? { text, urls: [], files: [] },
+              reactions: [],
+              serverTs: sysServerTs,
               sequenceNumber: seq,
               systemEvent,
               systemData,
-              sentAt:
-                message.createdAt instanceof Date
-                  ? message.createdAt.getTime()
-                  : Date.now(),
-            },
+            }),
           })
         )
         .catch((err: unknown) => {

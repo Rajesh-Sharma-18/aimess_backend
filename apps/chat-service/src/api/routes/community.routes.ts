@@ -5,7 +5,7 @@ import { validateQuery } from "../middleware/validate-query.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
-  messageListQuerySchema,
+  communityTimelineQuerySchema,
   messageSearchQuerySchema,
   mediaListQuerySchema,
   conversationQuerySchema,
@@ -44,7 +44,7 @@ export function createCommunityRoutes(
   router.get(
     "/rooms/:roomId/messages",
     authenticate,
-    validateQuery(messageListQuerySchema),
+    validateQuery(communityTimelineQuerySchema),
     messageCtrl.getMessages
   );
   router.get(

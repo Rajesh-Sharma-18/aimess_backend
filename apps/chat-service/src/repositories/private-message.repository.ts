@@ -151,6 +151,86 @@ export class PrivateMessageRepository {
       .slice(0, params.limit + 1);
   }
 
+  /**
+   * V2 §3.2/§5.2: seq-based keyset page. Unlike timestamp paging, a per-room
+   * monotonic `sequenceNumber` cursor can never skip a same-millisecond message.
+   * - direction "before": sequenceNumber < seq, newest-first (desc).
+   * - direction "after" : sequenceNumber > seq, oldest-first (asc).
+   * Over-fetches a buffer to absorb in-memory delete-for-me filtering, returns
+   * up to `limit + 1` survivors so the caller can compute exact `hasMore`.
+   */
+  async findByRoomIdSeq(params: {
+    userId: string;
+    roomId: string;
+    direction: "before" | "after";
+    seq: number;
+    limit: number;
+  }): Promise<PrivateMessage[]> {
+    const bound =
+      params.direction === "before" ? { lt: params.seq } : { gt: params.seq };
+    const order = params.direction === "before" ? "desc" : "asc";
+    const messages = await this.prisma.privateMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        isDeleted: false,
+        sequenceNumber: bound,
+      },
+      orderBy: { sequenceNumber: order },
+      take: params.limit + 1 + 10,
+    });
+    return messages
+      .filter((msg) => {
+        const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
+        return !(params.userId in deletedFor);
+      })
+      .slice(0, params.limit + 1);
+  }
+
+  /**
+   * V2 §3.2: jump-to-message anchor — `limit` messages centered on `anchorSeq`
+   * (half before, the anchor, half after). Used for reply-tap / search-result
+   * navigation. Returns the window ascending by sequenceNumber.
+   *
+   * If the requesting user has done "delete for me" on the anchor itself, the
+   * anchor is correctly omitted (you must not surface a message a user deleted);
+   * the surrounding window is still returned at full size.
+   */
+  async findAroundSeq(params: {
+    userId: string;
+    roomId: string;
+    anchorSeq: number;
+    limit: number;
+  }): Promise<PrivateMessage[]> {
+    const half = Math.max(1, Math.floor(params.limit / 2));
+    const [before, anchorAndAfter] = await Promise.all([
+      this.prisma.privateMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          isDeleted: false,
+          sequenceNumber: { lt: params.anchorSeq },
+        },
+        orderBy: { sequenceNumber: "desc" },
+        take: half + 10,
+      }),
+      this.prisma.privateMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          isDeleted: false,
+          sequenceNumber: { gte: params.anchorSeq },
+        },
+        orderBy: { sequenceNumber: "asc" },
+        take: half + 1 + 10,
+      }),
+    ]);
+    const keep = (msg: PrivateMessage): boolean => {
+      const deletedFor = (msg.deletedFor ?? {}) as Record<string, unknown>;
+      return !(params.userId in deletedFor);
+    };
+    const beforeKept = before.filter(keep).slice(0, half).reverse();
+    const afterKept = anchorAndAfter.filter(keep).slice(0, half + 1);
+    return [...beforeKept, ...afterKept];
+  }
+
   async searchByText(
     roomId: string,
     query: string,

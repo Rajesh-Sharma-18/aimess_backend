@@ -31,6 +31,7 @@ import { PrivateMessageReportRepository } from "./repositories/private-message-r
 // -- Services --
 import { PrivateRoomService } from "./services/private-room.service.js";
 import { InboxService } from "./services/inbox.service.js";
+import { SyncService } from "./services/sync.service.js";
 import { PrivateMessageService } from "./services/private-message.service.js";
 import { PrivatePinService } from "./services/private-pin.service.js";
 import { GroupRoomService } from "./services/group-room.service.js";
@@ -52,6 +53,7 @@ import { PresenceService } from "./services/presence.service.js";
 // -- Controllers --
 import { PrivateRoomController } from "./api/controllers/private-room.controller.js";
 import { InboxController } from "./api/controllers/inbox.controller.js";
+import { SyncController } from "./api/controllers/sync.controller.js";
 import { PrivateMessageController } from "./api/controllers/private-message.controller.js";
 import { GroupRoomController } from "./api/controllers/group-room.controller.js";
 import { GroupMessageController } from "./api/controllers/group-message.controller.js";
@@ -388,6 +390,12 @@ const startServer = async () => {
     // Unified inbox = private rooms + group chats merged by lastMessageAt
     const inboxService = new InboxService(privateRoomService, groupRoomService);
 
+    // V2 §3.3: per-conversation seq-based incremental sync (REST catch-up)
+    const syncService = new SyncService(
+      privateMessageService,
+      groupMessageService
+    );
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
@@ -409,6 +417,7 @@ const startServer = async () => {
     const controllers = {
       privateRoomCtrl: new PrivateRoomController(privateRoomService),
       inboxCtrl: new InboxController(inboxService),
+      syncCtrl: new SyncController(syncService),
       privateMessageCtrl: new PrivateMessageController(
         privateMessageService,
         privatePinService,

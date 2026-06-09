@@ -11,6 +11,10 @@ import {
   buildTimelineResponse,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
+import {
+  buildChatMessageEvent,
+  groupStoredReactions,
+} from "../../lib/chat-message.serializer.js";
 import type { PrivateMessageService } from "../../services/private-message.service.js";
 import type { PrivatePinService } from "../../services/private-pin.service.js";
 
@@ -24,13 +28,87 @@ export class PrivateMessageController {
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    // Timestamp pagination (epoch ms). before_ts → createdAt <= ts (newest-first);
-    // after_ts → createdAt >= ts (oldest-first); neither → newest page.
+    const limit = Number(req.query.limit) || 30;
+
+    // V2 §3.2: prefer seq-based keyset cursors (gap-safe) when present.
+    // before_seq → sequenceNumber < seq (newest-first);
+    // after_seq  → sequenceNumber > seq (oldest-first);
+    // around=<messageId> → window centered on a message (jump-to-message).
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+    const around = req.query.around as string | undefined;
+
+    if (around) {
+      const { items } = await this.messageService.getMessagesAround({
+        roomId,
+        userId,
+        messageId: around,
+        limit,
+      });
+      const enriched = await this.messageService.enrichMessages(items);
+      const totalCount = await this.messageService.countMessages(roomId);
+      const paginated = buildTimelineResponse(
+        enriched,
+        totalCount,
+        limit,
+        false,
+        null
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            paginated,
+            enriched.length
+              ? t("CHAT_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
+    if (beforeSeq != null || afterSeq != null) {
+      const direction = afterSeq != null ? "after" : "before";
+      const seq = afterSeq != null ? afterSeq : (beforeSeq as number);
+      const [result, totalCount] = await Promise.all([
+        this.messageService.getMessagesSeq({
+          roomId,
+          userId,
+          direction,
+          seq,
+          limit,
+        }),
+        this.messageService.countMessages(roomId),
+      ]);
+      const enriched = await this.messageService.enrichMessages(result.items);
+      const paginated = buildTimelineResponse(
+        enriched,
+        totalCount,
+        limit,
+        result.hasMore,
+        result.nextCursor
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            paginated,
+            paginated.data.length
+              ? t("CHAT_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
+    // Timestamp pagination (epoch ms) — V1 fallback. before_ts → createdAt <= ts
+    // (newest-first); after_ts → createdAt >= ts (oldest-first); neither → newest.
     const beforeTs =
       req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
     const afterTs =
       req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
-    const limit = Number(req.query.limit) || 30;
     const direction = afterTs != null ? "after" : "before";
     const tsMs =
       afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
@@ -97,10 +175,14 @@ export class PrivateMessageController {
         `conv:${result.roomId}`,
         JSON.stringify({
           event: "message:delete",
+          // §2.3: self-describing tombstone — conversationId + sequenceNumber so a
+          // client can route/locate the delete even if the room isn't loaded.
           data: {
             messageId: result.id,
+            conversationId: result.roomId,
             type: type === "forEveryone" ? "forEveryone" : "forMe",
             deletedBy: userId,
+            sequenceNumber: result.sequenceNumber,
           },
         })
       );
@@ -129,6 +211,63 @@ export class PrivateMessageController {
       ? t("CHAT_PINS_FETCHED", req.locale)
       : t("CHAT_NO_PINS_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+  });
+
+  // V2 §2.5: pin a message and broadcast pin:updated so the pinned banner
+  // updates live for everyone in the room (multi-device consistent).
+  pin = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const result = await this.pinService.pin({ roomId, messageId, userId });
+    const pinnedAt =
+      result.pin.pinnedAt instanceof Date
+        ? result.pin.pinnedAt.getTime()
+        : Date.now();
+    // Published to conv:<roomId> (where clients are joined) so it rides the
+    // gateway's existing conv:* subscription, exactly like message:delete.
+    await this.redis.publish(
+      `conv:${roomId}`,
+      JSON.stringify({
+        event: "pin:updated",
+        data: {
+          roomId,
+          conversationId: roomId,
+          messageId,
+          pinnedBy: userId,
+          pinnedAt,
+          action: "pinned",
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(result, "Message pinned"));
+  });
+
+  unpin = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const result = await this.pinService.unpin({ roomId, messageId, userId });
+    await this.redis.publish(
+      `conv:${roomId}`,
+      JSON.stringify({
+        event: "pin:updated",
+        data: {
+          roomId,
+          conversationId: roomId,
+          messageId,
+          unpinnedBy: userId,
+          action: "unpinned",
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, "Message unpinned"));
   });
 
   searchMessages = asyncHandler(async (req: Request, res: Response) => {
@@ -171,19 +310,31 @@ export class PrivateMessageController {
       receiverId,
       clientMessageId: clientMessageId ?? null,
     });
-    await this.redis.publish(
-      `conv:${targetRoomId}`,
-      JSON.stringify({
-        event: "message:new",
-        data: {
-          messageId: result.id,
-          conversationId: targetRoomId,
-          senderId: userId,
-          contentType: result.messageType,
-          isForwarded: true,
-        },
-      })
-    );
+    {
+      // §1/§9: REST forward previously emitted a thin 5-field message:new;
+      // emit the canonical ChatMessage shape so it matches the socket forward.
+      const full = result as unknown as Record<string, unknown>;
+      await this.redis.publish(
+        `conv:${targetRoomId}`,
+        JSON.stringify({
+          event: "message:new",
+          data: buildChatMessageEvent({
+            id: result.id,
+            clientMessageId: (full.clientMessageId as string) ?? "",
+            roomId: targetRoomId,
+            conversationType: "PRIVATE",
+            senderId: userId,
+            receiverId,
+            messageType: result.messageType,
+            content: result.content ?? null,
+            reactions: [],
+            isForwarded: true,
+            serverTs: result.createdAt?.getTime() ?? Date.now(),
+            sequenceNumber: (full.sequenceNumber as number) ?? 0,
+          }),
+        })
+      );
+    }
     // Fire-and-forget bump — must never delay the HTTP response.
     publishConvUpdatedSafe({
       redis: this.redis,
@@ -228,28 +379,38 @@ export class PrivateMessageController {
       content,
     });
     if (result.roomId) {
+      // §9: emit the FULL canonical ChatMessage shape on message:edited.
+      const full = result as unknown as Record<string, unknown>;
       await this.redis.publish(
         `conv:${result.roomId}`,
         JSON.stringify({
           event: "message:edited",
-          data: {
-            messageId: result.id,
-            conversationId: result.roomId,
-            contentText:
-              ((result.content as Record<string, unknown>)?.text as string) ??
-              "",
-            contentJson: ((): string => {
-              try {
-                return JSON.stringify(result.content ?? {});
-              } catch {
-                return "{}";
-              }
-            })(),
+          data: buildChatMessageEvent({
+            id: result.id,
+            clientMessageId: (full.clientMessageId as string) ?? "",
+            roomId: result.roomId,
+            conversationType: "PRIVATE",
+            senderId: (full.senderId as string) ?? "",
+            receiverId: (full.receiverId as string) ?? "",
+            messageType: (full.messageType as string) ?? "TEXT",
+            content: result.content ?? null,
+            parentMessageId: (full.parentMessageId as string) || "",
+            quoteData: full.quoteData ?? null,
+            reactions: groupStoredReactions(full.reactions),
+            isDeleted: Boolean(full.isDeleted),
             editedAt:
               result.editedAt instanceof Date
                 ? result.editedAt.getTime()
                 : Date.now(),
-          },
+            clientTs: Number(
+              (full.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+            ),
+            serverTs:
+              result.createdAt instanceof Date
+                ? result.createdAt.getTime()
+                : Date.now(),
+            sequenceNumber: (full.sequenceNumber as number) ?? 0,
+          }),
         })
       );
     }
