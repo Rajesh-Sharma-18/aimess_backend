@@ -31,7 +31,7 @@ export function createApp(): Express {
               .filter(Boolean),
       credentials: true,
       methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
-      allowedHeaders: ["Content-Type", "Authorization"],
+      // allowedHeaders: ["Content-Type", "Authorization"],
     })
   );
 

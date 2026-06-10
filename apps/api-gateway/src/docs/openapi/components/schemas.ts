@@ -3658,7 +3658,9 @@ export const openApiSchemas = {
       nextCursor: {
         type: "string",
         nullable: true,
-        description: "Always null for offset pagination (reserved field).",
+        description:
+          "Cursor for the next page. For offset/page pagination this is null (use page param). " +
+          "For timeline/cursor-paginated endpoints this is an epoch-ms string — feed it back as the same before_ts/after_ts you used.",
       },
       hasMore: {
         type: "boolean",
@@ -5212,13 +5214,136 @@ export const openApiSchemas = {
         items: { type: "object" },
       },
       deletedForAll: { type: "boolean" },
+      editedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "Non-null when the message has been edited.",
+      },
       createdAt: { type: "string", format: "date-time" },
+      updatedAt: {
+        type: "integer",
+        description:
+          "Epoch-ms of the last mutation (edit, reaction, delete). Present in incremental-sync (after_ts) responses only.",
+        nullable: true,
+      },
+      syncEventType: {
+        type: "string",
+        enum: ["new", "edited", "deleted", "reacted"],
+        nullable: true,
+        description:
+          "Only present in after_ts (incremental-sync) responses. Tells the client what reconciliation action to take: 'new'=insert, 'edited'=update text, 'deleted'=remove (tombstone), 'reacted'=refresh reaction counts.",
+      },
     },
     required: ["id", "roomId", "sentBy", "createdAt"],
   },
   ChatCommunityMessageList: {
     type: "array",
     items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+  },
+  /** Scroll / history mode — before_ts (default). Includes top-level hasMore + nextCursor shortcuts. */
+  ChatCommunityMessagePage: {
+    type: "object",
+    description:
+      "Timestamp-paginated community messages (scroll/history mode). Use before_ts to scroll backwards; omit for the newest page.",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+      },
+      hasMore: {
+        type: "boolean",
+        description: "Top-level shortcut — same value as pagination.hasMore.",
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description:
+          "Top-level shortcut — epoch-ms string; feed back as before_ts for the next page.",
+      },
+    },
+    required: ["pagination", "data", "hasMore", "nextCursor"],
+  },
+  /** Incremental-sync mode — after_ts. No pagination wrapper. */
+  ChatCommunityIncrementalSync: {
+    type: "object",
+    description:
+      "Incremental-sync envelope returned when after_ts is provided. Contains every community message whose updatedAt >= after_ts, sorted updatedAt ASC. Includes edits, reaction updates, and deletions (tombstones with deletedForAll=true). Store nextCursor as the next after_ts to page forward or re-sync.",
+    properties: {
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+        description:
+          "Each item has a non-null syncEventType indicating what reconciliation action to take.",
+      },
+      hasMore: { type: "boolean" },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description:
+          "Epoch-ms of the last item's updatedAt. Feed back as the next after_ts. Null when no items returned.",
+      },
+    },
+    required: ["data", "hasMore", "nextCursor"],
+  },
+  /** Per-user entry inside a community reaction group. */
+  ChatCommunityReactionUser: {
+    type: "object",
+    properties: {
+      userId: { type: "string" },
+      displayName: { type: "string" },
+      avatar: { type: "string", nullable: true },
+    },
+    required: ["userId", "displayName"],
+  },
+  /** Grouped emoji reaction. */
+  ChatCommunityReactionGroup: {
+    type: "object",
+    properties: {
+      emoji: { type: "string", description: "Unicode emoji." },
+      count: { type: "integer", description: "Number of users who reacted." },
+      users: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCommunityReactionUser" },
+        description: "Up to N users who used this emoji.",
+      },
+    },
+    required: ["emoji", "count", "users"],
+  },
+  /** Body for POST /chat/community/messages/{messageId}/react */
+  ChatCommunityReactRequest: {
+    type: "object",
+    required: ["communityId", "emoji"],
+    properties: {
+      communityId: {
+        type: "string",
+        description: "Community the message belongs to.",
+      },
+      emoji: {
+        type: "string",
+        minLength: 1,
+        maxLength: 10,
+        description:
+          "Unicode emoji. Sending the same emoji again removes it (toggle).",
+      },
+    },
+  },
+  /** Response for POST /chat/community/messages/{messageId}/react */
+  ChatCommunityReactResponse: {
+    type: "object",
+    description:
+      "Current reaction state after the toggle. The community:message:reaction Socket.IO event carries the same shape.",
+    properties: {
+      messageId: { type: "string" },
+      communityId: { type: "string" },
+      reactions: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatCommunityReactionGroup" },
+        description: "Full grouped reaction state for the message.",
+      },
+    },
+    required: ["messageId", "communityId", "reactions"],
   },
 
   // --- Attachments: location & contact ---
@@ -5570,5 +5695,26 @@ export const openApiSchemas = {
       isOnline: { type: "boolean" },
       lastSeen: { type: "integer", nullable: true },
     },
+  },
+  CommunityPinResponse: {
+    type: "object",
+    description: "Result of pinning or unpinning a community message.",
+    properties: {
+      pinnedIds: {
+        type: "array",
+        items: { type: "string" },
+        description: "All currently pinned message IDs in this room.",
+      },
+      pinnedCount: {
+        type: "integer",
+        description: "Total number of pinned messages.",
+      },
+      pinnedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when pinned. Present on pin only.",
+      },
+    },
+    required: ["pinnedIds", "pinnedCount"],
   },
 } as const;

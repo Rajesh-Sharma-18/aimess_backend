@@ -47,6 +47,8 @@ export class InboxController {
         hasMore: result.hasMore,
       },
       data: result.items,
+      hasMore: result.hasMore,
+      nextCursor: result.nextCursor,
     };
 
     const msg = result.items.length

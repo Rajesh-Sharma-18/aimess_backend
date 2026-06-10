@@ -350,13 +350,16 @@ gateway re-emits to the `community:<communityId>` room.
 The namespace forwards **any** event published to the `community:<communityId>`
 Redis channel verbatim. Contract events:
 
-| Event                     | Room             | Payload                                                                                                                           | Trigger               |
-| ------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `community:message:new`   | `community:<id>` | `{ messageId, communityId, roomId, senderId, senderName, senderAvatar, message, contentType, mediaKey, clientMessageId, sentAt }` | new community message |
-| `community:member:joined` | `community:<id>` | member DTO                                                                                                                        | a member joins        |
+| Event                        | Room             | Payload                                                                                                                                                                                                                                              | Trigger                                   |
+| ---------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `community:message:new`      | `community:<id>` | `{ messageId, communityId, roomId, senderId, senderName, senderAvatar, message, messageType, contentType, content{…}, reactions[], clientMessageId, serverTs, sentAt }` (`messageType` UPPER-CASE canonical; `contentType` is a same-value V1 alias) | new community message                     |
+| `community:message:reaction` | `community:<id>` | `{ messageId, communityId, reactions: [{ emoji, count, users: [{ userId, displayName, avatar }] }] }` (`selfReacted` derived client-side)                                                                                                            | reaction added/removed (full current set) |
+| `community:member:joined`    | `community:<id>` | member DTO                                                                                                                                                                                                                                           | a member joins                            |
 
 > Community message **deletes** are emitted as `message:delete` on the
 > `conv:<roomId>` channel (see §4.2), not on the community channel.
+
+> Community message **reactions** are emitted as `community:message:reaction` on the `community:<communityId>` channel. `POST /messages/:id/react` is the mutation path; this is the real-time broadcast. `selfReacted` is omitted from the broadcast — each client derives it from `reactions[].users[].userId === myUserId`. The full current reaction set is always sent (not a delta).
 
 ---
 
@@ -496,4 +499,4 @@ failures surface as a `connect_error` with message `Authentication required` /
 `message:delivered` · `message:reaction` · `message:delete` · `typing:start` ·
 `typing:stop` · `presence:status` · `call:incoming` · `call:answered` ·
 `call:declined` · `call:ended` · `call:ice` · `community:message:new` ·
-`community:member:joined` · `notification:count`
+`community:message:reaction` · `community:member:joined` · `notification:count`

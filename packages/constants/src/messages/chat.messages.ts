@@ -225,6 +225,8 @@ export const CHAT_MESSAGES = {
     vi: "Bạn chỉ có thể bỏ ghim các ghim do bạn tạo",
     en: "You can only unpin pins created by you",
   },
+  CHAT_MESSAGE_PINNED: { vi: "Tin nhắn đã được ghim", en: "Message pinned" },
+  CHAT_MESSAGE_UNPINNED: { vi: "Đã bỏ ghim tin nhắn", en: "Message unpinned" },
 
   // --- Groups ---
   CHAT_GROUP_NOT_FOUND: {

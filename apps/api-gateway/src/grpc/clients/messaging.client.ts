@@ -18,7 +18,7 @@ const PROTO_PATH = path.resolve(
 export interface SendMessageParams {
   conversationId: string;
   senderId: string;
-  clientMessageId: string;
+  clientMessageId?: string;
   contentType: string;
   contentText?: string;
   mediaKey?: string;

@@ -619,6 +619,9 @@ importers:
       "@aimess/errors":
         specifier: workspace:*
         version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger

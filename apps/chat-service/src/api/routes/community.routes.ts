@@ -6,11 +6,17 @@ import { validateBody } from "../middleware/validate-body.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
   communityTimelineQuerySchema,
+  communitySyncQuerySchema,
   messageSearchQuerySchema,
   mediaListQuerySchema,
   conversationQuerySchema,
 } from "../validators/query.validator.js";
-import { editCommunityMessageSchema } from "../validators/community.validator.js";
+import {
+  editCommunityMessageSchema,
+  reactCommunityMessageBodySchema,
+  pinCommunityMessageSchema,
+  unpinCommunityMessageSchema,
+} from "../validators/community.validator.js";
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
 
@@ -30,6 +36,31 @@ export function createCommunityRoutes(
   router.get("/rooms/search", roomCtrl.searchRooms);
   router.post("/rooms/:roomId/join", authenticate, roomCtrl.join);
   router.post("/rooms/:roomId/leave", authenticate, roomCtrl.leave);
+
+  // Incremental sync: returns ALL mutations (new + edits + reactions + tombstones)
+  // for the room since the given updatedAt cursor. Distinct from the timeline
+  // endpoint; since_ts is required here so the intent is unambiguous.
+  router.get(
+    "/rooms/:roomId/sync",
+    authenticate,
+    validateQuery(communitySyncQuerySchema),
+    messageCtrl.syncMessages
+  );
+
+  router.post(
+    "/rooms/:roomId/messages/:messageId/pin",
+    authenticate,
+    messageLimit,
+    validateBody(pinCommunityMessageSchema),
+    messageCtrl.pinMessage
+  );
+  router.delete(
+    "/rooms/:roomId/messages/:messageId/pin",
+    authenticate,
+    messageLimit,
+    validateBody(unpinCommunityMessageSchema),
+    messageCtrl.unpinMessage
+  );
 
   router.get(
     "/rooms/:roomId/messages/search",
@@ -69,6 +100,14 @@ export function createCommunityRoutes(
     messageLimit,
     validateBody(editCommunityMessageSchema),
     messageCtrl.editMessage
+  );
+
+  router.post(
+    "/messages/:messageId/react",
+    authenticate,
+    messageLimit,
+    validateBody(reactCommunityMessageBodySchema),
+    messageCtrl.reactToMessage
   );
 
   return router;

@@ -71,9 +71,18 @@ export const mediaListQuerySchema = z.object({
  * Mirrors messageTimelineQuerySchema but omits seq cursors (community messages
  * have no sequenceNumber column). Timestamps are epoch milliseconds.
  *
- * - `before_ts`: return messages with createdAt <= before_ts (newest-first).
- * - `after_ts` : return messages with createdAt >= after_ts (oldest-first).
- * - `around`   : anchor a jump-to-message window on a messageId.
+ * The two timestamp params are mutually exclusive:
+ *
+ * - `before_ts`: scroll / history mode. Returns messages with
+ *   `createdAt <= before_ts`, newest-first. Only live messages (no tombstones).
+ *   Feed the returned `nextCursor` back as the next `before_ts` to page back.
+ *
+ * - `after_ts`: incremental sync mode. Returns ALL messages (new, edited,
+ *   reacted, deleted tombstones) where `updatedAt >= after_ts`, oldest-first.
+ *   Designed for offline-first mobile clients: store the highest `updatedAt`
+ *   seen and send it back as `after_ts` on the next foreground call.
+ *
+ * - `around`: jump-to-message window anchored on a messageId.
  *
  * Omit all three for the newest page.
  */
@@ -88,6 +97,19 @@ export const communityTimelineQuerySchema = z
     message: "Provide either before_ts or after_ts, not both",
     path: ["before_ts"],
   });
+
+/**
+ * Query schema for the community incremental-sync REST endpoint.
+ * `GET /api/chat/community/rooms/:roomId/sync?since_ts=<ms>&limit=<n>`
+ *
+ * Returns all messages (new, edited, reacted, tombstones) whose
+ * `updatedAt >= since_ts`, sorted oldest-first. The client stores the
+ * highest `updatedAt` it has seen and feeds it back as `since_ts`.
+ */
+export const communitySyncQuerySchema = z.object({
+  since_ts: z.coerce.number().int().positive(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
 
 /**
  * Query schema for the offset-paginated "conversation" endpoint (group +

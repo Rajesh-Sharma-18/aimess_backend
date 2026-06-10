@@ -19,6 +19,10 @@ export interface PaginatedResponse<T> {
     hasMore: boolean;
   };
   data: T[];
+  /** Top-level shortcut — same value as pagination.hasMore. */
+  hasMore: boolean;
+  /** Top-level shortcut — same value as pagination.nextCursor. */
+  nextCursor: string | null;
 }
 
 export function buildPaginatedResponse<T extends Record<string, unknown>>(
@@ -50,6 +54,8 @@ export function buildPaginatedResponse<T extends Record<string, unknown>>(
       hasMore,
     },
     data: items,
+    hasMore,
+    nextCursor,
   };
 }
 
@@ -60,6 +66,7 @@ export function buildListResponse<T>(
   limit: number
 ): PaginatedResponse<T> {
   const totalPage = Math.ceil(totalCount / limit) || 1;
+  const hasMore = items.length === limit;
 
   return {
     pagination: {
@@ -68,9 +75,11 @@ export function buildListResponse<T>(
       currentPage: page,
       limit,
       nextCursor: null,
-      hasMore: items.length === limit,
+      hasMore,
     },
     data: items,
+    hasMore,
+    nextCursor: null,
   };
 }
 
@@ -99,6 +108,8 @@ export function buildTimelineResponse<T>(
       hasMore,
     },
     data: items,
+    hasMore,
+    nextCursor,
   };
 }
 

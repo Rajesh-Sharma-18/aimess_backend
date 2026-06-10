@@ -301,6 +301,32 @@ const communityMessageEdit = {
   },
 };
 
+const communityMessageReact = {
+  post: {
+    tags: ["Chat — Community"],
+    summary: "React to a community message",
+    description:
+      "Toggle an emoji reaction on a community message. Sending the same emoji again **removes** the reaction (toggle semantics — no separate un-react call needed). " +
+      "On success the server broadcasts a `community:message:reaction` Socket.IO event to all room members carrying the same `reactions` array as the REST response.",
+    security: [{ bearerAuth: [] }],
+    parameters: [messageIdPathParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatCommunityReactRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Reaction toggled", "ChatCommunityReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+    },
+  },
+};
+
 // =============================================================================
 // Private messaging
 // =============================================================================
@@ -1194,14 +1220,20 @@ const communityMessages = {
     tags: ["Chat — Community"],
     summary: "Get community room messages",
     description:
-      "Timestamp-paginated message history for a community room. Timestamps are epoch " +
-      "milliseconds and mutually exclusive: `before_ts` returns messages with " +
-      "`createdAt <= before_ts` (newest-first); `after_ts` returns messages with " +
-      "`createdAt >= after_ts` (oldest-first). Omit both for the newest page. " +
-      "Boundaries are inclusive, so consecutive pages can share the boundary message — " +
-      "de-duplicate by message id. Continue paging with `pagination.nextCursor` " +
-      "(epoch-ms string) fed back as the same `before_ts`/`after_ts` you used. " +
-      "Use `around=<messageId>` to fetch a window centered on a specific message (jump-to-message / reply-tap).",
+      "Dual-mode message endpoint. The query param determines which mode is active — **provide only one of before_ts / after_ts**.\n\n" +
+      "**Scroll / history mode** (`before_ts` or neither):\n" +
+      "- `before_ts` → messages with `createdAt <= before_ts`, newest-first.\n" +
+      "- Omit both for the newest page.\n" +
+      "- Response shape: `ChatCommunityMessagePage` (`pagination` + `data[]` + top-level `hasMore`/`nextCursor`).\n" +
+      "- Boundaries inclusive — de-dupe by message id. Feed `nextCursor` back as the next `before_ts`.\n\n" +
+      "**Incremental-sync mode** (`after_ts` only, for offline/reconnect sync):\n" +
+      "- Queries by `updatedAt >= after_ts` — catches **new messages, edits, reaction changes, and deletions** in one call.\n" +
+      "- Each item has a `syncEventType: 'new'|'edited'|'deleted'|'reacted'` field for client-side reconciliation.\n" +
+      "- Tombstones (`deletedForAll=true`) are **included** so the client can purge deleted messages.\n" +
+      "- Response shape: `ChatCommunityIncrementalSync` (`data[]`, `hasMore`, `nextCursor`) — **no pagination wrapper**.\n" +
+      "- Store `nextCursor` as the next `after_ts` to page forward or re-sync.\n\n" +
+      "**Jump-to-message** (`around=<messageId>`):\n" +
+      "- Returns ~limit/2 messages on each side of the anchor. Mutually exclusive with before_ts/after_ts.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -1222,10 +1254,112 @@ const communityMessages = {
       limitParam(30),
     ],
     responses: {
-      ...successResponse("Messages", "ChatCommunityMessageList"),
+      "200": {
+        description:
+          "Messages. Shape depends on the mode: scroll mode returns `ChatCommunityMessagePage`; " +
+          "incremental-sync mode (`after_ts`) returns `ChatCommunityIncrementalSync`.",
+        content: {
+          "application/json": {
+            schema: {
+              oneOf: [
+                {
+                  allOf: [
+                    { $ref: "#/components/schemas/ApiSuccessResponse" },
+                    {
+                      type: "object" as const,
+                      properties: {
+                        data: {
+                          $ref: "#/components/schemas/ChatCommunityMessagePage",
+                        },
+                      },
+                    },
+                  ],
+                },
+                {
+                  allOf: [
+                    { $ref: "#/components/schemas/ApiSuccessResponse" },
+                    {
+                      type: "object" as const,
+                      properties: {
+                        data: {
+                          $ref: "#/components/schemas/ChatCommunityIncrementalSync",
+                        },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      },
       "400": badRequest,
       "401": unauthorized,
       "404": notFound,
+    },
+  },
+};
+
+const communityRoomSync = {
+  get: {
+    tags: ["Chat — Community"],
+    summary: "Community incremental sync (REST)",
+    description: [
+      "Returns every message in the room whose `updatedAt >= since_ts` — new",
+      "messages, edits, reaction changes, **and tombstones** (deleted messages).",
+      "Results are sorted oldest-first by `updatedAt`.",
+      "",
+      "### When to use",
+      "Call this endpoint when the app returns to the foreground after being",
+      "backgrounded. Pass the highest `updatedAt` timestamp you have stored",
+      "locally as `since_ts`; on the next call pass the returned `nextCursor`.",
+      "",
+      "### Response shape",
+      "```json",
+      '{ "data": [...], "hasMore": true, "nextCursor": "1718000000000" }',
+      "```",
+      "Feed `nextCursor` back as `since_ts` to page forward when `hasMore` is",
+      "`true`. When `hasMore` is `false` you are fully caught up.",
+      "",
+      "### Tombstones",
+      "Deleted messages are **included** (`isDeleted: true`). The client should",
+      "remove them from local storage when it sees `isDeleted: true`.",
+      "",
+      "**Rate limit:** 120 requests / min per user.",
+    ].join("\n"),
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+        description: "The community room ObjectId",
+      },
+      {
+        name: "since_ts",
+        in: "query",
+        required: true,
+        schema: { type: "integer", format: "int64", example: 1718000000000 },
+        description:
+          "Lower bound (inclusive) for `updatedAt`, epoch milliseconds.",
+      },
+      {
+        name: "limit",
+        in: "query",
+        required: false,
+        schema: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+        description: "Max events to return per page (1–200, default 50).",
+      },
+    ],
+    responses: {
+      ...successResponse(
+        "Incremental sync page",
+        "ChatCommunityIncrementalSync"
+      ),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
     },
   },
 };
@@ -1571,6 +1705,71 @@ const rtcConfig = {
 };
 
 // =============================================================================
+// Community message pin / unpin
+// =============================================================================
+const communityMessagePin = {
+  post: {
+    tags: ["Chat — Community"],
+    summary: "Pin a community message (moderator/admin only)",
+    description:
+      "Pins a message in the community room. Moderator or admin role required. Limit enforced by PIN_LIMIT_PER_ROOM.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description: "Community room ID",
+      },
+      {
+        name: "messageId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description: "Message ID to pin",
+      },
+    ],
+    responses: {
+      ...successResponse("Message pinned", "CommunityPinResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+  delete: {
+    tags: ["Chat — Community"],
+    summary: "Unpin a community message (moderator/admin only)",
+    description:
+      "Unpins a previously pinned message. Moderator or admin role required.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description: "Community room ID",
+      },
+      {
+        name: "messageId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description: "Message ID to unpin",
+      },
+    ],
+    responses: {
+      ...successResponse("Message unpinned", "CommunityPinResponse"),
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+// =============================================================================
 // Assemble all chat paths
 // =============================================================================
 export const chatPaths = {
@@ -1629,6 +1828,7 @@ export const chatPaths = {
   "/chat/community/rooms/search": communitySearch,
   "/chat/community/rooms/{roomId}/join": communityJoin,
   "/chat/community/rooms/{roomId}/leave": communityLeave,
+  "/chat/community/rooms/{roomId}/sync": communityRoomSync,
   "/chat/community/rooms/{roomId}/messages": communityMessages,
   "/chat/community/rooms/{roomId}/conversation": communityConversation,
   "/chat/community/rooms/{roomId}/media": communityMedia,
@@ -1637,6 +1837,9 @@ export const chatPaths = {
     ...communityMessageDelete,
     ...communityMessageEdit,
   },
+  "/chat/community/messages/{messageId}/react": communityMessageReact,
+  "/chat/community/rooms/{roomId}/messages/{messageId}/pin":
+    communityMessagePin,
 
   // Private — forward & reactions
   "/chat/private/rooms/{roomId}/messages/{messageId}/forward":

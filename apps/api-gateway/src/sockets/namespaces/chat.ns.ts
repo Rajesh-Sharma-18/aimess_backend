@@ -42,8 +42,11 @@ const ContactSchema = z.object({
 });
 const MessageSendSchema = z.object({
   conversationId: z.string().min(1),
-  clientMessageId: z.string().min(1),
-  contentType: z.string().min(1),
+  clientMessageId: z.string().optional(),
+  contentType: z
+    .string()
+    .min(1)
+    .transform((v) => v.toUpperCase()),
   contentText: z.string().optional(),
   mediaKey: z.string().optional(),
   files: z.array(FileAttachmentSchema).optional(),

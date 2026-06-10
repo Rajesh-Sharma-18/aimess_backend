@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import type { Redis, Cluster } from "ioredis";
 
+import { logger } from "@aimess/logger";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
@@ -53,12 +54,39 @@ export class CommunityMessageController {
       return;
     }
 
-    // Timestamp pagination (epoch ms). before_ts → newest-first; after_ts →
-    // oldest-first; neither → newest page.
     const beforeTs =
       req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
     const afterTs =
       req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
+
+    // Incremental-sync mode: after_ts only.
+    // Returns every message (new, edited, reacted, deleted tombstone) whose
+    // updatedAt >= after_ts. Feed the returned nextCursor as the next after_ts.
+    if (afterTs != null) {
+      const result = await this.service.getMessagesSince({
+        roomId,
+        userId,
+        fromTs: new Date(afterTs),
+        limit,
+      });
+      const msg = result.items.length
+        ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+        : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          {
+            data: result.items,
+            hasMore: result.hasMore,
+            // Store this as the next after_ts to page forward or re-sync.
+            nextCursor: result.nextCursor,
+          },
+          msg
+        )
+      );
+      return;
+    }
+
+    // Scroll / history mode: before_ts → newest-first, omit → latest page.
     const direction = afterTs != null ? "after" : "before";
     const tsMs =
       afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
@@ -179,6 +207,44 @@ export class CommunityMessageController {
       .json(new ApiResponse(result, t("CHAT_MESSAGE_EDITED", req.locale)));
   });
 
+  reactToMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { communityId, emoji } = req.body as {
+      communityId: string;
+      emoji: string;
+    };
+
+    const result = await this.service.reactToMessage({
+      messageId,
+      userId,
+      communityId,
+      emoji,
+    });
+
+    this.redis
+      .publish(
+        `community:${communityId}`,
+        JSON.stringify({
+          event: "community:message:reaction",
+          data: {
+            messageId: result.messageId,
+            communityId: result.communityId,
+            reactions: result.reactions,
+          },
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `community:message:reaction publish failed: ${String(err)}`
+        );
+      });
+
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_EDITED", req.locale))); // TODO: add CHAT_MESSAGE_REACTED key to @aimess/constants
+  });
+
   deleteMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
@@ -193,24 +259,62 @@ export class CommunityMessageController {
     // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
     if (result?.roomId) {
       await this.redis.publish(
-        `conv:${result.roomId}`,
+        `community:${result.roomId}`,
         JSON.stringify({
-          event: "message:delete",
-          // §2.3: self-describing tombstone — conversationId so a client can route
-          // the delete even if the room isn't currently loaded.
+          event: "community:message:deleted",
           data: {
             messageId: result.id,
-            conversationId: result.roomId,
-            type: type === "forEveryone" ? "forEveryone" : "forMe",
+            communityId: result.roomId,
+            roomId: result.roomId,
+            deleteType: type === "forEveryone" ? "forEveryone" : "forMe",
             deletedBy: userId,
-            sequenceNumber:
-              (result as { sequenceNumber?: number }).sequenceNumber ?? 0,
           },
         })
       );
     }
 
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  /**
+   * GET /rooms/:roomId/sync?since_ts=<ms>&limit=<n>
+   *
+   * Community incremental-sync REST endpoint. Returns all messages (new,
+   * edited, reacted, deleted tombstones) whose `updatedAt >= since_ts`,
+   * sorted oldest-first. Mirrors `GET /rooms/:roomId/messages?after_ts=` but
+   * is rate-limited independently and uses a mandatory `since_ts` parameter so
+   * the intent is unambiguous.
+   *
+   * Response shape: `{ data, hasMore, nextCursor }` — `nextCursor` is the
+   * epoch-ms string of the last item's updatedAt; feed it back as `since_ts`.
+   */
+  syncMessages = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const sinceTs = Number(req.query.since_ts);
+    const limit = Number(req.query.limit) || 50;
+
+    const result = await this.service.getMessagesSince({
+      roomId,
+      userId,
+      fromTs: new Date(sinceTs),
+      limit,
+    });
+
+    const msg = result.items.length
+      ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+      : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
+
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          data: result.items,
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor,
+        },
+        msg
+      )
+    );
   });
 
   searchMessages = asyncHandler(async (req: Request, res: Response) => {
@@ -240,5 +344,53 @@ export class CommunityMessageController {
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+  });
+
+  pinMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const communityId = roomId; // roomId === communityId invariant for community rooms
+
+    const result = await this.service.pinMessage({
+      messageId,
+      userId,
+      roomId,
+      communityId,
+    });
+    await this.redis.publish(
+      `community:${communityId}`,
+      JSON.stringify({
+        event: "community:message:pinned",
+        data: { messageId, communityId, roomId, ...result, pinnedBy: userId },
+      })
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_PINNED", req.locale)));
+  });
+
+  unpinMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const communityId = roomId;
+
+    const result = await this.service.unpinMessage({
+      messageId,
+      userId,
+      roomId,
+      communityId,
+    });
+    await this.redis.publish(
+      `community:${communityId}`,
+      JSON.stringify({
+        event: "community:message:unpinned",
+        data: { messageId, communityId, roomId, ...result, unpinnedBy: userId },
+      })
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_UNPINNED", req.locale)));
   });
 }

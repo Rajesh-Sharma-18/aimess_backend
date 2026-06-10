@@ -47,7 +47,7 @@ export const rateLimiter = rateLimit({
 export const sensitiveAuthRateLimiter = rateLimit({
   // windowMs: 15 * 60 * 1000,
   // max: 20,
-  windowMs: env.SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES, // 15 minutes
+  windowMs: env.SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
   max: env.SENSITIVE_AUTH_RATE_LIMIT_MAX,
   standardHeaders: "draft-7",
   legacyHeaders: false,

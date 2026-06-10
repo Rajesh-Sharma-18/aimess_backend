@@ -162,4 +162,14 @@ export class GeneralRoomRepository {
       data: { status: "active" },
     });
   }
+
+  async updatePinnedMessages(
+    roomId: string,
+    pinnedIds: string[]
+  ): Promise<void> {
+    await this.prisma.generalRoom.update({
+      where: { id: roomId },
+      data: { listPinedMessage: pinnedIds },
+    });
+  }
 }

@@ -21,10 +21,10 @@ app.disable("x-powered-by");
 app.use(helmet());
 app.use(
   cors({
-    origin: "http://10.0.127.224:3000",
+    origin: env.CORS_ALLOWED_ORIGINS.split(","),
     credentials: true,
     methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    // allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 app.use(express.json({ limit: "1mb" }));
