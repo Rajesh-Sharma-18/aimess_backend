@@ -1,22 +1,22 @@
 import type { NextFunction, Request, Response } from "express";
 import type { ZodSchema } from "zod";
 
-import { BadRequestError } from "@aimess/errors";
+import { zodErrorMessage } from "@aimess/utils";
 
 /**
  * Express middleware factory: validate `req.query` against a Zod schema.
- * Express 5 makes `req.query` read-only, so this only validates (rejecting bad
- * input with a field-level message) — controllers continue reading req.query.
+ * Express 5 makes `req.query` read-only, so this only validates (responding 400
+ * with all issues merged into a single-line message) — controllers continue
+ * reading req.query.
  */
 export function validateQuery(schema: ZodSchema) {
-  return (req: Request, _res: Response, next: NextFunction): void => {
+  return (req: Request, res: Response, next: NextFunction): void => {
     const result = schema.safeParse(req.query);
     if (!result.success) {
-      const firstIssue = result.error.issues[0];
-      const message = firstIssue
-        ? `${firstIssue.path.join(".")}: ${firstIssue.message}`
-        : "Invalid query parameters";
-      throw new BadRequestError(message);
+      res
+        .status(400)
+        .json({ success: false, message: zodErrorMessage(result.error) });
+      return;
     }
     next();
   };

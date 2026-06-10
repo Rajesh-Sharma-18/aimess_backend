@@ -4,7 +4,7 @@ export const accountSchema = z
   .string()
   .trim()
   // .toLowerCase()
-  .min(3, "Account name must be at least 3 characters long")
+  .min(3, "Account name must be at least 3 characters")
   .max(32, "Account name must be at most 32 characters")
   .regex(
     /^[-a-zA-Z0-9_]+$/,
@@ -19,8 +19,8 @@ export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
 
 export const passwordSchema = z
   .string()
-  .min(8, "Password must be at least 8 characters long.")
-  .max(128, "Password cannot exceed 128 characters.");
+  .min(8, "Password must be at least 8 characters")
+  .max(128, "Password must be at most 128 characters");
 
 /**
  * FCM device push tokens — optional, captured on register/login when available.
@@ -28,7 +28,7 @@ export const passwordSchema = z
  * or pass an empty array. Individual tokens (when provided) must be non-empty strings.
  */
 export const fcmTokensSchema = z
-  .array(z.string().trim().min(1, "FCM token cannot be empty"))
+  .array(z.string().trim().min(1, "FCM token is required"))
   .optional();
 
 export const registerSchema = z.object({

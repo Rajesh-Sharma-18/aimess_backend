@@ -34,14 +34,14 @@ const liveStreamQualitySchema = z.enum([
   "DATA_SAVER_480P",
 ]);
 
-const uuidSchema = z.string().uuid("Please provide a valid user ID.");
+const uuidSchema = z.string().uuid("User ID is invalid");
 
 // "HH:mm" 24-hour clock, e.g. "22:00".
 const timeOfDaySchema = z
   .string()
   .regex(
     /^([01]\d|2[0-3]):[0-5]\d$/,
-    "Please enter a valid time in HH:mm 24-hour format (e.g. 22:00)."
+    "Time must be in HH:mm 24-hour format (e.g. 22:00)"
   );
 
 // 0 = Sunday .. 6 = Saturday.
@@ -124,29 +124,29 @@ export const updateSettingsSchema = z
       body.app !== undefined ||
       body.notifications !== undefined ||
       body.liveStream !== undefined,
-    { message: "Please provide at least one settings group to update." }
+    { message: "At least one settings group is required to update" }
   )
   .refine((body) => !body.privacy || hasAtLeastOneKey(body.privacy), {
-    message: "Privacy settings must include at least one field.",
+    message: "Privacy settings must include at least one field",
     path: ["privacy"],
   })
   .refine((body) => !body.chat || hasAtLeastOneKey(body.chat), {
-    message: "Chat settings must include at least one field.",
+    message: "Chat settings must include at least one field",
     path: ["chat"],
   })
   .refine((body) => !body.app || hasAtLeastOneKey(body.app), {
-    message: "App settings must include at least one field.",
+    message: "App settings must include at least one field",
     path: ["app"],
   })
   .refine(
     (body) => !body.notifications || hasAtLeastOneKey(body.notifications),
     {
-      message: "Notification settings must include at least one field.",
+      message: "Notification settings must include at least one field",
       path: ["notifications"],
     }
   )
   .refine((body) => !body.liveStream || hasAtLeastOneKey(body.liveStream), {
-    message: "Livestream settings must include at least one field.",
+    message: "Livestream settings must include at least one field",
     path: ["liveStream"],
   });
 

@@ -2,11 +2,7 @@ import { z } from "zod";
 
 import { passwordSchema } from "./auth.validator.js";
 
-const emailSchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .email("Please enter a valid email address.");
+const emailSchema = z.string().trim().toLowerCase().email("Email is invalid");
 
 export const requestPasswordResetOtpSchema = z.object({
   email: emailSchema,
@@ -21,7 +17,7 @@ export const verifyPasswordResetOtpSchema = z.object({
   code: z
     .string()
     .trim()
-    .regex(/^\d{6}$/, "Verification code must be exactly 6 digits."),
+    .regex(/^\d{6}$/, "Verification code must be exactly 6 digits"),
 });
 
 export type VerifyPasswordResetOtpInput = z.infer<
@@ -29,7 +25,7 @@ export type VerifyPasswordResetOtpInput = z.infer<
 >;
 
 export const resetPasswordSchema = z.object({
-  resetToken: z.string().trim().min(32, "Invalid reset token"),
+  resetToken: z.string().trim().min(32, "Reset token is invalid"),
   password: passwordSchema,
 });
 

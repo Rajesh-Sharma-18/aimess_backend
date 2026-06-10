@@ -7,7 +7,7 @@ export const refreshTokenSchema = z.object({
 export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
 
 export const sessionIdParamsSchema = z.object({
-  sessionId: z.string().uuid("Invalid session ID"),
+  sessionId: z.string().uuid("Session ID is invalid"),
 });
 
 export type SessionIdParams = z.infer<typeof sessionIdParamsSchema>;

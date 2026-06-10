@@ -991,6 +991,30 @@ export const communityService = {
       await communityCache.invalidateHandleAvailability(nextHandle);
     }
 
+    if (input.memberIds !== undefined) {
+      const desiredSet = new Set(input.memberIds);
+      const currentIds =
+        await communityRepository.findActiveMemberIds(communityId);
+      const currentSet = new Set(currentIds);
+
+      const toAdd = input.memberIds.filter((id) => !currentSet.has(id));
+      const toRemove = currentIds.filter((id) => !desiredSet.has(id));
+
+      if (toAdd.length > 0) {
+        await this.addMembers(communityId, callerId, toAdd);
+      }
+
+      for (const targetUserId of toRemove) {
+        try {
+          await this.kickMember(communityId, callerId, targetUserId);
+        } catch (err) {
+          // Skip members who are no longer ACTIVE (already left/banned/never joined).
+          if (err instanceof NotFoundError) continue;
+          throw err;
+        }
+      }
+    }
+
     // Admin who just patched the community isn't asking about mute — skip read.
     return toCommunityData(updated, membership.role, null);
   },

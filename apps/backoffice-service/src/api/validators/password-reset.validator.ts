@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-const emailSchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .email("Please enter a valid email address");
+const emailSchema = z.string().trim().toLowerCase().email("Email is invalid");
 
 /** Admin password policy: min 12 chars with upper + lower + digit + special. */
 const adminPasswordSchema = z

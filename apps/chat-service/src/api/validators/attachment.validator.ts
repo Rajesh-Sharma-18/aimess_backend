@@ -29,7 +29,7 @@ export const stickerSchema = z
   })
   .refine(
     (d) => d.objectKey || d.url,
-    "Sticker must include either objectKey or url."
+    "Sticker must include either objectKey or url"
   );
 
 export type LocationAttachment = z.infer<typeof locationSchema>;

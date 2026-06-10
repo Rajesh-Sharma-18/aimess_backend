@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 
 import { logger } from "@aimess/logger";
+import { zodErrorMessage } from "@aimess/utils";
 
 import { deviceTokenService } from "../../services/device-token.service.js";
 import {
@@ -17,8 +18,7 @@ export async function registerDevice(
   if (!parsed.success) {
     return res.status(400).json({
       success: false,
-      message: "Invalid request body",
-      issues: parsed.error.issues,
+      message: zodErrorMessage(parsed.error) || "Request body is invalid",
     });
   }
 
@@ -47,8 +47,7 @@ export async function unregisterDevice(
   if (!parsed.success) {
     return res.status(400).json({
       success: false,
-      message: "Invalid device token",
-      issues: parsed.error.issues,
+      message: zodErrorMessage(parsed.error) || "Device token is invalid",
     });
   }
 

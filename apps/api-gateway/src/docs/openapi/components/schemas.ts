@@ -3457,7 +3457,10 @@ export const openApiSchemas = {
   },
   UpdateCommunityRequest: {
     type: "object",
-    description: "Partial update; at least one field required. Admin only.",
+    description:
+      "Partial update; at least one field required. Admin only. " +
+      "Optionally supply memberIds with the complete desired member list — the service diffs it against the current ACTIVE members and adds/removes accordingly. " +
+      "Newly added users have their profile snapshot (username, displayName, avatarUrl) fetched automatically via gRPC.",
     properties: {
       name: { type: "string", minLength: 3, maxLength: 50 },
       handle: { type: "string", minLength: 3, maxLength: 32 },
@@ -3465,6 +3468,13 @@ export const openApiSchemas = {
       categoryId: { type: "string" },
       description: { type: "string", maxLength: 500, nullable: true },
       avatarObjectKey: { type: "string", nullable: true },
+      memberIds: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
+        maxItems: 500,
+        description:
+          "Complete desired member list (UUIDs). The service diffs against current ACTIVE members: users not in this list are removed, new users are added. BANNED users in the list are skipped.",
+      },
     },
   },
   CommunityNameAvailabilityData: {

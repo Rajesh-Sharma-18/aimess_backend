@@ -7,8 +7,8 @@ const OBJECT_ID_REGEX = /^[a-f0-9]{24}$/i;
 const nameSchema = z
   .string()
   .trim()
-  .min(3, "Community name must be at least 3 characters long.")
-  .max(50, "Community name cannot exceed 50 characters.");
+  .min(3, "Community name must be at least 3 characters")
+  .max(50, "Community name must be at most 50 characters");
 
 const handleSchema = z
   .string()
@@ -17,29 +17,29 @@ const handleSchema = z
   .pipe(
     z
       .string()
-      .min(3, "Community handle must be at least 3 characters long.")
-      .max(32, "Community handle cannot exceed 32 characters.")
+      .min(3, "Community handle must be at least 3 characters")
+      .max(32, "Community handle must be at most 32 characters")
       .regex(
         /^[a-z0-9_]+$/,
-        "Community handle may only contain lowercase letters, numbers, and underscores."
+        "Community handle may only contain lowercase letters, numbers, and underscores"
       )
   );
 
 const descriptionSchema = z
   .string()
   .trim()
-  .max(500, "Description cannot exceed 500 characters.");
+  .max(500, "Description must be at most 500 characters");
 
 const categoryIdSchema = z
   .string()
   .trim()
-  .regex(OBJECT_ID_REGEX, "Please provide a valid category.");
+  .regex(OBJECT_ID_REGEX, "Category is invalid");
 
 const objectKeySchema = z.string().trim().min(1).max(512);
 
 const memberIdsSchema = z
-  .array(z.string().uuid("One or more member IDs are invalid."))
-  .max(500, "You have exceeded the maximum number of members allowed.")
+  .array(z.string().uuid("One or more member IDs are invalid"))
+  .max(500, "You can select at most 500 members")
   .transform((ids) => [...new Set(ids)]);
 
 /** Shared offset/page pagination query fields. */
@@ -66,6 +66,7 @@ export const updateCommunitySchema = z
     categoryId: categoryIdSchema.optional(),
     description: descriptionSchema.nullable().optional(),
     avatarObjectKey: objectKeySchema.nullable().optional(),
+    memberIds: memberIdsSchema.optional(),
   })
   .refine(
     (body) =>
@@ -74,17 +75,15 @@ export const updateCommunitySchema = z
       body.type !== undefined ||
       body.categoryId !== undefined ||
       body.description !== undefined ||
-      body.avatarObjectKey !== undefined,
-    { message: "Please provide at least one field to update." }
+      body.avatarObjectKey !== undefined ||
+      body.memberIds !== undefined,
+    { message: "At least one field is required to update" }
   );
 
 export type UpdateCommunityInput = z.infer<typeof updateCommunitySchema>;
 
 export const communityIdParamsSchema = z.object({
-  id: z
-    .string()
-    .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid community ID."),
+  id: z.string().trim().regex(OBJECT_ID_REGEX, "Community ID is invalid"),
 });
 
 export type CommunityIdParams = z.infer<typeof communityIdParamsSchema>;
@@ -105,7 +104,7 @@ export type HandleAvailableQuery = z.infer<typeof handleAvailableQuerySchema>;
 const discoverSearchSchema = z
   .string()
   .trim()
-  .min(1, "Please enter a search query.")
+  .min(1, "Search query is required")
   .max(100, "Search query must be at most 100 characters");
 
 /**
@@ -142,7 +141,7 @@ export const myCommunitiesQuerySchema = z
     limit: limitSchema,
   })
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
-    message: "Please provide only one pagination parameter at a time.",
+    message: "Only one pagination parameter is allowed at a time",
     path: ["before_ts"],
   });
 
@@ -164,11 +163,8 @@ export const discoverQuerySchema = z.object({
 export type DiscoverQuery = z.infer<typeof discoverQuerySchema>;
 
 export const communityMemberParamsSchema = z.object({
-  id: z
-    .string()
-    .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid community ID."),
-  userId: z.string().trim().uuid("Please provide a valid user ID."),
+  id: z.string().trim().regex(OBJECT_ID_REGEX, "Community ID is invalid"),
+  userId: z.string().trim().uuid("User ID is invalid"),
 });
 
 export type CommunityMemberParams = z.infer<typeof communityMemberParamsSchema>;
@@ -192,9 +188,9 @@ export type ModerationReasonInput = z.infer<typeof moderationReasonSchema>;
 
 export const addMembersSchema = z.object({
   userIds: z
-    .array(z.string().uuid("One or more user IDs are invalid."))
-    .min(1, "At least one user must be selected.")
-    .max(100, "You have exceeded the maximum number of members allowed.")
+    .array(z.string().uuid("One or more user IDs are invalid"))
+    .min(1, "Select at least one user")
+    .max(100, "You can select at most 100 members")
     .transform((ids) => [...new Set(ids)]),
 });
 
@@ -216,7 +212,7 @@ export const auditLogsQuerySchema = z.object({
 export type AuditLogsQuery = z.infer<typeof auditLogsQuerySchema>;
 
 export const transferAdminSchema = z.object({
-  userId: z.string().trim().uuid("Please provide a valid user ID."),
+  userId: z.string().trim().uuid("User ID is invalid"),
 });
 
 export type TransferAdminInput = z.infer<typeof transferAdminSchema>;
@@ -257,21 +253,15 @@ export const myJoinRequestsQuerySchema = z.object({
 export type MyJoinRequestsQuery = z.infer<typeof myJoinRequestsQuerySchema>;
 
 export const joinRequestIdParamsSchema = z.object({
-  id: z
-    .string()
-    .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid community ID."),
-  requestId: z
-    .string()
-    .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid request ID."),
+  id: z.string().trim().regex(OBJECT_ID_REGEX, "Community ID is invalid"),
+  requestId: z.string().trim().regex(OBJECT_ID_REGEX, "Request ID is invalid"),
 });
 export type JoinRequestIdParams = z.infer<typeof joinRequestIdParamsSchema>;
 
 // --- Invites --------------------------------------------------------------
 
 export const createInviteSchema = z.object({
-  inviteeId: z.string().trim().uuid("Please provide a valid user to invite."),
+  inviteeId: z.string().trim().uuid("Invitee ID is invalid"),
 });
 export type CreateInviteInput = z.infer<typeof createInviteSchema>;
 
@@ -293,7 +283,7 @@ export const inviteIdParamsSchema = z.object({
   inviteId: z
     .string()
     .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid invitation ID."),
+    .regex(OBJECT_ID_REGEX, "Invitation ID is invalid"),
 });
 export type InviteIdParams = z.infer<typeof inviteIdParamsSchema>;
 
@@ -308,11 +298,7 @@ const reportStatusEnum = z.enum([
 ]);
 
 export const createReportSchema = z.object({
-  targetUserId: z
-    .string()
-    .trim()
-    .uuid("Please provide a valid user ID.")
-    .optional(),
+  targetUserId: z.string().trim().uuid("User ID is invalid").optional(),
   reason: z
     .string()
     .trim()
@@ -322,14 +308,8 @@ export const createReportSchema = z.object({
 export type CreateReportInput = z.infer<typeof createReportSchema>;
 
 export const reportIdParamsSchema = z.object({
-  id: z
-    .string()
-    .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid community ID."),
-  reportId: z
-    .string()
-    .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid report ID."),
+  id: z.string().trim().regex(OBJECT_ID_REGEX, "Community ID is invalid"),
+  reportId: z.string().trim().regex(OBJECT_ID_REGEX, "Report ID is invalid"),
 });
 export type ReportIdParams = z.infer<typeof reportIdParamsSchema>;
 
@@ -364,10 +344,10 @@ const communityIdsSchema = z
     z
       .string()
       .trim()
-      .regex(OBJECT_ID_REGEX, "One or more community IDs are invalid.")
+      .regex(OBJECT_ID_REGEX, "One or more community IDs are invalid")
   )
-  .min(1, "At least one community must be selected.")
-  .max(50, "You can select at most 50 communities at a time.")
+  .min(1, "Select at least one community")
+  .max(50, "You can select at most 50 communities")
   .transform((ids) => [...new Set(ids)]);
 
 export const bulkMarkReadSchema = z.object({
@@ -381,8 +361,8 @@ export const bulkMuteSchema = z.object({
   durationMinutes: z
     .number()
     .int()
-    .min(1, "The mute duration must be at least 1 minute.")
-    .max(525_600, "The mute duration cannot exceed 365 days.")
+    .min(1, "Mute duration must be at least 1 minute")
+    .max(525_600, "Mute duration must be at most 365 days")
     .nullable()
     .optional(),
 });
@@ -392,8 +372,8 @@ export const setMuteSchema = z.object({
   durationMinutes: z
     .number()
     .int()
-    .min(1, "The mute duration must be at least 1 minute.")
-    .max(525_600, "The mute duration cannot exceed 365 days.")
+    .min(1, "Mute duration must be at least 1 minute")
+    .max(525_600, "Mute duration must be at most 365 days")
     .nullable()
     .optional(),
 });
@@ -406,8 +386,8 @@ export const setMemberMuteSchema = z.object({
   durationMinutes: z
     .number()
     .int()
-    .min(1, "The mute duration must be at least 1 minute.")
-    .max(525_600, "The mute duration cannot exceed 365 days.")
+    .min(1, "Mute duration must be at least 1 minute")
+    .max(525_600, "Mute duration must be at most 365 days")
     .nullable()
     .optional(),
   reason: z
@@ -465,23 +445,26 @@ export const leaveReasonSchema = z
   .object({
     reason: z
       .enum([
-        "UNINTERESTED",
-        "TOO_NOISY",
-        "INAPPROPRIATE_CONTENT",
+        "TOO_MANY_NOTIFICATIONS",
+        "NOT_RELEVANT",
+        "COMMUNITY_INACTIVE",
+        "TOO_MANY_MESSAGES",
         "PRIVACY_CONCERN",
+        "JOINED_BY_MISTAKE",
+        "TAKING_A_BREAK",
         "OTHER",
       ])
       .optional(),
     reasonText: z
       .string()
       .trim()
-      .max(500, "The reason cannot exceed 500 characters.")
+      .max(500, "Reason must be at most 500 characters")
       .optional(),
   })
   .refine(
     (b) => b.reason !== "OTHER" || (!!b.reasonText && b.reasonText.length > 0),
     {
-      message: "Please provide a reason when selecting 'Other'.",
+      message: "Reason is required when selecting 'Other'",
       path: ["reasonText"],
     }
   );
@@ -506,14 +489,8 @@ export const listInviteLinksQuerySchema = z.object({
 export type ListInviteLinksQuery = z.infer<typeof listInviteLinksQuerySchema>;
 
 export const inviteLinkIdParamsSchema = z.object({
-  id: z
-    .string()
-    .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid community ID."),
-  linkId: z
-    .string()
-    .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid invite link ID."),
+  id: z.string().trim().regex(OBJECT_ID_REGEX, "Community ID is invalid"),
+  linkId: z.string().trim().regex(OBJECT_ID_REGEX, "Invite link ID is invalid"),
 });
 export type InviteLinkIdParams = z.infer<typeof inviteLinkIdParamsSchema>;
 
@@ -523,7 +500,7 @@ export const inviteLinkCodeParamsSchema = z.object({
     .trim()
     .min(4)
     .max(64)
-    .regex(/^[A-Za-z0-9_-]+$/, "The invite code is invalid."),
+    .regex(/^[A-Za-z0-9_-]+$/, "Invite code is invalid"),
 });
 export type InviteLinkCodeParams = z.infer<typeof inviteLinkCodeParamsSchema>;
 
@@ -537,10 +514,10 @@ export const bulkSendInviteLinkSchema = z.object({
       z
         .string()
         .trim()
-        .regex(OBJECT_ID_REGEX, "One or more user IDs are invalid.")
+        .regex(OBJECT_ID_REGEX, "One or more user IDs are invalid")
     )
-    .min(1, "At least one user must be selected.")
-    .max(50, "You can select at most 50 users at a time."),
+    .min(1, "Select at least one user")
+    .max(50, "You can select at most 50 users"),
   /**
    * Optional: reuse a specific invite link. When omitted the service fetches the
    * first active link or creates one on the fly.
@@ -548,7 +525,7 @@ export const bulkSendInviteLinkSchema = z.object({
   linkId: z
     .string()
     .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid invite link ID.")
+    .regex(OBJECT_ID_REGEX, "Invite link ID is invalid")
     .optional(),
 });
 export type BulkSendInviteLinkInput = z.infer<typeof bulkSendInviteLinkSchema>;
@@ -593,7 +570,7 @@ export const categoryIdParamSchema = z.object({
   categoryId: z
     .string()
     .trim()
-    .regex(OBJECT_ID_REGEX, "Please provide a valid category ID."),
+    .regex(OBJECT_ID_REGEX, "Category ID is invalid"),
 });
 
 export type CategoryIdParams = z.infer<typeof categoryIdParamSchema>;

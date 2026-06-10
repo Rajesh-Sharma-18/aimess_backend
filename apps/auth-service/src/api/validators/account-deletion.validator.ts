@@ -5,7 +5,7 @@ export const deleteAccountSchema = z.object({
   // accounts that actually have a password (social-only accounts can skip it).
   password: z
     .string()
-    .min(1, "Please enter your password to confirm account deletion.")
+    .min(1, "Password is required to confirm account deletion")
     .optional(),
 });
 

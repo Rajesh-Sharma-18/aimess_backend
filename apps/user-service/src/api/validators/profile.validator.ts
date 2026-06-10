@@ -13,11 +13,11 @@ const usernameSchema = z
   .pipe(
     z
       .string()
-      .min(3, "Username must be at least 3 characters long.")
-      .max(32, "Username cannot exceed 32 characters.")
+      .min(3, "Username must be at least 3 characters")
+      .max(32, "Username must be at most 32 characters")
       .regex(
         /^[a-z0-9_]+$/,
-        "Username may only contain lowercase letters, numbers, and underscores."
+        "Username may only contain lowercase letters, numbers, and underscores"
       )
   );
 
@@ -25,10 +25,10 @@ const dateOfBirthSchema = z
   .string()
   .regex(
     /^\d{4}-\d{2}-\d{2}$/,
-    "Date of birth must be in YYYY-MM-DD format (e.g. 1995-06-15)."
+    "Date of birth must be in YYYY-MM-DD format (e.g. 1995-06-15)"
   )
   .refine(isValidProfileDateOfBirth, {
-    message: "You must be at least 13 years old to use this app.",
+    message: "You must be at least 13 years old to use this app",
   });
 
 const genderSchema = z.enum(PROFILE_GENDER_VALUES);
@@ -38,20 +38,20 @@ export const updateProfileSchema = z
     firstName: z
       .string()
       .trim()
-      .min(1, "First name is required.")
-      .max(50, "First name cannot exceed 50 characters.")
+      .min(1, "First name is required")
+      .max(50, "First name must be at most 50 characters")
       .optional(),
     lastName: z
       .string()
       .trim()
-      .min(1, "Last name is required.")
-      .max(50, "Last name cannot exceed 50 characters.")
+      .min(1, "Last name is required")
+      .max(50, "Last name must be at most 50 characters")
       .optional(),
     username: usernameSchema.optional(),
     bio: z
       .string()
       .trim()
-      .max(280, "Bio cannot exceed 280 characters.")
+      .max(280, "Bio must be at most 280 characters")
       .nullable()
       .optional(),
     dateOfBirth: dateOfBirthSchema.optional(),
@@ -67,7 +67,7 @@ export const updateProfileSchema = z
       body.dateOfBirth !== undefined ||
       body.gender !== undefined ||
       body.avatarObjectKey !== undefined,
-    { message: "Please provide at least one field to update." }
+    { message: "Please provide at least one field to update" }
   );
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

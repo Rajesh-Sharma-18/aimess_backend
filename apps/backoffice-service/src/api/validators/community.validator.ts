@@ -123,10 +123,7 @@ export const listCommunitiesQuerySchema = z
     sortOrder: sortOrderFilter,
     sort: z
       .string()
-      .regex(
-        SORT_PATTERN,
-        "Invalid sort parameter. Use format: field:asc or field:desc"
-      )
+      .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
       .default("createdAt:desc"),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),

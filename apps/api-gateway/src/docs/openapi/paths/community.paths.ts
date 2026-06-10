@@ -768,7 +768,8 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Update a community",
       description:
-        "Admin only. Partial update; name/handle re-checked for uniqueness (excluding this community).",
+        "Admin only. Partial update; name/handle re-checked for uniqueness (excluding this community). " +
+        "Optionally supply memberIds (uuid[]) with the complete desired member list — the service diffs it against current ACTIVE members and applies adds/removes automatically.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
