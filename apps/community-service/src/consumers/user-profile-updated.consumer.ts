@@ -9,16 +9,19 @@ import {
 import { env } from "../config/env.js";
 import { communityRepository } from "../repositories/community.repository.js";
 
-const QUEUE = "user.profile_updated.queue";
-const DLX = "user.profile_updated.queue.dlx";
-const DLQ = "user.profile_updated.queue.dlq";
-const DLQ_ROUTING_KEY = "user.profile_updated.queue.dead";
+const EXCHANGE = "user.profile_updated";
+const QUEUE = "user.profile_updated.community.queue";
+const DLX = "user.profile_updated.community.queue.dlx";
+const DLQ = "user.profile_updated.community.queue.dlq";
+const DLQ_ROUTING_KEY = "user.profile_updated.community.queue.dead";
 
 const PREFETCH = 10;
 
 export async function startUserProfileUpdatedConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
   const channel = await connection.createChannel();
+
+  await channel.assertExchange(EXCHANGE, "fanout", { durable: true });
 
   await channel.assertExchange(DLX, "direct", { durable: true });
   await channel.assertQueue(DLQ, { durable: true });
@@ -29,11 +32,12 @@ export async function startUserProfileUpdatedConsumer(): Promise<void> {
     deadLetterExchange: DLX,
     deadLetterRoutingKey: DLQ_ROUTING_KEY,
   });
+  await channel.bindQueue(QUEUE, EXCHANGE, "");
 
   await channel.prefetch(PREFETCH);
 
   logger.info(
-    "Community-service consumer listening on user.profile_updated.queue"
+    `[user-profile-consumer] Listening on queue=${QUEUE} prefetch=${PREFETCH} — ready to sync community member snapshots`
   );
 
   channel.consume(QUEUE, async (message) => {

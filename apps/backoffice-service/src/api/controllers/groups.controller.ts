@@ -25,7 +25,7 @@ export const listGroups: RequestHandler = (req, res, next) => {
       );
       res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "GROUPS_LISTED",
+        message: "Groups fetched successfully",
         data: {
           items: result.items,
           pagination: result.pagination,
@@ -51,7 +51,7 @@ export const getGroupDetails: RequestHandler = (req, res, next) => {
       if (!group) throw new NotFoundError("GROUP_NOT_FOUND");
       res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "GROUP_FETCHED",
+        message: "Group fetched successfully",
         data: group,
       });
     } catch (error) {
@@ -76,7 +76,7 @@ export const listGroupMembers: RequestHandler = (req, res, next) => {
       if (!result.found) throw new NotFoundError("GROUP_NOT_FOUND");
       res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "GROUP_MEMBERS_LISTED",
+        message: "Group members fetched successfully",
         data: {
           items: result.items,
           pagination: result.pagination,

@@ -33,6 +33,6 @@ export const adminIpAllowlist: RequestHandler = (req, res, next) => {
 
   res.status(403).json({
     success: false,
-    message: "Forbidden",
+    message: "You do not have permission to access this resource.",
   });
 };

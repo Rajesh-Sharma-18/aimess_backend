@@ -12,9 +12,16 @@ import type {
   BulkResultItem,
   DismissReason,
   DismissResult,
+  EvidenceItem,
+  HistoryItem,
+  ListReportEvidenceQuery,
+  ListReportHistoryQuery,
+  ListReportRelatedQuery,
   ModeratorRef,
   Paginated,
   PaginationMeta,
+  RelatedReport,
+  ReportCore,
   ReportDetail,
   ReportListItem,
   ReportStatus,
@@ -35,6 +42,19 @@ import type {
 export interface ReportRepository {
   list(query: ListReportsQuery): Promise<Paginated<ReportListItem>>;
   getById(id: string): Promise<ReportDetail | null>;
+  getCore(id: string): Promise<ReportCore | null>;
+  listEvidence(
+    id: string,
+    query: ListReportEvidenceQuery
+  ): Promise<Paginated<EvidenceItem>>;
+  listHistory(
+    id: string,
+    query: ListReportHistoryQuery
+  ): Promise<Paginated<HistoryItem>>;
+  listRelated(
+    id: string,
+    query: ListReportRelatedQuery
+  ): Promise<Paginated<RelatedReport>>;
   resolve(
     id: string,
     input: ResolveInput,
@@ -166,6 +186,43 @@ export class MockReportRepository implements ReportRepository {
   getById(id: string): Promise<ReportDetail | null> {
     const row = this.rows.find((r) => r.reportId === id) ?? null;
     return Promise.resolve(row ? structuredClone(row) : null);
+  }
+
+  getCore(id: string): Promise<ReportCore | null> {
+    const row = this.rows.find((r) => r.reportId === id) ?? null;
+    if (!row) return Promise.resolve(null);
+    const { evidence, history, relatedReports, ...core } = structuredClone(row);
+    return Promise.resolve(core);
+  }
+
+  listEvidence(
+    id: string,
+    query: ListReportEvidenceQuery
+  ): Promise<Paginated<EvidenceItem>> {
+    const row = this.rows.find((r) => r.reportId === id);
+    if (!row) return Promise.resolve(this.emptyPage(query));
+    const items = row.evidence;
+    return Promise.resolve(this.slicePage(items, query));
+  }
+
+  listHistory(
+    id: string,
+    query: ListReportHistoryQuery
+  ): Promise<Paginated<HistoryItem>> {
+    const row = this.rows.find((r) => r.reportId === id);
+    if (!row) return Promise.resolve(this.emptyPage(query));
+    const items = row.history;
+    return Promise.resolve(this.slicePage(items, query));
+  }
+
+  listRelated(
+    id: string,
+    query: ListReportRelatedQuery
+  ): Promise<Paginated<RelatedReport>> {
+    const row = this.rows.find((r) => r.reportId === id);
+    if (!row) return Promise.resolve(this.emptyPage(query));
+    const items = row.relatedReports;
+    return Promise.resolve(this.slicePage(items, query));
   }
 
   resolve(
@@ -322,6 +379,35 @@ export class MockReportRepository implements ReportRepository {
     }
 
     return { requested: ids.length, succeeded, failed, results };
+  }
+
+  private slicePage<T>(
+    items: T[],
+    query: { page: number; limit: number }
+  ): Paginated<T> {
+    const { page, limit } = query;
+    const total = items.length;
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+    const start = (page - 1) * limit;
+    const slice = items.slice(start, start + limit);
+    return {
+      data: slice,
+      pagination: {
+        mode: "offset",
+        page,
+        limit,
+        total,
+        totalApprox: total,
+        totalPages,
+        hasNext: start + limit < total,
+        hasPrev: page > 1,
+        nextCursor: null,
+      },
+    };
+  }
+
+  private emptyPage<T>(query: { page: number; limit: number }): Paginated<T> {
+    return this.slicePage<T>([], query);
   }
 
   private applyFilters(query: ListReportsQuery): ReportDetail[] {

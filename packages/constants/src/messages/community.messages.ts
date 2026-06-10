@@ -14,13 +14,13 @@ export const COMMUNITY_MESSAGES = {
     vi: "Lấy thông tin cộng đồng thành công",
     en: "Community fetched successfully",
   },
-  COMMUNITY_NAME_AVAILABILITY: {
-    vi: "Đã kiểm tra tên cộng đồng",
-    en: "Community name availability checked",
+  COMMUNITY_NAME_AVAILABLE: {
+    vi: "Tên cộng đồng này có thể sử dụng",
+    en: "This community name is available.",
   },
-  COMMUNITY_HANDLE_AVAILABILITY: {
-    vi: "Đã kiểm tra định danh cộng đồng",
-    en: "Community handle availability checked",
+  COMMUNITY_HANDLE_AVAILABLE: {
+    vi: "Định danh cộng đồng này có thể sử dụng",
+    en: "This community handle is available.",
   },
   COMMUNITY_CATEGORIES_FETCHED: {
     vi: "Lấy danh mục cộng đồng thành công",
@@ -365,6 +365,14 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_INVITE_LINK_EXHAUSTED: {
     vi: "Liên kết mời đã đạt giới hạn sử dụng",
     en: "Invite link usage limit reached",
+  },
+  COMMUNITY_INVITE_LINK_BULK_SENT: {
+    vi: "Đã gửi liên kết mời hàng loạt",
+    en: "Invite links sent",
+  },
+  COMMUNITY_INVITE_LINK_INACTIVE: {
+    vi: "Liên kết mời này không còn hoạt động",
+    en: "Invite link is no longer active",
   },
 } as const satisfies MessageCatalog;
 

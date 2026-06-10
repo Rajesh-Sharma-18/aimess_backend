@@ -115,6 +115,14 @@ export const CHAT_MESSAGES = {
     vi: "Đã chỉnh sửa tin nhắn",
     en: "Message edited",
   },
+  CHAT_MESSAGE_PINNED: {
+    vi: "Đã ghim tin nhắn",
+    en: "Message pinned",
+  },
+  CHAT_MESSAGE_UNPINNED: {
+    vi: "Đã bỏ ghim tin nhắn",
+    en: "Message unpinned",
+  },
   CHAT_MESSAGE_REPORTED: {
     vi: "Đã báo cáo tin nhắn",
     en: "Message reported",

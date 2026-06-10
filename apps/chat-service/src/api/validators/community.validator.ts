@@ -101,4 +101,10 @@ export const pinCommunityMessageSchema = z.object({
 
 export const unpinCommunityMessageSchema = z.object({
   communityId: z.string().optional(),
+  messageId: z.string().min(1),
+  // communityId: z.string().min(1),
+});
+
+export const unpinCommunityMessageQuerySchema = z.object({
+  communityId: z.string().min(1),
 });

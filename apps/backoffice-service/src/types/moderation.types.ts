@@ -177,6 +177,21 @@ export type ReportDetail = {
   moderator?: ModeratorRef | null;
 };
 
+/** Core report detail returned by GET /reports/{reportId} — sub-resources served separately. */
+export type ReportCore = Omit<
+  ReportDetail,
+  "evidence" | "history" | "relatedReports"
+>;
+
+/** Query for GET /reports/:reportId/evidence */
+export type ListReportEvidenceQuery = { page: number; limit: number };
+
+/** Query for GET /reports/:reportId/history */
+export type ListReportHistoryQuery = { page: number; limit: number };
+
+/** Query for GET /reports/:reportId/related */
+export type ListReportRelatedQuery = { page: number; limit: number };
+
 /** Pagination envelope (shared by list endpoints). */
 export type PaginationMeta = {
   mode: "offset" | "keyset";

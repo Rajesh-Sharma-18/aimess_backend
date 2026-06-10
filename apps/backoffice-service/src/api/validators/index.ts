@@ -29,12 +29,18 @@ export {
   resolutionEnum,
   actionOnReportedUserEnum,
   dismissReasonEnum,
+  reportEvidenceQuerySchema,
+  reportHistoryQuerySchema,
+  reportRelatedQuerySchema,
   type ListReportsQueryInput,
   type ReportIdParam,
   type ResolveReportInput,
   type DismissReportInput,
   type BulkResolveInput,
   type BulkDismissInput,
+  type ReportEvidenceQueryInput,
+  type ReportHistoryQueryInput,
+  type ReportRelatedQueryInput,
 } from "./moderation.validator.js";
 
 export {

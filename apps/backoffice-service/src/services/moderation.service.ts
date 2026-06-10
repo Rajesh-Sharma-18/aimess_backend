@@ -9,8 +9,16 @@ import type { RequestAdmin } from "../types/index.js";
 import type {
   BulkResult,
   DismissResult,
+  EvidenceItem,
+  HistoryItem,
+  ListReportEvidenceQuery,
+  ListReportHistoryQuery,
+  ListReportRelatedQuery,
   ListReportsQuery,
   ModeratorRef,
+  Paginated,
+  RelatedReport,
+  ReportCore,
   ReportDetail,
   ReportListItem,
   PaginationMeta,
@@ -43,6 +51,31 @@ export const moderationService = {
   /** Fetch one report; null is translated to 404 by the controller. */
   getReport(reportId: string): Promise<ReportDetail | null> {
     return reportRepository.getById(reportId);
+  },
+
+  getReportCore(reportId: string): Promise<ReportCore | null> {
+    return reportRepository.getCore(reportId);
+  },
+
+  listReportEvidence(
+    reportId: string,
+    query: ListReportEvidenceQuery
+  ): Promise<Paginated<EvidenceItem>> {
+    return reportRepository.listEvidence(reportId, query);
+  },
+
+  listReportHistory(
+    reportId: string,
+    query: ListReportHistoryQuery
+  ): Promise<Paginated<HistoryItem>> {
+    return reportRepository.listHistory(reportId, query);
+  },
+
+  listReportRelated(
+    reportId: string,
+    query: ListReportRelatedQuery
+  ): Promise<Paginated<RelatedReport>> {
+    return reportRepository.listRelated(reportId, query);
   },
 
   async resolveReport(

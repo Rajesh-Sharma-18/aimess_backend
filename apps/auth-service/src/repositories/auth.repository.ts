@@ -17,6 +17,7 @@ const loginUserSelect = {
   lockedUntil: true,
   deletedAt: true,
   isProfileCompleted: true,
+  role: true,
 } as const;
 
 export const authRepository = {
@@ -389,6 +390,7 @@ export const authRepository = {
         account: true,
         email: true,
         createdAt: true,
+        role: true,
       },
     });
   },

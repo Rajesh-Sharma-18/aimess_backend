@@ -17,7 +17,7 @@ export async function registerDevice(
   if (!parsed.success) {
     return res.status(400).json({
       success: false,
-      message: "Invalid body",
+      message: "Invalid request body",
       issues: parsed.error.issues,
     });
   }
@@ -47,7 +47,7 @@ export async function unregisterDevice(
   if (!parsed.success) {
     return res.status(400).json({
       success: false,
-      message: "Invalid token param",
+      message: "Invalid device token",
       issues: parsed.error.issues,
     });
   }

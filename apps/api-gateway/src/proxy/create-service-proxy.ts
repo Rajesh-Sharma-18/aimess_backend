@@ -53,7 +53,8 @@ export function createServiceProxy(
           res.end(
             JSON.stringify({
               success: false,
-              message: `${options.serviceName} service unavailable`,
+              message:
+                "Service temporarily unavailable. Please try again later.",
             })
           );
         }

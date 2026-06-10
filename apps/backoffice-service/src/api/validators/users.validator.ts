@@ -60,7 +60,7 @@ const dateOnly = z
     if (!day || Number.isNaN(new Date(`${day}T00:00:00.000Z`).getTime())) {
       ctx.addIssue({
         code: "custom",
-        message: "Invalid date (expected YYYY-MM-DD or an ISO datetime)",
+        message: "Please enter a valid date in YYYY-MM-DD format.",
       });
       return z.NEVER;
     }
@@ -192,7 +192,10 @@ export const listUsersQuerySchema = z
     sortOrder: sortOrderFilter,
     sort: z
       .string()
-      .regex(SORT_PATTERN, "sort must be <field>:<asc|desc> from the whitelist")
+      .regex(
+        SORT_PATTERN,
+        "Invalid sort parameter. Use format: field:asc or field:desc"
+      )
       .default("joinedAt:desc"),
     // `order` is a direction-only alias that overrides the sort direction
     // (e.g. `?sort=username:asc&order=desc` → username:desc).

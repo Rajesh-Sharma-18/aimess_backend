@@ -4,7 +4,7 @@ const emailSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .email("Invalid email address");
+  .email("Please enter a valid email address");
 
 /** Admin password policy: min 12 chars with upper + lower + digit + special. */
 const adminPasswordSchema = z
@@ -44,7 +44,10 @@ export type ResendOtpInput = z.infer<typeof resendOtpSchema>;
 
 export const resetPasswordSchema = z
   .object({
-    resetToken: z.string().trim().min(32, "Invalid reset token"),
+    resetToken: z
+      .string()
+      .trim()
+      .min(32, "Reset token is missing or malformed"),
     password: adminPasswordSchema,
     confirmPassword: z.string(),
   })

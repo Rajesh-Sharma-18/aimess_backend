@@ -44,6 +44,7 @@ model AuthUser {
   termsVersion         String?
   privacyVersion       String?
   // Account lifecycle
+  role                 GlobalRole           @default(USER)
   status               AccountStatus        @default(ACTIVE)
   suspendedAt          DateTime?            @db.Timestamptz(3)
   suspendedReason      String?
@@ -261,4 +262,9 @@ enum LoginFailureReason {
   ACCOUNT_DELETED
   EMAIL_NOT_VERIFIED
   OAUTH_FAILURE
+}
+
+enum GlobalRole {
+  USER
+  ADMIN
 }

@@ -1386,6 +1386,145 @@ const communityMessageDelete = {
 };
 
 // =============================================================================
+// Community room pins
+// =============================================================================
+const communityPinMessage = {
+  post: {
+    tags: ["Chat — Community"],
+    summary: "Pin a community message (MODERATOR+)",
+    description:
+      "Pins a message in a community room. Requires MODERATOR or ADMIN role.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["messageId", "communityId"],
+            properties: {
+              messageId: { type: "string" as const },
+              communityId: { type: "string" as const },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Message pinned", "CommunityMessagePinWithCount"),
+      "400": {
+        description: "CHAT_PIN_LIMIT_REACHED",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+      "401": unauthorized,
+      "403": {
+        description: "CHAT_INSUFFICIENT_PERMISSIONS",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+      "404": {
+        description: "CHAT_MESSAGE_NOT_FOUND",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+    },
+  },
+};
+
+const communityUnpinMessage = {
+  delete: {
+    tags: ["Chat — Community"],
+    summary: "Unpin a community message (MODERATOR+)",
+    description:
+      "Unpins a message from a community room. Requires MODERATOR or ADMIN role. Pass `communityId` as a query parameter.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+      {
+        name: "communityId",
+        in: "query",
+        required: true,
+        schema: { type: "string" as const, minLength: 1 },
+        description: "ID of the community the room belongs to.",
+      },
+    ],
+    responses: {
+      ...successResponse("Message unpinned", "CommunityMessageUnpinResult"),
+      "401": unauthorized,
+      "403": {
+        description: "CHAT_INSUFFICIENT_PERMISSIONS",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+      "404": {
+        description: "CHAT_PIN_NOT_FOUND",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
+    },
+  },
+};
+
+const communityGetPins = {
+  get: {
+    tags: ["Chat — Community"],
+    summary: "List pinned messages in a community room",
+    description:
+      "Cursor-paginated list of pinned messages for a community room.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+      },
+      cursorParam(),
+      limitParam(20),
+    ],
+    responses: {
+      ...successResponse("Pinned messages", "CommunityMessagePinList"),
+      "401": unauthorized,
+    },
+  },
+};
+
+// =============================================================================
 // Message search (private / group / community)
 // =============================================================================
 function searchPath(tag: string, summary: string) {
@@ -1840,6 +1979,11 @@ export const chatPaths = {
   "/chat/community/messages/{messageId}/react": communityMessageReact,
   "/chat/community/rooms/{roomId}/messages/{messageId}/pin":
     communityMessagePin,
+  "/chat/community/rooms/{roomId}/pins": {
+    ...communityPinMessage,
+    ...communityGetPins,
+  },
+  "/chat/community/rooms/{roomId}/pins/{messageId}": communityUnpinMessage,
 
   // Private — forward & reactions
   "/chat/private/rooms/{roomId}/messages/{messageId}/forward":

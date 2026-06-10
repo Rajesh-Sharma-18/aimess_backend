@@ -32,7 +32,7 @@ export const messageTimelineQuerySchema = z
     limit: z.coerce.number().int().min(1).max(100).default(30),
   })
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
-    message: "Provide either before_ts or after_ts, not both",
+    message: "Please provide only one pagination parameter at a time.",
     path: ["before_ts"],
   })
   .refine((q) => !(q.before_seq != null && q.after_seq != null), {
@@ -138,6 +138,6 @@ export const inboxQuerySchema = z
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
   .refine((q) => !(q.before_ts != null && q.after_ts != null), {
-    message: "Provide either before_ts or after_ts, not both",
+    message: "Please provide only one pagination parameter at a time.",
     path: ["before_ts"],
   });

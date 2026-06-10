@@ -5,10 +5,10 @@ export const accountSchema = z
   .trim()
   // .toLowerCase()
   .min(3, "Account name must be at least 3 characters long")
-  .max(32, "Account name cannot be longer than 32 characters")
+  .max(32, "Account name must be at most 32 characters")
   .regex(
     /^[-a-zA-Z0-9_]+$/,
-    "Account name can only contain letters, numbers, and underscores"
+    "Account name can only contain letters, numbers, hyphens, and underscores"
   );
 
 export const validateAccountSchema = z.object({
@@ -19,8 +19,8 @@ export type ValidateAccountInput = z.infer<typeof validateAccountSchema>;
 
 export const passwordSchema = z
   .string()
-  .min(8, "Password must be at least 8 characters")
-  .max(128, "Password must be at most 128 characters");
+  .min(8, "Password must be at least 8 characters long.")
+  .max(128, "Password cannot exceed 128 characters.");
 
 /**
  * FCM device push tokens — optional, captured on register/login when available.

@@ -9,17 +9,11 @@ import {
 import { env } from "../config/env.js";
 import { authRepository } from "../repositories/auth.repository.js";
 
-/**
- * Queue topology MUST match user-service's publisher
- * (apps/user-service/src/messaging/publish-profile-updated.ts) exactly —
- * queue arguments are immutable once declared, so a mismatch throws
- * PRECONDITION_FAILED. user-service publishes with sendToQueue (default
- * exchange → this single queue), so auth-service consumes it directly.
- */
-const QUEUE = "user.profile_updated.queue";
-const DLX = "user.profile_updated.queue.dlx";
-const DLQ = "user.profile_updated.queue.dlq";
-const DLQ_ROUTING_KEY = "user.profile_updated.queue.dead";
+const EXCHANGE = "user.profile_updated";
+const QUEUE = "user.profile_updated.auth.queue";
+const DLX = "user.profile_updated.auth.queue.dlx";
+const DLQ = "user.profile_updated.auth.queue.dlq";
+const DLQ_ROUTING_KEY = "user.profile_updated.auth.queue.dead";
 
 const PREFETCH = 10;
 
@@ -56,17 +50,18 @@ export async function startProfileUpdatedConsumer(): Promise<void> {
   const connection = await connectWithRetry(env.RABBITMQ_URL);
   const channel = await connection.createChannel();
 
-  // Dead-letter exchange + queue for messages that fail permanently.
+  await channel.assertExchange(EXCHANGE, "fanout", { durable: true });
+
   await channel.assertExchange(DLX, "direct", { durable: true });
   await channel.assertQueue(DLQ, { durable: true });
   await channel.bindQueue(DLQ, DLX, DLQ_ROUTING_KEY);
 
-  // Main work queue. Args MUST match the user-service publisher declaration.
   await channel.assertQueue(QUEUE, {
     durable: true,
     deadLetterExchange: DLX,
     deadLetterRoutingKey: DLQ_ROUTING_KEY,
   });
+  await channel.bindQueue(QUEUE, EXCHANGE, "");
 
   await channel.prefetch(PREFETCH);
 

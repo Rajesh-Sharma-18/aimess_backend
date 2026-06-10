@@ -9,6 +9,7 @@ import type {
   AuditLogsQuery,
   BulkMarkReadInput,
   BulkMuteInput,
+  BulkSendInviteLinkInput,
   CommunityIdParams,
   CommunityMemberParams,
   CreateCommunityInput,
@@ -91,11 +92,13 @@ export const checkNameAvailable = asyncHandler(
     const { name } = req.query as unknown as NameAvailableQuery;
     const result = await communityService.checkNameAvailability(name);
 
+    const messageKey = result.available
+      ? "COMMUNITY_NAME_AVAILABLE"
+      : "COMMUNITY_NAME_TAKEN";
+
     return res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(result, t("COMMUNITY_NAME_AVAILABILITY", req.locale))
-      );
+      .json(new ApiResponse(result, t(messageKey, req.locale)));
   }
 );
 
@@ -104,11 +107,13 @@ export const checkHandleAvailable = asyncHandler(
     const { handle } = req.query as unknown as HandleAvailableQuery;
     const result = await communityService.checkHandleAvailability(handle);
 
+    const messageKey = result.available
+      ? "COMMUNITY_HANDLE_AVAILABLE"
+      : "COMMUNITY_HANDLE_TAKEN";
+
     return res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(result, t("COMMUNITY_HANDLE_AVAILABILITY", req.locale))
-      );
+      .json(new ApiResponse(result, t(messageKey, req.locale)));
   }
 );
 
@@ -983,6 +988,26 @@ export const redeemCommunityInviteLink = asyncHandler(
       .status(HTTP_STATUS.OK)
       .json(
         new ApiResponse(result, t("COMMUNITY_INVITE_LINK_REDEEMED", req.locale))
+      );
+  }
+);
+
+export const bulkSendCommunityInviteLink = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const body = req.body as BulkSendInviteLinkInput;
+    const result = await communityService.bulkSendInviteLink(
+      id,
+      req.auth.userId,
+      body
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_INVITE_LINK_BULK_SENT", req.locale)
+        )
       );
   }
 );

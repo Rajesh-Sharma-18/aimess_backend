@@ -50,7 +50,7 @@ export const friendsService = {
 
     // No accepted friends → empty list, not an error.
     if (friendIds.length === 0) {
-      return { friends: [], nextCursor: null };
+      return { friends: [], nextCursor: null, totalCount: 0 };
     }
 
     const rows = await friendsRepository.listFriendProfiles({
@@ -66,6 +66,6 @@ export const friendsService = {
 
     const friends = await Promise.all(page.map(toFriendListItem));
 
-    return { friends, nextCursor };
+    return { friends, nextCursor, totalCount: friendIds.length };
   },
 };

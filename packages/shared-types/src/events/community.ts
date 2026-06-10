@@ -13,6 +13,7 @@ export const CommunityEvents = {
   JOIN_REQUESTED: "community.join_requested",
   INVITE_SENT: "community.invite_sent",
   INVITE_ACCEPTED: "community.invite_accepted",
+  INVITE_LINK_SHARED: "community.invite_link_shared",
   REPORT_CREATED: "community.report_created",
   REPORT_ACTIONED: "community.report_actioned",
 } as const;
@@ -136,4 +137,22 @@ export type CommunityReportActionedPayload = CommunityEventBase & {
   actorId: string; // moderator who actioned
   reporterId: string;
   targetUserId: string | null;
+};
+
+/**
+ * Fired once per recipient when an ADMIN/MODERATOR bulk-shares an invite link.
+ * Consumed by chat-service → sends a system DM containing the invite link.
+ * Routed via `community.chat.sync.queue` (chat-service dedicated queue).
+ */
+export type CommunityInviteLinkSharedPayload = {
+  communityId: string;
+  communityName: string;
+  /** The invite link code (used to build the deep-link URL on the client). */
+  linkCode: string;
+  /** User who clicked "Share Invite" — becomes the DM sender. */
+  inviterId: string;
+  /** Single recipient for this event (one event per userId). */
+  recipientId: string;
+  /** ISO-8601 timestamp captured at emit time. */
+  eventAt: string;
 };

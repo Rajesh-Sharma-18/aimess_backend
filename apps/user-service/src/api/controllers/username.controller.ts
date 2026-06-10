@@ -30,8 +30,12 @@ export const validateUsername = asyncHandler(
       excludeUserId
     );
 
+    const messageKey = result.available
+      ? "USER_USERNAME_AVAILABLE"
+      : "USER_USERNAME_TAKEN";
+
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("USER_USERNAME_VALIDATED", req.locale)));
+      .json(new ApiResponse(result, t(messageKey, req.locale)));
   }
 );

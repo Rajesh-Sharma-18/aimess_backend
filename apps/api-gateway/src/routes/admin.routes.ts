@@ -47,7 +47,8 @@ export function createAdminRouter(): IRouter {
     adminRouter.use((_req, res) => {
       res.status(503).json({
         success: false,
-        message: "Backoffice service not configured",
+        message:
+          "This service is currently unavailable. Please contact support.",
       });
     });
     return adminRouter;
@@ -71,7 +72,8 @@ export function createAdminRouter(): IRouter {
             res.end(
               JSON.stringify({
                 success: false,
-                message: "backoffice service unavailable",
+                message:
+                  "Service temporarily unavailable. Please try again later.",
               })
             );
           }

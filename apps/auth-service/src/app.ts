@@ -21,10 +21,14 @@ app.disable("x-powered-by");
 app.use(helmet());
 app.use(
   cors({
-    origin: env.CORS_ALLOWED_ORIGINS.split(","),
+    origin:
+      env.NODE_ENV === "development"
+        ? true
+        : env.CORS_ALLOWED_ORIGINS.split(",")
+            .map((o) => o.trim())
+            .filter(Boolean),
     credentials: true,
     methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
-    // allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 app.use(express.json({ limit: "1mb" }));

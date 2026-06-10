@@ -27,7 +27,10 @@ export const stickerSchema = z
     packId: z.string().max(100),
     stickerId: z.string().max(100),
   })
-  .refine((d) => d.objectKey || d.url, "sticker needs objectKey or url");
+  .refine(
+    (d) => d.objectKey || d.url,
+    "Sticker must include either objectKey or url."
+  );
 
 export type LocationAttachment = z.infer<typeof locationSchema>;
 export type ContactAttachment = z.infer<typeof contactSchema>;

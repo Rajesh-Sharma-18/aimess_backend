@@ -6,7 +6,7 @@ const emailSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .email("Invalid email address");
+  .email("Please enter a valid email address.");
 
 export const requestPasswordResetOtpSchema = z.object({
   email: emailSchema,
@@ -21,7 +21,7 @@ export const verifyPasswordResetOtpSchema = z.object({
   code: z
     .string()
     .trim()
-    .regex(/^\d{6}$/, "OTP must be a 6-digit code"),
+    .regex(/^\d{6}$/, "Verification code must be exactly 6 digits."),
 });
 
 export type VerifyPasswordResetOtpInput = z.infer<
