@@ -11,9 +11,11 @@ import {
   buildTimelineResponse,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
+import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import {
   buildChatMessageEvent,
   groupStoredReactions,
+  toWireMessage,
 } from "../../lib/chat-message.serializer.js";
 import type { PrivateMessageService } from "../../services/private-message.service.js";
 import type { PrivatePinService } from "../../services/private-pin.service.js";
@@ -188,7 +190,9 @@ export class PrivateMessageController {
       );
     }
 
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result ? toWireMessage(result) : result));
   });
 
   getPins = asyncHandler(async (req: Request, res: Response) => {
@@ -344,11 +348,19 @@ export class PrivateMessageController {
       senderId: userId,
       lastMessageId: result.id,
       lastMessageAt: result.createdAt?.getTime() ?? Date.now(),
-      preview: { contentType: result.messageType, text: "" },
+      preview: {
+        contentType: result.messageType,
+        text: buildMessagePreview(result.messageType, result.content),
+      },
     });
     res
       .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(result, t("CHAT_MESSAGE_FORWARDED", req.locale)));
+      .json(
+        new ApiResponse(
+          toWireMessage(result),
+          t("CHAT_MESSAGE_FORWARDED", req.locale)
+        )
+      );
   });
 
   getMessageReactions = asyncHandler(async (req: Request, res: Response) => {
@@ -416,7 +428,12 @@ export class PrivateMessageController {
     }
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("CHAT_MESSAGE_EDITED", req.locale)));
+      .json(
+        new ApiResponse(
+          toWireMessage(result),
+          t("CHAT_MESSAGE_EDITED", req.locale)
+        )
+      );
   });
 
   reportMessage = asyncHandler(async (req: Request, res: Response) => {

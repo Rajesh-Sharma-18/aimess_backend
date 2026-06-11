@@ -1,12 +1,15 @@
 import type { Socket } from "socket.io";
 import { verifyAccessToken, extractBearerToken } from "@aimess/auth-jwt";
 import { logger } from "@aimess/logger";
+import { resolveLocale, type SupportedLocale } from "@aimess/constants";
 import { env } from "../config/env.js";
 
 declare module "socket.io" {
   interface SocketData {
     userId: string;
     sessionId: string;
+    /** Resolved once at handshake from `x-lang` / `Accept-Language`; drives ack copy. */
+    locale: SupportedLocale;
   }
 }
 
@@ -24,6 +27,12 @@ export function gatewaySocketAuthMiddleware(
       next(new Error("Authentication required"));
       return;
     }
+
+    const xLang = headers["x-lang"];
+    socket.data.locale = resolveLocale(
+      headers["accept-language"],
+      Array.isArray(xLang) ? xLang[0] : xLang
+    );
 
     const verified = verifyAccessToken(token, env.JWT_ACCESS_SECRET);
     socket.data.userId = verified.userId;

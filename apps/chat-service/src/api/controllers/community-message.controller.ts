@@ -11,7 +11,10 @@ import {
   buildCursorResponse,
   buildTimelineResponse,
 } from "../../lib/pagination.js";
-import { normalizeMessageType } from "../../lib/chat-message.serializer.js";
+import {
+  normalizeMessageType,
+  toWireMessage,
+} from "../../lib/chat-message.serializer.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
 
@@ -193,9 +196,8 @@ export class CommunityMessageController {
           roomId: result.roomId,
           senderId: result.sentBy,
           message: result.message ?? "",
-          // §1: unified UPPER casing — match community:message:new (which emits
-          // both messageType and contentType in UPPER), not the raw lower value.
-          messageType: normalizeMessageType(result.messageType),
+          // §1: unified UPPER casing — single client-facing field `contentType`
+          // in UPPER, matching community:message:new (not the raw lower value).
           contentType: normalizeMessageType(result.messageType),
           editedAt:
             result.editedAt instanceof Date
@@ -206,7 +208,12 @@ export class CommunityMessageController {
     );
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("CHAT_MESSAGE_EDITED", req.locale)));
+      .json(
+        new ApiResponse(
+          toWireMessage(result),
+          t("CHAT_MESSAGE_EDITED", req.locale)
+        )
+      );
   });
 
   reactToMessage = asyncHandler(async (req: Request, res: Response) => {
@@ -275,7 +282,9 @@ export class CommunityMessageController {
       );
     }
 
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result ? toWireMessage(result) : result));
   });
 
   /**

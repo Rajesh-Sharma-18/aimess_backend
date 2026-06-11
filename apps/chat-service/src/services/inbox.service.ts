@@ -32,6 +32,8 @@ export interface InboxItem {
   description: string | null;
   memberCount: number | null;
   role: string | null;
+  /** GROUP-only: true when the caller is an active member; null for PRIVATE rows. */
+  isJoined: boolean | null;
 }
 
 export interface InboxResult {
@@ -147,6 +149,7 @@ export class InboxService {
       description: null,
       memberCount: null,
       role: null,
+      isJoined: null,
     };
   }
 
@@ -166,6 +169,7 @@ export class InboxService {
       description: room.description,
       memberCount: room.memberCount,
       role: room.role,
+      isJoined: room.isJoined,
     };
   }
 }

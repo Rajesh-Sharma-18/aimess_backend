@@ -19,8 +19,22 @@ import type { RoomMemberRepository } from "../repositories/room-member.repositor
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { GeneralRoomMessage } from "../generated/prisma/index.js";
-import { groupStoredReactions } from "../lib/chat-message.serializer.js";
-import { communityMessagePreview } from "../utils/community-message-preview.js";
+import {
+  groupStoredReactions,
+  normalizeMessageType,
+  toWireMessage,
+} from "../lib/chat-message.serializer.js";
+import { buildMessagePreview } from "../events/publish-message-sent.js";
+
+/**
+ * Client-facing community message row: the raw Prisma entity with its
+ * LOWER-CASE `messageType` dropped and replaced by an UPPER-CASE `contentType`
+ * (§1 single client-facing casing). Used as the return element of every REST
+ * read path so HTTP clients never see the internal `messageType` field.
+ */
+type CommunityMessageWire = Omit<GeneralRoomMessage, "messageType"> & {
+  contentType: string;
+};
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
 export interface CommunityChatSummary {
@@ -332,10 +346,7 @@ export class CommunityMessageService {
         hasLastMessage: true,
         lastMessage: {
           username: last.senderName ?? "",
-          message: communityMessagePreview({
-            messageType: last.messageType,
-            content: last.content,
-          }),
+          message: buildMessagePreview(last.messageType ?? "", last.content),
           dateTime: Number.isNaN(createdAt.getTime()) ? 0 : createdAt.getTime(),
         },
       };
@@ -348,20 +359,33 @@ export class CommunityMessageService {
     return this.memberRepo.bulkAdvanceReadToNow(userId, ids);
   }
 
+  /**
+   * Map a raw Prisma message to the client wire shape: drop the LOWER-CASE
+   * `messageType` and add an UPPER-CASE `contentType` (§1). Every other field
+   * (id, roomId, sentBy, senderName, senderAvatar, message, attachments,
+   * reactions, deletedForAll, editedAt, createdAt, updatedAt, parentMessageId,
+   * …) is preserved unchanged. Applied at the RETURN site of REST read paths
+   * only — internal logic continues to read the raw rows.
+   */
+  private toWire(m: GeneralRoomMessage): CommunityMessageWire {
+    return toWireMessage(m);
+  }
+
   async getMessages(params: {
     roomId: string;
     userId: string;
     cursor?: string | null;
     limit: number;
-  }): Promise<GeneralRoomMessage[]> {
+  }): Promise<CommunityMessageWire[]> {
     const beforeTimestamp = params.cursor || new Date().toISOString();
-    return this.messageRepo.findByRoomIdWithTime(
+    const rows = await this.messageRepo.findByRoomIdWithTime(
       params.roomId,
       beforeTimestamp,
       "older",
       params.limit,
       params.userId
     );
+    return rows.map((m) => this.toWire(m));
   }
 
   /**
@@ -375,7 +399,7 @@ export class CommunityMessageService {
     ts: Date;
     limit: number;
   }): Promise<{
-    items: GeneralRoomMessage[];
+    items: CommunityMessageWire[];
     hasMore: boolean;
     nextCursor: string | null;
   }> {
@@ -388,12 +412,12 @@ export class CommunityMessageService {
     });
 
     const hasMore = rows.length > params.limit;
-    const items = rows.slice(0, params.limit);
-    const last = items[items.length - 1];
+    const pageRows = rows.slice(0, params.limit);
+    const last = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && last ? String(last.createdAt.getTime()) : null;
 
-    return { items, hasMore, nextCursor };
+    return { items: pageRows.map((m) => this.toWire(m)), hasMore, nextCursor };
   }
 
   /**
@@ -422,7 +446,7 @@ export class CommunityMessageService {
       senderName: string | null;
       senderAvatar: string | null;
       message: string | null;
-      messageType: string;
+      contentType: string;
       attachments: unknown;
       reactions: Array<{
         emoji: string;
@@ -485,7 +509,7 @@ export class CommunityMessageService {
         senderName: msg.senderName ?? null,
         senderAvatar: msg.senderAvatar ?? null,
         message: msg.message ?? null,
-        messageType: msg.messageType,
+        contentType: normalizeMessageType(msg.messageType),
         attachments: msg.attachments,
         reactions: groupStoredReactions(msg.reactions),
         deletedForAll: msg.deletedForAll,
@@ -508,18 +532,18 @@ export class CommunityMessageService {
     userId: string;
     messageId: string;
     limit: number;
-  }): Promise<{ items: GeneralRoomMessage[] }> {
+  }): Promise<{ items: CommunityMessageWire[] }> {
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
       return { items: [] };
     }
-    const items = await this.messageRepo.findAroundDate({
+    const rows = await this.messageRepo.findAroundDate({
       roomId: params.roomId,
       userId: params.userId,
       anchorDate: anchor.createdAt,
       limit: params.limit,
     });
-    return { items };
+    return { items: rows.map((m) => this.toWire(m)) };
   }
 
   /**
@@ -534,7 +558,7 @@ export class CommunityMessageService {
     pageNumber: number;
     limit: number;
     timestamp?: number;
-  }): Promise<{ messages: GeneralRoomMessage[]; total: number }> {
+  }): Promise<{ messages: CommunityMessageWire[]; total: number }> {
     // Enforce active membership first (banned/left members can't read).
     const member = await this.memberRepo.findByRoomAndUser(
       params.roomId,
@@ -565,6 +589,7 @@ export class CommunityMessageService {
 
     // Mark-as-read: advance to the newest message in the page (index 0, since
     // the page is createdAt DESC). Forward-only; skip when the page is empty.
+    // Runs on the RAW rows (needs id/createdAt) before we map to the wire shape.
     const newest = messages[0];
     if (newest) {
       await this.memberRepo
@@ -581,7 +606,7 @@ export class CommunityMessageService {
         });
     }
 
-    return { messages, total };
+    return { messages: messages.map((m) => this.toWire(m)), total };
   }
 
   async searchMessages(params: {
@@ -589,13 +614,14 @@ export class CommunityMessageService {
     userId: string;
     query: string;
     limit: number;
-  }): Promise<GeneralRoomMessage[]> {
-    return this.messageRepo.searchByText(
+  }): Promise<CommunityMessageWire[]> {
+    const rows = await this.messageRepo.searchByText(
       params.roomId,
       params.query,
       params.limit,
       params.userId
     );
+    return rows.map((m) => this.toWire(m));
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -612,7 +638,7 @@ export class CommunityMessageService {
     type?: string;
     cursor?: string | null;
     limit: number;
-  }): Promise<GeneralRoomMessage[]> {
+  }): Promise<CommunityMessageWire[]> {
     // Enforce active membership first (banned/left members can't list media).
     const member = await this.memberRepo.findByRoomAndUser(
       params.roomId,
@@ -621,13 +647,14 @@ export class CommunityMessageService {
     if (!member || member.status !== "active")
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
 
-    return this.messageRepo.listMedia({
+    const rows = await this.messageRepo.listMedia({
       roomId: params.roomId,
       userId: params.userId,
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
     });
+    return rows.map((m) => this.toWire(m));
   }
 
   async editMessage(params: {

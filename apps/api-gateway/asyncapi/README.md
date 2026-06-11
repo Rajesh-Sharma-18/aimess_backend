@@ -18,7 +18,7 @@ Machine-readable spec of every Socket.IO event the **api-gateway** exposes
 - `message:new`, `message:edited`, and forwards emit the **same canonical
   `ChatMessage`** (field names match REST `ChatMessage`) + legacy V1 aliases —
   the client uses one mapper.
-- `messageType` is UPPER-CASE on every surface; `contentType` is a same-value V1 alias.
+- `contentType` is the single field name for message kind (UPPER-CASE).
 - Reactions broadcast as grouped `ChatReactionGroup[]`; presence timestamps are
   epoch-ms integers; `message:delete` carries `conversationId` + `sequenceNumber`.
 - Multi-device: `read_sync` clears unread across a user's own devices; `pin:updated`

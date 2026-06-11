@@ -3613,6 +3613,11 @@ export const openApiSchemas = {
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
       role: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+      isJoined: {
+        type: "boolean",
+        description:
+          "True when the caller is an active member of this community. Always true in joined mode.",
+      },
       isMuted: {
         type: "boolean",
         description: "True if the caller has any mute row for this community.",
@@ -3656,6 +3661,7 @@ export const openApiSchemas = {
       "avatarUrl",
       "avatarUrlExpiresIn",
       "role",
+      "isJoined",
       "isMuted",
       "muteUntil",
       "streamEnabled",
@@ -3752,6 +3758,11 @@ export const openApiSchemas = {
         description:
           "Latest community-chat message preview (member-only). Only present via GET /communities/mine search mode; absent on the public /communities/discover alias.",
       },
+      isJoined: {
+        type: "boolean",
+        description:
+          "True when the caller is an active member of this community. Varies in /communities/mine search mode; always false on the deprecated public /communities/discover alias.",
+      },
       isMuted: {
         type: "boolean",
         description:
@@ -3779,6 +3790,7 @@ export const openApiSchemas = {
       "memberLimit",
       "avatarUrl",
       "avatarUrlExpiresIn",
+      "isJoined",
       "isMuted",
       "muteUntil",
       "streamEnabled",
@@ -4847,6 +4859,12 @@ export const openApiSchemas = {
         nullable: true,
         description: "GROUP only — the viewer's role.",
       },
+      isJoined: {
+        type: "boolean",
+        nullable: true,
+        description:
+          "GROUP only — true when the caller is an active member of this group (always true for inbox rows); null for PRIVATE rows.",
+      },
     },
     required: ["type", "roomId", "unreadCount", "isMuted", "pinnedCount"],
   },
@@ -4928,7 +4946,7 @@ export const openApiSchemas = {
           sticker: { $ref: "#/components/schemas/ChatSticker" },
         },
       },
-      messageType: {
+      contentType: {
         type: "string",
         enum: [
           "TEXT",
@@ -4956,7 +4974,7 @@ export const openApiSchemas = {
       },
       createdAt: { type: "string", format: "date-time" },
     },
-    required: ["id", "roomId", "messageType", "createdAt"],
+    required: ["id", "roomId", "contentType", "createdAt"],
   },
   ChatMessageList: {
     type: "array",
@@ -5007,6 +5025,11 @@ export const openApiSchemas = {
       settings: { type: "object" },
       lastMessageAt: { type: "string", format: "date-time", nullable: true },
       pinnedCount: { type: "integer" },
+      isJoined: {
+        type: "boolean",
+        description:
+          "True when the logged-in caller is an active member of this group. Present on the read surfaces — GET /groups/my-groups (always true) and GET /groups/{roomId} (varies: false for a non-member). Omitted on mutation responses (create/update/disband).",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
@@ -5241,10 +5264,10 @@ export const openApiSchemas = {
       message: { type: "string", nullable: true },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
-      messageType: {
+      contentType: {
         type: "string",
         description:
-          "Community message kind (stored lower-case): text, image, voice, custom, location, contact, sticker.",
+          "Community message kind (UPPER-CASE on the wire): TEXT, IMAGE, VOICE, CUSTOM, LOCATION, CONTACT, STICKER.",
       },
       attachments: {
         type: "array",
