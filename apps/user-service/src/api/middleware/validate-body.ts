@@ -1,4 +1,5 @@
 import { t } from "@aimess/constants";
+import { zodErrorMessage } from "@aimess/utils";
 import type { RequestHandler } from "express";
 import type { ZodSchema } from "zod";
 
@@ -8,8 +9,8 @@ export function validateBody(schema: ZodSchema): RequestHandler {
     if (!parsed.success) {
       res.status(400).json({
         success: false,
-        message: t("VALIDATION_FAILED", req.locale),
-        errors: parsed.error.flatten(),
+        message:
+          zodErrorMessage(parsed.error) || t("VALIDATION_FAILED", req.locale),
       });
       return;
     }

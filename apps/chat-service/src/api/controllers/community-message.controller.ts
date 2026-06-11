@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import type { Redis, Cluster } from "ioredis";
 
+import { logger } from "@aimess/logger";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
@@ -8,31 +9,109 @@ import {
   buildPaginatedResponse,
   buildListResponse,
   buildCursorResponse,
+  buildTimelineResponse,
 } from "../../lib/pagination.js";
+import {
+  normalizeMessageType,
+  toWireMessage,
+} from "../../lib/chat-message.serializer.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
+import type { CommunityPinService } from "../../services/community-pin.service.js";
 
 export class CommunityMessageController {
   constructor(
     private readonly service: CommunityMessageService,
+    private readonly pinService: CommunityPinService,
     private readonly redis: Redis | Cluster
   ) {}
 
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const cursor = req.query.cursor as string | undefined;
-    const limit = Number(req.query.limit) || 20;
-    const page = Number(req.query.page) || 1;
-    const [messages, totalCount] = await Promise.all([
-      this.service.getMessages({ roomId, userId, cursor, limit }),
+    const limit = Number(req.query.limit) || 30;
+    const around = req.query.around as string | undefined;
+
+    if (around) {
+      const { items } = await this.service.getMessagesAround({
+        roomId,
+        userId,
+        messageId: around,
+        limit,
+      });
+      const totalCount = await this.service.countMessages(roomId);
+      const paginated = buildTimelineResponse(
+        items as unknown as Record<string, unknown>[],
+        totalCount,
+        limit,
+        false,
+        null
+      );
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            paginated,
+            items.length
+              ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
+    const beforeTs =
+      req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
+    const afterTs =
+      req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
+
+    // Incremental-sync mode: after_ts only.
+    // Returns every message (new, edited, reacted, deleted tombstone) whose
+    // updatedAt >= after_ts. Feed the returned nextCursor as the next after_ts.
+    if (afterTs != null) {
+      const result = await this.service.getMessagesSince({
+        roomId,
+        userId,
+        fromTs: new Date(afterTs),
+        limit,
+      });
+      const msg = result.items.length
+        ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+        : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse(
+          {
+            data: result.items,
+            hasMore: result.hasMore,
+            // Store this as the next after_ts to page forward or re-sync.
+            nextCursor: result.nextCursor,
+          },
+          msg
+        )
+      );
+      return;
+    }
+
+    // Scroll / history mode: before_ts → newest-first, omit → latest page.
+    const direction = afterTs != null ? "after" : "before";
+    const tsMs =
+      afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
+
+    const [result, totalCount] = await Promise.all([
+      this.service.getMessagesTimeline({
+        roomId,
+        userId,
+        direction,
+        ts: new Date(tsMs),
+        limit,
+      }),
       this.service.countMessages(roomId),
     ]);
-    const paginated = buildPaginatedResponse(
-      messages as unknown as Record<string, unknown>[],
+    const paginated = buildTimelineResponse(
+      result.items as unknown as Record<string, unknown>[],
       totalCount,
-      page,
       limit,
-      "createdAt"
+      result.hasMore,
+      result.nextCursor
     );
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
@@ -117,7 +196,9 @@ export class CommunityMessageController {
           roomId: result.roomId,
           senderId: result.sentBy,
           message: result.message ?? "",
-          contentType: result.messageType,
+          // §1: unified UPPER casing — single client-facing field `contentType`
+          // in UPPER, matching community:message:new (not the raw lower value).
+          contentType: normalizeMessageType(result.messageType),
           editedAt:
             result.editedAt instanceof Date
               ? result.editedAt.getTime()
@@ -127,7 +208,50 @@ export class CommunityMessageController {
     );
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("CHAT_MESSAGE_EDITED", req.locale)));
+      .json(
+        new ApiResponse(
+          toWireMessage(result),
+          t("CHAT_MESSAGE_EDITED", req.locale)
+        )
+      );
+  });
+
+  reactToMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const { communityId, emoji } = req.body as {
+      communityId: string;
+      emoji: string;
+    };
+
+    const result = await this.service.reactToMessage({
+      messageId,
+      userId,
+      communityId,
+      emoji,
+    });
+
+    this.redis
+      .publish(
+        `community:${communityId}`,
+        JSON.stringify({
+          event: "community:message:reaction",
+          data: {
+            messageId: result.messageId,
+            communityId: result.communityId,
+            reactions: result.reactions,
+          },
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `community:message:reaction publish failed: ${String(err)}`
+        );
+      });
+
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_EDITED", req.locale))); // TODO: add CHAT_MESSAGE_REACTED key to @aimess/constants
   });
 
   deleteMessage = asyncHandler(async (req: Request, res: Response) => {
@@ -144,19 +268,64 @@ export class CommunityMessageController {
     // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
     if (result?.roomId) {
       await this.redis.publish(
-        `conv:${result.roomId}`,
+        `community:${result.roomId}`,
         JSON.stringify({
-          event: "message:delete",
+          event: "community:message:deleted",
           data: {
             messageId: result.id,
-            type: type === "forEveryone" ? "forEveryone" : "forMe",
+            communityId: result.roomId,
+            roomId: result.roomId,
+            deleteType: type === "forEveryone" ? "forEveryone" : "forMe",
             deletedBy: userId,
           },
         })
       );
     }
 
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result ? toWireMessage(result) : result));
+  });
+
+  /**
+   * GET /rooms/:roomId/sync?since_ts=<ms>&limit=<n>
+   *
+   * Community incremental-sync REST endpoint. Returns all messages (new,
+   * edited, reacted, deleted tombstones) whose `updatedAt >= since_ts`,
+   * sorted oldest-first. Mirrors `GET /rooms/:roomId/messages?after_ts=` but
+   * is rate-limited independently and uses a mandatory `since_ts` parameter so
+   * the intent is unambiguous.
+   *
+   * Response shape: `{ data, hasMore, nextCursor }` — `nextCursor` is the
+   * epoch-ms string of the last item's updatedAt; feed it back as `since_ts`.
+   */
+  syncMessages = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const sinceTs = Number(req.query.since_ts);
+    const limit = Number(req.query.limit) || 50;
+
+    const result = await this.service.getMessagesSince({
+      roomId,
+      userId,
+      fromTs: new Date(sinceTs),
+      limit,
+    });
+
+    const msg = result.items.length
+      ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+      : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
+
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          data: result.items,
+          hasMore: result.hasMore,
+          nextCursor: result.nextCursor,
+        },
+        msg
+      )
+    );
   });
 
   searchMessages = asyncHandler(async (req: Request, res: Response) => {
@@ -186,5 +355,73 @@ export class CommunityMessageController {
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+  });
+
+  pinMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { messageId, communityId } = req.body as {
+      messageId: string;
+      communityId: string;
+    };
+    const result = await this.pinService.pin({
+      roomId,
+      messageId,
+      userId,
+      communityId,
+    });
+    await this.redis.publish(
+      `community:${communityId}`,
+      JSON.stringify({
+        event: "community:message:pinned",
+        data: {
+          roomId,
+          communityId,
+          pin: result.pin,
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_PINNED", req.locale)));
+  });
+
+  unpinMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const communityId = req.query.communityId as string;
+    const result = await this.pinService.unpin({ roomId, messageId, userId });
+    await this.redis.publish(
+      `community:${communityId}`,
+      JSON.stringify({
+        event: "community:message:unpinned",
+        data: {
+          roomId,
+          communityId,
+          messageId,
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_UNPINNED", req.locale)));
+  });
+
+  getPins = asyncHandler(async (req: Request, res: Response) => {
+    const roomId = req.params.roomId as string;
+    const cursor = req.query.cursor as string | undefined;
+    const limit = Number(req.query.limit) || 20;
+    const pins = await this.pinService.list(roomId, { limit, cursor });
+    const paginated = buildCursorResponse(
+      pins as unknown as Record<string, unknown>[],
+      limit,
+      "pinnedAt"
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(paginated, t("CHAT_PINS_FETCHED", req.locale)));
   });
 }

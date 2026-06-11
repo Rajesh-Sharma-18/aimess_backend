@@ -9,7 +9,12 @@ import type { GroupInviteLinkRepository } from "../repositories/group-invite-lin
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
 
-export type EnrichedGroupRoom = GroupRoom & {
+export type GroupRoomMembership = GroupRoom & {
+  /** True when the logged-in caller is an active member of this group. */
+  isJoined: boolean;
+};
+
+export type EnrichedGroupRoom = GroupRoomMembership & {
   isMuted: boolean;
   unreadCount: number;
   role: string;
@@ -71,10 +76,15 @@ export class GroupRoomService {
     return { room: fresh ?? room, member };
   }
 
-  async getRoom(roomId: string): Promise<GroupRoom> {
+  async getRoom(roomId: string, userId?: string): Promise<GroupRoomMembership> {
     const room = await this.roomRepo.findActiveByRoomId(roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
-    return room;
+    // Any authenticated user can fetch a group's detail, so isJoined genuinely
+    // varies: true only when the caller has an ACTIVE membership row.
+    const isJoined = userId
+      ? (await this.memberRepo.findActiveByRoomAndUser(roomId, userId)) !== null
+      : false;
+    return { ...room, isJoined };
   }
 
   async updateRoom(
@@ -153,10 +163,15 @@ export class GroupRoomService {
   async getUserGroups(
     userId: string,
     params: { limit: number; cursor?: string | null }
-  ): Promise<GroupRoom[]> {
+  ): Promise<GroupRoomMembership[]> {
     const roomIds = await this.memberRepo.getActiveRoomIds(userId);
     if (!roomIds.length) return [];
-    return this.roomRepo.getUserGroups(userId, roomIds, params);
+    const rooms = await this.roomRepo.getUserGroups(userId, roomIds, params);
+    // Every row here is a group the caller is an ACTIVE member of.
+    return rooms.map((room) => ({
+      ...room,
+      isJoined: true,
+    }));
   }
 
   async countUserGroups(userId: string): Promise<number> {
@@ -201,11 +216,13 @@ export class GroupRoomService {
         settings.mute === true ||
         (settings.muteUntil != null &&
           new Date(settings.muteUntil).getTime() > now);
+      const isJoined = membership != null;
       return {
         ...room,
         isMuted,
         unreadCount: membership?.unreadCount ?? 0,
         role: membership?.role ?? "MEMBER",
+        isJoined,
       };
     });
   }

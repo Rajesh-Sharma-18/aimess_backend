@@ -11,6 +11,7 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { env } from "../config/env.js";
 
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
@@ -18,7 +19,22 @@ import type { RoomMemberRepository } from "../repositories/room-member.repositor
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { GeneralRoomMessage } from "../generated/prisma/index.js";
-import { communityMessagePreview } from "../utils/community-message-preview.js";
+import {
+  groupStoredReactions,
+  normalizeMessageType,
+  toWireMessage,
+} from "../lib/chat-message.serializer.js";
+import { buildMessagePreview } from "../events/publish-message-sent.js";
+
+/**
+ * Client-facing community message row: the raw Prisma entity with its
+ * LOWER-CASE `messageType` dropped and replaced by an UPPER-CASE `contentType`
+ * (§1 single client-facing casing). Used as the return element of every REST
+ * read path so HTTP clients never see the internal `messageType` field.
+ */
+type CommunityMessageWire = Omit<GeneralRoomMessage, "messageType"> & {
+  contentType: string;
+};
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
 export interface CommunityChatSummary {
@@ -173,6 +189,86 @@ export class CommunityMessageService {
   }
 
   /**
+   * Offline catch-up: returns missed messages for a community room.
+   *
+   * Two modes (mutually exclusive — sinceTs takes precedence when both supplied):
+   *
+   *   sinceTs > 0  — updatedAt-based sweep. Queries via `findUpdatedAtSince`,
+   *                  which includes tombstones, edits, and reaction changes.
+   *                  Returns `nextTs` (epoch-ms of last event's updatedAt) for
+   *                  continued paging.
+   *
+   *   sinceId      — ObjectId insertion-order query via `findSinceId`.  Includes
+   *                  tombstones (deletedForAll=true) so clients can reconcile
+   *                  offline deletes.  nextTs is 0 in this mode.
+   *
+   * Authorizes that the requesting user is an active member before querying.
+   */
+  async catchup(params: {
+    roomId: string;
+    userId: string;
+    sinceId: string;
+    sinceTs?: Date;
+    limit: number;
+  }): Promise<{
+    events: GeneralRoomMessage[];
+    hasMore: boolean;
+    lastId: string;
+    nextTs: number;
+    authorized: boolean;
+  }> {
+    const member = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (!member || member.status !== "active") {
+      return {
+        events: [],
+        hasMore: false,
+        lastId: params.sinceId,
+        nextTs: 0,
+        authorized: false,
+      };
+    }
+
+    const limit = Math.min(Math.max(params.limit || 100, 1), 200);
+
+    // since_ts mode: updatedAt-based query that catches all mutation types.
+    if (params.sinceTs) {
+      const { messages: tsMessages, hasMore } =
+        await this.messageRepo.findUpdatedAtSince({
+          roomId: params.roomId,
+          userId: params.userId,
+          fromTs: params.sinceTs,
+          limit,
+        });
+      const lastMsg =
+        tsMessages.length > 0 ? tsMessages[tsMessages.length - 1]! : null;
+      const lastId = lastMsg?.id ?? params.sinceId;
+      const nextTs =
+        lastMsg?.updatedAt instanceof Date ? lastMsg.updatedAt.getTime() : 0;
+      return {
+        events: tsMessages,
+        hasMore,
+        lastId,
+        nextTs,
+        authorized: true,
+      };
+    }
+
+    // since_id mode: ObjectId ordering (insertion-order). Tombstones included.
+    const { messages, hasMore } = await this.messageRepo.findSinceId({
+      roomId: params.roomId,
+      userId: params.userId,
+      sinceId: params.sinceId,
+      limit,
+    });
+    const lastId =
+      messages.length > 0 ? messages[messages.length - 1]!.id : params.sinceId;
+    return { events: messages, hasMore, lastId, nextTs: 0, authorized: true };
+  }
+
+  /**
    * Active member userIds for a community room — the recipient list for the
    * community list "bump-to-top" (`community:updated`) fan-out.
    */
@@ -250,10 +346,7 @@ export class CommunityMessageService {
         hasLastMessage: true,
         lastMessage: {
           username: last.senderName ?? "",
-          message: communityMessagePreview({
-            messageType: last.messageType,
-            content: last.content,
-          }),
+          message: buildMessagePreview(last.messageType ?? "", last.content),
           dateTime: Number.isNaN(createdAt.getTime()) ? 0 : createdAt.getTime(),
         },
       };
@@ -266,20 +359,191 @@ export class CommunityMessageService {
     return this.memberRepo.bulkAdvanceReadToNow(userId, ids);
   }
 
+  /**
+   * Map a raw Prisma message to the client wire shape: drop the LOWER-CASE
+   * `messageType` and add an UPPER-CASE `contentType` (§1). Every other field
+   * (id, roomId, sentBy, senderName, senderAvatar, message, attachments,
+   * reactions, deletedForAll, editedAt, createdAt, updatedAt, parentMessageId,
+   * …) is preserved unchanged. Applied at the RETURN site of REST read paths
+   * only — internal logic continues to read the raw rows.
+   */
+  private toWire(m: GeneralRoomMessage): CommunityMessageWire {
+    return toWireMessage(m);
+  }
+
   async getMessages(params: {
     roomId: string;
     userId: string;
     cursor?: string | null;
     limit: number;
-  }): Promise<GeneralRoomMessage[]> {
+  }): Promise<CommunityMessageWire[]> {
     const beforeTimestamp = params.cursor || new Date().toISOString();
-    return this.messageRepo.findByRoomIdWithTime(
+    const rows = await this.messageRepo.findByRoomIdWithTime(
       params.roomId,
       beforeTimestamp,
       "older",
       params.limit,
       params.userId
     );
+    return rows.map((m) => this.toWire(m));
+  }
+
+  /**
+   * Timestamp-keyset page (before_ts / after_ts). Over-fetches one extra row so
+   * `hasMore` is exact; `nextCursor` is the boundary createdAt as epoch-ms.
+   */
+  async getMessagesTimeline(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<{
+    items: CommunityMessageWire[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const rows = await this.messageRepo.findByRoomIdTimeline({
+      roomId: params.roomId,
+      userId: params.userId,
+      direction: params.direction,
+      ts: params.ts,
+      limit: params.limit,
+    });
+
+    const hasMore = rows.length > params.limit;
+    const pageRows = rows.slice(0, params.limit);
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && last ? String(last.createdAt.getTime()) : null;
+
+    return { items: pageRows.map((m) => this.toWire(m)), hasMore, nextCursor };
+  }
+
+  /**
+   * Incremental sync (`after_ts` mode) — returns every message (new, edited,
+   * reacted, deleted tombstone) whose `updatedAt >= fromTs`. Designed for
+   * offline-first mobile clients catching up after a background period.
+   *
+   * Key differences from `getMessagesTimeline` (`before_ts` / scroll mode):
+   * - Queries by `updatedAt` so edits, reaction changes, and deletes are
+   *   included alongside new messages.
+   * - Tombstones (`deletedForAll=true`) ARE returned — client reconciles.
+   * - Each item carries grouped reactions ready for direct rendering.
+   * - `nextCursor` is the epoch-ms `updatedAt` of the last item; the client
+   *   stores it and sends it back as the next `after_ts`.
+   */
+  async getMessagesSince(params: {
+    roomId: string;
+    userId: string;
+    fromTs: Date;
+    limit: number;
+  }): Promise<{
+    items: Array<{
+      id: string;
+      roomId: string;
+      sentBy: string;
+      senderName: string | null;
+      senderAvatar: string | null;
+      message: string | null;
+      contentType: string;
+      attachments: unknown;
+      reactions: Array<{
+        emoji: string;
+        count: number;
+        users: Array<{ userId: string; displayName: string; avatar: string }>;
+      }>;
+      deletedForAll: boolean;
+      editedAt: number | null;
+      createdAt: number;
+      updatedAt: number;
+      syncEventType: "new" | "edited" | "deleted" | "reacted";
+    }>;
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    // Enforce active membership — banned/left members cannot read.
+    const member = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (!member || member.status !== "active") {
+      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    }
+
+    const { messages, hasMore } = await this.messageRepo.findUpdatedAtSince({
+      roomId: params.roomId,
+      userId: params.userId,
+      fromTs: params.fromTs,
+      limit: params.limit,
+    });
+
+    const last = messages[messages.length - 1];
+    const nextCursor =
+      hasMore && last ? String(last.updatedAt.getTime()) : null;
+
+    const items = messages.map((msg) => {
+      const createdMs = msg.createdAt.getTime();
+      const updatedMs = msg.updatedAt.getTime();
+      const editedMs =
+        msg.editedAt instanceof Date ? msg.editedAt.getTime() : null;
+
+      // Derive what kind of mutation this update represents.
+      let syncEventType: "new" | "edited" | "deleted" | "reacted";
+      if (msg.deletedForAll) {
+        syncEventType = "deleted";
+      } else if (editedMs !== null) {
+        syncEventType = "edited";
+      } else if (updatedMs - createdMs > 2000) {
+        // updatedAt is more than 2 s after createdAt — something mutated it
+        // after creation (most likely a reaction, since edits set editedAt).
+        syncEventType = "reacted";
+      } else {
+        syncEventType = "new";
+      }
+
+      return {
+        id: msg.id,
+        roomId: msg.roomId,
+        sentBy: msg.sentBy,
+        senderName: msg.senderName ?? null,
+        senderAvatar: msg.senderAvatar ?? null,
+        message: msg.message ?? null,
+        contentType: normalizeMessageType(msg.messageType),
+        attachments: msg.attachments,
+        reactions: groupStoredReactions(msg.reactions),
+        deletedForAll: msg.deletedForAll,
+        editedAt: editedMs,
+        createdAt: createdMs,
+        updatedAt: updatedMs,
+        syncEventType,
+      };
+    });
+
+    return { items, hasMore, nextCursor };
+  }
+
+  /**
+   * Jump-to-message window: resolves the anchor's createdAt, then fetches a
+   * window of `limit` messages centered around it.
+   */
+  async getMessagesAround(params: {
+    roomId: string;
+    userId: string;
+    messageId: string;
+    limit: number;
+  }): Promise<{ items: CommunityMessageWire[] }> {
+    const anchor = await this.messageRepo.findById(params.messageId);
+    if (!anchor) {
+      return { items: [] };
+    }
+    const rows = await this.messageRepo.findAroundDate({
+      roomId: params.roomId,
+      userId: params.userId,
+      anchorDate: anchor.createdAt,
+      limit: params.limit,
+    });
+    return { items: rows.map((m) => this.toWire(m)) };
   }
 
   /**
@@ -294,7 +558,7 @@ export class CommunityMessageService {
     pageNumber: number;
     limit: number;
     timestamp?: number;
-  }): Promise<{ messages: GeneralRoomMessage[]; total: number }> {
+  }): Promise<{ messages: CommunityMessageWire[]; total: number }> {
     // Enforce active membership first (banned/left members can't read).
     const member = await this.memberRepo.findByRoomAndUser(
       params.roomId,
@@ -325,6 +589,7 @@ export class CommunityMessageService {
 
     // Mark-as-read: advance to the newest message in the page (index 0, since
     // the page is createdAt DESC). Forward-only; skip when the page is empty.
+    // Runs on the RAW rows (needs id/createdAt) before we map to the wire shape.
     const newest = messages[0];
     if (newest) {
       await this.memberRepo
@@ -341,7 +606,7 @@ export class CommunityMessageService {
         });
     }
 
-    return { messages, total };
+    return { messages: messages.map((m) => this.toWire(m)), total };
   }
 
   async searchMessages(params: {
@@ -349,13 +614,14 @@ export class CommunityMessageService {
     userId: string;
     query: string;
     limit: number;
-  }): Promise<GeneralRoomMessage[]> {
-    return this.messageRepo.searchByText(
+  }): Promise<CommunityMessageWire[]> {
+    const rows = await this.messageRepo.searchByText(
       params.roomId,
       params.query,
       params.limit,
       params.userId
     );
+    return rows.map((m) => this.toWire(m));
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -372,7 +638,7 @@ export class CommunityMessageService {
     type?: string;
     cursor?: string | null;
     limit: number;
-  }): Promise<GeneralRoomMessage[]> {
+  }): Promise<CommunityMessageWire[]> {
     // Enforce active membership first (banned/left members can't list media).
     const member = await this.memberRepo.findByRoomAndUser(
       params.roomId,
@@ -381,13 +647,14 @@ export class CommunityMessageService {
     if (!member || member.status !== "active")
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
 
-    return this.messageRepo.listMedia({
+    const rows = await this.messageRepo.listMedia({
       roomId: params.roomId,
       userId: params.userId,
       type: params.type,
       cursor: params.cursor,
       limit: params.limit,
     });
+    return rows.map((m) => this.toWire(m));
   }
 
   async editMessage(params: {
@@ -410,11 +677,125 @@ export class CommunityMessageService {
     return this.messageRepo.editMessage(params.messageId, params.content.text);
   }
 
-  async react(
-    messageId: string,
-    reactions: Record<string, unknown[]>
-  ): Promise<GeneralRoomMessage | null> {
-    return this.messageRepo.updateById("", messageId, reactions);
+  async reactToMessage(params: {
+    messageId: string;
+    userId: string;
+    communityId: string;
+    emoji: string;
+  }): Promise<{
+    messageId: string;
+    communityId: string;
+    reactions: Array<{
+      emoji: string;
+      count: number;
+      users: Array<{ userId: string; displayName: string; avatar: string }>;
+    }>;
+  }> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (message.deletedForAll)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+
+    // Guard: only active members may react.
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      params.userId
+    );
+    if (!member || member.status !== "active") {
+      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    }
+
+    // NOTE: non-atomic read-modify-write; acceptable at current scale
+    const updatedReactions = (
+      message.reactions
+        ? {
+            ...(message.reactions as Record<
+              string,
+              Array<{
+                userId: string;
+                userName: string;
+                avatar: string;
+                memberId: string;
+              }>
+            >),
+          }
+        : {}
+    ) as Record<
+      string,
+      Array<{
+        userId: string;
+        userName: string;
+        avatar: string;
+        memberId: string;
+      }>
+    >;
+
+    if (!updatedReactions[params.emoji]) {
+      updatedReactions[params.emoji] = [];
+    }
+
+    const existingIndex = updatedReactions[params.emoji]!.findIndex(
+      (entry) => entry.userId === params.userId
+    );
+
+    if (existingIndex !== -1) {
+      updatedReactions[params.emoji]!.splice(existingIndex, 1);
+      if (updatedReactions[params.emoji]!.length === 0) {
+        delete updatedReactions[params.emoji];
+      }
+    } else {
+      updatedReactions[params.emoji]!.push({
+        userId: params.userId,
+        userName: "",
+        avatar: "",
+        memberId: "",
+      });
+    }
+
+    await this.messageRepo.updateById(
+      params.communityId,
+      params.messageId,
+      updatedReactions
+    );
+
+    // Collect all unique userIds across all reaction arrays
+    const allUserIds = [
+      ...new Set(
+        Object.values(updatedReactions)
+          .flat()
+          .map((e) => e.userId)
+          .filter(Boolean)
+      ),
+    ];
+
+    const snaps =
+      allUserIds.length > 0
+        ? await this.userSnapshotService.getUserSnapshotsMap(
+            allUserIds,
+            this.cacheRepo
+          )
+        : new Map<string, Record<string, unknown>>();
+
+    const reactionGroups = Object.entries(updatedReactions)
+      .filter(([, users]) => users.length > 0) // skip defensively if empty
+      .map(([emoji, users]) => ({
+        emoji,
+        count: users.length,
+        users: users.map((u) => {
+          const snap = snaps.get(u.userId);
+          return {
+            userId: u.userId,
+            displayName: (snap?.displayName as string) || u.userName || "",
+            avatar: (snap?.avatar as string) || u.avatar || "",
+          };
+        }),
+      }));
+
+    return {
+      messageId: params.messageId,
+      communityId: params.communityId,
+      reactions: reactionGroups,
+    };
   }
 
   async deleteForMe(
@@ -459,5 +840,78 @@ export class CommunityMessageService {
       userReportId: params.reporterId,
       userReportReason: params.reportReason,
     });
+  }
+
+  async pinMessage(params: {
+    messageId: string;
+    userId: string;
+    roomId: string;
+    communityId: string;
+  }): Promise<{ pinnedIds: string[]; pinnedCount: number; pinnedAt: number }> {
+    const member = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (!member || member.status !== "active")
+      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    if (!["admin", "moderator"].includes(member.role))
+      throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
+
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (message.roomId !== params.roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (message.deletedForAll)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+
+    const room = await this.roomRepo.findRoomById(params.roomId);
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const pinnedIds: string[] = Array.isArray(room.listPinedMessage)
+      ? (room.listPinedMessage as string[])
+      : [];
+
+    if (pinnedIds.length >= env.PIN_LIMIT_PER_ROOM)
+      throw new BadRequestError("CHAT_PIN_LIMIT_REACHED");
+
+    if (pinnedIds.includes(params.messageId)) {
+      return { pinnedIds, pinnedCount: pinnedIds.length, pinnedAt: Date.now() };
+    }
+
+    const newPinnedIds = [...pinnedIds, params.messageId];
+    await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);
+    return {
+      pinnedIds: newPinnedIds,
+      pinnedCount: newPinnedIds.length,
+      pinnedAt: Date.now(),
+    };
+  }
+
+  async unpinMessage(params: {
+    messageId: string;
+    userId: string;
+    roomId: string;
+    communityId: string;
+  }): Promise<{ pinnedIds: string[]; pinnedCount: number }> {
+    const member = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.userId
+    );
+    if (!member || member.status !== "active")
+      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    if (!["admin", "moderator"].includes(member.role))
+      throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
+
+    const room = await this.roomRepo.findRoomById(params.roomId);
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const pinnedIds: string[] = Array.isArray(room.listPinedMessage)
+      ? (room.listPinedMessage as string[])
+      : [];
+
+    if (!pinnedIds.includes(params.messageId))
+      throw new NotFoundError("CHAT_PIN_NOT_FOUND");
+
+    const newPinnedIds = pinnedIds.filter((id) => id !== params.messageId);
+    await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);
+    return { pinnedIds: newPinnedIds, pinnedCount: newPinnedIds.length };
   }
 }

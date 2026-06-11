@@ -1,6 +1,11 @@
+import { toMediaObject } from "@aimess/storage";
+import type { MediaObject } from "@aimess/shared-types";
+
 import { avatarService } from "./avatar.service.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
+import { env } from "../config/env.js";
+import { mediaUrlStrategy } from "../config/storage.js";
 import type { SearchUsersQuery } from "../api/validators/user-discovery.validator.js";
 
 export type RelationshipStatus =
@@ -17,6 +22,11 @@ export type UserDiscoveryResult = {
   bio: string | null;
   avatarUrl: string | null;
   avatarUrlExpiresIn: number | null;
+  /**
+   * Nested media object for the avatar. Inner fields are all null when no avatar
+   * is set. Additive alongside the legacy `avatarUrl`/`avatarUrlExpiresIn`.
+   */
+  avatar: MediaObject;
   isOnline: boolean;
   relationshipStatus?: RelationshipStatus;
   friendshipId?: string | null;
@@ -27,6 +37,18 @@ async function resolveAvatarUrl(
 ): Promise<{ url: string | null; expiresIn: number | null }> {
   const view = await avatarService.resolveViewUrlForClient(avatarUrl);
   return { url: view?.url ?? null, expiresIn: view?.expiresIn ?? null };
+}
+
+/** Builds the nested avatar MediaObject from the raw stored object key. */
+async function resolveAvatarMedia(
+  avatarUrl: string | null
+): Promise<MediaObject> {
+  return toMediaObject({
+    bucket: env.MINIO_BUCKET_AVATARS,
+    stored: avatarUrl,
+    prefixes: ["avatars"],
+    strategy: mediaUrlStrategy,
+  });
 }
 
 export const userDiscoveryService = {
@@ -79,6 +101,7 @@ export const userDiscoveryService = {
     const users = await Promise.all(
       profiles.map(async (p) => {
         const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
+        const avatar = await resolveAvatarMedia(p.avatarUrl);
         return {
           userId: p.userId,
           username: p.username,
@@ -87,6 +110,7 @@ export const userDiscoveryService = {
           bio: p.bio,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
+          avatar,
           isOnline: p.isOnline,
           relationshipStatus: "FRIEND" as RelationshipStatus,
           friendshipId: friendshipIdByPeer.get(p.userId) ?? null,
@@ -155,6 +179,7 @@ export const userDiscoveryService = {
           friendshipId = pending.friendshipId;
         }
         const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
+        const avatar = await resolveAvatarMedia(p.avatarUrl);
         return {
           userId: p.userId,
           username: p.username,
@@ -163,6 +188,7 @@ export const userDiscoveryService = {
           bio: p.bio,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
+          avatar,
           isOnline: p.isOnline,
           relationshipStatus,
           friendshipId,
@@ -195,6 +221,7 @@ export const userDiscoveryService = {
     const users = await Promise.all(
       profiles.map(async (p) => {
         const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
+        const avatar = await resolveAvatarMedia(p.avatarUrl);
         return {
           userId: p.userId,
           username: p.username,
@@ -203,6 +230,7 @@ export const userDiscoveryService = {
           bio: p.bio,
           avatarUrl: url,
           avatarUrlExpiresIn: expiresIn,
+          avatar,
           isOnline: p.isOnline,
         };
       })

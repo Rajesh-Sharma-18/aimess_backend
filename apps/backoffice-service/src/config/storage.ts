@@ -1,4 +1,9 @@
-import { createStorageClient, type StorageClient } from "@aimess/storage";
+import {
+  createMediaUrlStrategy,
+  createStorageClient,
+  type MediaUrlStrategy,
+  type StorageClient,
+} from "@aimess/storage";
 
 import { env } from "./env.js";
 
@@ -15,4 +20,15 @@ export const presignClient: StorageClient = createStorageClient({
   accessKey: env.MINIO_ACCESS_KEY,
   secretKey: env.MINIO_SECRET_KEY,
   region: env.MINIO_REGION,
+});
+
+/**
+ * Shared media-URL strategy backing the nested `avatar: MediaObject` fields.
+ * Presign-only (no CDN base URL) so resolved download URLs are byte-identical
+ * in shape to the legacy `avatarUrl`/`avatarUrlExpiresIn` presigned GETs.
+ */
+export const mediaUrlStrategy: MediaUrlStrategy = createMediaUrlStrategy({
+  client: presignClient,
+  defaultViewExpiresIn: env.MINIO_AVATAR_VIEW_EXPIRES_IN,
+  cdnBaseUrl: null,
 });

@@ -97,7 +97,7 @@ export const listReportsQuerySchema = z.object({
   assignedTo: z.string().trim().min(1).optional(),
   sort: z
     .string()
-    .regex(SORT_PATTERN, "sort must be <field>:<asc|desc> from the whitelist")
+    .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
     .default("createdAt:desc"),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -156,3 +156,22 @@ export const bulkDismissSchema = dismissReportSchema.extend({
   reportIds: reportIdsField,
 });
 export type BulkDismissInput = z.infer<typeof bulkDismissSchema>;
+
+// ---------------------------------------------------------------------------
+// Sub-resource list queries (evidence / history / related).
+// ---------------------------------------------------------------------------
+const subPageSchema = {
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+};
+
+export const reportEvidenceQuerySchema = z.object(subPageSchema);
+export type ReportEvidenceQueryInput = z.infer<
+  typeof reportEvidenceQuerySchema
+>;
+
+export const reportHistoryQuerySchema = z.object(subPageSchema);
+export type ReportHistoryQueryInput = z.infer<typeof reportHistoryQuerySchema>;
+
+export const reportRelatedQuerySchema = z.object(subPageSchema);
+export type ReportRelatedQueryInput = z.infer<typeof reportRelatedQuerySchema>;

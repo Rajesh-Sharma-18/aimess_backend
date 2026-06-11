@@ -11,6 +11,7 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -37,7 +38,9 @@ export class GroupMessageService {
     messageType: string;
     parentMessageId?: string | null;
     clientMessageId?: string | null;
-  }): Promise<GroupMessage> {
+    /** Client compose time (epoch ms) — display only; never overwrites serverTs. */
+    clientTs?: number | null;
+  }): Promise<GroupMessage & { senderRole?: string }> {
     // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
     if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
@@ -54,13 +57,19 @@ export class GroupMessageService {
     );
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
 
+    // §2.2: stamp the sender's group role on the returned message (transient,
+    // not persisted) so the message:new emit can carry senderRole.
+    const senderRole = (member as { role?: string }).role ?? "MEMBER";
+    const withRole = (m: GroupMessage): GroupMessage & { senderRole: string } =>
+      Object.assign(m, { senderRole });
+
     // Check idempotency
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.senderId}:${params.clientMessageId}`;
       const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
       if (cachedId) {
         const cached = await this.messageRepo.findById(cachedId);
-        if (cached) return cached;
+        if (cached) return withRole(cached);
       }
       const existing = await this.messageRepo.findByClientMessageId(
         params.roomId,
@@ -71,7 +80,7 @@ export class GroupMessageService {
         this.cacheRepo
           .setMessageIdempotency(idemKey, existing.id)
           .catch(() => {});
-        return existing;
+        return withRole(existing);
       }
     }
 
@@ -81,12 +90,15 @@ export class GroupMessageService {
       senderName: params.senderName,
       senderAvatar: params.senderAvatar,
       content: params.content,
-      messageType: params.messageType || "TEXT",
+      messageType: normalizeMessageType(params.messageType),
       parentMessageId: params.parentMessageId || null,
       clientMessageId: params.clientMessageId || null,
+      // §5.1: persist the client compose time alongside the server createdAt.
+      ...(params.clientTs ? { clientInfo: { clientTs: params.clientTs } } : {}),
     };
 
-    // If reply, attach quote data
+    // If reply, attach the canonical quote snapshot (§1/§9):
+    // { messageId, senderId, senderName, messageType, preview, isDeleted }.
     if (params.parentMessageId) {
       const originalMsg = await this.messageRepo.findById(
         params.parentMessageId
@@ -97,11 +109,12 @@ export class GroupMessageService {
           unknown
         >;
         entity.quoteData = {
-          text: (origContent.text as string) || "",
+          messageId: originalMsg.id,
           senderId: originalMsg.senderId,
           senderName: originalMsg.senderName,
-          messageType: originalMsg.messageType,
-          deletedForAll: originalMsg.isDeleted,
+          messageType: normalizeMessageType(originalMsg.messageType),
+          preview: (origContent.text as string) || "",
+          isDeleted: Boolean(originalMsg.isDeleted),
         };
       }
     }
@@ -126,7 +139,7 @@ export class GroupMessageService {
           params.senderId,
           params.clientMessageId
         );
-        if (dup) return dup;
+        if (dup) return withRole(dup);
       }
       throw err;
     }
@@ -161,7 +174,7 @@ export class GroupMessageService {
           `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
         );
       });
-    return message;
+    return withRole(message);
   }
 
   /**
@@ -221,6 +234,54 @@ export class GroupMessageService {
       hasMore && last ? String(last.createdAt.getTime()) : null;
 
     return { items, hasMore, nextCursor };
+  }
+
+  /**
+   * V2 §3.2: seq-keyset page. `nextCursor` is the boundary `sequenceNumber`.
+   */
+  async getMessagesSeq(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    seq: number;
+    limit: number;
+  }): Promise<{
+    items: GroupMessage[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const rows = await this.messageRepo.findByRoomIdSeq({
+      userId: params.userId,
+      roomId: params.roomId,
+      direction: params.direction,
+      seq: params.seq,
+      limit: params.limit,
+    });
+    const hasMore = rows.length > params.limit;
+    const items = rows.slice(0, params.limit);
+    const last = items[items.length - 1];
+    const nextCursor = hasMore && last ? String(last.sequenceNumber) : null;
+    return { items, hasMore, nextCursor };
+  }
+
+  /**
+   * V2 §3.2: jump-to-message window centered on a message id.
+   */
+  async getMessagesAround(params: {
+    roomId: string;
+    userId: string;
+    messageId: string;
+    limit: number;
+  }): Promise<{ items: GroupMessage[]; anchorSeq: number }> {
+    const anchor = await this.messageRepo.findById(params.messageId);
+    if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const items = await this.messageRepo.findAroundSeq({
+      userId: params.userId,
+      roomId: params.roomId,
+      anchorSeq: anchor.sequenceNumber,
+      limit: params.limit,
+    });
+    return { items, anchorSeq: anchor.sequenceNumber };
   }
 
   /**
@@ -423,13 +484,18 @@ export class GroupMessageService {
     senderName: string;
     senderAvatar: string;
     clientMessageId?: string | null;
-  }): Promise<GroupMessage> {
+  }): Promise<GroupMessage & { senderRole?: string }> {
     // check sender is active member of target room
     const member = await this.memberRepo.findActiveByRoomAndUser(
       params.targetRoomId,
       params.senderId
     );
     if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+
+    // §2.2: stamp the forwarder's group role (transient) for parity with send.
+    const senderRole = (member as { role?: string }).role ?? "MEMBER";
+    const withRole = (m: GroupMessage): GroupMessage & { senderRole: string } =>
+      Object.assign(m, { senderRole });
 
     // idempotency — require senderId to avoid false matches across senders
     if (params.clientMessageId) {
@@ -438,7 +504,7 @@ export class GroupMessageService {
         params.senderId,
         params.clientMessageId
       );
-      if (existing) return existing;
+      if (existing) return withRole(existing);
     }
 
     // fetch source message
@@ -485,7 +551,7 @@ export class GroupMessageService {
         );
       });
 
-    return message;
+    return withRole(message);
   }
 
   /**
@@ -530,6 +596,17 @@ export class GroupMessageService {
       : p.sinceSeq;
 
     return { authorized: true, events, hasMore, lastSeq };
+  }
+
+  /**
+   * Resolve a group message's per-room `sequenceNumber` from its id. Used by the
+   * read_sync fan-out. Returns 0 if the message is missing.
+   */
+  async getMessageSequence(messageId: string): Promise<number> {
+    if (!messageId) return 0;
+    const msg = await this.messageRepo.findById(messageId);
+    const seq = (msg as { sequenceNumber?: number } | null)?.sequenceNumber;
+    return typeof seq === "number" ? seq : 0;
   }
 
   async getMessageReactions(params: {

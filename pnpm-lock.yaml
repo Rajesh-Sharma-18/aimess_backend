@@ -619,6 +619,9 @@ importers:
       "@aimess/errors":
         specifier: workspace:*
         version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
       "@aimess/logger":
         specifier: workspace:*
         version: link:../../packages/logger
@@ -783,6 +786,9 @@ importers:
 
   packages/storage:
     dependencies:
+      "@aimess/shared-types":
+        specifier: workspace:*
+        version: link:../shared-types
       "@aws-sdk/client-s3":
         specifier: ^3.888.0
         version: 3.1048.0
@@ -793,6 +799,9 @@ importers:
       "@types/node":
         specifier: ^25.6.2
         version: 25.6.2
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

@@ -8,9 +8,7 @@ import {
 
 import { env } from "../config/env.js";
 
-const QUEUE = "user.profile_updated.queue";
-const DLX = "user.profile_updated.queue.dlx";
-const DLQ_ROUTING_KEY = "user.profile_updated.queue.dead";
+const EXCHANGE = "user.profile_updated";
 
 let channelPromise: Promise<amqp.Channel> | null = null;
 
@@ -19,12 +17,7 @@ async function getChannel(): Promise<amqp.Channel> {
     channelPromise = (async () => {
       const connection = await amqp.connect(env.RABBITMQ_URL);
       const channel = await connection.createChannel();
-      await channel.assertExchange(DLX, "direct", { durable: true });
-      await channel.assertQueue(QUEUE, {
-        durable: true,
-        deadLetterExchange: DLX,
-        deadLetterRoutingKey: DLQ_ROUTING_KEY,
-      });
+      await channel.assertExchange(EXCHANGE, "fanout", { durable: true });
       return channel;
     })();
   }
@@ -37,7 +30,7 @@ async function publish(data: UserProfileUpdatedPayload): Promise<void> {
     type: UserEvents.USER_PROFILE_UPDATED,
     data,
   });
-  channel.sendToQueue(QUEUE, Buffer.from(payload), { persistent: true });
+  channel.publish(EXCHANGE, "", Buffer.from(payload), { persistent: true });
 }
 
 function publishSafe(data: UserProfileUpdatedPayload): void {

@@ -57,7 +57,7 @@ export class CallService {
           data: {
             callId,
             callerId: params.callerId,
-            type: params.type || CallType.AUDIO,
+            callType: params.type || CallType.AUDIO,
           },
         })
       )

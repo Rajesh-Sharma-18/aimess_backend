@@ -73,7 +73,7 @@ export const listLivestreamsQuerySchema = z.object({
   creatorId: z.string().trim().min(1).optional(),
   sort: z
     .string()
-    .regex(SORT_PATTERN, "sort must be <field>:<asc|desc> from the whitelist")
+    .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
     .default("createdAt:desc"),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
@@ -114,7 +114,10 @@ export const listLivestreamReportsQuerySchema = z.object({
   reportType: livestreamReportTypeEnum.optional(),
   sort: z
     .string()
-    .regex(REPORT_SORT_PATTERN, "sort must be createdAt:<asc|desc>")
+    .regex(
+      REPORT_SORT_PATTERN,
+      "Sort must be in the format createdAt:asc or createdAt:desc"
+    )
     .default("createdAt:desc"),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),

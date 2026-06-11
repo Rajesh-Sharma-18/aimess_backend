@@ -18,6 +18,8 @@ export interface CommunityActivityPayload {
   /** ISO-8601 timestamp of the latest community message. */
   lastMessageAt: string;
   lastMessageId: string;
+  senderUsername: string;
+  messagePreview: string;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;

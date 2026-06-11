@@ -15,13 +15,17 @@ export const sendCommunityMessageSchema = z
     roomId: z.string().min(5).max(50),
     message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
     messageType: z.enum([
-      "image",
       "text",
+      "image",
+      "video",
       "voice",
-      "custom",
+      "audio",
+      "document",
+      "gif",
       "location",
       "contact",
       "sticker",
+      "custom",
     ]),
     parentMessageId: z.string().nullish(),
     clientMessageId: z.string().optional(),
@@ -75,6 +79,11 @@ export const reactCommunityMessageSchema = z.object({
   ),
 });
 
+export const reactCommunityMessageBodySchema = z.object({
+  communityId: z.string().min(1),
+  emoji: z.string().min(1).max(10),
+});
+
 export const reportMessageSchema = z.object({
   roomId: z.string().min(10).max(300),
   messageId: z.string().min(10).max(300),
@@ -84,4 +93,18 @@ export const reportMessageSchema = z.object({
 
 export const searchRoomsSchema = z.object({
   query: z.string().min(1).max(100),
+});
+
+export const pinCommunityMessageSchema = z.object({
+  communityId: z.string().optional(),
+});
+
+export const unpinCommunityMessageSchema = z.object({
+  communityId: z.string().optional(),
+  messageId: z.string().min(1),
+  // communityId: z.string().min(1),
+});
+
+export const unpinCommunityMessageQuerySchema = z.object({
+  communityId: z.string().min(1),
 });

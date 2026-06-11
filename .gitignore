@@ -8,6 +8,7 @@ node_modules
 
 # BUILD
 dist
+*.tsbuildinfo
 .next
 .turbo
 _deploy-*

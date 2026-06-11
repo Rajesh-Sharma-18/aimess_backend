@@ -12,6 +12,7 @@ import {
   banCommunityMember,
   bulkMarkReadCommunities,
   bulkMuteCommunities,
+  bulkSendCommunityInviteLink,
   cancelCommunityJoinRequest,
   checkHandleAvailable,
   checkNameAvailable,
@@ -70,6 +71,7 @@ import {
   adminCategoriesQuerySchema,
   bulkMarkReadSchema,
   bulkMuteSchema,
+  bulkSendInviteLinkSchema,
   auditLogsQuerySchema,
   categoryIdParamSchema,
   communityIdParamsSchema,
@@ -521,4 +523,11 @@ communityRoutes.delete(
   "/:id/invite-links/:linkId",
   validateParams(inviteLinkIdParamsSchema),
   revokeCommunityInviteLink
+);
+
+communityRoutes.post(
+  "/:id/invite-links/bulk-send",
+  validateParams(communityIdParamsSchema),
+  validateBody(bulkSendInviteLinkSchema),
+  bulkSendCommunityInviteLink
 );

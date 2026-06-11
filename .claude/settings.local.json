@@ -99,7 +99,29 @@
       "Bash(graphify update *)",
       "Bash(pnpm --filter @aimess/backoffice-service exec tsc --noEmit)",
       "Bash(rtk npx *)",
-      "Bash(rtk lint *)"
+      "Bash(rtk lint *)",
+      "Bash(rtk find *)",
+      "PowerShell(pnpm install *)",
+      "Bash(pnpm *)",
+      "Bash(rtk tsc *)",
+      "Bash(rtk git *)",
+      "Bash(echo \"EXIT_ST_LINT:$?\")",
+      "Bash(echo \"EXIT_STG_LINT:$?\")",
+      "Bash(echo \"EXIT_CHAT_TSC:$?\")",
+      "Bash(echo \"EXIT_BO:$?\")",
+      "Bash(echo \"EXIT_GW:$?\")",
+      "Bash(echo \"EXIT_USER_LINT:$?\")",
+      "Bash(echo \"EXIT_COMM_LINT:$?\")",
+      "Bash(echo \"EXIT_CHAT_LINT:$?\")",
+      "Bash(echo \"EXIT_BO_LINT:$?\")",
+      "Bash(echo \"EXIT_GW_LINT:$?\")",
+      "Bash(grep -viE \"asyncapi[\\\\\\\\\\\\\\\\/]output|swagger|vendor\")",
+      "Bash(node \"C:\\\\Users\\\\Windows\\\\Documents\\\\Rajesh\\\\aimess_backend\\\\node_modules\\\\.bin\\\\..\\\\tsx\\\\dist\\\\cli.mjs\" --test \"src/**/*.test.ts\")",
+      "Bash(echo \"EXIT_TEST:$?\")",
+      "Bash(echo \"EXIT_STG_LINT2:$?\")",
+      "Bash(rtk pnpm *)",
+      "PowerShell(pnpm *)",
+      "PowerShell(npx tsc --noEmit --project \"C:\\\\Users\\\\Windows\\\\Documents\\\\Rajesh\\\\aimess_backend\\\\apps\\\\community-service\\\\tsconfig.json\")"
     ]
   }
 }

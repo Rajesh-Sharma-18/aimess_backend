@@ -6,6 +6,9 @@ import {
   bulkActivateUsers,
   bulkBanUsers,
   getUserDetails,
+  listOtherCommunityMembers,
+  listUserCommunities,
+  listUserReports,
   listUsers,
   suspendUser,
   unbanUser,
@@ -21,10 +24,14 @@ import {
   banUserSchema,
   bulkActivateSchema,
   bulkBanSchema,
+  listOtherMembersQuerySchema,
+  listUserCommunitiesQuerySchema,
   listUsersQuerySchema,
   suspendUserSchema,
   unbanUserSchema,
+  userCommunityMembersParamSchema,
   userIdParamSchema,
+  userReportsQuerySchema,
 } from "../validators/index.js";
 
 /** Admin User Management API — self-prefixed with `/users` (→ /v1/users/*). */
@@ -62,6 +69,30 @@ usersRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ),
   validateParams(userIdParamSchema),
   getUserDetails
+);
+usersRoutes.get(
+  "/users/:userId/reports",
+  requirePermission(PERMISSIONS.USERS_READ),
+  validateParams(userIdParamSchema),
+  validateQuery(userReportsQuerySchema),
+  listUserReports
+);
+// User → Communities grid + the co-member grid for a specific community. The
+// more-specific `/communities/:communityId/members` is declared before the
+// shallower `/communities` so Express matches it first.
+usersRoutes.get(
+  "/users/:userId/communities/:communityId/members",
+  requirePermission(PERMISSIONS.USERS_READ),
+  validateParams(userCommunityMembersParamSchema),
+  validateQuery(listOtherMembersQuerySchema),
+  listOtherCommunityMembers
+);
+usersRoutes.get(
+  "/users/:userId/communities",
+  requirePermission(PERMISSIONS.USERS_READ),
+  validateParams(userIdParamSchema),
+  validateQuery(listUserCommunitiesQuerySchema),
+  listUserCommunities
 );
 usersRoutes.post(
   "/users/:userId/ban",

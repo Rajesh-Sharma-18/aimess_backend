@@ -5,6 +5,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 
 import { logger } from "@aimess/logger";
+import { zodErrorMessage } from "@aimess/utils";
 
 import { sendPush } from "../providers/firebase/sendPush.js";
 
@@ -21,8 +22,7 @@ testPushRouter.post("/push", async (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({
       success: false,
-      message: "Invalid body",
-      issues: parsed.error.issues,
+      message: zodErrorMessage(parsed.error) || "Request body is invalid",
     });
   }
 

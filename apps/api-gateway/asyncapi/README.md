@@ -6,9 +6,24 @@ Machine-readable spec of every Socket.IO event the **api-gateway** exposes
 > Pinned to **3.0.0** (not 3.1.0): the `@asyncapi/react-component` viewer bundle
 > served at `/docs/socket` only supports up to 3.0.0. The CLI validates both.
 
-- **Spec file:** [`asyncapi.yaml`](./asyncapi.yaml)
+| File                               | Version   | Description                                                                     |
+| ---------------------------------- | --------- | ------------------------------------------------------------------------------- |
+| [`asyncapi.yaml`](./asyncapi.yaml) | **1.0.0** | The spec — all namespaces, events, and ack envelopes. Served at `/docs/socket`. |
+
 - **Human-readable source of truth:** [`docs/SOCKET_EVENTS.md`](../../../docs/SOCKET_EVENTS.md)
 - **Gateway socket code:** [`src/sockets/`](../src/sockets/)
+
+## Contract highlights
+
+- `message:new`, `message:edited`, and forwards emit the **same canonical
+  `ChatMessage`** (field names match REST `ChatMessage`) + legacy V1 aliases —
+  the client uses one mapper.
+- `contentType` is the single field name for message kind (UPPER-CASE).
+- Reactions broadcast as grouped `ChatReactionGroup[]`; presence timestamps are
+  epoch-ms integers; `message:delete` carries `conversationId` + `sequenceNumber`.
+- Multi-device: `read_sync` clears unread across a user's own devices; `pin:updated`
+  syncs the pinned banner.
+- Handshake query optionally carries `platform` / `clientType` (recorded in presence).
 
 If the code and this spec disagree, **code wins** — then update `asyncapi.yaml`
 and `docs/SOCKET_EVENTS.md` in the same PR.

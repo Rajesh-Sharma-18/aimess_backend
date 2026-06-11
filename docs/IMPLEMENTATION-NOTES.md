@@ -1,9 +1,26 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-06-04**.
-> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up** + **calling + forwarding + reactions + WebRTC**), **backoffice-service** (admin auth RBAC + user management + community moderation + reports + livestream admin + dashboard).
+> Update this whenever you ship or change a feature. Last reviewed: **2026-06-10**.
+> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up** + **calling + forwarding + reactions + WebRTC**), **backoffice-service** (admin auth RBAC + user management + **user-detail screen: user / joined-communities / other-members 3-API split** + community moderation + reports + livestream admin + dashboard).
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up**).
+
+---
+
+## Socket contract hardening + media-upload doc (shipped 2026-06-10)
+
+Contract-only hardening of the real-time API after a senior review of the Socket.IO contract (no business-logic change). Gateway socket code stays the source of truth; `docs/SOCKET_EVENTS.md` + `apps/api-gateway/asyncapi/asyncapi.yaml` were brought in sync.
+
+- **Shared ack module** — `apps/api-gateway/src/sockets/ack.ts` exports `ack` + `ackError` with ONE error taxonomy (`INVALID_PAYLOAD | SERVICE_ERROR | FORBIDDEN | NOT_FOUND | RATE_LIMITED | CONFLICT`) + a `retryable` hint. All three namespaces (`/chat`, `/community`, `/notify`) now use it; previously `/community` + `/notify` emitted the older `{success,error}` shape with **no** `retryable`. Adding `retryable` is additive (non-breaking). The gateway still only _emits_ `INVALID_PAYLOAD`/`SERVICE_ERROR` today — the other four are reserved so service-layer errors can map onto them without a breaking change.
+- **Payload constraints** — bounded Zod caps added across all namespaces: text **4000** (== `CHAT_TEXT_MAX_CHARS`, so the gateway never advertises looser than chat-service enforces), contentJson 16384, files ≤30, urls ≤20, emoji ≤32, peerIds/notificationIds ≤500, denormalized senderName ≤120 / avatar+url ≤3000. Coarse gateway guards — chat-service `media-limits.ts` stays authoritative per-attachment.
+- **ContentType unified + AUDIO restored** — one UPPER-CASE `ContentType` across `/chat` + `/community` (lower-case `CommunityMessageType` enum removed; send payload now refs `ContentType`). The serializer normalizes **any** string to UPPER-CASE (TEXT fallback), so the enum is documentation, not enforcement.
+- **AsyncAPI + SOCKET_EVENTS** — added `MessageSendResult`/`CommunityMessageSendResult`/`NotificationItem`/`IceCandidate` schemas; typed the forwarded notification (was `AnyObject`); `mediaKey` **deprecated** (still folded into `files[]`, back-compat kept); new SOCKET_EVENTS **§8 "Reliability, mobile & limits"** (reconnection state machine, throttling, event ordering, background/push/battery, offline queue, typing-indicator expiry, blocking, V2 deferrals, Mermaid sequence diagrams). `asyncapi:validate` → 0 errors.
+- **New `docs/MEDIA_UPLOAD.md`** — presigned-URL flow (`POST /api/chat/media/upload-url` → PUT to MinIO → send `objectKey`), allowed MIME/size, client-owned blurhash/waveform.
+- **Membership flag consolidated to a single `isJoined`** — `GET /communities/mine` items (`CommunityListItem` + `CommunityDiscoverItem`) and the chat-service group read surfaces (`GET /groups/my-groups`, `GET /groups/:roomId`, inbox GROUP rows) expose **one** `isJoined` boolean: `true` ⟺ the caller has an ACTIVE membership row (always true for "mine"/"my-groups", varies on detail/discover, `null` for PRIVATE inbox rows). The short-lived entity-specific aliases `isCommunityJoined` / `isGroupJoined` (added earlier 2026-06-10 per client request) were **removed the same day** in favour of the canonical, entity-agnostic field — a unified list keys off one name. OpenAPI (`CommunityListItem` / `CommunityDiscoverItem` / `ChatGroupRoom` / `ChatInboxItem`) updated to match.
+- **Localized socket ack `message`** — the ack module now also exports **`ackOk(callback, messageKey, locale, data?)`**; every acked socket event (all 3 namespaces) returns a display-ready localized `message` (success AND failure) resolved via `t()` from the new **`SOCKET_MESSAGES`** catalog (`packages/constants`), with `socket.data.locale` set once at handshake from `x-lang`/`Accept-Language`. join/leave (`conv:*`, `community:*`) gained ack callbacks; `typing:*`/`presence:heartbeat`/`call:ice` stay fire-and-forget. Per-event copy in SOCKET_EVENTS **§3.1**; `AckEnvelope` gained a required `message`. Additive/non-breaking.
+- **Delta-review follow-ups (2026-06-10, round 2)** — closed the still-open items from a second senior pass (`SOCKET_DELTA_REVIEW.md`). (1) **One preview vocabulary** — the divergent `chat-service/src/utils/community-message-preview.ts` (`"GIF"`/`"Sticker"`/`"📎 File"`, AUDIO+VOICE collapsed, no CONTACT/SYSTEM) was **deleted**; the community-list REST preview (`community-message.service.ts` `getChatSummaries`) now calls the canonical **`buildMessagePreview`** (`events/publish-message-sent.ts`), so the REST list, the `conv:updated`/`community:updated` bumps, and the push fallback emit the **same** `ListBumpLastMessage` placeholders (📷 Photo · 🎥 Video · 🎞 GIF · 🎵 Audio · 🎤 Voice message · 📎 {filename} · 🌟 Sticker · 📍 {placeName} · 👤 {contactName} · SYSTEM sentence). (2) **SOCKET_EVENTS §4.2** gained the per-`contentType` `lastMessage.text` rules table (was asyncapi-only) + a `notification:new` row in §6.2. (3) **asyncapi `info.version` 1.0.0 → 2.0.0** — the documented `messageType→contentType` / `type→callType` / `notification:forwarded→notification:new` renames are a clean break. (4) Contract↔code tightening: `notificationIds` `maxItems:500` (matches the gateway Zod cap), `TypingBroadcastPayload` now carries the ~6 s receiver-expiry / ~3–5 s sender-refresh contract, the `/notify` forward op names `notification:new`. Everything else the review listed (typing expiry, forMe-delete-on-catchup, group read receipts, community `read_sync`, background/battery, offline queue, blocking, sequence diagrams, sticker/GIF, admin-reaction, group calls) was already covered by SOCKET_EVENTS §8.1–§8.11 + the asyncapi header. Verified: `asyncapi:validate` 0 errors, chat-service `tsc --noEmit` + eslint clean, 9 `publish-conv-updated` bump-path tests green.
+- **Final-review follow-ups (2026-06-10, round 3)** — closed the new findings from a third senior pass (`SOCKET_FINAL_REVIEW.md`), run through the agent team (PM → Pro Coder → DRY + Contract reviewers + Quality Tester; all PASS). **One real behavior change:** the `community:message:new` Redis broadcast (`chat-service/src/grpc/server.ts`) now emits `parentMessageId` + `quoteData` (via the shared `buildCanonicalQuote`) — it previously dropped them although the persisted row carries both, so community replies now render quoted exactly like chat (chat already did). **Contract (asyncapi):** `CommunityMessageNewPayload` gained `parentMessageId`+`quoteData`; **reactions unified** — deleted asyncapi `CommunityReactionGroupDto`/`CommunityReactionUserDto`, repointed community catchup + reaction payloads to the shared `ReactionGroup` (the same-named **gRPC proto** types are a DIFFERENT namespace and were intentionally left intact); new typed `CommunityMessageContent`; concrete `CommunityMemberDTO` flagged **reserved — `community:member:joined` has no V1 producer** (community-service is AMQP-only, never `redis.publish`); `CallIceSendPayload` fire-and-forget warning; doc-notes for text-only community edit, sticker-is-community-only, `notification:count` aggregate-only, `content.text` authoritative. **Docs:** SOCKET_EVENTS §1 client-config, §8.1 catchup room caps (chat 50 / community 20), §10 breaking-changes callout. **Verified:** new deterministic test `chat-message.serializer.quote.test.ts` (13/13, covers `buildCanonicalQuote` + `buildMessagePreview` per ContentType); full chat-service suite 28/28; `asyncapi:validate` 0 errors; gateway + chat-service `tsc --noEmit` + eslint clean. **Follow-up shipped (2026-06-10):** chat + community message content unified under ONE shared **`MessageContent`** schema — `MessageNewPayload.content` (was untyped `additionalProperties:true`) and `CommunityMessageNewPayload.content` now both `allOf`-ref it; `CommunityMessageContent` kept as a back-compat alias (`allOf`→`MessageContent`); `additionalProperties:true` retained for forward-compat so mobile maps ONE content shape across both surfaces. Typed union verified against the chat-service emit paths (`chat-message.serializer.ts` `toWireMessage` / `buildChatMessageEvent` + `grpc/server.ts`): `text`/`files[]`/`location`/`contact` are emitted by both, **`urls[]` is chat-only** (the old `CommunityMessageContent` omitted it), `sticker` is community-only; `quoteData`/`parentMessageId` correctly stay at the payload level (NOT folded into content). Doc/contract-only — no runtime change. `asyncapi:validate` 0 errors.
+- **Checklist-review follow-ups (2026-06-10, round 4)** — a third external review (`REVIEW-CHECKLIST.md`) turned out to be a **generic mobile Socket.IO best-practices template, NOT a code audit** (its 25-scenario matrix was entirely `❓`). Agent-team mapping (PM → Pro Coder → Quality Tester) found **~90% already covered, zero missing backend scenarios**. Real fixes: **(1) security/contract** — asyncapi `securitySchemes.accessToken` was declaring `httpApiKey / in: query / name: token` (advertising an insecure URL-query token the code never uses); changed to `type: http / scheme: bearer / bearerFormat: JWT` + a "never put the JWT in the URL query string (it leaks to logs/proxies)" note. **The auth code was already correct** (`auth.middleware.ts` reads handshake `auth.token` then `Authorization: Bearer`, never query) — left untouched. **(2) docs** — SOCKET_EVENTS §1 now documents the real server config (`pingInterval` 25 s / `pingTimeout` 20 s = Socket.IO defaults, NOT overridden; `maxHttpBufferSize` 1 MB; `perMessageDeflate:false`) + battery rationale; §8.9 V2-deferred gained E2E encryption / scheduled messages / draft sync / per-device-binding+`session.expired`; new **§11 "Mobile scenario coverage"** appendix maps all 25 scenarios → our events/sections. **(3)** re-bumped `info.version` → 2.0.0 (it had been reverted to 1.0.0 by concurrent editing). **Deliberately NOT done** (harmful/out-of-scope, recorded so they aren't "fixed" later): renaming events to `client:*`/`server:*` (gratuitous 2nd breaking change — direction is already in AsyncAPI `action`); E2E crypto; scheduled/draft features; lowering the buffer to 8 KB; aggressive ping tuning; `deviceId` binding. Verified: `asyncapi:validate` 0 errors (the `http`/`bearer` scheme validates), gateway typecheck clean, **0 event renames** (`client:message`/`server:message` grep = 0), no `.ts`/proto touched this round.
 
 ---
 
@@ -127,7 +144,7 @@ Implemented and verified (compiles + lints; **not** runtime/integration-tested):
   - Store: `lib/device-link-store.ts`, Redis key `aimess:devlink:{linkToken}`, TTL 120s. Single-use approve + deliver-once consume are **atomic Lua** (`redis.eval`, KEEPTTL). pollSecret stored hashed only.
 - **Delete account** (soft) — `DELETE /auth/account` (auth): confirm via `currentPassword` (password accounts) or email `otp` (social-only; request via `POST /auth/account/delete/request-otp`). Order: confirm → `softDeleteUser` (atomic `$transaction`: status=DELETED + deletedAt, revoke all sessions w/ `SessionRevokeReason.ACCOUNT_DELETED` + refresh tokens) → `markSessionsRevoked` → publish `user.deleted`. Migration `20260520120000_account_deleted_revoke_reason` adds the enum value. user-service consumes `user.deleted` (own queue `user.deleted.queue` + DLX, mirrors user.created) → idempotent profile soft-delete + username release. DELETED accounts already rejected at login/refresh. OTP verify-and-consume consolidated into `lib/otp.ts` `verifyAndConsumeOtp` (shared by account-deletion + email-link; password-reset left separate due to different consume semantics).
 - **Social link / unlink** (`POST /api/auth/social/google/link`, `/social/apple/link`, `/social/unlink`) — `social-link.service.ts`, all `authenticateAccessToken`-guarded. Link verifies the Firebase ID token (same `verifyFirebaseIdToken`), then `linkProvider` guards: `AUTH_SOCIAL_ALREADY_LINKED` (same user), `AUTH_SOCIAL_ACCOUNT_LINKED_ELSEWHERE` (another user owns it), `AUTH_PROVIDER_ALREADY_LINKED` (user already has that provider). Create is wrapped in **P2002 race handling** mapping to those conflicts. Unlink refuses to remove the **last sign-in method** (`AUTH_LAST_SIGN_IN_METHOD`) via `countSignInMethods` (password + linked providers).
-- **Primary account** — `AuthUser.primaryAccount` (`AuthProvider?`, nullable, default null; migration `20260604120000_add_primary_account`, reuses the existing `AuthProvider` enum). On the first successful link via `link-email/verify` (→`EMAIL`), `social/google/link` (→`GOOGLE`), or `social/apple/link` (→`APPLE`), the field is set to that provider and **never overwritten** thereafter (first link wins). Enforced atomically by `authRepository.setPrimaryAccountIfUnset` — `updateMany({ where: { id, primaryAccount: null }, … })` then read-back, so concurrent links can't clobber it. The value is surfaced in the three link responses (`LinkEmailResponseData`, `SocialLinkResponseData`); unlink does **not** return it (`SocialUnlinkResponseData`). Note: link write + set are two statements (not one transaction) — a crash between them leaves it null but self-heals on the next link.
+- **Primary account** — `AuthUser.primaryAccount` (`AuthProvider?`, nullable, default null; migration `20260604120000_add_primary_account`, reuses the existing `AuthProvider` enum). On the first successful link via `link-email/verify` (→`EMAIL`), `social/google/link` (→`GOOGLE`), or `social/apple/link` (→`APPLE`), the field is set to that provider and **never overwritten** thereafter (first link wins). Enforced by `authRepository.setPrimaryAccountIfUnset` — `updateMany({ where: { id, primaryAccount: null }, … })` wrapped in a Prisma `$transaction` so concurrent links can't clobber it. The value is surfaced in the three link responses (`LinkEmailResponseData`, `SocialLinkResponseData`); unlink does **not** return it (`SocialUnlinkResponseData`). **`verifyAndLink` is now fully atomic** — `linkVerifiedEmail` + `setPrimaryAccountIfUnset` are combined in a single `authRepository.linkVerifiedEmailAndSetPrimary($transaction)`, eliminating the race where a concurrent user-service `getAccountSummary` gRPC call could read `email=set, primaryAccount=null` between the two formerly-separate DB writes (root cause of the staging "profile returns null email/primaryAccount" intermittent bug — fixed 2026-06-09).
 - **OTP** — issuance throttled per identifier via `lib/otp-rate-limit.ts` (`OTP_REQUEST_MAX` / `OTP_REQUEST_WINDOW_SEC`, defaults 5 / 900s). Per-OTP attempt cap via `OTP_MAX_ATTEMPTS`.
 - **Password reset, change-email, change-password, email-link, account availability, social-link** — controllers/services/repos present.
 
@@ -366,6 +383,18 @@ The single merged `GET /v1/dashboard/stats` was split into three independently-r
 - **`GET /v1/dashboard/service-status`** → `data: { serviceStatus }`. Pure/sync opossum-breaker-derived health wrapped with a short cache (`backoffice:dashboard:service-status`, ~10s).
 - **Resilience contract preserved:** each method uses `Promise.allSettled`; one down upstream degrades its field to `0`/empty + a `stale` flag, never 500s. Validator `dashboardChartsQuerySchema` (charts only); overview + service-status take no query. OpenAPI: `/admin/v1/dashboard/stats` replaced by `/overview` + `/charts` + `/service-status`; schema `AdminDashboard` replaced by `AdminDashboardOverview` + `AdminDashboardCharts` + `AdminDashboardServiceStatusResponse` (the `AdminDashboardStats`/`AdminActiveVsChurned`/`AdminCommunitiesGroups`/`AdminServiceStatus` shapes are unchanged).
 
+#### backoffice-service — User Management **Details** screen split into 3 APIs (shipped 2026-06-08)
+
+The detail screen is now served by three independent, separately-cacheable endpoints (RBAC `PERMISSIONS.USERS_READ` on all three; each records a **best-effort, non-blocking** view audit via the `void auditService.record({...}).catch(logger.warn)` pattern — an audit failure can never 500 a read). Built end-to-end through the multi-agent pipeline (PM → Pro Coder ×2 [community-service/proto, then backoffice/gateway] → DRY + Contract + Quality Tester in parallel). All green: tsc clean ×3 apps, eslint clean, **129/129** validator tests.
+
+- **API 1 — `GET /admin/v1/users/:userId`** (already existed): only change is the **removal of the dead `communities: []`** field (and the now-unused `CommunityMembership` type) from `UserDetail` now that API 2 owns that data. Non-breaking; the per-user community list was always `[]` (no reverse-lookup RPC existed).
+- **API 2 — `GET /admin/v1/users/:userId/communities`** (NEW): the communities a user is an **ACTIVE** member of. New gRPC RPC **`AdminListUserCommunities`** on community-service (`community.proto`): driving filter `CommunityMember {userId, status:ACTIVE}` (uses `@@index([userId, status])`), then a **single batch hydrate** of the matching communities (`community.findMany({ id: { in } })`) with DB-level name/id search + sort (`name|memberCount|createdAt`) + offset pagination — **2 queries + 1 count, no N+1**. Soft-deleted communities excluded (matches `adminListCommunities`; SUSPENDED not excluded). Response `data: { items:[{communityId, name, avatarUrl, category:{id,name}, description, memberCount, role, joinedAt, createdAt}], pagination }`. New audit action `USER_COMMUNITIES_VIEWED`.
+- **API 3 — `GET /admin/v1/users/:userId/communities/:communityId/members`** (EXTENDED, not forked): reuses the existing `AdminListCommunityMembers` member pipeline. Proto gained `exclude_user_id`, `sort_field` (`username|joinedAt`), `sort_dir`. **Hard business rule: the selected user MUST NEVER appear** — enforced at the DB via `where.userId = { not: excludeUserId }`, independent of the search term (never filtered in memory). UI role filter **`OWNER` folds to `ADMIN`** (no OWNER enum — the owner is the `adminId`/ADMIN member). **Email** is not stored on `CommunityMember`, so it's enriched from **auth-service** (`authClient.adminListUsers`): an `@`-bearing search resolves email→userId for the filter, and the page's emails are **batch-hydrated** by userIds (one call, no N+1). Email enrichment is **failure-isolated** — an auth-service outage degrades `email` to `null` (and an email search to an empty page), never 500s. The header `community { communityId, name, memberCount }` block comes from one parallel `adminGetCommunity` call. Response `data: { community, items:[{userId, username, email, avatarUrl, role, joinedAt}], pagination }`. New audit action `USER_COMMUNITY_MEMBERS_VIEWED`.
+- **Indexes (applied via `db:push` to `community_db`):** `Community @@index([name])` (API 2 name sort) + `CommunityMember @@index([communityId, status, snapshotUsername])` (API 3 username sort at scale). Existing `@@index([userId, status])` / `@@index([communityId, status])` already cover the driving filters. `Community @@index([memberCount])` recommended but not added (optional, lower value).
+- **Swagger:** two new paths in `api-gateway/.../paths/admin.paths.ts` (`x-implementation-status: implemented`, params incl. `sortBy`/`sortOrder`/`role`[+OWNER]/`q`/`search`/`page`/`limit`) + schemas `AdminUserCommunity(+ListResponse)` / `AdminOtherCommunityMember(+sResponse)` (email `nullable`) in `components/schemas.ts`.
+- **Deferred (fast-follow, filed as task chips):** extract a shared `buildOffsetMeta` pagination helper (offset `PaginationMeta` is copy-pasted across ~6 repos), and factor out the duplicated `sortBy`/`sortOrder` Zod scaffolding across the validators. Both are pre-existing patterns this feature merely propagated — no behavior change.
+- **Known limitation:** API 3 email search/return depends on auth-service availability (degrades to `null`); true DB-level email search would need a `snapshotEmail` denormalization on `CommunityMember` (not done).
+
 ---
 
 ## 2. Fixes applied during the 2026-05-20 review
@@ -384,7 +413,7 @@ The single merged `GET /v1/dashboard/stats` was split into three independently-r
 
 - **Session revocation model:** this codebase uses **session-based** revocation (Redis `session-active-cache` + DB `revokedAt`/`SessionRevokeReason`), NOT the jti-blacklist described in the architecture skill's "Auth quick reference". Logout/revoke mark the session revoked; the auth middleware checks session-active state. Keep this model unless deliberately migrating to jti.
 - **RabbitMQ DLQ (user.created):** uses a **simple dedicated pair** — exchange `user.queue.dlx` (direct, durable), queue `user.queue.dlq`, routing key `user.queue.dead`; main `user.queue` declared with `deadLetterExchange`/`deadLetterRoutingKey`. **Publisher (auth-service) and consumer (user-service) MUST declare identical queue args** — RabbitMQ queue args are immutable, mismatch → `PRECONDITION_FAILED`. This is NOT yet the full `aimess.events` topic + `aimess.retry` TTL-backoff mesh from the architecture spec (known gap — see §4).
-- **user-service → auth-service** uses **HTTP** (`AUTH_SERVICE_URL` + `fetch`), not gRPC, for profile/email aggregation. This is the one sanctioned internal HTTP hop. `resolve-auth-account.ts` is **cache-first** (Redis `account:summary`) then HTTP on miss, with on-failure cache fallback.
+- **user-service → auth-service** uses **gRPC** (`auth.client.ts` → `getAccountSummaryBreaker` opossum → `auth.proto` `GetAccountSummary` RPC) for profile/email aggregation, with a graceful fallback to `{ account: null, accountStatus: "unavailable" }` in `resolve-auth-account.ts` when the breaker is open or the call times out. (Earlier notes referencing an "HTTP hop" / `AUTH_SERVICE_URL` / `fetch` are stale — the aggregation was migrated to gRPC+opossum.) The breaker timeout is set to **5000 ms** (two DB queries behind the RPC; the default 2 s was too tight under staging load) and logs `info` on `close` in addition to `warn` on `open`.
 - **Username:** DB `@unique` is the source of truth. Generation/claim handles P2002 by retrying with the next suffix (bounded). A P2002 on `userId` during profile create = idempotent success (concurrent event).
 - **OTP/email delivery:** still a **dev stub** — OTPs are logged, not emailed. Real delivery waits on notifications-service wiring. `OTP_DEV_FIXED_CODE` can pin a code in dev.
 - **Rate limiting:** in-memory stores (per process). Move to a Redis store (`rate-limit-redis`) before horizontal scaling.
@@ -408,7 +437,7 @@ The single merged `GET /v1/dashboard/stats` was split into three independently-r
 - [ ] **Not deeply reviewed/tested:** `account.controller.ts`, `settings.controller.ts`, `connected-accounts.service.ts`, full avatar/MinIO round-trip, gateway `app-version` routes.
 - [ ] **Session revocation** intentionally diverges from the skill's jti-blacklist note — reconcile the doc or the design.
 - [ ] **Build output collision (infra):** all apps' `tsconfig` resolve `outDir` to the repo-root `dist/` (from `tsconfig.base.json`), so `auth/user/gateway` builds overwrite each other — a per-service `pnpm start` against `apps/<svc>/dist/index.js` would fail. Fix: per-app `outDir`/`rootDir`. (Found by Quality Tester 2026-05-20; pre-existing.)
-- [ ] **No circuit breakers (opossum):** architecture mandates opossum on outbound cross-service calls, but it isn't used anywhere (e.g. `user-service/src/lib/auth-client.ts` HTTP hop has a timeout + cache fallback but no breaker).
+- [x] **Circuit breakers (opossum) on user-service → auth-service gRPC** — `getAccountSummaryBreaker` in `apps/user-service/src/grpc/auth.client.ts`, timeout 5000 ms, logs open/halfOpen/close. Other outbound calls across the codebase still lack opossum.
 - [ ] **`resolve-auth-account` cache staleness:** the cache-first read serves a recent Redis copy even when auth-service is healthy, so connected-accounts/email can be stale up to the TTL right after a link/unlink or email change. Decide: invalidate on change (event from auth-service) vs live-first for the connected-accounts path vs accept the TTL window.
 - [ ] **`extractBearerToken`** (user-service `lib/`) is a generic helper that should live in `@aimess/utils`/`@aimess/auth-jwt` to avoid re-copying per service.
 - [ ] **Friendship events have NO consumer.** `friendship.queue` (`friend.requested/accepted/unfriended`) is published but unconsumed. notifications-service wiring is the natural next step.
@@ -861,3 +890,426 @@ Built the notifications-service from a stub into a working push/mail **transport
 - **Backward compat:** `GET /communities/discover` is **kept as a deprecated alias** (same `discoverCommunities` controller + `discoverQuerySchema`), so existing clients keep working. New clients should use `?scope=discover`.
 - **Validator:** `myCommunitiesQuerySchema` extended with `scope` + the discover filter fields (shared `q`/`categoryId`/`filter`/`page`), retaining the `before_ts`/`after_ts` mutual-exclusion refine.
 - **Docs:** api-gateway OpenAPI `/communities/mine` now documents `scope` + per-scope params with a `oneOf` response (`MyCommunitiesResponseData` | `CommunityDiscoverResponseData`); `/communities/discover` marked `deprecated: true`. test-cases `communities/discovery-listing.md` updated (merge note + TC-COMM-114/115). **Sign-off:** `tsc --noEmit` + `lint` clean on community-service and api-gateway.
+
+### Unified media contract — shared `MediaObject` across services (shipped 2026-06-08)
+
+- **What:** every media-bearing response now also returns a nested **`MediaObject`** alongside its existing fields — fully **additive / dual-field / non-breaking**. `MediaObject = { fileId, objectKey, fileName, contentType, size, downloadUrl, downloadUrlExpiresIn, uploadUrl, uploadUrlExpiresIn, uploadHeaders? }`. Legacy `avatarUrl`/`avatarUrlExpiresIn`/`coverUrl`/`coverUrlExpiresIn`/`snapshotAvatarUrl*` and chat `objectKey`/`uploadUrl`/`downloadUrl` are all left untouched, so Android/iOS/Web/Admin keep working and migrate at their own pace.
+- **Shared layer (single source of truth):** the existing `@aimess/storage` package was **extended, not duplicated**. New: `MediaObject` type in **`@aimess/shared-types`** (zero-dep; `@aimess/storage` now depends on it, one-way, no cycle); in `@aimess/storage` → `object-key-parse.ts` (`parseObjectKeyFromStored` — bare key / legacy-URL / marker-scan fallback / external-URL→null; `parseFileMetaFromObjectKey`), `media-url-strategy.ts` (`createMediaUrlStrategy` — presigned-GET today, **CDN-base-URL seam** for later with `expiresIn:null`, zero caller change when CDN lands), `media-object.ts` (`toMediaObject` async assembler + `buildUploadMediaObject`). No new S3/MinIO logic was added to any service — they all delegate.
+- **Per-service emit (each `config/storage.ts` builds one `mediaUrlStrategy` from the public-endpoint `presignClient`, never the internal client):**
+  - **user-service:** `avatar` on profile (`UserProfileData`), `FriendListItem`, `UserDiscoveryResult`; `media` (upload half) on the avatar upload-url response.
+  - **community-service:** `avatar` + `cover` on `CommunityData`, `avatar` on list/discover/muted-member/embedded-user blocks, `snapshotAvatar` on `CommunityMemberData` (member snapshots read the shared avatars bucket — allowed cross-service read); `media` on the community avatar upload-url response. `cover` resolves from `community.coverUrl` (still persisted `null` today → correct all-null MediaObject, future-proof).
+  - **chat-service:** `media` added to **both** `/chat/media/upload-url` (upload half) and `/chat/media/download-url` (download half). **Deliberately did NOT presign message `content.files[]` on read** — that would be N presigns per history page and break the existing on-demand `download-url` contract; per-message embedding is a **deferred follow-up**.
+
+---
+
+## Round 6 — UPDATED-REVIEW.md delta analysis (2026-06-10)
+
+**Reviewer:** Code-aware delta analysis of asyncapi.yaml v2→v3 (+142 lines).
+**PM findings:** 17 items triaged — 15 already handled, 2 actionable spec fixes, 1 V2 deferred.
+
+### Already handled (no action — 15 items)
+
+- C1: Push notifications — FCM/APNs pipeline exists, documented in §8.4
+- C2: Token refresh / session.expired — V1 design: `connect_error` on expiry, documented in §8.9 deferred
+- C3: forMe delete server tracking — V1 design: client-local, documented in §8.7 and 3 places in asyncapi.yaml
+- C4: Media Upload Doc — docs/MEDIA_UPLOAD.md exists and is fully populated
+- C5: Friend management events — REST+`notification:new` pattern, documented in §12.2
+- C6: Community moderation events — REST+`notification:new` pattern, documented in §12.3
+- C7: System event triggers — §12.1 documents trigger path; chat.ns.ts Redis subscriber handles forwarding
+- C8: Redis reliability guarantees — §12.5 documents at-least-once, ordering, failure mode
+- C9: Conversation lifecycle — §12.4 documents no conv:created/deleted in V1, refetch pattern
+- C10: Gateway load balancing — §12.6 documents sticky sessions, Redis adapter, health check
+- M2: Reaction rate limit scalability — V2 deferred (full-state broadcast is intentional V1 design)
+- M3: Concurrency controls — §12.9 documents last-write-wins, idempotent upsert, sequenceNumber
+- M4: Message retention policy — §12.7 documents indefinite V1 retention, GDPR anonymization, V2 roadmap
+- M5: Community catchup room limit — max(20) in code + §8.1 + asyncapi.yaml schema already documented
+- M6: conversationType enum case — asymmetry (lowercase send / UPPER receive) is intentional and correct
+
+### Fixes shipped (2)
+
+- M1 `retryAfter` in AckEnvelope: added optional `retryAfter: integer` property to asyncapi.yaml AckEnvelope schema + RATE_LIMITED example; updated §3 error table + §8.5 retry algorithm in SOCKET_EVENTS.md
+- M7 `id` alias in NotificationItem: description updated to "deprecated alias of notificationId — coalesce `notificationId ?? id`; removed in V2" in asyncapi.yaml + §6.2 note added in SOCKET_EVENTS.md
+
+### V2 deferred (1)
+
+- M2: Reaction broadcast scalability — delta-reaction broadcast for large rooms (requires messaging-service architecture change)
+  - **backoffice-service:** `avatar` on `UserListItem`/`UserDetail.profile` and report `reporter`. DiceBear admin defaults flow through `toMediaObject`'s external-URL branch → `{objectKey:null, fileId:null, downloadUrl:<url>, downloadUrlExpiresIn:null}`.
+- **gateway OpenAPI:** one `MediaObject` component added; referenced additively (`avatar`/`cover`/`snapshotAvatar`/`media`) on the media-bearing schemas. New props were **NOT** added to any existing `required` array (old contract tests stay green). Known doc gap: `AdminUserListItem`/`AdminUserDetail` model `profile` as an opaque object, so their TS `avatar` isn't mirrored in OpenAPI (admin-panel only; runtime payload is correct).
+- **Built with the Agent Team:** PM spec → 4 parallel service coders + serialized gateway coder → DRY + Contract + Quality reviewers. Review caught & fixed: a BLOCKER (upload-url endpoints advertised `media` but didn't populate it → now built via `buildUploadMediaObject`), report-reporter `avatar` not set, two missing OpenAPI `$ref`s (`UserDiscoveryItem`/`FriendListItem`), and removed two dead shared files (`media-config.ts`, `media-registry.ts`).
+- **Deferred (not in this slice):** CDN cutover (strategy seam ready, `cdnBaseUrl:null` today), retiring the legacy flat fields, per-message chat-file MediaObject embedding, admin opaque-profile OpenAPI typing, and centralizing the still-duplicated legacy parse helpers (`parseAvatarObjectKeyFromStored` / `parseCommunityImageObjectKeyFromStored`, kept only for the legacy view path).
+- **Tests/sign-off:** new `packages/storage/src/__tests__/media.test.ts` — **17/17 pass** (parse, assembler, strategy, upload-builder edge cases) via the repo's `node:test`+`tsx` convention. `pnpm build:packages` 10/10; `typecheck` + `lint` clean across `@aimess/storage`, `@aimess/shared-types`, user/community/chat/backoffice services + api-gateway (only pre-existing `no-console` / vendored swagger-ui findings remain).
+
+---
+
+### api-gateway — V2 socket + REST enhancements (branch `v2-socket-enhancements`, 2026-06-08)
+
+Addresses P0/P1 gaps identified in `BACKEND_CHAT_REQUIREMENTS.md` (Android/iOS client team).
+**All V1 code is untouched.** Changes are additive on this branch.
+
+#### Gateway-level socket fixes (already implemented)
+
+| Gap                                            | Fix location                     | What changed                                                                                                                                                              |
+| ---------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §2.3 `message:delete` missing `conversationId` | `chat.ns.ts` pmessage handler    | Gateway parses Redis channel name `conv:<id>` and **injects `conversationId`** into every `message:delete` emit before clients receive it. No chat-service change needed. |
+| §2.8 typing `senderName` absent                | `chat.ns.ts` TypingSchema + emit | Added optional `senderName` to `TypingSchema`; gateway relays it on `typing:start`/`typing:stop`. Client passes own display name.                                         |
+| §2.5 no pin socket events                      | `chat.ns.ts` psubscribe          | Added `psubscribe("pin:*")`; gateway forwards `pin:updated` verbatim from `pin:<roomId>` channel. chat-service must publish to this channel (§6.3 of socket spec).        |
+| §6 thin ack errors                             | `chat.ns.ts` `ackError` helper   | New `AckErrorCode` union: `INVALID_PAYLOAD \| SERVICE_ERROR \| FORBIDDEN \| NOT_FOUND \| RATE_LIMITED \| CONFLICT`. Every ack failure now carries `retryable: boolean`.   |
+
+#### V2 REST surface (new — does not touch `/api/v1/`)
+
+- **`/api/v2/chat/`** — proxies to chat-service. Chat-service must implement `before_seq` / `after_seq` / `around` query params on `/rooms/:roomId/messages` (§3.2). Endpoint `GET /chat/sync` for incremental resync (§3.3).
+- **`/api/v2/devices`** — proxies to notification-service. `POST /devices` (register FCM/APNs token) + `DELETE /devices/:deviceId` (unregister on logout). Requires notification-service to implement these endpoints (§4).
+- **New env var:** `NOTIFICATION_SERVICE_URL` (optional; `/api/v2/devices` returns 503 if unset).
+- **`API_VERSIONS`** updated to `["v1", "v2"]`.
+
+#### Service-side work remaining (not gateway — tracked here for visibility)
+
+These require changes to **chat-service** or **notification-service**:
+
+| Gap                                     | Service              | What to implement                                                                             |
+| --------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------- |
+| §1 Unified message shape                | chat-service         | Publish full unified DTO on `message:new` Redis broadcast (see `SOCKET_EVENTS_V2_FULL.md §3`) |
+| §2.1 `clientMessageId` on `message:new` | chat-service         | Include in Redis publish payload                                                              |
+| §2.4 Rich reaction broadcast            | chat-service         | Publish `ChatReactionGroup[]` (not thin `[{emoji,userId}]`)                                   |
+| §2.6 `read_sync` event                  | chat-service         | Publish to `user:<userId>` on `markMessagesRead`                                              |
+| §2.7 Presence timestamp type            | chat-service         | `lastSeen` must be epoch-ms integer, not string                                               |
+| §3.2 Seq-based pagination               | chat-service         | Add `before_seq` / `after_seq` / `around` to `/rooms/:roomId/messages`                        |
+| §3.3 Sync endpoint                      | chat-service         | Implement `GET /chat/sync?conv_id&from_seq&limit` with reset signal                           |
+| §4 Push delivery                        | notification-service | FCM/APNs fan-out per `PUSH_NOTIFICATIONS_V2.md`                                               |
+| §5.3 Idempotency TTL                    | chat-service         | Raise `clientMessageId` dedup TTL to ≥ 7 days                                                 |
+| §5.5 Device registry                    | notification-service | `device(id, user_id, platform, push_token, last_seen_at)` table + REST endpoints              |
+
+#### Docs added
+
+- `docs/SOCKET_EVENTS_V2_FULL.md` — complete V2 socket spec (supersedes `SOCKET_EVENTS_V2_ADDENDUM.md`)
+- `docs/REST_API_V2.md` — V2 REST endpoints (seq pagination, sync, device registration)
+- `docs/PUSH_NOTIFICATIONS_V2.md` — FCM/APNs data-message payload contract
+
+#### Known gaps (not blocking V2 release but should be tracked)
+
+- `chat:catchup:result` events still carry only IDs (no `senderName`/`senderAvatar`) — chat-service could join profiles at catchup time (deferred).
+- Community seq numbers still deferred (community `GeneralRoomMessage` has no `sequenceNumber`) — so `/sync` and seq pagination cover private + group only.
+
+---
+
+### chat-service + notifications-service — V2 service-side implementation (branch `v2-socket-enhancements`, 2026-06-08)
+
+The gateway V2 wiring (above) was dangling without chat-service/notifications-service changes.
+This slice makes the V2 contract functional end-to-end. **All changes additive; v1 behavior unchanged.**
+
+**chat-service `grpc/server.ts` (socket broadcasts — pure Redis publishes, NO proto change):**
+
+- **§1/§2.1/§2.2 `message:new` enriched** on all 3 publish sites (sendMessage, forwardMessage, community): added `id`, `clientMessageId`, `roomId`, `conversationType`, `receiverId`, `senderName`/`senderAvatar` (from the gRPC req), `parentMessageId`, `quoteData`, `reactions:[]`, `serverTs`, UPPER-CASE `messageType` — V1 aliases (`messageId`/`conversationId`/`contentType`/`sentAt`/`contentJson`) kept.
+- **§2.4 `message:reaction`** broadcast now emits the grouped `ChatReactionGroup[]` (`emoji`,`count`,`users[displayName+avatar]`) by reusing `getMessageReactions` snapshot grouping; `selfReacted` omitted (per-viewer — client derives). Thin gRPC ack unchanged.
+- **§2.6/§5.5 `read_sync`** published to `user:<readerId>` on `markMessagesRead`, with `read_to_seq` resolved via new `getMessageSequence(messageId)` on both message services.
+- **§4 push trigger:** new `events/publish-message-sent.ts` publishes `chat.message_sent` to durable RabbitMQ queue `chat.message.queue` after each fresh send (skipped on idempotent replay, sender excluded; private → `[receiverId]`, group → active members).
+
+**chat-service REST (pins, seq pagination, sync):**
+
+- **§2.5 pins:** new `POST/DELETE /chat/{private/rooms|groups}/.../messages/:messageId/pin` controller methods + routes (only `getPins` existed before); publish `pin:updated` to `conv:<roomId>` (rides existing `conv:*` subscription — no new gateway subscription, so the earlier `pin:*` psubscribe was reverted).
+- **§3.2 seq pagination:** `before_seq`/`after_seq`/`around=<messageId>` added to private + group `GET …/messages` (repo `findByRoomIdSeq` + `findAroundSeq`, service `getMessagesSeq`/`getMessagesAround`, controller branch, validator). Timestamp paging kept as fallback. Seq cursors are gap-safe (per-room monotonic).
+- **§3.3 sync:** new `GET /api/chat/sync?conv_id&from_seq&limit&type` (`sync.service/controller/routes` + DI). **Per-conversation** by design — seq is per-room, so a single cursor only means something within a room; whole-account discovery stays on `/inbox?after_ts`. Reuses `catchup` (same events as socket `chat:catchup`).
+- **§2.7 presence:** confirmed `lastSeen` is already an epoch-ms integer in both the socket publish and the REST response — no code change; the V1 "string" mismatch was only in the old AsyncAPI type, now corrected in docs.
+
+**notifications-service (§4 push fan-out):**
+
+- New `consumers/chat.consumer.ts` consumes `chat.message.queue` and fans push out via the existing `pushToUsers` → `sendPush` path (settings/quiet-hours gating + dead-token pruning already built); `category: "chatEnabled"` (already existed). Wired into `server.ts` startup.
+- Device registration (`POST/DELETE /v1/devices`) already existed — exposed at `/api/v2/devices` via the corrected gateway proxy (`downstreamPrefix: /v1/devices`, unregister keyed by `:token`).
+
+**Verification:** `tsc` clean on chat-service (except the pre-existing `mongodb` type error — see below) and notifications-service; eslint clean on all changed files; gateway `tsc` clean.
+
+**Deferred / follow-ups (documented in the V2 docs):**
+
+- `senderRole` on `message:new` (not on the send path); `clientTs` (needs a proto `client_ts` field).
+- Private-send broadcast emits `contentText`+`contentJson` rather than a parsed `content` object (forward + community emit `content`); all transports carry `contentJson`.
+- Push is a _mixed_ FCM message (notification + data); strict offline-first wants **data-only** (`dataOnly` flag through the shared `pushToUser`/`sendPush` path) + APNs-specific config + `badgeCount` + `READ`-clears-badge push.
+- REST quick-reply/mark-read fallbacks for killed-app notification actions — chat-service has no REST send endpoint (send is socket/gRPC only).
+- §5.6 transactional outbox (currently best-effort fire-and-forget publishes).
+
+**⚠️ PRE-EXISTING BUILD BLOCKER (not introduced here):** `apps/chat-service/src/services/room-profile.service.ts` (added by the earlier denormalization commit, currently **unwired**) does `import type { Db } from "mongodb"`, but `mongodb` is not a chat-service dependency → `tsc` fails on that one file. It uses the raw mongo driver (`.collection(...)`) so the real fix is `pnpm --filter @aimess/chat-service add mongodb`. Left untouched (out of this slice's scope) but must be fixed before the branch builds green.
+
+## 2026-06-08 — V2 canonical wire-contract pass (socket == REST shape parity)
+
+Closed the **§1/§9 "one canonical mapper"** gaps from `BACKEND_CHAT_REQUIREMENTS.md` + the v3 offline-first design (verified by an 11-agent doc-vs-code audit, then a 4-agent adversarial review).
+
+- **Shared serializer** `apps/chat-service/src/lib/chat-message.serializer.ts` — single source of truth: `buildChatMessageEvent()` (canonical `ChatMessage` + V1 aliases), `normalizeMessageType()` (UPPER), `buildCanonicalQuote()`, `groupStoredReactions()`/`flattenStoredReactions()`. Used by `message:new` (send + forward + **group SYSTEM** messages), `message:edited`, and REST forward/edit emits.
+- **`message:edited` is now the FULL canonical shape** (was a thin `{contentText,contentJson}`) — gRPC `editMessage` + both REST edit controllers.
+- **`senderRole`** (§2.2): group send **and** forward stamp the member role (transient `Object.assign`); `""` for private.
+- **`clientTs`** (§5.1): proto `SendMessageRequest.client_ts` → gateway `MessageSendSchema.clientTs` → emit + **persisted in `clientInfo`** (added `clientInfo Json?` to `GroupMessage`; `PrivateMessage` already had it).
+- **Canonical `quoteData`** `{messageId,senderId,senderName,messageType,preview,isDeleted}` written at send-time + normalized on read (handles legacy shapes).
+- **§2.3 delete:** group `message:delete` now **broadcasts** (was silent); all delete payloads self-describing (`conversationId` + `sequenceNumber` + `deletedType`).
+- **§2.4 reactions:** group reactions route via `conversationType` through gateway → `sendReaction` (was hitting the private collection).
+- **§3.5 media:** `blurhash` + `waveform` added to gateway `FileAttachmentSchema` + REST validator + OpenAPI + AsyncAPI (they now survive gateway→gRPC→persist→history; the gateway zod schema was the only drop point).
+- **§1 casing:** `messageType` UPPER on every emit (private/group/community, send + edit + history + catchup); `contentType` kept as a same-value V1 alias.
+- **REST history additive aliases** (private `enrichMessages`): `senderName`, `serverTs`, `clientTs`, `conversationType`, normalized `messageType`/`quoteData`, `reactionGroups` — added without removing legacy fields.
+- **Contracts:** AsyncAPI rewritten (canonical `MessageNewPayload`, `MessageEditedPayload` = allOf, grouped `MessageReactionPayload`, self-describing `MessageDeletePayload`, epoch-ms `PresenceStatusPayload`, new `ReadSyncPayload`/`PinUpdatedPayload` wired into channel + operations, `FileAttachment` blurhash/waveform). OpenAPI `ChatMessage` file item gained `objectKey/width/height/blurhash/waveform`. `SOCKET_EVENTS.md` updated + a "V2 contract clarifications" block (edit/delete authority = REST; group/community = sent+read only; §5.4 reconcile = refetch-window-on-open — display `sequenceNumber` is deliberately NOT bumped on edit/delete so timeline order stays stable).
+
+**Verification:** `tsc` clean on chat-service (except the pre-existing `mongodb` error above) + api-gateway; eslint clean on all changed files; AsyncAPI keys/refs structurally validated.
+
+### v2 → v1 consolidation (no separate v2 API)
+
+There is **no public v2 API** — the `v2` label was only a tracking scaffold while these changes were built. All of it now lives on **v1**:
+
+- **Routing:** re-wired `/api/v1/devices` (FCM/APNs token register/unregister) as a v1 service in `versioning/registry.ts` proxying to notifications-service `/v1/devices` — it had been lost when `routes/v2/` was removed. The seq-pagination/sync/pins paths already proxy via the existing v1 `chat` service.
+- **OpenAPI:** path files imported into `v1Paths`; exports renamed `v2ChatPaths`→`chatExtrasPaths`, `v2DevicesPaths`→`devicesPaths`; user-facing "V2 seq pagination" / "/api/v2/devices" text de-versioned.
+- **AsyncAPI:** deleted `asyncapi-v2.yaml` + the `/docs/socket/v2` route; `asyncapi.yaml` is the single spec (`version: 1.0.0`). Removed the unimplemented "multi-device" device-field docs (handshake `deviceId/deviceName/deviceType`, `DeviceInfo` schema, `senderDevice*` on message/community payloads, reader-device fields) — code never read/emitted them. Kept the real `platform`/`clientType` handshake query and the genuine `read_sync`/`pin:updated` multi-device events. `MessageSendPayload` gained `clientTs`; `MessageReactPayload` gained `conversationType`; `CommunityMessageNewPayload` aligned to the canonical emit.
+- **Verification:** gateway `tsc` clean; no remaining `v2ChatPaths/v2DevicesPaths/asyncapi-v2/SPEC_PATH_V2/createV2/routes/v2/versions/v2` references in `src`.
+
+**Deferred from this pass (scoped out as higher-risk / feature-build):** community reactions end-to-end (the reaction-merge model replaces rather than accumulates — needs review first); inbox empty-room discovery (`§3.3` — needs a coalesced `effectiveSortAt` sort key); sync retention-reset branch (`§3.3` — no retention floor today); peer `read_to_seq` receipts surface (`§2.6`); and the larger §4 push (data-only/priority/collapse/badge), §6 security (participant authz, WS ticket, rate-limit, ack-code mapping), and §5.6 transactional outbox items.
+
+---
+
+## 2026-06-09 — community reactions, offline sync, top-level pagination (chat-service + api-gateway)
+
+Shipped via multi-session work. All changes **additive / non-breaking** (no V1 behavior removed). `tsc` + `lint` clean on chat-service and api-gateway after each feature.
+
+### 1. `community:message:react` Socket.IO event (toggle add/remove)
+
+**Full socket → gRPC → service → Redis chain implemented.** Mirrors the private/group `message:react` event.
+
+- **Proto** (`packages/grpc-contracts/proto/community.proto`): new `rpc ReactToCommunityMessage` + request/response types:
+  ```protobuf
+  message ReactToCommunityMessageRequest { string message_id=1; string community_id=2; string user_id=3; string emoji=4; }
+  message CommunityReactionUserDto { string user_id=1; string display_name=2; string avatar=3; }
+  message CommunityReactionGroupDto { string emoji=1; int32 count=2; repeated CommunityReactionUserDto users=3; }
+  message ReactToCommunityMessageResponse { string message_id=1; string community_id=2; repeated CommunityReactionGroupDto reactions=3; }
+  ```
+- **Gateway gRPC client** (`apps/api-gateway/src/grpc/clients/community.client.ts`): added `ReactCommunityMessageParams` + `reactToCommunityMessage` method + `reactBreaker` opossum circuit breaker.
+- **Gateway socket** (`apps/api-gateway/src/sockets/namespaces/community.ns.ts`):
+  - Schema: `CommunityMsgReactSchema = z.object({ messageId, communityId, emoji })`.
+  - Handler on `community:message:react`: Zod-validates payload → calls `communityClient.reactToCommunityMessage({ ...payload, userId })` → ack result.
+- **chat-service gRPC server** (`apps/chat-service/src/grpc/server.ts`):
+  - Calls `deps.communityMessageService.reactToMessage()` (existing toggle logic).
+  - On success publishes `community:message:reaction` event to Redis `community:<communityId>`.
+  - Returns grouped `reactions[]` to the gRPC caller.
+- **Toggle semantics**: same emoji adds if absent, removes if present — **no separate un-react event needed**.
+- **REST endpoint** also exists: `POST /api/v1/chat/community/messages/:messageId/react` (body: `{communityId, emoji}`). Returns the same grouped reactions shape. Also publishes to Redis so all room members get the socket broadcast.
+- **AsyncAPI** (`apps/api-gateway/asyncapi/asyncapi.yaml`): `community:message:react` (send, with ack) + `community:message:reaction` (receive) events documented with 2 examples each; component schemas `CommunityMessageReactPayload`, `CommunityReactionUserDto`, `CommunityReactionGroupDto`, `CommunityMessageReactionPayload` added.
+- **Swagger** (gateway OpenAPI):
+  - `POST /chat/community/messages/{messageId}/react` path added (schemas `ChatCommunityReactRequest`, `ChatCommunityReactResponse`, `ChatCommunityReactionGroup`, `ChatCommunityReactionUser`).
+
+### 2. `community:catchup` / `community:catchup:result` — tombstones + sinceTs + reactions (2026-06-09)
+
+Community gap-fill now supports **tombstone reconciliation**, a **`sinceTs` mutation-sweep cursor**, and **embedded reactions** in every catch-up event. All changes are backward-compatible (new fields optional on input, always present on output).
+
+#### Proto changes (`packages/grpc-contracts/proto/community.proto`)
+
+- `CommunityCatchupRequest` — new `int64 since_ts = 5` (epoch-ms; 0 = use sinceId mode)
+- `CommunityCatchupEventDto` — new `string sync_event_type = 12` + `repeated CommunityReactionGroupDto reactions = 13`
+- `CommunityCatchupResponse` — new `int64 next_ts = 6` (last event's updatedAt; 0 in sinceId mode)
+
+#### Repository fix (`apps/chat-service/src/repositories/general-room-message.repository.ts`)
+
+Removed `deletedForAll: false` from `findSinceId`'s `matchStage`. Previously tombstones were invisible to catch-up, so clients that reconnected after a deletion had a phantom message forever. Per-user `deletedBy` filtering (`$ne: userId`) is still applied so "delete for me" rows are not sent to that user.
+
+#### Service (`apps/chat-service/src/services/community-message.service.ts`)
+
+`catchup()` signature gained `sinceTs?: Date` and the return type gained `nextTs: number`.
+
+Two modes (sinceTs takes precedence):
+
+- **sinceTs mode** — calls `findUpdatedAtSince()` (already existed from the `after_ts` endpoint work); returns tombstones + edits + reaction-only updates. `nextTs` = last event's `updatedAt.getTime()`.
+- **sinceId mode** (unchanged default) — calls `findSinceId()` (now includes tombstones); `nextTs = 0`.
+
+#### gRPC handler (`apps/chat-service/src/grpc/server.ts`)
+
+Updated `communityCatchup`:
+
+- Reads `req.sinceTs`; converts to `Date` when > 0.
+- Derives `syncEventType` inline per event:
+  - `"deleted"` — `m.deletedForAll`
+  - `"edited"` — `m.editedAt instanceof Date`
+  - `"reacted"` — `sinceTs && m.updatedAt > m.createdAt` (sinceTs mode only, catches reaction-only bumps)
+  - `"new"` — all other cases
+- Adds `reactions: groupStoredReactions(m.reactions)` (function already imported at line 32).
+- Returns `nextTs: result.nextTs` in the response.
+
+#### Gateway gRPC client (`apps/api-gateway/src/grpc/clients/community.client.ts`)
+
+- `CommunityCatchupParams` — `sinceTs?: number`
+- `CommunityCatchupEventDto` — `syncEventType: string`, `reactions: CommunityReactionGroupDto[]`
+- `CommunityCatchupResponse` — `nextTs: number`
+- `catchupBreaker` call — passes `sinceTs: p.sinceTs ?? 0`
+
+#### Gateway socket (`apps/api-gateway/src/sockets/namespaces/community.ns.ts`)
+
+- `CommunityCatchupRoomSchema` — `sinceTs: z.number().int().positive().optional()`
+- `communityCatchup` call — passes `sinceTs: room.sinceTs`
+- `community:catchup:result` emit — spreads `reactions: e.reactions ?? []`, adds `nextTs: Number(r.nextTs ?? 0)`
+- ACK `ackRooms` array — includes `nextTs`
+
+#### REST sync endpoint — `GET /api/v1/chat/community/rooms/:roomId/sync`
+
+New dedicated REST endpoint for mobile clients needing a full mutation sweep after returning from the background. Distinct from `?after_ts=` mode on the timeline endpoint to avoid ambiguity and rate-limit independently.
+
+- **Query**: `since_ts` (required, epoch-ms), `limit` (1–200, default 50)
+- **Handler**: `CommunityMessageController.syncMessages` calls `service.getMessagesSince()` (already existed)
+- **Response**: `{ data: [...], hasMore, nextCursor }` — same shape as `after_ts` mode
+- **Route**: `router.get("/rooms/:roomId/sync", authenticate, validateQuery(communitySyncQuerySchema), messageCtrl.syncMessages)` (before messages/search to avoid prefix collisions)
+- **Validator**: `communitySyncQuerySchema` added to `query.validator.ts`
+- **Swagger**: `communityRoomSync` path constant added; registered at `/chat/community/rooms/{roomId}/sync`
+
+#### AsyncAPI note
+
+`community:catchup` and `community:catchup:result` event shapes are already documented in `asyncapi.yaml`. The new fields (`sinceTs`, `syncEventType`, `reactions`, `nextTs`) should be added to those schemas in a follow-up AsyncAPI update.
+
+### 3. `after_ts` incremental-sync mode on `GET /api/v1/chat/community/rooms/:roomId/messages`
+
+**New behavior when `after_ts` is provided (mobile offline sync).**
+
+- **Semantics**: `after_ts` is an epoch-ms timestamp. The endpoint returns every `GeneralRoomMessage` whose `updatedAt >= after_ts`. Because Prisma `@updatedAt` auto-bumps on every write (send, edit, reaction toggle, delete), a single query captures ALL mutations since the last sync.
+- **Tombstones included**: `deletedForAll=true` messages are NOT filtered — the client receives them as tombstones to reconcile deletions.
+- **`syncEventType` field**: derived server-side and injected onto each item:
+  - `"deleted"` — `deletedForAll=true`
+  - `"edited"` — `editedAt !== null`
+  - `"reacted"` — `updatedAt - createdAt > 2 000 ms` (proxy for reaction-only update)
+  - `"new"` — everything else
+- **Response shape** (different from `before_ts` scroll mode — **no `pagination` wrapper**):
+  ```json
+  { "data": [...items], "hasMore": false, "nextCursor": "1718000000000" }
+  ```
+  Store `nextCursor` as the next `after_ts` to page forward or re-sync.
+- **Files changed**:
+  - `apps/chat-service/src/api/validators/query.validator.ts`: mutual-exclusion refine restored (`before_ts` and `after_ts` cannot both be set).
+  - `apps/chat-service/src/repositories/general-room-message.repository.ts`: new `findUpdatedAtSince({ roomId, userId, fromTs, limit })`.
+  - `apps/chat-service/src/services/community-message.service.ts`: new `getMessagesSince({ roomId, userId, fromTs, limit })` with active-membership guard + `syncEventType` derivation + `nextCursor = lastItem.updatedAt epoch-ms`.
+  - `apps/chat-service/src/api/controllers/community-message.controller.ts`: early-return block for `afterTs != null`.
+- **Swagger** (`GET /chat/community/rooms/{roomId}/messages`): description updated to document both modes; response uses `oneOf` (`ChatCommunityMessagePage` for scroll, `ChatCommunityIncrementalSync` for sync). New schemas: `ChatCommunityMessagePage`, `ChatCommunityIncrementalSync` (in `components/schemas.ts`). `ChatCommunityMessage` schema gained `syncEventType`, `updatedAt`, `editedAt` optional fields.
+
+### 4. Top-level `hasMore` + `nextCursor` on all paginated responses
+
+**All message-listing and search endpoints for private, group, and community now return `hasMore` and `nextCursor` as top-level fields in addition to the nested `pagination.*` fields.** This is a purely additive / non-breaking change.
+
+- **`apps/chat-service/src/lib/pagination.ts`** — `PaginatedResponse<T>` interface gained two new required fields: `hasMore: boolean` and `nextCursor: string | null`. All three builders (`buildPaginatedResponse`, `buildListResponse`, `buildTimelineResponse`) now populate them alongside `pagination.hasMore` / `pagination.nextCursor` (same values — top-level shortcuts).
+- **One manual fix**: `apps/chat-service/src/api/controllers/inbox.controller.ts` manually constructs a `PaginatedResponse<InboxItem>` literal — updated to include `hasMore` and `nextCursor` at top level.
+- **Swagger** (`PaginationMeta.nextCursor` description): updated to note the field is non-null (epoch-ms) for cursor/timeline paging and null for offset paging.
+
+### 5. `clientMessageId` optional for community/private/group (all 3 send events)
+
+`clientMessageId` is now **optional** in `community:message:send`, `message:send` (private), and `message:send` (group) socket events. When omitted, the server generates `randomUUID()` as a fallback. Previously the field was required, which blocked retries from clients that didn't implement idempotency keys.
+
+### Verification (2026-06-09)
+
+- `pnpm --filter @aimess/api-gateway typecheck` — **PASS** (new schemas + path definitions type-check)
+- `pnpm --filter @aimess/chat-service typecheck` — **PASS** (except pre-existing `group-room.repository.ts` duplicate-function-implementation error — unrelated, not introduced here)
+- `pnpm --filter @aimess/api-gateway lint` — **0 errors**
+- Runtime / integration — **NOT done** (no test runner; verified by typecheck + lint + code review)
+
+### Verification (2026-06-09, batch 2 — community catch-up hardening + REST sync)
+
+- `npx tsc --noEmit --project apps/api-gateway/tsconfig.json` — **0 errors**
+- `npx tsc --noEmit --project apps/chat-service/tsconfig.json` — only the pre-existing `group-room.repository.ts` duplicate errors; **0 new errors from this batch**
+- Proto field numbers confirmed immutable (new fields 5, 12, 13, 6 — no renumbering)
+- `groupStoredReactions` was already imported in `server.ts` (line 32); no new import needed
+- `findUpdatedAtSince` return shape confirmed `{ messages, hasMore }` — service aligned accordingly
+
+---
+
+### 4. Community edit/delete/reply socket gaps + community pin feature (2026-06-09)
+
+Wired three previously missing socket events and built the full community pin feature (Telegram-style, moderator/admin only). All changes shipped via the multi-agent pipeline (PM → Pro Coder A + B in parallel → DRY + Contract + Quality reviewers in parallel → nit fixes).
+
+#### Proto changes (`packages/grpc-contracts/proto/community.proto`)
+
+- `SendCommunityMessageRequest` — added `parent_message_id = 8` (reply/quote support)
+- 4 new RPCs added to `CommunityService`:
+  - `EditCommunityMessage` / `DeleteCommunityMessage` / `PinCommunityMessage` / `UnpinCommunityMessage`
+- 8 new message types: `EditCommunityMessageRequest/Response`, `DeleteCommunityMessageRequest/Response`, `PinCommunityMessageRequest/Response`, `UnpinCommunityMessageRequest/Response`
+- `pinned_ids` on pin/unpin responses is a JSON-stringified `string` (proto transport); the REST layer returns the native `string[]`
+
+#### Delete broadcast fix (`apps/chat-service/src/api/controllers/community-message.controller.ts`)
+
+**Bug fixed**: `deleteMessage` was publishing to `conv:<roomId>` — the gateway's `psubscribe("community:*")` never matched it so delete events never reached socket clients. Changed to `community:<roomId>` with a new `community:message:deleted` event name and updated payload (`{ messageId, communityId, roomId, deleteType, deletedBy }`).
+
+#### New service methods (`apps/chat-service/src/services/community-message.service.ts`)
+
+`pinMessage(params)` — role check (MODERATOR or ADMIN), message existence check (must exist, not tombstoned, must belong to room), `PIN_LIMIT_PER_ROOM` guard, idempotent if already pinned. Updates `GeneralRoom.listPinedMessage` JSON array.
+
+`unpinMessage(params)` — same role check, `CHAT_PIN_NOT_FOUND` if not currently pinned. Removes from array.
+
+**`env.PIN_LIMIT_PER_ROOM`** already existed in `apps/chat-service/src/config/env.ts` (default 50). No env change needed.
+
+#### New repository method (`apps/chat-service/src/repositories/general-room.repository.ts`)
+
+`updatePinnedMessages(roomId, pinnedIds: string[])` — Prisma `update` setting `listPinedMessage`.
+
+#### gRPC handlers (`apps/chat-service/src/grpc/server.ts`)
+
+4 new handlers in `communityImpl`:
+
+- `editCommunityMessage` — calls `editMessage()`, publishes `community:message:edited` to Redis
+- `deleteCommunityMessage` — branches on `deleteType`, calls `deleteForAll` or `deleteForMe`, publishes `community:message:deleted`
+- `pinCommunityMessage` — calls `pinMessage()`, publishes `community:message:pinned`
+- `unpinCommunityMessage` — calls `unpinMessage()`, publishes `community:message:unpinned`
+
+`sendCommunityMessage` handler updated to pass `parentMessageId: req.parentMessageId || null`.
+
+All 4 new handlers include `logger.error(...)` in catch blocks (nit from Quality Tester addressed post-review).
+
+#### Gateway gRPC client (`apps/api-gateway/src/grpc/clients/community.client.ts`)
+
+- `SendCommunityMessageParams` — `parentMessageId?: string` added; forwarded as `parentMessageId: p.parentMessageId ?? ""`
+- 8 new interfaces + 4 new `makeBreaker` circuit breakers for edit/delete/pin/unpin
+- `CommunityClient` interface extended with 4 new method signatures
+
+#### Gateway socket namespace (`apps/api-gateway/src/sockets/namespaces/community.ns.ts`)
+
+- `CommunityMsgSendSchema` — `parentMessageId: z.string().optional()` added
+- 4 new Zod schemas: `CommunityMsgEditSchema`, `CommunityMsgDeleteSchema`, `CommunityMsgPinSchema`, `CommunityMsgUnpinSchema`
+- 4 new socket event handlers following the existing validate→gRPC→ack pattern:
+  - `community:message:edit` — validates `{messageId, communityId, roomId, content:{text}}`, calls `editCommunityMessage`
+  - `community:message:delete` — validates `{messageId, communityId, roomId, type}`, maps `type → deleteType`
+  - `community:message:pin` — validates `{messageId, communityId, roomId}`, calls `pinCommunityMessage`
+  - `community:message:unpin` — validates `{messageId, communityId, roomId}`, calls `unpinCommunityMessage`
+
+**Server → client broadcast events** (emitted via Redis `community:<communityId>` → `psubscribe` fan-out):
+
+| Event                        | Payload                                                                            |
+| ---------------------------- | ---------------------------------------------------------------------------------- |
+| `community:message:edited`   | `{ messageId, communityId, roomId, message, contentType, editedAt }`               |
+| `community:message:deleted`  | `{ messageId, communityId, roomId, deleteType, deletedBy }`                        |
+| `community:message:pinned`   | `{ messageId, communityId, roomId, pinnedIds[], pinnedCount, pinnedAt, pinnedBy }` |
+| `community:message:unpinned` | `{ messageId, communityId, roomId, pinnedIds[], pinnedCount, unpinnedBy }`         |
+
+#### REST endpoints (`apps/chat-service/src/api/routes/community.routes.ts`)
+
+- `POST /rooms/:roomId/messages/:messageId/pin` — moderator/admin only (enforced in service); Redis publish included in controller
+- `DELETE /rooms/:roomId/messages/:messageId/pin` — moderator/admin only
+
+**`communityId === roomId` invariant** for community rooms: REST pin/unpin controller derives `communityId = roomId` from URL params without needing it in the body.
+
+#### i18n constants (`packages/constants/src/messages/chat.messages.ts`)
+
+Added `CHAT_MESSAGE_PINNED` and `CHAT_MESSAGE_UNPINNED` (vi + en) alongside the existing pin-related keys.
+
+#### Swagger (`apps/api-gateway/src/docs/openapi/`)
+
+- New `CommunityPinResponse` schema (`pinnedIds: string[]`, `pinnedCount: int`, `pinnedAt?: int64`) in `components/schemas.ts`
+- New `communityMessagePin` path entry (`POST` + `DELETE`) at `/chat/community/rooms/{roomId}/messages/{messageId}/pin` in `paths/chat.paths.ts`
+
+#### Invariant note
+
+`roomId === communityId` for all community chat rooms (enforced at `provisionForCommunity` time). REST paths use `result.roomId`; gRPC paths use `req.communityId`. Both resolve to the same channel `community:<id>` today. If the invariant is ever broken, a shared `publishCommunityEvent` helper should be extracted.
+
+#### Verification (2026-06-09, batch 3 — edit/delete/reply socket + pin)
+
+- `npx tsc --noEmit --project apps/chat-service/tsconfig.json` — **0 new errors** (2 pre-existing in `group-room.repository.ts` unrelated to this batch)
+- `npx tsc --noEmit --project apps/api-gateway/tsconfig.json` — **0 errors**
+- All 4 new gRPC handlers behind `makeBreaker` — confirmed by DRY reviewer
+- All 4 new socket event handlers registered — confirmed by Quality Tester
+- `pinMessage` happy path + all 4 failure paths verified — confirmed by Quality Tester
+
+---
+
+### Round 5 (COMPREHENSIVE-REVIEW.md — 2026-06-10)
+
+PM triage of 21 findings: 11 already covered, 5 deferred by design, 5 actionable spec/doc fixes shipped:
+
+1. **Fix #13 (`deletedType` example)** — asyncapi.yaml `CommunityCatchupResult` example corrected from `"ALL"` → `"forEveryone"`; `CommunityCatchupEventDto.deletedType` got enum description.
+2. **Fix #5 (presence TTL)** — asyncapi.yaml `presenceHeartbeat` op + `PresenceHeartbeatPayload` + SOCKET_EVENTS §8.2 now document the 10-min server TTL (renew every 30–60 s).
+3. **Fix #6 (call cancel V1)** — asyncapi.yaml `CallInitiatePayload` + SOCKET_EVENTS §7.5 (call scenarios) + §8.9 deferred table document `call:end` as the V1 cancel mechanism; `call:cancel`/`call:missed` deferred to V2.
+4. **Fix #2 (retry strategy)** — asyncapi.yaml `AckEnvelope.retryable` + SOCKET_EVENTS §8.5 now specify 500 ms/2×/30 s cap/3-attempt recipe for `SERVICE_ERROR`; 30 s wait for `RATE_LIMITED`.
+5. **Fix #9 (reaction rate limit)** — asyncapi.yaml `chat.messageReact` + `community.messageReact` + SOCKET_EVENTS §8.2 table now document ≤ 10/min per conversation/room limit.
+
+Already-correct (no change): push flow (#1), forMe caveat (#3), reconnection (#4), notification naming (#7), catchup maxItems (#8), conversationType (#10), contentText mapping (#11), mediaKey deprecated (#12), sentAt coercion (#14), blocked users (#19), search (#20).
+Deferred: scheduled messages (#15), self-destruct (#16), draft sync (#17), group call (#18), reaction moderation (#21).

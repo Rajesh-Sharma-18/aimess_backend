@@ -3,6 +3,7 @@ import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { ackOk, ackError } from "../ack.js";
 import type { NotificationClient } from "../../grpc/clients/notification.client.js";
 
 const NotificationsFetchSchema = z.object({
@@ -10,7 +11,9 @@ const NotificationsFetchSchema = z.object({
   limit: z.number().int().positive().max(100).optional(),
 });
 const MarkReadSchema = z.object({
-  notificationIds: z.array(z.string()).min(0),
+  // Empty array = mark ALL unread as read. Bounded so a single call can't ship
+  // an unbounded id list.
+  notificationIds: z.array(z.string().min(1)).max(500),
 });
 
 interface RedisSocketEvent {
@@ -45,7 +48,7 @@ export function registerNotifyNamespace(
   });
 
   notify.on("connection", (socket: Socket) => {
-    const { userId } = socket.data;
+    const { userId, locale } = socket.data;
     void socket.join(`user:${userId}`);
     logger.debug(`/notify connected userId=${userId}`);
 
@@ -73,17 +76,19 @@ export function registerNotifyNamespace(
       (payload: unknown, callback: (res: unknown) => void) => {
         const r = NotificationsFetchSchema.safeParse(payload ?? {});
         if (!r.success) {
-          callback({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         notificationClient
           .getNotifications({ userId, ...r.data })
-          .then((result) => callback({ success: true, data: result }))
+          .then((result) =>
+            ackOk(callback, "SOCKET_NOTIFICATIONS_FETCHED", locale, result)
+          )
           .catch((err: unknown) => {
             logger.warn(
               `/notify notifications:fetch gRPC error: ${String(err)}`
             );
-            callback({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );
@@ -93,7 +98,7 @@ export function registerNotifyNamespace(
       (payload: unknown, callback: (res: unknown) => void) => {
         const r = MarkReadSchema.safeParse(payload);
         if (!r.success) {
-          callback({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         notificationClient
@@ -101,12 +106,30 @@ export function registerNotifyNamespace(
             userId,
             notificationIds: r.data.notificationIds,
           })
-          .then((result) => callback({ success: true, data: result }))
+          .then((result) => {
+            ackOk(callback, "SOCKET_NOTIFICATIONS_MARKED_READ", locale, result);
+            // Gap #5: push the updated unread count to ALL devices for this user
+            // immediately after a read action — notifications-service publishes
+            // count_update for NEW notifications; read-side changes need this
+            // gateway-side push so multi-device count stays in sync.
+            notificationClient
+              .getNotifications({ userId, limit: 1, cursor: "" })
+              .then((res) =>
+                notify
+                  .to(`user:${userId}`)
+                  .emit("notification:count_update", { count: res.unreadCount })
+              )
+              .catch((err: unknown) =>
+                logger.warn(
+                  `/notify count_update after mark_read failed: ${String(err)}`
+                )
+              );
+          })
           .catch((err: unknown) => {
             logger.warn(
               `/notify notifications:mark_read gRPC error: ${String(err)}`
             );
-            callback({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );

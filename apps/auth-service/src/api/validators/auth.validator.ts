@@ -4,11 +4,11 @@ export const accountSchema = z
   .string()
   .trim()
   // .toLowerCase()
-  .min(3, "Account name must be at least 3 characters long")
-  .max(32, "Account name cannot be longer than 32 characters")
+  .min(3, "Account name must be at least 3 characters")
+  .max(32, "Account name must be at most 32 characters")
   .regex(
     /^[-a-zA-Z0-9_]+$/,
-    "Account name can only contain letters, numbers, and underscores"
+    "Account name can only contain letters, numbers, hyphens, and underscores"
   );
 
 export const validateAccountSchema = z.object({
@@ -28,7 +28,7 @@ export const passwordSchema = z
  * or pass an empty array. Individual tokens (when provided) must be non-empty strings.
  */
 export const fcmTokensSchema = z
-  .array(z.string().trim().min(1, "FCM token cannot be empty"))
+  .array(z.string().trim().min(1, "FCM token is required"))
   .optional();
 
 export const registerSchema = z.object({

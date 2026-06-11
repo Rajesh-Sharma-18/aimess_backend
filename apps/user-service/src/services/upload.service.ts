@@ -1,4 +1,9 @@
-import { createUploadUrl, StorageValidationError } from "@aimess/storage";
+import {
+  buildUploadMediaObject,
+  createUploadUrl,
+  StorageValidationError,
+} from "@aimess/storage";
+import type { MediaObject } from "@aimess/shared-types";
 import { BadRequestError, UnsupportedMediaTypeError } from "@aimess/errors";
 
 import { presignClient } from "../config/storage.js";
@@ -18,6 +23,7 @@ export type CreateUploadUrlResult = {
   uploadExpiresIn: number;
   maxBytes: number;
   headers: { "Content-Type": string };
+  media: MediaObject;
 };
 
 export const uploadService = {
@@ -25,7 +31,7 @@ export const uploadService = {
     params: CreateUploadUrlParams
   ): Promise<CreateUploadUrlResult> {
     try {
-      return await createUploadUrl({
+      const result = await createUploadUrl({
         client: presignClient,
         def: UPLOAD_TYPES[params.type],
         contentType: params.contentType,
@@ -33,6 +39,13 @@ export const uploadService = {
         ownerId: params.ownerId,
         expiresIn: env.MINIO_PRESIGN_EXPIRES_IN,
       });
+      return {
+        ...result,
+        media: buildUploadMediaObject({
+          result,
+          contentType: params.contentType,
+        }),
+      };
     } catch (error) {
       if (error instanceof StorageValidationError) {
         switch (error.code) {

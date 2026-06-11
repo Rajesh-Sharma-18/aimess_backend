@@ -8,7 +8,10 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import { toMediaObject } from "@aimess/storage";
+import type { MediaObject } from "@aimess/shared-types";
 
+import { mediaUrlStrategy } from "../config/storage.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityCache } from "../lib/community-cache.js";
 import {
@@ -51,7 +54,7 @@ import type {
   CommunityCategoryData,
   CommunityData,
   CommunityDiscoverItem,
-  CommunityLastMessageActivity,
+  CommunityLastActivity,
   CommunityInviteData,
   CommunityInviteLinkData,
   CommunityInviteWithUserData,
@@ -99,8 +102,10 @@ import {
 import {
   publishCommunityCreatedForChatSafe,
   publishCommunityDeletedForChatSafe,
+  publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
+import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
 
 type CommunityWithCategory = Community & {
   category: { id: string; name: string };
@@ -146,14 +151,81 @@ function assertCommunityNotSuspended(community: {
   }
 }
 
+const COMMUNITY_IMAGE_PREFIXES = ["community/avatar", "community/cover"];
+const AVATAR_PREFIXES = ["avatars"];
+
+/**
+ * Build the additive nested {@link MediaObject} for a community image (avatar or
+ * cover) from the RAW stored DB value (object key or legacy URL). Resolves the
+ * presigned download URL via the shared strategy; a null/empty value yields an
+ * all-null MediaObject.
+ */
+function buildCommunityImageMedia(
+  stored: string | null | undefined
+): Promise<MediaObject> {
+  return toMediaObject({
+    bucket: env.MINIO_BUCKET_COMMUNITY,
+    stored: stored ?? null,
+    prefixes: COMMUNITY_IMAGE_PREFIXES,
+    strategy: mediaUrlStrategy,
+  });
+}
+
+/**
+ * Build the additive nested {@link MediaObject} for a member's snapshot avatar
+ * from the RAW stored object key. The key lives in the shared avatars bucket
+ * (cross-service). HEAD-free, like the legacy member-avatar resolver.
+ */
+function buildAvatarMedia(
+  stored: string | null | undefined
+): Promise<MediaObject> {
+  return toMediaObject({
+    bucket: env.MINIO_BUCKET_AVATARS,
+    stored: stored ?? null,
+    prefixes: AVATAR_PREFIXES,
+    strategy: mediaUrlStrategy,
+  });
+}
+
+function buildLastActivity(community: {
+  lastActivityAt: Date;
+  lastActivityType?: string | null;
+  lastActivityPreview?: string | null;
+  lastActivityUsername?: string | null;
+  createdAt: Date;
+}): CommunityLastActivity {
+  const type = community.lastActivityType ?? "created";
+  const dateTime =
+    type === "created"
+      ? community.createdAt.getTime()
+      : community.lastActivityAt.getTime();
+
+  if (type === "message" || type === "join" || type === "removal") {
+    return {
+      type: type as "message" | "join" | "removal",
+      username: community.lastActivityUsername ?? "",
+      preview: community.lastActivityPreview ?? "",
+      dateTime,
+    };
+  }
+  return {
+    type: "created",
+    username: null,
+    preview: community.lastActivityPreview ?? "Community created successfully",
+    dateTime,
+  };
+}
+
 async function toCommunityData(
   community: CommunityWithCategory,
   myRole: CommunityMemberRole | null,
-  muteRow: { mutedUntil: Date | null } | null
+  muteRow: MuteRowFragment
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
+  const avatar = await buildCommunityImageMedia(community.avatarUrl);
+  const cover = await buildCommunityImageMedia(community.coverUrl);
 
   return {
     id: community.id,
@@ -168,13 +240,19 @@ async function toCommunityData(
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
     coverUrl: null,
     coverUrlExpiresIn: null,
-    myRole,
+    cover,
+    role: myRole,
+    isJoined: myRole !== null,
     ...muteFields(muteRow),
     moderationStatus: community.moderationStatus,
+    // Phase 1 stub — wire to stream-service gRPC in Phase 2.
+    isLive: false,
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
+    lastActivity: buildLastActivity(community),
   };
 }
 
@@ -182,10 +260,20 @@ async function toCommunityData(
  * Batch-load the caller's mute rows for a set of communities, keyed by
  * communityId. One indexed query for the whole page — avoids N+1 when listing.
  */
+type MuteRowFragment =
+  | {
+      mutedUntil: Date | null;
+      streamEnabled: boolean;
+      chatEnabled: boolean;
+      announcementEnabled: boolean;
+    }
+  | null
+  | undefined;
+
 async function loadMuteMap(
   userId: string,
   communityIds: string[]
-): Promise<Map<string, { mutedUntil: Date | null }>> {
+): Promise<Map<string, MuteRowFragment>> {
   if (communityIds.length === 0) return new Map();
   const rows = await communityRepository.findMutesByUserAndCommunityIds(
     userId,
@@ -194,15 +282,20 @@ async function loadMuteMap(
   return new Map(rows.map((row) => [row.communityId, row]));
 }
 
-/** Derive the caller-facing mute fields from a (possibly absent) mute row. */
-function muteFields(muteRow: { mutedUntil: Date | null } | null | undefined): {
-  myIsMuted: boolean;
-  myMuteUntil: string | null;
+/** Derive the caller-facing mute + notification-preference fields from a (possibly absent) mute row. */
+function muteFields(muteRow: MuteRowFragment): {
+  isMuted: boolean;
+  muteUntil: string | null;
+  streamEnabled: boolean;
+  chatEnabled: boolean;
+  announcementEnabled: boolean;
 } {
   return {
-    myIsMuted: !!muteRow,
-    myMuteUntil:
-      muteRow && muteRow.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
+    isMuted: !!muteRow,
+    muteUntil: muteRow?.mutedUntil ? muteRow.mutedUntil.toISOString() : null,
+    streamEnabled: muteRow?.streamEnabled ?? true,
+    chatEnabled: muteRow?.chatEnabled ?? true,
+    announcementEnabled: muteRow?.announcementEnabled ?? true,
   };
 }
 
@@ -217,13 +310,19 @@ async function toDiscoverItem(
     memberCount: number;
     avatarUrl: string | null;
     createdAt: Date;
+    lastActivityAt: Date;
+    lastActivityType?: string | null;
+    lastActivityPreview?: string | null;
+    lastActivityUsername?: string | null;
     category: { id: string; name: string };
   },
-  muteRow: { mutedUntil: Date | null } | null
+  muteRow: MuteRowFragment,
+  isJoined: boolean
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
+  const avatar = await buildCommunityImageMedia(community.avatarUrl);
 
   return {
     id: community.id,
@@ -236,8 +335,13 @@ async function toDiscoverItem(
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
+    isJoined,
     ...muteFields(muteRow),
+    // Phase 1 stub — wire to stream-service gRPC in Phase 2.
+    isLive: false,
     createdAt: community.createdAt.getTime(),
+    lastActivity: buildLastActivity(community),
   };
 }
 
@@ -257,6 +361,7 @@ async function toMemberData(member: {
   const avatarView = await memberAvatarService.resolveViewUrl(
     member.snapshotAvatarKey
   );
+  const snapshotAvatar = await buildAvatarMedia(member.snapshotAvatarKey);
 
   return {
     userId: member.userId,
@@ -267,6 +372,7 @@ async function toMemberData(member: {
     snapshotDisplayName: member.snapshotDisplayName,
     snapshotAvatarUrl: avatarView?.url ?? null,
     snapshotAvatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    snapshotAvatar,
     bannedAt: member.bannedAt ? member.bannedAt.toISOString() : null,
     bannedBy: member.bannedBy ?? null,
     banReason: member.banReason ?? null,
@@ -332,6 +438,7 @@ async function toEmbeddedCommunitySummary(community: {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
   );
+  const avatar = await buildCommunityImageMedia(community.avatarUrl);
   return {
     id: community.id,
     name: community.name,
@@ -341,6 +448,7 @@ async function toEmbeddedCommunitySummary(community: {
     memberLimit: COMMUNITY_MEMBER_LIMIT,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
   };
 }
 
@@ -356,12 +464,14 @@ async function buildUserSnapshotView(
   const avatarView = await memberAvatarService.resolveViewUrl(
     snapshot.avatarObjectKey
   );
+  const avatar = await buildAvatarMedia(snapshot.avatarObjectKey);
   return {
     userId,
     username: snapshot.username,
     displayName: snapshot.displayName,
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+    avatar,
   };
 }
 
@@ -421,18 +531,17 @@ function toAuditLogData(log: {
   };
 }
 
-/** Resolved chat enrichment for one community: unread count + preview-or-null. */
+/** Resolved chat enrichment for one community: unread count. */
 type ChatEnrichment = {
   unreadMessageCount: number;
-  lastMessageActivity: CommunityLastMessageActivity | null;
 };
 
 /**
- * Bulk-fetch community-chat summaries (unread + last message) for the caller and
- * index them by communityId. Member-only previews are enforced in chat-service;
- * non-member / missing ids resolve to `{ unreadMessageCount: 0,
- * lastMessageActivity: null }`. Always degrades gracefully (empty map on chat
- * failure — the gRPC client already falls back to []).
+ * Bulk-fetch community-chat summaries (unread count) for the caller and
+ * index them by communityId. Member-only data is enforced in chat-service;
+ * non-member / missing ids resolve to `{ unreadMessageCount: 0 }`. Always
+ * degrades gracefully (empty map on chat failure — the gRPC client already
+ * falls back to []).
  */
 async function fetchChatEnrichment(
   userId: string,
@@ -448,14 +557,6 @@ async function fetchChatEnrichment(
   for (const s of summaries) {
     map.set(s.communityId, {
       unreadMessageCount: s.unreadMessageCount ?? 0,
-      lastMessageActivity:
-        s.hasLastMessage && s.lastMessage
-          ? {
-              username: s.lastMessage.username,
-              message: s.lastMessage.message,
-              dateTime: s.lastMessage.dateTime,
-            }
-          : null,
     });
   }
   return map;
@@ -463,7 +564,6 @@ async function fetchChatEnrichment(
 
 const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
   unreadMessageCount: 0,
-  lastMessageActivity: null,
 };
 
 export const communityService = {
@@ -684,6 +784,8 @@ export const communityService = {
         description: input.description ?? null,
         type: input.type as CommunityType,
         categoryId: input.categoryId,
+        // Denormalize the category name for the admin list's DB-level sort.
+        categoryName: category.name,
         creatorId,
         adminId: creatorId,
         avatarUrl,
@@ -852,6 +954,8 @@ export const communityService = {
         throw new BadRequestError("COMMUNITY_CATEGORY_INVALID");
       }
       data.category = { connect: { id: input.categoryId } };
+      // Keep the denormalized category name (admin-list sort key) in sync.
+      data.categoryName = category.name;
     }
 
     if (input.description !== undefined) {
@@ -887,6 +991,30 @@ export const communityService = {
       await communityCache.invalidateHandleAvailability(nextHandle);
     }
 
+    if (input.memberIds !== undefined) {
+      const desiredSet = new Set(input.memberIds);
+      const currentIds =
+        await communityRepository.findActiveMemberIds(communityId);
+      const currentSet = new Set(currentIds);
+
+      const toAdd = input.memberIds.filter((id) => !currentSet.has(id));
+      const toRemove = currentIds.filter((id) => !desiredSet.has(id));
+
+      if (toAdd.length > 0) {
+        await this.addMembers(communityId, callerId, toAdd);
+      }
+
+      for (const targetUserId of toRemove) {
+        try {
+          await this.kickMember(communityId, callerId, targetUserId);
+        } catch (err) {
+          // Skip members who are no longer ACTIVE (already left/banned/never joined).
+          if (err instanceof NotFoundError) continue;
+          throw err;
+        }
+      }
+    }
+
     // Admin who just patched the community isn't asking about mute — skip read.
     return toCommunityData(updated, membership.role, null);
   },
@@ -909,18 +1037,17 @@ export const communityService = {
     const communityIds = pageRows.map((row) => row.id);
 
     // Bulk-fetch chat enrichment and mute settings in parallel.
-    const [chatMap, muteRows] = await Promise.all([
+    const [chatMap, muteMap] = await Promise.all([
       fetchChatEnrichment(userId, communityIds),
-      communityRepository.findMutesByUserAndCommunityIds(userId, communityIds),
+      loadMuteMap(userId, communityIds),
     ]);
-
-    const mutedSet = new Set(muteRows.map((m) => m.communityId));
 
     const communities: CommunityListItem[] = await Promise.all(
       pageRows.map(async (row) => {
         const avatarView = await communityImageService.resolveViewUrlForClient(
           row.avatarUrl
         );
+        const avatar = await buildCommunityImageMedia(row.avatarUrl);
         const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
         return {
           id: row.id,
@@ -931,11 +1058,15 @@ export const communityService = {
           memberLimit: COMMUNITY_MEMBER_LIMIT,
           avatarUrl: avatarView?.url ?? null,
           avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-          myRole: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
+          avatar,
+          role: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
+          isJoined: true,
           lastActivityAt: row.lastActivityAt.getTime(),
           unreadMessageCount: chat.unreadMessageCount,
-          lastMessageActivity: chat.lastMessageActivity,
-          myIsMuted: mutedSet.has(row.id),
+          lastActivity: buildLastActivity(row),
+          ...muteFields(muteMap.get(row.id) ?? null),
+          // Phase 1 stub — wire to stream-service gRPC in Phase 2.
+          isLive: false,
         };
       })
     );
@@ -1019,9 +1150,19 @@ export const communityService = {
       rows.map((row) => row.id)
     );
 
+    // Build a fast lookup for membership: used by the mine-search alias
+    // (includeJoined=true). Public discover always has isJoined=false.
+    const memberSet = includeMemberCommunityIds
+      ? new Set(includeMemberCommunityIds)
+      : new Set<string>();
+
     const communities: CommunityDiscoverItem[] = await Promise.all(
       rows.map((row) =>
-        toDiscoverItem(row, muteByCommunityId.get(row.id) ?? null)
+        toDiscoverItem(
+          row,
+          muteByCommunityId.get(row.id) ?? null,
+          memberSet.has(row.id)
+        )
       )
     );
 
@@ -1037,7 +1178,6 @@ export const communityService = {
       for (const item of communities) {
         const chat = chatMap.get(item.id) ?? EMPTY_CHAT_ENRICHMENT;
         item.unreadMessageCount = chat.unreadMessageCount;
-        item.lastMessageActivity = chat.lastMessageActivity;
       }
     }
 
@@ -1250,6 +1390,20 @@ export const communityService = {
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
 
+    void communityRepository
+      .updateLastActivity(
+        communityId,
+        new Date(),
+        "removal",
+        `${updated.snapshotUsername} was removed from the community`,
+        updated.snapshotUsername
+      )
+      .catch((err) =>
+        logger.warn(
+          `updateLastActivity failed for community=${communityId}: ${String(err)}`
+        )
+      );
+
     await this.recordAudit({
       communityId,
       actorId: callerId,
@@ -1332,6 +1486,20 @@ export const communityService = {
 
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
+
+    void communityRepository
+      .updateLastActivity(
+        communityId,
+        new Date(),
+        "removal",
+        `${updated.snapshotUsername} was removed from the community`,
+        updated.snapshotUsername
+      )
+      .catch((err) =>
+        logger.warn(
+          `updateLastActivity failed for community=${communityId}: ${String(err)}`
+        )
+      );
 
     await this.recordAudit({
       communityId,
@@ -1464,6 +1632,27 @@ export const communityService = {
 
       const count = await communityRepository.countActiveMembers(communityId);
       await communityRepository.setMemberCount(communityId, count);
+
+      const allAdded = [...toReactivate.map((m) => m.userId), ...toCreate];
+      const lastAddedSnap =
+        allAdded.length > 0
+          ? snapshotMap.get(allAdded[allAdded.length - 1])
+          : undefined;
+      if (lastAddedSnap) {
+        void communityRepository
+          .updateLastActivity(
+            communityId,
+            new Date(),
+            "join",
+            `${lastAddedSnap.username} joined the community`,
+            lastAddedSnap.username
+          )
+          .catch((err) =>
+            logger.warn(
+              `updateLastActivity failed for community=${communityId}: ${String(err)}`
+            )
+          );
+      }
 
       const reactivated: CommunityMemberData[] = await Promise.all(
         toReactivate.map((m) => {
@@ -1702,6 +1891,7 @@ export const communityService = {
       displayName: view.displayName,
       avatarUrl: view.avatarUrl,
       avatarUrlExpiresIn: view.avatarUrlExpiresIn,
+      avatar: view.avatar,
       mutedBy: row.mutedBy,
       reason: row.reason,
       mutedAt: row.createdAt.toISOString(),
@@ -1795,12 +1985,16 @@ export const communityService = {
         const avatarView = await memberAvatarService.resolveViewUrl(
           member?.snapshotAvatarKey ?? null
         );
+        const avatar = await buildAvatarMedia(
+          member?.snapshotAvatarKey ?? null
+        );
         items.push({
           userId: row.userId,
           username: member?.snapshotUsername ?? "",
           displayName: member?.snapshotDisplayName ?? "",
           avatarUrl: avatarView?.url ?? null,
           avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+          avatar,
           mutedBy: row.mutedBy,
           reason: row.reason,
           mutedAt: row.createdAt.toISOString(),
@@ -2345,6 +2539,20 @@ export const communityService = {
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
 
+    void communityRepository
+      .updateLastActivity(
+        communityId,
+        new Date(),
+        "join",
+        `${snap.username} joined the community`,
+        snap.username
+      )
+      .catch((err) =>
+        logger.warn(
+          `updateLastActivity failed for community=${communityId}: ${String(err)}`
+        )
+      );
+
     const updatedRequest = await communityRepository.updateJoinRequest(
       requestId,
       {
@@ -2715,6 +2923,20 @@ export const communityService = {
     );
     await communityRepository.setMemberCount(invite.communityId, count);
 
+    void communityRepository
+      .updateLastActivity(
+        invite.communityId,
+        new Date(),
+        "join",
+        `${snap.username} joined the community`,
+        snap.username
+      )
+      .catch((err) =>
+        logger.warn(
+          `updateLastActivity failed for community=${invite.communityId}: ${String(err)}`
+        )
+      );
+
     const updatedInvite = await communityRepository.updateInvite(inviteId, {
       status: CommunityInviteStatus.ACCEPTED,
     });
@@ -2853,14 +3075,26 @@ export const communityService = {
         CommunityMemberRole.ADMIN,
         CommunityMemberRole.MODERATOR,
       ]);
+    // One timestamp for both events so they correlate for the same report.
+    const reportEventAt = new Date().toISOString();
     publishCommunityReportCreatedSafe({
       communityId,
-      eventAt: new Date().toISOString(),
+      eventAt: reportEventAt,
       reportId: row.id,
       reporterId: callerId,
       targetUserId,
       reason: input.reason,
       moderatorRecipientIds: reportModeratorRecipientIds,
+    });
+
+    publishAdminReportIngestSafe({
+      type: targetUserId ? "user" : "community",
+      targetId: targetUserId ?? communityId,
+      reporterId: callerId,
+      reason: input.reason,
+      details: null,
+      eventAt: reportEventAt,
+      sourceReportId: row.id,
     });
 
     return toReportData(row);
@@ -3206,6 +3440,9 @@ export const communityService = {
     return {
       communityId,
       mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+      streamEnabled: row.streamEnabled,
+      chatEnabled: row.chatEnabled,
+      announcementEnabled: row.announcementEnabled,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -3244,6 +3481,9 @@ export const communityService = {
     return {
       communityId,
       mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+      streamEnabled: row.streamEnabled,
+      chatEnabled: row.chatEnabled,
+      announcementEnabled: row.announcementEnabled,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -3611,6 +3851,119 @@ export const communityService = {
     return toInviteLinkData(updated);
   },
 
+  /**
+   * Bulk-share a community invite link via system DMs.
+   *
+   * 1. Validates the caller holds MODERATOR or ADMIN role.
+   * 2. Resolves or creates one active invite link to share.
+   * 3. Fires one `community.invite_link_shared` RabbitMQ event per userId (→
+   *    chat-service consumes and delivers a system DM).
+   *
+   * Returns the resolved link data plus counts of queued/skipped recipients.
+   */
+  async bulkSendInviteLink(
+    communityId: string,
+    callerId: string,
+    input: {
+      userIds: string[];
+      /** Optional: prefer this specific link. Falls back to first active link or
+       *  auto-creates one if none exists. */
+      linkId?: string;
+    }
+  ): Promise<{
+    link: CommunityInviteLinkData;
+    queued: number;
+    skipped: number;
+  }> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+    assertCommunityNotSuspended(community);
+
+    // --- Resolve or create the invite link -----------------------------------
+
+    let linkRow: CommunityInviteLink | null;
+
+    if (input.linkId) {
+      // Caller specified a particular link — validate it.
+      linkRow = await communityRepository.findInviteLinkById(input.linkId);
+      if (!linkRow || linkRow.communityId !== communityId) {
+        throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+      }
+      const now = Date.now();
+      const isActive =
+        !linkRow.revokedAt &&
+        (!linkRow.expiresAt || linkRow.expiresAt.getTime() > now) &&
+        (linkRow.maxUses === null || linkRow.usedCount < linkRow.maxUses);
+      if (!isActive) {
+        throw new ForbiddenError("COMMUNITY_INVITE_LINK_INACTIVE");
+      }
+    } else {
+      // Auto-pick the first active link, or create one.
+      const { rows } = await communityRepository.listInviteLinks({
+        communityId,
+        status: "active",
+        page: 1,
+        limit: 1,
+      });
+      if (rows.length > 0) {
+        linkRow = rows[0]!;
+      } else {
+        // No active link exists — create a permanent, unlimited one.
+        let created: CommunityInviteLink | null = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            created = await communityRepository.createInviteLink({
+              code: generateInviteCode(),
+              communityId,
+              createdBy: callerId,
+              maxUses: null,
+              autoApprove: false,
+              expiresAt: null,
+            });
+            break;
+          } catch (err) {
+            if (!isUniqueConstraintError(err) || attempt === 2) throw err;
+          }
+        }
+        if (!created) throw new Error("Failed to allocate invite-link code");
+        linkRow = created;
+      }
+    }
+
+    // --- Fan-out events: one per unique non-self userId ----------------------
+
+    const uniqueIds = [...new Set(input.userIds)];
+    let queued = 0;
+    let skipped = 0;
+
+    const eventAt = new Date().toISOString();
+    for (const recipientId of uniqueIds) {
+      if (recipientId === callerId) {
+        skipped++;
+        continue;
+      }
+      publishCommunityInviteLinkSharedForChatSafe({
+        communityId,
+        communityName: community.name,
+        linkCode: linkRow.code,
+        inviterId: callerId,
+        recipientId,
+        eventAt,
+      });
+      queued++;
+    }
+
+    return { link: toInviteLinkData(linkRow), queued, skipped };
+  },
+
   async redeemInviteLink(
     code: string,
     callerId: string
@@ -3703,6 +4056,21 @@ export const communityService = {
       }
       const count = await communityRepository.countActiveMembers(community.id);
       await communityRepository.setMemberCount(community.id, count);
+
+      void communityRepository
+        .updateLastActivity(
+          community.id,
+          new Date(),
+          "join",
+          `${snap.username} joined the community`,
+          snap.username
+        )
+        .catch((err) =>
+          logger.warn(
+            `updateLastActivity failed for community=${community.id}: ${String(err)}`
+          )
+        );
+
       return {
         link: toInviteLinkData(updatedLink!),
         member: await toMemberData(member),

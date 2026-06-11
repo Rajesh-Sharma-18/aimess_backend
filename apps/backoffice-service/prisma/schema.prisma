@@ -299,14 +299,23 @@ model Report {
   targetId   String
   reporterId String
   reason     String
+  details    String? // reporter free-text ("Other Reason")
   status     String   @default("open") // open | reviewing | resolved | dismissed
   priority   String   @default("normal")
   assignedTo String?  @db.Uuid
-  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  // Upstream report row's id (community/chat-service). Carried on the
+  // admin.report.ingest event; the unique index makes ingestion exactly-once
+  // — a RabbitMQ redelivery hits a P2002 the consumer swallows instead of
+  // inserting a duplicate. Nullable for pre-existing / non-event rows; Postgres
+  // unique indexes treat NULLs as distinct, so "unique where not null" holds.
+  sourceReportId String? @unique
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
 
   notes ReportNote[]
 
   @@index([status, type])
+  @@index([type, targetId, createdAt(sort: Desc)])
+  @@index([reporterId])
 }
 
 model ReportNote {

@@ -19,6 +19,9 @@ const messageFileSchema = z.object({
   width: z.number().positive().optional(),
   height: z.number().positive().optional(),
   durationMs: z.number().nonnegative().optional(),
+  // §3.5: instant-preview metadata (image/video blur + voice waveform).
+  blurhash: z.string().max(120).optional(),
+  waveform: z.array(z.number()).max(2048).optional(),
 });
 
 export const sendPrivateMessageSchema = z

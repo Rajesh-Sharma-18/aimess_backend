@@ -1,4 +1,9 @@
-import { createStorageClient, type StorageClient } from "@aimess/storage";
+import {
+  createMediaUrlStrategy,
+  createStorageClient,
+  type MediaUrlStrategy,
+  type StorageClient,
+} from "@aimess/storage";
 
 import { env } from "./env.js";
 
@@ -23,4 +28,15 @@ export const presignClient: StorageClient = createStorageClient({
   accessKey: env.MINIO_ACCESS_KEY,
   secretKey: env.MINIO_SECRET_KEY,
   region: env.MINIO_REGION,
+});
+
+/**
+ * Strategy used to resolve a stored object key into a presigned (or CDN) view
+ * URL when building a {@link MediaObject}. Uses the presignClient so URLs are
+ * signed against the public endpoint.
+ */
+export const mediaUrlStrategy: MediaUrlStrategy = createMediaUrlStrategy({
+  client: presignClient,
+  defaultViewExpiresIn: env.MINIO_VIEW_EXPIRES_IN,
+  cdnBaseUrl: null,
 });

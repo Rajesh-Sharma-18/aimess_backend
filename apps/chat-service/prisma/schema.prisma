@@ -146,6 +146,8 @@ model GroupRoom {
   @@index([memberCount])
   @@index([status, lastMessageAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([status, memberCount(sort: Desc)])
   @@map("group_rooms")
 }
 
@@ -156,6 +158,7 @@ model GroupMessage {
   id                 String    @id @default(auto()) @map("_id") @db.ObjectId
   roomId             String
   clientMessageId    String?
+  clientInfo         Json?
   senderId           String?
   senderName         String    @default("")
   senderAvatar       String    @default("")
@@ -289,6 +292,8 @@ model GeneralRoom {
   lastMessageAt    DateTime?
   lastMessage      Json?
   listPinedMessage Json      @default("[]")
+  pinnedCount      Int       @default(0)
+  lastPinnedAt     DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -480,4 +485,24 @@ model PrivateMessageReport {
   @@index([status, createdAt(sort: Desc)])
   @@index([reportedUserId])
   @@map("private_message_reports")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityMessagePin
+// -----------------------------------------------------------------------------
+model CommunityMessagePin {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  roomId            String
+  messageId         String   @db.ObjectId
+  pinnedBy          String
+  pinnedAt          DateTime @default(now())
+  messageCreatedAt  DateTime
+  senderId          String
+  senderDisplayName String   @default("")
+  senderAvatar      String   @default("")
+  contentPinned     Json     @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+
+  @@unique([roomId, messageId])
+  @@index([roomId, pinnedAt(sort: Desc)])
+  @@map("community_message_pins")
 }

@@ -39,7 +39,7 @@ export class GeneralRoomRepository {
         OR: [
           { name: { contains: query, mode: "insensitive" } },
           { title: { contains: query, mode: "insensitive" } },
-          { tags: { has: query.toLowerCase() } },
+          { tags: { has: query?.toLowerCase() } },
         ],
       },
       orderBy: { memberNumber: "desc" },
@@ -131,6 +131,19 @@ export class GeneralRoomRepository {
     });
   }
 
+  async incPinnedCount(
+    roomId: string,
+    inc: number
+  ): Promise<GeneralRoom | null> {
+    return this.prisma.generalRoom.update({
+      where: { id: roomId },
+      data: {
+        pinnedCount: { increment: inc },
+        ...(inc > 0 ? { lastPinnedAt: new Date() } : {}),
+      },
+    });
+  }
+
   /** Soft-deactivate a community's chat room (driven by `community.deleted`). */
   async deactivateForCommunity(communityId: string): Promise<void> {
     await this.prisma.generalRoom.updateMany({
@@ -160,6 +173,16 @@ export class GeneralRoomRepository {
     await this.prisma.generalRoom.updateMany({
       where: { id: communityId, status: "suspended" },
       data: { status: "active" },
+    });
+  }
+
+  async updatePinnedMessages(
+    roomId: string,
+    pinnedIds: string[]
+  ): Promise<void> {
+    await this.prisma.generalRoom.update({
+      where: { id: roomId },
+      data: { listPinedMessage: pinnedIds },
     });
   }
 }

@@ -1,10 +1,6 @@
 import { z } from "zod";
 
-const emailSchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .email("Invalid email address");
+const emailSchema = z.string().trim().toLowerCase().email("Email is invalid");
 
 export const requestLinkEmailOtpSchema = z.object({
   email: emailSchema,
@@ -19,7 +15,7 @@ export const verifyLinkEmailOtpSchema = z.object({
   code: z
     .string()
     .trim()
-    .regex(/^\d{6}$/, "OTP must be a 6-digit code"),
+    .regex(/^\d{6}$/, "Verification code must be exactly 6 digits"),
 });
 
 export type VerifyLinkEmailOtpInput = z.infer<typeof verifyLinkEmailOtpSchema>;

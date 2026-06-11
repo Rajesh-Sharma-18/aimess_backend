@@ -9,6 +9,7 @@ export default [
       "**/.turbo/**",
       "**/coverage/**",
       "**/generated/**",
+      "**/asyncapi/output/**",
       "**/prisma.config.ts",
     ],
   },

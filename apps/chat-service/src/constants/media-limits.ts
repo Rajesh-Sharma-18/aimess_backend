@@ -31,25 +31,29 @@ export const MEDIA_MESSAGE_TYPES = [
 
 /**
  * Map an incoming (upper-cased) media-list `type` filter to the community
- * storage value. Community stores IMAGE/VOICE/STICKER lower-cased and carries
- * VIDEO/GIF/DOCUMENT as "custom". Returns undefined for unknown/non-media types
- * so callers can decide on an empty result rather than broadening the query.
+ * storage value. Returns undefined for unknown/non-media types so callers can
+ * decide on an empty result rather than broadening the query.
  */
 const COMMUNITY_MEDIA_TYPE_MAP: Record<string, string> = {
   IMAGE: "image",
   VOICE: "voice",
+  AUDIO: "audio",
   STICKER: "sticker",
-  VIDEO: "custom",
-  GIF: "custom",
-  DOCUMENT: "custom",
+  VIDEO: "video",
+  GIF: "gif",
+  DOCUMENT: "document",
 };
 
 /** Distinct community storage values that hold media. */
 export const COMMUNITY_MEDIA_MESSAGE_TYPES = [
   "image",
   "voice",
+  "audio",
   "sticker",
-  "custom",
+  "video",
+  "gif",
+  "document",
+  "custom", // kept for backward-compat with messages stored before the type expansion
 ] as const;
 
 /** Resolve a community media storage value for an incoming `type` filter. */
@@ -69,6 +73,7 @@ export const MEDIA_LIMITS = {
   IMAGE: { maxCount: 10, maxBytes: GENERIC_MAX_BYTES },
   VIDEO: { maxBytes: VIDEO_MAX_BYTES, maxDurationMs: 180_000 },
   VOICE: { maxBytes: GENERIC_MAX_BYTES, maxDurationMs: 300_000 },
+  AUDIO: { maxBytes: VIDEO_MAX_BYTES },
   GIF: { maxBytes: GENERIC_MAX_BYTES },
   DOCUMENT: { maxBytes: GENERIC_MAX_BYTES },
   STICKER: { maxBytes: GENERIC_MAX_BYTES },
@@ -127,6 +132,14 @@ export function assertAttachmentsValid(
         }
         if ((f.durationMs ?? 0) > MEDIA_LIMITS.VOICE.maxDurationMs) {
           throw new BadRequestError("CHAT_VOICE_TOO_LONG");
+        }
+      }
+      break;
+    }
+    case "AUDIO": {
+      for (const f of list) {
+        if ((f.size ?? 0) > MEDIA_LIMITS.AUDIO.maxBytes) {
+          throw new BadRequestError("CHAT_FILE_TOO_LARGE");
         }
       }
       break;
@@ -199,6 +212,14 @@ export function enforceMediaLimits(
         }
         if ((f.durationMs ?? 0) > MEDIA_LIMITS.VOICE.maxDurationMs) {
           fail("Voice note exceeds the maximum allowed duration");
+        }
+      }
+      break;
+    }
+    case "AUDIO": {
+      for (const f of list) {
+        if ((f.size ?? 0) > MEDIA_LIMITS.AUDIO.maxBytes) {
+          fail("Audio file exceeds the maximum allowed size");
         }
       }
       break;

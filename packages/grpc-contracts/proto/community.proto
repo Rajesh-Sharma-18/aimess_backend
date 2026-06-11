@@ -15,6 +15,10 @@ service CommunityService {
   // close/reopen moderation command. backoffice-service is the only caller.
   rpc AdminListCommunities (AdminListCommunitiesRequest) returns (AdminListCommunitiesResponse);
   rpc AdminGetCommunity (AdminGetCommunityRequest) returns (AdminCommunityDetail);
+  rpc AdminListCommunityMembers (AdminListCommunityMembersRequest) returns (AdminListCommunityMembersResponse);
+  // Reverse lookup for the admin User Management detail screen: the communities a
+  // given user is an ACTIVE member of. Searchable by community name/id, sortable.
+  rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
   rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
 
   // Bulk community-chat summaries for GET /communities/mine: per-community unread
@@ -24,6 +28,18 @@ service CommunityService {
   // Bulk mark-as-read: advances lastReadAt to now for the caller's active
   // member rows across the given communities. Non-member rooms are silently skipped.
   rpc BulkMarkCommunityRead (BulkMarkCommunityReadRequest) returns (BulkMarkCommunityReadResponse);
+
+  // Offline catch-up: fetch missed messages in a community room since a known
+  // message id. Used on reconnect to fill the gap without re-fetching history.
+  rpc CommunityCatchup (CommunityCatchupRequest) returns (CommunityCatchupResponse);
+
+  // Toggle reaction on a community message (add if absent, remove if present).
+  rpc ReactToCommunityMessage (ReactToCommunityMessageRequest) returns (ReactToCommunityMessageResponse);
+
+  rpc EditCommunityMessage   (EditCommunityMessageRequest)   returns (EditCommunityMessageResponse);
+  rpc DeleteCommunityMessage (DeleteCommunityMessageRequest) returns (DeleteCommunityMessageResponse);
+  rpc PinCommunityMessage    (PinCommunityMessageRequest)    returns (PinCommunityMessageResponse);
+  rpc UnpinCommunityMessage  (UnpinCommunityMessageRequest)  returns (UnpinCommunityMessageResponse);
 }
 
 // ---- Bulk mark-as-read ----
@@ -66,7 +82,7 @@ message AdminListCommunitiesRequest {
   string status       = 4;  // "ACTIVE" | "CLOSED" | "" (any)
   string created_from = 5;  // ISO date YYYY-MM-DD, inclusive; "" = none
   string created_to   = 6;  // ISO date YYYY-MM-DD, inclusive; "" = none
-  string sort_field   = 7;  // createdAt | name | memberCount | livestreamCount
+  string sort_field   = 7;  // createdAt | name | memberCount | categoryName | livestreamCount
   string sort_dir     = 8;  // asc | desc
   int32  page         = 9;  // 1-based
   int32  limit        = 10; // page size
@@ -126,6 +142,68 @@ message AdminCommunityDetail {
   string owner_account_status    = 16;
 }
 
+// ---- Backoffice Community Member List ----
+// The "Community User List" grid on the admin User Management detail screen.
+// Read-through, offset paginated; searchable by username/userId, role-filterable.
+message AdminListCommunityMembersRequest {
+  string community_id    = 1;
+  string search          = 2;  // username or userId; "" = none
+  string role            = 3;  // ADMIN|MODERATOR|MEMBER; "" = all
+  int32  page            = 4;
+  int32  limit           = 5;
+  // "" = no exclusion. When set, this userId is excluded at the DB level and MUST
+  // NEVER appear in the page (used to hide the user being viewed from their own
+  // co-member grid). Never filtered in memory.
+  string exclude_user_id = 6;
+  // "username" | "joinedAt" | "" (default). Default order is role asc then joinedAt asc.
+  string sort_field      = 7;
+  // "asc" | "desc" | "" (default asc).
+  string sort_dir        = 8;
+}
+message AdminCommunityMemberRow {
+  string user_id     = 1;
+  string username    = 2;   // snapshotDisplayName (fallback snapshotUsername)
+  string handle      = 3;   // snapshotUsername (the @handle)
+  string avatar_url  = 4;   // resolved/presigned, "" when none
+  string role        = 5;
+  string status      = 6;
+  string joined_at   = 7;   // ISO 8601
+}
+message AdminListCommunityMembersResponse {
+  repeated AdminCommunityMemberRow members = 1;
+  int64 total = 2;
+}
+
+// ---- Backoffice User → Communities reverse lookup ----
+// The "Communities" grid on the admin User Management detail screen: the
+// communities the given user is an ACTIVE member of. Driving filter is the
+// user's ACTIVE memberships; name search + sort apply to the Community fields.
+// Excludes soft-deleted communities. Read-through, offset paginated.
+message AdminListUserCommunitiesRequest {
+  string user_id    = 1;
+  string search     = 2; // community name (insensitive contains) OR communityId (exact); "" = none
+  string sort_field = 3; // "name" | "memberCount" | "createdAt" (default createdAt)
+  string sort_dir   = 4; // "asc" | "desc" (default desc)
+  int32  page       = 5;
+  int32  limit      = 6;
+}
+message AdminUserCommunityRow {
+  string community_id  = 1;
+  string name          = 2;
+  string avatar_url    = 3; // presigned community avatar GET URL, "" when none/unavailable
+  string category_id   = 4;
+  string category_name = 5; // "" if none
+  string description   = 6; // "" if none
+  int32  member_count  = 7;
+  string role          = 8; // this user's role in the community (ADMIN|MODERATOR|MEMBER)
+  string joined_at     = 9; // ISO 8601 (this user's joinedAt)
+  int64  created_at    = 10; // community createdAt epoch ms
+}
+message AdminListUserCommunitiesResponse {
+  repeated AdminUserCommunityRow communities = 1;
+  int64 total = 2;
+}
+
 message AdminSetModerationStatusRequest {
   string community_id   = 1;
   string status         = 2; // "ACTIVE" (reopen) | "SUSPENDED" (close)
@@ -153,7 +231,11 @@ message SendCommunityMessageRequest {
   string client_message_id = 4;
   string message           = 5;
   string content_type      = 6;
-  string media_key         = 7;
+  string media_key         = 7;  // deprecated: use attachments_json instead
+  string parent_message_id = 8;  // "" when not a reply
+  // JSON-encoded attachment payload: { files?, location?, contact?, sticker? }
+  // Supersedes media_key for all new clients.
+  string attachments_json  = 9;
 }
 message SendCommunityMessageResponse {
   string message_id = 1;
@@ -204,4 +286,134 @@ message ListCommunitiesResponse {
   repeated ReconcileCommunityDto communities = 1;
   string next_after_id = 2; // pass back as after_id for the next page
   bool   has_more      = 3;
+}
+
+// ---- Community offline catch-up ----
+message CommunityCatchupRequest {
+  string room_id       = 1;
+  string requester_id  = 2;
+  // Exclusive lower bound: last message id the client already has.
+  // "" = fetch the latest `limit` messages (first load).
+  // Provide EITHER since_id OR since_ts — not both.
+  string since_id      = 3;
+  int32  limit         = 4;
+  // Alternative cursor: epoch-ms of updatedAt lower bound (inclusive).
+  // When since_ts > 0 the server switches to an updatedAt-based query that
+  // catches edits, reaction changes, and deletions (tombstones) in addition to
+  // new messages. Use this after returning from the background for a full
+  // mutation sweep. since_ts takes precedence over since_id when both are set.
+  int64  since_ts      = 5;
+}
+message CommunityCatchupEventDto {
+  string message_id    = 1;
+  string room_id       = 2;
+  string sender_id     = 3;
+  string sender_name   = 4;
+  string sender_avatar = 5;
+  string message       = 6;
+  string content_type  = 7;
+  int64  sent_at       = 8;
+  bool   is_deleted    = 9;
+  string deleted_type  = 10;
+  int64  edited_at     = 11;
+  // "new" | "edited" | "deleted" | "reacted" — what happened since the cursor.
+  // In since_id mode every non-tombstone row is "new"; deleted tombstones are
+  // "deleted". In since_ts mode the value is derived from updatedAt/editedAt.
+  string sync_event_type                       = 12;
+  // Current grouped reaction state for this message at the time of catch-up.
+  repeated CommunityReactionGroupDto reactions = 13;
+}
+message CommunityCatchupResponse {
+  string room_id                             = 1;
+  repeated CommunityCatchupEventDto events   = 2;
+  bool   has_more                            = 3;
+  string last_id                             = 4; // last returned message id (use as next since_id)
+  bool   authorized                          = 5;
+  // Epoch-ms cursor for since_ts mode — equals the last event's updatedAt.
+  // Feed back as the next since_ts to continue paging. Zero in since_id mode.
+  int64  next_ts                             = 6;
+}
+
+// ---- Community message reaction (toggle: add if absent, remove if present) ----
+message ReactToCommunityMessageRequest {
+  string message_id   = 1;
+  string community_id = 2;
+  string user_id      = 3;
+  string emoji        = 4;
+}
+message CommunityReactionUserDto {
+  string user_id      = 1;
+  string display_name = 2;
+  string avatar       = 3;
+}
+message CommunityReactionGroupDto {
+  string emoji                           = 1;
+  int32  count                           = 2;
+  repeated CommunityReactionUserDto users = 3;
+}
+message ReactToCommunityMessageResponse {
+  string message_id                             = 1;
+  string community_id                           = 2;
+  repeated CommunityReactionGroupDto reactions  = 3;
+}
+
+// ---- Edit ----
+message EditCommunityMessageRequest {
+  string message_id   = 1;
+  string community_id = 2;
+  string user_id      = 3;
+  string text         = 4;
+}
+message EditCommunityMessageResponse {
+  string message_id   = 1;
+  string community_id = 2;
+  string room_id      = 3;
+  int64  edited_at    = 4;
+  string message      = 5;
+  string content_type = 6;
+}
+
+// ---- Delete ----
+message DeleteCommunityMessageRequest {
+  string message_id   = 1;
+  string community_id = 2;
+  string user_id      = 3;
+  string delete_type  = 4;  // "forEveryone" | "forMe"
+}
+message DeleteCommunityMessageResponse {
+  string message_id   = 1;
+  string community_id = 2;
+  string room_id      = 3;
+  string delete_type  = 4;
+}
+
+// ---- Pin ----
+message PinCommunityMessageRequest {
+  string message_id   = 1;
+  string community_id = 2;
+  string room_id      = 3;
+  string user_id      = 4;
+}
+message PinCommunityMessageResponse {
+  string message_id   = 1;
+  string community_id = 2;
+  string room_id      = 3;
+  string pinned_ids   = 4;  // JSON string of string[]
+  int32  pinned_count = 5;
+  int64  pinned_at    = 6;
+}
+
+// ---- Unpin ----
+message UnpinCommunityMessageRequest {
+  string message_id   = 1;
+  string community_id = 2;
+  string room_id      = 3;
+  string user_id      = 4;
+}
+message UnpinCommunityMessageResponse {
+  string message_id   = 1;
+  string community_id = 2;
+  string room_id      = 3;
+  string pinned_ids   = 4;  // JSON string of string[]
+  int32  pinned_count = 5;
 }

@@ -8,7 +8,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { listUsersQuerySchema } from "../users.validator.js";
+import {
+  listUsersQuerySchema,
+  userReportsQuerySchema,
+} from "../users.validator.js";
 
 describe("listUsersQuerySchema — search param", () => {
   it("maps the public `q` param onto `search`", () => {
@@ -69,5 +72,212 @@ describe("listUsersQuerySchema — search param", () => {
     assert.equal(r.data?.sort, "joinedAt:desc");
     assert.equal(r.data?.page, 2);
     assert.equal(r.data?.limit, 50);
+  });
+});
+
+describe("userReportsQuerySchema — pagination", () => {
+  it("defaults page=1 and limit=20 when omitted", () => {
+    const r = userReportsQuerySchema.safeParse({});
+    assert.equal(r.success, true);
+    assert.equal(r.data?.page, 1);
+    assert.equal(r.data?.limit, 20);
+  });
+
+  it("coerces string page/limit to numbers", () => {
+    const r = userReportsQuerySchema.safeParse({ page: "2", limit: "50" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.page, 2);
+    assert.equal(r.data?.limit, 50);
+  });
+
+  it("rejects limit above the max of 100", () => {
+    const r = userReportsQuerySchema.safeParse({ limit: "101" });
+    assert.equal(r.success, false);
+  });
+});
+
+describe("listUsersQuerySchema — status filter (case-insensitive)", () => {
+  it("accepts a lowercase status from the dropdown", () => {
+    const r = listUsersQuerySchema.safeParse({ status: "active" });
+    assert.equal(r.success, true);
+    assert.deepEqual(r.data?.status, ["ACTIVE"]);
+  });
+
+  it("accepts a repeated lowercase status list", () => {
+    const r = listUsersQuerySchema.safeParse({ status: ["active", "banned"] });
+    assert.equal(r.success, true);
+    assert.deepEqual(r.data?.status, ["ACTIVE", "BANNED"]);
+  });
+
+  it("maps the `pending_deletion` alias onto DELETED", () => {
+    const r = listUsersQuerySchema.safeParse({ status: "pending_deletion" });
+    assert.equal(r.success, true);
+    assert.deepEqual(r.data?.status, ["DELETED"]);
+  });
+
+  it("keeps UPPERCASE status working", () => {
+    const r = listUsersQuerySchema.safeParse({ status: "BANNED" });
+    assert.equal(r.success, true);
+    assert.deepEqual(r.data?.status, ["BANNED"]);
+  });
+
+  it("rejects an unknown status value", () => {
+    const r = listUsersQuerySchema.safeParse({ status: "frozen" });
+    assert.equal(r.success, false);
+  });
+
+  it("rejects SUSPENDED — not a panel filter option (only active/banned/deleted)", () => {
+    const r = listUsersQuerySchema.safeParse({ status: "suspended" });
+    assert.equal(r.success, false);
+  });
+});
+
+describe("listUsersQuerySchema — sortBy / sortOrder", () => {
+  it("maps sortBy=username onto the canonical sort token", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "username",
+      sortOrder: "asc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "username:asc");
+    assert.equal(r.data?.sortBy, "username");
+    assert.equal(r.data?.sortOrder, "asc");
+  });
+
+  it("maps sortBy=joinedDate onto the joinedAt column", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "joinedDate",
+      sortOrder: "desc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "joinedAt:desc");
+    assert.equal(r.data?.sortBy, "joinedDate");
+  });
+
+  it("maps sortBy=reports onto the reportCount column", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "reports",
+      sortOrder: "desc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "reportCount:desc");
+    assert.equal(r.data?.sortBy, "reports");
+  });
+
+  it("defaults sortOrder to desc when only sortBy is given", () => {
+    const r = listUsersQuerySchema.safeParse({ sortBy: "email" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "email:desc");
+    assert.equal(r.data?.sortOrder, "desc");
+  });
+
+  it("is case-insensitive and tolerates the canonical column names", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "ReportCount",
+      sortOrder: "ASC",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "reportCount:asc");
+    assert.equal(r.data?.sortBy, "reports");
+  });
+
+  it("prefers sortBy over the legacy sort param", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sort: "email:asc",
+      sortBy: "username",
+      sortOrder: "desc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "username:desc");
+  });
+
+  it("echoes the UI sort pair even when the legacy sort param is used", () => {
+    const r = listUsersQuerySchema.safeParse({ sort: "reportCount:asc" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "reportCount:asc");
+    assert.equal(r.data?.sortBy, "reports");
+    assert.equal(r.data?.sortOrder, "asc");
+  });
+
+  it("ignores sortOrder when sortBy is absent — falls back to the legacy/default sort", () => {
+    // `sortOrder` only takes effect alongside `sortBy`. On its own it must NOT
+    // hijack the default `joinedAt:desc`, and the echoed UI pair must reflect
+    // the resolved (default) sort, not the orphaned sortOrder.
+    const r = listUsersQuerySchema.safeParse({ sortOrder: "asc" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "joinedAt:desc");
+    assert.equal(r.data?.sortBy, "joinedDate");
+    assert.equal(r.data?.sortOrder, "desc");
+  });
+
+  it("accepts a bare `sort` field (no :dir) + `order` — the Swagger form shape", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sort: "username",
+      order: "desc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "username:desc");
+    assert.equal(r.data?.sortBy, "username");
+    assert.equal(r.data?.sortOrder, "desc");
+  });
+
+  it("defaults a bare `sort` field with no order to desc", () => {
+    const r = listUsersQuerySchema.safeParse({ sort: "reportCount" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sort, "reportCount:desc");
+    assert.equal(r.data?.sortBy, "reports");
+  });
+
+  it("rejects an unknown sortBy column", () => {
+    const r = listUsersQuerySchema.safeParse({ sortBy: "karma" });
+    assert.equal(r.success, false);
+  });
+
+  it("still rejects an unknown bare `sort` field", () => {
+    const r = listUsersQuerySchema.safeParse({ sort: "karma" });
+    assert.equal(r.success, false);
+  });
+
+  it("rejects an invalid sortOrder", () => {
+    const r = listUsersQuerySchema.safeParse({
+      sortBy: "username",
+      sortOrder: "sideways",
+    });
+    assert.equal(r.success, false);
+  });
+});
+
+describe("listUsersQuerySchema — date range filter", () => {
+  it("accepts a YYYY-MM-DD range", () => {
+    const r = listUsersQuerySchema.safeParse({
+      dateFrom: "2026-01-01",
+      dateTo: "2026-06-01",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.dateFrom, "2026-01-01");
+    assert.equal(r.data?.dateTo, "2026-06-01");
+  });
+
+  it("normalizes a full ISO datetime to YYYY-MM-DD", () => {
+    const r = listUsersQuerySchema.safeParse({
+      dateFrom: "2026-01-01T10:30:00.000Z",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.dateFrom, "2026-01-01");
+  });
+
+  it("accepts `createdAfter`/`createdBefore` as range aliases", () => {
+    const r = listUsersQuerySchema.safeParse({
+      createdAfter: "2026-01-01",
+      createdBefore: "2026-06-01",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.dateFrom, "2026-01-01");
+    assert.equal(r.data?.dateTo, "2026-06-01");
+  });
+
+  it("rejects a malformed date", () => {
+    const r = listUsersQuerySchema.safeParse({ dateFrom: "01-2026" });
+    assert.equal(r.success, false);
   });
 });

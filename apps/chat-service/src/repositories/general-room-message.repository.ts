@@ -84,6 +84,82 @@ export class GeneralRoomMessageRepository {
   }
 
   /**
+   * Timestamp-keyset page for community messages. Over-fetches by 1 so the
+   * caller can detect `hasMore` without a separate count query.
+   * `direction="before"` → createdAt <= ts, newest-first (the default load).
+   * `direction="after"`  → createdAt >= ts, oldest-first (upward scroll).
+   * Per-user deletedBy filtering is done in memory (Prisma/Mongo limitation).
+   */
+  async findByRoomIdTimeline(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    ts: Date;
+    limit: number;
+  }): Promise<GeneralRoomMessage[]> {
+    const messages = await this.prisma.generalRoomMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        deletedForAll: false,
+        createdAt:
+          params.direction === "before"
+            ? { lte: params.ts }
+            : { gte: params.ts },
+      },
+      orderBy: {
+        createdAt: params.direction === "before" ? "desc" : "asc",
+      },
+      take: params.limit + 1,
+    });
+
+    return messages.filter((msg) => {
+      const deletedBy = (msg.deletedBy ?? []) as string[];
+      return !deletedBy.includes(params.userId);
+    });
+  }
+
+  /**
+   * Jump-to-message window for community rooms (no sequenceNumber, anchors on
+   * createdAt). Fetches ~half the limit on each side of the anchor message.
+   */
+  async findAroundDate(params: {
+    roomId: string;
+    userId: string;
+    anchorDate: Date;
+    limit: number;
+  }): Promise<GeneralRoomMessage[]> {
+    const half = Math.floor(params.limit / 2);
+
+    const [older, newer] = await Promise.all([
+      // anchor-inclusive older half (desc → reversed to asc before merge)
+      this.prisma.generalRoomMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          deletedForAll: false,
+          createdAt: { lte: params.anchorDate },
+        },
+        orderBy: { createdAt: "desc" },
+        take: half + 1,
+      }),
+      // strictly newer half
+      this.prisma.generalRoomMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          deletedForAll: false,
+          createdAt: { gt: params.anchorDate },
+        },
+        orderBy: { createdAt: "asc" },
+        take: half,
+      }),
+    ]);
+
+    return [...older.reverse(), ...newer].filter((msg) => {
+      const deletedBy = (msg.deletedBy ?? []) as string[];
+      return !deletedBy.includes(params.userId);
+    });
+  }
+
+  /**
    * Mongo `$match` for a community conversation page: not deleted-for-all, older
    * than `beforeMs`, and not deleted-for-me by this user. `deletedBy` is a Json
    * array (not a Prisma scalar list), so the per-user exclusion can't use the typed
@@ -399,6 +475,101 @@ export class GeneralRoomMessageRepository {
         return !deletedBy.includes(params.userId);
       })
       .slice(0, params.limit);
+  }
+
+  /**
+   * Catch-up query: returns messages in `roomId` with `_id > sinceId`, oldest
+   * first, up to `limit + 1` rows (caller checks `raw.length > limit` for
+   * hasMore). Uses aggregateRaw so the ObjectId `$gt` comparison is exact and
+   * the per-user `deletedBy` array is filtered at the DB level.
+   * When `sinceId` is empty the constraint is omitted (returns oldest N rows —
+   * callers that want the latest N should use findByRoomIdTimeline instead).
+   */
+  async findSinceId(params: {
+    roomId: string;
+    userId: string;
+    sinceId: string;
+    limit: number;
+  }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
+    // Note: deletedForAll is intentionally NOT filtered here so that tombstones
+    // are visible to the client. The client uses `isDeleted` to reconcile
+    // offline deletes it missed; per-user "delete for me" is still filtered via
+    // the deletedBy array below.
+    const matchStage: Record<string, unknown> = {
+      roomId: { $oid: params.roomId },
+      deletedBy: { $ne: params.userId },
+    };
+    if (params.sinceId) {
+      matchStage["_id"] = { $gt: { $oid: params.sinceId } };
+    }
+
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        { $match: matchStage },
+        { $sort: { _id: 1 } },
+        { $limit: params.limit + 1 },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+
+    const hasMore = raw.length > params.limit;
+    const ids = raw
+      .slice(0, params.limit)
+      .map((doc) => (typeof doc._id === "string" ? doc._id : doc._id?.$oid))
+      .filter((id): id is string => Boolean(id));
+
+    if (!ids.length) return { messages: [], hasMore: false };
+
+    const docs = await this.prisma.generalRoomMessage.findMany({
+      where: { id: { in: ids } },
+    });
+    const byId = new Map(docs.map((d) => [d.id, d]));
+    return {
+      messages: ids
+        .map((id) => byId.get(id))
+        .filter((d): d is GeneralRoomMessage => Boolean(d)),
+      hasMore,
+    };
+  }
+
+  /**
+   * Incremental sync: returns ALL messages (including tombstones) whose
+   * `updatedAt >= fromTs`. This covers new messages, edits, reaction changes,
+   * and deletes in a single query — designed for offline-first mobile clients
+   * doing a catch-up sync after returning from the background.
+   *
+   * Unlike `findByRoomIdTimeline`, tombstones (`deletedForAll=true`) are
+   * included so the client can reconcile deletes it missed while offline.
+   * Per-user `deletedBy` filtering is still applied.
+   *
+   * Over-fetches by 1 so the caller can detect `hasMore`. Results are sorted
+   * by `updatedAt` asc — the client stores the last item's `updatedAt` as the
+   * next `after_ts`.
+   */
+  async findUpdatedAtSince(params: {
+    roomId: string;
+    userId: string;
+    fromTs: Date;
+    limit: number;
+  }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
+    const raw = await this.prisma.generalRoomMessage.findMany({
+      where: {
+        roomId: params.roomId,
+        updatedAt: { gte: params.fromTs },
+        // deletedForAll intentionally NOT filtered — tombstones must be
+        // included so the client can reconcile deletes missed while offline.
+      },
+      orderBy: { updatedAt: "asc" },
+      take: params.limit + 1,
+    });
+
+    const hasMore = raw.length > params.limit;
+    const messages = raw.slice(0, params.limit).filter((msg) => {
+      // Per-user deletedBy filtered in memory (Prisma/Mongo limitation).
+      const deletedBy = (msg.deletedBy ?? []) as string[];
+      return !deletedBy.includes(params.userId);
+    });
+
+    return { messages, hasMore };
   }
 
   async addReport(

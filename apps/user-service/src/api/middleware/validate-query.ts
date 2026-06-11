@@ -1,3 +1,5 @@
+import { t } from "@aimess/constants";
+import { zodErrorMessage } from "@aimess/utils";
 import type { RequestHandler } from "express";
 import type { ZodSchema } from "zod";
 
@@ -6,7 +8,11 @@ export function validateQuery(schema: ZodSchema): RequestHandler {
   return (req, res, next) => {
     const parsed = schema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ success: false, errors: parsed.error.flatten() });
+      res.status(400).json({
+        success: false,
+        message:
+          zodErrorMessage(parsed.error) || t("VALIDATION_FAILED", req.locale),
+      });
       return;
     }
     // Express 5 re-parses req.query on every access, so mutating it in place is

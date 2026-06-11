@@ -138,18 +138,19 @@ export const emailLinkService = {
       code: input.code,
     });
 
-    const updated = await authRepository.linkVerifiedEmail(userId, email);
-
-    // First linked method wins: only sets EMAIL when primaryAccount is null.
-    const primaryAccount = await authRepository.setPrimaryAccountIfUnset(
+    // Atomic: links email + sets primaryAccount in one transaction so that a
+    // concurrent getAccountSummary gRPC call from user-service can never read
+    // a half-written state (email present but primaryAccount still null).
+    const result = await authRepository.linkVerifiedEmailAndSetPrimary(
       userId,
+      email,
       AuthProvider.EMAIL
     );
 
     return {
-      userId: updated.id,
-      emailVerified: updated.emailVerified,
-      primaryAccount,
+      userId: result.id,
+      emailVerified: result.emailVerified,
+      primaryAccount: result.primaryAccount,
     };
   },
 };

@@ -59,7 +59,7 @@ export function createRateLimit({
 
         res.status(429).json({
           success: false,
-          message: "Too many requests",
+          message: "Too many requests, please try again later.",
           retryAfterSec,
         });
         return;

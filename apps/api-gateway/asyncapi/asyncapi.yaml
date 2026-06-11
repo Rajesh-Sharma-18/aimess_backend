@@ -24,6 +24,59 @@ info:
     Each AsyncAPI **channel** maps to a Socket.IO **namespace**; each
     **message** maps to a Socket.IO **event** (its `name` is the wire event).
 
+    **Contract highlights.**
+    - `message:new`, `message:edited`, and forwards all emit the **same canonical
+      `ChatMessage`** (field names match REST `ChatMessage`) plus legacy V1 aliases —
+      the client uses one mapper.
+    - `contentType` is the single field name for message kind on every surface
+      (socket + REST); values are always UPPER-CASE; there is no `messageType` alias.
+    - Reactions broadcast as grouped `ChatReactionGroup[]`; presence timestamps are
+      epoch-ms integers; `message:delete` carries `conversationId` + `sequenceNumber`.
+    - Multi-device: `read_sync` clears unread across a user's own devices and
+      `pin:updated` syncs the pinned banner.
+    - Handshake query optionally carries `platform` / `clientType` (recorded in presence).
+    - **Ordering:** per-room `sequenceNumber` is the sole message-ordering key.
+      Events from different Redis channels have **no** cross-channel ordering
+      guarantee (e.g. `message:new` vs `conv:updated`) — order messages by
+      `sequenceNumber` and handle out-of-order arrivals defensively.
+    - **Acks:** every request/response event answers an `AckEnvelope`
+      (`{ success: true, message, data }` or
+      `{ success: false, error, retryable, message }`). `message` is a localized,
+      display-ready sentence (resolved from `x-lang` / `Accept-Language`). The
+      **failure** shape is identical for every event — branch on `error` +
+      `retryable`, not on the operation.
+    - **⚠️ Ack integer wart:** in **ack** payloads **only**, `sentAt` and
+      `sequenceNumber` arrive as **strings** (gRPC `int64` serialization) —
+      always `Number()`-coerce them. Broadcast events (`message:new`, …) carry
+      proper integers.
+    - **Reconnect:** Socket.IO `connectionStateRecovery` restores rooms + missed
+      emits for up to **2 min**; past that, the client re-joins rooms and runs
+      `chat:catchup` / `community:catchup`. See SOCKET_EVENTS.md
+      "Reconnection & State Recovery".
+    - **Throttling:** fire-and-forget events (`typing:*`, `presence:heartbeat`,
+      `call:ice`) carry client-side throttle expectations — see SOCKET_EVENTS.md
+      "Rate limiting & throttling".
+    - **Media:** attachments reference an `objectKey` / `url`; file bytes never
+      cross the socket — see `docs/MEDIA_UPLOAD.md`.
+    - **Client config:** Socket.IO v4 client; transports `["websocket","polling"]`
+      (WS-first, polling fallback); ONE multiplexed connection serves `/chat` +
+      `/community` + `/notify`; reconnection uses Socket.IO default exponential
+      backoff (see SOCKET_EVENTS.md §8.1).
+    - **Lifecycle:** conversations & communities are created/managed over REST
+      (gateway HTTP); the socket assumes they already exist.
+    - **Mobile / reliability:** typing-indicator expiry, offline send queue,
+      background + push fallback, `forMe`-delete reconciliation on catch-up, and
+      blocking/privacy semantics are specified in SOCKET_EVENTS.md §8; V1 scope
+      gaps (group calls, group read receipts, community `read_sync`, reaction
+      moderation, server-proxied sticker/GIF search) are listed in §8.9.
+
+    **Breaking changes (this revision).** Clean renames with **no** back-compat
+    alias — update client emitters/listeners:
+    - message-kind field `messageType` → **`contentType`** (UPPER-CASE) on every
+      socket + REST surface;
+    - call field `type` → **`callType`** (`call:initiate`, `call:incoming`);
+    - notification event `notification:forwarded` → **`notification:new`**.
+
     Source of truth: `apps/api-gateway/src/sockets/` and `docs/SOCKET_EVENTS.md`.
   contact:
     name: AIMess Backend
@@ -34,13 +87,15 @@ info:
       description: Many-member community chat
     - name: notify
       description: In-app notification feed + unread badge
+    - name: multi-device
+      description: "Own-device sync: read_sync (unread high-water mark) + presence"
 
 defaultContentType: application/json
 
 servers:
   local:
-    host: localhost:8000
-    protocol: ws
+    host: mrpg6wbd-3000.inc1.devtunnels.ms
+    protocol: wss
     pathname: /socket.io/
     description: Local development gateway.
     security:
@@ -82,6 +137,9 @@ channels:
       presenceHeartbeat: { $ref: "#/components/messages/PresenceHeartbeat" }
       presenceSubscribe: { $ref: "#/components/messages/PresenceSubscribe" }
       presenceUnsubscribe: { $ref: "#/components/messages/PresenceUnsubscribe" }
+      presenceUnsubscribeAll:
+        { $ref: "#/components/messages/PresenceUnsubscribeAll" }
+      presenceList: { $ref: "#/components/messages/PresenceList" }
       callInitiate: { $ref: "#/components/messages/CallInitiate" }
       callAnswer: { $ref: "#/components/messages/CallAnswer" }
       callDecline: { $ref: "#/components/messages/CallDecline" }
@@ -98,6 +156,8 @@ channels:
         { $ref: "#/components/messages/MessageDeliveredReceipt" }
       messageReaction: { $ref: "#/components/messages/MessageReaction" }
       messageDelete: { $ref: "#/components/messages/MessageDelete" }
+      readSync: { $ref: "#/components/messages/ReadSync" }
+      pinUpdated: { $ref: "#/components/messages/PinUpdated" }
       typingStartBroadcast:
         { $ref: "#/components/messages/TypingStartBroadcast" }
       typingStopBroadcast: { $ref: "#/components/messages/TypingStopBroadcast" }
@@ -114,11 +174,9 @@ channels:
     title: /community namespace
     description: |
       Many-member community chat. Served by chat-service's CommunityService.
-      Sends publish `community:message:new` to Redis channel
-      `community:<communityId>`, re-emitted to the `community:<communityId>` room.
-      Note: community message *deletes* fan out as `message:delete` on
-      `conv:<roomId>` on the /chat namespace, and the `community:updated` list
-      bump is delivered on /chat (see those messages).
+      All events publish to Redis channel `community:<communityId>` and are
+      re-emitted to the `community:<communityId>` Socket.IO room.
+      Supported events: send, fetch, react, edit, delete, pin, unpin, catchup.
     x-socketio-namespace: /community
     messages:
       communityJoin: { $ref: "#/components/messages/CommunityJoin" }
@@ -130,6 +188,28 @@ channels:
       communityMessageNew: { $ref: "#/components/messages/CommunityMessageNew" }
       communityMemberJoined:
         { $ref: "#/components/messages/CommunityMemberJoined" }
+      communityCatchup: { $ref: "#/components/messages/CommunityCatchup" }
+      communityCatchupResult:
+        { $ref: "#/components/messages/CommunityCatchupResult" }
+      communityMessageReact:
+        { $ref: "#/components/messages/CommunityMessageReact" }
+      communityMessageReaction:
+        { $ref: "#/components/messages/CommunityMessageReaction" }
+      communityMessageEdit:
+        { $ref: "#/components/messages/CommunityMessageEdit" }
+      communityMessageEdited:
+        { $ref: "#/components/messages/CommunityMessageEdited" }
+      communityMessageDelete:
+        { $ref: "#/components/messages/CommunityMessageDelete" }
+      communityMessageDeleted:
+        { $ref: "#/components/messages/CommunityMessageDeleted" }
+      communityMessagePin: { $ref: "#/components/messages/CommunityMessagePin" }
+      communityMessagePinned:
+        { $ref: "#/components/messages/CommunityMessagePinned" }
+      communityMessageUnpin:
+        { $ref: "#/components/messages/CommunityMessageUnpin" }
+      communityMessageUnpinned:
+        { $ref: "#/components/messages/CommunityMessageUnpinned" }
 
   # -------------------------------------------------------------- /notify
   notify:
@@ -145,6 +225,8 @@ channels:
       notificationsMarkRead:
         { $ref: "#/components/messages/NotificationsMarkRead" }
       notificationCount: { $ref: "#/components/messages/NotificationCount" }
+      notificationCountUpdate:
+        { $ref: "#/components/messages/NotificationCountUpdate" }
       notificationForwarded:
         { $ref: "#/components/messages/NotificationForwarded" }
 
@@ -153,17 +235,31 @@ operations:
   chat.convJoin:
     action: send
     channel: { $ref: "#/channels/chat" }
-    summary: "conv:join — join conv:<id> (fire-and-forget, no ack)"
+    summary: "conv:join — join conv:<id>"
+    description: Ack `data` on success is empty — the ack is a localized join confirmation (`message`).
     messages: [{ $ref: "#/channels/chat/messages/convJoin" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
   chat.convLeave:
     action: send
     channel: { $ref: "#/channels/chat" }
-    summary: "conv:leave — leave conv:<id> (fire-and-forget)"
+    summary: "conv:leave — leave conv:<id>"
+    description: Ack `data` on success is empty — the ack is a localized leave confirmation (`message`).
     messages: [{ $ref: "#/channels/chat/messages/convLeave" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
   chat.messageSend:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "message:send — create a message (idempotent on clientMessageId)"
+    description: |
+      Ack `data` on success — schema **`MessageSendResult`**:
+      ```json
+      { "messageId": "msg_abc123", "conversationId": "conv_xyz", "sequenceNumber": 143, "sentAt": 1749465231234, "alreadySent": false }
+      ```
+      `alreadySent: true` means the same `clientMessageId` was already saved — safe to retry.
     messages: [{ $ref: "#/channels/chat/messages/messageSend" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -172,6 +268,7 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "message:read — mark read up to a message"
+    description: Ack `data` on success is `{}`. Side-effect — broadcasts `message:read` receipt to the conversation room.
     messages: [{ $ref: "#/channels/chat/messages/messageRead" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -180,6 +277,7 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "message:delivered — delivered receipt (private only)"
+    description: Ack `data` on success is `{}`. Side-effect — broadcasts `message:delivered` receipt to the sender.
     messages: [{ $ref: "#/channels/chat/messages/messageDelivered" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -188,6 +286,11 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "message:react — toggle/add a reaction"
+    description: |
+      Ack `data` on success is `{}`. Side-effect — broadcasts `message:reaction` to all room members
+      with the full updated grouped reactions list.
+
+      > **Rate limit:** ≤ 10 per minute per conversation. Exceeding this returns `RATE_LIMITED` (retryable — back off before retrying).
     messages: [{ $ref: "#/channels/chat/messages/messageReact" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -196,6 +299,11 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "message:reactions:get — list who reacted"
+    description: |
+      Ack `data` on success:
+      ```json
+      { "reactions": [{ "emoji": "👍", "count": 2, "users": [{ "userId": "user_abc", "displayName": "Alice", "avatar": "" }] }] }
+      ```
     messages: [{ $ref: "#/channels/chat/messages/messageReactionsGet" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -204,6 +312,9 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "message:edit — edit own message"
+    description: |
+      Ack `data` on success is `{}`. Side-effect — broadcasts `message:edited` to all room members
+      with the full updated message shape (same as `message:new`).
     messages: [{ $ref: "#/channels/chat/messages/messageEdit" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -212,6 +323,11 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "message:forward — forward into another conversation"
+    description: |
+      Ack `data` on success:
+      ```json
+      { "messageId": "msg_fwd_abc", "conversationId": "conv_target", "sentAt": 1749465231234 }
+      ```
     messages: [{ $ref: "#/channels/chat/messages/messageForward" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -220,6 +336,16 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "messages:fetch — cursor-paged history"
+    description: |
+      Ack `data` on success:
+      ```json
+      {
+        "messages": [ /* array of MessageNewPayload shape */ ],
+        "nextCursor": "2025-06-09T10:00:00.000Z",
+        "hasMore": true
+      }
+      ```
+      Pass `nextCursor` back as `cursor` in subsequent calls to page backwards. `hasMore: false` = beginning of history.
     messages: [{ $ref: "#/channels/chat/messages/messagesFetch" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -249,6 +375,10 @@ operations:
     action: send
     channel: { $ref: "#/channels/chat" }
     summary: "presence:heartbeat — keep presence alive (fire-and-forget)"
+    description: |
+      The server renews the device-presence TTL on each heartbeat; the TTL is **10 minutes**.
+      Stop sending heartbeats and the user will appear offline to peers after ~10 minutes.
+      Recommended client interval: every 30–60 s while the app is in the foreground.
     messages: [{ $ref: "#/channels/chat/messages/presenceHeartbeat" }]
   chat.presenceSubscribe:
     action: send
@@ -263,6 +393,33 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "presence:unsubscribe — stop watching peers"
     messages: [{ $ref: "#/channels/chat/messages/presenceUnsubscribe" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.presenceUnsubscribeAll:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "presence:unsubscribe_all — clear ALL peer subscriptions at once"
+    description: |
+      Leaves every `user:<peerId>` room except the socket's own identity room
+      (`user:<userId>`). Ack `data` is `{ unsubscribedCount: number }`.
+      Useful when navigating away from a screen that watched many peers — no
+      need to track and enumerate every subscribed peerId individually.
+      Payload is ignored (send `{}` or omit).
+    messages: [{ $ref: "#/channels/chat/messages/presenceUnsubscribeAll" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.presenceList:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "presence:list — query currently-watched peerIds"
+    description: |
+      Returns `{ peerIds: string[] }` — the list of peerIds this socket is
+      currently subscribed to (i.e. the `user:*` rooms beyond the socket's
+      own identity room). Useful for debugging or for restoring subscriptions
+      across screens. Payload is ignored.
+    messages: [{ $ref: "#/channels/chat/messages/presenceList" }]
     reply:
       channel: { $ref: "#/channels/chat" }
       messages: [{ $ref: "#/components/messages/Ack" }]
@@ -333,7 +490,7 @@ operations:
   chat.onMessageRead:
     action: receive
     channel: { $ref: "#/channels/chat" }
-    summary: "message:read — read receipt"
+    summary: "message:read — read receipt (private)"
     messages: [{ $ref: "#/channels/chat/messages/messageReadReceipt" }]
   chat.onMessageDelivered:
     action: receive
@@ -350,6 +507,16 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "message:delete — message deleted (also used for community deletes)"
     messages: [{ $ref: "#/channels/chat/messages/messageDelete" }]
+  chat.onReadSync:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "read_sync — §5.5 multi-device read high-water mark (own devices)"
+    messages: [{ $ref: "#/channels/chat/messages/readSync" }]
+  chat.onPinUpdated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "pin:updated — §2.5 pinned banner change"
+    messages: [{ $ref: "#/channels/chat/messages/pinUpdated" }]
   chat.onTypingStart:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -395,17 +562,31 @@ operations:
   community.join:
     action: send
     channel: { $ref: "#/channels/community" }
-    summary: "community:join — join community:<id> (fire-and-forget)"
+    summary: "community:join — join community:<id>"
+    description: Ack `data` on success is empty — the ack is a localized join confirmation (`message`).
     messages: [{ $ref: "#/channels/community/messages/communityJoin" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
   community.leave:
     action: send
     channel: { $ref: "#/channels/community" }
-    summary: "community:leave (fire-and-forget)"
+    summary: "community:leave — leave community:<id>"
+    description: Ack `data` on success is empty — the ack is a localized leave confirmation (`message`).
     messages: [{ $ref: "#/channels/community/messages/communityLeave" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
   community.messageSend:
     action: send
     channel: { $ref: "#/channels/community" }
     summary: "community:message:send — post a message"
+    description: |
+      Ack `data` on success — schema **`CommunityMessageSendResult`**:
+      ```json
+      { "messageId": "683abc123def456789012345", "roomId": "6843e1a2b5c3d4e5f6a7b8c9", "sentAt": 1749465231234 }
+      ```
+      Side-effect — broadcasts `community:message:new` to all members in `community:<communityId>` room.
     messages: [{ $ref: "#/channels/community/messages/communityMessageSend" }]
     reply:
       channel: { $ref: "#/channels/community" }
@@ -414,6 +595,16 @@ operations:
     action: send
     channel: { $ref: "#/channels/community" }
     summary: "community:messages:fetch — cursor-paged history"
+    description: |
+      Ack `data` on success:
+      ```json
+      {
+        "messages": [ /* array of CommunityMessageDto */ ],
+        "nextCursor": "2025-06-09T10:00:00.000Z",
+        "hasMore": true
+      }
+      ```
+      Pass `nextCursor` back as `cursor` in subsequent calls to page backwards.
     messages: [{ $ref: "#/channels/community/messages/communityMessagesFetch" }]
     reply:
       channel: { $ref: "#/channels/community" }
@@ -423,19 +614,182 @@ operations:
   community.onMessageNew:
     action: receive
     channel: { $ref: "#/channels/community" }
-    summary: "community:message:new"
+    summary: "community:message:new — new community message (canonical sender + content)"
     messages: [{ $ref: "#/channels/community/messages/communityMessageNew" }]
   community.onMemberJoined:
     action: receive
     channel: { $ref: "#/channels/community" }
     summary: "community:member:joined"
     messages: [{ $ref: "#/channels/community/messages/communityMemberJoined" }]
+  community.catchup:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:catchup — reconnect gap-fill; fetch missed messages per room since a known cursor"
+    description: |
+      Client emits on reconnect with up to 20 rooms and their last known cursor.
+      Two cursor modes (mutually exclusive per room; `sinceTs` takes precedence):
+
+      **sinceId mode** — pass `sinceId` (last known message ObjectId). Returns new messages in
+      insertion order (tombstones included). Store `lastId` as the next `sinceId`.
+
+      **sinceTs mode** — pass `sinceTs` (epoch-ms of last known `updatedAt`). Returns ALL
+      mutations (new, edited, reacted, deleted tombstones) since that timestamp. Use after
+      returning from background for a full mutation sweep. Store `nextTs` as the next `sinceTs`.
+
+      Server emits one `community:catchup:result` per room, then acks the full batch.
+      Every event includes `syncEventType` and `reactions` regardless of mode.
+    messages: [{ $ref: "#/channels/community/messages/communityCatchup" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.onCatchupResult:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:catchup:result — gap-fill response for one room (one per requested room)"
+    description: |
+      Each event includes `syncEventType` (`new|edited|deleted|reacted`) and `reactions` (current state).
+      In sinceId mode `nextTs` is 0; in sinceTs mode `lastId` is the last message id (may be used as fallback sinceId).
+    messages: [{ $ref: "#/channels/community/messages/communityCatchupResult" }]
+  community.messageReact:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:react — toggle a reaction (add if absent, remove if present)"
+    description: |
+      Ack `data` on success:
+      ```json
+      {
+        "messageId": "683abc123def456789012345",
+        "communityId": "6843e1a2b5c3d4e5f6a7b8c9",
+        "reactions": [
+          { "emoji": "👍", "count": 3, "users": [{ "userId": "user_abc123", "displayName": "Alice", "avatar": "https://cdn.aimess.com/avatars/alice.jpg" }] }
+        ]
+      }
+      ```
+      Side-effect — broadcasts `community:message:reaction` to all members of `community:<communityId>`.
+      Sending the same emoji again removes the reaction (toggle).
+
+      > **Rate limit:** ≤ 10 per minute per community room. Exceeding this returns `RATE_LIMITED` (retryable — back off before retrying).
+    messages: [{ $ref: "#/channels/community/messages/communityMessageReact" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.onMessageReaction:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:reaction — full reaction state broadcast after any react/unreact"
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMessageReaction" }]
+  community.messageEdit:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:edit — edit the text of an own community message"
+    description: |
+      Only the original sender may edit. Text-only messages only. Edit window enforced server-side.
+      Ack `data` on success:
+      ```json
+      { "messageId": "...", "communityId": "...", "roomId": "...", "editedAt": 1749465999000, "message": "..." }
+      ```
+      Side-effect — broadcasts `community:message:edited` to all members of `community:<communityId>`.
+    messages: [{ $ref: "#/channels/community/messages/communityMessageEdit" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.onMessageEdited:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:edited — edit broadcast to all room members"
+    messages: [{ $ref: "#/channels/community/messages/communityMessageEdited" }]
+  community.messageDelete:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:delete — delete a community message"
+    description: |
+      `type: forEveryone` — sender, moderator, or admin only. Broadcasts `community:message:deleted` to all members.
+      `type: forMe` — any participant. Message hidden only for the caller; no broadcast emitted.
+      Ack `data` on success:
+      ```json
+      { "messageId": "...", "communityId": "...", "roomId": "...", "deleteType": "forEveryone" }
+      ```
+    messages: [{ $ref: "#/channels/community/messages/communityMessageDelete" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.onMessageDeleted:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:deleted — delete broadcast (forEveryone only) to all room members"
+    description: |
+      Only emitted for `forEveryone` deletes. Clients replace the message body with a tombstone placeholder ("This message was deleted").
+      NOT emitted for `forMe` deletes.
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMessageDeleted" }]
+  community.messagePin:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:pin — pin a message (moderator / admin only)"
+    description: |
+      Moderator or admin role required. Enforces PIN_LIMIT_PER_ROOM (default 50).
+      Idempotent if the message is already pinned.
+      Ack `data` on success:
+      ```json
+      { "pinnedIds": ["683abc..."], "pinnedCount": 1, "pinnedAt": 1749466100000 }
+      ```
+      Side-effect — broadcasts `community:message:pinned` to all members.
+    messages: [{ $ref: "#/channels/community/messages/communityMessagePin" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.onMessagePinned:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:pinned — pin broadcast to all room members"
+    description: |
+      Clients should display / update the pinned-message banner with `pinnedIds`.
+      `pinnedIds` is the COMPLETE current list — replace, do not merge.
+    messages: [{ $ref: "#/channels/community/messages/communityMessagePinned" }]
+  community.messageUnpin:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:unpin — unpin a message (moderator / admin only)"
+    description: |
+      Moderator or admin role required. Throws 404 if the message is not currently pinned.
+      Ack `data` on success:
+      ```json
+      { "pinnedIds": [], "pinnedCount": 0 }
+      ```
+      Side-effect — broadcasts `community:message:unpinned` to all members.
+    messages: [{ $ref: "#/channels/community/messages/communityMessageUnpin" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.onMessageUnpinned:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:unpinned — unpin broadcast to all room members"
+    description: |
+      Clients should remove the message from the pinned banner.
+      `pinnedIds` is the COMPLETE remaining list after this unpin — replace, do not merge.
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMessageUnpinned" }]
 
   # ================================================= /notify client -> server
   notify.fetch:
     action: send
     channel: { $ref: "#/channels/notify" }
     summary: "notifications:fetch — cursor-paged feed"
+    description: |
+      Ack `data` on success:
+      ```json
+      {
+        "notifications": [
+          { "id": "683abc...", "type": "MESSAGE", "title": "Alice", "body": "Hey!", "isRead": false, "createdAt": 1749465231234 }
+        ],
+        "nextCursor": "683abc100def000000000099",
+        "hasMore": false,
+        "unreadCount": 3
+      }
+      ```
+      Pass `nextCursor` back as `cursor` for subsequent pages.
     messages: [{ $ref: "#/channels/notify/messages/notificationsFetch" }]
     reply:
       channel: { $ref: "#/channels/notify" }
@@ -444,6 +798,12 @@ operations:
     action: send
     channel: { $ref: "#/channels/notify" }
     summary: "notifications:mark_read"
+    description: |
+      Ack `data` on success:
+      ```json
+      { "markedCount": 2 }
+      ```
+      Passing an empty `notificationIds: []` marks ALL unread notifications as read.
     messages: [{ $ref: "#/channels/notify/messages/notificationsMarkRead" }]
     reply:
       channel: { $ref: "#/channels/notify" }
@@ -455,24 +815,51 @@ operations:
     channel: { $ref: "#/channels/notify" }
     summary: "notification:count — unread count (emitted once on connect)"
     messages: [{ $ref: "#/channels/notify/messages/notificationCount" }]
+  notify.onCountUpdate:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "notification:count_update — real-time badge count refresh"
+    description: |
+      Emitted to `user:<userId>` (all connected devices) whenever the unread
+      count changes:
+      - **On `notifications:mark_read`:** gateway fetches the new count and
+        pushes it immediately so all devices sync their badge without polling.
+      - **On new notifications:** notifications-service publishes
+        `{ event: "notification:count_update", data: { count } }` to the
+        `notify:<userId>` Redis channel, which the gateway forwards verbatim.
+
+      Client rule: replace the badge value with `count` on receipt.
+      Aggregate only — no per-type breakdown in V1.
+    messages: [{ $ref: "#/channels/notify/messages/notificationCountUpdate" }]
   notify.onForwarded:
     action: receive
     channel: { $ref: "#/channels/notify" }
-    summary: "forwarded notification events (verbatim from notify:<userId>)"
+    summary: "notification:new — in-app notification (+ any event forwarded verbatim from notify:<userId>)"
     messages: [{ $ref: "#/channels/notify/messages/notificationForwarded" }]
 
 components:
   securitySchemes:
     accessToken:
-      type: httpApiKey
-      in: query
-      name: token
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
       description: |
+        **Pass the JWT in the handshake `auth` object (preferred) or the
+        `Authorization: Bearer` header — NEVER in the URL query string**, which
+        leaks into access logs, proxies, and browser history.
+
         JWT **access token** supplied on the Socket.IO handshake via
         `socket.handshake.auth.token` (preferred) or the
-        `Authorization: Bearer <token>` header. No anonymous sockets. On success
-        the socket carries `{ userId, sessionId }` derived from the token —
-        clients never send their own `userId`.
+        `Authorization: Bearer <token>` header. No anonymous sockets.
+
+        **Handshake query parameters (optional, `/chat` — recorded in presence):**
+        | Param        | Values                        | Example    |
+        |--------------|-------------------------------|------------|
+        | `platform`   | `ios` \| `android` \| `web`   | `ios`      |
+        | `clientType` | `mobile` \| `web` \| `desktop`| `mobile`   |
+
+        On success the socket carries `{ userId, sessionId }` derived from the
+        token — clients must never send their own `userId`.
 
   messages:
     # -------- shared ack envelope --------
@@ -481,210 +868,1324 @@ components:
       title: Acknowledgement
       summary: Standard ack callback envelope for request/response events.
       payload: { $ref: "#/components/schemas/AckEnvelope" }
+      examples:
+        - name: Success (with data) — e.g. message:send
+          payload:
+            success: true
+            message: "Message sent successfully"
+            data: {}
+        - name: Success (no data) — e.g. conv:join
+          payload:
+            success: true
+            message: "Joined the conversation successfully"
+        - name: Failure — bad payload (do not retry as-is)
+          payload:
+            success: false
+            error: INVALID_PAYLOAD
+            retryable: false
+            message: "The request data is invalid"
+        - name: Failure — transient service error (retry with backoff)
+          payload:
+            success: false
+            error: SERVICE_ERROR
+            retryable: true
+            message: "Something went wrong, please try again"
+        - name: Failure — rate limited (back off, then retry)
+          payload:
+            success: false
+            error: RATE_LIMITED
+            retryable: true
+            retryAfter: 1749465261234
+            message: "You are doing that too fast, please slow down"
+        - name: Failure — not allowed (not a member / blocked / role)
+          payload:
+            success: false
+            error: FORBIDDEN
+            retryable: false
+            message: "You are not allowed to perform this action"
+        - name: Failure — target not found
+          payload:
+            success: false
+            error: NOT_FOUND
+            retryable: false
+            message: "The requested resource was not found"
 
     # -------- /chat client -> server --------
     ConvJoin:
       name: "conv:join"
       title: "conv:join"
       payload: { $ref: "#/components/schemas/ConversationRef" }
+      examples:
+        - name: Join a conversation room
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
     ConvLeave:
       name: "conv:leave"
       title: "conv:leave"
       payload: { $ref: "#/components/schemas/ConversationRef" }
+      examples:
+        - name: Leave a conversation room
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
     MessageSend:
       name: "message:send"
       title: "message:send"
-      summary: Create a message. clientMessageId is the idempotency key.
+      summary: Create a message. clientMessageId is the idempotency key — omit to let the server auto-generate one.
       payload: { $ref: "#/components/schemas/MessageSendPayload" }
+      examples:
+        - name: Private text message
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440001"
+            contentType: TEXT
+            contentText: "Hey! How are you?"
+            conversationType: private
+            receiverId: "user_abc123"
+            clientTs: 1749465231000
+        - name: Group image message
+          payload:
+            conversationId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440002"
+            contentType: IMAGE
+            files:
+              - objectKey: "media/photos/img_001.jpg"
+                name: "photo.jpg"
+                mime: "image/jpeg"
+                width: 1080
+                height: 720
+                blurhash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj"
+            conversationType: group
+        - name: Reply (quoted) message
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440003"
+            contentType: TEXT
+            contentText: "Totally agree!"
+            conversationType: private
+            receiverId: "user_abc123"
+            repliedToId: "msg_9876543210abcdef"
     MessageReadRequest:
       name: "message:read"
       title: "message:read (request)"
       payload: { $ref: "#/components/schemas/ReadUpTo" }
+      examples:
+        - name: Mark read up to a message
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            upToMessageId: "msg_9876543210abcdef"
     MessageDeliveredRequest:
       name: "message:delivered"
       title: "message:delivered (request)"
       payload: { $ref: "#/components/schemas/ReadUpTo" }
+      examples:
+        - name: Confirm delivery
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            upToMessageId: "msg_9876543210abcdef"
     MessageReact:
       name: "message:react"
       title: "message:react"
       payload: { $ref: "#/components/schemas/MessageReactPayload" }
+      examples:
+        - name: Add a reaction
+          payload:
+            messageId: "msg_9876543210abcdef"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            emoji: "👍"
+            conversationType: private
+        - name: Toggle off an existing reaction (same emoji = remove)
+          payload:
+            messageId: "msg_9876543210abcdef"
+            conversationId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            emoji: "❤️"
+            conversationType: group
     MessageReactionsGet:
       name: "message:reactions:get"
       title: "message:reactions:get"
       payload: { $ref: "#/components/schemas/MessageReactionsGetPayload" }
+      examples:
+        - name: Get all reactions for a message
+          payload:
+            messageId: "msg_9876543210abcdef"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationType: group
     MessageEdit:
       name: "message:edit"
       title: "message:edit"
       payload: { $ref: "#/components/schemas/MessageEditPayload" }
+      examples:
+        - name: Edit a text message
+          payload:
+            messageId: "msg_9876543210abcdef"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            contentText: "Corrected message text"
+            conversationType: private
     MessageForward:
       name: "message:forward"
       title: "message:forward"
       payload: { $ref: "#/components/schemas/MessageForwardPayload" }
+      examples:
+        - name: Forward to a private conversation
+          payload:
+            messageId: "msg_9876543210abcdef"
+            targetConversationId: "6843e1a2b5c3d4e5f6a7b8ca"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440004"
+            conversationType: private
+            receiverId: "user_def456"
     MessagesFetch:
       name: "messages:fetch"
       title: "messages:fetch"
       payload: { $ref: "#/components/schemas/MessagesFetchPayload" }
+      examples:
+        - name: Fetch latest messages (first load)
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationType: private
+            limit: 30
+        - name: Fetch next page (scroll up)
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationType: group
+            cursor: "2025-06-09T10:30:00.000Z"
+            limit: 30
     ChatCatchup:
       name: "chat:catchup"
       title: "chat:catchup"
       payload: { $ref: "#/components/schemas/ChatCatchupPayload" }
+      examples:
+        - name: Reconnect gap-fill for two rooms
+          payload:
+            rooms:
+              - roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+                sinceSeq: 142
+                conversationType: private
+                limit: 100
+              - roomId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+                sinceSeq: 87
+                conversationType: group
+                limit: 100
     TypingStartRequest:
       name: "typing:start"
       title: "typing:start (request)"
+      summary: |
+        Fire-and-forget. Re-emit every ~3–5 s while still typing; send one
+        typing:stop when typing ends.
+        Server-side auto-expiry: the gateway keeps a per-socket 6 s countdown.
+        If typing:stop is never received (crash / network drop), the server
+        broadcasts typing:stop automatically after 6 s. On disconnect all
+        pending timers are flushed and typing:stop is broadcast for every
+        active conversation. The RECEIVER should also auto-clear after ~6 s
+        without a fresh typing:start (belt-and-suspenders).
       payload: { $ref: "#/components/schemas/ConversationRef" }
+      examples:
+        - name: Start typing indicator
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
     TypingStopRequest:
       name: "typing:stop"
       title: "typing:stop (request)"
       payload: { $ref: "#/components/schemas/ConversationRef" }
+      examples:
+        - name: Stop typing indicator
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
     PresenceHeartbeat:
       name: "presence:heartbeat"
       title: "presence:heartbeat"
       payload: { $ref: "#/components/schemas/PresenceHeartbeatPayload" }
+      examples:
+        - name: App in foreground
+          payload:
+            appState: FOREGROUND
+        - name: App backgrounded
+          payload:
+            appState: BACKGROUND
     PresenceSubscribe:
       name: "presence:subscribe"
       title: "presence:subscribe"
       payload: { $ref: "#/components/schemas/PeerIds" }
+      examples:
+        - name: Watch two peers
+          payload:
+            peerIds:
+              - "user_abc123"
+              - "user_def456"
     PresenceUnsubscribe:
       name: "presence:unsubscribe"
       title: "presence:unsubscribe"
       payload: { $ref: "#/components/schemas/PeerIds" }
+      examples:
+        - name: Stop watching a peer
+          payload:
+            peerIds:
+              - "user_abc123"
+    PresenceUnsubscribeAll:
+      name: "presence:unsubscribe_all"
+      title: "presence:unsubscribe_all"
+      summary: "Clear all peer presence subscriptions in one call"
+      description: |
+        Payload is ignored — send `{}`. Ack `data` is
+        `{ unsubscribedCount: number }`. The socket's own `user:<userId>`
+        identity room is NOT left.
+      payload:
+        type: object
+        description: "No fields required — send an empty object."
+      examples:
+        - name: Clear all subscriptions
+          payload: {}
+    PresenceList:
+      name: "presence:list"
+      title: "presence:list"
+      summary: "Query currently-watched peer IDs"
+      description: |
+        Payload is ignored — send `{}`. Ack `data` is
+        `{ peerIds: string[] }` — IDs of all peers currently subscribed to
+        via `presence:subscribe`. The socket's own userId is never included.
+      payload:
+        type: object
+        description: "No fields required — send an empty object."
+      examples:
+        - name: List subscriptions
+          payload: {}
     CallInitiate:
       name: "call:initiate"
       title: "call:initiate"
       payload: { $ref: "#/components/schemas/CallInitiatePayload" }
+      examples:
+        - name: Start an audio call
+          payload:
+            calleeId: "user_abc123"
+            callType: AUDIO
+            privateRoomId: "6843e1a2b5c3d4e5f6a7b8c9"
+        - name: Start a video call
+          payload:
+            calleeId: "user_abc123"
+            callType: VIDEO
+            privateRoomId: "6843e1a2b5c3d4e5f6a7b8c9"
     CallAnswer:
       name: "call:answer"
       title: "call:answer"
       payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Accept an incoming call
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
     CallDecline:
       name: "call:decline"
       title: "call:decline"
       payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Decline an incoming call
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
     CallEnd:
       name: "call:end"
       title: "call:end"
       payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Hang up
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
     CallIceSend:
       name: "call:ice"
       title: "call:ice (send)"
       payload: { $ref: "#/components/schemas/CallIceSendPayload" }
+      examples:
+        - name: Relay an ICE candidate
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            candidate:
+              candidate: "candidate:1 1 UDP 2013266431 192.168.1.100 54321 typ host"
+              sdpMid: "0"
+              sdpMLineIndex: 0
 
     # -------- /chat server -> client --------
     MessageNew:
       name: "message:new"
       title: "message:new"
       payload: { $ref: "#/components/schemas/MessageNewPayload" }
+      examples:
+        - name: Private text message received
+          payload:
+            id: "msg_9876543210abcdef"
+            messageId: "msg_9876543210abcdef"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationType: PRIVATE
+            senderId: "user_abc123"
+            senderName: "Alice"
+            senderAvatar: "https://cdn.aimess.com/avatars/alice.jpg"
+            senderRole: ""
+            receiverId: "user_def456"
+            contentType: TEXT
+            content:
+              text: "Hey! How are you?"
+            contentText: "Hey! How are you?"
+            contentJson: ""
+            reactions: []
+            isDeleted: false
+            deletedType: ""
+            editedAt: 0
+            clientTs: 1749465231000
+            serverTs: 1749465231234
+            sentAt: 1749465231234
+            sequenceNumber: 143
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440001"
+        - name: Group image message received
+          payload:
+            id: "msg_img_001"
+            messageId: "msg_img_001"
+            roomId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationType: GROUP
+            senderId: "user_def456"
+            senderName: "Bob"
+            senderAvatar: ""
+            senderRole: MEMBER
+            contentType: IMAGE
+            content:
+              files:
+                - objectKey: "media/photos/img_001.jpg"
+                  mime: "image/jpeg"
+                  width: 1080
+                  height: 720
+                  blurhash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj"
+            reactions: []
+            isDeleted: false
+            deletedType: ""
+            editedAt: 0
+            serverTs: 1749465400000
+            sentAt: 1749465400000
+            sequenceNumber: 88
+        - name: Group system message (member added)
+          payload:
+            id: "msg_sys_001"
+            messageId: "msg_sys_001"
+            roomId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            conversationType: GROUP
+            senderId: ""
+            senderName: ""
+            senderRole: ""
+            contentType: SYSTEM
+            content: {}
+            reactions: []
+            isDeleted: false
+            deletedType: ""
+            editedAt: 0
+            serverTs: 1749465300000
+            sentAt: 1749465300000
+            sequenceNumber: 89
+            systemEvent: MEMBER_ADDED
+            systemData:
+              actorId: "user_abc123"
+              actorName: "Alice"
+              targetUserId: "user_ghi789"
+              targetName: "Bob"
     MessageEdited:
       name: "message:edited"
       title: "message:edited"
       payload: { $ref: "#/components/schemas/MessageEditedPayload" }
+      examples:
+        - name: Edited message broadcast (same shape as message:new)
+          payload:
+            id: "msg_9876543210abcdef"
+            messageId: "msg_9876543210abcdef"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationType: PRIVATE
+            senderId: "user_abc123"
+            senderName: "Alice"
+            senderAvatar: "https://cdn.aimess.com/avatars/alice.jpg"
+            contentType: TEXT
+            content:
+              text: "Corrected message text"
+            contentText: "Corrected message text"
+            reactions: []
+            isDeleted: false
+            deletedType: ""
+            editedAt: 1749465400000
+            serverTs: 1749465231234
+            sentAt: 1749465231234
+            sequenceNumber: 143
     ConvUpdated:
       name: "conv:updated"
       title: "conv:updated"
       payload: { $ref: "#/components/schemas/ConvUpdatedPayload" }
+      examples:
+        - name: Private conversation bumped to top (unread)
+          payload:
+            type: PRIVATE
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            lastMessageId: "msg_9876543210abcdef"
+            lastMessage:
+              contentType: TEXT
+              text: "Hey! How are you?"
+            lastMessageAt: 1749465231234
+            senderId: "user_abc123"
+            unread: true
+        - name: Sender's own copy (unread=false)
+          payload:
+            type: PRIVATE
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            lastMessageId: "msg_9876543210abcdef"
+            lastMessage:
+              contentType: TEXT
+              text: "Hey! How are you?"
+            lastMessageAt: 1749465231234
+            senderId: "user_abc123"
+            unread: false
     CommunityUpdated:
       name: "community:updated"
       title: "community:updated (on /chat)"
       payload: { $ref: "#/components/schemas/CommunityUpdatedPayload" }
+      examples:
+        - name: Community bumped to top with new message
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            lastMessageId: "683abc123def456789012345"
+            lastMessage:
+              contentType: TEXT
+              text: "New announcement! 📢"
+            lastMessageAt: 1749465500000
+            senderId: "user_admin_001"
+            unread: true
     ChatCatchupResult:
       name: "chat:catchup:result"
       title: "chat:catchup:result"
       payload: { $ref: "#/components/schemas/ChatCatchupResultPayload" }
+      examples:
+        - name: Two missed messages returned
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            events:
+              - messageId: "msg_9876543210abcde1"
+                conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+                senderId: "user_abc123"
+                contentType: TEXT
+                contentText: "Did you see the game?"
+                contentJson: ""
+                sentAt: 1749465100000
+                sequenceNumber: 143
+                isDeleted: false
+                deletedType: ""
+                editedAt: 0
+                systemEvent: ""
+                systemData: ""
+              - messageId: "msg_9876543210abcde2"
+                conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+                senderId: "user_def456"
+                contentType: TEXT
+                contentText: "Yes! Amazing match!"
+                contentJson: ""
+                sentAt: 1749465120000
+                sequenceNumber: 144
+                isDeleted: false
+                deletedType: ""
+                editedAt: 0
+                systemEvent: ""
+                systemData: ""
+            hasMore: false
+            lastSeq: 144
+        - name: No missed messages
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            events: []
+            hasMore: false
+            lastSeq: 142
     MessageReadReceipt:
       name: "message:read"
       title: "message:read (receipt)"
       payload: { $ref: "#/components/schemas/MessageReadReceiptPayload" }
+      examples:
+        - name: Peer read your message
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            readerId: "user_abc123"
+            upToMessageId: "msg_9876543210abcdef"
     MessageDeliveredReceipt:
       name: "message:delivered"
       title: "message:delivered (receipt)"
       payload: { $ref: "#/components/schemas/MessageDeliveredReceiptPayload" }
+      examples:
+        - name: Message delivered to recipient's device
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            recipientId: "user_abc123"
+            upToMessageId: "msg_9876543210abcdef"
+            messageIds:
+              - "msg_9876543210abcdef"
     MessageReaction:
       name: "message:reaction"
       title: "message:reaction"
       payload: { $ref: "#/components/schemas/MessageReactionPayload" }
+      examples:
+        - name: Updated reaction set after a new reaction
+          payload:
+            messageId: "msg_9876543210abcdef"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            reactions:
+              - emoji: "👍"
+                count: 2
+                users:
+                  - userId: "user_abc123"
+                    displayName: "Alice"
+                    avatar: "https://cdn.aimess.com/avatars/alice.jpg"
+                  - userId: "user_def456"
+                    displayName: "Bob"
+                    avatar: ""
+              - emoji: "❤️"
+                count: 1
+                users:
+                  - userId: "user_ghi789"
+                    displayName: "Carol"
+                    avatar: ""
     MessageDelete:
       name: "message:delete"
       title: "message:delete"
+      summary: |
+        Tombstone broadcast — a message was ALREADY deleted (past-tense event
+        despite the present-tense name, kept for back-compat). Covers 1-1,
+        **group**, and **community** room deletes (community deletes ride the
+        `conv:<roomId>` channel). The `/community` namespace also has its own
+        `community:message:deleted` for community-scoped clients.
       payload: { $ref: "#/components/schemas/MessageDeletePayload" }
+      examples:
+        - name: Deleted for everyone
+          payload:
+            messageId: "msg_9876543210abcdef"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            type: forEveryone
+            deletedType: SELF_DELETE
+            deletedBy: "user_abc123"
+            sequenceNumber: 143
+        - name: Admin deleted in group
+          payload:
+            messageId: "msg_group_xyz"
+            conversationId: "grp_6843e1a2b5c3d4e5f6a7b8c9"
+            type: forEveryone
+            deletedType: ADMIN_DELETE
+            deletedBy: "user_admin_001"
+            sequenceNumber: 88
+    ReadSync:
+      name: "read_sync"
+      title: "read_sync (multi-device read high-water mark)"
+      payload: { $ref: "#/components/schemas/ReadSyncPayload" }
+      examples:
+        - name: Read sync to own devices
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            readerId: "user_abc123"
+            read_to_seq: 143
+            unreadCount: 0
+            conversationType: PRIVATE
+    PinUpdated:
+      name: "pin:updated"
+      title: "pin:updated (pinned banner change)"
+      payload: { $ref: "#/components/schemas/PinUpdatedPayload" }
+      examples:
+        - name: Message pinned
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            messageId: "msg_9876543210abcdef"
+            action: pinned
+            pinnedBy: "user_abc123"
+            pinnedAt: 1749465600000
+            pinnedCount: 1
+        - name: Message unpinned
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            messageId: "msg_9876543210abcdef"
+            action: unpinned
+            unpinnedBy: "user_abc123"
+            pinnedCount: 0
     TypingStartBroadcast:
       name: "typing:start"
       title: "typing:start (broadcast)"
       payload: { $ref: "#/components/schemas/TypingBroadcastPayload" }
+      examples:
+        - name: Peer started typing
+          payload:
+            userId: "user_abc123"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
     TypingStopBroadcast:
       name: "typing:stop"
       title: "typing:stop (broadcast)"
       payload: { $ref: "#/components/schemas/TypingBroadcastPayload" }
+      examples:
+        - name: Peer stopped typing
+          payload:
+            userId: "user_abc123"
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
     PresenceStatus:
       name: "presence:status"
       title: "presence:status"
       payload: { $ref: "#/components/schemas/PresenceStatusPayload" }
+      examples:
+        - name: Peer came online
+          payload:
+            userId: "user_abc123"
+            isOnline: true
+            lastActiveAt: 1749465700000
+            lastSeen: null
+        - name: Peer went offline
+          payload:
+            userId: "user_abc123"
+            isOnline: false
+            lastActiveAt: 1749465700000
+            lastSeen: 1749465700000
     CallIncoming:
       name: "call:incoming"
       title: "call:incoming"
       payload: { $ref: "#/components/schemas/CallIncomingPayload" }
+      examples:
+        - name: Incoming audio call
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            callerId: "user_abc123"
+            callType: AUDIO
+        - name: Incoming video call
+          payload:
+            callId: "call_6843e1a2b5c3d4e6"
+            callerId: "user_abc123"
+            callType: VIDEO
     CallAnswered:
       name: "call:answered"
       title: "call:answered"
       payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Call was answered by recipient
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
     CallDeclined:
       name: "call:declined"
       title: "call:declined"
       payload: { $ref: "#/components/schemas/CallRef" }
+      examples:
+        - name: Call was declined by recipient
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
     CallEnded:
       name: "call:ended"
       title: "call:ended"
       payload: { $ref: "#/components/schemas/CallEndedPayload" }
+      examples:
+        - name: Call ended normally
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            endedBy: "user_abc123"
+            durationSec: 127
+        - name: Call ended immediately (unanswered)
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            endedBy: "user_abc123"
+            durationSec: 0
     CallIceRecv:
       name: "call:ice"
       title: "call:ice (receive)"
       payload: { $ref: "#/components/schemas/CallIceRecvPayload" }
+      examples:
+        - name: ICE candidate from peer
+          payload:
+            callId: "call_6843e1a2b5c3d4e5"
+            from: "user_abc123"
+            candidate:
+              candidate: "candidate:1 1 UDP 2013266431 192.168.1.100 54321 typ host"
+              sdpMid: "0"
+              sdpMLineIndex: 0
 
     # -------- /community --------
     CommunityJoin:
       name: "community:join"
       title: "community:join"
       payload: { $ref: "#/components/schemas/CommunityJoinPayload" }
+      examples:
+        - name: Join a community general room
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
     CommunityLeave:
       name: "community:leave"
       title: "community:leave"
       payload: { $ref: "#/components/schemas/CommunityRef" }
+      examples:
+        - name: Leave a community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
     CommunityMessageSend:
       name: "community:message:send"
       title: "community:message:send"
       payload: { $ref: "#/components/schemas/CommunityMessageSendPayload" }
+      examples:
+        - name: Text message (with emoji)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440010"
+            message: "Good morning everyone! 👋"
+            contentType: TEXT
+        - name: Image gallery (up to 10 images)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440011"
+            contentType: IMAGE
+            media:
+              files:
+                - objectKey: "uploads/community/img_abc123.jpg"
+                  name: "photo.jpg"
+                  size: 204800
+                  mime: "image/jpeg"
+                  width: 1080
+                  height: 720
+                  blurhash: "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
+        - name: Document / file
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440012"
+            contentType: DOCUMENT
+            media:
+              files:
+                - objectKey: "uploads/community/doc_abc123.pdf"
+                  name: "meeting-notes.pdf"
+                  size: 512000
+                  mime: "application/pdf"
+        - name: Audio file
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440013"
+            contentType: AUDIO
+            media:
+              files:
+                - objectKey: "uploads/community/audio_abc123.mp3"
+                  name: "podcast-clip.mp3"
+                  size: 1048576
+                  mime: "audio/mpeg"
+        - name: Location pin
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440014"
+            contentType: LOCATION
+            location:
+              lat: 37.7749
+              lng: -122.4194
+              placeName: "Salesforce Tower"
+              placeAddress: "415 Mission St, San Francisco, CA"
+        - name: Contact card
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440015"
+            contentType: CONTACT
+            contact:
+              name: "Alice Smith"
+              phone: "+14155551234"
+              avatar: "https://cdn.aimess.com/avatars/alice.jpg"
+              userId: "user_abc123"
+        - name: Sticker
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440016"
+            contentType: STICKER
+            sticker:
+              packId: "pack_greetings"
+              stickerId: "wave_hello"
+              objectKey: "stickers/greetings/wave_hello.webp"
+        - name: GIF
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440017"
+            contentType: GIF
+            media:
+              files:
+                - url: "https://media.tenor.com/abc123/thumbs_up.gif"
+                  name: "thumbs-up.gif"
+                  mime: "image/gif"
+                  width: 320
+                  height: 240
     CommunityMessagesFetch:
       name: "community:messages:fetch"
       title: "community:messages:fetch"
       payload: { $ref: "#/components/schemas/CommunityMessagesFetchPayload" }
+      examples:
+        - name: Fetch latest messages (first load)
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            limit: 30
+        - name: Fetch next page (scroll up)
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            cursor: "2025-06-09T10:30:00.000Z"
+            limit: 30
     CommunityMessageNew:
       name: "community:message:new"
       title: "community:message:new"
       payload: { $ref: "#/components/schemas/CommunityMessageNewPayload" }
+      examples:
+        - name: New community text message broadcast
+          payload:
+            id: "683abc123def456789012345"
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_abc123"
+            senderName: "Alice"
+            senderAvatar: "https://cdn.aimess.com/avatars/alice.jpg"
+            contentType: TEXT
+            content:
+              text: "Good morning everyone! 👋"
+              files: []
+            message: "Good morning everyone! 👋"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440010"
+            reactions: []
+            serverTs: 1749465231234
+            sentAt: 1749465231234
+        - name: Image gallery broadcast
+          payload:
+            id: "683abc123def456789012346"
+            messageId: "683abc123def456789012346"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_abc123"
+            senderName: "Alice"
+            senderAvatar: "https://cdn.aimess.com/avatars/alice.jpg"
+            contentType: IMAGE
+            content:
+              text: ""
+              files:
+                - objectKey: "uploads/community/img_abc123.jpg"
+                  name: "photo.jpg"
+                  size: 204800
+                  mime: "image/jpeg"
+                  width: 1080
+                  height: 720
+                  blurhash: "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
+            message: ""
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440011"
+            reactions: []
+            serverTs: 1749465232000
+            sentAt: 1749465232000
+        - name: Location pin broadcast
+          payload:
+            id: "683abc123def456789012347"
+            messageId: "683abc123def456789012347"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_abc123"
+            senderName: "Alice"
+            senderAvatar: "https://cdn.aimess.com/avatars/alice.jpg"
+            contentType: LOCATION
+            content:
+              text: ""
+              files: []
+              location:
+                lat: 37.7749
+                lng: -122.4194
+                placeName: "Salesforce Tower"
+                placeAddress: "415 Mission St, San Francisco, CA"
+            message: ""
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440014"
+            reactions: []
+            serverTs: 1749465233000
+            sentAt: 1749465233000
     CommunityMemberJoined:
       name: "community:member:joined"
       title: "community:member:joined"
       payload: { $ref: "#/components/schemas/CommunityMemberDTO" }
+      examples:
+        - name: A member joined the community
+          payload:
+            userId: "user_newmember"
+            username: "newcomer99"
+            displayName: "New Member"
+            avatarUrl: ""
+            role: MEMBER
+            joinedAt: 1749465800000
+    CommunityCatchup:
+      name: "community:catchup"
+      title: "community:catchup"
+      payload: { $ref: "#/components/schemas/CommunityCatchupPayload" }
+      examples:
+        - name: sinceId mode — gap-fill on reconnect
+          payload:
+            rooms:
+              - roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+                sinceId: "683abc100def000000000001"
+                limit: 100
+        - name: sinceTs mode — mutation sweep after returning from background
+          payload:
+            rooms:
+              - roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+                sinceTs: 1749465000000
+                limit: 100
+        - name: First load (no cursor)
+          payload:
+            rooms:
+              - roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+                limit: 50
+    CommunityCatchupResult:
+      name: "community:catchup:result"
+      title: "community:catchup:result"
+      payload: { $ref: "#/components/schemas/CommunityCatchupResultPayload" }
+      examples:
+        - name: sinceId mode — two missed messages
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            events:
+              - messageId: "683abc123def456789000001"
+                roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+                senderId: "user_abc123"
+                senderName: "Alice"
+                senderAvatar: "https://cdn.aimess.com/avatars/alice.jpg"
+                message: "Did you all see the announcement?"
+                contentType: TEXT
+                sentAt: 1749465100000
+                isDeleted: false
+                deletedType: ""
+                editedAt: 0
+                syncEventType: new
+                reactions: []
+              - messageId: "683abc123def456789000002"
+                roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+                senderId: "user_def456"
+                senderName: "Bob"
+                senderAvatar: ""
+                message: "Yes! Exciting news!"
+                contentType: TEXT
+                sentAt: 1749465150000
+                isDeleted: false
+                deletedType: ""
+                editedAt: 0
+                syncEventType: new
+                reactions:
+                  - emoji: "👍"
+                    count: 1
+                    users:
+                      - userId: "user_abc123"
+                        displayName: "Alice"
+                        avatar: ""
+            hasMore: false
+            lastId: "683abc123def456789000002"
+            nextTs: 0
+        - name: sinceTs mode — includes an edit and a tombstone
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            events:
+              - messageId: "683abc123def456789000003"
+                roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+                senderId: "user_abc123"
+                senderName: "Alice"
+                senderAvatar: ""
+                message: "Updated text after edit"
+                contentType: TEXT
+                sentAt: 1749465050000
+                isDeleted: false
+                deletedType: ""
+                editedAt: 1749465200000
+                syncEventType: edited
+                reactions: []
+              - messageId: "683abc123def456789000004"
+                roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+                senderId: "user_def456"
+                senderName: "Bob"
+                senderAvatar: ""
+                message: ""
+                contentType: TEXT
+                sentAt: 1749465060000
+                isDeleted: true
+                deletedType: "forEveryone"
+                editedAt: 0
+                syncEventType: deleted
+                reactions: []
+            hasMore: false
+            lastId: "683abc123def456789000004"
+            nextTs: 1749465210000
+        - name: No missed messages
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            events: []
+            hasMore: false
+            lastId: "683abc100def000000000001"
+            nextTs: 0
+    CommunityMessageReact:
+      name: "community:message:react"
+      title: "community:message:react"
+      summary: Toggle a reaction on a community message. Same emoji sent twice removes it.
+      payload: { $ref: "#/components/schemas/CommunityMessageReactPayload" }
+      examples:
+        - name: Add a thumbs-up
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            emoji: "👍"
+        - name: Remove a reaction (same payload as add)
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            emoji: "❤️"
+    CommunityMessageReaction:
+      name: "community:message:reaction"
+      title: "community:message:reaction"
+      summary: Broadcast sent to all members after any reaction is added or removed. Contains the full updated reaction state.
+      payload: { $ref: "#/components/schemas/CommunityMessageReactionPayload" }
+      examples:
+        - name: Reaction state after a member reacted
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            reactions:
+              - emoji: "👍"
+                count: 3
+                users:
+                  - userId: "user_abc123"
+                    displayName: "Alice"
+                    avatar: "https://cdn.aimess.com/avatars/alice.jpg"
+                  - userId: "user_def456"
+                    displayName: "Bob"
+                    avatar: ""
+              - emoji: "❤️"
+                count: 1
+                users:
+                  - userId: "user_ghi789"
+                    displayName: "Carol"
+                    avatar: ""
+        - name: All reactions removed (empty array)
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            reactions: []
+    CommunityMessageEdit:
+      name: "community:message:edit"
+      title: "community:message:edit"
+      summary: Edit the text of an own community message (within the edit window).
+      payload: { $ref: "#/components/schemas/CommunityMessageEditPayload" }
+      examples:
+        - name: Edit a message
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            content:
+              text: "Good morning — updated message! 👋"
+    CommunityMessageEdited:
+      name: "community:message:edited"
+      title: "community:message:edited"
+      summary: Broadcast to all room members when a community message is edited.
+      payload: { $ref: "#/components/schemas/CommunityMessageEditedPayload" }
+      examples:
+        - name: Edit broadcast
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_abc123"
+            message: "Good morning — updated message! 👋"
+            contentType: TEXT
+            editedAt: 1749465999000
+    CommunityMessageDelete:
+      name: "community:message:delete"
+      title: "community:message:delete"
+      summary: Delete a community message for everyone or just for the caller.
+      payload: { $ref: "#/components/schemas/CommunityMessageDeletePayload" }
+      examples:
+        - name: Delete for everyone (sender / mod / admin)
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            type: forEveryone
+        - name: Delete for me only
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            type: forMe
+    CommunityMessageDeleted:
+      name: "community:message:deleted"
+      title: "community:message:deleted"
+      summary: Broadcast to all room members when a message is deleted for everyone.
+      payload: { $ref: "#/components/schemas/CommunityMessageDeletedPayload" }
+      examples:
+        - name: forEveryone delete broadcast
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            deleteType: forEveryone
+            deletedBy: "user_abc123"
+    CommunityMessagePin:
+      name: "community:message:pin"
+      title: "community:message:pin"
+      summary: Pin a message in the community room (moderator / admin only).
+      payload: { $ref: "#/components/schemas/CommunityMessagePinPayload" }
+      examples:
+        - name: Pin a message
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+    CommunityMessagePinned:
+      name: "community:message:pinned"
+      title: "community:message:pinned"
+      summary: Broadcast to all room members when a message is pinned. Clients update the pinned banner.
+      payload: { $ref: "#/components/schemas/CommunityMessagePinnedPayload" }
+      examples:
+        - name: Message pinned broadcast
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            pinnedIds: ["683abc123def456789012345"]
+            pinnedCount: 1
+            pinnedAt: 1749466100000
+            pinnedBy: "user_mod001"
+    CommunityMessageUnpin:
+      name: "community:message:unpin"
+      title: "community:message:unpin"
+      summary: Unpin a message in the community room (moderator / admin only).
+      payload: { $ref: "#/components/schemas/CommunityMessageUnpinPayload" }
+      examples:
+        - name: Unpin a message
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+    CommunityMessageUnpinned:
+      name: "community:message:unpinned"
+      title: "community:message:unpinned"
+      summary: Broadcast to all room members when a message is unpinned.
+      payload: { $ref: "#/components/schemas/CommunityMessageUnpinnedPayload" }
+      examples:
+        - name: Message unpinned broadcast
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            pinnedIds: []
+            pinnedCount: 0
+            unpinnedBy: "user_mod001"
 
     # -------- /notify --------
     NotificationsFetch:
       name: "notifications:fetch"
       title: "notifications:fetch"
       payload: { $ref: "#/components/schemas/NotificationsFetchPayload" }
+      examples:
+        - name: Fetch latest notifications
+          payload:
+            limit: 20
+        - name: Fetch next page
+          payload:
+            cursor: "683abc100def000000000099"
+            limit: 20
     NotificationsMarkRead:
       name: "notifications:mark_read"
       title: "notifications:mark_read"
       payload: { $ref: "#/components/schemas/NotificationsMarkReadPayload" }
+      examples:
+        - name: Mark two notifications as read
+          payload:
+            notificationIds:
+              - "683abc100def000000000099"
+              - "683abc100def000000000098"
+        - name: Mark all as read
+          payload:
+            notificationIds: []
     NotificationCount:
       name: "notification:count"
       title: "notification:count"
       payload: { $ref: "#/components/schemas/NotificationCountPayload" }
+      examples:
+        - name: Five unread notifications
+          payload:
+            count: 5
+        - name: All notifications read
+          payload:
+            count: 0
+    NotificationCountUpdate:
+      name: "notification:count_update"
+      title: "notification:count_update"
+      summary: "Real-time unread badge count refresh (all devices)"
+      description: |
+        Emitted to `user:<userId>` (all connected devices) whenever the
+        aggregate unread notification count changes:
+        - After a successful `notifications:mark_read` the gateway pushes the
+          updated count so all devices sync immediately.
+        - When the notifications-service creates a new notification it publishes
+          `{ event: "notification:count_update", data: { count } }` to the
+          `notify:<userId>` Redis channel, which the gateway forwards verbatim.
+
+        Client rule: on receipt replace the badge/tab-count with `count`.
+        Aggregate total only — no per-type breakdown in V1.
+      payload: { $ref: "#/components/schemas/NotificationCountPayload" }
+      examples:
+        - name: Count updated to 3 after mark-read
+          payload:
+            count: 3
+        - name: New notification bumps count to 7
+          payload:
+            count: 7
     NotificationForwarded:
-      name: "notification:forwarded"
-      title: "forwarded notification event"
+      name: "notification:new"
+      title: "notification:new (forwarded in-app notification)"
       summary: |
-        Any event published to notify:<userId> is forwarded verbatim. The event
-        name and payload are defined by notifications-service; shape is open.
-      payload: { $ref: "#/components/schemas/AnyObject" }
+        An in-app notification forwarded from `notify:<userId>` to `user:<userId>`.
+        Typed as `NotificationItem`: a stable envelope (`type`, `title`, `body`,
+        `referenceId`, `isRead`, `createdAt`) plus a `data` map of type-specific
+        fields. `type` is the discriminator. The namespace forwards ANY event
+        published to the channel verbatim, so treat unknown `type` values
+        defensively.
+      payload: { $ref: "#/components/schemas/NotificationItem" }
+      examples:
+        - name: New message
+          payload:
+            notificationId: "683abc100def000000000099"
+            type: MESSAGE
+            title: "Alice"
+            body: "Hey! How are you?"
+            referenceId: "6843e1a2b5c3d4e5f6a7b8c9"
+            isRead: false
+            createdAt: 1749465231234
+            data:
+              conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+              conversationType: PRIVATE
+              messageId: "msg_9876543210abcdef"
+              senderId: "user_abc123"
+              senderName: "Alice"
+              contentType: TEXT
+              preview: "Hey! How are you?"
+              sentAt: "1749465231234"
+        - name: Friend request
+          payload:
+            notificationId: "683abc100def0000000000a0"
+            type: friend.requested
+            title: "New friend request"
+            body: "Bob sent you a friend request"
+            referenceId: "frnd_123"
+            isRead: false
+            createdAt: 1749465300000
+            data:
+              friendshipId: "frnd_123"
+              requesterId: "user_def456"
+        - name: Community member added
+          payload:
+            notificationId: "683abc100def0000000000a1"
+            type: community.member_added
+            title: "Added to a community"
+            body: "You were added to Design Guild"
+            referenceId: "6843e1a2b5c3d4e5f6a7b8c9"
+            isRead: false
+            createdAt: 1749465400000
+            data:
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
 
   schemas:
     # -------- generic --------
@@ -693,18 +2194,95 @@ components:
       description: Ack callback envelope. `success` discriminates the two shapes.
       properties:
         success: { type: boolean }
+        message:
+          type: string
+          description: |
+            Always present (success AND failure). A localized, display-ready
+            sentence describing the outcome — resolved from the shared `t()`
+            catalog using the socket's `x-lang` / `Accept-Language` at handshake
+            (defaults: English in dev, Vietnamese in prod). On success a
+            confirmation (e.g. "Message sent successfully", "Joined the community
+            successfully"); on failure a human-readable reason. Clients may show
+            it directly; branch logic on `success`/`error`/`retryable`, not on
+            this string.
         data:
           type: object
           description: Present on success — the gRPC result (shape varies per event).
           additionalProperties: true
         error:
           type: string
-          enum: [INVALID_PAYLOAD, SERVICE_ERROR]
-          description: Present on failure.
-      required: [success]
-    AnyObject:
+          enum:
+            [
+              INVALID_PAYLOAD,
+              SERVICE_ERROR,
+              FORBIDDEN,
+              NOT_FOUND,
+              RATE_LIMITED,
+              CONFLICT,
+            ]
+          description: |
+            Present on failure. Stable, branchable error codes:
+            - `INVALID_PAYLOAD` — Zod validation failed at the gateway (fix the payload).
+            - `SERVICE_ERROR` — downstream gRPC/service error (transient).
+            - `FORBIDDEN` — authenticated but not allowed (not a participant/member, blocked, insufficient role).
+            - `NOT_FOUND` — the target message/conversation/community does not exist.
+            - `RATE_LIMITED` — a server rate limit tripped (back off).
+            - `CONFLICT` — the operation conflicts with current state (e.g. already applied / edit window expired).
+        retryable:
+          type: boolean
+          description: |
+            Present on failure. `true` when re-emitting the SAME payload may
+            succeed later (`SERVICE_ERROR`, `RATE_LIMITED`); `false` for
+            permanent failures (`INVALID_PAYLOAD`, `FORBIDDEN`, `NOT_FOUND`,
+            `CONFLICT`) — do not blind-retry.
+
+            For **`SERVICE_ERROR`** (retryable): use exponential backoff — start at 500 ms,
+            double each attempt (with ±50% jitter), cap at 30 s, maximum **3 attempts**.
+            Resend with the same `clientMessageId` (idempotency is guaranteed server-side).
+            For **`RATE_LIMITED`** (retryable): back off for the full rate-limit window
+            (use 30 s as a safe default if no `retryAfter` is present), then retry once.
+        retryAfter:
+          type: integer
+          description: |
+            Optional. Present on failure when `error` is `RATE_LIMITED`. Epoch-ms
+            timestamp after which the client may safely retry. If absent, use
+            **30 s** as the default back-off window. Clients MUST NOT retry before
+            this time. Not present for any other error code.
+      required: [success, message]
+    MessageSendResult:
       type: object
-      additionalProperties: true
+      description: |
+        `data` of the `message:send` and `message:forward` acks. The full message
+        is ALSO broadcast as `message:new` to the conversation room. Numeric
+        fields backed by gRPC int64 (`sentAt`, `sequenceNumber`) arrive on the
+        **ack** as **strings** — coerce with `Number()` (see §3 numeric note).
+      properties:
+        messageId: { type: string }
+        conversationId: { type: string }
+        sequenceNumber:
+          {
+            type: integer,
+            description: "per-room monotonic seq (string on the ack).",
+          }
+        sentAt: { type: integer, description: "epoch ms (string on the ack)." }
+        alreadySent:
+          {
+            type: boolean,
+            description: "true = same clientMessageId was already saved (idempotent retry — safe).",
+          }
+      required: [messageId, conversationId]
+    CommunityMessageSendResult:
+      type: object
+      description: |
+        `data` of the `community:message:send` ack. The full message is broadcast
+        as `community:message:new` to the `community:<communityId>` room. `sentAt`
+        arrives as a string on the ack — coerce with `Number()`.
+      properties:
+        messageId: { type: string }
+        roomId: { type: string }
+        sentAt: { type: integer, description: "epoch ms (string on the ack)." }
+        alreadySent: { type: boolean }
+      required: [messageId, roomId]
     ConversationRef:
       type: object
       properties:
@@ -727,21 +2305,66 @@ components:
       description: Case-insensitive; selects private vs group code path.
     ContentType:
       type: string
-      enum: [TEXT, IMAGE, VIDEO, FILE, AUDIO, LOCATION, CONTACT, SYSTEM]
+      enum:
+        [
+          TEXT,
+          IMAGE,
+          VIDEO,
+          AUDIO,
+          VOICE,
+          DOCUMENT,
+          GIF,
+          STICKER,
+          LOCATION,
+          CONTACT,
+          SYSTEM,
+        ]
+      description: |
+        Message kind — **UPPER-CASE on every surface** (socket + REST,
+        private/group/community). This is the single field name for message
+        classification; there is no `messageType` alias.
+
+        The server normalizes **any** incoming value to UPPER-CASE (legacy
+        lower-case stored values like `text` are normalized on read) and falls
+        back to `TEXT` when empty. The enum above is the **recommended, rendered**
+        set; an unrecognized UPPER-CASE value is forwarded verbatim and a client
+        should render it as a generic/text bubble rather than crash.
+
+        - `TEXT` — plain text (emoji included).
+        - `IMAGE` / `VIDEO` / `GIF` — require `files[]` (or `media.files[]` on community).
+        - `AUDIO` — audio file; `VOICE` — recorded voice note (waveform metadata).
+        - `DOCUMENT` — generic file attachment.
+        - `STICKER` — requires `sticker`; `LOCATION` — requires `location`;
+          `CONTACT` — requires `contact`.
+        - `SYSTEM` — group/community lifecycle event (carries `systemEvent`/`systemData`).
 
     # -------- chat send payloads --------
     FileAttachment:
       type: object
-      description: Either objectKey or url is expected.
+      description: |
+        One attachment. Either `objectKey` (a key from the media-upload flow —
+        see `docs/MEDIA_UPLOAD.md`) **or** `url` (an external URL, e.g. a Tenor
+        GIF) is expected. The server never receives file bytes over the socket.
       properties:
-        objectKey: { type: string }
-        url: { type: string }
-        name: { type: string }
-        size: { type: integer }
-        mime: { type: string }
-        width: { type: integer }
-        height: { type: integer }
-        durationMs: { type: integer }
+        objectKey: { type: string, maxLength: 500 }
+        url: { type: string, format: uri, maxLength: 3000 }
+        name: { type: string, maxLength: 255 }
+        size: { type: integer, minimum: 0 }
+        mime: { type: string, maxLength: 150 }
+        width: { type: integer, minimum: 0 }
+        height: { type: integer, minimum: 0 }
+        durationMs: { type: integer, minimum: 0 }
+        blurhash:
+          {
+            type: string,
+            maxLength: 120,
+            description: "§3.5: blur preview for image/video (instant aspect-ratio render).",
+          }
+        waveform:
+          type: array
+          maxItems: 2048
+          items: { type: number }
+          description: "§3.5: voice-note amplitude samples (render bars pre-download)."
     Location:
       type: object
       properties:
@@ -758,26 +2381,51 @@ components:
         userId: { type: string }
     MessageSendPayload:
       type: object
+      description: |
+        Message send payload (client → server). The server derives sender
+        identity from the authenticated socket — clients never stamp their own
+        `senderId`. `clientTs` (epoch ms) is the optional display-only compose time.
+        Stickers are community-only in V1 — there is no `sticker` field here; send a
+        STICKER-typed reference via `files[]` or use a community.
       properties:
-        conversationId: { type: string }
+        conversationId: { type: string, minLength: 1, maxLength: 200 }
         clientMessageId:
-          { type: string, description: Client-generated idempotency key. }
+          {
+            type: string,
+            maxLength: 200,
+            description: "Client-generated idempotency key (a UUID is recommended).",
+          }
         contentType: { $ref: "#/components/schemas/ContentType" }
-        contentText: { type: string }
-        mediaKey: { type: string, description: Single object-key shorthand. }
+        contentText: { type: string, maxLength: 4000 }
+        mediaKey:
+          type: string
+          maxLength: 3000
+          deprecated: true
+          description: |
+            **Deprecated** — single object-key shorthand. Prefer `files[]` (a
+            single file is an array of one). Still accepted: when set and no
+            `files[]` entry carries an `objectKey`, the gateway folds it into
+            `files[]`. New clients should not send this.
         files:
           type: array
+          maxItems: 30
           items: { $ref: "#/components/schemas/FileAttachment" }
         urls:
           type: array
-          items: { type: string }
+          maxItems: 20
+          items: { type: string, format: uri, maxLength: 3000 }
         location: { $ref: "#/components/schemas/Location" }
         contact: { $ref: "#/components/schemas/Contact" }
-        repliedToId: { type: string }
+        repliedToId: { type: string, maxLength: 200 }
         conversationType: { $ref: "#/components/schemas/ConversationType" }
-        receiverId: { type: string }
-        senderName: { type: string }
-        senderAvatar: { type: string }
+        receiverId: { type: string, maxLength: 200 }
+        senderName: { type: string, maxLength: 120 }
+        senderAvatar: { type: string, maxLength: 3000 }
+        clientTs:
+          {
+            type: integer,
+            description: "§5.1: client compose time (epoch ms), display-only.",
+          }
       required: [conversationId, clientMessageId, contentType]
     ReadUpTo:
       type: object
@@ -788,9 +2436,17 @@ components:
     MessageReactPayload:
       type: object
       properties:
-        messageId: { type: string }
-        conversationId: { type: string }
-        emoji: { type: string }
+        messageId: { type: string, minLength: 1, maxLength: 200 }
+        conversationId: { type: string, minLength: 1, maxLength: 200 }
+        emoji:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: |
+            A single emoji grapheme. Bounded length tolerates multi-codepoint
+            ZWJ / skin-tone sequences but rejects pasted text. Sending the same
+            emoji again toggles (removes) the reaction.
+        conversationType: { $ref: "#/components/schemas/ConversationType" }
       required: [messageId, conversationId, emoji]
     MessageReactionsGetPayload:
       type: object
@@ -802,10 +2458,10 @@ components:
     MessageEditPayload:
       type: object
       properties:
-        messageId: { type: string }
-        conversationId: { type: string }
-        contentText: { type: string }
-        contentJson: { type: string }
+        messageId: { type: string, minLength: 1, maxLength: 200 }
+        conversationId: { type: string, minLength: 1, maxLength: 200 }
+        contentText: { type: string, maxLength: 4000 }
+        contentJson: { type: string, maxLength: 16384 }
         conversationType: { $ref: "#/components/schemas/ConversationType" }
       required: [messageId, conversationId]
     MessageForwardPayload:
@@ -845,49 +2501,192 @@ components:
       required: [rooms]
     PresenceHeartbeatPayload:
       type: object
+      description: |
+        Payload for `presence:heartbeat`. The server renews the device-presence TTL on each
+        heartbeat; the TTL is **10 minutes**. Stop sending heartbeats and the user will appear
+        offline to peers after ~10 minutes. Recommended client interval: every 30–60 s while
+        the app is in the foreground.
       properties:
         appState: { type: string, default: FOREGROUND }
     PeerIds:
       type: object
+      description: |
+        Up to **500** peer ids per call. Exceeding 500 is **rejected** — the ack
+        is `INVALID_PAYLOAD` (the server does not silently truncate). Re-subscribe
+        in batches if you watch more than 500 peers.
       properties:
         peerIds:
           type: array
+          minItems: 1
           maxItems: 500
-          items: { type: string }
+          items: { type: string, minLength: 1, maxLength: 200 }
       required: [peerIds]
     CallInitiatePayload:
       type: object
+      description: |
+        **1-1 calls only (V1).** Signaling targets a single `calleeId`; group /
+        community calls are out of scope — see SOCKET_EVENTS.md §7.5.
+
+        **Canceling a ringing call (V1):** the caller emits `call:end { callId }` before
+        the callee answers. The callee receives `call:ended { durationSec: 0 }`. There is
+        no server-side ring timeout in V1 — implement a client-side auto-cancel after ~60 s
+        of ringing. `call:cancel`, `call:missed`, and server-enforced ring timeout are
+        deferred to V2.
       properties:
-        calleeId: { type: string }
-        type: { type: string, enum: [AUDIO, VIDEO] }
-        privateRoomId: { type: string }
+        calleeId: { type: string, minLength: 1, maxLength: 200 }
+        callType: { type: string, enum: [AUDIO, VIDEO], default: AUDIO }
+        privateRoomId: { type: string, maxLength: 200 }
       required: [calleeId]
+    IceCandidate:
+      type: object
+      description: |
+        A WebRTC ICE candidate (RTCIceCandidateInit). The backend relays it
+        opaquely — it is never parsed or persisted. An empty `candidate` string
+        signals end-of-candidates.
+      properties:
+        candidate: { type: string, maxLength: 1000 }
+        sdpMid: { type: string, maxLength: 100 }
+        sdpMLineIndex: { type: integer, minimum: 0 }
+        usernameFragment: { type: string, maxLength: 256 }
     CallIceSendPayload:
       type: object
+      description: "Trickle a single WebRTC ICE candidate to the peer. Fire-and-forget: no ack, no retry. On weak networks candidates can drop and call setup may fail — re-send the latest candidate on a short timer."
       properties:
-        callId: { type: string }
+        callId: { type: string, minLength: 1, maxLength: 200 }
         candidate:
           description: WebRTC ICE candidate (opaque to the backend).
           oneOf:
-            - { type: object, additionalProperties: true }
-            - { type: string }
+            - { $ref: "#/components/schemas/IceCandidate" }
+            - { type: string, maxLength: 1000 }
       required: [callId, candidate]
 
     # -------- chat receive payloads --------
-    MessageNewPayload:
+    QuoteData:
       type: object
+      description: "§9: canonical reply snapshot (survives parent eviction)."
+      nullable: true
       properties:
         messageId: { type: string }
-        conversationId: { type: string }
         senderId: { type: string }
+        senderName: { type: string }
         contentType: { $ref: "#/components/schemas/ContentType" }
-        contentText: { type: string }
-        contentJson: { type: string }
-        sentAt: { type: integer, description: epoch ms (number in broadcast). }
-        sequenceNumber:
-          { type: integer, description: per-room monotonic sequence. }
+        preview: { type: string }
+        isDeleted: { type: boolean }
+    ReactionGroup:
+      type: object
+      description: "§2.4: grouped reaction (selfReacted derived client-side from users[])."
+      properties:
+        emoji: { type: string }
+        count: { type: integer }
+        users:
+          type: array
+          items:
+            type: object
+            properties:
+              userId: { type: string }
+              displayName: { type: string }
+              avatar: { type: string }
+    MessageContent:
+      type: object
+      additionalProperties: true
+      description: |
+        The SINGLE shared structured message body, referenced by BOTH
+        `MessageNewPayload.content` (chat `message:new` / `message:edited`) and
+        `CommunityMessageNewPayload.content` (`community:message:new`) so mobile
+        uses ONE content mapper across chat + community. All fields are optional;
+        the enclosing payload's `contentType` says which is authoritative (e.g.
+        LOCATION → `location`, STICKER → `sticker`, IMAGE/VIDEO/GIF → `files`).
+        `additionalProperties: true` keeps it forward-compatible — unknown keys
+        are forwarded verbatim.
+
+        Field provenance in V1 (verified against the chat-service serializer +
+        grpc emit paths): `text` / `files` / `location` / `contact` are emitted by
+        BOTH surfaces; `urls` is chat-only (passed through from the sender);
+        `sticker` is community-only. NOTE: `quoteData` and `parentMessageId` are
+        NOT part of content — they live at the payload level.
+      properties:
+        text:
+          type: string
+          description: "Message text. May be empty for non-text kinds (location, contact, sticker, …)."
+        urls:
+          type: array
+          description: "Chat-only: URLs carried alongside the body (passed through verbatim). Absent on community."
+          items: { type: string, format: uri }
+        files:
+          type: array
+          description: "Gallery / files attachment — images, videos, documents, audio, voice notes, GIFs."
+          items: { $ref: "#/components/schemas/FileAttachment" }
+        location: { $ref: "#/components/schemas/Location" }
+        contact: { $ref: "#/components/schemas/Contact" }
+        sticker:
+          type: object
+          description: |
+            Sticker / GIF attachment — a REFERENCE only (the socket never carries
+            bytes). Community-emitted in V1; see SOCKET_EVENTS §8.9.
+          properties:
+            objectKey: { type: string }
+            url: { type: string, format: uri }
+            packId: { type: string }
+            stickerId: { type: string }
+    MessageNewPayload:
+      type: object
+      description: |
+        Server → client broadcast for every new message (§1/§9 canonical
+        ChatMessage). Field names match the REST `ChatMessage` so the client uses
+        ONE mapper; the legacy V1 aliases (messageId, conversationId,
+        contentText, contentJson, sentAt) are kept for back-compat. The SAME shape
+        is emitted on `message:edited`.
+      properties:
+        # ── canonical (REST ChatMessage names) ──
+        id: { type: string, description: server id (== messageId). }
+        clientMessageId:
+          {
+            type: string,
+            description: "§2.1: echoed on the sender's own message for dedupe.",
+          }
+        roomId: { type: string }
+        conversationType: { type: string, enum: [PRIVATE, GROUP] }
+        senderId: { type: string }
+        senderName: { type: string }
+        senderAvatar: { type: string }
+        senderRole:
+          {
+            type: string,
+            description: "§2.2: ADMIN|MEMBER|… for groups; '' for private.",
+          }
+        receiverId: { type: string, description: private only; '' for groups. }
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        content:
+          allOf: [{ $ref: "#/components/schemas/MessageContent" }]
+          description: "Structured body — the shared MessageContent shape (text, urls[] chat-only, files[], location, contact, sticker). forward-compat via additionalProperties."
+        parentMessageId: { type: string }
+        quoteData: { $ref: "#/components/schemas/QuoteData" }
+        reactions:
+          type: array
+          items: { $ref: "#/components/schemas/ReactionGroup" }
         isForwarded:
           { type: boolean, description: present on forwarded messages. }
+        isDeleted: { type: boolean }
+        deletedType: { type: string, description: 'forEveryone | forMe | "".' }
+        editedAt: { type: integer, description: "epoch ms, 0 = never edited." }
+        clientTs:
+          {
+            type: integer,
+            description: "§5.1: client compose time (epoch ms), display-only.",
+          }
+        serverTs:
+          { type: integer, description: server-authoritative time (epoch ms). }
+        sequenceNumber:
+          {
+            type: integer,
+            description: per-room monotonic sequence (sole ordering key).,
+          }
+        # ── V1-compat aliases ──
+        messageId: { type: string }
+        conversationId: { type: string }
+        contentText: { type: string }
+        contentJson: { type: string }
+        sentAt: { type: integer, description: epoch ms (== serverTs). }
         systemEvent:
           type: string
           description: Set when contentType=SYSTEM.
@@ -909,28 +2708,38 @@ components:
           additionalProperties: true
       required:
         [
-          messageId,
-          conversationId,
+          id,
+          roomId,
+          conversationType,
           senderId,
           contentType,
-          sentAt,
+          content,
+          serverTs,
           sequenceNumber,
         ]
     MessageEditedPayload:
-      type: object
-      properties:
-        messageId: { type: string }
-        conversationId: { type: string }
-        contentText: { type: string }
-        contentJson: { type: string }
-        editedAt: { type: integer, description: epoch ms. }
-        sequenceNumber: { type: integer }
-      required: [messageId, conversationId]
+      description: |
+        §9: emits the FULL canonical ChatMessage shape (identical to
+        MessageNewPayload), not a thin {contentText,contentJson}. A client
+        re-renders the edited bubble with the same mapper.
+      allOf:
+        - { $ref: "#/components/schemas/MessageNewPayload" }
     ListBumpLastMessage:
       type: object
+      description: |
+        Last-message preview for a chat/community list row. `contentType` is the
+        UPPER-CASE kind; `text` is a ready-to-render preview string the client
+        may show verbatim. Server convention by type (clients may localize):
+        - `TEXT` → first ~200 chars of the body (truncated; `text` ≤512).
+        - `IMAGE` → "📷 Photo"   · `VIDEO` → "🎥 Video"   · `GIF` → "🎞 GIF"
+        - `DOCUMENT` → "📎 {filename}"   · `AUDIO` → "🎵 Audio"
+        - `VOICE` → "🎤 Voice message"   · `STICKER` → "🌟 Sticker"
+        - `LOCATION` → "📍 {placeName}"   · `CONTACT` → "👤 {contactName}"
+        - `SYSTEM` → the rendered system-event sentence.
+        For non-text types `text` is the placeholder above (never the raw body).
       properties:
         contentType: { $ref: "#/components/schemas/ContentType" }
-        text: { type: string }
+        text: { type: string, maxLength: 512 }
     ConvUpdatedPayload:
       type: object
       description: Chat list bump-to-top hint (idempotent). Delivered to user:<id>.
@@ -959,6 +2768,12 @@ components:
         unread: { type: boolean }
     CatchupEvent:
       type: object
+      description: |
+        A single gap-fill row. Catch-up INCLUDES tombstones: `forEveryone` deletes
+        return with isDeleted=true (+deletedType) and edits carry editedAt, so an
+        offline client reconciles. NOTE on `forMe`: forMe deletes are client-local
+        (never broadcast, never flagged here) — a message you hid forMe MAY reappear
+        on catch-up. Keep your own hiddenMessageIds set and re-apply it on render.
       properties:
         messageId: { type: string }
         conversationId: { type: string }
@@ -1000,10 +2815,46 @@ components:
       required: [roomId, events, hasMore, lastSeq]
     MessageReadReceiptPayload:
       type: object
+      description: |
+        Read receipt broadcast to the conversation room. PRIVATE only: groups and
+        communities are sent + read aggregate only — there is NO per-member delivery
+        receipt and NO per-member "seen by X of Y" in V1 (deferred to V2; see the
+        info `Breaking changes` block / SOCKET_EVENTS §8.9). message:delivered is
+        likewise private-only.
       properties:
         conversationId: { type: string }
         readerId: { type: string }
         upToMessageId: { type: string }
+    ReadSyncPayload:
+      type: object
+      description: |
+        §5.5: multi-device read high-water mark. Delivered to the reader's OWN
+        devices (channel user:<readerId>) so every screen clears unread together.
+        SCOPE: emitted on /chat for PRIVATE + GROUP rooms only. There is no
+        community read_sync in V1 — community unread reconciles via bulk mark-read
+        + the community:updated list hint (deferred to V2).
+      properties:
+        conversationId: { type: string }
+        readerId: { type: string }
+        read_to_seq:
+          {
+            type: integer,
+            description: highest read sequenceNumber for this room.,
+          }
+        unreadCount: { type: integer }
+        conversationType: { type: string, enum: [PRIVATE, GROUP] }
+    PinUpdatedPayload:
+      type: object
+      description: "§2.5: pin/unpin banner broadcast to conv:<roomId>."
+      properties:
+        roomId: { type: string }
+        conversationId: { type: string }
+        messageId: { type: string }
+        action: { type: string, enum: [pinned, unpinned] }
+        pinnedBy: { type: string, description: present on action=pinned. }
+        unpinnedBy: { type: string, description: present on action=unpinned. }
+        pinnedAt: { type: integer, description: epoch ms (action=pinned). }
+        pinnedCount: { type: integer }
     MessageDeliveredReceiptPayload:
       type: object
       properties:
@@ -1013,28 +2864,46 @@ components:
         messageIds:
           type: array
           items: { type: string }
-    Reaction:
-      type: object
-      properties:
-        emoji: { type: string }
-        userId: { type: string }
     MessageReactionPayload:
       type: object
+      description: |
+        §2.4: emits the grouped ChatReactionGroup[] shape (emoji/count/users)
+        so the live reaction bar renders without a refetch. `selfReacted` is
+        intentionally omitted — derive it client-side from users[].userId.
       properties:
         messageId: { type: string }
         conversationId: { type: string }
         reactions:
           type: array
-          items: { $ref: "#/components/schemas/Reaction" }
+          items: { $ref: "#/components/schemas/ReactionGroup" }
     MessageDeletePayload:
       type: object
+      description: |
+        §2.3: self-describing tombstone. conversationId lets a client route the
+        delete even if the room isn't loaded; sequenceNumber locates the message.
+        Client rule: on `type:"forEveryone"` hide for everyone; on `forMe` hide
+        only when deletedBy === your own userId. forMe hides are client-local and
+        may not survive a catch-up — re-apply your hiddenMessageIds on render.
       properties:
         messageId: { type: string }
+        conversationId: { type: string }
         type: { type: string, enum: [forEveryone, forMe] }
+        deletedType:
+          {
+            type: string,
+            description: "group/community: SELF_DELETE | ADMIN_DELETE.",
+          }
         deletedBy: { type: string }
-      required: [messageId, type, deletedBy]
+        sequenceNumber: { type: integer }
+      required: [messageId, conversationId, type, deletedBy]
     TypingBroadcastPayload:
       type: object
+      description: |
+        Fire-and-forget typing signal re-emitted to the room. The server keeps NO
+        typing state, so a crashed sender cannot be cleaned up server-side. EXPIRY
+        CONTRACT: the RECEIVER auto-clears a "typing…" indicator after ~6 s with no
+        fresh typing:start; the SENDER re-emits typing:start every ~3–5 s while
+        typing and one typing:stop when it ends.
       properties:
         userId: { type: string }
         conversationId: { type: string }
@@ -1043,14 +2912,20 @@ components:
       properties:
         userId: { type: string }
         isOnline: { type: boolean }
-        lastActiveAt: { type: string }
-        lastSeen: { type: string }
+        # §2.7: epoch-ms INTEGERS (match REST ChatPresence.lastSeen), not strings.
+        lastActiveAt: { type: integer, description: epoch ms. }
+        lastSeen:
+          {
+            type: integer,
+            nullable: true,
+            description: "epoch ms; null while online.",
+          }
     CallIncomingPayload:
       type: object
       properties:
         callId: { type: string }
         callerId: { type: string }
-        type: { type: string, enum: [AUDIO, VIDEO] }
+        callType: { type: string, enum: [AUDIO, VIDEO] }
     CallEndedPayload:
       type: object
       properties:
@@ -1063,11 +2938,14 @@ components:
         callId: { type: string }
         candidate:
           oneOf:
-            - { type: object, additionalProperties: true }
-            - { type: string }
+            - { $ref: "#/components/schemas/IceCandidate" }
+            - { type: string, maxLength: 1000 }
         from: { type: string }
 
     # -------- community payloads --------
+    # NOTE: community messages use the SAME `ContentType` enum as /chat (UPPER-CASE).
+    # The former lower-case `CommunityMessageType` was removed — there is one
+    # content-type vocabulary across both namespaces (one client mapper).
     CommunityJoinPayload:
       type: object
       properties:
@@ -1077,43 +2955,340 @@ components:
     CommunityMessageSendPayload:
       type: object
       properties:
-        communityId: { type: string }
-        roomId: { type: string }
-        clientMessageId: { type: string }
+        communityId: { type: string, minLength: 1, maxLength: 200 }
+        roomId: { type: string, minLength: 1, maxLength: 200 }
+        clientMessageId: { type: string, maxLength: 200 }
         message:
-          {
-            type: string,
-            minLength: 1,
-            description: "min(1) — non-empty even for media.",
-          }
-        contentType: { type: string }
-        mediaKey: { type: string }
-      required: [communityId, roomId, clientMessageId, message, contentType]
+          type: string
+          default: ""
+          maxLength: 4000
+          description: "Message text. May be empty for non-text types (location, contact, sticker, gif, etc.)."
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        media:
+          type: object
+          description: "Gallery / files attachment. One files[] array holds images, videos, documents, audio, voice notes, and GIFs."
+          properties:
+            files:
+              type: array
+              maxItems: 30
+              items: { $ref: "#/components/schemas/FileAttachment" }
+        location: { $ref: "#/components/schemas/Location" }
+        contact: { $ref: "#/components/schemas/Contact" }
+        sticker:
+          type: object
+          description: |
+            Sticker / GIF attachment — a REFERENCE only; the socket never carries
+            bytes. Discovery is client-side in V1: the client integrates the
+            provider directly (Tenor/Giphy for GIFs, its own sticker catalog) and
+            sends the resolved `url` (GIF) or `packId`+`stickerId`+`objectKey`
+            (sticker). There is NO server-proxied sticker-pack / GIF-search API in
+            V1 (deferred to V2 — see SOCKET_EVENTS §8.9).
+          properties:
+            objectKey: { type: string, maxLength: 500 }
+            url: { type: string, format: uri, maxLength: 3000 }
+            packId: { type: string, maxLength: 100 }
+            stickerId: { type: string, maxLength: 100 }
+        parentMessageId:
+          type: string
+          maxLength: 200
+          description: "Optional. messageId of the message being replied to. Omit for top-level messages."
+      required: [communityId, roomId, contentType]
     CommunityMessagesFetchPayload:
       type: object
       properties:
         roomId: { type: string }
-        cursor: { type: string }
-        limit: { type: integer, maximum: 100 }
+        cursor:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 UTC timestamp (e.g. `"2025-01-15T10:00:00.000Z"`).
+            Must not be in the future (a 5 s clock-skew grace window is
+            applied server-side). Omit for the most recent page.
+            Pass the `nextCursor` from the previous response to page
+            backwards.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 30
+          description: "Number of messages to return (default 30)."
       required: [roomId]
+    CommunityMessageContent:
+      description: |
+        Deprecated alias of `MessageContent` — the single shared chat+community
+        content shape. Kept so existing `$ref`s keep resolving; new refs should
+        point at `MessageContent` directly.
+      allOf:
+        - { $ref: "#/components/schemas/MessageContent" }
     CommunityMessageNewPayload:
       type: object
+      description: |
+        Server → client broadcast for every new community message. Sender
+        identity (senderName/senderAvatar) is resolved server-side; `contentType`
+        is the single UPPER-CASE field for community message kind.
       properties:
+        id: { type: string, description: server id (== messageId). }
         messageId: { type: string }
         communityId: { type: string }
         roomId: { type: string }
         senderId: { type: string }
         senderName: { type: string }
         senderAvatar: { type: string }
-        message: { type: string }
-        contentType: { type: string }
-        mediaKey: { type: string }
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        content:
+          allOf: [{ $ref: "#/components/schemas/MessageContent" }]
+          description: "Structured body — the shared MessageContent shape (text, files[], location?, contact?, sticker?). forward-compat via additionalProperties."
+        parentMessageId:
+          {
+            type: string,
+            description: "messageId being replied to; '' for top-level.",
+          }
+        quoteData: { $ref: "#/components/schemas/QuoteData" }
+        reactions:
+          type: array
+          items: { $ref: "#/components/schemas/ReactionGroup" }
+        message:
+          {
+            type: string,
+            description: "V1 alias for content.text. `content.text` is authoritative.",
+          }
         clientMessageId: { type: string }
-        sentAt: { type: integer, description: epoch ms. }
+        serverTs: { type: integer, description: epoch ms. }
+        sentAt: { type: integer, description: epoch ms (== serverTs). }
     CommunityMemberDTO:
       type: object
-      description: Member DTO forwarded verbatim from the Redis channel.
       additionalProperties: true
+      description: |
+        Member snapshot for `community:member:joined`. NOTE: in V1 NO backend
+        service publishes this event yet — the schema is reserved; the gateway
+        will forward it verbatim once a producer exists.
+      properties:
+        userId: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        avatarUrl: { type: string }
+        role: { type: string, enum: [ADMIN, MODERATOR, MEMBER] }
+        joinedAt: { type: integer, description: "epoch ms." }
+      required: [userId]
+    CommunityCatchupPayload:
+      type: object
+      properties:
+        rooms:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            properties:
+              roomId: { type: string }
+              sinceId:
+                type: string
+                description: "Exclusive lower bound — last message id the client already has. Omit for first load. Mutually exclusive with sinceTs; sinceTs takes precedence."
+              sinceTs:
+                type: integer
+                description: "Epoch-ms alternative cursor. When > 0 the server switches to an updatedAt-based query that surfaces edits, reaction changes, and tombstones in addition to new messages. Use after returning from background. Mutually exclusive with sinceId."
+              limit: { type: integer, maximum: 200 }
+            required: [roomId]
+      required: [rooms]
+    CommunityCatchupEventDto:
+      type: object
+      properties:
+        messageId: { type: string }
+        roomId: { type: string }
+        senderId: { type: string }
+        senderName: { type: string }
+        senderAvatar: { type: string }
+        message: { type: string }
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        sentAt: { type: integer, description: "epoch ms." }
+        isDeleted: { type: boolean }
+        deletedType:
+          type: string
+          description: 'Value is "forEveryone", "forMe", or "" (empty string when not deleted).'
+        editedAt: { type: integer, description: "epoch ms; 0 if not edited." }
+        syncEventType:
+          type: string
+          enum: [new, edited, deleted, reacted]
+          description: |
+            What happened to this message since the cursor.
+            - `new` — insertion-ordered new message (sinceId mode) or genuinely new (sinceTs mode)
+            - `edited` — message text was changed
+            - `deleted` — message was deleted for everyone (tombstone)
+            - `reacted` — only reactions changed (sinceTs mode only)
+        reactions:
+          type: array
+          description: "Current grouped reaction state at the time of catch-up."
+          items: { $ref: "#/components/schemas/ReactionGroup" }
+    CommunityCatchupResultPayload:
+      type: object
+      description: |
+        Server → client per room in response to `community:catchup`.
+        One event emitted per requested room. Store `lastId` as the next `sinceId`,
+        or `nextTs` as the next `sinceTs` when using the updatedAt-cursor mode.
+      properties:
+        roomId: { type: string }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/CommunityCatchupEventDto" }
+        hasMore: { type: boolean }
+        lastId:
+          type: string
+          description: "id of the last returned message; pass as sinceId on the next reconnect (sinceId mode)."
+        nextTs:
+          type: integer
+          description: "Epoch-ms of the last event's updatedAt. Pass as sinceTs on the next call to continue paging in sinceTs mode. 0 in sinceId mode."
+      required: [roomId, events, hasMore, lastId]
+
+    CommunityMessageReactPayload:
+      type: object
+      properties:
+        messageId: { type: string, minLength: 1, maxLength: 200 }
+        communityId: { type: string, minLength: 1, maxLength: 200 }
+        emoji:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: "A single emoji grapheme (same rule as chat). Sending it again toggles it off."
+      required: [messageId, communityId, emoji]
+    CommunityMessageReactionPayload:
+      type: object
+      description: Broadcast to all members of the community room after any react/unreact. Contains the full updated reaction state — clients replace, not merge.
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        reactions:
+          type: array
+          items: { $ref: "#/components/schemas/ReactionGroup" }
+      required: [messageId, communityId, reactions]
+
+    # ---- community edit/delete/pin/unpin payloads ----
+    CommunityMessageEditPayload:
+      type: object
+      description: Client → server. Edit the text of an own community message (within the edit window).
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+        content:
+          type: object
+          properties:
+            text: { type: string, minLength: 1, maxLength: 4000 }
+          required: [text]
+      required: [messageId, communityId, roomId, content]
+    CommunityMessageEditedPayload:
+      type: object
+      description: |
+        Server → client broadcast to `community:<communityId>` after a successful edit.
+        Clients update the matching message in-place. Edit is text-only in V1; merge
+        `message` + `editedAt` into the existing message in place (non-text edits are
+        rejected server-side).
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+        senderId: { type: string }
+        message: { type: string, description: "Updated text content." }
+        contentType: { $ref: "#/components/schemas/ContentType" }
+        editedAt:
+          { type: integer, description: "Epoch ms when the edit was applied." }
+      required: [messageId, communityId, roomId, senderId, message, editedAt]
+    CommunityMessageDeletePayload:
+      type: object
+      description: |
+        Client → server. Delete a community message.
+        `forEveryone` — only sender / moderator / admin. Broadcasts a tombstone.
+        `forMe` — any participant; message hidden for the caller only (no broadcast).
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+        type:
+          type: string
+          enum: [forEveryone, forMe]
+      required: [messageId, communityId, roomId, type]
+    CommunityMessageDeletedPayload:
+      type: object
+      description: |
+        Server → client broadcast to `community:<communityId>` after a `forEveryone` delete.
+        Clients replace the message body with a tombstone placeholder.
+        NOT emitted for `forMe` deletes.
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+        deleteType: { type: string, enum: [forEveryone, forMe] }
+        deletedBy:
+          {
+            type: string,
+            description: "userId of the actor who deleted the message.",
+          }
+      required: [messageId, communityId, roomId, deleteType, deletedBy]
+    CommunityMessagePinPayload:
+      type: object
+      description: "Client → server. Pin a message (moderator / admin only)."
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+      required: [messageId, communityId, roomId]
+    CommunityMessagePinnedPayload:
+      type: object
+      description: |
+        Server → client broadcast to `community:<communityId>` after a pin.
+        Clients show / update the pinned-message banner.
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+        pinnedIds:
+          type: array
+          items: { type: string }
+          description: "Complete list of pinned message IDs in this room after this pin."
+        pinnedCount: { type: integer }
+        pinnedAt: { type: integer, description: "Epoch ms when pinned." }
+        pinnedBy:
+          {
+            type: string,
+            description: "userId of the moderator/admin who pinned.",
+          }
+      required:
+        [
+          messageId,
+          communityId,
+          roomId,
+          pinnedIds,
+          pinnedCount,
+          pinnedAt,
+          pinnedBy,
+        ]
+    CommunityMessageUnpinPayload:
+      type: object
+      description: "Client → server. Unpin a message (moderator / admin only)."
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+      required: [messageId, communityId, roomId]
+    CommunityMessageUnpinnedPayload:
+      type: object
+      description: |
+        Server → client broadcast to `community:<communityId>` after an unpin.
+        Clients hide / update the pinned-message banner.
+      properties:
+        messageId: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+        pinnedIds:
+          type: array
+          items: { type: string }
+          description: "Complete list of remaining pinned message IDs after this unpin."
+        pinnedCount: { type: integer }
+        unpinnedBy:
+          {
+            type: string,
+            description: "userId of the moderator/admin who unpinned.",
+          }
+      required:
+        [messageId, communityId, roomId, pinnedIds, pinnedCount, unpinnedBy]
 
     # -------- notify payloads --------
     NotificationsFetchPayload:
@@ -1126,11 +3301,58 @@ components:
       properties:
         notificationIds:
           type: array
-          description: Empty array allowed.
+          maxItems: 500
+          description: "Ids to mark read. An empty array marks ALL unread as read. Capped at 500 per call (matches the gateway Zod bound)."
           items: { type: string }
       required: [notificationIds]
     NotificationCountPayload:
       type: object
+      description: "Aggregate unread only; no per-type breakdown in V1 — fetch the feed for category counts."
       properties:
         count: { type: integer }
       required: [count]
+    NotificationItem:
+      type: object
+      description: |
+        An in-app notification (the `notification:new` push and each row of the
+        `notifications:fetch` ack). A stable envelope plus a `data` map of
+        type-specific fields. The auth/OTP system events (email relays) are NOT
+        delivered here. Treat unknown `type` values defensively — the set grows.
+      properties:
+        notificationId: { type: string }
+        id:
+          type: string
+          description: |
+            Deprecated alias of `notificationId` present in some legacy payloads.
+            Prefer `notificationId`. Clients should coalesce: `notificationId ?? id`.
+            This alias will be removed in V2.
+        type:
+          type: string
+          description: |
+            Discriminator. Known in-app values:
+            `MESSAGE` · `friend.requested` · `friend.accepted` ·
+            `community.join_requested` · `community.member_added` ·
+            `community.admin_transferred` · `community.member_role_changed` ·
+            `community.member_kicked` · `community.member_banned` ·
+            `community.invite_sent` · `community.invite_accepted` ·
+            `community.report_created` · `community.report_actioned` ·
+            `community.deleted`.
+        title: { type: string }
+        body: { type: string }
+        referenceId:
+          {
+            type: string,
+            description: "primary context id (conversationId / friendshipId / communityId …).",
+          }
+        isRead: { type: boolean }
+        createdAt: { type: integer, description: "epoch ms." }
+        data:
+          type: object
+          additionalProperties: { type: string }
+          description: |
+            Type-specific fields (FCM-style — all string values). For `MESSAGE`:
+            `{ conversationId, conversationType, messageId, clientMessageId,
+            senderId, senderName, senderAvatar, contentType, preview, sentAt }`.
+            For `friend.*`: `{ friendshipId, requesterId | addresseeId }`.
+            For `community.*`: `{ communityId, … }`.
+      required: [type]

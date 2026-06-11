@@ -20,6 +20,8 @@ const envSchema = z.object({
   USER_SERVICE_URL: z.string().url().optional(),
   COMMUNITY_SERVICE_URL: z.string().url().optional(),
   CHAT_SERVICE_URL: z.string().url().optional(),
+  /** Notification service REST URL — used by /api/v1/devices for FCM/APNs token registration. */
+  NOTIFICATION_SERVICE_URL: z.string().url().optional(),
   AUTH_GRPC_URL: z.string().optional(),
   USER_GRPC_URL: z.string().optional(),
   /** gRPC URLs for socket-facing services (required — sockets cannot operate without them). */
@@ -43,6 +45,15 @@ const envSchema = z.object({
   ADMIN_LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   REDIS_URL: z.string(),
   CORS_ALLOWED_ORIGINS: z.string(),
+  /**
+   * Comma-separated request headers reflected in the CORS preflight's
+   * `Access-Control-Allow-Headers`. Must list every custom header the browser
+   * sends (e.g. `x-lang`) — a header absent here makes the browser block the
+   * request at preflight even when the origin is allowed. Defaults cover the
+   * standard auth/content headers plus the `x-lang` locale header the web
+   * client sends on every request.
+   */
+  CORS_ALLOWED_HEADERS: z.string().default("Content-Type,Authorization,x-lang"),
   API_PUBLIC_URL: z.string().url().optional(),
   /** Comma-separated Swagger server URLs (e.g. localhost + LAN IP). */
   SWAGGER_SERVER_URLS: z.string().optional(),
@@ -98,6 +109,13 @@ export function getDefaultAppVersionConfig(): AppVersionConfig {
 export function getCorsAllowedOrigins(): string[] {
   return env.CORS_ALLOWED_ORIGINS.split(",")
     .map((o) => o.trim())
+    .filter(Boolean);
+}
+
+/** Request headers allowed in the CORS preflight — comma-separated list from env. */
+export function getCorsAllowedHeaders(): string[] {
+  return env.CORS_ALLOWED_HEADERS.split(",")
+    .map((h) => h.trim())
     .filter(Boolean);
 }
 

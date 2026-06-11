@@ -23,9 +23,12 @@ const usernameSchema = z
 
 const dateOfBirthSchema = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "Date of birth must be YYYY-MM-DD")
+  .regex(
+    /^\d{4}-\d{2}-\d{2}$/,
+    "Date of birth must be in YYYY-MM-DD format (e.g. 1995-06-15)"
+  )
   .refine(isValidProfileDateOfBirth, {
-    message: "Date of birth must be a valid date and you must be at least 13",
+    message: "You must be at least 13 years old to use this app",
   });
 
 const genderSchema = z.enum(PROFILE_GENDER_VALUES);
@@ -64,7 +67,7 @@ export const updateProfileSchema = z
       body.dateOfBirth !== undefined ||
       body.gender !== undefined ||
       body.avatarObjectKey !== undefined,
-    { message: "At least one field is required to update" }
+    { message: "Please provide at least one field to update" }
   );
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

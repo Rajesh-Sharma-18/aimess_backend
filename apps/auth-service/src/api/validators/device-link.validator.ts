@@ -12,14 +12,14 @@ export const initiateDeviceLinkSchema = z.object({
 export type InitiateDeviceLinkInput = z.infer<typeof initiateDeviceLinkSchema>;
 
 export const deviceLinkStatusQuerySchema = z.object({
-  linkToken: z.string().trim().min(1),
-  pollSecret: z.string().trim().min(1),
+  linkToken: z.string().trim().min(1, "Link token is required"),
+  pollSecret: z.string().trim().min(1, "Poll secret is required"),
 });
 
 export type DeviceLinkStatusQuery = z.infer<typeof deviceLinkStatusQuerySchema>;
 
 export const approveDeviceLinkSchema = z.object({
-  linkToken: z.string().trim().min(1),
+  linkToken: z.string().trim().min(1, "Link token is required"),
   deviceLabel: z.string().trim().max(100).optional(),
 });
 

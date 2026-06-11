@@ -6,6 +6,8 @@ import { authPaths } from "../../paths/auth.paths.js";
 import { chatPaths } from "../../paths/chat.paths.js";
 import { communityPaths } from "../../paths/community.paths.js";
 import { userPaths } from "../../paths/user.paths.js";
+import { chatExtrasPaths } from "../../paths/chat-extras.paths.js";
+import { devicesPaths } from "../../paths/devices.paths.js";
 
 /**
  * OpenAPI paths for API v1.
@@ -20,6 +22,8 @@ export const v1Paths = {
   ...userPaths,
   ...communityPaths,
   ...chatPaths,
+  ...chatExtrasPaths,
+  ...devicesPaths,
   ...adminPaths,
 };
 
@@ -54,6 +58,11 @@ export const v1Tags = [
   {
     name: "Chat — Media",
     description: "File upload presigned URLs (chat-service)",
+  },
+  {
+    name: "Devices",
+    description:
+      "FCM / APNs device token registration for push notifications (notifications-service)",
   },
   {
     name: "Admin — Auth & Account",

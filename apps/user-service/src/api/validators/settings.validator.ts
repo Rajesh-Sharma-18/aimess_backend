@@ -34,12 +34,15 @@ const liveStreamQualitySchema = z.enum([
   "DATA_SAVER_480P",
 ]);
 
-const uuidSchema = z.string().uuid("Invalid user id");
+const uuidSchema = z.string().uuid("User ID is invalid");
 
 // "HH:mm" 24-hour clock, e.g. "22:00".
 const timeOfDaySchema = z
   .string()
-  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Time must be in HH:mm 24-hour format");
+  .regex(
+    /^([01]\d|2[0-3]):[0-5]\d$/,
+    "Time must be in HH:mm 24-hour format (e.g. 22:00)"
+  );
 
 // 0 = Sunday .. 6 = Saturday.
 const dayOfWeekSchema = z.number().int().min(0).max(6);
@@ -124,28 +127,26 @@ export const updateSettingsSchema = z
     { message: "At least one settings group is required to update" }
   )
   .refine((body) => !body.privacy || hasAtLeastOneKey(body.privacy), {
-    message: "Privacy settings must include at least one field when provided",
+    message: "Privacy settings must include at least one field",
     path: ["privacy"],
   })
   .refine((body) => !body.chat || hasAtLeastOneKey(body.chat), {
-    message: "Chat settings must include at least one field when provided",
+    message: "Chat settings must include at least one field",
     path: ["chat"],
   })
   .refine((body) => !body.app || hasAtLeastOneKey(body.app), {
-    message: "App settings must include at least one field when provided",
+    message: "App settings must include at least one field",
     path: ["app"],
   })
   .refine(
     (body) => !body.notifications || hasAtLeastOneKey(body.notifications),
     {
-      message:
-        "Notification settings must include at least one field when provided",
+      message: "Notification settings must include at least one field",
       path: ["notifications"],
     }
   )
   .refine((body) => !body.liveStream || hasAtLeastOneKey(body.liveStream), {
-    message:
-      "Livestream settings must include at least one field when provided",
+    message: "Livestream settings must include at least one field",
     path: ["liveStream"],
   });
 

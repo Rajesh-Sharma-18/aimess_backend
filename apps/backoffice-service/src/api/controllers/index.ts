@@ -13,6 +13,9 @@ export {
   dismissReport,
   bulkResolveReports,
   bulkDismissReports,
+  getReportEvidence,
+  getReportHistory,
+  getReportRelated,
 } from "./moderation.controller.js";
 export {
   listLivestreams,
@@ -30,6 +33,9 @@ export {
 export {
   listUsers,
   getUserDetails,
+  listUserReports,
+  listUserCommunities,
+  listOtherCommunityMembers,
   banUser,
   suspendUser,
   unbanUser,
@@ -39,8 +45,14 @@ export {
 export {
   listCommunities,
   getCommunityDetails,
+  listCommunityMembers,
   closeCommunity,
   reopenCommunity,
   bulkCloseCommunities,
   bulkReopenCommunities,
 } from "./community.controller.js";
+export {
+  listGroups,
+  getGroupDetails,
+  listGroupMembers,
+} from "./groups.controller.js";

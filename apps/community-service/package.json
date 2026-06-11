@@ -9,6 +9,8 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed/categories.seed.ts",
+    "db:backfill:category-name": "tsx prisma/seed/backfill-category-name.ts",
+    "db:backfill:last-activity-at": "tsx prisma/seed/backfill-last-activity-at.ts",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
     "lint": "eslint .",

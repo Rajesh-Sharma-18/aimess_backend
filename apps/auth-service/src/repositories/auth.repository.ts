@@ -17,6 +17,7 @@ const loginUserSelect = {
   lockedUntil: true,
   deletedAt: true,
   isProfileCompleted: true,
+  role: true,
 } as const;
 
 export const authRepository = {
@@ -100,20 +101,61 @@ export const authRepository = {
    * Sets the user's primary account exactly once. The `primaryAccount: null`
    * guard in the WHERE makes this an atomic no-op when a value is already
    * present, so the first linked provider wins and is never overwritten even
-   * under concurrent link requests. Returns the effective value afterwards.
+   * under concurrent link requests.
+   *
+   * The `updateMany` and subsequent `findUnique` are wrapped in a single
+   * Prisma interactive transaction so that a concurrent read (e.g. a gRPC
+   * getAccountSummary call) can never observe the intermediate state where
+   * the updateMany has not yet committed but the findUnique has already read.
    */
   async setPrimaryAccountIfUnset(userId: string, provider: AuthProvider) {
-    await prisma.authUser.updateMany({
-      where: { id: userId, primaryAccount: null },
-      data: { primaryAccount: provider },
-    });
+    return prisma.$transaction(async (tx) => {
+      await tx.authUser.updateMany({
+        where: { id: userId, primaryAccount: null },
+        data: { primaryAccount: provider },
+      });
 
-    const row = await prisma.authUser.findUnique({
-      where: { id: userId },
-      select: { primaryAccount: true },
-    });
+      const row = await tx.authUser.findUnique({
+        where: { id: userId },
+        select: { primaryAccount: true },
+      });
 
-    return row?.primaryAccount ?? null;
+      return row?.primaryAccount ?? null;
+    });
+  },
+
+  /**
+   * Atomically links a verified email and promotes EMAIL to the user's primary
+   * account if none has been set yet. Combines what were previously two
+   * sequential repository calls (`linkVerifiedEmail` + `setPrimaryAccountIfUnset`)
+   * into a single Prisma interactive transaction, eliminating the race window
+   * where a concurrent getAccountSummary gRPC call could read email=set but
+   * primaryAccount=null.
+   */
+  async linkVerifiedEmailAndSetPrimary(
+    userId: string,
+    email: string,
+    provider: AuthProvider
+  ) {
+    return prisma.$transaction(async (tx) => {
+      const updated = await tx.authUser.update({
+        where: { id: userId },
+        data: { email, emailVerified: true },
+        select: { id: true, email: true, emailVerified: true },
+      });
+
+      await tx.authUser.updateMany({
+        where: { id: userId, primaryAccount: null },
+        data: { primaryAccount: provider },
+      });
+
+      const row = await tx.authUser.findUnique({
+        where: { id: userId },
+        select: { primaryAccount: true },
+      });
+
+      return { ...updated, primaryAccount: row?.primaryAccount ?? null };
+    });
   },
 
   linkVerifiedEmail(userId: string, email: string) {
@@ -348,6 +390,7 @@ export const authRepository = {
         account: true,
         email: true,
         createdAt: true,
+        role: true,
       },
     });
   },

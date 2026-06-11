@@ -2,8 +2,12 @@ import type { Channel, ConsumeMessage, ChannelModel } from "amqplib";
 import { logger } from "@aimess/logger";
 
 import { prisma } from "../config/prisma.js";
+import { redis } from "../config/redis.js";
 import { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import { RoomMemberRepository } from "../repositories/room-member.repository.js";
+import { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import { PrivateMessageRepository } from "../repositories/private-message.repository.js";
+import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 
 /** community member status → chat RoomMember status. */
 export function mapMemberStatus(status: string | undefined): string | null {
@@ -81,6 +85,12 @@ interface CommunityRoomSyncEvent {
     role?: string;
     // community.status.changed
     communityStatus?: string;
+    // community.invite_link_shared
+    communityName?: string;
+    linkCode?: string;
+    inviterId?: string;
+    recipientId?: string;
+    eventAt?: string;
   };
 }
 
@@ -88,6 +98,8 @@ export class CommunityRoomSyncConsumer {
   private channel: Channel | null = null;
   private roomRepo = new GeneralRoomRepository(prisma);
   private memberRepo = new RoomMemberRepository(prisma);
+  private privateRoomRepo = new PrivateRoomRepository(prisma);
+  private privateMessageRepo = new PrivateMessageRepository(prisma);
 
   async start(connection: ChannelModel): Promise<void> {
     this.channel = await connection.createChannel();
@@ -167,6 +179,30 @@ export class CommunityRoomSyncConsumer {
           break;
         }
 
+        case "community.invite_link_shared": {
+          const {
+            inviterId,
+            recipientId,
+            linkCode,
+            communityId: cId,
+            communityName,
+          } = event.data;
+          if (!inviterId || !recipientId || !linkCode) {
+            logger.warn(
+              "community.invite_link_shared: missing inviterId/recipientId/linkCode — skipping"
+            );
+            break;
+          }
+          await this.deliverInviteLinkDm({
+            inviterId,
+            recipientId,
+            linkCode,
+            communityId: cId,
+            communityName: communityName ?? "",
+          });
+          break;
+        }
+
         default:
           logger.warn(`Unknown community.chat.sync event type: ${event.type}`);
       }
@@ -176,6 +212,81 @@ export class CommunityRoomSyncConsumer {
       logger.error("Error processing community.chat.sync event", err);
       this.channel?.nack(msg, false, false);
     }
+  }
+
+  /**
+   * Creates or reuses a private room between inviter and recipient, then inserts
+   * a SYSTEM message carrying the community invite link. Bypasses the friendship
+   * check intentionally — this is an admin-initiated system notification, not a
+   * user-to-user message. Publishes to Redis so delivery-service fans it out.
+   */
+  private async deliverInviteLinkDm(params: {
+    inviterId: string;
+    recipientId: string;
+    linkCode: string;
+    communityId: string;
+    communityName: string;
+  }): Promise<void> {
+    const { inviterId, recipientId, linkCode, communityId, communityName } =
+      params;
+
+    // 1. Find or create the private room (no friendship check — system event).
+    const key = buildParticipantsKey(inviterId, recipientId);
+    let room = await this.privateRoomRepo.findByParticipantsKey(key);
+    if (!room) {
+      const roomId = generateRoomId("prv");
+      room = await this.privateRoomRepo.create({
+        roomId,
+        participants: [inviterId, recipientId].sort(),
+        participantsKey: key,
+      });
+      logger.debug(
+        `invite_link_shared: provisioned private room=${roomId} for ${inviterId}↔${recipientId}`
+      );
+    }
+
+    // 2. Allocate sequence number and persist the system message.
+    const seq = await this.privateRoomRepo.allocateSequence(room.roomId);
+    const message = await this.privateMessageRepo.createMessage({
+      roomId: room.roomId,
+      senderId: inviterId,
+      receiverId: recipientId,
+      content: { text: "" },
+      messageType: "SYSTEM",
+      systemEvent: "COMMUNITY_INVITE",
+      systemData: { communityId, communityName, linkCode },
+      sequenceNumber: seq,
+    });
+
+    // 3. Publish to Redis so delivery-service fans out to connected sockets.
+    await redis
+      .publish(
+        `conv:${room.roomId}`,
+        JSON.stringify({
+          event: "message:new",
+          data: {
+            messageId: message.id,
+            conversationId: room.roomId,
+            senderId: inviterId,
+            contentType: "SYSTEM",
+            contentText: "",
+            sentAt:
+              message.createdAt instanceof Date
+                ? message.createdAt.getTime()
+                : Date.now(),
+            sequenceNumber: seq,
+          },
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `invite_link_shared: Redis publish failed for room=${room!.roomId}: ${String(err)}`
+        );
+      });
+
+    logger.debug(
+      `invite_link_shared: system DM delivered room=${room.roomId} msg=${message.id}`
+    );
   }
 
   async stop(): Promise<void> {
