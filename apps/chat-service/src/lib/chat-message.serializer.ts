@@ -19,6 +19,19 @@ export function normalizeMessageType(type: string | null | undefined): string {
   return t ? t.toUpperCase() : "TEXT";
 }
 
+/** Map a stored message entity to its client wire shape: drop the internal
+ *  `messageType` column, expose UPPER-CASE `contentType`. All other fields pass
+ *  through unchanged. Null/undefined passes through untouched. */
+export function toWireMessage<T extends { messageType?: string | null }>(
+  entity: T
+): Omit<T, "messageType"> & { contentType: string } {
+  const { messageType, ...rest } = entity;
+  return {
+    ...rest,
+    contentType: normalizeMessageType(messageType),
+  } as Omit<T, "messageType"> & { contentType: string };
+}
+
 export function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value ?? {});
@@ -167,7 +180,6 @@ export function buildChatMessageEvent(
     senderRole: input.senderRole ?? "",
     receiverId:
       input.conversationType === "GROUP" ? "" : (input.receiverId ?? ""),
-    messageType,
     content,
     parentMessageId: input.parentMessageId ?? "",
     quoteData: buildCanonicalQuote(input.quoteData),

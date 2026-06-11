@@ -19,8 +19,9 @@ export class GroupRoomController {
   });
 
   getRoom = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const room = await this.service.getRoom(roomId);
+    const room = await this.service.getRoom(roomId, userId);
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(room, t("CHAT_GROUP_FETCHED", req.locale)));

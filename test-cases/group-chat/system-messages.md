@@ -2,7 +2,7 @@
 
 **Source:** `apps/chat-service/src/services/group-system-message.service.ts` (`post`, `buildSystemText`) · `types/enums.ts` (`SystemEvent`) · callers: `group-room.service.ts`, `group-member.service.ts`, `group-invite-link.service.ts` · `docs/SOCKET_EVENTS.md` §4.2 (Group system messages), §4.3 (catch-up `systemEvent`/`systemData`) · commit `8bdd3cd` (include group system messages in `chat:catchup`)
 
-**Contract:** every group lifecycle action posts a `messageType:"SYSTEM"` `GroupMessage` carrying a `systemEvent` code + structured `systemData`, plus an English `content.text` preview fallback. Each post:
+**Contract:** every group lifecycle action posts a `contentType:"SYSTEM"` `GroupMessage` carrying a `systemEvent` code + structured `systemData`, plus an English `content.text` preview fallback. Each post:
 
 1. resolves actor/target user snapshots (names, avatar) and folds `actorId/actorName` (+ `targetUserId/targetName`, `newRole`, `newName`) into `systemData`;
 2. allocates the per-room monotonic `sequenceNumber` (so it flows through `chat:catchup`);

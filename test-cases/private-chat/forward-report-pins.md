@@ -19,7 +19,7 @@
 | **Priority**              | High                                                                                          |
 | **Preconditions**         | Source message exists, not deleted; A & receiver friends                                      |
 | **Request Payload**       | `{ targetRoomId, receiverId:"<B>", clientMessageId:"f1" }`                                    |
-| **Expected Response**     | `201` `CHAT_MESSAGE_FORWARDED` `{ data:{ id, messageType } }`                                 |
+| **Expected Response**     | `201` `CHAT_MESSAGE_FORWARDED` `{ data:{ id, contentType } }`                                 |
 | **Expected DB Changes**   | New forwarded message in targetRoom with `forwardData`; target room bumped                    |
 | **Expected Socket/Event** | `message:new` → `conv:<targetRoomId>` `{ isForwarded:true }`; `conv:updated` to [A, receiver] |
 | **Notes**                 | Rate-limited by `sendLimit`                                                                   |

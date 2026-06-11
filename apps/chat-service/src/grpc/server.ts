@@ -13,6 +13,7 @@ import {
 import {
   publishMessageSentSafe,
   buildPushPreview,
+  buildMessagePreview,
 } from "../events/publish-message-sent.js";
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
@@ -29,6 +30,7 @@ import type { CommunityMessageService } from "../services/community-message.serv
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import {
   buildChatMessageEvent,
+  buildCanonicalQuote,
   groupStoredReactions,
   flattenStoredReactions,
   normalizeMessageType,
@@ -262,8 +264,6 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               msg.createdAt instanceof Date
                 ? msg.createdAt.getTime()
                 : Date.now();
-            const bumpText =
-              ((msg.content as Record<string, unknown>)?.text as string) ?? "";
             const bumpBase = {
               redis,
               type: (conversationType?.toUpperCase() === "GROUP"
@@ -275,7 +275,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               lastMessageAt: bumpSentAt,
               preview: {
                 contentType: normalizeMessageType(msg.messageType),
-                text: bumpText,
+                text: buildMessagePreview(msg.messageType, msg.content),
               },
             };
             if (conversationType === "GROUP") {
@@ -964,7 +964,10 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               lastMessageAt: message.createdAt.getTime(),
               preview: {
                 contentType: normalizeMessageType(message.messageType),
-                text: "",
+                text: buildMessagePreview(
+                  message.messageType,
+                  (message as unknown as Record<string, unknown>).content
+                ),
               },
             };
             if (conversationType === "GROUP") {
@@ -1500,9 +1503,8 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                 senderId: saved.sentBy,
                 senderName,
                 senderAvatar,
-                // §1: unified UPPER-CASE casing on BOTH messageType and the
-                // contentType alias (no within-event lower/upper split).
-                messageType: normalizeMessageType(saved.messageType),
+                parentMessageId: saved.parentMessageId ?? "",
+                quoteData: buildCanonicalQuote(saved.quoteData),
                 content: {
                   text: saved.message ?? "",
                   files: parsed.files ?? [],
@@ -1554,7 +1556,12 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             lastMessageAt: sentAt,
             preview: {
               contentType: normalizeMessageType(saved.messageType),
-              text: saved.message ?? "",
+              text: buildMessagePreview(saved.messageType, {
+                text: saved.message ?? "",
+                files: parsed.files ?? [],
+                ...(parsed.location ? { location: parsed.location } : {}),
+                ...(parsed.contact ? { contact: parsed.contact } : {}),
+              }),
             },
           });
 
@@ -1604,7 +1611,9 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               roomId: m.roomId,
               senderId: m.sentBy,
               message: m.message ?? "",
-              contentType: normalizeMessageType(m.messageType),
+              // getMessages now returns the wire shape: `contentType` is already
+              // the canonical UPPER-CASE value (§1), so no re-normalize needed.
+              contentType: m.contentType,
               mediaKey: (() => {
                 const att = Array.isArray(m.attachments)
                   ? (m.attachments[0] as Record<string, unknown> | undefined)
@@ -1840,7 +1849,6 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                 roomId: result.roomId,
                 senderId: result.sentBy,
                 message: result.message ?? "",
-                messageType: normalizeMessageType(result.messageType),
                 contentType: normalizeMessageType(result.messageType),
                 editedAt:
                   result.editedAt instanceof Date

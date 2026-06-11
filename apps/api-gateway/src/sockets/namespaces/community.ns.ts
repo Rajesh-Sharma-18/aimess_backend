@@ -3,7 +3,14 @@ import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { ackOk, ackError } from "../ack.js";
 import type { CommunityClient } from "../../grpc/clients/community.client.js";
+
+// §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
+// socket frame or fan an oversized payload out to a whole community room.
+const MAX_TEXT_LEN = 4000; // message body / caption (matches chat-service CHAT_TEXT_MAX_CHARS)
+const MAX_FILES = 30; // attachments per message (gallery)
+const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 
 const CommunityJoinSchema = z.object({
   communityId: z.string().min(1),
@@ -27,12 +34,14 @@ const CommunityMsgSendSchema = z.object({
   communityId: z.string().min(1),
   roomId: z.string().min(1),
   clientMessageId: z.string().optional(),
-  message: z.string().default(""),
+  message: z.string().max(MAX_TEXT_LEN).default(""),
   contentType: z
     .string()
     .min(1)
     .transform((v) => v.toUpperCase()),
-  media: z.object({ files: z.array(CommunityMsgSendFileSchema) }).optional(),
+  media: z
+    .object({ files: z.array(CommunityMsgSendFileSchema).max(MAX_FILES) })
+    .optional(),
   location: z
     .object({
       lat: z.number().min(-90).max(90),
@@ -61,13 +70,24 @@ const CommunityMsgSendSchema = z.object({
 });
 const CommunityMsgsFetchSchema = z.object({
   roomId: z.string().min(1),
-  cursor: z.string().optional(),
-  limit: z.number().int().positive().max(100).optional(),
+  // Gap #8: cursor must be a valid ISO 8601 date-time string AND must not be in
+  // the future — a future cursor would return 0 results and is almost certainly
+  // a client bug or a replay attack.
+  // 5 s future grace absorbs sender-clock skew (last-message timestamps from a
+  // device whose clock is slightly ahead should still be accepted as cursors).
+  cursor: z
+    .string()
+    .datetime({ offset: true })
+    .refine((d) => new Date(d) <= new Date(Date.now() + 5_000), {
+      message: "cursor must not be in the future",
+    })
+    .optional(),
+  limit: z.number().int().positive().max(100).default(30),
 });
 const CommunityMsgReactSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
-  emoji: z.string().min(1),
+  emoji: z.string().min(1).max(MAX_EMOJI_LEN),
 });
 const CommunityCatchupRoomSchema = z.object({
   roomId: z.string().min(1),
@@ -144,29 +164,42 @@ export function registerCommunityNamespace(
   );
 
   community.on("connection", (socket: Socket) => {
-    const { userId } = socket.data;
+    const { userId, locale } = socket.data;
     void socket.join(`user:${userId}`);
     logger.debug(`/community connected userId=${userId}`);
 
-    socket.on("community:join", (payload: unknown) => {
-      const r = CommunityJoinSchema.safeParse(payload);
-      if (!r.success) return;
-      void socket.join(`community:${r.data.communityId}`);
-    });
+    socket.on(
+      "community:join",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CommunityJoinSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        void socket.join(`community:${r.data.communityId}`);
+        ackOk(callback, "SOCKET_COMMUNITY_JOINED", locale);
+      }
+    );
 
-    socket.on("community:leave", (payload: unknown) => {
-      const r = CommunityLeaveSchema.safeParse(payload);
-      if (!r.success) return;
-      void socket.leave(`community:${r.data.communityId}`);
-    });
+    socket.on(
+      "community:leave",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CommunityLeaveSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        void socket.leave(`community:${r.data.communityId}`);
+        ackOk(callback, "SOCKET_COMMUNITY_LEFT", locale);
+      }
+    );
 
     socket.on(
       "community:message:send",
       (payload: unknown, callback?: (res: unknown) => void) => {
-        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgSendSchema.safeParse(payload);
         if (!r.success) {
-          ack({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         communityClient
@@ -183,10 +216,12 @@ export function registerCommunityNamespace(
             sticker: r.data.sticker,
             parentMessageId: r.data.parentMessageId,
           })
-          .then((result) => ack({ success: true, data: result }))
+          .then((result) =>
+            ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_SENT", locale, result)
+          )
           .catch((err: unknown) => {
             logger.warn(`/community message:send gRPC error: ${String(err)}`);
-            ack({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );
@@ -194,18 +229,19 @@ export function registerCommunityNamespace(
     socket.on(
       "community:messages:fetch",
       (payload: unknown, callback?: (res: unknown) => void) => {
-        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgsFetchSchema.safeParse(payload);
         if (!r.success) {
-          ack({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         communityClient
           .getCommunityMessages({ ...r.data, requesterId: userId })
-          .then((result) => ack({ success: true, data: result }))
+          .then((result) =>
+            ackOk(callback, "SOCKET_COMMUNITY_MESSAGES_FETCHED", locale, result)
+          )
           .catch((err: unknown) => {
             logger.warn(`/community messages:fetch gRPC error: ${String(err)}`);
-            ack({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );
@@ -213,18 +249,19 @@ export function registerCommunityNamespace(
     socket.on(
       "community:message:react",
       (payload: unknown, callback?: (res: unknown) => void) => {
-        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgReactSchema.safeParse(payload);
         if (!r.success) {
-          ack({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         communityClient
           .reactToCommunityMessage({ ...r.data, userId })
-          .then((result) => ack({ success: true, data: result }))
+          .then((result) =>
+            ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_REACTED", locale, result)
+          )
           .catch((err: unknown) => {
             logger.warn(`/community message:react gRPC error: ${String(err)}`);
-            ack({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );
@@ -234,10 +271,9 @@ export function registerCommunityNamespace(
     socket.on(
       "community:catchup",
       (payload: unknown, callback?: (res: unknown) => void) => {
-        const ack = typeof callback === "function" ? callback : () => undefined;
         const parsed = CommunityCatchupSchema.safeParse(payload);
         if (!parsed.success) {
-          ack({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         void (async () => {
@@ -292,7 +328,9 @@ export function registerCommunityNamespace(
             }
           });
 
-          ack({ success: true, data: { rooms: ackRooms } });
+          ackOk(callback, "SOCKET_COMMUNITY_CATCHUP_COMPLETED", locale, {
+            rooms: ackRooms,
+          });
         })();
       }
     );
@@ -300,10 +338,9 @@ export function registerCommunityNamespace(
     socket.on(
       "community:message:edit",
       (payload: unknown, callback?: (res: unknown) => void) => {
-        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgEditSchema.safeParse(payload);
         if (!r.success) {
-          ack({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         communityClient
@@ -313,10 +350,12 @@ export function registerCommunityNamespace(
             userId,
             text: r.data.content.text,
           })
-          .then((result) => ack({ success: true, data: result }))
+          .then((result) =>
+            ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_EDITED", locale, result)
+          )
           .catch((err: unknown) => {
             logger.warn(`/community message:edit gRPC error: ${String(err)}`);
-            ack({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );
@@ -324,10 +363,9 @@ export function registerCommunityNamespace(
     socket.on(
       "community:message:delete",
       (payload: unknown, callback?: (res: unknown) => void) => {
-        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgDeleteSchema.safeParse(payload);
         if (!r.success) {
-          ack({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         communityClient
@@ -337,10 +375,12 @@ export function registerCommunityNamespace(
             userId,
             deleteType: r.data.type,
           })
-          .then((result) => ack({ success: true, data: result }))
+          .then((result) =>
+            ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_DELETED", locale, result)
+          )
           .catch((err: unknown) => {
             logger.warn(`/community message:delete gRPC error: ${String(err)}`);
-            ack({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );
@@ -348,18 +388,19 @@ export function registerCommunityNamespace(
     socket.on(
       "community:message:pin",
       (payload: unknown, callback?: (res: unknown) => void) => {
-        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgPinSchema.safeParse(payload);
         if (!r.success) {
-          ack({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         communityClient
           .pinCommunityMessage({ ...r.data, userId })
-          .then((result) => ack({ success: true, data: result }))
+          .then((result) =>
+            ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_PINNED", locale, result)
+          )
           .catch((err: unknown) => {
             logger.warn(`/community message:pin gRPC error: ${String(err)}`);
-            ack({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );
@@ -367,18 +408,19 @@ export function registerCommunityNamespace(
     socket.on(
       "community:message:unpin",
       (payload: unknown, callback?: (res: unknown) => void) => {
-        const ack = typeof callback === "function" ? callback : () => undefined;
         const r = CommunityMsgUnpinSchema.safeParse(payload);
         if (!r.success) {
-          ack({ success: false, error: "INVALID_PAYLOAD" });
+          ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
         communityClient
           .unpinCommunityMessage({ ...r.data, userId })
-          .then((result) => ack({ success: true, data: result }))
+          .then((result) =>
+            ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_UNPINNED", locale, result)
+          )
           .catch((err: unknown) => {
             logger.warn(`/community message:unpin gRPC error: ${String(err)}`);
-            ack({ success: false, error: "SERVICE_ERROR" });
+            ackError(callback, "SERVICE_ERROR", locale);
           });
       }
     );

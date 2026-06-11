@@ -1,0 +1,178 @@
+import type { MessageCatalog } from "./types.js";
+
+/**
+ * Socket.IO acknowledgement messages (api-gateway namespaces /chat, /community,
+ * /notify). Every request/response socket event answers its ack callback with a
+ * localized, human-readable `message` — mirroring the REST `t()` envelope so a
+ * mobile client can surface one consistent sentence whether it called HTTP or a
+ * socket event.
+ *
+ * Kept in a dedicated catalog (not reusing CHAT_/COMMUNITY_ keys) because the
+ * real-time ack copy is its own contract surface and may evolve independently of
+ * the REST wording; any overlap in phrasing is incidental.
+ */
+export const SOCKET_MESSAGES = {
+  // ── /chat — rooms ───────────────────────────────────────────────────────
+  SOCKET_CONVERSATION_JOINED: {
+    vi: "Đã tham gia cuộc trò chuyện",
+    en: "Joined the conversation successfully",
+  },
+  SOCKET_CONVERSATION_LEFT: {
+    vi: "Đã rời cuộc trò chuyện",
+    en: "Left the conversation successfully",
+  },
+
+  // ── /chat — messages ────────────────────────────────────────────────────
+  SOCKET_MESSAGE_SENT: {
+    vi: "Đã gửi tin nhắn",
+    en: "Message sent successfully",
+  },
+  SOCKET_MESSAGE_READ: {
+    vi: "Đã đánh dấu tin nhắn là đã đọc",
+    en: "Messages marked as read",
+  },
+  SOCKET_MESSAGE_REACTED: {
+    vi: "Đã thêm cảm xúc",
+    en: "Reaction added successfully",
+  },
+  SOCKET_MESSAGES_FETCHED: {
+    vi: "Lấy tin nhắn thành công",
+    en: "Messages fetched successfully",
+  },
+  SOCKET_CATCHUP_COMPLETED: {
+    vi: "Đã đồng bộ tin nhắn",
+    en: "Caught up successfully",
+  },
+  SOCKET_MESSAGE_EDITED: {
+    vi: "Đã chỉnh sửa tin nhắn",
+    en: "Message edited successfully",
+  },
+  SOCKET_MESSAGE_DELIVERED: {
+    vi: "Đã đánh dấu tin nhắn là đã nhận",
+    en: "Messages marked as delivered",
+  },
+  SOCKET_MESSAGE_FORWARDED: {
+    vi: "Đã chuyển tiếp tin nhắn",
+    en: "Message forwarded successfully",
+  },
+  SOCKET_REACTIONS_FETCHED: {
+    vi: "Lấy danh sách cảm xúc thành công",
+    en: "Reactions fetched successfully",
+  },
+
+  // ── /chat — presence ────────────────────────────────────────────────────
+  SOCKET_PRESENCE_SUBSCRIBED: {
+    vi: "Đã đăng ký nhận trạng thái hoạt động",
+    en: "Subscribed to presence updates",
+  },
+  SOCKET_PRESENCE_UNSUBSCRIBED: {
+    vi: "Đã hủy đăng ký trạng thái hoạt động",
+    en: "Unsubscribed from presence updates",
+  },
+  SOCKET_PRESENCE_UNSUBSCRIBED_ALL: {
+    vi: "Đã hủy đăng ký tất cả trạng thái hoạt động",
+    en: "Unsubscribed from all presence updates",
+  },
+  SOCKET_PRESENCE_LIST_FETCHED: {
+    vi: "Lấy danh sách theo dõi trạng thái thành công",
+    en: "Presence subscription list fetched successfully",
+  },
+
+  // ── /chat — calls ───────────────────────────────────────────────────────
+  SOCKET_CALL_INITIATED: {
+    vi: "Đã bắt đầu cuộc gọi",
+    en: "Call initiated successfully",
+  },
+  SOCKET_CALL_ANSWERED: {
+    vi: "Đã trả lời cuộc gọi",
+    en: "Call answered successfully",
+  },
+  SOCKET_CALL_DECLINED: {
+    vi: "Đã từ chối cuộc gọi",
+    en: "Call declined",
+  },
+  SOCKET_CALL_ENDED: {
+    vi: "Đã kết thúc cuộc gọi",
+    en: "Call ended",
+  },
+
+  // ── /community ──────────────────────────────────────────────────────────
+  SOCKET_COMMUNITY_JOINED: {
+    vi: "Đã tham gia cộng đồng",
+    en: "Joined the community successfully",
+  },
+  SOCKET_COMMUNITY_LEFT: {
+    vi: "Đã rời khỏi cộng đồng",
+    en: "Left the community successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_SENT: {
+    vi: "Đã gửi tin nhắn",
+    en: "Message sent successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGES_FETCHED: {
+    vi: "Lấy tin nhắn cộng đồng thành công",
+    en: "Community messages fetched successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_REACTED: {
+    vi: "Đã thêm cảm xúc",
+    en: "Reaction added successfully",
+  },
+  SOCKET_COMMUNITY_CATCHUP_COMPLETED: {
+    vi: "Đã đồng bộ tin nhắn",
+    en: "Caught up successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_EDITED: {
+    vi: "Đã chỉnh sửa tin nhắn",
+    en: "Message edited successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_DELETED: {
+    vi: "Đã xóa tin nhắn",
+    en: "Message deleted successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_PINNED: {
+    vi: "Đã ghim tin nhắn",
+    en: "Message pinned successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_UNPINNED: {
+    vi: "Đã bỏ ghim tin nhắn",
+    en: "Message unpinned successfully",
+  },
+
+  // ── /notify ─────────────────────────────────────────────────────────────
+  SOCKET_NOTIFICATIONS_FETCHED: {
+    vi: "Lấy thông báo thành công",
+    en: "Notifications fetched successfully",
+  },
+  SOCKET_NOTIFICATIONS_MARKED_READ: {
+    vi: "Đã đánh dấu thông báo là đã đọc",
+    en: "Notifications marked as read",
+  },
+
+  // ── Error acks — one default sentence per AckErrorCode ───────────────────
+  SOCKET_ERR_INVALID_PAYLOAD: {
+    vi: "Dữ liệu yêu cầu không hợp lệ",
+    en: "The request data is invalid",
+  },
+  SOCKET_ERR_SERVICE: {
+    vi: "Đã xảy ra lỗi, vui lòng thử lại",
+    en: "Something went wrong, please try again",
+  },
+  SOCKET_ERR_FORBIDDEN: {
+    vi: "Bạn không có quyền thực hiện hành động này",
+    en: "You are not allowed to perform this action",
+  },
+  SOCKET_ERR_NOT_FOUND: {
+    vi: "Không tìm thấy tài nguyên yêu cầu",
+    en: "The requested resource was not found",
+  },
+  SOCKET_ERR_RATE_LIMITED: {
+    vi: "Bạn thao tác quá nhanh, vui lòng chậm lại",
+    en: "You are doing that too fast, please slow down",
+  },
+  SOCKET_ERR_CONFLICT: {
+    vi: "Hành động này đã được thực hiện",
+    en: "This action has already been applied",
+  },
+} as const satisfies MessageCatalog;
+
+export type SocketMessageKey = keyof typeof SOCKET_MESSAGES;
