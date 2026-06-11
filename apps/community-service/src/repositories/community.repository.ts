@@ -167,6 +167,13 @@ export const communityRepository = {
     });
   },
 
+  findManyByIds(ids: string[]) {
+    return prisma.community.findMany({
+      where: { id: { in: ids } },
+      include: { category: { select: { id: true, name: true } } },
+    });
+  },
+
   /** Case-insensitive display-name lookup (uniqueness check). */
   findByName(name: string) {
     return prisma.community.findFirst({
@@ -373,6 +380,23 @@ export const communityRepository = {
         status: CommunityMemberStatus.ACTIVE,
       },
       select: { communityId: true },
+    });
+  },
+
+  /** Like `findActiveMembershipsByCommunityIds` but also includes `role` and
+   *  `status` — used by bulk operations that need to branch on the caller's
+   *  role per community (e.g. bulk leave admin-block check). */
+  findActiveMembershipsWithRoleByCommunityIds(
+    userId: string,
+    communityIds: string[]
+  ) {
+    return prisma.communityMember.findMany({
+      where: {
+        userId,
+        communityId: { in: communityIds },
+        status: CommunityMemberStatus.ACTIVE,
+      },
+      select: { communityId: true, role: true, status: true },
     });
   },
 
@@ -649,6 +673,7 @@ export const communityRepository = {
           lastActivityType: true,
           lastActivityPreview: true,
           lastActivityUsername: true,
+          lastActivityUserId: true,
           createdAt: true,
           moderationStatus: true,
           // At most one row per (communityId, userId) by unique constraint, so
@@ -681,7 +706,8 @@ export const communityRepository = {
     activityAt: Date,
     type: string,
     preview: string,
-    username: string | null
+    username: string | null,
+    userId: string | null
   ): Promise<void> {
     await prisma.community.updateMany({
       where: { id: communityId, lastActivityAt: { lt: activityAt } },
@@ -690,6 +716,7 @@ export const communityRepository = {
         lastActivityType: type,
         lastActivityPreview: preview,
         lastActivityUsername: username,
+        lastActivityUserId: userId,
       },
     });
   },
@@ -837,6 +864,7 @@ export const communityRepository = {
           lastActivityType: true,
           lastActivityPreview: true,
           lastActivityUsername: true,
+          lastActivityUserId: true,
           category: { select: { id: true, name: true } },
         },
       }),
@@ -844,6 +872,69 @@ export const communityRepository = {
     ]);
 
     return { rows, total };
+  },
+
+  // ---------------------------------------------------------------------------
+  // Favorites (liked communities)
+  // ---------------------------------------------------------------------------
+  async likeCommunity(userId: string, communityId: string) {
+    return prisma.communityFavorite.upsert({
+      where: { userId_communityId: { userId, communityId } },
+      create: { userId, communityId },
+      update: {},
+    });
+  },
+
+  async unlikeCommunity(userId: string, communityId: string) {
+    return prisma.communityFavorite.deleteMany({
+      where: { userId, communityId },
+    });
+  },
+
+  async isFavorite(userId: string, communityId: string): Promise<boolean> {
+    const row = await prisma.communityFavorite.findUnique({
+      where: { userId_communityId: { userId, communityId } },
+      select: { id: true },
+    });
+    return row !== null;
+  },
+
+  /**
+   * Cursor-paginated list of communities liked by a user.
+   * Cursor is the `CommunityFavorite.id` (ObjectId, time-ordered, desc).
+   */
+  async listFavorites(params: {
+    userId: string;
+    cursor?: string | null;
+    limit: number;
+  }) {
+    const rows = await prisma.communityFavorite.findMany({
+      where: { userId: params.userId },
+      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+      orderBy: { id: "desc" },
+      take: params.limit + 1,
+      select: {
+        id: true,
+        communityId: true,
+        createdAt: true,
+      },
+    });
+    const hasMore = rows.length > params.limit;
+    if (hasMore) rows.pop();
+    const nextCursor = hasMore ? (rows.at(-1)?.id ?? null) : null;
+    return { rows, hasMore, nextCursor };
+  },
+
+  async isFavoriteMany(
+    userId: string,
+    communityIds: string[]
+  ): Promise<Set<string>> {
+    if (communityIds.length === 0) return new Set();
+    const rows = await prisma.communityFavorite.findMany({
+      where: { userId, communityId: { in: communityIds } },
+      select: { communityId: true },
+    });
+    return new Set(rows.map((r) => r.communityId));
   },
 
   // ---------------------------------------------------------------------------

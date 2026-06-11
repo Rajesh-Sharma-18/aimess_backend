@@ -10,6 +10,7 @@ import {
   adminUpdateCategory,
   approveCommunityJoinRequest,
   banCommunityMember,
+  bulkLeaveCommunities,
   bulkMarkReadCommunities,
   bulkMuteCommunities,
   bulkSendCommunityInviteLink,
@@ -32,6 +33,8 @@ import {
   getNotificationPreferences,
   joinCommunity,
   kickCommunityMember,
+  likeCommunity,
+  listLikedCommunities,
   leaveCommunity,
   listCategories,
   listCommunityAuditLogs,
@@ -56,6 +59,7 @@ import {
   transferCommunityAdmin,
   unbanCommunityMember,
   unmuteCommunityMember,
+  unlikeCommunity,
   updateCommunity,
   updateCommunityMemberRole,
   warnCommunityMember,
@@ -69,6 +73,7 @@ import { authenticateAccessToken } from "../../middleware/authenticate-access-to
 import {
   addMembersSchema,
   adminCategoriesQuerySchema,
+  bulkLeaveSchema,
   bulkMarkReadSchema,
   bulkMuteSchema,
   bulkSendInviteLinkSchema,
@@ -283,11 +288,33 @@ communityRoutes.post(
   addCommunityMembers
 );
 
+// Static route must be registered before /:id to prevent "leave" being
+// captured as a communityId param.
+communityRoutes.post(
+  "/leave/bulk",
+  validateBody(bulkLeaveSchema),
+  bulkLeaveCommunities
+);
+
 communityRoutes.post(
   "/:id/leave",
   validateParams(communityIdParamsSchema),
   validateBody(leaveReasonSchema),
   leaveCommunity
+);
+
+communityRoutes.get("/liked", listLikedCommunities);
+
+communityRoutes.post(
+  "/:id/like",
+  validateParams(communityIdParamsSchema),
+  likeCommunity
+);
+
+communityRoutes.delete(
+  "/:id/like",
+  validateParams(communityIdParamsSchema),
+  unlikeCommunity
 );
 
 communityRoutes.post(

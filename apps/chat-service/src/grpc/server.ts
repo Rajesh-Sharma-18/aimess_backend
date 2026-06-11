@@ -1534,6 +1534,7 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
                   ? saved.createdAt.toISOString()
                   : new Date(sentAt).toISOString(),
               lastMessageId: saved.id,
+              senderUserId: req.senderId,
               senderUsername: senderName,
               messagePreview:
                 messageText.length > 80
@@ -1815,6 +1816,15 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
               })),
             })),
           });
+          publishCommunityActivitySafe({
+            communityId: req.communityId,
+            lastMessageAt: new Date().toISOString(),
+            lastMessageId: req.messageId,
+            senderUserId: req.userId,
+            senderUsername: "",
+            messagePreview: `reacted with ${req.emoji}`,
+            type: "reaction",
+          });
         } catch (err) {
           logger.error(`gRPC reactToCommunityMessage error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
@@ -1868,6 +1878,16 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             message: result.message ?? "",
             contentType: normalizeMessageType(result.messageType),
           });
+          publishCommunityActivitySafe({
+            communityId: req.communityId,
+            lastMessageAt: new Date().toISOString(),
+            lastMessageId: result.id,
+            senderUserId: req.userId,
+            senderUsername: "",
+            messagePreview:
+              req.text.length > 80 ? req.text.slice(0, 80) : req.text,
+            type: "edited",
+          });
         } catch (err) {
           logger.error(`gRPC editCommunityMessage error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
@@ -1915,6 +1935,15 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             communityId: req.communityId,
             roomId: result?.roomId ?? "",
             deleteType: req.deleteType,
+          });
+          publishCommunityActivitySafe({
+            communityId: req.communityId,
+            lastMessageAt: new Date().toISOString(),
+            lastMessageId: req.messageId,
+            senderUserId: req.userId,
+            senderUsername: "",
+            messagePreview: "Message deleted",
+            type: "deleted",
           });
         } catch (err) {
           logger.error(`gRPC deleteCommunityMessage error: ${String(err)}`);
@@ -1964,6 +1993,15 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             pinnedCount: result.pinnedCount,
             pinnedAt: result.pinnedAt,
           });
+          publishCommunityActivitySafe({
+            communityId: req.communityId,
+            lastMessageAt: new Date().toISOString(),
+            lastMessageId: req.messageId,
+            senderUserId: req.userId,
+            senderUsername: "",
+            messagePreview: "Message pinned",
+            type: "pinned",
+          });
         } catch (err) {
           logger.error(`gRPC pinCommunityMessage error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
@@ -2009,6 +2047,15 @@ export function startGrpcServer(port: number, deps: GrpcDeps): grpc.Server {
             roomId: req.roomId,
             pinnedIds: JSON.stringify(result.pinnedIds),
             pinnedCount: result.pinnedCount,
+          });
+          publishCommunityActivitySafe({
+            communityId: req.communityId,
+            lastMessageAt: new Date().toISOString(),
+            lastMessageId: req.messageId,
+            senderUserId: req.userId,
+            senderUsername: "",
+            messagePreview: "Message unpinned",
+            type: "unpinned",
           });
         } catch (err) {
           logger.error(`gRPC unpinCommunityMessage error: ${String(err)}`);

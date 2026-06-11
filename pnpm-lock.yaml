@@ -549,6 +549,9 @@ importers:
       "@aimess/shared-types":
         specifier: workspace:*
         version: link:../../packages/shared-types
+      "@aimess/utils":
+        specifier: workspace:*
+        version: link:../../packages/utils
       "@grpc/grpc-js":
         specifier: ^1.14.3
         version: 1.14.3

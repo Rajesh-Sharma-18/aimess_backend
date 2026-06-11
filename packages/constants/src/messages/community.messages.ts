@@ -106,6 +106,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Đã rời khỏi cộng đồng",
     en: "Left the community",
   },
+  COMMUNITY_BULK_LEFT: {
+    vi: "Xử lý rời khỏi cộng đồng hàng loạt thành công",
+    en: "Bulk community leave processed",
+  },
   COMMUNITY_MEMBER_UNBANNED: {
     vi: "Đã bỏ cấm thành viên",
     en: "Member unbanned",
@@ -373,6 +377,18 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_INVITE_LINK_INACTIVE: {
     vi: "Liên kết mời này không còn hoạt động",
     en: "Invite link is no longer active",
+  },
+  COMMUNITY_LIKED: {
+    vi: "Đã thêm cộng đồng vào yêu thích",
+    en: "Community added to liked",
+  },
+  COMMUNITY_UNLIKED: {
+    vi: "Đã xóa cộng đồng khỏi yêu thích",
+    en: "Community removed from liked",
+  },
+  COMMUNITY_LIKED_LIST_FETCHED: {
+    vi: "Đã tải danh sách cộng đồng yêu thích",
+    en: "Liked communities fetched",
   },
 } as const satisfies MessageCatalog;
 

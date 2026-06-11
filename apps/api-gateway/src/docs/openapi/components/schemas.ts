@@ -3512,6 +3512,51 @@ export const openApiSchemas = {
     },
     required: ["categories"],
   },
+  CommunityLastActivity: {
+    type: "object",
+    description:
+      "Typed summary of the most recent community activity, derived from " +
+      "denormalized fields on the Community model. Always present on " +
+      "CommunityListItem (joined-mode mine list).",
+    properties: {
+      type: {
+        type: "string",
+        enum: [
+          "message",
+          "join",
+          "removal",
+          "reaction",
+          "edited",
+          "deleted",
+          "pinned",
+          "unpinned",
+          "created",
+        ],
+        description: "Kind of activity that last updated the community.",
+      },
+      userId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Auth user ID of the person who triggered this activity; null for 'created' type.",
+      },
+      username: {
+        type: "string",
+        nullable: true,
+        description: "Display name of the actor; null for 'created' type.",
+      },
+      preview: {
+        type: "string",
+        description: "Short human-readable preview of the activity.",
+      },
+      dateTime: {
+        type: "integer",
+        format: "int64",
+        description: "Activity timestamp as epoch milliseconds.",
+      },
+    },
+    required: ["type", "userId", "username", "preview", "dateTime"],
+  },
   CommunityLastMessageActivity: {
     type: "object",
     description:
@@ -3644,6 +3689,12 @@ export const openApiSchemas = {
         description:
           "Unread community-chat messages for the caller based on their last-read state. 0 when fully read or chat-service is unavailable.",
       },
+      lastActivity: {
+        allOf: [{ $ref: "#/components/schemas/CommunityLastActivity" }],
+        description:
+          "Typed summary of the latest community activity (message, reaction, join, etc.). " +
+          "Always present; type='created' when no chat activity has occurred.",
+      },
       lastMessageActivity: {
         nullable: true,
         allOf: [{ $ref: "#/components/schemas/CommunityLastMessageActivity" }],
@@ -3668,6 +3719,7 @@ export const openApiSchemas = {
       "chatEnabled",
       "announcementEnabled",
       "lastActivityAt",
+      "lastActivity",
       "unreadMessageCount",
       "lastMessageActivity",
     ],
@@ -3827,6 +3879,53 @@ export const openApiSchemas = {
       },
     },
     required: ["pagination", "data"],
+  },
+  CommunityFavoriteData: {
+    type: "object",
+    properties: {
+      favoriteId: {
+        type: "string",
+        description: "MongoDB ObjectId of the favorite row.",
+      },
+      communityId: {
+        type: "string",
+        description: "MongoDB ObjectId of the community.",
+      },
+      createdAt: {
+        type: "string",
+        format: "date-time",
+        description: "When the community was liked (ISO 8601).",
+      },
+    },
+    required: ["favoriteId", "communityId", "createdAt"],
+  },
+  LikedCommunityItem: {
+    allOf: [{ $ref: "#/components/schemas/CommunityDiscoverItem" }],
+    properties: {
+      likedAt: {
+        type: "string",
+        format: "date-time",
+        description: "When the caller liked this community (ISO 8601).",
+      },
+    },
+    required: ["likedAt"],
+  },
+  LikedCommunitiesResponseData: {
+    type: "object",
+    properties: {
+      items: {
+        type: "array",
+        items: { $ref: "#/components/schemas/LikedCommunityItem" },
+      },
+      hasMore: { type: "boolean" },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description:
+          "ObjectId cursor for the next page; null when no more results.",
+      },
+    },
+    required: ["items", "hasMore", "nextCursor"],
   },
   CommunityUploadUrlRequest: {
     type: "object",
@@ -4485,6 +4584,69 @@ export const openApiSchemas = {
         minimum: 1,
         maximum: 525600,
         nullable: true,
+      },
+    },
+  },
+  BulkLeaveRequest: {
+    type: "object",
+    required: ["communityIds"],
+    properties: {
+      communityIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 50,
+        description:
+          "List of community ObjectIds to leave (1–50, duplicates deduplicated).",
+      },
+    },
+  },
+  BulkLeaveResultItem: {
+    type: "object",
+    required: ["communityId", "status"],
+    properties: {
+      communityId: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["LEFT", "DELETED", "FAILED"],
+        description:
+          "`LEFT` — caller left successfully; `DELETED` — caller was the sole member and the community was auto-deleted; `FAILED` — see `errorCode`.",
+      },
+      errorCode: {
+        type: "string",
+        enum: ["ADMIN_CANNOT_LEAVE", "NOT_MEMBER", "NOT_FOUND"],
+        description:
+          "Present only when `status` is `FAILED`. `ADMIN_CANNOT_LEAVE` — caller is admin and other members exist (transfer ownership first); `NOT_MEMBER` — caller is not an active member; `NOT_FOUND` — community does not exist.",
+      },
+    },
+  },
+  BulkLeaveResult: {
+    type: "object",
+    required: ["results", "summary"],
+    properties: {
+      results: {
+        type: "array",
+        items: { $ref: "#/components/schemas/BulkLeaveResultItem" },
+        description: "Per-community outcome in the same order as the request.",
+      },
+      summary: {
+        type: "object",
+        required: ["requested", "left", "failed"],
+        properties: {
+          requested: {
+            type: "integer",
+            description: "Total communities requested.",
+          },
+          left: {
+            type: "integer",
+            description:
+              "Communities successfully left (includes auto-deleted).",
+          },
+          failed: {
+            type: "integer",
+            description: "Communities that could not be left.",
+          },
+        },
       },
     },
   },
@@ -5295,6 +5457,40 @@ export const openApiSchemas = {
         nullable: true,
         description:
           "Only present in after_ts (incremental-sync) responses. Tells the client what reconciliation action to take: 'new'=insert, 'edited'=update text, 'deleted'=remove (tombstone), 'reacted'=refresh reaction counts.",
+      },
+      readBy: {
+        type: "array",
+        description:
+          "Users who have read this message (lastReadAt >= message.createdAt). Excludes the sender. Each entry carries an epoch-ms timestamp.",
+        items: {
+          type: "object",
+          properties: {
+            userId: { type: "string" },
+            readAt: {
+              type: "integer",
+              description:
+                "Epoch milliseconds when the user read up to this message.",
+            },
+          },
+          required: ["userId", "readAt"],
+        },
+      },
+      deliveredTo: {
+        type: "array",
+        description:
+          "Users who were active members of this room at the time the message was sent (joinedAt <= message.createdAt). Excludes the sender.",
+        items: {
+          type: "object",
+          properties: {
+            userId: { type: "string" },
+            deliveredAt: {
+              type: "integer",
+              description:
+                "Epoch milliseconds — equals the message createdAt timestamp.",
+            },
+          },
+          required: ["userId", "deliveredAt"],
+        },
       },
     },
     required: ["id", "roomId", "sentBy", "createdAt"],
