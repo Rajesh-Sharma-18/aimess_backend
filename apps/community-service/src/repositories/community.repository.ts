@@ -837,6 +837,7 @@ export const communityRepository = {
           lastActivityType: true,
           lastActivityPreview: true,
           lastActivityUsername: true,
+          moderationStatus: true,
           category: { select: { id: true, name: true } },
         },
       }),
@@ -1495,6 +1496,23 @@ export const communityRepository = {
     });
   },
 
+  /** Single query returning the set of communityIds that the user has a PENDING join request for. */
+  async findPendingRequestedCommunityIds(
+    userId: string,
+    communityIds: string[]
+  ): Promise<Set<string>> {
+    if (communityIds.length === 0) return new Set();
+    const rows = await prisma.communityJoinRequest.findMany({
+      where: {
+        userId,
+        communityId: { in: communityIds },
+        status: CommunityJoinReqStatus.PENDING,
+      },
+      select: { communityId: true },
+    });
+    return new Set(rows.map((r) => r.communityId));
+  },
+
   updateJoinRequest(
     requestId: string,
     data: {
@@ -1507,6 +1525,24 @@ export const communityRepository = {
     return prisma.communityJoinRequest.update({
       where: { id: requestId },
       data,
+    });
+  },
+
+  findJoinRequestsByIds(requestIds: string[]) {
+    return prisma.communityJoinRequest.findMany({
+      where: { id: { in: requestIds } },
+    });
+  },
+
+  bulkUpdateJoinRequestStatus(
+    requestIds: string[],
+    status: CommunityJoinReqStatus,
+    decidedBy: string,
+    decidedAt: Date
+  ) {
+    return prisma.communityJoinRequest.updateMany({
+      where: { id: { in: requestIds } },
+      data: { status, decidedBy, decidedAt },
     });
   },
 

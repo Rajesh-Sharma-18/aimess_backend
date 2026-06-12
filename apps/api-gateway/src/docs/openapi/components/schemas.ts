@@ -3271,6 +3271,79 @@ export const openApiSchemas = {
   },
 
   // ===========================================================================
+  // user-service · friendship record
+  // ===========================================================================
+  FriendshipRecord: {
+    type: "object",
+    description:
+      "A friendship row returned by send / accept / reject / cancel operations. `status` reflects the new state after the operation.",
+    properties: {
+      id: { type: "string", format: "uuid", description: "Friendship ID." },
+      requesterId: {
+        type: "string",
+        format: "uuid",
+        description: "User who sent the friend request.",
+      },
+      addresseeId: {
+        type: "string",
+        format: "uuid",
+        description: "User who received the friend request.",
+      },
+      status: {
+        type: "string",
+        enum: ["PENDING", "ACCEPTED", "REJECTED", "CANCELLED", "UNFRIENDED"],
+        description: "Current friendship status.",
+      },
+      acceptedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "When the request was accepted; null otherwise.",
+      },
+      rejectedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "When the request was rejected; null otherwise.",
+      },
+      cancelledAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the request was cancelled by the sender; null otherwise.",
+      },
+      unfriendedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "When the friendship was dissolved; null otherwise.",
+      },
+      unfriendedBy: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description: "userId of who initiated the unfriend; null otherwise.",
+      },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "requesterId",
+      "addresseeId",
+      "status",
+      "acceptedAt",
+      "rejectedAt",
+      "cancelledAt",
+      "unfriendedAt",
+      "unfriendedBy",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+
+  // ===========================================================================
   // user-service · user discovery
   // ===========================================================================
   UserDiscoveryItem: {
@@ -3632,6 +3705,12 @@ export const openApiSchemas = {
       streamEnabled: { type: "boolean" },
       chatEnabled: { type: "boolean" },
       announcementEnabled: { type: "boolean" },
+      moderationStatus: {
+        type: "string",
+        enum: ["ACTIVE", "SUSPENDED"],
+        description:
+          "ACTIVE = open; SUSPENDED = closed by admin — clients should render the community as read-only.",
+      },
       lastActivityAt: {
         type: "integer",
         format: "int64",
@@ -3667,6 +3746,7 @@ export const openApiSchemas = {
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",
+      "moderationStatus",
       "lastActivityAt",
       "unreadMessageCount",
       "lastMessageActivity",
@@ -3763,6 +3843,11 @@ export const openApiSchemas = {
         description:
           "True when the caller is an active member of this community. Varies in /communities/mine search mode; always false on the deprecated public /communities/discover alias.",
       },
+      hasRequested: {
+        type: "boolean",
+        description:
+          "True when the caller has a PENDING join request for this community. Always false for communities the caller has already joined.",
+      },
       isMuted: {
         type: "boolean",
         description:
@@ -3778,6 +3863,12 @@ export const openApiSchemas = {
       streamEnabled: { type: "boolean" },
       chatEnabled: { type: "boolean" },
       announcementEnabled: { type: "boolean" },
+      moderationStatus: {
+        type: "string",
+        enum: ["ACTIVE", "SUSPENDED"],
+        description:
+          "ACTIVE = open; SUSPENDED = closed by admin — clients should render the community as read-only.",
+      },
     },
     required: [
       "id",
@@ -3791,11 +3882,13 @@ export const openApiSchemas = {
       "avatarUrl",
       "avatarUrlExpiresIn",
       "isJoined",
+      "hasRequested",
       "isMuted",
       "muteUntil",
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",
+      "moderationStatus",
       "createdAt",
     ],
   },
@@ -4170,6 +4263,44 @@ export const openApiSchemas = {
       member: { $ref: "#/components/schemas/CommunityMemberData" },
     },
     required: ["request", "member"],
+  },
+  BulkApproveJoinRequestsResult: {
+    type: "object",
+    description:
+      "Result of a bulk-approve. `approved` = request IDs that were PENDING and successfully approved; `skipped` = IDs that were not found, belong to a different community, are not PENDING, or whose requester is banned.",
+    properties: {
+      approved: {
+        type: "array",
+        items: { type: "string" },
+        description: "Request IDs that were approved.",
+      },
+      skipped: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Request IDs that were skipped (non-pending, not found, or banned requester).",
+      },
+    },
+    required: ["approved", "skipped"],
+  },
+  BulkRejectJoinRequestsResult: {
+    type: "object",
+    description:
+      "Result of a bulk-reject. `rejected` = request IDs that were PENDING and rejected; `skipped` = IDs that were not found, belong to a different community, or are not PENDING.",
+    properties: {
+      rejected: {
+        type: "array",
+        items: { type: "string" },
+        description: "Request IDs that were rejected.",
+      },
+      skipped: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Request IDs that were skipped (non-pending or not found).",
+      },
+    },
+    required: ["rejected", "skipped"],
   },
   JoinRequestPage: {
     type: "object",
@@ -4574,11 +4705,11 @@ export const openApiSchemas = {
     description: "A single moderation-muted member row.",
     properties: {
       userId: { type: "string", format: "uuid" },
-      username: { type: "string" },
-      displayName: { type: "string" },
-      avatarUrl: { type: "string", nullable: true },
-      avatarUrlExpiresIn: { type: "integer", nullable: true },
-      avatar: { $ref: "#/components/schemas/MediaObject" },
+      snapshotUsername: { type: "string" },
+      snapshotDisplayName: { type: "string" },
+      snapshotAvatarUrl: { type: "string", nullable: true },
+      snapshotAvatarUrlExpiresIn: { type: "integer", nullable: true },
+      snapshotAvatar: { $ref: "#/components/schemas/MediaObject" },
       mutedBy: {
         type: "string",
         format: "uuid",
@@ -4595,10 +4726,10 @@ export const openApiSchemas = {
     },
     required: [
       "userId",
-      "username",
-      "displayName",
-      "avatarUrl",
-      "avatarUrlExpiresIn",
+      "snapshotUsername",
+      "snapshotDisplayName",
+      "snapshotAvatarUrl",
+      "snapshotAvatarUrlExpiresIn",
       "mutedBy",
       "reason",
       "mutedAt",

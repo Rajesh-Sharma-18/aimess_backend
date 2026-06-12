@@ -8,6 +8,7 @@
     "start": "node dist/server.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
     "lint": "eslint .",

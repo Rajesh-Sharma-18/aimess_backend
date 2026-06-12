@@ -197,6 +197,306 @@ export const userPaths = {
       },
     },
   },
+  "/users/friends/requests": {
+    post: {
+      tags: ["Users"],
+      summary: "Send a friend request",
+      description:
+        "Sends a friend request to `addresseeId`. If the addressee already sent you a request, it auto-accepts (mutual). If a previous rejected/cancelled/unfriended row exists it is recycled. Returns the friendship record in its new state (PENDING or ACCEPTED if auto-accepted).",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["addresseeId"],
+              properties: {
+                addresseeId: {
+                  type: "string",
+                  format: "uuid",
+                  description: "The userId of the user to befriend.",
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Friend request sent (or auto-accepted)",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/FriendshipRecord" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Cannot add self or one side has blocked the other",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Missing or invalid access token",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Requester or addressee profile not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "409": {
+          description: "Request already sent or already friends",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/users/friends/requests/{id}/accept": {
+    post: {
+      tags: ["Users"],
+      summary: "Accept a friend request",
+      description:
+        "Accepts a pending friend request addressed to the authenticated user. `{id}` is the friendship ID. Returns the updated friendship record (status: ACCEPTED).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+          description: "Friendship ID of the pending request to accept.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Friend request accepted",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/FriendshipRecord" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": {
+          description: "Missing or invalid access token",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description:
+            "Request not found, already handled, or not addressed to you",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/users/friends/requests/{id}/reject": {
+    post: {
+      tags: ["Users"],
+      summary: "Reject a friend request",
+      description:
+        "Rejects a pending friend request addressed to the authenticated user. `{id}` is the friendship ID. Returns the updated friendship record (status: REJECTED).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+          description: "Friendship ID of the pending request to reject.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Friend request rejected",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/FriendshipRecord" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": {
+          description: "Missing or invalid access token",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description:
+            "Request not found, already handled, or not addressed to you",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/users/friends/requests/{id}": {
+    delete: {
+      tags: ["Users"],
+      summary: "Cancel a sent friend request",
+      description:
+        "Cancels a PENDING friend request that the authenticated user sent. `{id}` is the friendship ID. Returns the updated friendship record (status: CANCELLED).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+          description: "Friendship ID of the pending request to cancel.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Friend request cancelled",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/FriendshipRecord" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": {
+          description: "Missing or invalid access token",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Request not found, already handled, or not sent by you",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/users/friends/{userId}": {
+    delete: {
+      tags: ["Users"],
+      summary: "Unfriend a user",
+      description:
+        "Dissolves an accepted friendship between the authenticated user and `{userId}`. Both users' friend counters are decremented. No response data — only a success message.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+          description: "userId of the friend to remove.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Friendship dissolved",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "400": {
+          description: "Cannot unfriend yourself",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": {
+          description: "Missing or invalid access token",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "No active friendship found with that user",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/users/friends": {
     get: {
       tags: ["Users"],

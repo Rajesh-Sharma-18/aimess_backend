@@ -7,8 +7,10 @@ import { communityService } from "../../services/community.service.js";
 import type {
   AddMembersInput,
   AuditLogsQuery,
+  BulkApproveJoinRequestsInput,
   BulkMarkReadInput,
   BulkMuteInput,
+  BulkRejectJoinRequestsInput,
   BulkSendInviteLinkInput,
   CommunityIdParams,
   CommunityMemberParams,
@@ -574,6 +576,46 @@ export const rejectCommunityJoinRequest = asyncHandler(
         new ApiResponse(
           result,
           t("COMMUNITY_JOIN_REQUEST_REJECTED", req.locale)
+        )
+      );
+  }
+);
+
+export const bulkApproveCommunityJoinRequests = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const { requestIds } = req.body as BulkApproveJoinRequestsInput;
+    const result = await communityService.bulkApproveJoinRequests(
+      id,
+      req.auth.userId,
+      requestIds
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_JOIN_REQUESTS_BULK_APPROVED", req.locale)
+        )
+      );
+  }
+);
+
+export const bulkRejectCommunityJoinRequests = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const { requestIds } = req.body as BulkRejectJoinRequestsInput;
+    const result = await communityService.bulkRejectJoinRequests(
+      id,
+      req.auth.userId,
+      requestIds
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_JOIN_REQUESTS_BULK_REJECTED", req.locale)
         )
       );
   }

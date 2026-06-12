@@ -208,7 +208,8 @@ export const userDiscoveryService = {
     const blockedUserIds = new Set<string>();
 
     for (const b of allBlocks) {
-      blockedUserIds.add(b.blockerId);
+      const otherId = b.blockerId === viewerId ? b.blockedId : b.blockerId;
+      blockedUserIds.add(otherId);
     }
 
     const excludeIds = [viewerId, ...Array.from(blockedUserIds)];

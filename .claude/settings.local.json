@@ -121,7 +121,20 @@
       "Bash(echo \"EXIT_STG_LINT2:$?\")",
       "Bash(rtk pnpm *)",
       "PowerShell(pnpm *)",
-      "PowerShell(npx tsc --noEmit --project \"C:\\\\Users\\\\Windows\\\\Documents\\\\Rajesh\\\\aimess_backend\\\\apps\\\\community-service\\\\tsconfig.json\")"
+      "PowerShell(npx tsc --noEmit --project \"C:\\\\Users\\\\Windows\\\\Documents\\\\Rajesh\\\\aimess_backend\\\\apps\\\\community-service\\\\tsconfig.json\")",
+      "Bash(npm install *)",
+      "Bash(rtk npm *)",
+      "Bash(echo \"started pid $!\")",
+      "Bash(rtk curl *)",
+      "Bash(pkill -f \"vite --port 5174\")",
+      "PowerShell(Test-NetConnection -ComputerName ai5stream.tech -Port 1935 -WarningAction SilentlyContinue)",
+      "PowerShell($f = Get-Command ffmpeg -ErrorAction SilentlyContinue; if \\($f\\) { \"ffmpeg found: \" + $f.Source; ffmpeg -version | Select-Object -First 1 } else { \"ffmpeg NOT installed\" })",
+      "Bash(winget --version)",
+      "Bash(winget install *)",
+      "Bash(timeout 16 /c/Users/Windows/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1.1-full_build/bin/ffmpeg.exe -hide_banner -loglevel verbose -rw_timeout 10000000 -f lavfi -i testsrc=size=320x240:rate=10 -c:v libx264 -preset ultrafast -t 3 -an -f flv rtmp://ai5stream.tech/live/my-test)",
+      "Bash(curl -s --max-time 10 -u 'deploy@gmail.com:deploy.125#' \"https://ai5stream.tech/api/v1/raw?rpc=raw\")",
+      "Bash(curl -s --max-time 8 -u 'deploy@gmail.com:deploy.125#' \"https://ai5stream.tech/api/v1/versions\")",
+      "PowerShell(ffmpeg -version)"
     ]
   }
 }

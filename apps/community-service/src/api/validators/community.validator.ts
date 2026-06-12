@@ -258,6 +258,31 @@ export const joinRequestIdParamsSchema = z.object({
 });
 export type JoinRequestIdParams = z.infer<typeof joinRequestIdParamsSchema>;
 
+const joinRequestIdsSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .regex(OBJECT_ID_REGEX, "One or more request IDs are invalid")
+  )
+  .min(1, "Select at least one request")
+  .max(50, "You can select at most 50 requests")
+  .transform((ids) => [...new Set(ids)]);
+
+export const bulkApproveJoinRequestsSchema = z.object({
+  requestIds: joinRequestIdsSchema,
+});
+export type BulkApproveJoinRequestsInput = z.infer<
+  typeof bulkApproveJoinRequestsSchema
+>;
+
+export const bulkRejectJoinRequestsSchema = z.object({
+  requestIds: joinRequestIdsSchema,
+});
+export type BulkRejectJoinRequestsInput = z.infer<
+  typeof bulkRejectJoinRequestsSchema
+>;
+
 // --- Invites --------------------------------------------------------------
 
 export const createInviteSchema = z.object({

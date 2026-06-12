@@ -2625,6 +2625,165 @@ export const communityPaths = {
       },
     },
   },
+  "/communities/{id}/join-requests/bulk-approve": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk approve join requests",
+      description:
+        "Moderator or admin only. Accepts up to 50 request IDs. Non-PENDING, not-found, and banned-requester IDs are silently skipped and returned in `skipped`. Idempotent per request — already-ACTIVE members are not re-created.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                requestIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  minItems: 1,
+                  maxItems: 50,
+                  description:
+                    "Join request IDs to approve (duplicates deduplicated).",
+                },
+              },
+              required: ["requestIds"],
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Bulk approve result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/BulkApproveJoinRequestsResult",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Caller is not a moderator/admin, or community is SUSPENDED",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/join-requests/bulk-reject": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk reject join requests",
+      description:
+        "Moderator or admin only. Accepts up to 50 request IDs. Non-PENDING and not-found IDs are silently skipped and returned in `skipped`.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                requestIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  minItems: 1,
+                  maxItems: 50,
+                  description:
+                    "Join request IDs to reject (duplicates deduplicated).",
+                },
+              },
+              required: ["requestIds"],
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Bulk reject result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/BulkRejectJoinRequestsResult",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Caller is not a moderator or admin of the community",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/communities/{id}/join-requests/{requestId}": {
     delete: {
       tags: ["Communities"],

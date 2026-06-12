@@ -10,8 +10,10 @@ import {
   adminUpdateCategory,
   approveCommunityJoinRequest,
   banCommunityMember,
+  bulkApproveCommunityJoinRequests,
   bulkMarkReadCommunities,
   bulkMuteCommunities,
+  bulkRejectCommunityJoinRequests,
   bulkSendCommunityInviteLink,
   cancelCommunityJoinRequest,
   checkHandleAvailable,
@@ -69,8 +71,10 @@ import { authenticateAccessToken } from "../../middleware/authenticate-access-to
 import {
   addMembersSchema,
   adminCategoriesQuerySchema,
+  bulkApproveJoinRequestsSchema,
   bulkMarkReadSchema,
   bulkMuteSchema,
+  bulkRejectJoinRequestsSchema,
   bulkSendInviteLinkSchema,
   auditLogsQuerySchema,
   categoryIdParamSchema,
@@ -392,6 +396,20 @@ communityRoutes.post(
   "/:id/join-requests/:requestId/reject",
   validateParams(joinRequestIdParamsSchema),
   rejectCommunityJoinRequest
+);
+
+communityRoutes.post(
+  "/:id/join-requests/bulk-approve",
+  validateParams(communityIdParamsSchema),
+  validateBody(bulkApproveJoinRequestsSchema),
+  bulkApproveCommunityJoinRequests
+);
+
+communityRoutes.post(
+  "/:id/join-requests/bulk-reject",
+  validateParams(communityIdParamsSchema),
+  validateBody(bulkRejectJoinRequestsSchema),
+  bulkRejectCommunityJoinRequests
 );
 
 communityRoutes.delete(

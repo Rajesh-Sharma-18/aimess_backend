@@ -145,6 +145,8 @@ export type CommunityListItem = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
+  /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
+  moderationStatus: CommunityModerationStatus;
 };
 
 /**
@@ -186,6 +188,8 @@ export type CommunityDiscoverItem = {
   lastActivity?: CommunityLastActivity;
   /** True when the caller is an active member of this community. */
   isJoined: boolean;
+  /** True when the caller has a PENDING join request for this community. */
+  hasRequested: boolean;
   isMuted: boolean;
   muteUntil: string | null;
   streamEnabled: boolean;
@@ -193,6 +197,8 @@ export type CommunityDiscoverItem = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
+  /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
+  moderationStatus: CommunityModerationStatus;
 };
 
 /** A single community member row returned by the member-listing endpoint. */
@@ -220,12 +226,12 @@ export type CommunityMemberData = {
 /** A single moderation-muted member row. Returned by mute / list-muted. */
 export type CommunityMutedMemberData = {
   userId: string;
-  username: string;
-  displayName: string;
-  avatarUrl: string | null;
-  avatarUrlExpiresIn: number | null;
-  /** Nested media object for the avatar (additive; mirrors avatarUrl). */
-  avatar: MediaObject;
+  snapshotUsername: string;
+  snapshotDisplayName: string;
+  snapshotAvatarUrl: string | null;
+  snapshotAvatarUrlExpiresIn: number | null;
+  /** Nested media object for the avatar (additive; mirrors snapshotAvatarUrl). */
+  snapshotAvatar: MediaObject;
   /** AuthUser.id of the moderator/admin who muted the member. */
   mutedBy: string;
   reason: string | null;

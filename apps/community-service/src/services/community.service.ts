@@ -314,10 +314,12 @@ async function toDiscoverItem(
     lastActivityType?: string | null;
     lastActivityPreview?: string | null;
     lastActivityUsername?: string | null;
+    moderationStatus: CommunityModerationStatus;
     category: { id: string; name: string };
   },
   muteRow: MuteRowFragment,
-  isJoined: boolean
+  isJoined: boolean,
+  hasRequested: boolean
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -337,9 +339,11 @@ async function toDiscoverItem(
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
     isJoined,
+    hasRequested,
     ...muteFields(muteRow),
     // Phase 1 stub — wire to stream-service gRPC in Phase 2.
     isLive: false,
+    moderationStatus: community.moderationStatus,
     createdAt: community.createdAt.getTime(),
     lastActivity: buildLastActivity(community),
   };
@@ -1067,6 +1071,7 @@ export const communityService = {
           ...muteFields(muteMap.get(row.id) ?? null),
           // Phase 1 stub — wire to stream-service gRPC in Phase 2.
           isLive: false,
+          moderationStatus: row.moderationStatus,
         };
       })
     );
@@ -1142,13 +1147,16 @@ export const communityService = {
       limit: params.limit,
     });
 
-    // Discovered communities are ones the caller isn't an active member of, so
-    // a mute row is unusual (only a stale row from a community they left) — but
-    // resolve it for parity. One batched query.
-    const muteByCommunityId = await loadMuteMap(
-      userId,
-      rows.map((row) => row.id)
-    );
+    const communityIds = rows.map((row) => row.id);
+
+    // Batch-load mute rows and pending join requests in parallel — one query each.
+    const [muteByCommunityId, pendingRequestSet] = await Promise.all([
+      loadMuteMap(userId, communityIds),
+      communityRepository.findPendingRequestedCommunityIds(
+        userId,
+        communityIds
+      ),
+    ]);
 
     // Build a fast lookup for membership: used by the mine-search alias
     // (includeJoined=true). Public discover always has isJoined=false.
@@ -1161,7 +1169,8 @@ export const communityService = {
         toDiscoverItem(
           row,
           muteByCommunityId.get(row.id) ?? null,
-          memberSet.has(row.id)
+          memberSet.has(row.id),
+          pendingRequestSet.has(row.id)
         )
       )
     );
@@ -1887,11 +1896,11 @@ export const communityService = {
 
     return {
       userId: view.userId,
-      username: view.username,
-      displayName: view.displayName,
-      avatarUrl: view.avatarUrl,
-      avatarUrlExpiresIn: view.avatarUrlExpiresIn,
-      avatar: view.avatar,
+      snapshotUsername: view.username,
+      snapshotDisplayName: view.displayName,
+      snapshotAvatarUrl: view.avatarUrl,
+      snapshotAvatarUrlExpiresIn: view.avatarUrlExpiresIn,
+      snapshotAvatar: view.avatar,
       mutedBy: row.mutedBy,
       reason: row.reason,
       mutedAt: row.createdAt.toISOString(),
@@ -1990,11 +1999,11 @@ export const communityService = {
         );
         items.push({
           userId: row.userId,
-          username: member?.snapshotUsername ?? "",
-          displayName: member?.snapshotDisplayName ?? "",
-          avatarUrl: avatarView?.url ?? null,
-          avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-          avatar,
+          snapshotUsername: member?.snapshotUsername ?? "",
+          snapshotDisplayName: member?.snapshotDisplayName ?? "",
+          snapshotAvatarUrl: avatarView?.url ?? null,
+          snapshotAvatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+          snapshotAvatar: avatar,
           mutedBy: row.mutedBy,
           reason: row.reason,
           mutedAt: row.createdAt.toISOString(),
@@ -2631,6 +2640,177 @@ export const communityService = {
     });
 
     return toJoinRequestData(updated);
+  },
+
+  async bulkApproveJoinRequests(
+    communityId: string,
+    callerId: string,
+    requestIds: string[]
+  ): Promise<{ approved: string[]; skipped: string[] }> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+    assertCommunityNotSuspended(community);
+
+    const rows = await communityRepository.findJoinRequestsByIds(requestIds);
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+
+    const pending = requestIds.filter((id) => {
+      const r = rowMap.get(id);
+      return (
+        r &&
+        r.communityId === communityId &&
+        r.status === CommunityJoinReqStatus.PENDING
+      );
+    });
+    const skipped = requestIds.filter((id) => !pending.includes(id));
+
+    if (pending.length === 0) return { approved: [], skipped };
+
+    const targetUserIds = pending.map((id) => rowMap.get(id)!.userId);
+    const [existingMembers, snapshotMap] = await Promise.all([
+      communityRepository.findMembersByUserIds(communityId, targetUserIds),
+      fetchUserSnapshots(targetUserIds),
+    ]);
+    const memberMap = new Map(existingMembers.map((m) => [m.userId, m]));
+
+    const approved: string[] = [];
+    const bannedSkipped: string[] = [];
+    const decidedAt = new Date();
+
+    for (const requestId of pending) {
+      const request = rowMap.get(requestId)!;
+      const existing = memberMap.get(request.userId);
+
+      if (existing?.status === CommunityMemberStatus.BANNED) {
+        bannedSkipped.push(requestId);
+        continue;
+      }
+
+      const snap = snapshotMap.get(request.userId);
+      const snapshotData = {
+        snapshotUsername: snap?.username ?? "",
+        snapshotDisplayName: snap?.displayName ?? "",
+        snapshotAvatarKey: snap?.avatarObjectKey ?? null,
+      };
+
+      if (existing?.status === CommunityMemberStatus.LEFT) {
+        await communityRepository.reactivateMemberWithSnapshot(
+          communityId,
+          request.userId,
+          snapshotData
+        );
+      } else if (
+        !existing ||
+        existing.status !== CommunityMemberStatus.ACTIVE
+      ) {
+        await communityRepository.createMember({
+          communityId,
+          userId: request.userId,
+          role: CommunityMemberRole.MEMBER,
+          status: CommunityMemberStatus.ACTIVE,
+          ...snapshotData,
+        });
+      }
+
+      approved.push(requestId);
+    }
+
+    if (approved.length > 0) {
+      await communityRepository.bulkUpdateJoinRequestStatus(
+        approved,
+        CommunityJoinReqStatus.APPROVED,
+        callerId,
+        decidedAt
+      );
+
+      const count = await communityRepository.countActiveMembers(communityId);
+      await communityRepository.setMemberCount(communityId, count);
+
+      for (const requestId of approved) {
+        const request = rowMap.get(requestId)!;
+        void this.recordAudit({
+          communityId,
+          actorId: callerId,
+          action: "JOIN_REQUEST_APPROVED",
+          targetUserId: request.userId,
+          metadata: { requestId, bulk: true },
+        });
+        publishCommunityMemberAddedSafe({
+          communityId,
+          eventAt: decidedAt.toISOString(),
+          actorId: callerId,
+          targetUserId: request.userId,
+          via: "join_request_approved",
+        });
+      }
+
+      logger.info(
+        `Bulk approve join-requests: community=${communityId} approver=${callerId} approved=${approved.length} skipped=${skipped.length + bannedSkipped.length}`
+      );
+    }
+
+    return { approved, skipped: [...skipped, ...bannedSkipped] };
+  },
+
+  async bulkRejectJoinRequests(
+    communityId: string,
+    callerId: string,
+    requestIds: string[]
+  ): Promise<{ rejected: string[]; skipped: string[] }> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const rows = await communityRepository.findJoinRequestsByIds(requestIds);
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+
+    const pending = requestIds.filter((id) => {
+      const r = rowMap.get(id);
+      return (
+        r &&
+        r.communityId === communityId &&
+        r.status === CommunityJoinReqStatus.PENDING
+      );
+    });
+    const skipped = requestIds.filter((id) => !pending.includes(id));
+
+    if (pending.length > 0) {
+      const decidedAt = new Date();
+      await communityRepository.bulkUpdateJoinRequestStatus(
+        pending,
+        CommunityJoinReqStatus.REJECTED,
+        callerId,
+        decidedAt
+      );
+
+      for (const requestId of pending) {
+        const request = rowMap.get(requestId)!;
+        void this.recordAudit({
+          communityId,
+          actorId: callerId,
+          action: "JOIN_REQUEST_REJECTED",
+          targetUserId: request.userId,
+          metadata: { requestId, bulk: true },
+        });
+      }
+
+      logger.info(
+        `Bulk reject join-requests: community=${communityId} rejector=${callerId} rejected=${pending.length} skipped=${skipped.length}`
+      );
+    }
+
+    return { rejected: pending, skipped };
   },
 
   async cancelJoinRequest(

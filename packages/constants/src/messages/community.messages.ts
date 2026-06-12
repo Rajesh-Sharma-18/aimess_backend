@@ -162,6 +162,14 @@ export const COMMUNITY_MESSAGES = {
     vi: "Đã từ chối yêu cầu tham gia",
     en: "Join request rejected",
   },
+  COMMUNITY_JOIN_REQUESTS_BULK_APPROVED: {
+    vi: "Đã duyệt hàng loạt yêu cầu tham gia",
+    en: "Join requests bulk approved",
+  },
+  COMMUNITY_JOIN_REQUESTS_BULK_REJECTED: {
+    vi: "Đã từ chối hàng loạt yêu cầu tham gia",
+    en: "Join requests bulk rejected",
+  },
   COMMUNITY_JOIN_REQUEST_CANCELLED: {
     vi: "Đã hủy yêu cầu tham gia",
     en: "Join request cancelled",

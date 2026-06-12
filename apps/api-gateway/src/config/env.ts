@@ -58,6 +58,12 @@ const envSchema = z.object({
   /** Comma-separated Swagger server URLs (e.g. localhost + LAN IP). */
   SWAGGER_SERVER_URLS: z.string().optional(),
 
+  GLOBAL_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1),
+  GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES: z.coerce
     .number()
     .int()
