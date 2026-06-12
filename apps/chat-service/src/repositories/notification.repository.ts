@@ -42,10 +42,20 @@ export class NotificationRepository {
     });
   }
 
-  async markRead(notificationId: string): Promise<Notification | null> {
-    return this.prisma.notification.update({
-      where: { id: notificationId },
+  async markRead(
+    notificationId: string,
+    userId: string
+  ): Promise<Notification | null> {
+    // Scope the update to the owner so one user can't flip another user's
+    // notification (IDOR). updateMany lets us filter by both id AND userId;
+    // a non-owning id matches 0 rows and returns null without mutating.
+    const result = await this.prisma.notification.updateMany({
+      where: { id: notificationId, userId },
       data: { isRead: true, readAt: new Date() },
+    });
+    if (result.count === 0) return null;
+    return this.prisma.notification.findFirst({
+      where: { id: notificationId, userId },
     });
   }
 

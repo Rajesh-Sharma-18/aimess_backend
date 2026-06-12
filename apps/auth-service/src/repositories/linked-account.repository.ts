@@ -16,6 +16,7 @@ export const linkedAccountRepository = {
             status: true,
             lockedUntil: true,
             deletedAt: true,
+            role: true,
           },
         },
       },

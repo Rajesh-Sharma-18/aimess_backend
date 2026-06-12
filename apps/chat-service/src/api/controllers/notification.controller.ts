@@ -32,8 +32,10 @@ export class NotificationController {
   });
 
   markRead = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     const { notificationId } = req.body;
-    const result = await this.service.markRead(notificationId);
+    // Scope to the caller so a user can't mark another user's notification read.
+    const result = await this.service.markRead(notificationId, userId);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 

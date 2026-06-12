@@ -70,6 +70,7 @@ import { validateBody } from "../middleware/validate-body.js";
 import { validateParams } from "../middleware/validate-params.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
+import { requirePlatformAdmin } from "../../middleware/require-platform-admin.js";
 import {
   addMembersSchema,
   adminCategoriesQuerySchema,
@@ -131,21 +132,25 @@ communityRoutes.use(authenticateAccessToken);
 // Admin CRUD on /categories uses the admin sub-handlers below.
 communityRoutes.get("/categories", listCategories);
 
-// Admin category CRUD — these MUST be before the `/:id` param route.
+// Admin category CRUD — these MUST be before the `/:id` param route, and are
+// gated by a platform-admin role check (fail-fast, before the validators).
 communityRoutes.get(
   "/categories/admin",
+  requirePlatformAdmin,
   validateQuery(adminCategoriesQuerySchema),
   adminListCategories
 );
 
 communityRoutes.post(
   "/categories",
+  requirePlatformAdmin,
   validateBody(createCategorySchema),
   adminCreateCategory
 );
 
 communityRoutes.patch(
   "/categories/:categoryId",
+  requirePlatformAdmin,
   validateParams(categoryIdParamSchema),
   validateBody(updateCategorySchema),
   adminUpdateCategory
@@ -153,6 +158,7 @@ communityRoutes.patch(
 
 communityRoutes.delete(
   "/categories/:categoryId",
+  requirePlatformAdmin,
   validateParams(categoryIdParamSchema),
   adminDeleteCategory
 );
@@ -211,6 +217,10 @@ communityRoutes.get(
   validateQuery(myReportsQuerySchema),
   listMyReports
 );
+
+// Static "/liked" listing MUST be before the `/:id` param route, otherwise
+// "liked" is captured as a community id and rejected by communityIdParamsSchema.
+communityRoutes.get("/liked", listLikedCommunities);
 
 communityRoutes.post(
   "/invites/:inviteId/accept",
@@ -302,8 +312,6 @@ communityRoutes.post(
   validateBody(leaveReasonSchema),
   leaveCommunity
 );
-
-communityRoutes.get("/liked", listLikedCommunities);
 
 communityRoutes.post(
   "/:id/like",

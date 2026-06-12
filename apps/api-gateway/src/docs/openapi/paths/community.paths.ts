@@ -7,6 +7,15 @@ const unauthorized = {
   },
 };
 
+const forbidden = {
+  description: "Caller is not a platform admin (PLATFORM_ADMIN_REQUIRED)",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
 const validationError = {
   description: "Query validation failed (e.g. no filter/pagination param)",
   content: {
@@ -158,6 +167,7 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+        "403": forbidden,
         "409": {
           description: "Category name already taken",
           content: {
@@ -232,6 +242,7 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+        "403": forbidden,
       },
     },
   },
@@ -308,6 +319,7 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+        "403": forbidden,
         "404": {
           description: "Category not found",
           content: {
@@ -356,6 +368,7 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+        "403": forbidden,
         "404": {
           description: "Category not found",
           content: {

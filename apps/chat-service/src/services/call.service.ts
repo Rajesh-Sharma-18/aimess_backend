@@ -181,8 +181,17 @@ export class CallService {
     return { ...updated, durationSec };
   }
 
-  async getCallByCallId(callId: string): Promise<Call | null> {
-    return this.callRepo.findByCallId(callId);
+  async getCallByCallId(
+    callId: string,
+    requesterId: string
+  ): Promise<Call | null> {
+    const call = await this.callRepo.findByCallId(callId);
+    if (!call) return null;
+    // IDOR guard: only the caller or callee may read a call's details (AUDIT H8).
+    if (call.callerId !== requesterId && call.calleeId !== requesterId) {
+      throw new ForbiddenError("CALL_NOT_PARTICIPANT");
+    }
+    return call;
   }
 
   async getCallHistory(params: {

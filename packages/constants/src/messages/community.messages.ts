@@ -54,6 +54,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Bạn không có quyền thực hiện hành động này",
     en: "You do not have permission to perform this action",
   },
+  PLATFORM_ADMIN_REQUIRED: {
+    vi: "Bạn không có quyền quản trị nền tảng",
+    en: "Platform administrator access is required",
+  },
   COMMUNITY_CATEGORY_INVALID: {
     vi: "Danh mục cộng đồng không hợp lệ",
     en: "Invalid community category",

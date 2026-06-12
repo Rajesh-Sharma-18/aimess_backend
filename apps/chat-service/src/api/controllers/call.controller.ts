@@ -20,8 +20,9 @@ export class CallController {
   });
 
   getCallById = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     const callId = req.params.callId as string;
-    const call = await this.callService.getCallByCallId(callId);
+    const call = await this.callService.getCallByCallId(callId, userId);
     if (!call) throw new NotFoundError("CALL_NOT_FOUND");
     res.status(HTTP_STATUS.OK).json(new ApiResponse(call));
   });

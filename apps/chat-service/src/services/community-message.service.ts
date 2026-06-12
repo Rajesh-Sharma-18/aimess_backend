@@ -25,6 +25,7 @@ import {
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
+import { assertCommunityMember } from "../lib/access-guard.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -411,6 +412,7 @@ export class CommunityMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
+    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
     const beforeTimestamp = params.cursor || new Date().toISOString();
     const [rows, members] = await Promise.all([
       this.messageRepo.findByRoomIdWithTime(
@@ -440,6 +442,7 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
+    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
     const [rows, members] = await Promise.all([
       this.messageRepo.findByRoomIdTimeline({
         roomId: params.roomId,
@@ -577,6 +580,7 @@ export class CommunityMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: CommunityMessageWire[] }> {
+    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
       return { items: [] };
@@ -662,6 +666,7 @@ export class CommunityMessageService {
     query: string;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
+    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
     const rows = await this.messageRepo.searchByText(
       params.roomId,
       params.query,

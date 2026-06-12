@@ -13,7 +13,7 @@
     "db:push": "prisma db push",
     "postinstall": "prisma generate",
     "lint": "eslint .",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs"
   },
   "dependencies": {
     "@aimess/auth-jwt": "workspace:*",

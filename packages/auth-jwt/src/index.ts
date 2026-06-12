@@ -4,6 +4,7 @@ export {
   signAccessToken,
   verifyAccessToken,
   type AccessTokenPayload,
+  type PlatformRole,
   type VerifiedAccessToken,
 } from "./access-token.js";
 

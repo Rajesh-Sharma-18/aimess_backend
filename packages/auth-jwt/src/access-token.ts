@@ -5,17 +5,23 @@ import { UnauthorizedError } from "@aimess/errors";
 /** Must match the `type` claim set when auth-service signs access tokens. */
 export const ACCESS_TOKEN_TYPE = "access" as const;
 
+/** Platform-wide role carried on the access token (auth-service `GlobalRole`). */
+export type PlatformRole = "USER" | "ADMIN";
+
 export type AccessTokenPayload = {
   /** Auth user id (UUID). */
   sub: string;
   /** Session id (UUID). */
   sid: string;
   type: typeof ACCESS_TOKEN_TYPE;
+  /** Platform role. Optional so older tokens without it still parse. */
+  role?: PlatformRole;
 };
 
 export type VerifiedAccessToken = {
   userId: string;
   sessionId: string;
+  role: PlatformRole;
 };
 
 export function signAccessToken(params: {
@@ -23,11 +29,15 @@ export function signAccessToken(params: {
   sessionId: string;
   secret: string;
   expiresInSeconds: number;
+  role?: PlatformRole;
 }): string {
   const payload: AccessTokenPayload = {
     sub: params.userId,
     sid: params.sessionId,
     type: ACCESS_TOKEN_TYPE,
+    // Include `role` only when provided so callers that don't pass it keep the
+    // old token shape (and older tokens remain valid).
+    ...(params.role ? { role: params.role } : {}),
   };
 
   return jwt.sign(payload, params.secret, {
@@ -66,9 +76,14 @@ export function verifyAccessToken(
     throw new UnauthorizedError("AUTH_INVALID_TOKEN");
   }
 
+  // Resolve role defensively: anything that is not exactly "ADMIN"
+  // (missing/unknown) is treated as the non-privileged "USER".
+  const role: PlatformRole = payload.role === "ADMIN" ? "ADMIN" : "USER";
+
   return {
     userId: payload.sub,
     sessionId: payload.sid,
+    role,
   };
 }
 

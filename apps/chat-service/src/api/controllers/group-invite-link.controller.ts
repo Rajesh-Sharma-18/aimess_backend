@@ -47,13 +47,14 @@ export class GroupInviteLinkController {
   });
 
   getActiveLinks = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const limit = Number(req.query.limit) || 20;
     const page = Number(req.query.page) || 1;
-    const [links, totalCount] = await Promise.all([
-      this.service.getActiveLinks(roomId),
-      this.service.countActiveLinks(roomId),
-    ]);
+    // Authorize (active OWNER/ADMIN) before listing tokens; the count query is
+    // harmless and only surfaces if authorization passes.
+    const links = await this.service.getActiveLinks(roomId, userId);
+    const totalCount = await this.service.countActiveLinks(roomId);
     const paginated = buildListResponse(links, totalCount, page, limit);
     const msg = paginated.data.length
       ? t("CHAT_INVITE_LINKS_FETCHED", req.locale)

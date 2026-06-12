@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import { z } from "zod/v4";
 
 import { ApiResponse, asyncHandler } from "@aimess/utils";
-import { BadRequestError } from "@aimess/errors";
+import { BadRequestError, ForbiddenError } from "@aimess/errors";
 import { HTTP_STATUS } from "@aimess/constants";
 import type { MediaObject } from "@aimess/shared-types";
 import {
@@ -11,6 +11,7 @@ import {
   buildObjectKey,
   parseFileMetaFromObjectKey,
   toMediaObject,
+  assertObjectKeyOwnedBy,
 } from "@aimess/storage";
 import { mediaUrlStrategy, presignClient } from "../../config/storage.js";
 import { env } from "../../config/env.js";
@@ -80,8 +81,10 @@ export class MediaController {
   });
 
   getDownloadUrl = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     // NOTE: per-message-file MediaObject embedding (presigning files on message
-    // read) is a deferred follow-up; this endpoint resolves a single key only.
+    // read, where room participation is enforced) is the deferred follow-up;
+    // this endpoint resolves a single key the CALLER OWNS.
     const parsed = downloadUrlSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new BadRequestError("CHAT_DOWNLOAD_REQUEST_INVALID");
@@ -90,6 +93,12 @@ export class MediaController {
     const { objectKey } = parsed.data;
     if (!objectKey.startsWith(`${CHAT.keyPrefix}/`)) {
       throw new BadRequestError("CHAT_INVALID_OBJECT_KEY");
+    }
+    // IDOR guard: the key embeds the uploader id as `{prefix}/{ownerId}/{file}`.
+    // A prefix-only check let any authenticated user presign another user's
+    // attachment — require the caller to own the key (AUDIT H7).
+    if (!assertObjectKeyOwnedBy(objectKey, CHAT.keyPrefix, userId)) {
+      throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
     }
 
     const downloadUrl = await createPresignedViewUrl({

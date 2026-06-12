@@ -9,6 +9,7 @@ import type {
   InitiateDeviceLinkInput,
 } from "../api/validators/device-link.validator.js";
 import { DeviceType } from "../generated/prisma/client.js";
+import { authRepository } from "../repositories/auth.repository.js";
 import {
   approveLinkSessionAtomic,
   consumeTokensAtomic,
@@ -107,8 +108,14 @@ export const deviceLinkService = {
       userAgent: null,
     };
 
+    // The approver is linking a NEW device to their OWN account, so the new
+    // session must carry the approving user's real platform role.
+    const approver = await authRepository.findRoleByUserId(userId);
+    const role = approver?.role === "ADMIN" ? "ADMIN" : "USER";
+
     const { tokens, sessionId } = await issueAuthTokens(
       userId,
+      role,
       syntheticContext
     );
 

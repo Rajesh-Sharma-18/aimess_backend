@@ -1,7 +1,11 @@
 import { UnauthorizedError } from "@aimess/errors";
 import type { RequestHandler } from "express";
 
-import { extractBearerToken, verifyAccessToken } from "./access-token.js";
+import {
+  extractBearerToken,
+  verifyAccessToken,
+  type PlatformRole,
+} from "./access-token.js";
 
 declare global {
   namespace Express {
@@ -9,6 +13,7 @@ declare global {
       auth: {
         userId: string;
         sessionId: string;
+        role: PlatformRole;
       };
     }
   }
