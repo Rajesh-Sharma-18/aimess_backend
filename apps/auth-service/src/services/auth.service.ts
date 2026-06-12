@@ -40,7 +40,11 @@ export const authService = {
     console.log("User registered with ID:", user); // Debug log
 
     const session = buildSessionContext(req);
-    const { tokens } = await issueAuthTokens(user.id, session);
+    const { tokens } = await issueAuthTokens(
+      user.id,
+      user.role === "ADMIN" ? "ADMIN" : "USER",
+      session
+    );
 
     publishUserCreatedSafe({
       userId: user.id,
@@ -107,6 +111,7 @@ export const authService = {
     const session = buildSessionContext(req);
     const { tokens } = await issueAuthTokens(
       user.id,
+      user.role === "ADMIN" ? "ADMIN" : "USER",
       session,
       input.rememberMe
     );

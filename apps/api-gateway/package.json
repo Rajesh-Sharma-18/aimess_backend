@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "start": "node dist/server.js",
     "lint": "eslint .",
-    "test": "node -e \"process.exit(0)\"",
+    "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs",
     "asyncapi:validate": "pnpm dlx @asyncapi/cli@6 validate asyncapi/asyncapi.yaml",
     "asyncapi:preview": "pnpm dlx @asyncapi/cli@6 start studio --file asyncapi/asyncapi.yaml",
     "asyncapi:docs": "pnpm dlx @asyncapi/cli@6 generate fromTemplate asyncapi/asyncapi.yaml @asyncapi/html-template@3 --output asyncapi/output --force-write"

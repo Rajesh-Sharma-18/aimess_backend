@@ -113,6 +113,18 @@ export class RoomMemberRepository {
     });
   }
 
+  /** Lightweight read-status projection used to compute per-message readBy/deliveredTo. */
+  async findReadStatusByRoom(
+    roomId: string
+  ): Promise<
+    Array<{ userId: string; lastReadAt: Date | null; joinedAt: Date }>
+  > {
+    return this.prisma.roomMember.findMany({
+      where: { roomId, status: "active" },
+      select: { userId: true, lastReadAt: true, joinedAt: true },
+    });
+  }
+
   /**
    * Bulk: a user's ACTIVE member rows across many rooms — the basis for
    * member-only community-chat summaries. One query, no N+1.

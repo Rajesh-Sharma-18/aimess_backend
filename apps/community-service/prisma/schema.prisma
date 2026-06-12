@@ -64,10 +64,11 @@ model Community {
   // Latest activity for inbox-style ordering: bumped to a community message's
   // timestamp (denormalized from chat-service via the community.activity event),
   // initialized to createdAt so message-less communities still sort by age.
-  lastActivityAt DateTime       @default(now())
+  lastActivityAt       DateTime @default(now())
   lastActivityType     String?
   lastActivityPreview  String?
   lastActivityUsername String?
+  lastActivityUserId   String?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   // Admin moderation state. DISTINCT from `deletedAt`: moderationStatus is an
@@ -278,6 +279,21 @@ model CommunityInviteLink {
 
   @@index([communityId, revokedAt])
   @@map("community_invite_links")
+}
+
+// -----------------------------------------------------------------------------
+// CommunityFavorite — user bookmarks/likes a community. Any authenticated user
+// may like a community regardless of membership. Unique per (userId, communityId).
+// -----------------------------------------------------------------------------
+model CommunityFavorite {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   // AuthUser.id
+  communityId String   @db.ObjectId
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, communityId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("community_favorites")
 }
 
 // =============================================================================

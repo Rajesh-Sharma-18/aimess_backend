@@ -12,6 +12,7 @@ import {
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
   type CommunityMemberKickedPayload,
+  type CommunityMemberLeftPayload,
   type CommunityMemberMutedPayload,
   type CommunityMemberUnmutedPayload,
   type CommunityMemberWarnedPayload,
@@ -117,6 +118,12 @@ export function publishCommunityDeletedSafe(
   data: CommunityDeletedPayload
 ): void {
   publishSafe(CommunityEvents.DELETED, data, "community.deleted");
+}
+
+export function publishCommunityMemberLeftSafe(
+  data: CommunityMemberLeftPayload
+): void {
+  publishSafe(CommunityEvents.MEMBER_LEFT, data, "community.member_left");
 }
 
 export function publishCommunityJoinRequestedSafe(

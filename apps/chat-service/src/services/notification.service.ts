@@ -11,8 +11,11 @@ export class NotificationService {
     return this.notificationRepo.findByUserId(userId, params);
   }
 
-  async markRead(notificationId: string): Promise<Notification | null> {
-    return this.notificationRepo.markRead(notificationId);
+  async markRead(
+    notificationId: string,
+    userId: string
+  ): Promise<Notification | null> {
+    return this.notificationRepo.markRead(notificationId, userId);
   }
 
   async markAllRead(userId: string): Promise<void> {

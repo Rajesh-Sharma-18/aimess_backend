@@ -22,6 +22,7 @@ export const refreshTokenRepository = {
             id: true,
             status: true,
             deletedAt: true,
+            role: true,
           },
         },
       },

@@ -14,7 +14,7 @@
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",
     "lint": "eslint .",
-    "test": "tsx --test \"src/**/*.test.ts\""
+    "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs"
   },
   "keywords": [],
   "author": "",

@@ -1,0 +1,179 @@
+/**
+ * POST /api/auth/login — branches not covered by login.test.ts:
+ *   - email-identifier login path (findByEmailForLogin) + unverified-email guard
+ *   - password-not-set guard (social-only account)
+ *   - rememberMe + fcmTokens pass-through and isProfileCompleted/role in the body
+ *   - mass-assignment: privileged fields in the body are ignored
+ *   - NOTE: /login is wired WITHOUT validateBody (loginSchema is commented out in
+ *     auth.routes.ts), so a missing `account` reaches the service and throws,
+ *     surfacing as a 500 rather than a 400 — asserted here as real behaviour.
+ */
+jest.mock("../../src/repositories/auth.repository.js", () => ({
+  authRepository: {
+    findByAccountForLogin: jest.fn(),
+    findByEmailForLogin: jest.fn(),
+    recordSuccessfulLogin: jest.fn(),
+    recordFailedLogin: jest.fn(),
+    mergeFcmTokens: jest.fn(),
+  },
+}));
+jest.mock("../../src/lib/token.js", () => ({
+  issueAuthTokens: jest.fn(),
+}));
+
+import request from "supertest";
+import bcrypt from "bcryptjs";
+
+import app from "../../src/app.js";
+import { authRepository } from "../../src/repositories/auth.repository.js";
+import { issueAuthTokens } from "../../src/lib/token.js";
+
+const repo = authRepository as unknown as Record<string, jest.Mock>;
+const issue = issueAuthTokens as unknown as jest.Mock;
+
+const PASSWORD = "Password123";
+let passwordHash: string;
+
+const TOKENS = {
+  accessToken: "access.jwt.token",
+  refreshToken: "refresh-token-value",
+  accessTokenExpiresIn: 3600,
+  refreshTokenExpiresIn: 604800,
+};
+
+beforeAll(async () => {
+  passwordHash = await bcrypt.hash(PASSWORD, 4);
+});
+
+function activeUser(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "user-1",
+    account: "johndoe",
+    email: "john@example.com",
+    passwordHash,
+    deletedAt: null,
+    emailVerified: true,
+    lockedUntil: null,
+    status: "ACTIVE",
+    isProfileCompleted: true,
+    role: "USER",
+    ...overrides,
+  };
+}
+
+describe("POST /api/auth/login (extra branches)", () => {
+  beforeEach(() => {
+    repo.findByAccountForLogin.mockResolvedValue(activeUser());
+    repo.findByEmailForLogin.mockResolvedValue(activeUser());
+    repo.recordSuccessfulLogin.mockResolvedValue(undefined);
+    repo.recordFailedLogin.mockResolvedValue(undefined);
+    repo.mergeFcmTokens.mockResolvedValue(undefined);
+    issue.mockResolvedValue({ tokens: TOKENS, sessionId: "sess-1" });
+  });
+
+  it("logs in via an email identifier (routes to findByEmailForLogin)", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "john@example.com", password: PASSWORD });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(repo.findByEmailForLogin).toHaveBeenCalledWith("john@example.com");
+    expect(repo.findByAccountForLogin).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when logging in by email that is not yet verified", async () => {
+    repo.findByEmailForLogin.mockResolvedValue(
+      activeUser({ emailVerified: false })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "john@example.com", password: PASSWORD });
+
+    expect(res.status).toBe(401);
+    expect(issue).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when the account has no password set (social-only)", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      activeUser({ passwordHash: null })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: PASSWORD });
+
+    expect(res.status).toBe(401);
+    expect(issue).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 when the account was soft-deleted (deletedAt set)", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      activeUser({ deletedAt: new Date() })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: PASSWORD });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns isProfileCompleted + role in the success envelope and passes rememberMe", async () => {
+    repo.findByAccountForLogin.mockResolvedValue(
+      activeUser({ isProfileCompleted: false, role: "ADMIN" })
+    );
+
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ account: "johndoe", password: PASSWORD, rememberMe: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isProfileCompleted).toBe(false);
+    expect(res.body.data.role).toBe("ADMIN");
+    // issueAuthTokens(userId, role, session, rememberMe) — rememberMe is the 4th arg.
+    expect(issue.mock.calls[0][3]).toBe(true);
+  });
+
+  it("merges supplied fcmTokens on a successful login", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({
+        account: "johndoe",
+        password: PASSWORD,
+        fcmTokens: ["tok-a", "tok-b"],
+      });
+
+    expect(res.status).toBe(200);
+    expect(repo.mergeFcmTokens).toHaveBeenCalledWith("user-1", [
+      "tok-a",
+      "tok-b",
+    ]);
+  });
+
+  it("ignores mass-assignment of privileged fields in the body", async () => {
+    const res = await request(app).post("/api/auth/login").send({
+      account: "johndoe",
+      password: PASSWORD,
+      role: "ADMIN",
+      status: "BANNED",
+      id: "attacker-id",
+    });
+
+    expect(res.status).toBe(200);
+    // Role echoed back is the stored USER role, not the injected ADMIN.
+    expect(res.body.data.role).toBe("USER");
+    expect(repo.recordSuccessfulLogin).toHaveBeenCalledWith("user-1");
+  });
+
+  it("does NOT 400 on a missing account because /login skips validateBody (service throws → 500)", async () => {
+    const res = await request(app)
+      .post("/api/auth/login")
+      .send({ password: PASSWORD });
+
+    // Documenting actual behaviour: no route-level Zod guard on /login.
+    expect(res.status).toBe(500);
+    expect(res.body.success).toBe(false);
+  });
+});

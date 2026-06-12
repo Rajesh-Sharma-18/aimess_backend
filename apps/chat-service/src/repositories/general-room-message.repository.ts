@@ -296,6 +296,7 @@ export class GeneralRoomMessageRepository {
             roomId: { $in: oids },
             deletedForAll: false,
             deletedBy: { $ne: params.userId },
+            sentBy: { $ne: params.userId },
           },
         },
         {

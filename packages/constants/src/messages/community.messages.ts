@@ -54,6 +54,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Bạn không có quyền thực hiện hành động này",
     en: "You do not have permission to perform this action",
   },
+  PLATFORM_ADMIN_REQUIRED: {
+    vi: "Bạn không có quyền quản trị nền tảng",
+    en: "Platform administrator access is required",
+  },
   COMMUNITY_CATEGORY_INVALID: {
     vi: "Danh mục cộng đồng không hợp lệ",
     en: "Invalid community category",
@@ -105,6 +109,10 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_LEFT: {
     vi: "Đã rời khỏi cộng đồng",
     en: "Left the community",
+  },
+  COMMUNITY_BULK_LEFT: {
+    vi: "Xử lý rời khỏi cộng đồng hàng loạt thành công",
+    en: "Bulk community leave processed",
   },
   COMMUNITY_MEMBER_UNBANNED: {
     vi: "Đã bỏ cấm thành viên",
@@ -381,6 +389,18 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_INVITE_LINK_INACTIVE: {
     vi: "Liên kết mời này không còn hoạt động",
     en: "Invite link is no longer active",
+  },
+  COMMUNITY_LIKED: {
+    vi: "Đã thêm cộng đồng vào yêu thích",
+    en: "Community added to liked",
+  },
+  COMMUNITY_UNLIKED: {
+    vi: "Đã xóa cộng đồng khỏi yêu thích",
+    en: "Community removed from liked",
+  },
+  COMMUNITY_LIKED_LIST_FETCHED: {
+    vi: "Đã tải danh sách cộng đồng yêu thích",
+    en: "Liked communities fetched",
   },
 } as const satisfies MessageCatalog;
 

@@ -17,6 +17,7 @@ import {
   buildCanonicalQuote,
   groupStoredReactions,
 } from "../lib/chat-message.serializer.js";
+import { assertPrivateParticipant } from "../lib/access-guard.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -157,10 +158,11 @@ export class PrivateMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<PrivateMessage[]> {
-    const room = await this.roomRepo.findByRoomId(params.roomId, {
-      projection: { roomId: 1, deletedFor: 1 },
-    });
-    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
 
     const beforeTimestamp = params.cursor || new Date().toISOString();
     return this.messageRepo.findByRoomIdWithTime(
@@ -187,10 +189,11 @@ export class PrivateMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    const room = await this.roomRepo.findByRoomId(params.roomId, {
-      projection: { roomId: 1, deletedFor: 1 },
-    });
-    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
 
     const rows = await this.messageRepo.findByRoomIdTimeline({
       userId: params.userId,
@@ -224,10 +227,11 @@ export class PrivateMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    const room = await this.roomRepo.findByRoomId(params.roomId, {
-      projection: { roomId: 1, deletedFor: 1 },
-    });
-    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
 
     const rows = await this.messageRepo.findByRoomIdSeq({
       userId: params.userId,
@@ -253,10 +257,11 @@ export class PrivateMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: PrivateMessage[]; anchorSeq: number }> {
-    const room = await this.roomRepo.findByRoomId(params.roomId, {
-      projection: { roomId: 1, deletedFor: 1 },
-    });
-    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const room = await assertPrivateParticipant(
+      this.roomRepo,
+      params.roomId,
+      params.userId
+    );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     const items = await this.messageRepo.findAroundSeq({
@@ -274,10 +279,7 @@ export class PrivateMessageService {
     query: string;
     limit: number;
   }): Promise<PrivateMessage[]> {
-    const room = await this.roomRepo.findByRoomId(params.roomId, {
-      projection: { roomId: 1 },
-    });
-    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    await assertPrivateParticipant(this.roomRepo, params.roomId, params.userId);
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,

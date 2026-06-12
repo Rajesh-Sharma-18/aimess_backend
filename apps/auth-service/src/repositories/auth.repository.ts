@@ -348,6 +348,13 @@ export const authRepository = {
     return row?.isProfileCompleted ?? false;
   },
 
+  findRoleByUserId(userId: string) {
+    return prisma.authUser.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+  },
+
   /**
    * Mirrors the profile-completion flag from the user.profile_updated event.
    * Uses updateMany so a stale event for a deleted/missing user is a no-op

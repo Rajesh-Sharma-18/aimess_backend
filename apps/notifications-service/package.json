@@ -10,7 +10,7 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "lint": "eslint .",
-    "test": "node -e \"process.exit(0)\"",
+    "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs",
     "dev": "tsx watch --include ./src --clear-screen=false src/server.ts"
   },
   "keywords": [],

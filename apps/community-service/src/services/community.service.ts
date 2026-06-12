@@ -58,6 +58,7 @@ import type {
   CommunityInviteData,
   CommunityInviteLinkData,
   CommunityInviteWithUserData,
+  CommunityFavoriteData,
   CommunityJoinRequestData,
   CommunityJoinRequestWithUserData,
   CommunityListItem,
@@ -92,6 +93,7 @@ import {
   publishCommunityMemberAddedSafe,
   publishCommunityMemberBannedSafe,
   publishCommunityMemberKickedSafe,
+  publishCommunityMemberLeftSafe,
   publishCommunityMemberMutedSafe,
   publishCommunityMemberUnmutedSafe,
   publishCommunityMemberWarnedSafe,
@@ -192,6 +194,7 @@ function buildLastActivity(community: {
   lastActivityType?: string | null;
   lastActivityPreview?: string | null;
   lastActivityUsername?: string | null;
+  lastActivityUserId?: string | null;
   createdAt: Date;
 }): CommunityLastActivity {
   const type = community.lastActivityType ?? "created";
@@ -200,9 +203,28 @@ function buildLastActivity(community: {
       ? community.createdAt.getTime()
       : community.lastActivityAt.getTime();
 
-  if (type === "message" || type === "join" || type === "removal") {
+  const NAMED_TYPES = new Set([
+    "message",
+    "join",
+    "removal",
+    "reaction",
+    "edited",
+    "deleted",
+    "pinned",
+    "unpinned",
+  ]);
+  if (NAMED_TYPES.has(type)) {
     return {
-      type: type as "message" | "join" | "removal",
+      type: type as
+        | "message"
+        | "join"
+        | "removal"
+        | "reaction"
+        | "edited"
+        | "deleted"
+        | "pinned"
+        | "unpinned",
+      userId: community.lastActivityUserId ?? null,
       username: community.lastActivityUsername ?? "",
       preview: community.lastActivityPreview ?? "",
       dateTime,
@@ -210,6 +232,7 @@ function buildLastActivity(community: {
   }
   return {
     type: "created",
+    userId: null,
     username: null,
     preview: community.lastActivityPreview ?? "Community created successfully",
     dateTime,
@@ -1405,7 +1428,8 @@ export const communityService = {
         new Date(),
         "removal",
         `${updated.snapshotUsername} was removed from the community`,
-        updated.snapshotUsername
+        updated.snapshotUsername,
+        targetUserId
       )
       .catch((err) =>
         logger.warn(
@@ -1502,7 +1526,8 @@ export const communityService = {
         new Date(),
         "removal",
         `${updated.snapshotUsername} was removed from the community`,
-        updated.snapshotUsername
+        updated.snapshotUsername,
+        targetUserId
       )
       .catch((err) =>
         logger.warn(
@@ -1654,7 +1679,8 @@ export const communityService = {
             new Date(),
             "join",
             `${lastAddedSnap.username} joined the community`,
-            lastAddedSnap.username
+            lastAddedSnap.username,
+            allAdded[allAdded.length - 1] ?? null
           )
           .catch((err) =>
             logger.warn(
@@ -1776,6 +1802,130 @@ export const communityService = {
     });
 
     return toMemberData(updated);
+  },
+
+  /**
+   * Leave multiple communities in one call. Each communityId is processed
+   * independently — failures do not abort the rest.
+   *
+   * Rules (mirroring single leaveCommunity):
+   *  - Not an active member → FAILED / NOT_MEMBER
+   *  - Community not found  → FAILED / NOT_FOUND
+   *  - Admin, sole member   → community auto-deleted, status DELETED
+   *  - Admin, others exist  → FAILED / ADMIN_CANNOT_LEAVE
+   *  - Non-admin            → LEFT; memberCount recomputed; MEMBER_LEFT audit + event
+   */
+  async bulkLeaveCommunities(
+    callerId: string,
+    communityIds: string[]
+  ): Promise<{
+    results: Array<{
+      communityId: string;
+      status: "LEFT" | "DELETED" | "FAILED";
+      errorCode?: "ADMIN_CANNOT_LEAVE" | "NOT_MEMBER" | "NOT_FOUND";
+    }>;
+    summary: { requested: number; left: number; failed: number };
+  }> {
+    // 1. Batch-fetch: active memberships + community rows (for existence check
+    //    and adminId/memberCount on admin-owned communities).
+    const [memberships, communities] = await Promise.all([
+      communityRepository.findActiveMembershipsWithRoleByCommunityIds(
+        callerId,
+        communityIds
+      ),
+      communityRepository.findCommunitiesByIds(communityIds),
+    ]);
+
+    const membershipMap = new Map(memberships.map((m) => [m.communityId, m]));
+    const communityMap = new Map(communities.map((c) => [c.id, c]));
+
+    const results: Array<{
+      communityId: string;
+      status: "LEFT" | "DELETED" | "FAILED";
+      errorCode?: "ADMIN_CANNOT_LEAVE" | "NOT_MEMBER" | "NOT_FOUND";
+    }> = [];
+    let leftCount = 0;
+    let failedCount = 0;
+    const eventAt = new Date().toISOString();
+
+    for (const communityId of communityIds) {
+      if (!communityMap.has(communityId)) {
+        results.push({ communityId, status: "FAILED", errorCode: "NOT_FOUND" });
+        failedCount++;
+        continue;
+      }
+
+      const membership = membershipMap.get(communityId);
+      if (!membership || membership.status !== CommunityMemberStatus.ACTIVE) {
+        results.push({
+          communityId,
+          status: "FAILED",
+          errorCode: "NOT_MEMBER",
+        });
+        failedCount++;
+        continue;
+      }
+
+      const isAdmin = membership.role === CommunityMemberRole.ADMIN;
+
+      if (isAdmin) {
+        const community = communityMap.get(communityId)!;
+        if (community.memberCount === 1) {
+          // Admin is the only member — auto-delete the community.
+          await communityRepository.deleteCommunityHard(communityId);
+          logger.info(
+            `Community auto-deleted (last member left via bulk): community=${communityId} by=${callerId}`
+          );
+          results.push({ communityId, status: "DELETED" });
+          leftCount++;
+          continue;
+        }
+
+        // Admin with other members present — block.
+        results.push({
+          communityId,
+          status: "FAILED",
+          errorCode: "ADMIN_CANNOT_LEAVE",
+        });
+        failedCount++;
+        continue;
+      }
+
+      // Non-admin: mark LEFT, recompute memberCount, audit, publish.
+      await communityRepository.updateMemberStatus(
+        communityId,
+        callerId,
+        CommunityMemberStatus.LEFT
+      );
+      const count = await communityRepository.countActiveMembers(communityId);
+      await communityRepository.setMemberCount(communityId, count);
+
+      await this.recordAudit({
+        communityId,
+        actorId: callerId,
+        action: "MEMBER_LEFT",
+        targetUserId: callerId,
+      });
+
+      publishCommunityMemberLeftSafe({
+        communityId,
+        actorId: callerId,
+        reason: null,
+        eventAt,
+      });
+
+      results.push({ communityId, status: "LEFT" });
+      leftCount++;
+    }
+
+    return {
+      results,
+      summary: {
+        requested: communityIds.length,
+        left: leftCount,
+        failed: failedCount,
+      },
+    };
   },
 
   async unbanMember(
@@ -2095,6 +2245,96 @@ export const communityService = {
     }));
 
     return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Liked / Favorited communities
+  // ---------------------------------------------------------------------------
+  async likeCommunity(
+    communityId: string,
+    callerId: string
+  ): Promise<CommunityFavoriteData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    assertCommunityNotSuspended(community);
+
+    const row = await communityRepository.likeCommunity(callerId, communityId);
+    return {
+      favoriteId: row.id,
+      communityId: row.communityId,
+      createdAt: row.createdAt.toISOString(),
+    };
+  },
+
+  async unlikeCommunity(communityId: string, callerId: string): Promise<void> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    await communityRepository.unlikeCommunity(callerId, communityId);
+  },
+
+  async listFavoriteCommunities(
+    callerId: string,
+    params: { cursor?: string | null; limit: number }
+  ): Promise<{
+    items: (CommunityDiscoverItem & { likedAt: string })[];
+    hasMore: boolean;
+    nextCursor: string | null;
+  }> {
+    const {
+      rows: favRows,
+      hasMore,
+      nextCursor,
+    } = await communityRepository.listFavorites({
+      userId: callerId,
+      cursor: params.cursor,
+      limit: params.limit,
+    });
+
+    if (favRows.length === 0) {
+      return { items: [], hasMore: false, nextCursor: null };
+    }
+
+    const communityIds = favRows.map((r) => r.communityId);
+    const likedAtByCommunityId = new Map(
+      favRows.map((r) => [r.communityId, r.createdAt.toISOString()])
+    );
+
+    const [communities, muteMap] = await Promise.all([
+      communityRepository.findManyByIds(communityIds),
+      loadMuteMap(callerId, communityIds),
+    ]);
+
+    // Resolve membership in bulk via findMemberships if available, else serial.
+    const membershipRows = await Promise.all(
+      communityIds.map((cid) =>
+        communityRepository
+          .findMembership(cid, callerId)
+          .then((m) => ({ cid, role: m?.role ?? null }))
+      )
+    );
+    const membershipMap = new Map(membershipRows.map((r) => [r.cid, r.role]));
+
+    const items = await Promise.all(
+      favRows
+        .map((fav) => communities.find((c) => c.id === fav.communityId))
+        .filter(
+          (c): c is NonNullable<typeof c> => c != null && c.deletedAt == null
+        )
+        .map(async (community) => {
+          const isJoined =
+            membershipMap.get(community.id) !== null &&
+            membershipMap.get(community.id) !== undefined;
+          const base = await toDiscoverItem(
+            community,
+            muteMap.get(community.id) ?? null,
+            isJoined
+          );
+          return { ...base, likedAt: likedAtByCommunityId.get(community.id)! };
+        })
+    );
+
+    return { items, hasMore, nextCursor };
   },
 
   async joinCommunity(
@@ -2554,7 +2794,8 @@ export const communityService = {
         new Date(),
         "join",
         `${snap.username} joined the community`,
-        snap.username
+        snap.username,
+        request.userId
       )
       .catch((err) =>
         logger.warn(
@@ -3109,7 +3350,8 @@ export const communityService = {
         new Date(),
         "join",
         `${snap.username} joined the community`,
-        snap.username
+        snap.username,
+        callerId
       )
       .catch((err) =>
         logger.warn(
@@ -4243,7 +4485,8 @@ export const communityService = {
           new Date(),
           "join",
           `${snap.username} joined the community`,
-          snap.username
+          snap.username,
+          callerId
         )
         .catch((err) =>
           logger.warn(

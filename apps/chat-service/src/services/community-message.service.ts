@@ -25,6 +25,7 @@ import {
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
+import { assertCommunityMember } from "../lib/access-guard.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -32,8 +33,18 @@ import { buildMessagePreview } from "../events/publish-message-sent.js";
  * (§1 single client-facing casing). Used as the return element of every REST
  * read path so HTTP clients never see the internal `messageType` field.
  */
+type MemberReadStatus = {
+  userId: string;
+  lastReadAt: Date | null;
+  joinedAt: Date;
+};
+
 type CommunityMessageWire = Omit<GeneralRoomMessage, "messageType"> & {
   contentType: string;
+  /** Members whose read cursor is at or past this message's createdAt. */
+  readBy: Array<{ userId: string; readAt: string }>;
+  /** Members who were active in the room when this message was sent. */
+  deliveredTo: Array<{ userId: string; deliveredAt: string }>;
 };
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
@@ -367,8 +378,32 @@ export class CommunityMessageService {
    * …) is preserved unchanged. Applied at the RETURN site of REST read paths
    * only — internal logic continues to read the raw rows.
    */
-  private toWire(m: GeneralRoomMessage): CommunityMessageWire {
-    return toWireMessage(m);
+  private toWire(
+    m: GeneralRoomMessage,
+    members?: MemberReadStatus[]
+  ): CommunityMessageWire {
+    const wire = toWireMessage(m);
+    const msgTs = m.createdAt;
+
+    const readBy = members
+      ? members
+          .filter((mem) => mem.lastReadAt !== null && mem.lastReadAt >= msgTs)
+          .map((mem) => ({
+            userId: mem.userId,
+            readAt: mem.lastReadAt!.getTime(),
+          }))
+      : [];
+
+    const deliveredTo = members
+      ? members
+          .filter((mem) => mem.joinedAt <= msgTs)
+          .map((mem) => ({
+            userId: mem.userId,
+            deliveredAt: msgTs.getTime(),
+          }))
+      : [];
+
+    return { ...wire, readBy, deliveredTo };
   }
 
   async getMessages(params: {
@@ -377,15 +412,19 @@ export class CommunityMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
+    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
     const beforeTimestamp = params.cursor || new Date().toISOString();
-    const rows = await this.messageRepo.findByRoomIdWithTime(
-      params.roomId,
-      beforeTimestamp,
-      "older",
-      params.limit,
-      params.userId
-    );
-    return rows.map((m) => this.toWire(m));
+    const [rows, members] = await Promise.all([
+      this.messageRepo.findByRoomIdWithTime(
+        params.roomId,
+        beforeTimestamp,
+        "older",
+        params.limit,
+        params.userId
+      ),
+      this.memberRepo.findReadStatusByRoom(params.roomId),
+    ]);
+    return rows.map((m) => this.toWire(m, members));
   }
 
   /**
@@ -403,13 +442,17 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    const rows = await this.messageRepo.findByRoomIdTimeline({
-      roomId: params.roomId,
-      userId: params.userId,
-      direction: params.direction,
-      ts: params.ts,
-      limit: params.limit,
-    });
+    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
+    const [rows, members] = await Promise.all([
+      this.messageRepo.findByRoomIdTimeline({
+        roomId: params.roomId,
+        userId: params.userId,
+        direction: params.direction,
+        ts: params.ts,
+        limit: params.limit,
+      }),
+      this.memberRepo.findReadStatusByRoom(params.roomId),
+    ]);
 
     const hasMore = rows.length > params.limit;
     const pageRows = rows.slice(0, params.limit);
@@ -417,7 +460,11 @@ export class CommunityMessageService {
     const nextCursor =
       hasMore && last ? String(last.createdAt.getTime()) : null;
 
-    return { items: pageRows.map((m) => this.toWire(m)), hasMore, nextCursor };
+    return {
+      items: pageRows.map((m) => this.toWire(m, members)),
+      hasMore,
+      nextCursor,
+    };
   }
 
   /**
@@ -533,17 +580,21 @@ export class CommunityMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: CommunityMessageWire[] }> {
+    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
       return { items: [] };
     }
-    const rows = await this.messageRepo.findAroundDate({
-      roomId: params.roomId,
-      userId: params.userId,
-      anchorDate: anchor.createdAt,
-      limit: params.limit,
-    });
-    return { items: rows.map((m) => this.toWire(m)) };
+    const [rows, members] = await Promise.all([
+      this.messageRepo.findAroundDate({
+        roomId: params.roomId,
+        userId: params.userId,
+        anchorDate: anchor.createdAt,
+        limit: params.limit,
+      }),
+      this.memberRepo.findReadStatusByRoom(params.roomId),
+    ]);
+    return { items: rows.map((m) => this.toWire(m, members)) };
   }
 
   /**
@@ -615,6 +666,7 @@ export class CommunityMessageService {
     query: string;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
+    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
     const rows = await this.messageRepo.searchByText(
       params.roomId,
       params.query,

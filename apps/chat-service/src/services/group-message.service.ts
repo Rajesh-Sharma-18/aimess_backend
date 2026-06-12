@@ -12,6 +12,7 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
+import { assertGroupMember } from "../lib/access-guard.js";
 
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -192,6 +193,7 @@ export class GroupMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<GroupMessage[]> {
+    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
     const beforeTimestamp = params.cursor || new Date().toISOString();
     return this.messageRepo.findByRoomIdWithTime(
       params.roomId,
@@ -219,6 +221,7 @@ export class GroupMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
+    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
     const rows = await this.messageRepo.findByRoomIdTimeline({
       userId: params.userId,
       roomId: params.roomId,
@@ -250,6 +253,7 @@ export class GroupMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
+    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
     const rows = await this.messageRepo.findByRoomIdSeq({
       userId: params.userId,
       roomId: params.roomId,
@@ -273,6 +277,7 @@ export class GroupMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: GroupMessage[]; anchorSeq: number }> {
+    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     const items = await this.messageRepo.findAroundSeq({
@@ -362,9 +367,11 @@ export class GroupMessageService {
 
   async searchMessages(params: {
     roomId: string;
+    userId: string;
     query: string;
     limit: number;
   }): Promise<GroupMessage[]> {
+    await assertGroupMember(this.memberRepo, params.roomId, params.userId);
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,

@@ -88,10 +88,69 @@ export type CommunityCategoryData = {
   slug: string;
 };
 export type CommunityLastActivity =
-  | { type: "message"; username: string; preview: string; dateTime: number }
-  | { type: "join"; username: string; preview: string; dateTime: number }
-  | { type: "removal"; username: string; preview: string; dateTime: number }
-  | { type: "created"; username: null; preview: string; dateTime: number };
+  | {
+      type: "message";
+      userId: string | null;
+      username: string;
+      preview: string;
+      dateTime: number;
+    }
+  | {
+      type: "join";
+      userId: string | null;
+      username: string;
+      preview: string;
+      dateTime: number;
+    }
+  | {
+      type: "removal";
+      userId: string | null;
+      username: string;
+      preview: string;
+      dateTime: number;
+    }
+  | {
+      type: "reaction";
+      userId: string | null;
+      username: string;
+      preview: string;
+      dateTime: number;
+    }
+  | {
+      type: "edited";
+      userId: string | null;
+      username: string;
+      preview: string;
+      dateTime: number;
+    }
+  | {
+      type: "deleted";
+      userId: string | null;
+      username: string;
+      preview: string;
+      dateTime: number;
+    }
+  | {
+      type: "pinned";
+      userId: string | null;
+      username: string;
+      preview: string;
+      dateTime: number;
+    }
+  | {
+      type: "unpinned";
+      userId: string | null;
+      username: string;
+      preview: string;
+      dateTime: number;
+    }
+  | {
+      type: "created";
+      userId: null;
+      username: null;
+      preview: string;
+      dateTime: number;
+    };
 export type AdminCategoryData = {
   id: string;
   name: string;
@@ -324,6 +383,13 @@ export type CommunityInviteLinkData = {
   createdAt: string;
   /** Computed: not revoked, not expired, not exhausted. */
   isActive: boolean;
+};
+
+/** Liked/favorited community record. */
+export type CommunityFavoriteData = {
+  favoriteId: string;
+  communityId: string;
+  createdAt: string;
 };
 
 /** Plain join-request DTO (used by approve/reject/cancel/my-self-fetch responses). */

@@ -58,7 +58,16 @@ export class CommunityRoomService {
   }
 
   async leave(roomId: string, userId: string): Promise<void> {
-    await this.memberRepo.updateStatus(roomId, userId, "active", {
+    // Guard: only an active member can leave. Without this, leave was a no-op
+    // that still decremented memberNumber, drifting the count (AUDIT H5).
+    const member = await this.memberRepo.findByRoomAndUser(roomId, userId);
+    if (!member || member.status !== "active") {
+      throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    }
+
+    // Must write "left" (the new status) — previously wrote "active", leaving
+    // the member ACTIVE while still decrementing memberNumber.
+    await this.memberRepo.updateStatus(roomId, userId, "left", {
       leftAt: new Date(),
     });
     await this.roomRepo.incMemberNumber(roomId, -1);

@@ -8,6 +8,7 @@ import type {
   AddMembersInput,
   AuditLogsQuery,
   BulkApproveJoinRequestsInput,
+  BulkLeaveInput,
   BulkMarkReadInput,
   BulkMuteInput,
   BulkRejectJoinRequestsInput,
@@ -322,6 +323,21 @@ export const leaveCommunity = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(member, t("COMMUNITY_LEFT", req.locale)));
+  }
+);
+
+export const bulkLeaveCommunities = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { communityIds } = req.body as BulkLeaveInput;
+
+    const result = await communityService.bulkLeaveCommunities(
+      req.auth.userId,
+      communityIds
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("COMMUNITY_BULK_LEFT", req.locale)));
   }
 );
 
@@ -1103,5 +1119,48 @@ export const adminDeleteCategory = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(null, "Category deleted"));
+  }
+);
+
+// --- Liked / Favorite communities -------------------------------------------
+
+export const likeCommunity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const result = await communityService.likeCommunity(id, req.auth.userId);
+    return res
+      .status(HTTP_STATUS.CREATED)
+      .json(new ApiResponse(result, t("COMMUNITY_LIKED", req.locale)));
+  }
+);
+
+export const unlikeCommunity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    await communityService.unlikeCommunity(id, req.auth.userId);
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("COMMUNITY_UNLIKED", req.locale)));
+  }
+);
+
+export const listLikedCommunities = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { cursor, limit = 20 } = req.query as {
+      cursor?: string;
+      limit?: number;
+    };
+    const result = await communityService.listFavoriteCommunities(
+      req.auth.userId,
+      {
+        cursor: cursor ?? null,
+        limit: Number(limit),
+      }
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(result, t("COMMUNITY_LIKED_LIST_FETCHED", req.locale))
+      );
   }
 );

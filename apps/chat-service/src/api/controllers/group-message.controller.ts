@@ -354,6 +354,7 @@ export class GroupMessageController {
   });
 
   searchMessages = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
     const roomId = req.params.roomId as string;
     const query = ((req.query.q as string) ?? "").trim();
     const limit = Number(req.query.limit) || 30;
@@ -366,7 +367,7 @@ export class GroupMessageController {
       return;
     }
     const [messages, totalCount] = await Promise.all([
-      this.messageService.searchMessages({ roomId, query, limit }),
+      this.messageService.searchMessages({ roomId, userId, query, limit }),
       this.messageService.countSearchResults(roomId, query),
     ]);
     const paginated = buildListResponse(messages, totalCount, page, limit);

@@ -142,11 +142,7 @@ function normalizeGatewayBaseUrl(url: string): string {
 /** Fixed gateway base URLs from env (host only, no `/api/v1` path). */
 export function getConfiguredSwaggerServerUrls(): string[] {
   const port = String(env.API_GATEWAY_PORT);
-  const urls: string[] = [`http://localhost:${port}`];
-
-  if (env.API_PUBLIC_URL) {
-    urls.push(normalizeGatewayBaseUrl(env.API_PUBLIC_URL));
-  }
+  const urls: string[] = [];
 
   if (env.SWAGGER_SERVER_URLS) {
     urls.push(
@@ -156,12 +152,19 @@ export function getConfiguredSwaggerServerUrls(): string[] {
     );
   }
 
+  if (env.API_PUBLIC_URL) {
+    urls.push(normalizeGatewayBaseUrl(env.API_PUBLIC_URL));
+  }
+
+  urls.push(`http://localhost:${port}`);
+
   return [...new Set(urls)];
 }
 
 /**
- * Swagger "Servers" list: current browser host first, then env-configured URLs.
- * Works for http://localhost:3000/docs and http://10.0.127.224:3000/docs alike.
+ * Swagger "Servers" list: env-configured URLs first (dev tunnel, etc.), then
+ * the current browser host. https://localhost is skipped — it is a dev-proxy
+ * artifact and not a real reachable server.
  */
 export function resolveSwaggerServerUrls(req: Request): string[] {
   const host = req.get("host");
@@ -170,5 +173,9 @@ export function resolveSwaggerServerUrls(req: Request): string[] {
       ? normalizeGatewayBaseUrl(`${req.protocol}://${host}`)
       : `http://localhost:${String(env.API_GATEWAY_PORT)}`;
 
-  return [...new Set([currentBase, ...getConfiguredSwaggerServerUrls()])];
+  const isHttpsLocalhost = /^https:\/\/localhost(:\d+)?$/.test(currentBase);
+  const configured = getConfiguredSwaggerServerUrls();
+  return isHttpsLocalhost
+    ? configured
+    : [...new Set([...configured, currentBase])];
 }
