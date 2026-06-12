@@ -1,4 +1,8 @@
-﻿import type { PrismaClient, GroupRoom } from "../generated/prisma/index.js";
+﻿import type {
+  PrismaClient,
+  GroupRoom,
+  Prisma,
+} from "../generated/prisma/index.js";
 
 /** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
 function endOfDay(d: Date): Date {
@@ -199,6 +203,39 @@ export class GroupRoomRepository {
         disbandedAt: new Date(),
         disbandedBy: userId,
       },
+    });
+  }
+
+  async setArchived(roomId: string, userId: string): Promise<GroupRoom | null> {
+    const existing = await this.prisma.groupRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return null;
+
+    const archivedBy = (existing.archivedBy ?? {}) as Record<string, unknown>;
+    archivedBy[userId] = { archivedAt: new Date().toISOString() };
+
+    return this.prisma.groupRoom.update({
+      where: { roomId },
+      data: { archivedBy: archivedBy as unknown as Prisma.InputJsonValue },
+    });
+  }
+
+  async setUnarchived(
+    roomId: string,
+    userId: string
+  ): Promise<GroupRoom | null> {
+    const existing = await this.prisma.groupRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return null;
+
+    const archivedBy = (existing.archivedBy ?? {}) as Record<string, unknown>;
+    delete archivedBy[userId];
+
+    return this.prisma.groupRoom.update({
+      where: { roomId },
+      data: { archivedBy: archivedBy as unknown as Prisma.InputJsonValue },
     });
   }
 

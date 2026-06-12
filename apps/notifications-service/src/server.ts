@@ -31,20 +31,20 @@ async function start() {
     // Device-token store. Required for push delivery; fail fast if unreachable.
     await connectDatabase();
 
-    // Wait briefly for the settings-cache Redis client to be ready before
-    // starting consumers (enableOfflineQueue is false, so commands issued
-    // before the connection is up would error). Non-fatal: proceed after a
-    // short timeout and let the cache helpers fall through to gRPC.
-    if (redis.status !== "ready") {
-      await new Promise<void>((resolve) => {
-        const done = (): void => {
-          clearTimeout(timer);
-          redis.off("ready", done);
-          resolve();
-        };
-        const timer = setTimeout(done, 3000);
-        redis.once("ready", done);
-      });
+    // Explicitly connect the Redis client before consumers start.
+    // lazyConnect:true means ioredis stays in "wait" state until .connect() is
+    // called — it does NOT auto-connect on the first command. Combined with
+    // enableOfflineQueue:false, every command would immediately throw
+    // "Stream isn't writeable" without this call.
+    // Non-fatal: if Redis is unreachable the cache helpers fall through to gRPC.
+    if (redis.status === "wait") {
+      try {
+        await redis.connect();
+      } catch {
+        logger.warn(
+          "Redis unavailable at startup; notif settings will fall through to gRPC on each message"
+        );
+      }
     }
 
     await startConsumerSafe("notification consumer", startConsumer);

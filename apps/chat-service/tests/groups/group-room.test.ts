@@ -129,6 +129,30 @@ describe("GET /api/chat/groups/my-groups", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.data).toEqual([]);
   });
+
+  // Resolve-on-read: the stored group logo object key must surface as a full
+  // download URL (mediaUrlStrategy mock → https://media.test/<bucket>/<key>).
+  it("MEDIA: resolves the group logo object key to a download URL", async () => {
+    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
+      {
+        roomId: "grp_1",
+        name: "Devs",
+        avatar: "group-avatars/grp_1/logo.png",
+        lastMessageAt: new Date(1),
+      },
+    ]);
+    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+
+    const res = await request(app)
+      .get("/api/chat/groups/my-groups")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data[0].avatar).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_1/logo.png"
+    );
+  });
 });
 
 describe("GET /api/chat/groups/:roomId", () => {
@@ -173,6 +197,25 @@ describe("GET /api/chat/groups/:roomId", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
+  });
+
+  // Resolve-on-read on the single room-detail boundary.
+  it("MEDIA: resolves the room logo object key on the detail read", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: "grp_1",
+      name: "Devs",
+      avatar: "group-avatars/grp_1/logo.png",
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get("/api/chat/groups/grp_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.avatar).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_1/logo.png"
+    );
   });
 });
 

@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 import * as amqp from "amqplib";
 
 import { env } from "../config/env.js";
+import { resolveMediaUrl } from "../lib/media-resolve.js";
 
 /**
  * V2 §4: durable queue carrying "a message was sent" to notifications-service,
@@ -75,6 +76,10 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
       );
       if (targets.length === 0) return;
 
+      // Resolve-on-read at the publish boundary: the push (FCM data map) must
+      // carry a full, usable avatar URL, never a raw object key. Best-effort and
+      // not persisted (notifications-service forwards this into the FCM payload).
+      const senderAvatar = await resolveMediaUrl(p.senderAvatar);
       const channel = await getChannel(url);
       const data: MessageSentPayload = {
         conversationId: p.conversationId,
@@ -83,7 +88,7 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
         clientMessageId: p.clientMessageId,
         senderId: p.senderId,
         senderName: p.senderName,
-        senderAvatar: p.senderAvatar,
+        senderAvatar,
         preview: p.preview,
         messageType: p.messageType,
         sentAt: p.sentAt,

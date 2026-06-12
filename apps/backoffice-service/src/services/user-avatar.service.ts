@@ -1,4 +1,9 @@
-import { createPresignedViewUrl, toMediaObject } from "@aimess/storage";
+import {
+  MEDIA_PREFIXES,
+  createPresignedViewUrl,
+  parseObjectKeyFromStored,
+  toMediaObject,
+} from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 import { logger } from "@aimess/logger";
 
@@ -8,7 +13,7 @@ import { env } from "../config/env.js";
 const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
 
 /** Storage-key prefix the shared media layer strips/validates for avatars. */
-const AVATAR_PREFIXES = ["avatars"];
+const AVATAR_PREFIXES = MEDIA_PREFIXES.userAvatars;
 
 export type AdminUserAvatarView = {
   url: string;
@@ -25,13 +30,6 @@ export class UserAvatarService {
    *
    * Failures are swallowed (logged + null) so a broken avatar never fails the
    * admin list/detail response.
-   *
-   * TODO: the stored value may be a legacy full MinIO URL rather than a bare
-   * key. user-service owns the canonical normalizer
-   * (`parseAvatarObjectKeyFromStored` in apps/user-service/src/lib/
-   * avatar-storage.ts) but it is not exported from @aimess/storage, so we
-   * presign the value as-is. Lift the normalizer into @aimess/storage and reuse
-   * it here if legacy-URL rows surface.
    */
   async resolveViewUrl(
     objectKey: string | null | undefined
@@ -41,11 +39,16 @@ export class UserAvatarService {
     }
 
     try {
+      const key =
+        parseObjectKeyFromStored(objectKey, {
+          prefixes: AVATAR_PREFIXES,
+          bucket: AVATAR_BUCKET,
+        }) ?? objectKey;
       const expiresIn = env.MINIO_AVATAR_VIEW_EXPIRES_IN;
       const url = await createPresignedViewUrl({
         client: presignClient,
         bucket: AVATAR_BUCKET,
-        objectKey,
+        objectKey: key,
         expiresIn,
       });
       return { url, expiresIn };

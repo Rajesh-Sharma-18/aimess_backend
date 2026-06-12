@@ -12,6 +12,7 @@ allowBuilds:
   esbuild: true
   prisma: false
   protobufjs: false
+  unrs-resolver: true
 packages:
   - apps/*
   - packages/*

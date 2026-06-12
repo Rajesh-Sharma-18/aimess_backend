@@ -1,4 +1,5 @@
 import { ConflictError, NotFoundError } from "@aimess/errors";
+import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 
 import {
   communityClient,
@@ -29,9 +30,54 @@ import {
 } from "./community.repository.js";
 import { moderationActionRepository } from "./moderation-action.repository.js";
 import { msToIso, orNull } from "../lib/grpc-view.js";
+import { mediaUrlStrategy } from "../config/storage.js";
+import { env } from "../config/env.js";
+
+/**
+ * Community admin/owner snapshot avatars live in the SHARED avatars bucket
+ * (`avatars/<userId>/…`). community-service now resolves these on its admin RPCs;
+ * backoffice resolves AGAIN at its own OUTPUT boundary as defense-in-depth, so the
+ * admin API can never leak a raw key even if an upstream path regresses.
+ * `toMediaObject` passes an already-signed http(s) URL through unchanged, so this
+ * is an idempotent safety net, not a re-sign. Presigned URLs expire — never
+ * persist them.
+ */
+const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
+const AVATAR_PREFIXES = MEDIA_PREFIXES.avatars;
+
+/** Stored avatar key/url → presigned download URL (null when absent). */
+async function resolveAvatarUrl(
+  stored: string | null | undefined
+): Promise<string | null> {
+  const media = await toMediaObject({
+    bucket: AVATAR_BUCKET,
+    stored: stored ?? null,
+    prefixes: AVATAR_PREFIXES,
+    strategy: mediaUrlStrategy,
+  });
+  return media.downloadUrl;
+}
+
+const COMMUNITY_BUCKET = env.MINIO_BUCKET_COMMUNITY;
+const COMMUNITY_IMAGE_PREFIXES = MEDIA_PREFIXES.community;
+
+/** Stored community avatar/cover key/url → presigned download URL (null when absent). */
+async function resolveCommunityImageUrl(
+  stored: string | null | undefined
+): Promise<string | null> {
+  const media = await toMediaObject({
+    bucket: COMMUNITY_BUCKET,
+    stored: stored ?? null,
+    prefixes: COMMUNITY_IMAGE_PREFIXES,
+    strategy: mediaUrlStrategy,
+  });
+  return media.downloadUrl;
+}
 
 /** Map an AdminCommunityRow → the list-table view model. */
-function rowToListItem(r: RawAdminCommunityRow): CommunityListItem {
+async function rowToListItem(
+  r: RawAdminCommunityRow
+): Promise<CommunityListItem> {
   const status = r.status as CommunityModerationStatus;
   return {
     communityId: r.communityId,
@@ -39,7 +85,7 @@ function rowToListItem(r: RawAdminCommunityRow): CommunityListItem {
     admin: {
       userId: r.adminId,
       name: r.adminName,
-      avatarUrl: orNull(r.adminAvatarUrl),
+      avatarUrl: await resolveAvatarUrl(r.adminAvatarUrl),
     },
     type: r.type as CommunityType,
     category: { id: r.categoryId, name: r.categoryName, slug: r.categorySlug },
@@ -103,7 +149,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
     };
 
     return {
-      data: (res.communities ?? []).map(rowToListItem),
+      data: await Promise.all((res.communities ?? []).map(rowToListItem)),
       pagination,
     };
   }
@@ -199,11 +245,11 @@ export class GrpcCommunityRepository implements CommunityRepository {
   }
 
   /** Map the gRPC detail payload → the CommunityDetail view model. */
-  private toDetail(
+  private async toDetail(
     res: AdminCommunityDetailRes,
     row: RawAdminCommunityRow,
     moderationHistory: CommunityModerationHistoryItem[]
-  ): CommunityDetail {
+  ): Promise<CommunityDetail> {
     const status = row.status as CommunityModerationStatus;
     const type = row.type as CommunityType;
     const category = {
@@ -214,6 +260,13 @@ export class GrpcCommunityRepository implements CommunityRepository {
     const createdAt = msToIso(row.createdAt);
     // STUB livestream stats — stream-service is not wired yet (proto sends 0).
     const liveCount = Number(row.livestreamCount);
+
+    // Resolve-on-read: the detail RPC echoes the RAW admin snapshot avatar key
+    // (shared avatars bucket), unlike adminListCommunities which presigns it.
+    const [ownerAvatarUrl, coverUrl] = await Promise.all([
+      resolveAvatarUrl(row.adminAvatarUrl),
+      resolveCommunityImageUrl(res.coverUrl),
+    ]);
 
     return {
       community: {
@@ -227,7 +280,10 @@ export class GrpcCommunityRepository implements CommunityRepository {
         // The proto AdminCommunityRow carries no community avatar; only the
         // cover_url is sent on the detail payload.
         avatarUrl: null,
-        coverUrl: orNull(res.coverUrl),
+        // Defense-in-depth: community-service resolves the cover on its admin RPC;
+        // resolve again here (idempotent passthrough when already a URL) so the
+        // admin API can't leak a raw key. Community bucket; never persisted.
+        coverUrl,
         createdAt,
         // Fall back to createdAt when the community has no recorded activity
         // (proto sends 0 → would otherwise render as the 1970 epoch).
@@ -240,7 +296,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
         userId: row.adminId,
         displayName: row.adminName,
         username: row.adminUsername,
-        avatarUrl: orNull(row.adminAvatarUrl),
+        avatarUrl: ownerAvatarUrl,
         email: orNull(res.ownerEmail),
         accountStatus: (res.ownerAccountStatus || "ACTIVE") as AccountStatus,
       },

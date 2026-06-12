@@ -30,6 +30,7 @@ process.env.COMMUNITY_SERVICE_URL = "http://localhost:3003";
 process.env.CHAT_SERVICE_URL = "http://localhost:3004";
 process.env.NOTIFICATION_SERVICE_URL = "http://localhost:3006";
 process.env.BACKOFFICE_SERVICE_URL = "http://localhost:3010";
+process.env.MEDIA_SERVICE_URL = "http://localhost:3007";
 
 // --- Optional gRPC URLs ----------------------------------------------------
 process.env.AUTH_GRPC_URL = "localhost:4001";

@@ -30,7 +30,7 @@ import { isProfileComplete } from "../lib/profile-completion.util.js";
 import { normalizeUsername } from "../lib/username.util.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import type { UserProfileData } from "../types/user-profile.types.js";
-import { toMediaObject } from "@aimess/storage";
+import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { avatarService } from "./avatar.service.js";
@@ -124,7 +124,7 @@ async function toProfileData(
   const avatar = await toMediaObject({
     bucket: env.MINIO_BUCKET_AVATARS,
     stored: profile.avatarUrl,
-    prefixes: ["avatars"],
+    prefixes: MEDIA_PREFIXES.userAvatars,
     strategy: mediaUrlStrategy,
   });
 

@@ -1,4 +1,4 @@
-import { toMediaObject } from "@aimess/storage";
+import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 
 import {
   friendsRepository,
@@ -26,7 +26,7 @@ async function toFriendListItem(
   const avatar = await toMediaObject({
     bucket: env.MINIO_BUCKET_AVATARS,
     stored: row.avatarUrl,
-    prefixes: ["avatars"],
+    prefixes: MEDIA_PREFIXES.userAvatars,
     strategy: mediaUrlStrategy,
   });
 

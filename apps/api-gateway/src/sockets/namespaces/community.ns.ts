@@ -14,7 +14,7 @@ const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 
 const CommunityJoinSchema = z.object({
   communityId: z.string().min(1),
-  roomId: z.string().min(1),
+  roomId: z.string().min(1).optional(),
 });
 const CommunityLeaveSchema = z.object({ communityId: z.string().min(1) });
 const CommunityMsgSendFileSchema = z.object({
@@ -32,7 +32,7 @@ const CommunityMsgSendFileSchema = z.object({
 
 const CommunityMsgSendSchema = z.object({
   communityId: z.string().min(1),
-  roomId: z.string().min(1),
+  roomId: z.string().min(1).optional(),
   clientMessageId: z.string().optional(),
   message: z.string().max(MAX_TEXT_LEN).default(""),
   contentType: z
@@ -92,7 +92,8 @@ const CommunityMsgReactSchema = z.object({
 const CommunityCatchupRoomSchema = z.object({
   roomId: z.string().min(1),
   sinceId: z.string().optional(),
-  limit: z.number().int().positive().max(200).optional(),
+  // P2 §13: max 100 events per room per catchup request.
+  limit: z.number().int().positive().max(100).optional(),
   /**
    * Epoch-ms (positive integer). When provided the server switches to an
    * updatedAt-based query that surfaces edits, reaction changes, and
@@ -101,34 +102,70 @@ const CommunityCatchupRoomSchema = z.object({
    */
   sinceTs: z.number().int().positive().optional(),
 });
+// P2 §13: max 10 rooms per catchup request to prevent oversized payloads.
+// Users in many communities must batch requests; the ack includes hasMore + cursors.
 const CommunityCatchupSchema = z.object({
-  rooms: z.array(CommunityCatchupRoomSchema).min(1).max(20),
+  rooms: z.array(CommunityCatchupRoomSchema).min(1).max(10),
 });
 
 const CommunityMsgEditSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
-  roomId: z.string().min(1),
+  roomId: z.string().min(1).optional(),
   content: z.object({ text: z.string().min(1).max(4000) }),
 });
 
 const CommunityMsgDeleteSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
-  roomId: z.string().min(1),
+  roomId: z.string().min(1).optional(),
   type: z.enum(["forEveryone", "forMe"]),
 });
 
 const CommunityMsgPinSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
-  roomId: z.string().min(1),
+  roomId: z.string().min(1).optional(),
 });
 
 const CommunityMsgUnpinSchema = z.object({
   messageId: z.string().min(1),
   communityId: z.string().min(1),
-  roomId: z.string().min(1),
+  roomId: z.string().min(1).optional(),
+});
+
+// ── Moderation schemas ───────────────────────────────────────────────────────
+const KickMemberSchema = z.object({
+  communityId: z.string().min(1),
+  targetUserId: z.string().min(1),
+  reason: z.string().max(500).optional(),
+});
+const BanMemberSchema = z.object({
+  communityId: z.string().min(1),
+  targetUserId: z.string().min(1),
+  reason: z.string().max(500).optional(),
+});
+const UnbanMemberSchema = z.object({
+  communityId: z.string().min(1),
+  targetUserId: z.string().min(1),
+});
+const TransferAdminSchema = z.object({
+  communityId: z.string().min(1),
+  newAdminId: z.string().min(1),
+});
+const ChangeMemberRoleSchema = z.object({
+  communityId: z.string().min(1),
+  targetUserId: z.string().min(1),
+  newRole: z.enum(["MODERATOR", "MEMBER"]),
+});
+const CreateReportSchema = z.object({
+  communityId: z.string().min(1),
+  reason: z.string().min(1).max(1000),
+  targetMessageId: z.string().optional(),
+});
+const DeleteCommunitySchema = z.object({
+  communityId: z.string().min(1),
+  reason: z.string().max(500).optional(),
 });
 
 interface RedisSocketEvent {
@@ -205,7 +242,7 @@ export function registerCommunityNamespace(
         communityClient
           .sendCommunityMessage({
             communityId: r.data.communityId,
-            roomId: r.data.roomId,
+            roomId: r.data.roomId ?? r.data.communityId,
             senderId: userId,
             clientMessageId: r.data.clientMessageId,
             message: r.data.message,
@@ -394,7 +431,11 @@ export function registerCommunityNamespace(
           return;
         }
         communityClient
-          .pinCommunityMessage({ ...r.data, userId })
+          .pinCommunityMessage({
+            ...r.data,
+            roomId: r.data.roomId ?? r.data.communityId,
+            userId,
+          })
           .then((result) =>
             ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_PINNED", locale, result)
           )
@@ -414,12 +455,211 @@ export function registerCommunityNamespace(
           return;
         }
         communityClient
-          .unpinCommunityMessage({ ...r.data, userId })
+          .unpinCommunityMessage({
+            ...r.data,
+            roomId: r.data.roomId ?? r.data.communityId,
+            userId,
+          })
           .then((result) =>
             ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_UNPINNED", locale, result)
           )
           .catch((err: unknown) => {
             logger.warn(`/community message:unpin gRPC error: ${String(err)}`);
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    // ── Moderation ────────────────────────────────────────────────────────────
+    // All moderation actions are authorised server-side (community-service checks
+    // the actor's role). The gateway passes the authenticated userId as actorId
+    // so clients cannot impersonate another actor.
+
+    socket.on(
+      "community.member.kick",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = KickMemberSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .kickMember({ ...r.data, actorId: userId })
+          .then((result) =>
+            result.ok
+              ? ackOk(
+                  callback,
+                  "SOCKET_COMMUNITY_MEMBER_KICKED",
+                  locale,
+                  result
+                )
+              : ackError(callback, "FORBIDDEN", locale)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/community member.kick gRPC error: ${String(err)}`);
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    socket.on(
+      "community.member.ban",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = BanMemberSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .banMember({ ...r.data, actorId: userId })
+          .then((result) =>
+            result.ok
+              ? ackOk(
+                  callback,
+                  "SOCKET_COMMUNITY_MEMBER_BANNED",
+                  locale,
+                  result
+                )
+              : ackError(callback, "FORBIDDEN", locale)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/community member.ban gRPC error: ${String(err)}`);
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    socket.on(
+      "community.member.unban",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = UnbanMemberSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .unbanMember({ ...r.data, actorId: userId })
+          .then((result) =>
+            result.ok
+              ? ackOk(
+                  callback,
+                  "SOCKET_COMMUNITY_MEMBER_UNBANNED",
+                  locale,
+                  result
+                )
+              : ackError(callback, "FORBIDDEN", locale)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/community member.unban gRPC error: ${String(err)}`);
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    socket.on(
+      "community.admin.transfer",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = TransferAdminSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .transferAdmin({ ...r.data, actorId: userId })
+          .then((result) =>
+            result.ok
+              ? ackOk(
+                  callback,
+                  "SOCKET_COMMUNITY_ADMIN_TRANSFERRED",
+                  locale,
+                  result
+                )
+              : ackError(callback, "FORBIDDEN", locale)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/community admin.transfer gRPC error: ${String(err)}`);
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    socket.on(
+      "community.member.role_change",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = ChangeMemberRoleSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .changeMemberRole({ ...r.data, actorId: userId })
+          .then((result) =>
+            result.ok
+              ? ackOk(callback, "SOCKET_COMMUNITY_ROLE_CHANGED", locale, result)
+              : ackError(callback, "FORBIDDEN", locale)
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `/community member.role_change gRPC error: ${String(err)}`
+            );
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    socket.on(
+      "community.report.create",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CreateReportSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .createReport({ ...r.data, reporterId: userId })
+          .then((result) =>
+            result.ok
+              ? ackOk(
+                  callback,
+                  "SOCKET_COMMUNITY_REPORT_CREATED",
+                  locale,
+                  result
+                )
+              : ackError(callback, "SERVICE_ERROR", locale)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/community report.create gRPC error: ${String(err)}`);
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    socket.on(
+      "community.delete",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = DeleteCommunitySchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .deleteCommunity({ ...r.data, actorId: userId })
+          .then((result) => {
+            if (!result.ok) {
+              ackError(callback, "FORBIDDEN", locale);
+              return;
+            }
+            // Broadcast deletion to all community members before acking.
+            community
+              .to(`community:${r.data.communityId}`)
+              .emit("community.deleted", {
+                communityId: r.data.communityId,
+                deletedBy: userId,
+              });
+            ackOk(callback, "SOCKET_COMMUNITY_DELETED", locale, result);
+          })
+          .catch((err: unknown) => {
+            logger.warn(`/community delete gRPC error: ${String(err)}`);
             ackError(callback, "SERVICE_ERROR", locale);
           });
       }

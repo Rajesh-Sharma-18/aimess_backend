@@ -1,10 +1,18 @@
 # USERS — Avatar / Upload URL (presigned)
 
-Source: `apps/user-service/src/api/routes/upload.routes.ts`, `controllers/upload.controller.ts`, `validators/upload.validator.ts`, `services/upload.service.ts`, `config/uploads.ts`, `packages/storage/src/validation.ts`, `object-key.ts`. Note: actual binary upload goes directly to MinIO via the returned presigned PUT URL; size/ownership is re-checked when the key is attached in `PATCH /profiles/me` (see profile.md TC-USER-019..023).
+> ℹ️ **NOTE (2026-06-12).** `POST /api/v1/users/uploads/url` is a supported gateway alias that
+> forwards to the centralized **media-service**. The equivalent direct call is
+> **`POST /api/v1/media/upload-url`** with **`category: "USER_AVATAR"`** (was `type: "AVATAR"`).
+> The response contract and the generated `objectKey` (`avatars/{userId}/{uuid}.ext`) are
+> **unchanged**, so the `PATCH /profiles/me { avatarObjectKey }` step still works as-is.
+> Canonical executable coverage now lives in `apps/media-service/tests/media/upload.test.ts`.
+> The cases below are retained for historical reference; the request field is now `category`.
+
+Source (historical — files deleted): `apps/user-service/src/api/routes/upload.routes.ts`, `controllers/upload.controller.ts`, `validators/upload.validator.ts`, `services/upload.service.ts`, `config/uploads.ts`. Replacement: `apps/media-service/src/{services/media.service.ts, api/controllers/media.controller.ts, api/validators/media.validator.ts, config/uploads.ts}`, `packages/storage/src/*`. Note: actual binary upload goes directly to MinIO via the returned presigned PUT URL; size/ownership is re-checked when the key is attached in `PATCH /profiles/me` (see profile.md TC-USER-019..023).
 
 Endpoints:
 
-- `POST /api/v1/users/uploads/url` — create a presigned upload URL + object key for an avatar
+- ~~`POST /api/v1/users/uploads/url`~~ → **`POST /api/v1/media/upload-url`** (`category: "USER_AVATAR"`) — create a presigned upload URL + object key for an avatar
 
 ---
 

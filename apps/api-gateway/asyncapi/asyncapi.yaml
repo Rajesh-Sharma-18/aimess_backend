@@ -101,10 +101,10 @@ servers:
     security:
       - $ref: "#/components/securitySchemes/accessToken"
   production:
-    host: api.aimess.example
+    host: aimess.api.vasundharasolutions.com
     protocol: wss
     pathname: /socket.io/
-    description: Production gateway (replace host with the real origin).
+    description: Production gateway.
     security:
       - $ref: "#/components/securitySchemes/accessToken"
 

@@ -1,4 +1,4 @@
-import { toMediaObject } from "@aimess/storage";
+import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 
 import { avatarService } from "./avatar.service.js";
@@ -46,7 +46,7 @@ async function resolveAvatarMedia(
   return toMediaObject({
     bucket: env.MINIO_BUCKET_AVATARS,
     stored: avatarUrl,
-    prefixes: ["avatars"],
+    prefixes: MEDIA_PREFIXES.userAvatars,
     strategy: mediaUrlStrategy,
   });
 }

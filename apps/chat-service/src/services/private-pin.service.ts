@@ -1,6 +1,7 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 
 import { env } from "../config/env.js";
+import { resolvePinsMedia } from "../lib/media-resolve.js";
 import type { PrivateMessagePinRepository } from "../repositories/private-message-pin.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -92,7 +93,10 @@ export class PrivatePinService {
     roomId: string,
     params: { limit: number; cursor?: string | null }
   ): Promise<PrivateMessagePin[]> {
-    return this.pinRepo.findPinsByRoom(roomId, params);
+    const pins = await this.pinRepo.findPinsByRoom(roomId, params);
+    // Resolve the pinned snapshot's sender avatar + attachment keys on read so
+    // the pinned-banner FE never receives a raw object key (URLs not persisted).
+    return resolvePinsMedia(pins);
   }
 
   async countPins(roomId: string): Promise<number> {

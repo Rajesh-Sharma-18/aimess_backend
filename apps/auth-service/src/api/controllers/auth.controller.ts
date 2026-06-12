@@ -31,7 +31,6 @@ export const validateAccount = asyncHandler(
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const body = req.body as RegisterInput;
   const result = await authService.register(req, body);
-  console.log("Registration result111:", req.body); // Debug log
   return res
     .status(HTTP_STATUS.CREATED)
     .json(new ApiResponse(result, t("AUTH_REGISTRATION_SUCCESS", req.locale)));

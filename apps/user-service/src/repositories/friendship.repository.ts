@@ -1,4 +1,22 @@
+import { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../config/prisma.js";
+
+/** WHERE clause for pending requests, filtered by direction relative to `userId`. */
+function pendingRequestsWhere(
+  userId: string,
+  direction: "incoming" | "outgoing" | "all"
+): Prisma.FriendshipWhereInput {
+  if (direction === "incoming") {
+    return { status: "PENDING", addresseeId: userId };
+  }
+  if (direction === "outgoing") {
+    return { status: "PENDING", requesterId: userId };
+  }
+  return {
+    status: "PENDING",
+    OR: [{ requesterId: userId }, { addresseeId: userId }],
+  };
+}
 
 const FRIENDSHIP_SELECT = {
   id: true,
@@ -13,6 +31,10 @@ const FRIENDSHIP_SELECT = {
   createdAt: true,
   updatedAt: true,
 } as const;
+
+type FriendshipRow = Prisma.FriendshipGetPayload<{
+  select: typeof FRIENDSHIP_SELECT;
+}>;
 
 export const friendshipRepository = {
   findById(id: string) {
@@ -147,6 +169,59 @@ export const friendshipRepository = {
     ]);
   },
 
+  /**
+   * Creates N ACCEPTED friendship rows in a single atomic transaction. All pairs
+   * must share the same requesterId (the calling user). Uses createMany + bulk
+   * counter updates so the total DB round-trips are O(1) regardless of batch size.
+   *
+   * skipDuplicates: true makes the batch idempotent against concurrent inserts for
+   * the same (requesterId, addresseeId) pair.
+   */
+  async autoAcceptBatch(
+    pairs: { requesterId: string; addresseeId: string }[]
+  ): Promise<FriendshipRow[]> {
+    if (pairs.length === 0) return [];
+    return prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const requesterId = pairs[0].requesterId;
+      const addresseeIds = pairs.map((p) => p.addresseeId);
+
+      // 1. Batch-insert all friendship rows (skip any duplicate from a concurrent request).
+      await tx.friendship.createMany({
+        data: pairs.map(({ addresseeId }) => ({
+          requesterId,
+          addresseeId,
+          status: "ACCEPTED",
+          acceptedAt: now,
+        })),
+        skipDuplicates: true,
+      });
+
+      // 2. Increment counters in bulk: requester once by N, each addressee once by 1.
+      await Promise.all([
+        tx.userProfile.update({
+          where: { userId: requesterId },
+          data: { friendsCount: { increment: pairs.length } },
+          select: { userId: true },
+        }),
+        tx.userProfile.updateMany({
+          where: { userId: { in: addresseeIds } },
+          data: { friendsCount: { increment: 1 } },
+        }),
+      ]);
+
+      // 3. Return the inserted rows so callers can read IDs for event publishing.
+      return tx.friendship.findMany({
+        where: {
+          requesterId,
+          addresseeId: { in: addresseeIds },
+          status: "ACCEPTED",
+        },
+        select: FRIENDSHIP_SELECT,
+      });
+    });
+  },
+
   /** All ACCEPTED friendships for a user — returns peer userId + friendship id. */
   findAcceptedFriends(userId: string) {
     return prisma.friendship.findMany({
@@ -198,6 +273,37 @@ export const friendshipRepository = {
       friends.add(r.requesterId === callerId ? r.addresseeId : r.requesterId);
     }
     return [...friends];
+  },
+
+  /** Pending requests for a user, paginated, newest first. */
+  findPendingRequests(params: {
+    userId: string;
+    direction: "incoming" | "outgoing" | "all";
+    skip: number;
+    take: number;
+  }) {
+    return prisma.friendship.findMany({
+      where: pendingRequestsWhere(params.userId, params.direction),
+      orderBy: { createdAt: "desc" },
+      skip: params.skip,
+      take: params.take,
+      select: {
+        id: true,
+        requesterId: true,
+        addresseeId: true,
+        createdAt: true,
+      },
+    });
+  },
+
+  /** Count of pending requests for a user in the given direction. */
+  countPendingRequests(
+    userId: string,
+    direction: "incoming" | "outgoing" | "all"
+  ) {
+    return prisma.friendship.count({
+      where: pendingRequestsWhere(userId, direction),
+    });
   },
 
   /** All block rows where the user is either blocker or blocked. */

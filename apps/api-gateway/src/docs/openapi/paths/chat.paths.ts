@@ -488,6 +488,15 @@ const privateMessageDelete = {
       "400": badRequest,
       "401": unauthorized,
       "404": notFound,
+      "410": {
+        description:
+          "Edit window expired (CHAT_EDIT_WINDOW_EXPIRED) — edits are allowed only within 15 minutes of sending.",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
     },
   },
   delete: {
@@ -871,6 +880,15 @@ const groupMemberAdd = {
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
+      "409": {
+        description:
+          "User is already an active member of the group (CHAT_ALREADY_MEMBER).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
     },
   },
 };
@@ -1572,55 +1590,6 @@ const communitySearch2 = searchPath(
 );
 
 // =============================================================================
-// Media uploads
-// =============================================================================
-const mediaDownloadUrl = {
-  post: {
-    tags: ["Chat — Media"],
-    summary: "Get presigned download URL",
-    description:
-      "Returns a short-lived presigned GET URL for playing/downloading an uploaded object (e.g. voice notes). Object key must start with chat-uploads/.",
-    security: [{ bearerAuth: [] }],
-    requestBody: {
-      required: true,
-      content: {
-        "application/json": {
-          schema: { $ref: "#/components/schemas/ChatDownloadUrlRequest" },
-        },
-      },
-    },
-    responses: {
-      ...successResponse("Download URL", "ChatDownloadUrlData"),
-      "400": badRequest,
-      "401": unauthorized,
-    },
-  },
-};
-
-const mediaUploadUrl = {
-  post: {
-    tags: ["Chat — Media"],
-    summary: "Get presigned upload URL",
-    description:
-      "Returns a presigned URL for uploading a file to object storage. Supports images, video, audio, and documents.",
-    security: [{ bearerAuth: [] }],
-    requestBody: {
-      required: true,
-      content: {
-        "application/json": {
-          schema: { $ref: "#/components/schemas/ChatUploadUrlRequest" },
-        },
-      },
-    },
-    responses: {
-      ...successResponse("Upload URL", "ChatUploadUrlData"),
-      "400": badRequest,
-      "401": unauthorized,
-    },
-  },
-};
-
-// =============================================================================
 // Private — forward & reactions
 // =============================================================================
 const privateMessageForward = {
@@ -1813,6 +1782,15 @@ const callById = {
     responses: {
       ...successResponse("Call details", "ChatCall"),
       "401": unauthorized,
+      "403": {
+        description:
+          "You were not a participant in this call (CALL_NOT_PARTICIPANT).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
       "404": notFound,
     },
   },
@@ -2001,10 +1979,6 @@ export const chatPaths = {
 
   // WebRTC
   "/webrtc/rtc-config": rtcConfig,
-
-  // Media
-  "/chat/media/upload-url": mediaUploadUrl,
-  "/chat/media/download-url": mediaDownloadUrl,
 
   // TODO(notifications): The notifications-service exposes device-token
   // registration endpoints — `POST /v1/devices` and `DELETE /v1/devices/:token`

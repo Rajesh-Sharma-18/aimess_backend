@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package media;
+
+service MediaService {
+  rpc GenerateUploadUrl  (UploadUrlRequest)   returns (UploadUrlResponse);
+  rpc GenerateDownloadUrl(DownloadUrlRequest) returns (DownloadUrlResponse);
+}
+
+enum MediaCategory {
+  UNKNOWN                   = 0;
+  USER_AVATAR               = 1;
+  COMMUNITY_AVATAR          = 2;
+  COMMUNITY_COVER           = 3;
+  CHAT_ATTACHMENT           = 4;
+  COMMUNITY_CHAT_ATTACHMENT = 5;
+  GROUP_AVATAR              = 6;
+  GROUP_CHAT_ATTACHMENT     = 7;
+}
+
+message MediaObjectProto {
+  string file_id                     = 1;
+  string object_key                  = 2;
+  string file_name                   = 3;
+  string content_type                = 4;
+  int64  size                        = 5;
+  string download_url                = 6;
+  int64  download_url_expires_in     = 7;
+  string upload_url                  = 8;
+  int64  upload_url_expires_in       = 9;
+  map<string, string> upload_headers = 10;
+}
+
+message UploadUrlRequest {
+  MediaCategory category       = 1;
+  string        content_type   = 2;
+  int64         content_length = 3;
+  string        owner_id       = 4;
+}
+
+message UploadUrlResponse {
+  string           upload_url  = 1;
+  string           object_key  = 2;
+  int64            expires_in  = 3;
+  int64            max_bytes   = 4;
+  MediaObjectProto media       = 5;
+}
+
+message DownloadUrlRequest {
+  string        object_key   = 1;
+  MediaCategory category     = 2;
+  string        requester_id = 3;
+}
+
+message DownloadUrlResponse {
+  string           download_url = 1;
+  int64            expires_in   = 2;
+  MediaObjectProto media        = 3;
+}

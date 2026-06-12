@@ -54,7 +54,6 @@ const envSchema = z
     MINIO_BUCKET: z.string().min(1).optional(),
     MINIO_BUCKET_AVATARS: z.string().min(1).optional(),
     MINIO_REGION: z.string().default("us-east-1"),
-    MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(900),
     /** Presigned GET lifetime for avatar display URLs (seconds). */
     MINIO_AVATAR_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
     /** Max avatar file size in bytes (default 5 MB). */

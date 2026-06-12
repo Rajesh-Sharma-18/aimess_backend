@@ -1,3 +1,5 @@
+import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
+
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
@@ -111,10 +113,11 @@ export class AdminGroupService {
     const ownerIds = rows.map((r) => ownerMap.get(r.roomId) ?? r.createdBy);
 
     const { snapshots, authMap } = await this.resolveIdentities(ownerIds);
+    const urlMap = await this.resolveAvatarUrls(rows, snapshots);
 
     const groups = rows.map((row) => {
       const ownerId = ownerMap.get(row.roomId) ?? row.createdBy;
-      return this.toGroupRow(row, ownerId, snapshots, authMap);
+      return this.toGroupRow(row, ownerId, snapshots, authMap, urlMap);
     });
 
     return { groups, total };
@@ -131,10 +134,11 @@ export class AdminGroupService {
     ]);
     const ownerId = ownerMap.get(row.roomId) ?? row.createdBy;
     const { snapshots, authMap } = await this.resolveIdentities([ownerId]);
+    const urlMap = await this.resolveAvatarUrls([row], snapshots);
 
     return {
       found: true,
-      group: this.toGroupRow(row, ownerId, snapshots, authMap),
+      group: this.toGroupRow(row, ownerId, snapshots, authMap, urlMap),
     };
   }
 
@@ -168,8 +172,12 @@ export class AdminGroupService {
 
     const userIds = rows.map((m) => m.userId);
     const { snapshots, authMap } = await this.resolveIdentities(userIds);
+    // Members carry only user-avatar snapshots (no group-logo row) — resolve them.
+    const urlMap = await this.resolveAvatarUrls([], snapshots);
 
-    const members = rows.map((m) => this.toMemberRow(m, snapshots, authMap));
+    const members = rows.map((m) =>
+      this.toMemberRow(m, snapshots, authMap, urlMap)
+    );
     return { found: true, members, total };
   }
 
@@ -190,17 +198,38 @@ export class AdminGroupService {
     return { snapshots, authMap };
   }
 
+  /**
+   * Batch-resolve every avatar object key across a set of group rows (the group
+   * logo `row.avatar`) and owner/member snapshots (`snap.avatar`) to download
+   * URLs in ONE deduped presign pass. Pass the returned map to {@link toGroupRow}
+   * / {@link toMemberRow} so each row stamps a usable URL synchronously instead
+   * of leaking a raw object key over the admin gRPC surface.
+   */
+  private resolveAvatarUrls(
+    rows: GroupRoom[],
+    snapshots: Map<string, Record<string, unknown>>
+  ): Promise<Map<string, string>> {
+    const keys: string[] = [];
+    for (const row of rows) if (row.avatar) keys.push(row.avatar);
+    for (const snap of snapshots.values()) {
+      const avatar = snap.avatar;
+      if (typeof avatar === "string" && avatar) keys.push(avatar);
+    }
+    return resolveMediaUrlMap(keys);
+  }
+
   private toGroupRow(
     row: GroupRoom,
     ownerId: string,
     snapshots: Map<string, Record<string, unknown>>,
-    authMap: Map<string, { email: string }>
+    authMap: Map<string, { email: string }>,
+    urlMap: Map<string, string>
   ): AdminGroupRowResult {
     const snap = snapshots.get(ownerId);
     return {
       id: row.roomId,
       name: row.name,
-      avatarUrl: row.avatar ?? "",
+      avatarUrl: urlFromMap(urlMap, row.avatar ?? ""),
       description: row.description ?? "",
       memberCount: row.memberCount ?? 0,
       createdAt: row.createdAt instanceof Date ? row.createdAt.getTime() : 0,
@@ -208,7 +237,7 @@ export class AdminGroupService {
         userId: ownerId,
         username: (snap?.memberId as string) ?? "",
         email: authMap.get(ownerId)?.email ?? "",
-        avatarUrl: (snap?.avatar as string) ?? "",
+        avatarUrl: urlFromMap(urlMap, (snap?.avatar as string) ?? ""),
       },
     };
   }
@@ -216,14 +245,15 @@ export class AdminGroupService {
   private toMemberRow(
     m: GroupMember,
     snapshots: Map<string, Record<string, unknown>>,
-    authMap: Map<string, { email: string }>
+    authMap: Map<string, { email: string }>,
+    urlMap: Map<string, string>
   ): AdminGroupMemberRowResult {
     const snap = snapshots.get(m.userId);
     return {
       userId: m.userId,
       username: (snap?.memberId as string) ?? "",
       email: authMap.get(m.userId)?.email ?? "",
-      avatarUrl: (snap?.avatar as string) ?? "",
+      avatarUrl: urlFromMap(urlMap, (snap?.avatar as string) ?? ""),
       role: m.role,
       joinedAt: m.joinedAt instanceof Date ? m.joinedAt.getTime() : 0,
     };

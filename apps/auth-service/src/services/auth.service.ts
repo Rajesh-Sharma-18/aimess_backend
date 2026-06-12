@@ -22,7 +22,6 @@ import type { LoginResult, RegisterResult } from "../types/index.js";
 export const authService = {
   async register(req: Request, input: RegisterInput): Promise<RegisterResult> {
     const account = input.account;
-    console.log("Attempting to register account:", account); // Debug log
     const existingAccount = await authRepository.findByAccount(account);
 
     if (existingAccount) {
@@ -36,8 +35,6 @@ export const authService = {
       passwordHash,
       lastPasswordChangeAt: new Date(),
     });
-
-    console.log("User registered with ID:", user); // Debug log
 
     const session = buildSessionContext(req);
     const { tokens } = await issueAuthTokens(
@@ -69,8 +66,6 @@ export const authService = {
     const user = isEmailLoginIdentifier(identifier)
       ? await authRepository.findByEmailForLogin(identifier)
       : await authRepository.findByAccountForLogin(identifier);
-
-    console.log("user found for login:", user); // Debug log
 
     if (!user || user.deletedAt) {
       throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");

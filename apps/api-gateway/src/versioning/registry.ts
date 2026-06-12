@@ -62,6 +62,15 @@ if (env.NOTIFICATION_SERVICE_URL) {
   });
 }
 
+if (env.MEDIA_SERVICE_URL) {
+  v1Services.push({
+    segment: "media",
+    target: env.MEDIA_SERVICE_URL,
+    downstreamPrefix: "/api/v1/media",
+    swaggerTag: "Media",
+  });
+}
+
 const servicesByVersion: Record<ApiVersion, VersionedServiceConfig[]> = {
   v1: v1Services,
 };

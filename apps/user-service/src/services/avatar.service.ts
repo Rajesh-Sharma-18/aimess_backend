@@ -3,12 +3,12 @@ import {
   createPresignedViewUrl,
   deleteObject,
   headObject,
+  parseObjectKeyFromStored,
 } from "@aimess/storage";
 import { BadRequestError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
 import { presignClient, storageClient } from "../config/storage.js";
-import { parseAvatarObjectKeyFromStored } from "../lib/avatar-storage.js";
 import { env } from "../config/env.js";
 
 const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
@@ -50,7 +50,10 @@ export class AvatarService {
   async resolveViewUrlForClient(
     stored: string | null | undefined
   ): Promise<AvatarViewUrl | null> {
-    const objectKey = parseAvatarObjectKeyFromStored(stored);
+    const objectKey = parseObjectKeyFromStored(stored, {
+      prefixes: [AVATAR_KEY_PREFIX],
+      bucket: env.MINIO_BUCKET_AVATARS,
+    });
     if (!objectKey) {
       return null;
     }

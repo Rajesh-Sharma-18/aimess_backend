@@ -54,6 +54,9 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.data).toHaveLength(1);
+    // Canonical kind field: contentType present (UPPER), internal messageType stripped.
+    expect(res.body.data.data[0].contentType).toBe("TEXT");
+    expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
   // AUDIT H2 — message timeline must be gated on participation (IDOR on history).
@@ -121,6 +124,8 @@ describe("GET /rooms/:roomId/messages/search", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data[0].contentType).toBe("TEXT");
+    expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
   // AUDIT H2 — search must be gated on participation (IDOR on history).
@@ -171,6 +176,9 @@ describe("GET /rooms/:roomId/media", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.items).toHaveLength(1);
+    // messageType "IMAGE" on the row must surface as contentType, not messageType.
+    expect(res.body.data.items[0].contentType).toBe("IMAGE");
+    expect(res.body.data.items[0].messageType).toBeUndefined();
   });
 
   it("SECURITY: IDOR — 403 when the caller is not a participant", async () => {

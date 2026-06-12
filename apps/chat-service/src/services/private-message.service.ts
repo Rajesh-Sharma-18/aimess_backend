@@ -16,8 +16,16 @@ import {
   normalizeMessageType,
   buildCanonicalQuote,
   groupStoredReactions,
+  toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import {
+  resolveMediaUrlMap,
+  urlFromMap,
+  applyUrlMapToFiles,
+  fileMediaKey,
+  type MediaFileLike,
+} from "../lib/media-resolve.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -627,7 +635,15 @@ export class PrivateMessageService {
       p.limit
     );
     const hasMore = rows.length > p.limit;
-    const events = hasMore ? rows.slice(0, p.limit) : rows;
+    const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
+
+    // Exclude messages the requesting user hid with "delete for me".
+    // deletedFor shape: { [userId]: ISO-timestamp }
+    const events = rawEvents.filter((m) => {
+      const deletedFor = (m.deletedFor ?? {}) as Record<string, unknown>;
+      return !(p.userId in deletedFor);
+    });
+
     const lastSeq = events.length
       ? events[events.length - 1]!.sequenceNumber
       : p.sinceSeq;
@@ -643,38 +659,97 @@ export class PrivateMessageService {
         messages.map((m) => m.senderId).filter((s): s is string => Boolean(s))
       ),
     ];
-    if (!senderIds.length) {
-      return messages.map((m) => m as unknown as Record<string, unknown>);
-    }
 
-    const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
-      senderIds,
-      this.cacheRepo
-    );
+    const snapshots = senderIds.length
+      ? await this.userSnapshotService.getUserSnapshotsMap(
+          senderIds,
+          this.cacheRepo
+        )
+      : new Map<string, Record<string, unknown>>();
+
+    // Resolve every stored media key on this page ONCE (sender + reaction-user
+    // avatars + attachment object keys) into full download URLs. Resolve on
+    // READ — persisted snapshots keep the stable raw object key; the
+    // presigned/CDN URL is (re)derived here so the FE never receives a key.
+    const mediaKeys: string[] = [];
+    for (const snap of snapshots.values()) {
+      const avatar = (snap as Record<string, unknown>).avatar;
+      if (typeof avatar === "string" && avatar) mediaKeys.push(avatar);
+    }
+    for (const message of messages) {
+      const files = (message.content as Record<string, unknown> | null)?.files;
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          const key = fileMediaKey(file as MediaFileLike);
+          if (key) mediaKeys.push(key);
+        }
+      }
+      const reactions = message.reactions as Record<string, unknown> | null;
+      if (reactions) {
+        for (const reactors of Object.values(reactions)) {
+          if (!Array.isArray(reactors)) continue;
+          for (const reactor of reactors) {
+            const avatar = (reactor as Record<string, unknown>)?.avatar;
+            if (typeof avatar === "string" && avatar) mediaKeys.push(avatar);
+          }
+        }
+      }
+    }
+    const urlMap = await resolveMediaUrlMap(mediaKeys);
 
     return messages.map((message) => {
       const snapshot = (snapshots.get(message.senderId || "") || {}) as Record<
         string,
         unknown
       >;
-      const row = message as unknown as Record<string, unknown>;
+      // §1: canonical wire shape — drops the internal `messageType` column and
+      // exposes UPPER-CASE `contentType`, identical to the socket message:new
+      // and the REST edit/forward responses (single client mapper).
+      const wire = toWireMessage(
+        message as { messageType?: string | null }
+      ) as unknown as Record<string, unknown>;
       const displayName = (snapshot.displayName as string) || "";
-      const avatar = (snapshot.avatar as string) || "";
+      const avatar = urlFromMap(urlMap, (snapshot.avatar as string) || "");
+
+      // Stamp resolved download URLs onto attachment files (content.files[]).
+      const content = wire.content as Record<string, unknown> | null;
+      const resolvedContent =
+        content && Array.isArray(content.files)
+          ? {
+              ...content,
+              files: applyUrlMapToFiles(
+                content.files as MediaFileLike[],
+                urlMap
+              ),
+            }
+          : content;
+
+      // Resolve reaction-user avatars carried in the grouped reaction shape.
+      const reactionGroups = groupStoredReactions(wire.reactions).map(
+        (group) => ({
+          ...group,
+          users: group.users.map((user) => ({
+            ...user,
+            avatar: urlFromMap(urlMap, user.avatar),
+          })),
+        })
+      );
+
       return {
-        ...row,
+        ...wire,
+        content: resolvedContent,
         senderDisplayName: displayName,
         senderAvatar: avatar,
         senderMemberId: (snapshot.memberId as string) || "",
         isDeletedUser: snapshot.isDeletedUser === true,
-        // §1: additive canonical aliases so REST history can be read with the
-        // SAME mapper as the socket message:new (legacy fields kept untouched).
+        // additive canonical aliases so REST history reads with the SAME mapper
+        // as the socket message:new (legacy fields kept untouched).
         senderName: displayName,
         conversationType: "PRIVATE",
-        messageType: normalizeMessageType(message.messageType),
-        quoteData: buildCanonicalQuote(row.quoteData),
-        reactionGroups: groupStoredReactions(row.reactions),
+        quoteData: buildCanonicalQuote(wire.quoteData),
+        reactionGroups,
         clientTs: Number(
-          (row.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+          (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),
         serverTs:
           message.createdAt instanceof Date ? message.createdAt.getTime() : 0,

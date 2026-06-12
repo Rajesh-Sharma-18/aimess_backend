@@ -26,6 +26,13 @@ import {
 } from "../lib/chat-message.serializer.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
 import { assertCommunityMember } from "../lib/access-guard.js";
+import {
+  resolveMediaUrlMap,
+  urlFromMap,
+  applyUrlMapToFiles,
+  fileMediaKey,
+  type MediaFileLike,
+} from "../lib/media-resolve.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -42,9 +49,9 @@ type MemberReadStatus = {
 type CommunityMessageWire = Omit<GeneralRoomMessage, "messageType"> & {
   contentType: string;
   /** Members whose read cursor is at or past this message's createdAt. */
-  readBy: Array<{ userId: string; readAt: string }>;
+  readBy: Array<{ userId: string; readAt: number }>;
   /** Members who were active in the room when this message was sent. */
-  deliveredTo: Array<{ userId: string; deliveredAt: string }>;
+  deliveredTo: Array<{ userId: string; deliveredAt: number }>;
 };
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
@@ -242,7 +249,8 @@ export class CommunityMessageService {
       };
     }
 
-    const limit = Math.min(Math.max(params.limit || 100, 1), 200);
+    // P2 §13: max 100 events per room per catchup to prevent oversized payloads.
+    const limit = Math.min(Math.max(params.limit || 100, 1), 100);
 
     // since_ts mode: updatedAt-based query that catches all mutation types.
     if (params.sinceTs) {
@@ -378,11 +386,50 @@ export class CommunityMessageService {
    * …) is preserved unchanged. Applied at the RETURN site of REST read paths
    * only — internal logic continues to read the raw rows.
    */
+  /**
+   * Collect every stored media key on a page of community rows (sender avatars +
+   * attachment object keys) and resolve them ONCE to full download URLs. Pass
+   * the returned map to {@link toWire} so each row serializes synchronously and
+   * the FE never receives a raw object key.
+   */
+  private resolveRowsMedia(
+    rows: GeneralRoomMessage[]
+  ): Promise<Map<string, string>> {
+    const keys: string[] = [];
+    for (const m of rows) {
+      if (m.senderAvatar) keys.push(m.senderAvatar);
+      const attachments = m.attachments;
+      if (Array.isArray(attachments)) {
+        for (const attachment of attachments) {
+          const key = fileMediaKey(attachment as MediaFileLike);
+          if (key) keys.push(key);
+        }
+      }
+    }
+    return resolveMediaUrlMap(keys);
+  }
+
   private toWire(
     m: GeneralRoomMessage,
-    members?: MemberReadStatus[]
+    members?: MemberReadStatus[],
+    urlMap?: Map<string, string>
   ): CommunityMessageWire {
-    const wire = toWireMessage(m);
+    const wire = toWireMessage(m) as Record<string, unknown>;
+
+    // Resolve raw object keys → full download URLs on read (never persisted, so
+    // CDN/presign rotation keeps working). Internal logic still reads raw rows.
+    if (urlMap) {
+      if (typeof wire.senderAvatar === "string") {
+        wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
+      }
+      if (Array.isArray(wire.attachments)) {
+        wire.attachments = applyUrlMapToFiles(
+          wire.attachments as MediaFileLike[],
+          urlMap
+        );
+      }
+    }
+
     const msgTs = m.createdAt;
 
     const readBy = members
@@ -403,7 +450,7 @@ export class CommunityMessageService {
           }))
       : [];
 
-    return { ...wire, readBy, deliveredTo };
+    return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
   }
 
   async getMessages(params: {
@@ -424,7 +471,8 @@ export class CommunityMessageService {
       ),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
-    return rows.map((m) => this.toWire(m, members));
+    const urlMap = await this.resolveRowsMedia(rows);
+    return rows.map((m) => this.toWire(m, members, urlMap));
   }
 
   /**
@@ -460,8 +508,9 @@ export class CommunityMessageService {
     const nextCursor =
       hasMore && last ? String(last.createdAt.getTime()) : null;
 
+    const urlMap = await this.resolveRowsMedia(pageRows);
     return {
-      items: pageRows.map((m) => this.toWire(m, members)),
+      items: pageRows.map((m) => this.toWire(m, members, urlMap)),
       hasMore,
       nextCursor,
     };
@@ -529,6 +578,30 @@ export class CommunityMessageService {
     const nextCursor =
       hasMore && last ? String(last.updatedAt.getTime()) : null;
 
+    // Resolve sender avatars, attachment keys, and reaction-user avatars on read
+    // so the incremental-sync payload never carries a raw object key.
+    const mediaKeys: string[] = [];
+    for (const msg of messages) {
+      if (msg.senderAvatar) mediaKeys.push(msg.senderAvatar);
+      if (Array.isArray(msg.attachments)) {
+        for (const attachment of msg.attachments) {
+          const key = fileMediaKey(attachment as MediaFileLike);
+          if (key) mediaKeys.push(key);
+        }
+      }
+      const reactions = msg.reactions as Record<string, unknown> | null;
+      if (reactions) {
+        for (const reactors of Object.values(reactions)) {
+          if (!Array.isArray(reactors)) continue;
+          for (const reactor of reactors) {
+            const avatar = (reactor as Record<string, unknown>)?.avatar;
+            if (typeof avatar === "string" && avatar) mediaKeys.push(avatar);
+          }
+        }
+      }
+    }
+    const urlMap = await resolveMediaUrlMap(mediaKeys);
+
     const items = messages.map((msg) => {
       const createdMs = msg.createdAt.getTime();
       const updatedMs = msg.updatedAt.getTime();
@@ -554,11 +627,19 @@ export class CommunityMessageService {
         roomId: msg.roomId,
         sentBy: msg.sentBy,
         senderName: msg.senderName ?? null,
-        senderAvatar: msg.senderAvatar ?? null,
+        senderAvatar: urlFromMap(urlMap, msg.senderAvatar) || null,
         message: msg.message ?? null,
         contentType: normalizeMessageType(msg.messageType),
-        attachments: msg.attachments,
-        reactions: groupStoredReactions(msg.reactions),
+        attachments: Array.isArray(msg.attachments)
+          ? applyUrlMapToFiles(msg.attachments as MediaFileLike[], urlMap)
+          : msg.attachments,
+        reactions: groupStoredReactions(msg.reactions).map((group) => ({
+          ...group,
+          users: group.users.map((user) => ({
+            ...user,
+            avatar: urlFromMap(urlMap, user.avatar),
+          })),
+        })),
         deletedForAll: msg.deletedForAll,
         editedAt: editedMs,
         createdAt: createdMs,
@@ -594,7 +675,8 @@ export class CommunityMessageService {
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
-    return { items: rows.map((m) => this.toWire(m, members)) };
+    const urlMap = await this.resolveRowsMedia(rows);
+    return { items: rows.map((m) => this.toWire(m, members, urlMap)) };
   }
 
   /**
@@ -657,7 +739,11 @@ export class CommunityMessageService {
         });
     }
 
-    return { messages: messages.map((m) => this.toWire(m)), total };
+    const urlMap = await this.resolveRowsMedia(messages);
+    return {
+      messages: messages.map((m) => this.toWire(m, undefined, urlMap)),
+      total,
+    };
   }
 
   async searchMessages(params: {
@@ -673,7 +759,8 @@ export class CommunityMessageService {
       params.limit,
       params.userId
     );
-    return rows.map((m) => this.toWire(m));
+    const urlMap = await this.resolveRowsMedia(rows);
+    return rows.map((m) => this.toWire(m, undefined, urlMap));
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -706,7 +793,8 @@ export class CommunityMessageService {
       cursor: params.cursor,
       limit: params.limit,
     });
-    return rows.map((m) => this.toWire(m));
+    const urlMap = await this.resolveRowsMedia(rows);
+    return rows.map((m) => this.toWire(m, undefined, urlMap));
   }
 
   async editMessage(params: {

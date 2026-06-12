@@ -86,6 +86,42 @@ describe("GET /api/chat/inbox", () => {
     expect(res.body.data.pagination.totalData).toBe(2);
   });
 
+  it("MEDIA: resolves the group avatar object key on the inbox item", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(0);
+    mocks.groupMemberRepo.getActiveMemberships.mockResolvedValue([
+      {
+        roomId: "grp_1",
+        role: "MEMBER",
+        unreadCount: 0,
+        notificationSettings: {},
+      },
+    ]);
+    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupRoomRepo.getInboxGroups.mockResolvedValue([
+      {
+        roomId: "grp_1",
+        name: "Devs",
+        avatar: "group-avatars/grp_1/logo.png",
+        lastMessageAt: new Date(3000),
+        lastMessageId: "g9",
+        pinnedCount: 0,
+      },
+    ]);
+    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(new Map());
+
+    const res = await request(app).get(BASE).set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const group = res.body.data.data.find(
+      (i: { type: string }) => i.type === "GROUP"
+    );
+    expect(group.avatar).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_1/logo.png"
+    );
+  });
+
   it("EDGE: both sides empty → 200 with empty list", async () => {
     mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([]);
     mocks.privateRoomRepo.countConversations.mockResolvedValue(0);
