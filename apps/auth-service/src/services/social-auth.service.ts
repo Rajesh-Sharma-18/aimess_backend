@@ -5,6 +5,7 @@ import { ConflictError, UnauthorizedError } from "@aimess/errors";
 import {
   AccountStatus,
   AuthProvider,
+  GlobalRole,
   Prisma,
 } from "../generated/prisma/client.js";
 import { verifyAppleIdToken } from "../lib/apple-id-token.js";
@@ -32,6 +33,7 @@ type AuthUserRow = {
   status: AccountStatus;
   lockedUntil: Date | null;
   deletedAt: Date | null;
+  role: GlobalRole;
 };
 
 function isUniqueConstraintError(error: unknown): boolean {
@@ -61,7 +63,11 @@ async function issueTokensForUser(
 ): Promise<SocialLoginResult["tokens"]> {
   await authRepository.recordSuccessfulLogin(user.id);
   const session = buildSessionContext(req);
-  const { tokens } = await issueAuthTokens(user.id, session);
+  const { tokens } = await issueAuthTokens(
+    user.id,
+    user.role === "ADMIN" ? "ADMIN" : "USER",
+    session
+  );
   return tokens;
 }
 
@@ -182,7 +188,8 @@ async function signInWithProvider(
   });
 
   const session = buildSessionContext(req);
-  const { tokens } = await issueAuthTokens(user.id, session);
+  // Brand-new account — always the default non-privileged role.
+  const { tokens } = await issueAuthTokens(user.id, "USER", session);
 
   return {
     isNewUser: true,

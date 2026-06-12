@@ -16,6 +16,7 @@ export const CommunityEvents = {
   INVITE_LINK_SHARED: "community.invite_link_shared",
   REPORT_CREATED: "community.report_created",
   REPORT_ACTIONED: "community.report_actioned",
+  MEMBER_LEFT: "community.member_left",
 } as const;
 
 export type CommunityEventType =
@@ -137,6 +138,12 @@ export type CommunityReportActionedPayload = CommunityEventBase & {
   actorId: string; // moderator who actioned
   reporterId: string;
   targetUserId: string | null;
+};
+
+export type CommunityMemberLeftPayload = CommunityEventBase & {
+  /** The user who voluntarily left. */
+  actorId: string;
+  reason: string | null;
 };
 
 /**

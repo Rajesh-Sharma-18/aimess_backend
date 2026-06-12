@@ -1,6 +1,12 @@
-import { BadRequestError, ConflictError, NotFoundError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "@aimess/errors";
 
 import { SystemEvent } from "../types/enums.js";
+import { assertGroupMember } from "../lib/access-guard.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
@@ -25,10 +31,36 @@ export class GroupMemberService {
       invitedBy?: string;
       role?: string;
     },
-    opts?: { systemEvent?: SystemEvent; actorId?: string }
+    opts?: {
+      systemEvent?: SystemEvent;
+      actorId?: string;
+      /**
+       * Invite-link self-join: the joining user is authorized by possessing a
+       * valid link, so skip the OWNER/ADMIN actor check. Default (false) means
+       * a direct add MUST be performed by an active OWNER/ADMIN.
+       */
+      skipActorAuthz?: boolean;
+    }
   ): Promise<GroupMember> {
     const room = await this.roomRepo.findActiveByRoomId(params.roomId);
     if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+
+    // Authorize the actor: only an active OWNER/ADMIN may add members (mirrors
+    // the kick/updateRole guards). Without this, any authenticated user could
+    // inject themselves or others into a private group (AUDIT H3).
+    if (!opts?.skipActorAuthz) {
+      if (!params.invitedBy) {
+        throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
+      }
+      await assertGroupMember(
+        this.memberRepo,
+        params.roomId,
+        params.invitedBy,
+        {
+          roles: ["OWNER", "ADMIN"],
+        }
+      );
+    }
 
     if (room.memberCount >= room.memberLimit) {
       throw new BadRequestError("CHAT_GROUP_MEMBER_LIMIT_REACHED");

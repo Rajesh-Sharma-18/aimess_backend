@@ -7,6 +7,15 @@ const unauthorized = {
   },
 };
 
+const forbidden = {
+  description: "Caller is not a platform admin (PLATFORM_ADMIN_REQUIRED)",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
 const validationError = {
   description: "Query validation failed (e.g. no filter/pagination param)",
   content: {
@@ -158,6 +167,7 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+        "403": forbidden,
         "409": {
           description: "Category name already taken",
           content: {
@@ -232,6 +242,7 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+        "403": forbidden,
       },
     },
   },
@@ -308,6 +319,7 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+        "403": forbidden,
         "404": {
           description: "Category not found",
           content: {
@@ -356,6 +368,7 @@ export const communityPaths = {
           },
         },
         "401": unauthorized,
+        "403": forbidden,
         "404": {
           description: "Category not found",
           content: {
@@ -586,6 +599,55 @@ export const communityPaths = {
           },
         },
         "400": validationError,
+        "401": unauthorized,
+      },
+    },
+  },
+  "/communities/liked": {
+    get: {
+      tags: ["Communities"],
+      summary: "List liked (favorited) communities",
+      description:
+        "Returns the caller's saved/liked communities, newest-first by `likedAt`. ObjectId cursor pagination — pass `cursor` (the `nextCursor` from the previous page) on subsequent calls.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "cursor",
+          in: "query",
+          required: false,
+          schema: { type: "string", pattern: "^[a-f0-9]{24}$" },
+          description:
+            "Pagination cursor (ObjectId of the last item from the previous page).",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Liked communities page",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/LikedCommunitiesResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
         "401": unauthorized,
       },
     },
@@ -1161,6 +1223,92 @@ export const communityPaths = {
         "401": unauthorized,
         "404": {
           description: "Community not found, or you are not an active member",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/like": {
+    post: {
+      tags: ["Communities"],
+      summary: "Like (favorite) a community",
+      description:
+        "Adds the community to the caller's liked list. Idempotent — liking an already-liked community returns the existing favorite row unchanged. The community must exist and must not be suspended.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "201": {
+          description: "Community liked",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityFavoriteData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+    delete: {
+      tags: ["Communities"],
+      summary: "Unlike (un-favorite) a community",
+      description:
+        "Removes the community from the caller's liked list. No-op if the community was not liked. The community must exist.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Community unliked (data is null)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "404": {
+          description: "Community not found",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -3543,6 +3691,91 @@ export const communityPaths = {
             },
           },
         },
+      },
+    },
+  },
+
+  // --- Bulk leave -----------------------------------------------------------
+  "/communities/leave/bulk": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk leave communities",
+      description:
+        "Leave multiple communities in a single call. Each community is processed independently — a failure for one does not block the others.\n\n" +
+        "**Rules (per community):**\n" +
+        "- `LEFT` — caller was an active non-admin member and has been removed.\n" +
+        "- `DELETED` — caller was the admin **and** the sole remaining member; the community is auto-deleted.\n" +
+        "- `FAILED / ADMIN_CANNOT_LEAVE` — caller is admin and other members exist; transfer ownership first via `POST /communities/{id}/transfer-admin`.\n" +
+        "- `FAILED / NOT_MEMBER` — caller is not an active member of this community.\n" +
+        "- `FAILED / NOT_FOUND` — community does not exist or has been deleted.\n\n" +
+        "A `MEMBER_LEFT` audit entry and a `community.member_left` RabbitMQ event are fired for each successful non-admin leave. " +
+        "The response is always `200 OK`; inspect each item's `status` and the `summary` to determine overall outcome.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/BulkLeaveRequest" },
+            examples: {
+              basic: {
+                summary: "Leave two communities",
+                value: {
+                  communityIds: [
+                    "64a7b1e2f1d2e34567890abc",
+                    "64a7b1e2f1d2e34567890def",
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description:
+            "Bulk leave processed. Each item carries its own `status`; `summary` gives aggregate counts.",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/BulkLeaveResult" },
+                    },
+                  },
+                ],
+              },
+              examples: {
+                partial: {
+                  summary: "Mixed result — one left, one admin-blocked",
+                  value: {
+                    success: true,
+                    message: "Bulk community leave processed",
+                    data: {
+                      results: [
+                        {
+                          communityId: "64a7b1e2f1d2e34567890abc",
+                          status: "LEFT",
+                        },
+                        {
+                          communityId: "64a7b1e2f1d2e34567890def",
+                          status: "FAILED",
+                          errorCode: "ADMIN_CANNOT_LEAVE",
+                        },
+                      ],
+                      summary: { requested: 2, left: 1, failed: 1 },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        "400": validationError,
+        "401": unauthorized,
       },
     },
   },

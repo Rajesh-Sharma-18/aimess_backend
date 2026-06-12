@@ -441,34 +441,45 @@ export type SetNotificationPrefsInput = z.infer<
 
 // --- Leave reason ---------------------------------------------------------
 
+const leaveReasonEnum = [
+  "TOO_MANY_NOTIFICATIONS",
+  "NOT_RELEVANT",
+  "COMMUNITY_INACTIVE",
+  "TOO_MANY_MESSAGES",
+  "PRIVACY_CONCERN",
+  "JOINED_BY_MISTAKE",
+  "TAKING_A_BREAK",
+  "OTHER",
+] as const;
+
+const leaveReasonFields = {
+  reason: z.enum(leaveReasonEnum).optional(),
+  reasonText: z
+    .string()
+    .trim()
+    .max(500, "Reason must be at most 500 characters")
+    .optional(),
+};
+
+const requireReasonText = (b: { reason?: string; reasonText?: string }) =>
+  b.reason !== "OTHER" || (!!b.reasonText && b.reasonText.length > 0);
+
+const reasonTextRequired = {
+  message: "Reason is required when selecting 'Other'",
+  path: ["reasonText"] as string[],
+};
+
 export const leaveReasonSchema = z
-  .object({
-    reason: z
-      .enum([
-        "TOO_MANY_NOTIFICATIONS",
-        "NOT_RELEVANT",
-        "COMMUNITY_INACTIVE",
-        "TOO_MANY_MESSAGES",
-        "PRIVACY_CONCERN",
-        "JOINED_BY_MISTAKE",
-        "TAKING_A_BREAK",
-        "OTHER",
-      ])
-      .optional(),
-    reasonText: z
-      .string()
-      .trim()
-      .max(500, "Reason must be at most 500 characters")
-      .optional(),
-  })
-  .refine(
-    (b) => b.reason !== "OTHER" || (!!b.reasonText && b.reasonText.length > 0),
-    {
-      message: "Reason is required when selecting 'Other'",
-      path: ["reasonText"],
-    }
-  );
+  .object(leaveReasonFields)
+  .refine(requireReasonText, reasonTextRequired);
 export type LeaveReasonInput = z.infer<typeof leaveReasonSchema>;
+
+// --- Bulk leave -----------------------------------------------------------
+
+export const bulkLeaveSchema = z.object({
+  communityIds: communityIdsSchema,
+});
+export type BulkLeaveInput = z.infer<typeof bulkLeaveSchema>;
 
 // --- Invite links ---------------------------------------------------------
 

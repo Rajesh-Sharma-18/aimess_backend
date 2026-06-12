@@ -109,6 +109,7 @@ export const sessionService = {
       sessionId: stored.sessionId,
       secret: env.JWT_ACCESS_SECRET,
       expiresInSeconds: accessTokenExpiresIn,
+      role: stored.user.role === "ADMIN" ? "ADMIN" : "USER",
     });
 
     await markSessionActive(stored.sessionId);
@@ -167,6 +168,7 @@ export const sessionService = {
       sessionId: stored.sessionId,
       secret: env.JWT_ACCESS_SECRET,
       expiresInSeconds: accessTokenExpiresIn,
+      role: stored.user.role === "ADMIN" ? "ADMIN" : "USER",
     });
 
     await markSessionActive(stored.sessionId);

@@ -419,6 +419,7 @@ The detail screen is now served by three independent, separately-cacheable endpo
 - **Rate limiting:** in-memory stores (per process). Move to a Redis store (`rate-limit-redis`) before horizontal scaling.
 - **Layering is clean** in both services: controllers thin, repositories own all Prisma, services hold logic, multi-write ops use `$transaction`. Keep it that way.
 - **Community authz primitive:** ALL community member-management/moderation goes through `assertCommunityRole(membership, minRole)` + the `COMMUNITY_ROLE_RANK` map (`community-service/src/lib/community-authz.ts`). Never re-implement role/status checks inline. Future moderator powers (join-request approve, etc.) MUST reuse this gate. Role hierarchy: ADMIN > MODERATOR > MEMBER; the admin role is immutable via the member endpoints (can't be demoted/kicked/banned, and the admin can't leave) until a separate ownership-transfer flow exists.
+- **Platform-admin authz (shipped 2026-06-12):** platform-wide admin actions are gated by a `role` claim (`USER`|`ADMIN`, mirrored from auth-service's `GlobalRole`) now carried on the **access JWT** — added to `@aimess/auth-jwt` (`signAccessToken`/`verifyAccessToken`, `req.auth.role`), stamped by auth-service at every token issue/refresh site (normalized via `lib/platform-role.ts` `toPlatformRole`), and defaulted to `USER` when absent so pre-existing tokens stay unprivileged. community-service's `requirePlatformAdmin` middleware (`src/middleware/require-platform-admin.ts`) reads `req.auth.role` and throws `ForbiddenError("PLATFORM_ADMIN_REQUIRED")` → 403. First consumers: the four `/communities/categories*` admin-category CRUD routes. This is the platform-level analogue of the community-scoped `assertCommunityRole` gate above — reuse `requirePlatformAdmin` (promote it to `@aimess/auth-jwt` when a second service needs it) rather than re-checking roles inline.
 - **`memberCount` is recomputed, not deltaed:** every community membership status change recomputes via `countActiveMembers` → `setMemberCount`. Robust against drift and safe without a transaction. Do NOT switch to blind ±1.
 - **`$transaction` is per-store:** Postgres services (auth, user) DO use `prisma.$transaction` for multi-row writes — e.g. friendship accept/unfriend bumping `friendsCount`. **community-service (standalone Mongo) does NOT** — Prisma interactive transactions fail there, so it uses sequential writes + recompute / compensating cleanup.
 - **Friendship = one row per pair, recycled:** re-sending after reject/cancel/unfriend updates the existing `Friendship` row (resets status + direction + clears timestamps) rather than inserting a new one; a mutual pending request auto-accepts. Friendship/discovery queries respect two-way blocks.
@@ -1313,3 +1314,48 @@ PM triage of 21 findings: 11 already covered, 5 deferred by design, 5 actionable
 
 Already-correct (no change): push flow (#1), forMe caveat (#3), reconnection (#4), notification naming (#7), catchup maxItems (#8), conversationType (#10), contentText mapping (#11), mediaKey deprecated (#12), sentAt coercion (#14), blocked users (#19), search (#20).
 Deferred: scheduled messages (#15), self-destruct (#16), draft sync (#17), group call (#18), reaction moderation (#21).
+
+---
+
+### Bulk Leave Communities — `POST /communities/leave/bulk` (2026-06-11)
+
+#### What was shipped
+
+New endpoint allowing a caller to leave up to 50 communities in a single authenticated call.
+
+**Files changed:**
+| File | Change |
+|---|---|
+| `packages/shared-types/src/events/community.ts` | Added `MEMBER_LEFT: "community.member_left"` to `CommunityEvents`; new `CommunityMemberLeftPayload` type |
+| `packages/constants/src/messages/community.messages.ts` | Added `COMMUNITY_BULK_LEFT` message key (EN + VI) |
+| `apps/community-service/src/messaging/publish-community.ts` | Added `publishCommunityMemberLeftSafe()` |
+| `apps/community-service/src/repositories/community.repository.ts` | Added `findActiveMembershipsWithRoleByCommunityIds()` — like the existing slim projection but includes `role` and `status` for admin-block logic |
+| `apps/community-service/src/api/validators/community.validator.ts` | Factored `leaveReasonEnum` + `leaveReasonFields` into shared constants; added `bulkLeaveSchema` / `BulkLeaveInput` reusing both |
+| `apps/community-service/src/services/community.service.ts` | Added `bulkLeaveCommunities()` + imported `publishCommunityMemberLeftSafe` |
+| `apps/community-service/src/api/controllers/community.controller.ts` | Added `bulkLeaveCommunities` handler |
+| `apps/community-service/src/api/routes/community.routes.ts` | Registered `POST /leave/bulk` **before** `/:id/leave` (static route order) |
+| `apps/api-gateway/src/docs/openapi/components/schemas.ts` | Added `BulkLeaveRequest`, `BulkLeaveResultItem`, `BulkLeaveResult` schemas |
+| `apps/api-gateway/src/docs/openapi/paths/community.paths.ts` | Added `POST /communities/leave/bulk` path with full examples |
+
+#### Behaviour per community
+
+| Scenario                   | Result status                 | Side-effects                                                                                                                      |
+| -------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Active non-admin member    | `LEFT`                        | `updateMemberStatus` → LEFT; `countActiveMembers` → `setMemberCount`; `MEMBER_LEFT` audit; `community.member_left` RabbitMQ event |
+| Admin, sole member         | `DELETED`                     | `deleteCommunityHard` (community permanently removed)                                                                             |
+| Admin, other members exist | `FAILED / ADMIN_CANNOT_LEAVE` | No writes                                                                                                                         |
+| Community not found        | `FAILED / NOT_FOUND`          | No writes                                                                                                                         |
+| Not an active member       | `FAILED / NOT_MEMBER`         | No writes                                                                                                                         |
+
+#### Key design decisions
+
+- **Static route order:** `/leave/bulk` is registered before `/:id/leave` so Express doesn't treat the string `"leave"` as a communityId.
+- **No `$transaction`:** MongoDB is standalone; writes are sequential per community inside a `for` loop, consistent with the rest of the service.
+- **Batch queries upfront:** memberships and community rows are fetched in a single parallel `Promise.all` at the start; per-community writes are then sequential — no N+1 on reads.
+- **ADMIN_CANNOT_LEAVE is a hard block:** admins must transfer ownership first (`POST /communities/{id}/admin/transfer`) before leaving; no auto-handover in the bulk path (matches the existing single-leave behaviour).
+- **`community.member_left` event:** fired only for non-admin leaves (same events that the single-leave produces when implemented). Admin sole-member auto-delete fires no separate MEMBER_LEFT event (the community ceases to exist).
+- **Response shape:** always `200 OK`; the `summary.failed > 0` signals partial failure without a top-level HTTP error.
+
+#### Verification (2026-06-11)
+
+- `tsc --noEmit` on `community-service` — **0 errors**

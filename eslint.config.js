@@ -59,6 +59,20 @@ export default [
     },
   },
   {
+    // Test files live under tests/ (outside each service's tsconfig `src`
+    // rootDir), so type-aware linting cannot resolve them to a project.
+    files: ["**/tests/**/*.ts"],
+    languageOptions: {
+      parserOptions: {
+        project: false,
+      },
+    },
+    rules: {
+      "no-console": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
+  {
     files: [
       "packages/auth-jwt/src/middleware.ts",
       "packages/utils/src/locale-middleware.ts",

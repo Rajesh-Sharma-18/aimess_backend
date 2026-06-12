@@ -2,6 +2,7 @@ import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { nanoid } from "nanoid";
 
 import { SystemEvent } from "../types/enums.js";
+import { assertGroupMember } from "../lib/access-guard.js";
 
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -125,7 +126,13 @@ export class GroupInviteLinkService {
         userId,
         invitedBy: link.createdBy,
       },
-      { systemEvent: SystemEvent.MEMBER_JOINED, actorId: userId }
+      {
+        systemEvent: SystemEvent.MEMBER_JOINED,
+        actorId: userId,
+        // Self-join: the user is authorized by the valid invite link, not by an
+        // OWNER/ADMIN role — skip the direct-add actor authorization.
+        skipActorAuthz: true,
+      }
     );
 
     await this.inviteLinkRepo.incrementUsedCount(token);
@@ -133,7 +140,15 @@ export class GroupInviteLinkService {
     return { room };
   }
 
-  async getActiveLinks(roomId: string): Promise<GroupInviteLink[]> {
+  async getActiveLinks(
+    roomId: string,
+    userId: string
+  ): Promise<GroupInviteLink[]> {
+    // Invite tokens grant group entry, so listing them must be restricted to an
+    // active OWNER/ADMIN of the room — not any authenticated user (AUDIT H4).
+    await assertGroupMember(this.memberRepo, roomId, userId, {
+      roles: ["OWNER", "ADMIN"],
+    });
     return this.inviteLinkRepo.findActiveByRoom(roomId);
   }
 

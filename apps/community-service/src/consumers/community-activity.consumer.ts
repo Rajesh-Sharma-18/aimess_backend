@@ -23,8 +23,10 @@ interface CommunityActivityMessage {
     communityId: string;
     lastMessageAt: string;
     lastMessageId: string;
+    senderUserId?: string;
     senderUsername?: string;
     messagePreview?: string;
+    type?: string;
   };
 }
 
@@ -62,9 +64,10 @@ export async function startCommunityActivityConsumer(): Promise<void> {
             await communityRepository.updateLastActivity(
               parsed.data.communityId,
               at,
-              "message",
+              parsed.data.type ?? "message",
               parsed.data.messagePreview ?? "",
-              parsed.data.senderUsername ?? null
+              parsed.data.senderUsername ?? null,
+              parsed.data.senderUserId ?? null
             );
           }
         } else {

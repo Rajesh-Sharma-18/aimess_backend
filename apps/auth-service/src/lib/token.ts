@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import { signAccessToken } from "@aimess/auth-jwt";
+import { signAccessToken, type PlatformRole } from "@aimess/auth-jwt";
 
 import { env } from "../config/env.js";
 import { markSessionActive } from "./session-active-cache.js";
@@ -38,6 +38,7 @@ export function createRefreshTokenValue(): string {
 
 export async function issueAuthTokens(
   userId: string,
+  role: PlatformRole,
   session: SessionContext,
   rememberMe?: boolean
 ): Promise<IssuedAuthTokens> {
@@ -69,6 +70,7 @@ export async function issueAuthTokens(
     sessionId: createdSession.id,
     secret: env.JWT_ACCESS_SECRET,
     expiresInSeconds: accessTokenExpiresIn,
+    role,
   });
 
   await markSessionActive(createdSession.id);

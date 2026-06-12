@@ -10,6 +10,7 @@ import {
   adminUpdateCategory,
   approveCommunityJoinRequest,
   banCommunityMember,
+  bulkLeaveCommunities,
   bulkMarkReadCommunities,
   bulkMuteCommunities,
   bulkSendCommunityInviteLink,
@@ -32,6 +33,8 @@ import {
   getNotificationPreferences,
   joinCommunity,
   kickCommunityMember,
+  likeCommunity,
+  listLikedCommunities,
   leaveCommunity,
   listCategories,
   listCommunityAuditLogs,
@@ -56,6 +59,7 @@ import {
   transferCommunityAdmin,
   unbanCommunityMember,
   unmuteCommunityMember,
+  unlikeCommunity,
   updateCommunity,
   updateCommunityMemberRole,
   warnCommunityMember,
@@ -66,9 +70,11 @@ import { validateBody } from "../middleware/validate-body.js";
 import { validateParams } from "../middleware/validate-params.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
+import { requirePlatformAdmin } from "../../middleware/require-platform-admin.js";
 import {
   addMembersSchema,
   adminCategoriesQuerySchema,
+  bulkLeaveSchema,
   bulkMarkReadSchema,
   bulkMuteSchema,
   bulkSendInviteLinkSchema,
@@ -126,21 +132,25 @@ communityRoutes.use(authenticateAccessToken);
 // Admin CRUD on /categories uses the admin sub-handlers below.
 communityRoutes.get("/categories", listCategories);
 
-// Admin category CRUD — these MUST be before the `/:id` param route.
+// Admin category CRUD — these MUST be before the `/:id` param route, and are
+// gated by a platform-admin role check (fail-fast, before the validators).
 communityRoutes.get(
   "/categories/admin",
+  requirePlatformAdmin,
   validateQuery(adminCategoriesQuerySchema),
   adminListCategories
 );
 
 communityRoutes.post(
   "/categories",
+  requirePlatformAdmin,
   validateBody(createCategorySchema),
   adminCreateCategory
 );
 
 communityRoutes.patch(
   "/categories/:categoryId",
+  requirePlatformAdmin,
   validateParams(categoryIdParamSchema),
   validateBody(updateCategorySchema),
   adminUpdateCategory
@@ -148,6 +158,7 @@ communityRoutes.patch(
 
 communityRoutes.delete(
   "/categories/:categoryId",
+  requirePlatformAdmin,
   validateParams(categoryIdParamSchema),
   adminDeleteCategory
 );
@@ -206,6 +217,10 @@ communityRoutes.get(
   validateQuery(myReportsQuerySchema),
   listMyReports
 );
+
+// Static "/liked" listing MUST be before the `/:id` param route, otherwise
+// "liked" is captured as a community id and rejected by communityIdParamsSchema.
+communityRoutes.get("/liked", listLikedCommunities);
 
 communityRoutes.post(
   "/invites/:inviteId/accept",
@@ -283,11 +298,31 @@ communityRoutes.post(
   addCommunityMembers
 );
 
+// Static route must be registered before /:id to prevent "leave" being
+// captured as a communityId param.
+communityRoutes.post(
+  "/leave/bulk",
+  validateBody(bulkLeaveSchema),
+  bulkLeaveCommunities
+);
+
 communityRoutes.post(
   "/:id/leave",
   validateParams(communityIdParamsSchema),
   validateBody(leaveReasonSchema),
   leaveCommunity
+);
+
+communityRoutes.post(
+  "/:id/like",
+  validateParams(communityIdParamsSchema),
+  likeCommunity
+);
+
+communityRoutes.delete(
+  "/:id/like",
+  validateParams(communityIdParamsSchema),
+  unlikeCommunity
 );
 
 communityRoutes.post(
