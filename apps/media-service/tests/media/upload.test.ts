@@ -137,6 +137,78 @@ describe("POST /api/v1/media/upload-url", () => {
     expect(res.body.data.objectKey).toMatch(/^group-chat-uploads\//);
   });
 
+  it("200: CHAT_ATTACHMENT accepts video/webm (newly enabled)", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({
+        category: "CHAT_ATTACHMENT",
+        contentType: "video/webm",
+        contentLength: 2048,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.objectKey).toMatch(/\.webm$/);
+  });
+
+  it("200: CHAT_ATTACHMENT accepts audio/flac (newly enabled)", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({
+        category: "CHAT_ATTACHMENT",
+        contentType: "audio/flac",
+        contentLength: 2048,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.objectKey).toMatch(/\.flac$/);
+  });
+
+  it("200: CHAT_ATTACHMENT accepts xlsx (newly enabled office type)", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({
+        category: "CHAT_ATTACHMENT",
+        contentType:
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        contentLength: 2048,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.objectKey).toMatch(/\.xlsx$/);
+  });
+
+  it("200: CHAT_ATTACHMENT accepts text/csv with originalFileName", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({
+        category: "CHAT_ATTACHMENT",
+        contentType: "text/csv",
+        contentLength: 2048,
+        originalFileName: "quarterly-report.csv",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.objectKey).toMatch(/\.csv$/);
+  });
+
+  it("415: CHAT_ATTACHMENT still rejects an unlisted executable type", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({
+        category: "CHAT_ATTACHMENT",
+        contentType: "application/x-msdownload",
+        contentLength: 2048,
+      });
+
+    expect(res.status).toBe(415);
+    expect(res.body.success).toBe(false);
+  });
+
   it("415: unsupported type for GROUP_AVATAR (application/pdf)", async () => {
     const res = await request(app)
       .post("/api/v1/media/upload-url")
