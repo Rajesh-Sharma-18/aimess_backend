@@ -107,6 +107,98 @@ export function groupStoredReactions(raw: unknown): ReactionGroup[] {
 }
 
 /**
+ * Build the canonical client-facing `reactionGroups[]` for a message ROW: group
+ * the stored reactor map per emoji and resolve each reactor's avatar key via
+ * `resolveAvatar`. This is the shape the FE reads off message rows (history,
+ * message:new, catchup); the legacy `reactions` map is deprecated. Stored rows
+ * carry empty userName/avatar (enriched only by getMessageReactions), so on a row
+ * `users[]` is effectively `{ userId, displayName: "", avatar: "" }`.
+ */
+export function buildReactionGroups(
+  raw: unknown,
+  resolveAvatar: (key: string) => string
+): ReactionGroup[] {
+  return groupStoredReactions(raw).map((group) => ({
+    ...group,
+    users: group.users.map((user) => ({
+      ...user,
+      avatar: resolveAvatar(user.avatar),
+    })),
+  }));
+}
+
+/** Canonical stored reactor entry — what each reaction array element looks like at rest. */
+export interface StoredReactor {
+  userId: string;
+  userName: string;
+  avatar: string;
+  memberId: string;
+}
+
+/**
+ * Coerce one stored reaction entry into the canonical {@link StoredReactor} shape.
+ * Entries are objects `{ userId, userName, avatar, memberId }`; legacy rows may hold
+ * a bare userId string, so tolerate both.
+ */
+function normalizeReactor(entry: unknown): StoredReactor {
+  if (typeof entry === "string")
+    return { userId: entry, userName: "", avatar: "", memberId: "" };
+  const o = (entry ?? {}) as Record<string, unknown>;
+  return {
+    userId: (o.userId as string) ?? "",
+    userName: (o.userName as string) ?? "",
+    avatar: (o.avatar as string) ?? "",
+    memberId: (o.memberId as string) ?? "",
+  };
+}
+
+/**
+ * Reduce the stored reactions map to `{ emoji: userId[] }`. Stored entries are
+ * reactor OBJECTS, not bare ids — callers that need just the ids (counts, snapshot
+ * fan-out, selfReacted checks) must go through this rather than indexing the array
+ * elements as strings. Empty emoji buckets are dropped.
+ */
+export function reactionUserIdMap(raw: unknown): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [emoji, list] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(list)) continue;
+    const ids = list.map((e) => normalizeReactor(e).userId).filter(Boolean);
+    if (ids.length) out[emoji] = ids;
+  }
+  return out;
+}
+
+/**
+ * Toggle `userId`'s `emoji` reaction in the stored map and return a NEW map (the
+ * input is not mutated). Absent → append the canonical reactor object; present →
+ * remove it, pruning the emoji bucket when it empties. Carried-over entries are
+ * normalized to the canonical object shape, so the persisted result is always
+ * well-formed regardless of how legacy rows were written.
+ */
+export function toggleStoredReaction(
+  raw: unknown,
+  userId: string,
+  emoji: string
+): Record<string, StoredReactor[]> {
+  const out: Record<string, StoredReactor[]> = {};
+  if (raw && typeof raw === "object") {
+    for (const [e, list] of Object.entries(raw as Record<string, unknown>)) {
+      if (!Array.isArray(list) || list.length === 0) continue;
+      const entries = list.map(normalizeReactor).filter((r) => r.userId);
+      if (entries.length) out[e] = entries;
+    }
+  }
+  const bucket = out[emoji] ?? [];
+  const idx = bucket.findIndex((r) => r.userId === userId);
+  if (idx !== -1) bucket.splice(idx, 1);
+  else bucket.push({ userId, userName: "", avatar: "", memberId: "" });
+  if (bucket.length === 0) delete out[emoji];
+  else out[emoji] = bucket;
+  return out;
+}
+
+/**
  * Flatten the stored reactions map into the thin `[{ userId, emoji }]` shape used
  * by the gRPC MessageDto (history fetch). Distinct from the grouped broadcast
  * shape — this matches the legacy proto field.

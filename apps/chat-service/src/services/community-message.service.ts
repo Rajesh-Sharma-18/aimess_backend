@@ -20,13 +20,15 @@ import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { GeneralRoomMessage } from "../generated/prisma/index.js";
 import {
-  groupStoredReactions,
+  buildReactionGroups,
   normalizeMessageType,
+  toggleStoredReaction,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
 import { assertCommunityMember } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
+import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
   resolveMediaUrlMap,
   urlFromMap,
@@ -143,7 +145,7 @@ export class CommunityMessageService {
       const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
       if (cachedId) {
         const cached = await this.messageRepo.findById(cachedId);
-        if (cached) return cached;
+        if (cached) return markIdempotentReplay(cached);
       }
       const existing = await this.messageRepo.findOne({
         roomId: params.roomId,
@@ -154,7 +156,7 @@ export class CommunityMessageService {
         this.cacheRepo
           .setMessageIdempotency(idemKey, existing.id)
           .catch(() => {});
-        return existing;
+        return markIdempotentReplay(existing);
       }
     }
 
@@ -212,7 +214,7 @@ export class CommunityMessageService {
           sentBy: params.sentBy,
           clientMessageId: params.clientMessageId,
         });
-        if (dup) return dup;
+        if (dup) return markIdempotentReplay(dup);
       }
       throw err;
     }
@@ -464,6 +466,12 @@ export class CommunityMessageService {
       }
     }
 
+    // Canonical client-facing reaction shape (FE reads `reactionGroups[]`); the
+    // legacy `reactions` map left on the row is deprecated.
+    wire.reactionGroups = buildReactionGroups(wire.reactions, (key) =>
+      urlMap ? urlFromMap(urlMap, key) : key
+    );
+
     const msgTs = m.createdAt;
 
     const readBy = members
@@ -656,6 +664,10 @@ export class CommunityMessageService {
         syncEventType = "new";
       }
 
+      const reactionGroups = buildReactionGroups(msg.reactions, (key) =>
+        urlFromMap(urlMap, key)
+      );
+
       return {
         id: msg.id,
         roomId: msg.roomId,
@@ -667,13 +679,8 @@ export class CommunityMessageService {
         attachments: Array.isArray(msg.attachments)
           ? applyUrlMapToFiles(msg.attachments as MediaFileLike[], urlMap)
           : msg.attachments,
-        reactions: groupStoredReactions(msg.reactions).map((group) => ({
-          ...group,
-          users: group.users.map((user) => ({
-            ...user,
-            avatar: urlFromMap(urlMap, user.avatar),
-          })),
-        })),
+        reactions: reactionGroups,
+        reactionGroups,
         deletedForAll: msg.deletedForAll,
         editedAt: editedMs,
         createdAt: createdMs,
@@ -883,52 +890,13 @@ export class CommunityMessageService {
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
     }
 
-    // NOTE: non-atomic read-modify-write; acceptable at current scale
-    const updatedReactions = (
-      message.reactions
-        ? {
-            ...(message.reactions as Record<
-              string,
-              Array<{
-                userId: string;
-                userName: string;
-                avatar: string;
-                memberId: string;
-              }>
-            >),
-          }
-        : {}
-    ) as Record<
-      string,
-      Array<{
-        userId: string;
-        userName: string;
-        avatar: string;
-        memberId: string;
-      }>
-    >;
-
-    if (!updatedReactions[params.emoji]) {
-      updatedReactions[params.emoji] = [];
-    }
-
-    const existingIndex = updatedReactions[params.emoji]!.findIndex(
-      (entry) => entry.userId === params.userId
+    // Toggle the reactor in/out of the emoji bucket (shared with private/group);
+    // non-atomic read-modify-write, acceptable at current scale.
+    const updatedReactions = toggleStoredReaction(
+      message.reactions,
+      params.userId,
+      params.emoji
     );
-
-    if (existingIndex !== -1) {
-      updatedReactions[params.emoji]!.splice(existingIndex, 1);
-      if (updatedReactions[params.emoji]!.length === 0) {
-        delete updatedReactions[params.emoji];
-      }
-    } else {
-      updatedReactions[params.emoji]!.push({
-        userId: params.userId,
-        userName: "",
-        avatar: "",
-        memberId: "",
-      });
-    }
 
     await this.messageRepo.updateById(
       params.communityId,

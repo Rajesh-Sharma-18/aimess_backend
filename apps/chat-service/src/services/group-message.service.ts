@@ -13,9 +13,14 @@ import {
 } from "../constants/media-limits.js";
 import {
   normalizeMessageType,
+  buildReactionGroups,
+  reactionUserIdMap,
+  toggleStoredReaction,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { assertGroupMember } from "../lib/access-guard.js";
+import { isDuplicateKeyError } from "../lib/db-errors.js";
+import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
   resolveMediaUrlMap,
   urlFromMap,
@@ -80,7 +85,7 @@ export class GroupMessageService {
       const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
       if (cachedId) {
         const cached = await this.messageRepo.findById(cachedId);
-        if (cached) return withRole(cached);
+        if (cached) return withRole(markIdempotentReplay(cached));
       }
       const existing = await this.messageRepo.findByClientMessageId(
         params.roomId,
@@ -91,7 +96,7 @@ export class GroupMessageService {
         this.cacheRepo
           .setMessageIdempotency(idemKey, existing.id)
           .catch(() => {});
-        return withRole(existing);
+        return withRole(markIdempotentReplay(existing));
       }
     }
 
@@ -142,15 +147,16 @@ export class GroupMessageService {
         entity as Parameters<typeof this.messageRepo.create>[0]
       );
     } catch (err) {
-      // P2002 = unique constraint violation from the sparse idempotency index
-      const pe = err as { code?: string };
-      if (pe?.code === "P2002" && params.clientMessageId) {
+      // Concurrent send with the same clientMessageId lost the unique-index
+      // insert (E11000/P2002 from the sparse idempotency index) — re-read and
+      // return the winner so both collapse to one message.
+      if (isDuplicateKeyError(err) && params.clientMessageId) {
         const dup = await this.messageRepo.findByClientMessageId(
           params.roomId,
           params.senderId,
           params.clientMessageId
         );
-        if (dup) return withRole(dup);
+        if (dup) return withRole(markIdempotentReplay(dup));
       }
       throw err;
     }
@@ -487,11 +493,22 @@ export class GroupMessageService {
     return this.messageRepo.editMessage(params.messageId, params.content);
   }
 
+  /**
+   * Toggle a single user's emoji reaction on a group message. Reads the stored
+   * reactor map, flips `userId`'s membership in the `emoji` bucket (add on first
+   * react, remove on a duplicate react = toggle-off), and persists the canonical
+   * `{ emoji: [{ userId, userName, avatar, memberId }] }` shape. Other emojis are
+   * preserved.
+   */
   async react(
     messageId: string,
-    reactions: Record<string, unknown[]>
+    userId: string,
+    emoji: string
   ): Promise<GroupMessage | null> {
-    return this.messageRepo.addReactions(messageId, reactions);
+    const raw = await this.messageRepo.getReactions(messageId);
+    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const updated = toggleStoredReaction(raw, userId, emoji);
+    return this.messageRepo.addReactions(messageId, updated);
   }
 
   async forwardMessage(params: {
@@ -652,7 +669,9 @@ export class GroupMessageService {
     const raw = await this.messageRepo.getReactions(params.messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
-    const reactions = (raw ?? {}) as Record<string, string[]>;
+    // Stored entries are reactor OBJECTS; reduce to { emoji: userId[] } so the
+    // grouped result carries the plain id string in users[].userId (not the object).
+    const reactions = reactionUserIdMap(raw);
     const allUserIds = [...new Set(Object.values(reactions).flat())];
 
     const snapshots =
@@ -752,6 +771,12 @@ export class GroupMessageService {
           files: applyUrlMapToFiles(content.files as MediaFileLike[], urlMap),
         };
       }
+
+      // Canonical client-facing reaction shape (FE reads `reactionGroups[]`); the
+      // raw `reactions` map resolved below is kept for backward compat but deprecated.
+      wire.reactionGroups = buildReactionGroups(wire.reactions, (key) =>
+        urlFromMap(urlMap, key)
+      );
 
       // Stamp reaction-user avatars in place, preserving the stored map shape
       // (`{ emoji: [{ userId, userName, avatar, … }] }`) the group read path

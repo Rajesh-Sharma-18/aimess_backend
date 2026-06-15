@@ -15,10 +15,14 @@ import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js"
 import {
   normalizeMessageType,
   buildCanonicalQuote,
-  groupStoredReactions,
+  buildReactionGroups,
+  reactionUserIdMap,
+  toggleStoredReaction,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { isDuplicateKeyError } from "../lib/db-errors.js";
+import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
   resolveMediaUrlMap,
   urlFromMap,
@@ -84,7 +88,7 @@ export class PrivateMessageService {
         params.senderId,
         params.clientMessageId
       );
-      if (existing) return existing;
+      if (existing) return markIdempotentReplay(existing);
     }
 
     const entity: Record<string, unknown> = {
@@ -132,12 +136,33 @@ export class PrivateMessageService {
 
     // Allocate the per-room monotonic sequence AFTER the idempotency pre-check,
     // immediately before insert, so a retried clientMessageId never burns a seq.
+    // On the duplicate-key path below the allocated seq is discarded (an
+    // acceptable per-room gap — we do not retry allocation).
     const seq = await this.roomRepo.allocateSequence(params.roomId);
     entity.sequenceNumber = seq;
 
-    const message = await this.messageRepo.createMessage(
-      entity as Parameters<PrivateMessageRepository["createMessage"]>[0]
-    );
+    let message: PrivateMessage;
+    try {
+      message = await this.messageRepo.createMessage(
+        entity as Parameters<PrivateMessageRepository["createMessage"]>[0]
+      );
+    } catch (err) {
+      // Concurrent send with the same clientMessageId: the pre-send dedup check
+      // above raced with a sibling request, both saw "not found", and both
+      // reached the insert. The partial-unique idempotency index
+      // (roomId, senderId, clientMessageId) rejects the loser with E11000/P2002.
+      // Re-read and return the winner so all concurrent sends collapse to one
+      // message instead of surfacing a 500 / SERVICE_ERROR.
+      if (params.clientMessageId && isDuplicateKeyError(err)) {
+        const dup = await this.messageRepo.findByClientMessageId(
+          params.roomId,
+          params.senderId,
+          params.clientMessageId
+        );
+        if (dup) return markIdempotentReplay(dup);
+      }
+      throw err;
+    }
 
     // Update room with last message
     this.roomRepo
@@ -457,11 +482,22 @@ export class PrivateMessageService {
     }
   }
 
+  /**
+   * Toggle a single user's emoji reaction on a private message. Reads the stored
+   * reactor map, flips `userId`'s membership in the `emoji` bucket (add on first
+   * react, remove on a duplicate react = toggle-off), and persists the canonical
+   * `{ emoji: [{ userId, userName, avatar, memberId }] }` shape. Other emojis are
+   * preserved.
+   */
   async react(
     messageId: string,
-    reactions: Record<string, unknown[]>
+    userId: string,
+    emoji: string
   ): Promise<PrivateMessage | null> {
-    return this.messageRepo.addReactions(messageId, reactions);
+    const raw = await this.messageRepo.getReactions(messageId);
+    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const updated = toggleStoredReaction(raw, userId, emoji);
+    return this.messageRepo.addReactions(messageId, updated);
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -493,7 +529,7 @@ export class PrivateMessageService {
         params.senderId,
         params.clientMessageId
       );
-      if (existing) return existing;
+      if (existing) return markIdempotentReplay(existing);
     }
 
     // fetch source message
@@ -511,16 +547,32 @@ export class PrivateMessageService {
 
     const seq = await this.roomRepo.allocateSequence(params.targetRoomId);
 
-    const message = await this.messageRepo.createForwardedMessage({
-      roomId: params.targetRoomId,
-      senderId: params.senderId,
-      receiverId: params.receiverId,
-      content: source.content as object,
-      messageType: source.messageType,
-      forwardData,
-      clientMessageId: params.clientMessageId ?? null,
-      sequenceNumber: seq,
-    });
+    let message: PrivateMessage;
+    try {
+      message = await this.messageRepo.createForwardedMessage({
+        roomId: params.targetRoomId,
+        senderId: params.senderId,
+        receiverId: params.receiverId,
+        content: source.content as object,
+        messageType: source.messageType,
+        forwardData,
+        clientMessageId: params.clientMessageId ?? null,
+        sequenceNumber: seq,
+      });
+    } catch (err) {
+      // Same idempotency race as sendMessage: a concurrent forward with the
+      // same clientMessageId loses the unique-index insert (E11000/P2002) —
+      // re-read and return the winner instead of erroring.
+      if (params.clientMessageId && isDuplicateKeyError(err)) {
+        const dup = await this.messageRepo.findByClientMessageId(
+          params.targetRoomId,
+          params.senderId,
+          params.clientMessageId
+        );
+        if (dup) return markIdempotentReplay(dup);
+      }
+      throw err;
+    }
 
     this.roomRepo
       .updateRoomOnNewMessage({
@@ -562,7 +614,9 @@ export class PrivateMessageService {
     const raw = await this.messageRepo.getReactions(params.messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
-    const reactions = (raw ?? {}) as Record<string, string[]>;
+    // Stored entries are reactor OBJECTS; reduce to { emoji: userId[] } so the
+    // grouped result carries the plain id string in users[].userId (not the object).
+    const reactions = reactionUserIdMap(raw);
     const allUserIds = [...new Set(Object.values(reactions).flat())];
 
     const snapshots =
@@ -724,15 +778,10 @@ export class PrivateMessageService {
             }
           : content;
 
-      // Resolve reaction-user avatars carried in the grouped reaction shape.
-      const reactionGroups = groupStoredReactions(wire.reactions).map(
-        (group) => ({
-          ...group,
-          users: group.users.map((user) => ({
-            ...user,
-            avatar: urlFromMap(urlMap, user.avatar),
-          })),
-        })
+      // Canonical client-facing reaction shape (FE reads `reactionGroups[]`; the
+      // legacy `reactions` map carried by `...wire` is deprecated).
+      const reactionGroups = buildReactionGroups(wire.reactions, (key) =>
+        urlFromMap(urlMap, key)
       );
 
       return {

@@ -50,6 +50,7 @@ import {
   resolveContentFiles,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
+import { isIdempotentReplay } from "../lib/idempotency.js";
 
 /**
  * Resolve attachment object-keys inside a message `content` blob to full,
@@ -171,8 +172,9 @@ export function createMessagingImpl(
             sequenceNumber: number;
             senderRole?: string;
           };
-          // Track whether this was an idempotency hit (message already existed).
-          // Set by comparing createdAt to now after the service call.
+          // Track whether the service returned a pre-existing row (idempotent
+          // replay) vs a fresh insert; set from the service's replay marker
+          // after the call and used to suppress duplicate fan-out.
           let alreadySent = false;
 
           const conversationType = String(
@@ -204,7 +206,15 @@ export function createMessagingImpl(
             });
           }
 
-          {
+          // An idempotent replay (a concurrent same-clientMessageId duplicate
+          // that collapsed to the existing row, or a later retry) must NOT re-run
+          // the live fan-out — the row's FIRST send already broadcast/bumped/
+          // pushed. This is what makes N concurrent dup sends yield exactly ONE
+          // message:new (the winning insert), while every caller still gets the
+          // same messageId ack below.
+          alreadySent = isIdempotentReplay(msg);
+
+          if (!alreadySent) {
             const serverTs =
               msg.createdAt instanceof Date
                 ? msg.createdAt.getTime()
@@ -246,7 +256,7 @@ export function createMessagingImpl(
 
           // Bump-to-top: fan out conv:updated to every participant's inbox.
           // Fire-and-forget — must never delay the send callback.
-          {
+          if (!alreadySent) {
             const bumpSentAt =
               msg.createdAt instanceof Date
                 ? msg.createdAt.getTime()
@@ -279,14 +289,6 @@ export function createMessagingImpl(
                 recipientIds: [req.senderId, req.receiverId],
               });
             }
-          }
-
-          // Detect idempotency hit: message created more than 5s ago → already existed
-          if (
-            msg.createdAt instanceof Date &&
-            Date.now() - msg.createdAt.getTime() > 5000
-          ) {
-            alreadySent = true;
           }
 
           // V2 §4: trigger an FCM/APNs push (fallback wake for app-killed
