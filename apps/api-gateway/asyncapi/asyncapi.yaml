@@ -45,10 +45,11 @@ info:
       display-ready sentence (resolved from `x-lang` / `Accept-Language`). The
       **failure** shape is identical for every event — branch on `error` +
       `retryable`, not on the operation.
-    - **⚠️ Ack integer wart:** in **ack** payloads **only**, `sentAt` and
-      `sequenceNumber` arrive as **strings** (gRPC `int64` serialization) —
-      always `Number()`-coerce them. Broadcast events (`message:new`, …) carry
-      proper integers.
+    - **Numeric consistency:** `sentAt`, `editedAt`, `pinnedAt`, and
+      `sequenceNumber` are plain epoch-ms / integer **numbers** on **both** ack
+      payloads and broadcast events — the gateway coerces the gRPC `int64`
+      wire-strings before relaying. (A defensive `Number()` on the client stays
+      harmless.)
     - **Reconnect:** Socket.IO `connectionStateRecovery` restores rooms + missed
       emits for up to **2 min**; past that, the client re-joins rooms and runs
       `chat:catchup` / `community:catchup`. See SOCKET_EVENTS.md
@@ -2399,18 +2400,15 @@ components:
       type: object
       description: |
         `data` of the `message:send` and `message:forward` acks. The full message
-        is ALSO broadcast as `message:new` to the conversation room. Numeric
-        fields backed by gRPC int64 (`sentAt`, `sequenceNumber`) arrive on the
-        **ack** as **strings** — coerce with `Number()` (see §3 numeric note).
+        is ALSO broadcast as `message:new` to the conversation room. `sentAt` and
+        `sequenceNumber` are plain integer numbers (the gateway coerces the gRPC
+        int64 wire-strings), identical to the `message:new` broadcast.
       properties:
         messageId: { type: string }
         conversationId: { type: string }
         sequenceNumber:
-          {
-            type: integer,
-            description: "per-room monotonic seq (string on the ack).",
-          }
-        sentAt: { type: integer, description: "epoch ms (string on the ack)." }
+          { type: integer, description: "per-room monotonic seq." }
+        sentAt: { type: integer, description: "epoch ms." }
         alreadySent:
           {
             type: boolean,
@@ -2422,11 +2420,12 @@ components:
       description: |
         `data` of the `community:message:send` ack. The full message is broadcast
         as `community:message:new` to the `community:<communityId>` room. `sentAt`
-        arrives as a string on the ack — coerce with `Number()`.
+        is a plain integer number (the gateway coerces the gRPC int64 wire-string),
+        identical to the broadcast.
       properties:
         messageId: { type: string }
         roomId: { type: string }
-        sentAt: { type: integer, description: "epoch ms (string on the ack)." }
+        sentAt: { type: integer, description: "epoch ms." }
         alreadySent: { type: boolean }
       required: [messageId, roomId]
     ConversationRef:
@@ -2759,7 +2758,7 @@ components:
         messageId: { type: string }
         senderId: { type: string }
         senderName: { type: string }
-        contentType: { $ref: "#/components/schemas/ContentType" }
+        messageType: { $ref: "#/components/schemas/ContentType" }
         preview: { type: string }
         isDeleted: { type: boolean }
     ReactionGroup:
