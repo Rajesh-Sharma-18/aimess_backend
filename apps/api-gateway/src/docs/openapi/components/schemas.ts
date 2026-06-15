@@ -5640,6 +5640,116 @@ export const openApiSchemas = {
     type: "array",
     items: { $ref: "#/components/schemas/ChatMessage" },
   },
+  /**
+   * Canonical wire message returned by the REST private/group SEND endpoints
+   * (and broadcast byte-identically as the Socket.IO `message:new`). This is the
+   * `buildChatMessageEvent` output — NOT the `ChatMessage` read shape: it carries
+   * server-authoritative `serverTs`/`sentAt` epoch-ms (there is **no** `createdAt`
+   * here), the resolved `senderAvatar` URL, and `reactions` as an empty array on a
+   * fresh send. The send handler wraps this in `allOf:[ChatWireMessage, {idempotent}]`.
+   */
+  ChatWireMessage: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      clientMessageId: {
+        type: "string",
+        description: "Echo of the idempotency key (empty string if none).",
+      },
+      roomId: { type: "string" },
+      conversationType: { type: "string", enum: ["PRIVATE", "GROUP"] },
+      senderId: { type: "string" },
+      senderName: { type: "string" },
+      senderAvatar: {
+        type: "string",
+        description:
+          "Fully-qualified presigned GET URL (resolved on read), or empty string.",
+      },
+      senderRole: {
+        type: "string",
+        description:
+          "Group role (OWNER/ADMIN/MEMBER) for GROUP; empty otherwise.",
+      },
+      receiverId: {
+        type: "string",
+        description: "Peer user ID for PRIVATE; empty string for GROUP.",
+      },
+      content: {
+        type: "object",
+        description:
+          "Message body. `content.files[].url` is a resolved presigned download URL (raw object keys are never returned).",
+        properties: {
+          text: { type: "string", maxLength: 4000 },
+          urls: { type: "array", items: { type: "string" } },
+          files: { type: "array", items: { type: "object" } },
+          location: { $ref: "#/components/schemas/ChatLocationAttachment" },
+          contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+          sticker: { $ref: "#/components/schemas/ChatSticker" },
+        },
+        nullable: true,
+      },
+      contentType: {
+        type: "string",
+        enum: [
+          "TEXT",
+          "IMAGE",
+          "VIDEO",
+          "AUDIO",
+          "VOICE",
+          "DOCUMENT",
+          "GIF",
+          "STICKER",
+          "LOCATION",
+          "CONTACT",
+          "SYSTEM",
+        ],
+        description: "Canonical UPPER-CASE message kind.",
+      },
+      parentMessageId: {
+        type: "string",
+        description: "Replied-to message id, or empty string.",
+      },
+      quoteData: {
+        type: "object",
+        nullable: true,
+        description:
+          "Canonical reply snapshot { messageId, senderId, senderName, messageType, preview, isDeleted }, or null.",
+      },
+      reactions: {
+        type: "array",
+        description: "Always [] on a fresh send.",
+        items: { type: "object" },
+      },
+      clientTs: {
+        type: "integer",
+        format: "int64",
+        description: "Client compose time (epoch ms); 0 if unknown.",
+      },
+      serverTs: {
+        type: "integer",
+        format: "int64",
+        description: "Server-authoritative send time (epoch ms).",
+      },
+      sentAt: {
+        type: "integer",
+        format: "int64",
+        description: "Alias of serverTs (epoch ms).",
+      },
+      sequenceNumber: {
+        type: "integer",
+        description: "Per-room monotonic sequence number.",
+      },
+    },
+    required: [
+      "id",
+      "roomId",
+      "conversationType",
+      "senderId",
+      "contentType",
+      "serverTs",
+      "sequenceNumber",
+    ],
+  },
   ChatDeletePrivateMessageRequest: {
     type: "object",
     properties: {
@@ -6025,6 +6135,98 @@ export const openApiSchemas = {
   ChatCommunityMessageList: {
     type: "array",
     items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+  },
+  /**
+   * Canonical wire message returned by the REST community SEND endpoint (and
+   * broadcast byte-identically as the Socket.IO `community:message:new`). This is
+   * the orchestrator `sendCommunity` payload — NOT the `ChatCommunityMessage` read
+   * shape: it uses `senderId` (not `sentBy`), structured `content` (not flat
+   * `attachments[]`), `serverTs`/`sentAt` epoch-ms (no `createdAt`), and carries
+   * `reactions` as an empty array on a fresh send. The send handler wraps this in
+   * `allOf:[ChatCommunityWireMessage, {idempotent}]`.
+   */
+  ChatCommunityWireMessage: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      messageId: { type: "string", description: "Alias of id." },
+      communityId: {
+        type: "string",
+        description: "community-service Community.id (broadcast channel key).",
+      },
+      roomId: { type: "string", description: "chat-service GeneralRoom.id." },
+      senderId: { type: "string" },
+      senderName: { type: "string" },
+      senderAvatar: {
+        type: "string",
+        description:
+          "Fully-qualified presigned GET URL (resolved on read), or empty string.",
+      },
+      parentMessageId: {
+        type: "string",
+        description: "Replied-to message id, or empty string.",
+      },
+      quoteData: {
+        type: "object",
+        nullable: true,
+        description: "Canonical reply snapshot, or null.",
+      },
+      content: {
+        type: "object",
+        description:
+          "Structured body. `content.files[]` carry resolved presigned download URLs.",
+        properties: {
+          text: { type: "string" },
+          files: { type: "array", items: { type: "object" } },
+          location: { $ref: "#/components/schemas/ChatLocationAttachment" },
+          contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+          sticker: { $ref: "#/components/schemas/ChatSticker" },
+        },
+        required: ["text", "files"],
+      },
+      reactions: {
+        type: "array",
+        description: "Always [] on a fresh send.",
+        items: { type: "object" },
+      },
+      message: {
+        type: "string",
+        description: "Plain-text body (mirrors content.text).",
+      },
+      contentType: {
+        type: "string",
+        description: "Canonical UPPER-CASE message kind.",
+      },
+      clientMessageId: {
+        type: "string",
+        description: "Echo of the idempotency key (empty string if none).",
+      },
+      serverTs: {
+        type: "integer",
+        format: "int64",
+        description: "Server-authoritative send time (epoch ms).",
+      },
+      sentAt: {
+        type: "integer",
+        format: "int64",
+        description: "Alias of serverTs (epoch ms).",
+      },
+      sequenceNumber: {
+        type: "integer",
+        description: "Per-room monotonic sequence number.",
+      },
+    },
+    required: [
+      "id",
+      "messageId",
+      "communityId",
+      "roomId",
+      "senderId",
+      "content",
+      "contentType",
+      "serverTs",
+      "sequenceNumber",
+    ],
   },
   /** Scroll / history mode — before_ts (default). Includes top-level hasMore + nextCursor shortcuts. */
   ChatCommunityMessagePage: {

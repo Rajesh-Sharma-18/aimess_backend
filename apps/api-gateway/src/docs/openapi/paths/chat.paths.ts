@@ -1233,6 +1233,35 @@ const communityLeave = {
   },
 };
 
+// Community send 201/200 response body: the canonical community wire message
+// (ChatCommunityWireMessage) plus an `idempotent` flag. Shared by both the fresh
+// (201) and idempotent-replay (200) responses.
+const communitySendResponseSchema = {
+  allOf: [
+    { $ref: "#/components/schemas/ApiSuccessResponse" },
+    {
+      type: "object" as const,
+      properties: {
+        data: {
+          allOf: [
+            { $ref: "#/components/schemas/ChatCommunityWireMessage" },
+            {
+              type: "object" as const,
+              properties: {
+                idempotent: {
+                  type: "boolean" as const,
+                  description:
+                    "True when this send collapsed onto a pre-existing message (replay).",
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+  ],
+};
+
 const communityMessages = {
   get: {
     tags: ["Chat — Community"],
@@ -1320,7 +1349,7 @@ const communityMessages = {
     tags: ["Chat — Community"],
     summary: "Send a community message",
     description:
-      "Sends a message into the community room. `roomId` (the chat room id) comes from the path; `communityId` (used for the broadcast + activity bump) is required in the body. The server broadcasts `community:message:new` to the `community:<communityId>` Socket.IO room, denormalizes community activity (orders GET /communities/mine), and bumps the room for every member. Requires active membership; the room must not be suspended.",
+      "Sends a message into the community room. `roomId` (the chat room id) comes from the path; `communityId` (used for the broadcast + activity bump) is required in the body. The server broadcasts `community:message:new` to the `community:<communityId>` Socket.IO room, denormalizes community activity (orders GET /communities/mine), and bumps the room for every member. Requires active membership; the room must not be suspended. Idempotent via `clientMessageId` (a replay answers 200 with `idempotent: true`), matching the private/group send contract.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -1385,22 +1414,19 @@ const communityMessages = {
     responses: {
       "201": {
         description:
-          "Message sent. The data payload is the canonical community wire message (byte-identical to the Socket.IO `community:message:new`).",
+          "Message sent (fresh insert). The data payload is the canonical community wire message (byte-identical to the Socket.IO `community:message:new`) plus an `idempotent` flag.",
         content: {
           "application/json": {
-            schema: {
-              allOf: [
-                { $ref: "#/components/schemas/ApiSuccessResponse" },
-                {
-                  type: "object" as const,
-                  properties: {
-                    data: {
-                      $ref: "#/components/schemas/ChatCommunityMessage",
-                    },
-                  },
-                },
-              ],
-            },
+            schema: communitySendResponseSchema,
+          },
+        },
+      },
+      "200": {
+        description:
+          "Idempotent replay — `clientMessageId` matched an existing message; the original is returned with `idempotent: true`.",
+        content: {
+          "application/json": {
+            schema: communitySendResponseSchema,
           },
         },
       },

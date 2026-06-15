@@ -125,15 +125,18 @@ function sendMessageRequestBody(includeReceiverId: boolean) {
               enum: [
                 "TEXT",
                 "IMAGE",
-                "DOCUMENT",
                 "VIDEO",
-                "GIF",
+                "AUDIO",
                 "VOICE",
+                "DOCUMENT",
+                "GIF",
                 "STICKER",
                 "LOCATION",
                 "CONTACT",
+                "SYSTEM",
               ],
-              description: "Canonical UPPER-CASE message kind.",
+              description:
+                "Canonical UPPER-CASE message kind (matches @aimess/constants CONTENT_TYPES).",
             },
             parentMessageId: {
               type: "string" as const,
@@ -159,8 +162,10 @@ function sendMessageRequestBody(includeReceiverId: boolean) {
 
 /**
  * 201/200 responses for the REST send endpoints. The data payload is the
- * canonical wire ChatMessage (byte-identical to the Socket.IO `message:new`)
- * plus an `idempotent` flag. 201 = freshly inserted; 200 = idempotent replay.
+ * canonical wire message (`ChatWireMessage` — byte-identical to the Socket.IO
+ * `message:new`, i.e. `buildChatMessageEvent` output with `serverTs`/`sentAt`
+ * and no `createdAt`) plus an `idempotent` flag. 201 = freshly inserted;
+ * 200 = idempotent replay.
  */
 function sendMessageResponses() {
   const sentSchema = {
@@ -171,7 +176,7 @@ function sendMessageResponses() {
         properties: {
           data: {
             allOf: [
-              { $ref: "#/components/schemas/ChatMessage" },
+              { $ref: "#/components/schemas/ChatWireMessage" },
               {
                 type: "object" as const,
                 properties: {
