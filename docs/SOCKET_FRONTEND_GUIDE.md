@@ -840,9 +840,10 @@ export function useTyping(conversationId: string) {
 > `{ conversationId, userId, userDetails, timestamp, senderName }`. Render the
 > indicator straight from `p.userDetails.displayName` / `p.userDetails.avatarUrl`
 > (`avatarUrl` may be `null`) — **no profile fetch needed**. `userId` is
-> server-authoritative; `senderName` mirrors `displayName` for legacy clients.
-> The same shape arrives on the server's 6 s auto-expiry stop and the
-> disconnect-flush stop.
+> server-authoritative; `senderName` mirrors `displayName` for legacy clients;
+> `timestamp` is an **epoch-ms number** (all socket timestamps, including
+> `conv:archived.archivedAt`, are epoch ms — never ISO strings). The same shape
+> arrives on the server's 6 s auto-expiry stop and the disconnect-flush stop.
 
 **Community typing.** Identical UX on the `/community` namespace — emit
 `typing:start { communityId }` / `typing:stop { communityId }` (throttle the same

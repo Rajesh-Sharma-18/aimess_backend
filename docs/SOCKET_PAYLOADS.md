@@ -335,6 +335,9 @@ carries server-authoritative `userDetails` + `timestamp`; the legacy top-level
 client-trusted. The same enriched shape is emitted on the 6 s auto-expiry stop
 and the disconnect-flush stop.
 
+> **All socket timestamps are epoch-ms numbers** (not ISO strings). `timestamp`
+> below — and `conv:archived.archivedAt` — are Unix epoch milliseconds.
+
 ```jsonc
 // → emit
 { "conversationId": "conv_64f1a2b3c4d5e6f7" } // senderName optional (legacy)
@@ -349,7 +352,7 @@ and the disconnect-flush stop.
     "displayName": "Alice",
     "avatarUrl": "https://cdn.aimess.com/avatars/alice.jpg" // null when no avatar
   },
-  "timestamp": "2026-06-15T10:00:10.000Z",
+  "timestamp": 1749981610000, // epoch ms (number, not ISO)
   "senderName": "Alice"
 }
 ```
@@ -378,7 +381,7 @@ Mirrors `/chat`, broadcast to the `community:<communityId>` room. Server holds a
     "displayName": "Alice",
     "avatarUrl": "https://cdn.aimess.com/avatars/alice.jpg" // null when no avatar
   },
-  "timestamp": "2026-06-15T10:00:10.000Z",
+  "timestamp": 1749981610000, // epoch ms (number, not ISO)
   "senderName": "Alice"
 }
 ```

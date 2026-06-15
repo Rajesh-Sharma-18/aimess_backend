@@ -92,6 +92,8 @@ export function buildOpenApiDocument(
         "All paths below are relative to the selected server (e.g. `http://localhost:3000/api/v1`).",
         "",
         "All current routes are available at `/api/v1/...`.",
+        "",
+        "Chat/messaging response datetime fields are Unix epoch milliseconds (integer/int64); request datetime inputs and pagination cursors are ISO-8601 strings.",
       ].join("\n"),
     },
     servers: uniqueServers.map((url, index) => ({

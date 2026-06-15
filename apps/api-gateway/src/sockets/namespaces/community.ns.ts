@@ -255,7 +255,7 @@ export function registerCommunityNamespace(
         userId,
         socket.data.userDetails,
         communityId,
-        new Date().toISOString(),
+        Date.now(),
         { senderName, communityId }
       );
 

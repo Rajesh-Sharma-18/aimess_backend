@@ -215,7 +215,7 @@ export class PrivateRoomService {
           data: {
             roomId,
             type: "PRIVATE",
-            archivedAt: new Date().toISOString(),
+            archivedAt: Date.now(),
           },
         })
       )

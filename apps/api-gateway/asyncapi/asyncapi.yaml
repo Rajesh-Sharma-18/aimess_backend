@@ -158,6 +158,8 @@ channels:
       messageDelete: { $ref: "#/components/messages/MessageDelete" }
       readSync: { $ref: "#/components/messages/ReadSync" }
       pinUpdated: { $ref: "#/components/messages/PinUpdated" }
+      convArchived: { $ref: "#/components/messages/ConvArchived" }
+      convUnarchived: { $ref: "#/components/messages/ConvUnarchived" }
       typingStartBroadcast:
         { $ref: "#/components/messages/TypingStartBroadcast" }
       typingStopBroadcast: { $ref: "#/components/messages/TypingStopBroadcast" }
@@ -525,6 +527,16 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "pin:updated — §2.5 pinned banner change"
     messages: [{ $ref: "#/channels/chat/messages/pinUpdated" }]
+  chat.onConvArchived:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "conv:archived — a conversation was archived (own devices)"
+    messages: [{ $ref: "#/channels/chat/messages/convArchived" }]
+  chat.onConvUnarchived:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "conv:unarchived — a conversation was unarchived (own devices)"
+    messages: [{ $ref: "#/channels/chat/messages/convUnarchived" }]
   chat.onTypingStart:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -1538,6 +1550,34 @@ components:
             action: unpinned
             unpinnedBy: "user_abc123"
             pinnedCount: 0
+    ConvArchived:
+      name: "conv:archived"
+      title: "conv:archived (conversation archived)"
+      payload: { $ref: "#/components/schemas/ConvArchivedPayload" }
+      examples:
+        - name: Private conversation archived
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            type: PRIVATE
+            archivedAt: 1749465600000
+        - name: Group conversation archived
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            type: GROUP
+            archivedAt: 1749465600000
+    ConvUnarchived:
+      name: "conv:unarchived"
+      title: "conv:unarchived (conversation unarchived)"
+      payload: { $ref: "#/components/schemas/ConvUnarchivedPayload" }
+      examples:
+        - name: Private conversation unarchived
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            type: PRIVATE
+        - name: Group conversation unarchived
+          payload:
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            type: GROUP
     TypingStartBroadcast:
       name: "typing:start"
       title: "typing:start (broadcast)"
@@ -1552,7 +1592,7 @@ components:
               username: "alice"
               displayName: "Alice"
               avatarUrl: "https://cdn.aimess.com/avatars/alice.jpg"
-            timestamp: "2026-06-15T10:00:10Z"
+            timestamp: 1749465610000
             senderName: "Alice"
     TypingStopBroadcast:
       name: "typing:stop"
@@ -1568,7 +1608,7 @@ components:
               username: "alice"
               displayName: "Alice"
               avatarUrl: null
-            timestamp: "2026-06-15T10:00:16Z"
+            timestamp: 1749465616000
             senderName: "Alice"
     CommunityTypingStartRequest:
       name: "typing:start"
@@ -1607,7 +1647,7 @@ components:
               username: "alice"
               displayName: "Alice"
               avatarUrl: "https://cdn.aimess.com/avatars/alice.jpg"
-            timestamp: "2026-06-15T10:00:10Z"
+            timestamp: 1749465610000
             senderName: "Alice"
     CommunityTypingStopBroadcast:
       name: "typing:stop"
@@ -1624,7 +1664,7 @@ components:
               username: "alice"
               displayName: "Alice"
               avatarUrl: null
-            timestamp: "2026-06-15T10:00:16Z"
+            timestamp: 1749465616000
             senderName: "Alice"
     PresenceStatus:
       name: "presence:status"
@@ -3005,6 +3045,21 @@ components:
         unpinnedBy: { type: string, description: present on action=unpinned. }
         pinnedAt: { type: integer, description: epoch ms (action=pinned). }
         pinnedCount: { type: integer }
+    ConvArchivedPayload:
+      type: object
+      description: "Conversation archived; broadcast to the actor's own user:<userId> channel."
+      properties:
+        roomId: { type: string }
+        type: { type: string, enum: [PRIVATE, GROUP] }
+        archivedAt: { type: integer, description: epoch ms. }
+      required: [roomId, type, archivedAt]
+    ConvUnarchivedPayload:
+      type: object
+      description: "Conversation unarchived; broadcast to the actor's own user:<userId> channel. Carries no timestamp."
+      properties:
+        roomId: { type: string }
+        type: { type: string, enum: [PRIVATE, GROUP] }
+      required: [roomId, type]
     MessageDeliveredReceiptPayload:
       type: object
       properties:
@@ -3066,17 +3121,25 @@ components:
         userId:
           {
             type: string,
-            description: "Legacy top-level sender id (kept for back-compat).",
+            deprecated: true,
+            description:
+              "DEPRECATED — use userDetails.userId (the primary, stable identity).
+              Legacy top-level sender id, kept for back-compat.",
           }
         userDetails: { $ref: "#/components/schemas/UserDetails" }
-        timestamp:
+        timestamp: { type: integer, description: "Emit time, epoch ms." }
+        senderName:
           {
             type: string,
-            format: date-time,
-            description: "ISO-8601 emit time.",
+            deprecated: true,
+            description:
+              "DEPRECATED — use userDetails.displayName. Legacy display name
+              (== userDetails.displayName).",
           }
-        senderName:
-          { type: string, description: "Legacy = userDetails.displayName." }
+      # userDetails (and therefore userDetails.userId — the primary, stable sender
+      # identity) is REQUIRED on every typing broadcast. Legacy top-level
+      # userId/senderName are intentionally NOT required (deprecated back-compat).
+      required: [conversationId, userDetails, timestamp]
     PresenceStatusPayload:
       type: object
       properties:

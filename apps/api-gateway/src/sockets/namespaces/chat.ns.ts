@@ -746,7 +746,7 @@ export function registerChatNamespace(
         userId,
         socket.data.userDetails,
         conversationId,
-        new Date().toISOString(),
+        Date.now(),
         { senderName }
       );
 

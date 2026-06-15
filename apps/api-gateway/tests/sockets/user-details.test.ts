@@ -319,7 +319,7 @@ describe("buildTypingBroadcast", () => {
     displayName: "Alice",
     avatarUrl: "https://cdn.aimess.com/avatars/alice.jpg",
   };
-  const TS = "2026-06-15T10:00:10.000Z";
+  const TS = 1749465610000; // epoch ms — typing broadcasts carry a NUMBER
 
   it("includes legacy + enriched fields (chat shape, no communityId)", () => {
     const out = buildTypingBroadcast(USER_ID, details, "conv1", TS);
@@ -370,11 +370,10 @@ describe("buildTypingBroadcast", () => {
     });
   });
 
-  it("timestamp passes through verbatim (ISO-8601 produced by the caller)", () => {
-    const iso = new Date().toISOString();
-    const out = buildTypingBroadcast(USER_ID, details, "conv1", iso);
-    expect(out.timestamp).toBe(iso);
-    // Parseable ISO-8601.
-    expect(Number.isNaN(Date.parse(out.timestamp))).toBe(false);
+  it("timestamp passes through verbatim as an epoch-ms number", () => {
+    const now = Date.now();
+    const out = buildTypingBroadcast(USER_ID, details, "conv1", now);
+    expect(out.timestamp).toBe(now);
+    expect(typeof out.timestamp).toBe("number");
   });
 });

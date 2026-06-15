@@ -206,7 +206,7 @@ export class GroupRoomService {
         `user:${userId}`,
         JSON.stringify({
           event: "conv:archived",
-          data: { roomId, type: "GROUP", archivedAt: new Date().toISOString() },
+          data: { roomId, type: "GROUP", archivedAt: Date.now() },
         })
       )
       .catch(() => {});

@@ -287,7 +287,9 @@ chat.on("chat:catchup:result", (p) => {
 - **Payload listen:** `{ conversationId, userId, userDetails, timestamp, senderName }`
   — `userDetails = { userId, username, displayName, avatarUrl|null }` is resolved
   server-side at connect; `userId` is server-authoritative; `senderName` ==
-  `displayName`. Same shape on auto-expiry and disconnect-flush stops.
+  `displayName`; `timestamp` is an **epoch-ms number** (all socket timestamps,
+  incl. `conv:archived.archivedAt`, are epoch ms — never ISO). Same shape on
+  auto-expiry and disconnect-flush stops.
 
 ```ts
 chat.emit("typing:start", { conversationId }); // throttled

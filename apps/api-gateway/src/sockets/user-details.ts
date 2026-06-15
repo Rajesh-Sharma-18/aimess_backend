@@ -66,7 +66,7 @@ export function buildTypingBroadcast(
   userId: string,
   userDetails: SocketUserDetails,
   conversationId: string,
-  timestamp: string,
+  timestamp: number,
   opts?: { senderName?: string; communityId?: string }
 ) {
   return {
