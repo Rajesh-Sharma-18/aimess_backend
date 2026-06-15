@@ -27,6 +27,8 @@ jest.mock("../../src/messaging/publish-friendship.js", () => ({
   publishFriendRequestedSafe: jest.fn(),
   publishFriendAcceptedSafe: jest.fn(),
   publishFriendUnfriendedSafe: jest.fn(),
+  publishFriendshipCreatedSafe: jest.fn(),
+  publishFriendshipDeletedSafe: jest.fn(),
 }));
 
 import request from "supertest";

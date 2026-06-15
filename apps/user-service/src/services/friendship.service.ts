@@ -5,6 +5,8 @@ import {
   publishFriendAcceptedSafe,
   publishFriendRequestedSafe,
   publishFriendUnfriendedSafe,
+  publishFriendshipCreatedSafe,
+  publishFriendshipDeletedSafe,
 } from "../messaging/publish-friendship.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
@@ -174,6 +176,10 @@ export const friendshipService = {
           addresseeId: friendship.addresseeId,
           acceptedAt: friendship.acceptedAt!.toISOString(),
         });
+        publishFriendshipCreatedSafe(
+          friendship.requesterId,
+          friendship.addresseeId
+        );
         return friendship;
       }
 
@@ -235,6 +241,10 @@ export const friendshipService = {
       addresseeId: friendship.addresseeId,
       acceptedAt: updated.acceptedAt!.toISOString(),
     });
+    publishFriendshipCreatedSafe(
+      friendship.requesterId,
+      friendship.addresseeId
+    );
 
     return updated;
   },
@@ -340,6 +350,7 @@ export const friendshipService = {
         addresseeId: f.addresseeId,
         acceptedAt: (f.acceptedAt ?? new Date()).toISOString(),
       });
+      publishFriendshipCreatedSafe(f.requesterId, f.addresseeId);
     }
 
     return {
@@ -389,5 +400,9 @@ export const friendshipService = {
       otherUserId,
       unfriendedAt: new Date().toISOString(),
     });
+    publishFriendshipDeletedSafe(
+      friendship.requesterId,
+      friendship.addresseeId
+    );
   },
 };
