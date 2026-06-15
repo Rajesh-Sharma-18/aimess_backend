@@ -508,6 +508,11 @@ export function createMessagingImpl(
                 reactions: flattenStoredReactions(
                   (m as Record<string, unknown>).reactions
                 ),
+                // Canonical grouped reactions on the row (thin `reactions` kept
+                // for back-compat); FE reads `reactionGroups[]`. See messaging.proto.
+                reactionGroups: groupStoredReactions(
+                  (m as Record<string, unknown>).reactions
+                ),
                 isRead: false,
               })),
               nextCursor:
@@ -545,6 +550,11 @@ export function createMessagingImpl(
               contentJson: stringifyContent(m.content),
               sentAt: m.createdAt instanceof Date ? m.createdAt.getTime() : 0,
               reactions: flattenStoredReactions(
+                (m as Record<string, unknown>).reactions
+              ),
+              // Canonical grouped reactions on the row (thin `reactions` kept
+              // for back-compat); FE reads `reactionGroups[]`. See messaging.proto.
+              reactionGroups: groupStoredReactions(
                 (m as Record<string, unknown>).reactions
               ),
               isRead: false,

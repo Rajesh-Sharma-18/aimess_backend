@@ -145,6 +145,9 @@ message MessageDto {
   bool   is_read         = 10;
   string content_json    = 11;
   int64  sequence_number = 12;
+  // Canonical grouped reactions (FE reads this; the thin `reactions` field above
+  // stays for back-compat). Mirrors the GetMessageReactions/broadcast shape.
+  repeated ReactionGroupDto reaction_groups = 13;
 }
 message ReactionDto {
   string user_id = 1;
