@@ -61,7 +61,10 @@ export interface MessageDto {
   contentJson: string;
   repliedToId: string;
   sentAt: number;
+  /** @deprecated thin shape kept for back-compat; use reactionGroups. */
   reactions: { userId: string; emoji: string }[];
+  /** Canonical grouped reactions (FE reads this). */
+  reactionGroups: ReactionGroupDto[];
   isRead: boolean;
   sequenceNumber: number;
 }
@@ -551,7 +554,18 @@ export function createMessagingClient(): MessagingClient {
         userId: p.userId,
         cursor: p.cursor ?? "",
         limit: p.limit ?? 20,
-      })
+        // int64 initiated_at/answered_at/ended_at arrive as strings (proto-loader
+        // longs:String); coerce each call's epoch-ms timestamps to numbers.
+        // duration_sec is int32 → already a number, no coercion needed.
+      }).then((r) => ({
+        ...r,
+        calls: r.calls.map((c) => ({
+          ...c,
+          initiatedAt: Number(c.initiatedAt),
+          answeredAt: Number(c.answeredAt),
+          endedAt: Number(c.endedAt),
+        })),
+      }))
   );
 
   const catchupRoomBreaker = makeBreaker(
