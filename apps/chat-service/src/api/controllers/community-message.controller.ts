@@ -33,8 +33,9 @@ export class CommunityMessageController {
    * community-activity + community:updated bump). Active-membership and
    * suspended-room guards + idempotency live in the service. roomId (chat
    * GeneralRoom id) comes from the path; communityId (used for the broadcast) is
-   * in the body. Returns the canonical wire message (201; community sends have no
-   * idempotent-replay status distinction in the gRPC contract).
+   * in the body. Returns the canonical wire message; 201 on a fresh insert, 200
+   * on an idempotent replay (`idempotent: true`) — matching the private/group
+   * send contract.
    */
   sendMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
@@ -78,9 +79,12 @@ export class CommunityMessageController {
     });
 
     res
-      .status(HTTP_STATUS.CREATED)
+      .status(result.alreadySent ? HTTP_STATUS.OK : HTTP_STATUS.CREATED)
       .json(
-        new ApiResponse(result.message, t("CHAT_MESSAGE_SENT", req.locale))
+        new ApiResponse(
+          { ...result.message, idempotent: result.alreadySent },
+          t("CHAT_MESSAGE_SENT", req.locale)
+        )
       );
   });
 

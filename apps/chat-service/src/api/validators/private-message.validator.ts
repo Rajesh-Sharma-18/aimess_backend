@@ -73,17 +73,10 @@ export const sendPrivateMessageBodySchema = z
     enforceMediaLimits(val.messageType, val.content.files, ctx);
   });
 
-export const markReadSchema = z.object({
-  receiverId: z.string().min(4).max(150),
-  roomId: z.string().min(4).max(150),
-  lastMessageId: z.string().min(4).max(150),
-});
-
 /**
  * REST body for `POST /private/rooms/:roomId/read` (mark-read up to a message).
  * roomId comes from the path; the caller id from the access token — so the body
- * carries only the read high-water mark. (Distinct from the legacy gRPC-shaped
- * `markReadSchema` above, which is unused by the REST routes.)
+ * carries only the read high-water mark.
  */
 export const markReadBodySchema = z.object({
   upToMessageId: z.string().min(1).max(150),

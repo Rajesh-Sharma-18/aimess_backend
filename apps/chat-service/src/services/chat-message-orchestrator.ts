@@ -24,6 +24,7 @@ import {
   resolveContentFiles,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
+import { isIdempotentReplay } from "../lib/idempotency.js";
 
 import type { PrivateMessageService } from "./private-message.service.js";
 import type { GroupMessageService } from "./group-message.service.js";
@@ -31,15 +32,6 @@ import type { GroupMemberService } from "./group-member.service.js";
 import type { CommunityMessageService } from "./community-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
-
-/**
- * Window (ms) after which a returned message's createdAt is treated as an
- * idempotency replay rather than a fresh insert. The service-layer dedup returns
- * the PRE-EXISTING row for a repeated clientMessageId; if that row was created
- * more than this long ago, the send is a replay and the FCM push must be skipped
- * (mirrors the gRPC sendMessage handler's `alreadySent` heuristic).
- */
-const IDEMPOTENT_REPLAY_WINDOW_MS = 5000;
 
 /**
  * Structured message content as it travels through the send path: the body text
@@ -111,6 +103,8 @@ export interface SendCommunityResult {
   roomId: string;
   /** epoch ms server-authoritative time. */
   sentAt: number;
+  /** True when the service collapsed this onto a pre-existing message (replay). */
+  alreadySent: boolean;
   sequenceNumber: number;
   /** Canonical wire event — byte-identical to the socket `community:message:new`. */
   message: Record<string, unknown>;
@@ -208,16 +202,18 @@ export class ChatMessageOrchestrator {
       msg.createdAt instanceof Date ? msg.createdAt.getTime() : Date.now();
     const full = msg as Record<string, unknown>;
 
-    // Detect idempotency replay the same way the gRPC handler does: the service
-    // returns the PRE-EXISTING row for a repeated clientMessageId, so a createdAt
-    // older than the replay window means this send already happened.
-    const alreadySent =
-      msg.createdAt instanceof Date &&
-      Date.now() - msg.createdAt.getTime() > IDEMPOTENT_REPLAY_WINDOW_MS;
+    // Detect an idempotency replay via the authoritative marker the service set
+    // when it returned a PRE-EXISTING row for a repeated clientMessageId (a
+    // pre-send dedup hit or a duplicate-key collapse). Mirrors the gRPC
+    // sendMessage handler — the time-window heuristic was unreliable. On a replay
+    // the row's FIRST send already broadcast/bumped/pushed, so all three live
+    // effects must be suppressed (re-running them duplicates the bubble + bump).
+    const alreadySent = isIdempotentReplay(msg);
 
-    // ── 1. Live broadcast: message:new on conv:<roomId> ────────────────────
-    // Resolve-on-read: raw avatar/attachment object-keys → presigned URLs for
-    // the live push only (the stored snapshot keeps the raw keys).
+    // Resolve-on-read: raw avatar/attachment object-keys → presigned URLs for the
+    // returned/broadcast wire object only (the stored snapshot keeps raw keys).
+    // Built UNCONDITIONALLY — the controller returns this canonical wire event
+    // even on a replay (the client still gets the message it sent).
     const [bcastAvatar, bcastContent] = await Promise.all([
       resolveMediaUrl(senderAvatar || ""),
       this.resolveBroadcastContent(msg.content ?? null),
@@ -241,39 +237,41 @@ export class ChatMessageOrchestrator {
       serverTs,
       sequenceNumber: msg.sequenceNumber,
     });
-    await this.redis.publish(
-      `conv:${params.roomId}`,
-      JSON.stringify({ event: "message:new", data: wireEvent })
-    );
 
-    // ── 2. Bump-to-top: conv:updated fan-out (fire-and-forget) ─────────────
-    const bumpBase = {
-      redis: this.redis,
-      type: conversationType,
-      roomId: params.roomId,
-      senderId: params.senderId,
-      lastMessageId: msg.id,
-      lastMessageAt: serverTs,
-      preview: {
-        contentType: normalizeMessageType(msg.messageType),
-        text: buildMessagePreview(msg.messageType, msg.content),
-      },
-    };
-    if (conversationType === "GROUP") {
-      publishConvUpdatedSafe({
-        ...bumpBase,
-        fetchRecipients: () =>
-          this.groupMessageService.getActiveMemberIds(params.roomId),
-      });
-    } else {
-      publishConvUpdatedSafe({
-        ...bumpBase,
-        recipientIds: [params.senderId, params.receiverId ?? ""],
-      });
-    }
-
-    // ── 3. FCM/APNs push (fire-and-forget; skipped on idempotent replay) ───
     if (!alreadySent) {
+      // ── 1. Live broadcast: message:new on conv:<roomId> ──────────────────
+      await this.redis.publish(
+        `conv:${params.roomId}`,
+        JSON.stringify({ event: "message:new", data: wireEvent })
+      );
+
+      // ── 2. Bump-to-top: conv:updated fan-out (fire-and-forget) ───────────
+      const bumpBase = {
+        redis: this.redis,
+        type: conversationType,
+        roomId: params.roomId,
+        senderId: params.senderId,
+        lastMessageId: msg.id,
+        lastMessageAt: serverTs,
+        preview: {
+          contentType: normalizeMessageType(msg.messageType),
+          text: buildMessagePreview(msg.messageType, msg.content),
+        },
+      };
+      if (conversationType === "GROUP") {
+        publishConvUpdatedSafe({
+          ...bumpBase,
+          fetchRecipients: () =>
+            this.groupMessageService.getActiveMemberIds(params.roomId),
+        });
+      } else {
+        publishConvUpdatedSafe({
+          ...bumpBase,
+          recipientIds: [params.senderId, params.receiverId ?? ""],
+        });
+      }
+
+      // ── 3. FCM/APNs push (fire-and-forget) ───────────────────────────────
       const pushText =
         ((msg.content as Record<string, unknown>)?.text as string) ?? "";
       const pushBase = {
@@ -343,6 +341,12 @@ export class ChatMessageOrchestrator {
     const sentAt =
       saved.createdAt instanceof Date ? saved.createdAt.getTime() : Date.now();
 
+    // Idempotency replay: the service tagged the returned row when a repeated
+    // clientMessageId collapsed onto a pre-existing message. Suppress all live
+    // effects (broadcast, activity denormalization, bump) on a replay — the
+    // row's FIRST send already ran them. Same marker the private/group path uses.
+    const alreadySent = isIdempotentReplay(saved);
+
     // Resolve-on-read for the live push: sender avatar + attachment keys → full
     // presigned URLs (the stored snapshot keeps the raw keys).
     const files = Array.isArray(params.attachments) ? params.attachments : [];
@@ -383,54 +387,57 @@ export class ChatMessageOrchestrator {
       sequenceNumber: saved.sequenceNumber,
     };
 
-    await this.redis.publish(
-      `community:${params.communityId}`,
-      JSON.stringify({ event: "community:message:new", data: wireEvent })
-    );
+    if (!alreadySent) {
+      await this.redis.publish(
+        `community:${params.communityId}`,
+        JSON.stringify({ event: "community:message:new", data: wireEvent })
+      );
 
-    // Denormalize activity to community-service (orders GET /communities/mine).
-    // Keyed by communityId (Community.id), NOT roomId (GeneralRoom.id).
-    if (params.communityId) {
-      const messageText = saved.message ?? "";
-      publishCommunityActivitySafe({
+      // Denormalize activity to community-service (orders GET /communities/mine).
+      // Keyed by communityId (Community.id), NOT roomId (GeneralRoom.id).
+      if (params.communityId) {
+        const messageText = saved.message ?? "";
+        publishCommunityActivitySafe({
+          communityId: params.communityId,
+          lastMessageAt:
+            saved.createdAt instanceof Date
+              ? saved.createdAt.toISOString()
+              : new Date(sentAt).toISOString(),
+          lastMessageId: saved.id,
+          senderUserId: params.senderId,
+          senderUsername: senderName,
+          messagePreview:
+            messageText.length > 80 ? messageText.slice(0, 80) : messageText,
+        });
+      }
+
+      // Bump-to-top: community:updated fan-out (fire-and-forget).
+      publishCommunityUpdatedSafe({
+        redis: this.redis,
         communityId: params.communityId,
-        lastMessageAt:
-          saved.createdAt instanceof Date
-            ? saved.createdAt.toISOString()
-            : new Date(sentAt).toISOString(),
+        roomId: saved.roomId,
+        fetchMembers: () =>
+          this.communityMessageService.getActiveMemberIds(params.roomId),
+        senderId: params.senderId,
         lastMessageId: saved.id,
-        senderUserId: params.senderId,
-        senderUsername: senderName,
-        messagePreview:
-          messageText.length > 80 ? messageText.slice(0, 80) : messageText,
+        lastMessageAt: sentAt,
+        preview: {
+          contentType: normalizeMessageType(saved.messageType),
+          text: buildMessagePreview(saved.messageType, {
+            text: saved.message ?? "",
+            files,
+            ...(location ? { location } : {}),
+            ...(contact ? { contact } : {}),
+          }),
+        },
       });
     }
-
-    // Bump-to-top: community:updated fan-out (fire-and-forget).
-    publishCommunityUpdatedSafe({
-      redis: this.redis,
-      communityId: params.communityId,
-      roomId: saved.roomId,
-      fetchMembers: () =>
-        this.communityMessageService.getActiveMemberIds(params.roomId),
-      senderId: params.senderId,
-      lastMessageId: saved.id,
-      lastMessageAt: sentAt,
-      preview: {
-        contentType: normalizeMessageType(saved.messageType),
-        text: buildMessagePreview(saved.messageType, {
-          text: saved.message ?? "",
-          files,
-          ...(location ? { location } : {}),
-          ...(contact ? { contact } : {}),
-        }),
-      },
-    });
 
     return {
       messageId: saved.id,
       roomId: saved.roomId,
       sentAt,
+      alreadySent,
       sequenceNumber: saved.sequenceNumber,
       message: wireEvent,
     };
