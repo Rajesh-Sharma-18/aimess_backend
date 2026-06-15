@@ -135,6 +135,14 @@ export const CHAT_MESSAGES = {
     vi: "Đã bật thông báo cuộc trò chuyện",
     en: "Conversation unmuted",
   },
+  CHAT_ROOM_ARCHIVED: {
+    vi: "Đã lưu trữ cuộc trò chuyện",
+    en: "Conversation archived",
+  },
+  CHAT_ROOM_UNARCHIVED: {
+    vi: "Đã bỏ lưu trữ cuộc trò chuyện",
+    en: "Conversation unarchived",
+  },
   CHAT_REACTIONS_FETCHED: {
     vi: "Lấy danh sách cảm xúc thành công",
     en: "Reactions fetched successfully",

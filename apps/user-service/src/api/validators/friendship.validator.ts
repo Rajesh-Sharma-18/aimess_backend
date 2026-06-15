@@ -17,3 +17,13 @@ export const unfriendParamsSchema = z.object({
 });
 
 export type UnfriendParams = z.infer<typeof unfriendParamsSchema>;
+
+export const listFriendRequestsQuerySchema = z.object({
+  direction: z.enum(["incoming", "outgoing", "all"]).default("incoming"),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
+export type ListFriendRequestsQuery = z.infer<
+  typeof listFriendRequestsQuerySchema
+>;

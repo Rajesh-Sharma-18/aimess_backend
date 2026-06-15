@@ -14,6 +14,10 @@ export const USER_MESSAGES = {
     vi: "Lấy danh sách bạn bè thành công",
     en: "Friends list retrieved successfully.",
   },
+  USER_FRIEND_REQUESTS_FETCHED: {
+    vi: "Lấy danh sách lời mời kết bạn thành công",
+    en: "Friend requests retrieved successfully.",
+  },
   USER_CONNECTED_ACCOUNTS_FETCHED: {
     vi: "Lấy tài khoản liên kết thành công",
     en: "Connected accounts retrieved successfully.",
@@ -137,6 +141,10 @@ export const USER_MESSAGES = {
   USERS_FETCHED: {
     vi: "Lấy danh sách người dùng thành công",
     en: "Users retrieved successfully.",
+  },
+  FRIENDS_AUTO_CONNECTED: {
+    vi: "Đã kết bạn tự động thành công",
+    en: "Auto-connect completed.",
   },
 } as const satisfies MessageCatalog;
 

@@ -31,7 +31,7 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Create a community",
       description:
-        "Creator becomes ADMIN (memberCount starts at 1). `handle` is the unique @-slug (lowercase). Optional `memberIds` (UUIDs) are added as ACTIVE members. Upload an avatar via /communities/uploads/url first, then pass the returned object key as `avatarObjectKey`.",
+        "Creator becomes ADMIN (memberCount starts at 1). `handle` is the unique @-slug (lowercase). Optional `memberIds` (UUIDs) are added as ACTIVE members. Upload an avatar via `POST /api/v1/media/upload-url` (category: `COMMUNITY_AVATAR`) first, then pass the returned object key as `avatarObjectKey`.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -424,6 +424,7 @@ export const communityPaths = {
             },
           },
         },
+        "400": validationError,
         "401": unauthorized,
       },
     },
@@ -464,6 +465,7 @@ export const communityPaths = {
             },
           },
         },
+        "400": validationError,
         "401": unauthorized,
       },
     },
@@ -721,57 +723,6 @@ export const communityPaths = {
                   },
                 ],
               },
-            },
-          },
-        },
-        "401": unauthorized,
-      },
-    },
-  },
-  "/communities/uploads/url": {
-    post: {
-      tags: ["Communities"],
-      summary: "Get presigned URL to upload a community file",
-      description:
-        "Generic upload endpoint. Pass `type` (e.g. `COMMUNITY_AVATAR`), `contentType`, and `contentLength` (bytes). Returns a short-lived PUT URL (private bucket). PUT the file to `uploadUrl` with the `Content-Type` header only, then pass the returned `objectKey` as `avatarObjectKey` when creating/updating the community.",
-      security: [{ bearerAuth: [] }],
-      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": {
-            schema: {
-              $ref: "#/components/schemas/CommunityUploadUrlRequest",
-            },
-          },
-        },
-      },
-      responses: {
-        "200": {
-          description: "Presigned upload URL",
-          content: {
-            "application/json": {
-              schema: {
-                allOf: [
-                  { $ref: "#/components/schemas/ApiSuccessResponse" },
-                  {
-                    type: "object",
-                    properties: {
-                      data: {
-                        $ref: "#/components/schemas/UploadUrlResponseData",
-                      },
-                    },
-                  },
-                ],
-              },
-            },
-          },
-        },
-        "400": {
-          description: "Validation failed or file too large",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
             },
           },
         },

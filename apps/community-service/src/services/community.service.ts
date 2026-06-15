@@ -8,7 +8,7 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
-import { toMediaObject } from "@aimess/storage";
+import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 
 import { mediaUrlStrategy } from "../config/storage.js";
@@ -153,8 +153,8 @@ function assertCommunityNotSuspended(community: {
   }
 }
 
-const COMMUNITY_IMAGE_PREFIXES = ["community/avatar", "community/cover"];
-const AVATAR_PREFIXES = ["avatars"];
+const COMMUNITY_IMAGE_PREFIXES = MEDIA_PREFIXES.community;
+const AVATAR_PREFIXES = MEDIA_PREFIXES.userAvatars;
 
 /**
  * Build the additive nested {@link MediaObject} for a community image (avatar or

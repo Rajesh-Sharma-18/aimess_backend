@@ -11,8 +11,18 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
-import { normalizeMessageType } from "../lib/chat-message.serializer.js";
+import {
+  normalizeMessageType,
+  toWireMessage,
+} from "../lib/chat-message.serializer.js";
 import { assertGroupMember } from "../lib/access-guard.js";
+import {
+  resolveMediaUrlMap,
+  urlFromMap,
+  applyUrlMapToFiles,
+  fileMediaKey,
+  type MediaFileLike,
+} from "../lib/media-resolve.js";
 
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -597,7 +607,16 @@ export class GroupMessageService {
       p.limit
     );
     const hasMore = rows.length > p.limit;
-    const events = hasMore ? rows.slice(0, p.limit) : rows;
+    const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
+
+    // Exclude messages the requesting user hid with "delete for me".
+    // deletedForUserIds shape: string[] (array of userId strings)
+    const events = rawEvents.filter((m) => {
+      const raw = m as unknown as { deletedForUserIds?: unknown };
+      const deletedForUserIds = (raw.deletedForUserIds ?? []) as string[];
+      return !deletedForUserIds.includes(p.userId);
+    });
+
     const lastSeq = events.length
       ? events[events.length - 1]!.sequenceNumber
       : p.sinceSeq;
@@ -644,6 +663,11 @@ export class GroupMessageService {
           )
         : new Map<string, Record<string, unknown>>();
 
+    // Resolve reactor avatar keys → download URLs on read (one batch, deduped).
+    const urlMap = await resolveMediaUrlMap(
+      [...snapshots.values()].map((s) => (s.avatar as string) || "")
+    );
+
     const result: Record<
       string,
       {
@@ -663,12 +687,92 @@ export class GroupMessageService {
             userId: uid,
             displayName:
               (snap.displayName as string) ?? (snap.memberId as string) ?? "",
-            avatar: (snap.avatar as string) ?? "",
+            avatar: urlFromMap(urlMap, (snap.avatar as string) || ""),
           };
         }),
       };
     }
 
     return { reactions: result };
+  }
+
+  /**
+   * Serialize a page of group messages to the canonical client wire shape with
+   * resolve-on-read media. Group rows denormalize senderName/senderAvatar, so
+   * unlike the private path no user-snapshot fan-out is needed — but the stored
+   * `senderAvatar`, `content.files[].objectKey`, and reaction-user avatars are
+   * raw MinIO object keys. Collect every key on the page ONCE, presign via
+   * {@link resolveMediaUrlMap}, then stamp each row synchronously so the FE never
+   * receives a raw key (URLs are derived at read time, never persisted).
+   */
+  async enrichForWire(
+    messages: GroupMessage[]
+  ): Promise<Array<Record<string, unknown>>> {
+    const mediaKeys: string[] = [];
+    for (const message of messages) {
+      if (message.senderAvatar) mediaKeys.push(message.senderAvatar);
+      const files = (message.content as Record<string, unknown> | null)?.files;
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          const key = fileMediaKey(file as MediaFileLike);
+          if (key) mediaKeys.push(key);
+        }
+      }
+      // Reaction-user avatars live inside the stored `{ emoji: [{ avatar }] }`
+      // map; collect them so they can be stamped in place (shape preserved).
+      const reactions = message.reactions as Record<string, unknown> | null;
+      if (reactions) {
+        for (const reactors of Object.values(reactions)) {
+          if (!Array.isArray(reactors)) continue;
+          for (const reactor of reactors) {
+            const avatar = (reactor as Record<string, unknown>)?.avatar;
+            if (typeof avatar === "string" && avatar) mediaKeys.push(avatar);
+          }
+        }
+      }
+    }
+    const urlMap = await resolveMediaUrlMap(mediaKeys);
+
+    return messages.map((message) => {
+      // §1: canonical wire shape — drops the internal `messageType` column and
+      // exposes UPPER-CASE `contentType`, identical to the socket message:new.
+      const wire = toWireMessage(
+        message as { messageType?: string | null }
+      ) as unknown as Record<string, unknown>;
+
+      if (typeof wire.senderAvatar === "string") {
+        wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
+      }
+
+      // Stamp resolved download URLs onto attachment files (content.files[]).
+      const content = wire.content as Record<string, unknown> | null;
+      if (content && Array.isArray(content.files)) {
+        wire.content = {
+          ...content,
+          files: applyUrlMapToFiles(content.files as MediaFileLike[], urlMap),
+        };
+      }
+
+      // Stamp reaction-user avatars in place, preserving the stored map shape
+      // (`{ emoji: [{ userId, userName, avatar, … }] }`) the group read path
+      // returns — only the raw `avatar` key is swapped for its resolved URL.
+      const reactions = wire.reactions as Record<string, unknown> | null;
+      if (reactions && typeof reactions === "object") {
+        const resolvedReactions: Record<string, unknown> = {};
+        for (const [emoji, reactors] of Object.entries(reactions)) {
+          resolvedReactions[emoji] = Array.isArray(reactors)
+            ? reactors.map((reactor) => {
+                const r = (reactor ?? {}) as Record<string, unknown>;
+                return typeof r.avatar === "string" && r.avatar
+                  ? { ...r, avatar: urlFromMap(urlMap, r.avatar) }
+                  : reactor;
+              })
+            : reactors;
+        }
+        wire.reactions = resolvedReactions;
+      }
+
+      return wire;
+    });
   }
 }

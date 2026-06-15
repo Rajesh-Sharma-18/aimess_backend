@@ -50,6 +50,44 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
+    // Canonical kind field: contentType present, internal messageType stripped.
+    expect(res.body.data.data[0].contentType).toBe("TEXT");
+    expect(res.body.data.data[0].messageType).toBeUndefined();
+  });
+
+  // Resolve-on-read: the denormalized senderAvatar key AND attachment objectKeys
+  // must surface as full download URLs (mock → https://media.test/<bucket>/<key>).
+  it("MEDIA: resolves senderAvatar + content.files object keys in history", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue([
+      {
+        id: "g1",
+        senderId: "u",
+        senderAvatar: "avatars/u/a.png",
+        messageType: "IMAGE",
+        content: {
+          text: "",
+          files: [{ objectKey: "group-chat-uploads/grp/clip.mp4" }],
+        },
+        createdAt: new Date(1),
+      },
+    ]);
+    mocks.groupMessageRepo.countByRoom.mockResolvedValue(1);
+
+    const res = await request(app)
+      .get(`${BASE}/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const row = res.body.data.data[0];
+    expect(row.senderAvatar).toBe(
+      "https://media.test/aimess-avatars/avatars/u/a.png"
+    );
+    expect(row.content.files[0].url).toBe(
+      "https://media.test/aimess-chat-test/group-chat-uploads/grp/clip.mp4"
+    );
   });
 
   // AUDIT H2 — group history must be gated on active membership (IDOR).
@@ -105,6 +143,8 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data[0].contentType).toBe("TEXT");
+    expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
   // AUDIT H2 — search must be gated on active membership (IDOR).
@@ -137,6 +177,8 @@ describe("GET /:roomId/conversation (membership-gated)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data[0].contentType).toBe("TEXT");
+    expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
   it("SECURITY: 403 when the caller is not an active member", async () => {
@@ -172,6 +214,9 @@ describe("GET /:roomId/media (membership-gated)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.items).toHaveLength(1);
+    // messageType "IMAGE" on the row must surface as contentType, not messageType.
+    expect(res.body.data.items[0].contentType).toBe("IMAGE");
+    expect(res.body.data.items[0].messageType).toBeUndefined();
   });
 
   it("SECURITY: 400 when the caller is not a member", async () => {
@@ -364,9 +409,17 @@ describe("pins + forward + reactions", () => {
     );
   });
 
-  it("POSITIVE: lists pins", async () => {
+  it("POSITIVE: lists pins (resolves snapshot avatar + attachment keys)", async () => {
     mocks.groupMessagePinRepo.findPinsByRoom.mockResolvedValue([
-      { id: "p1", pinnedAt: new Date(1) },
+      {
+        id: "p1",
+        pinnedAt: new Date(1),
+        senderAvatar: "avatars/u/a.png",
+        contentPinned: {
+          text: "hi",
+          files: [{ objectKey: "group-chat-uploads/grp/doc.pdf" }],
+        },
+      },
     ]);
     mocks.groupMessagePinRepo.countPinsByRoom.mockResolvedValue(1);
 
@@ -376,6 +429,13 @@ describe("pins + forward + reactions", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
+    // Resolve-on-read: raw object keys → download URLs on the pin-list boundary.
+    expect(res.body.data.data[0].senderAvatar).toBe(
+      "https://media.test/aimess-avatars/avatars/u/a.png"
+    );
+    expect(res.body.data.data[0].contentPinned.files[0].url).toBe(
+      "https://media.test/aimess-chat-test/group-chat-uploads/grp/doc.pdf"
+    );
   });
 
   it("POSITIVE: forward to a target room emits message:new", async () => {

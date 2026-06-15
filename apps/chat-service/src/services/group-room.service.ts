@@ -1,8 +1,14 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import type { Redis, Cluster } from "ioredis";
 
 import { generateRoomId } from "../lib/room-id.js";
 import { SystemEvent } from "../types/enums.js";
+import {
+  resolveMediaUrl,
+  resolveMediaUrlMap,
+  urlFromMap,
+} from "../lib/media-resolve.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
@@ -25,7 +31,8 @@ export class GroupRoomService {
     private readonly roomRepo: GroupRoomRepository,
     private readonly memberRepo: GroupMemberRepository,
     private readonly inviteLinkRepo: GroupInviteLinkRepository,
-    private readonly sysMsg: GroupSystemMessageService
+    private readonly sysMsg: GroupSystemMessageService,
+    private readonly redis: Redis | Cluster
   ) {}
 
   async createGroup(params: {
@@ -84,7 +91,9 @@ export class GroupRoomService {
     const isJoined = userId
       ? (await this.memberRepo.findActiveByRoomAndUser(roomId, userId)) !== null
       : false;
-    return { ...room, isJoined };
+    // Resolve the room logo object key → download URL on read (never persisted).
+    const avatar = await resolveMediaUrl(room.avatar);
+    return { ...room, avatar, isJoined };
   }
 
   async updateRoom(
@@ -167,9 +176,12 @@ export class GroupRoomService {
     const roomIds = await this.memberRepo.getActiveRoomIds(userId);
     if (!roomIds.length) return [];
     const rooms = await this.roomRepo.getUserGroups(userId, roomIds, params);
+    // Resolve every room logo on this page ONCE (deduped) → download URLs.
+    const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
     // Every row here is a group the caller is an ACTIVE member of.
     return rooms.map((room) => ({
       ...room,
+      avatar: urlFromMap(avatarUrls, room.avatar),
       isJoined: true,
     }));
   }
@@ -178,6 +190,48 @@ export class GroupRoomService {
     const roomIds = await this.memberRepo.getActiveRoomIds(userId);
     if (!roomIds.length) return 0;
     return this.roomRepo.countUserGroups(roomIds);
+  }
+
+  async archiveRoom(roomId: string, userId: string): Promise<GroupRoom> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const room = await this.roomRepo.findActiveByRoomId(roomId);
+    if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    const updated = await this.roomRepo.setArchived(roomId, userId);
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:archived",
+          data: { roomId, type: "GROUP", archivedAt: new Date().toISOString() },
+        })
+      )
+      .catch(() => {});
+    return updated ?? room;
+  }
+
+  async unarchiveRoom(roomId: string, userId: string): Promise<GroupRoom> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const room = await this.roomRepo.findActiveByRoomId(roomId);
+    if (!room) throw new NotFoundError("CHAT_GROUP_NOT_FOUND");
+    const updated = await this.roomRepo.setUnarchived(roomId, userId);
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:unarchived",
+          data: { roomId, type: "GROUP" },
+        })
+      )
+      .catch(() => {});
+    return updated ?? room;
   }
 
   /**
@@ -205,6 +259,10 @@ export class GroupRoomService {
       limit: params.limit,
     });
 
+    // Resolve every room logo on this page ONCE (deduped) → download URLs, so
+    // the unified inbox renders a usable avatar instead of a raw object key.
+    const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
+
     const now = Date.now();
     return rooms.map((room) => {
       const membership = membershipByRoom.get(room.roomId);
@@ -219,6 +277,7 @@ export class GroupRoomService {
       const isJoined = membership != null;
       return {
         ...room,
+        avatar: urlFromMap(avatarUrls, room.avatar),
         isMuted,
         unreadCount: membership?.unreadCount ?? 0,
         role: membership?.role ?? "MEMBER",

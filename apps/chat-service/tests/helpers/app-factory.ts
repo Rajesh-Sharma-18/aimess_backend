@@ -55,7 +55,6 @@ import { GroupInviteLinkController } from "../../src/api/controllers/group-invit
 import { NotificationController } from "../../src/api/controllers/notification.controller.js";
 import { CommunityController } from "../../src/api/controllers/community.controller.js";
 import { CommunityMessageController } from "../../src/api/controllers/community-message.controller.js";
-import { MediaController } from "../../src/api/controllers/media.controller.js";
 import { CallController } from "../../src/api/controllers/call.controller.js";
 import { PresenceController } from "../../src/api/controllers/presence.controller.js";
 
@@ -175,7 +174,8 @@ export function buildApp(): BuiltApp {
     privateRoomRepo,
     cacheRepo,
     userSnapshotService,
-    userServiceClient
+    userServiceClient,
+    redis
   );
   const privateMessageService = new PrivateMessageService(
     privateMessageRepo,
@@ -289,7 +289,6 @@ export function buildApp(): BuiltApp {
       communityPinService,
       redis
     ),
-    mediaCtrl: new MediaController(),
     callCtrl: new CallController(callService),
     presenceCtrl: new PresenceController(presenceService),
   };

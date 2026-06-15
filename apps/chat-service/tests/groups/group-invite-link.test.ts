@@ -154,7 +154,7 @@ describe("GET /api/chat/invite-links/preview/:token (public)", () => {
     mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
       roomId: ROOM,
       name: "Devs",
-      avatar: "",
+      avatar: "group-avatars/grp_room_1/logo.png",
       description: "",
       memberCount: 3,
       memberLimit: 50,
@@ -167,6 +167,12 @@ describe("GET /api/chat/invite-links/preview/:token (public)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.groupName).toBe("Devs");
+    // Resolve-on-read: the stored group logo object key must surface as a full
+    // download URL (mediaUrlStrategy mock → https://media.test/<bucket>/<key>),
+    // never the raw MinIO key.
+    expect(res.body.data.groupAvatar).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_room_1/logo.png"
+    );
   });
 
   it("NEGATIVE: 404 for an unknown/revoked token", async () => {

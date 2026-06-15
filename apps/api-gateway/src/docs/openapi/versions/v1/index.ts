@@ -8,6 +8,7 @@ import { communityPaths } from "../../paths/community.paths.js";
 import { userPaths } from "../../paths/user.paths.js";
 import { chatExtrasPaths } from "../../paths/chat-extras.paths.js";
 import { devicesPaths } from "../../paths/devices.paths.js";
+import { mediaPaths } from "../../paths/media.paths.js";
 
 /**
  * OpenAPI paths for API v1.
@@ -24,6 +25,7 @@ export const v1Paths = {
   ...chatPaths,
   ...chatExtrasPaths,
   ...devicesPaths,
+  ...mediaPaths,
   ...adminPaths,
 };
 
@@ -56,8 +58,9 @@ export const v1Tags = [
     description: "Community room browsing and messaging (chat-service)",
   },
   {
-    name: "Chat — Media",
-    description: "File upload presigned URLs (chat-service)",
+    name: "Media",
+    description:
+      "Centralized presigned URL generation for all media uploads and downloads",
   },
   {
     name: "Devices",

@@ -3,20 +3,31 @@ import { Router, type IRouter } from "express";
 import {
   acceptFriendRequest,
   cancelFriendRequest,
+  listFriendRequests,
+  makeUsersFriends,
   rejectFriendRequest,
   sendFriendRequest,
   unfriend,
 } from "../controllers/friendship.controller.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateParams } from "../middleware/validate-params.js";
+import { validateQuery } from "../middleware/validate-query.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
 import {
   friendshipIdParamsSchema,
+  listFriendRequestsQuerySchema,
   sendFriendRequestSchema,
   unfriendParamsSchema,
 } from "../validators/friendship.validator.js";
 
 export const friendshipRoutes: IRouter = Router();
+
+friendshipRoutes.get(
+  "/requests",
+  authenticateAccessToken,
+  validateQuery(listFriendRequestsQuerySchema),
+  listFriendRequests
+);
 
 friendshipRoutes.post(
   "/requests",
@@ -44,6 +55,12 @@ friendshipRoutes.delete(
   authenticateAccessToken,
   validateParams(friendshipIdParamsSchema),
   cancelFriendRequest
+);
+
+friendshipRoutes.post(
+  "/auto-connect",
+  authenticateAccessToken,
+  makeUsersFriends
 );
 
 friendshipRoutes.delete(

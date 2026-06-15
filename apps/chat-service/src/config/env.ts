@@ -39,8 +39,12 @@ const envSchema = z.object({
   MINIO_ACCESS_KEY: z.string(),
   MINIO_SECRET_KEY: z.string(),
   MINIO_BUCKET: z.string(),
+  // Sibling buckets on the shared MinIO. chat-service does not upload to these
+  // (media-service owns uploads) but must know their names to presign view URLs
+  // for avatar / community-image object keys carried on chat snapshots.
+  MINIO_BUCKET_AVATARS: z.string().min(1).default("aimess-avatars"),
+  MINIO_BUCKET_COMMUNITY: z.string().min(1).default("aimess-community"),
   MINIO_REGION: z.string(),
-  MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(300),
   MINIO_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
   CHAT_UPLOAD_MAX_BYTES: z.coerce.number().positive().default(52_428_800), // 50 MB (generic cap)
   CHAT_VIDEO_MAX_BYTES: z.coerce.number().positive().default(104_857_600), // 100 MB (video cap)

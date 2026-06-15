@@ -23,3 +23,32 @@ export type FriendsListResult = {
   /** Total number of accepted friends for the caller (not just this page). */
   totalCount: number;
 };
+
+export type FriendRequestDirection = "INCOMING" | "OUTGOING";
+
+/** The other party in a pending friend request, with display fields. */
+export type FriendRequestUser = {
+  userId: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+  /** Presigned GET URL (private bucket); null if no avatar / MinIO unavailable. */
+  avatarUrl: string | null;
+  avatar: MediaObject;
+};
+
+/** A single pending friend request returned by GET /friends/requests. */
+export type FriendRequestItem = {
+  friendshipId: string;
+  /** INCOMING = they sent it to you; OUTGOING = you sent it to them. */
+  direction: FriendRequestDirection;
+  user: FriendRequestUser;
+  /** ISO-8601 timestamp of when the request was created. */
+  createdAt: string;
+};
+
+export type FriendRequestsListResult = {
+  requests: FriendRequestItem[];
+  /** Total pending requests for the caller in the requested direction. */
+  total: number;
+};

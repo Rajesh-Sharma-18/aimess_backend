@@ -39,6 +39,7 @@ model PrivateRoom {
   blockedBy                 Json     @default("[]")
   deletedFor                Json     @default("{}")
   mutedBy                   Json     @default("{}")
+  archivedBy                Json     @default("{}")
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
   lastSequence              Int      @default(0)
@@ -135,6 +136,7 @@ model GroupRoom {
   pinnedCount        Int       @default(0)
   lastPinnedAt       DateTime?
   lastSequence       Int       @default(0)
+  archivedBy         Json      @default("{}")
   disbandedAt        DateTime?
   disbandedBy        String?
   createdAt          DateTime  @default(now())

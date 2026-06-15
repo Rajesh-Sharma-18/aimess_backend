@@ -7,6 +7,7 @@ import type {
   GroupRoomService,
   EnrichedGroupRoom,
 } from "./group-room.service.js";
+import { toWireMessage } from "../lib/chat-message.serializer.js";
 
 export type InboxDirection = "before" | "after";
 
@@ -159,7 +160,14 @@ export class InboxService {
       roomId: room.roomId,
       lastMessageAt: room.lastMessageAt,
       lastMessageId: room.lastMessageId,
-      lastMessage: room.lastMessagePreview ?? null,
+      // Normalize the group preview's kind field (messageType -> contentType).
+      // (Private previews are already normalized upstream in enrichConversations.)
+      lastMessage:
+        room.lastMessagePreview && typeof room.lastMessagePreview === "object"
+          ? toWireMessage(
+              room.lastMessagePreview as { messageType?: string | null }
+            )
+          : (room.lastMessagePreview ?? null),
       unreadCount: room.unreadCount,
       isMuted: room.isMuted,
       pinnedCount: room.pinnedCount,

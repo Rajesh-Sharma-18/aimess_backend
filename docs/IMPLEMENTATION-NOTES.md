@@ -7,6 +7,47 @@
 
 ---
 
+## Media-URL standardization — resolve-on-read everywhere (shipped 2026-06-12)
+
+Every REST / gRPC / socket / FCM-push response now returns **fully-qualified presigned download URLs** for media; **no API leaks a raw MinIO object key**. Closes the 41 leaks in `docs/EVENT-MEDIA-AUDIT.md` §4. Run via the agent team (Pro Coders → DRY + Contract reviewers + Quality Tester).
+
+- **Rule:** resolve-on-read at each owner service's OUTPUT boundary; the stored snapshot/DB keeps the **raw key** (presigned URLs expire ~1h — never persist a resolved URL). Reuse `@aimess/storage` `toMediaObject` and chat-service `src/lib/media-resolve.ts` (`resolveMediaUrl` / `resolveMediaUrlMap` / `urlFromMap` / `applyUrlMapToFiles` / `resolveContentFiles` / `resolvePinsMedia`). The gateway forwards already-resolved URLs (no gateway-side resolver).
+- **media-service:** `POST /api/v1/media/upload-url` now also returns a ready `media.downloadUrl` (+ `downloadUrlExpiresIn`) for instant preview — additive, existing fields unchanged.
+- **chat-service:** all read paths (private/group/community history, inbox, conversation lists, reactions, pins, admin-group, invite-link preview) + **all realtime gRPC broadcasts** (`message:new`/`:edited`/`:reaction`, `community:message:new`/`:reaction`, community catchup, plus the group-history gRPC callback) + the **FCM-push publisher** (`publish-message-sent.ts`) resolve sender avatars + `content.files[]` + reaction-user avatars before emitting. New `group-message.service.enrichForWire`; shared `resolvePinsMedia`. `community-room-sync.consumer` persists the room logo as a raw key (never read out → no read-side fix needed).
+- **community-service:** the 3 admin gRPC handlers (`adminAvatarUrl`×2, `coverUrl`) resolve via the existing `memberAvatarService` / `communityImageService`.
+- **backoffice-service:** community/group admin read-model repos resolve avatars; added `MINIO_BUCKET_COMMUNITY` (+ `.env.example`) so the admin community-detail **cover** resolves.
+- **notifications-service:** unchanged — it forwards the now-resolved `senderAvatar` into the FCM data map (fixed at the chat-service publisher per single-boundary).
+- **api-gateway:** OpenAPI examples switched raw keys → full URLs; request-input key fields (`objectKey`, `avatarObjectKey`, media request bodies) correctly left as keys.
+- **Deferred (designed, not built):** a socket-driven upload control-plane (`media:upload:init/complete/success` + a `confirmUpload` HEAD). It removes **zero** required network steps (bytes still PUT direct to storage) and adds a second transport; revisit only for upload-progress / multi-device / async media processing. Bytes-over-socket rejected (HOL blocking, no resumability, gateway memory). The gateway already has a `media.client.ts` gRPC client + media-service `headObject`, so it's cheap to add later.
+- **Verified:** chat 246, community 218, media 13, backoffice 37 jest + 15 node:test; all touched services typecheck clean.
+
+---
+
+## Upload URL centralization — media-service migration (shipped 2026-06-12)
+
+Upload URL generation removed from user-service and community-service; responsibility moved to the new media-service.
+
+- `POST /api/v1/users/uploads/url` — removed from user-service, but kept as a **supported gateway alias** that forwards to media-service (see "Gateway alias" below). It is NOT marked deprecated. `POST /api/v1/media/upload-url` with `category: "USER_AVATAR"` is the equivalent direct call.
+- `POST /api/v1/communities/uploads/url` — **REMOVED** (no compat shim). Clients must use `POST /api/v1/media/upload-url` with `category: "COMMUNITY_AVATAR"` or `"COMMUNITY_COVER"`.
+
+**Files deleted:**
+
+- `apps/user-service/src/api/controllers/upload.controller.ts`
+- `apps/user-service/src/api/validators/upload.validator.ts`
+- `apps/user-service/src/api/routes/upload.routes.ts`
+- `apps/user-service/src/services/upload.service.ts`
+- `apps/user-service/src/config/uploads.ts`
+- `apps/community-service/src/api/controllers/upload.controller.ts`
+- `apps/community-service/src/api/validators/upload.validator.ts`
+- `apps/community-service/src/services/upload.service.ts`
+- `apps/community-service/src/config/uploads.ts`
+
+**`@aimess/storage` retained** in both services for `headObject` / `deleteObject` / `createPresignedViewUrl` — used by `avatar.service.ts` and `community-image.service.ts` to validate confirmed uploads and sign view URLs. `AVATAR_MAX_UPLOAD_BYTES` kept in user-service env (used by `avatar.service.ts`). `COMMUNITY_IMAGE_MAX_UPLOAD_BYTES` kept in community-service env (used by `community-image.service.ts`). `MINIO_PRESIGN_EXPIRES_IN` removed from both services (was only used by the deleted upload services).
+
+**Gateway alias for `/users/uploads/url` (2026-06-12):** `POST /api/v1/users/uploads/url` is a **supported** stable alias served at the **gateway** by `apps/api-gateway/src/routes/v1/legacy-uploads.routes.ts` (mounted before the generic `/users` proxy, only when `MEDIA_SERVICE_URL` is set). It renames the request field `type: "AVATAR"` → `category: "USER_AVATAR"` and forwards to media-service `POST /api/v1/media/upload-url` over HTTP; media-service performs JWT auth (deriving `ownerId` from the token) and returns the identical response, which is relayed verbatim. **No upload logic was re-added to user-service** — the alias is a pure path+field adapter that reuses the centralized media-service (no duplicated logic). The path is documented normally in Swagger (not deprecated). Tests: `apps/api-gateway/tests/uploads/legacy-uploads.test.ts` (4 cases). The community endpoint has no equivalent alias.
+
+---
+
 ## Socket contract hardening + media-upload doc (shipped 2026-06-10)
 
 Contract-only hardening of the real-time API after a senior review of the Socket.IO contract (no business-logic change). Gateway socket code stays the source of truth; `docs/SOCKET_EVENTS.md` + `apps/api-gateway/asyncapi/asyncapi.yaml` were brought in sync.
@@ -419,7 +460,7 @@ The detail screen is now served by three independent, separately-cacheable endpo
 - **Rate limiting:** in-memory stores (per process). Move to a Redis store (`rate-limit-redis`) before horizontal scaling.
 - **Layering is clean** in both services: controllers thin, repositories own all Prisma, services hold logic, multi-write ops use `$transaction`. Keep it that way.
 - **Community authz primitive:** ALL community member-management/moderation goes through `assertCommunityRole(membership, minRole)` + the `COMMUNITY_ROLE_RANK` map (`community-service/src/lib/community-authz.ts`). Never re-implement role/status checks inline. Future moderator powers (join-request approve, etc.) MUST reuse this gate. Role hierarchy: ADMIN > MODERATOR > MEMBER; the admin role is immutable via the member endpoints (can't be demoted/kicked/banned, and the admin can't leave) until a separate ownership-transfer flow exists.
-- **Platform-admin authz (shipped 2026-06-12):** platform-wide admin actions are gated by a `role` claim (`USER`|`ADMIN`, mirrored from auth-service's `GlobalRole`) now carried on the **access JWT** — added to `@aimess/auth-jwt` (`signAccessToken`/`verifyAccessToken`, `req.auth.role`), stamped by auth-service at every token issue/refresh site (normalized via `lib/platform-role.ts` `toPlatformRole`), and defaulted to `USER` when absent so pre-existing tokens stay unprivileged. community-service's `requirePlatformAdmin` middleware (`src/middleware/require-platform-admin.ts`) reads `req.auth.role` and throws `ForbiddenError("PLATFORM_ADMIN_REQUIRED")` → 403. First consumers: the four `/communities/categories*` admin-category CRUD routes. This is the platform-level analogue of the community-scoped `assertCommunityRole` gate above — reuse `requirePlatformAdmin` (promote it to `@aimess/auth-jwt` when a second service needs it) rather than re-checking roles inline.
+- **Platform-admin authz (shipped 2026-06-12):** platform-wide admin actions are gated by a `role` claim (`USER`|`ADMIN`, mirrored from auth-service's `GlobalRole`) now carried on the **access JWT** — added to `@aimess/auth-jwt` (`signAccessToken`/`verifyAccessToken`, `req.auth.role`), stamped by auth-service at every token issue/refresh site (the Prisma `GlobalRole` normalized to `USER`/`ADMIN`), and defaulted to `USER` when absent so pre-existing tokens stay unprivileged. community-service's `requirePlatformAdmin` middleware (`src/middleware/require-platform-admin.ts`) reads `req.auth.role` and throws `ForbiddenError("PLATFORM_ADMIN_REQUIRED")` → 403. First consumers: the four `/communities/categories*` admin-category CRUD routes. This is the platform-level analogue of the community-scoped `assertCommunityRole` gate above — reuse `requirePlatformAdmin` (promote it to `@aimess/auth-jwt` when a second service needs it) rather than re-checking roles inline.
 - **`memberCount` is recomputed, not deltaed:** every community membership status change recomputes via `countActiveMembers` → `setMemberCount`. Robust against drift and safe without a transaction. Do NOT switch to blind ±1.
 - **`$transaction` is per-store:** Postgres services (auth, user) DO use `prisma.$transaction` for multi-row writes — e.g. friendship accept/unfriend bumping `friendsCount`. **community-service (standalone Mongo) does NOT** — Prisma interactive transactions fail there, so it uses sequential writes + recompute / compensating cleanup.
 - **Friendship = one row per pair, recycled:** re-sending after reject/cancel/unfriend updates the existing `Friendship` row (resets status + direction + clears timestamps) rather than inserting a new one; a mutual pending request auto-accepts. Friendship/discovery queries respect two-way blocks.

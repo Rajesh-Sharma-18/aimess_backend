@@ -183,6 +183,65 @@ export interface PinCommunityMessageResult {
   pinnedAt: number;
 }
 
+// ---- Moderation ----
+export interface ModerationActionResult {
+  ok: boolean;
+  communityId: string;
+  targetUserId: string;
+  errorCode: string;
+}
+
+export interface KickMemberParams {
+  communityId: string;
+  actorId: string;
+  targetUserId: string;
+  reason?: string;
+}
+
+export interface BanMemberParams {
+  communityId: string;
+  actorId: string;
+  targetUserId: string;
+  reason?: string;
+}
+
+export interface UnbanMemberParams {
+  communityId: string;
+  actorId: string;
+  targetUserId: string;
+}
+
+export interface TransferAdminParams {
+  communityId: string;
+  actorId: string;
+  newAdminId: string;
+}
+
+export interface ChangeMemberRoleParams {
+  communityId: string;
+  actorId: string;
+  targetUserId: string;
+  newRole: "MODERATOR" | "MEMBER";
+}
+
+export interface CreateReportParams {
+  communityId: string;
+  reporterId: string;
+  reason: string;
+  targetMessageId?: string;
+}
+
+export interface CreateReportResult {
+  reportId: string;
+  ok: boolean;
+}
+
+export interface DeleteCommunityParams {
+  communityId: string;
+  actorId: string;
+  reason?: string;
+}
+
 // ---- Unpin ----
 export interface UnpinCommunityMessageParams {
   messageId: string;
@@ -223,6 +282,15 @@ export interface CommunityClient {
   unpinCommunityMessage(
     p: UnpinCommunityMessageParams
   ): Promise<UnpinCommunityMessageResult>;
+
+  // Moderation
+  kickMember(p: KickMemberParams): Promise<ModerationActionResult>;
+  banMember(p: BanMemberParams): Promise<ModerationActionResult>;
+  unbanMember(p: UnbanMemberParams): Promise<ModerationActionResult>;
+  transferAdmin(p: TransferAdminParams): Promise<ModerationActionResult>;
+  changeMemberRole(p: ChangeMemberRoleParams): Promise<ModerationActionResult>;
+  createReport(p: CreateReportParams): Promise<CreateReportResult>;
+  deleteCommunity(p: DeleteCommunityParams): Promise<ModerationActionResult>;
 }
 
 export function createCommunityClient(): CommunityClient {
@@ -338,6 +406,72 @@ export function createCommunityClient(): CommunityClient {
       })
   );
 
+  const kickBreaker = makeBreaker(
+    "community.kickMember",
+    (p: KickMemberParams) =>
+      call<unknown, ModerationActionResult>("kickMember", {
+        communityId: p.communityId,
+        actorId: p.actorId,
+        targetUserId: p.targetUserId,
+        reason: p.reason ?? "",
+      })
+  );
+  const banBreaker = makeBreaker("community.banMember", (p: BanMemberParams) =>
+    call<unknown, ModerationActionResult>("banMember", {
+      communityId: p.communityId,
+      actorId: p.actorId,
+      targetUserId: p.targetUserId,
+      reason: p.reason ?? "",
+    })
+  );
+  const unbanBreaker = makeBreaker(
+    "community.unbanMember",
+    (p: UnbanMemberParams) =>
+      call<unknown, ModerationActionResult>("unbanMember", {
+        communityId: p.communityId,
+        actorId: p.actorId,
+        targetUserId: p.targetUserId,
+      })
+  );
+  const transferAdminBreaker = makeBreaker(
+    "community.transferAdmin",
+    (p: TransferAdminParams) =>
+      call<unknown, ModerationActionResult>("transferAdmin", {
+        communityId: p.communityId,
+        actorId: p.actorId,
+        newAdminId: p.newAdminId,
+      })
+  );
+  const changeRoleBreaker = makeBreaker(
+    "community.changeMemberRole",
+    (p: ChangeMemberRoleParams) =>
+      call<unknown, ModerationActionResult>("changeMemberRole", {
+        communityId: p.communityId,
+        actorId: p.actorId,
+        targetUserId: p.targetUserId,
+        newRole: p.newRole,
+      })
+  );
+  const createReportBreaker = makeBreaker(
+    "community.createReport",
+    (p: CreateReportParams) =>
+      call<unknown, CreateReportResult>("createReport", {
+        communityId: p.communityId,
+        reporterId: p.reporterId,
+        reason: p.reason,
+        targetMessageId: p.targetMessageId ?? "",
+      })
+  );
+  const deleteCommunityBreaker = makeBreaker(
+    "community.deleteCommunity",
+    (p: DeleteCommunityParams) =>
+      call<unknown, ModerationActionResult>("deleteCommunity", {
+        communityId: p.communityId,
+        actorId: p.actorId,
+        reason: p.reason ?? "",
+      })
+  );
+
   return {
     sendCommunityMessage: (p) => sendMsgBreaker.fire(p),
     getCommunityMessages: (p) => getMsgsBreaker.fire(p),
@@ -347,5 +481,12 @@ export function createCommunityClient(): CommunityClient {
     deleteCommunityMessage: (p) => deleteMsgBreaker.fire(p),
     pinCommunityMessage: (p) => pinMsgBreaker.fire(p),
     unpinCommunityMessage: (p) => unpinMsgBreaker.fire(p),
+    kickMember: (p) => kickBreaker.fire(p),
+    banMember: (p) => banBreaker.fire(p),
+    unbanMember: (p) => unbanBreaker.fire(p),
+    transferAdmin: (p) => transferAdminBreaker.fire(p),
+    changeMemberRole: (p) => changeRoleBreaker.fire(p),
+    createReport: (p) => createReportBreaker.fire(p),
+    deleteCommunity: (p) => deleteCommunityBreaker.fire(p),
   };
 }

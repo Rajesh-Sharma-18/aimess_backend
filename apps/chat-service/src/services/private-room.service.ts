@@ -1,7 +1,10 @@
 import { ForbiddenError, NotFoundError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import type { Redis, Cluster } from "ioredis";
 
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
+import { toWireMessage } from "../lib/chat-message.serializer.js";
+import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
@@ -28,7 +31,8 @@ export class PrivateRoomService {
     private readonly privateRoomRepo: PrivateRoomRepository,
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
-    private readonly userServiceClient: UserServiceClient
+    private readonly userServiceClient: UserServiceClient,
+    private readonly redis: Redis | Cluster
   ) {}
 
   async getOrCreateRoom(userId: string, peerId: string): Promise<PrivateRoom> {
@@ -53,6 +57,15 @@ export class PrivateRoomService {
     });
 
     logger.debug(`PrivateRoomService|getOrCreateRoom|created room=${roomId}`);
+
+    // Notify both participants that a new conversation was opened.
+    const convCreatedPayload = JSON.stringify({
+      event: "conv:created",
+      data: { roomId, participants: [userId, peerId] },
+    });
+    this.redis.publish(`user:${userId}`, convCreatedPayload).catch(() => {});
+    this.redis.publish(`user:${peerId}`, convCreatedPayload).catch(() => {});
+
     return room;
   }
 
@@ -97,6 +110,13 @@ export class PrivateRoomService {
       this.cacheRepo
     );
 
+    // Resolve peer avatar object keys → full download URLs (resolve on read).
+    const avatarUrls = await resolveMediaUrlMap(
+      [...snapshots.values()].map(
+        (snap) => (snap as Record<string, unknown>).avatar as string
+      )
+    );
+
     const now = Date.now();
     return rooms.map((room) => {
       const peerId = (room.participants || []).find((p) => p !== userId) || "";
@@ -110,15 +130,22 @@ export class PrivateRoomService {
         myMute != null &&
         (myMute.muteUntil == null ||
           new Date(myMute.muteUntil).getTime() > now);
+      // Normalize the embedded preview's kind field (messageType -> contentType)
+      // so the conversation-list AND inbox-private rows match the canonical wire.
+      const lm = room.lastMessage;
+      const lastMessage = (lm && typeof lm === "object"
+        ? toWireMessage(lm as { messageType?: string | null })
+        : (lm ?? null)) as unknown as PrivateRoom["lastMessage"];
       return {
         ...room,
+        lastMessage,
         isMuted,
         peerId,
         peer: {
           id: peerId,
           displayName: (snapshot.displayName as string) || "",
           memberId: (snapshot.memberId as string) || "",
-          avatar: (snapshot.avatar as string) || "",
+          avatar: urlFromMap(avatarUrls, (snapshot.avatar as string) || ""),
           isDeletedUser: snapshot.isDeletedUser === true,
           isOnline: Boolean(snapshot.isOnline),
         },
@@ -138,6 +165,17 @@ export class PrivateRoomService {
     if (!isParticipant) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
     await this.privateRoomRepo.setDeletedFor(roomId, userId);
+
+    // Notify the user that the conversation was deleted from their view.
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:deleted",
+          data: { roomId, deletedBy: userId },
+        })
+      )
+      .catch(() => {});
   }
 
   async muteRoom(

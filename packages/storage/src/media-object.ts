@@ -10,7 +10,7 @@ import type { UploadUrlResult } from "./upload.js";
 export interface ToMediaObjectInput {
   bucket: string;
   stored: string | null | undefined;
-  prefixes: string[];
+  prefixes: readonly string[];
   strategy: MediaUrlStrategy;
   fileName?: string | null;
   contentType?: string | null;

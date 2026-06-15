@@ -59,6 +59,14 @@ export function createPrivateMessageRoutes(
   );
   router.post("/rooms/:roomId/unmute", authenticate, roomCtrl.unmuteRoom);
 
+  // Archive / unarchive a conversation
+  router.patch("/rooms/:roomId/archive", authenticate, roomCtrl.archiveRoom);
+  router.patch(
+    "/rooms/:roomId/unarchive",
+    authenticate,
+    roomCtrl.unarchiveRoom
+  );
+
   // Search messages in a room (must precede the messages list route)
   router.get(
     "/rooms/:roomId/messages/search",

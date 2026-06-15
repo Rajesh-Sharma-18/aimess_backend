@@ -67,7 +67,6 @@ import {
   warnCommunityMember,
   withdrawCommunityReport,
 } from "../controllers/community.controller.js";
-import { createUploadUrl } from "../controllers/upload.controller.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateParams } from "../middleware/validate-params.js";
 import { validateQuery } from "../middleware/validate-query.js";
@@ -123,7 +122,6 @@ import {
   warningsQuerySchema,
   warnMemberSchema,
 } from "../validators/community.validator.js";
-import { uploadUrlSchema } from "../validators/upload.validator.js";
 
 export const communityRoutes: IRouter = Router();
 
@@ -194,12 +192,6 @@ communityRoutes.get(
   "/discover",
   validateQuery(discoverQuerySchema),
   discoverCommunities
-);
-
-communityRoutes.post(
-  "/uploads/url",
-  validateBody(uploadUrlSchema),
-  createUploadUrl
 );
 
 // Static "/mine" + "/invites/:inviteId/..." routes must be registered before

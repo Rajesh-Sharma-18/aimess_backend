@@ -1,3 +1,5 @@
+import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
+
 import {
   chatClient,
   type AdminListGroupsReq,
@@ -13,13 +15,44 @@ import type {
   ListGroupsQuery,
 } from "../types/group.types.js";
 import { msToIso, orNull } from "../lib/grpc-view.js";
+import { mediaUrlStrategy } from "../config/storage.js";
+import { env } from "../config/env.js";
+
+/**
+ * Group + user avatars (group logo, owner/member snapshot avatars) live in the
+ * SHARED avatars bucket. chat-service echoes RAW MinIO object keys for these
+ * over the AdminGroup* gRPC wire (see admin-group.service.ts toGroupRow /
+ * toMemberRow), so we resolve-on-read at the backoffice OUTPUT boundary via the
+ * shared media layer. `group-avatars/<roomId>/…` (logo) and `avatars/<userId>/…`
+ * (member snapshots) both resolve against this bucket; legacy/external http(s)
+ * values pass through unchanged. Presigned URLs expire — never persist them.
+ */
+const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
+const AVATAR_PREFIXES = MEDIA_PREFIXES.avatars;
+
+/** Stored avatar key/url → presigned download URL (null when absent). */
+async function resolveAvatarUrl(
+  stored: string | null | undefined
+): Promise<string | null> {
+  const media = await toMediaObject({
+    bucket: AVATAR_BUCKET,
+    stored: stored ?? null,
+    prefixes: AVATAR_PREFIXES,
+    strategy: mediaUrlStrategy,
+  });
+  return media.downloadUrl;
+}
 
 /** Map an AdminGroupRow → the list/detail view model. */
-function rowToGroupItem(r: RawAdminGroupRow): GroupItem {
+async function rowToGroupItem(r: RawAdminGroupRow): Promise<GroupItem> {
+  const [avatarUrl, adminAvatarUrl] = await Promise.all([
+    resolveAvatarUrl(r.avatarUrl),
+    resolveAvatarUrl(r.admin?.avatarUrl),
+  ]);
   return {
     id: r.id,
     name: r.name,
-    avatarUrl: orNull(r.avatarUrl),
+    avatarUrl,
     description: r.description ?? "",
     memberCount: r.memberCount,
     createdAt: msToIso(r.createdAt),
@@ -27,18 +60,20 @@ function rowToGroupItem(r: RawAdminGroupRow): GroupItem {
       userId: r.admin?.userId ?? "",
       username: r.admin?.username ?? "",
       email: orNull(r.admin?.email),
-      avatarUrl: orNull(r.admin?.avatarUrl),
+      avatarUrl: adminAvatarUrl,
     },
   };
 }
 
 /** Map an AdminGroupMemberRow → the members-table view model. */
-function rowToMemberItem(r: RawAdminGroupMemberRow): GroupMemberItem {
+async function rowToMemberItem(
+  r: RawAdminGroupMemberRow
+): Promise<GroupMemberItem> {
   return {
     userId: r.userId,
     username: r.username,
     email: orNull(r.email),
-    avatarUrl: orNull(r.avatarUrl),
+    avatarUrl: await resolveAvatarUrl(r.avatarUrl),
     role: r.role,
     joinedAt: msToIso(r.joinedAt),
   };
@@ -82,7 +117,7 @@ export class GrpcGroupRepository {
 
     const res = await chatClient.adminListGroups(req);
     return {
-      items: (res.groups ?? []).map(rowToGroupItem),
+      items: await Promise.all((res.groups ?? []).map(rowToGroupItem)),
       pagination: buildPagination(res.total, query.page, query.limit),
     };
   }
@@ -112,7 +147,7 @@ export class GrpcGroupRepository {
     const res = await chatClient.adminListGroupMembers(req);
     return {
       found: res.found,
-      items: (res.members ?? []).map(rowToMemberItem),
+      items: await Promise.all((res.members ?? []).map(rowToMemberItem)),
       pagination: buildPagination(res.total, query.page, query.limit),
     };
   }

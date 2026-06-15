@@ -3,13 +3,14 @@ import {
   createPresignedViewUrl,
   deleteObject,
   headObject,
+  MEDIA_PREFIXES,
+  parseObjectKeyFromStored,
 } from "@aimess/storage";
 import { BadRequestError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 
 import { presignClient, storageClient } from "../config/storage.js";
 import { env } from "../config/env.js";
-import { parseCommunityImageObjectKeyFromStored } from "../lib/community-image-storage.js";
 import type { CommunityImageView } from "../types/community.types.js";
 
 const COMMUNITY_BUCKET = env.MINIO_BUCKET_COMMUNITY;
@@ -42,7 +43,10 @@ export class CommunityImageService {
   async resolveViewUrlForClient(
     stored: string | null | undefined
   ): Promise<CommunityImageView | null> {
-    const objectKey = parseCommunityImageObjectKeyFromStored(stored);
+    const objectKey = parseObjectKeyFromStored(stored, {
+      prefixes: MEDIA_PREFIXES.community,
+      bucket: env.MINIO_BUCKET_COMMUNITY,
+    });
     if (!objectKey) {
       return null;
     }

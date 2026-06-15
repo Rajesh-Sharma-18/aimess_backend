@@ -50,7 +50,6 @@ const envSchema = z.object({
   /** user-service's avatars bucket (shared MinIO) — used to presign member avatar GET URLs. */
   MINIO_BUCKET_AVATARS: z.string().min(1).default("aimess-avatars"),
   MINIO_REGION: z.string().default("us-east-1"),
-  MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(900),
   /** Presigned GET lifetime for community image display URLs (seconds). */
   MINIO_IMAGE_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
   /** Presigned GET lifetime for member avatar display URLs (seconds). */
