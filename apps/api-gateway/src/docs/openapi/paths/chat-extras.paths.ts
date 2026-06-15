@@ -71,6 +71,190 @@ function created(description: string) {
   };
 }
 
+/**
+ * Request body for the REST send endpoints (private / group). roomId comes from
+ * the path; the sender is the authenticated caller. `clientMessageId` is the
+ * idempotency key (a repeated value collapses onto the original message — the
+ * server then answers 200 instead of 201). For PRIVATE, `receiverId` (the peer)
+ * is required by the friendship gate. The structured `content` mirrors the
+ * canonical ChatMessage body.
+ */
+function sendMessageRequestBody(includeReceiverId: boolean) {
+  const contentSchema = {
+    type: "object" as const,
+    properties: {
+      text: {
+        type: "string" as const,
+        maxLength: 4000,
+        description: "Plain-text body (max 4000 chars).",
+      },
+      urls: { type: "array" as const, items: { type: "string" as const } },
+      files: {
+        type: "array" as const,
+        maxItems: 30,
+        description:
+          "Media files (objectKey + metadata). Send-time caps apply per messageType (see ChatMessage.content).",
+        items: { type: "object" as const },
+      },
+      location: { $ref: "#/components/schemas/ChatLocationAttachment" },
+      contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+      sticker: { $ref: "#/components/schemas/ChatSticker" },
+    },
+  };
+  return {
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          type: "object" as const,
+          required: includeReceiverId
+            ? ["receiverId", "content", "messageType"]
+            : ["content", "messageType"],
+          properties: {
+            ...(includeReceiverId
+              ? {
+                  receiverId: {
+                    type: "string" as const,
+                    description: "The peer's user ID (PRIVATE only).",
+                  },
+                }
+              : {}),
+            content: contentSchema,
+            messageType: {
+              type: "string" as const,
+              enum: [
+                "TEXT",
+                "IMAGE",
+                "DOCUMENT",
+                "VIDEO",
+                "GIF",
+                "VOICE",
+                "STICKER",
+                "LOCATION",
+                "CONTACT",
+              ],
+              description: "Canonical UPPER-CASE message kind.",
+            },
+            parentMessageId: {
+              type: "string" as const,
+              nullable: true,
+              description: "ID of the message being replied to (quote/thread).",
+            },
+            clientMessageId: {
+              type: "string" as const,
+              description:
+                "Idempotency key. A repeated value returns the original message with HTTP 200 (`idempotent: true`).",
+            },
+            clientTs: {
+              type: "integer" as const,
+              format: "int64",
+              description: "Client compose time (epoch ms) — display only.",
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+/**
+ * 201/200 responses for the REST send endpoints. The data payload is the
+ * canonical wire ChatMessage (byte-identical to the Socket.IO `message:new`)
+ * plus an `idempotent` flag. 201 = freshly inserted; 200 = idempotent replay.
+ */
+function sendMessageResponses() {
+  const sentSchema = {
+    allOf: [
+      { $ref: "#/components/schemas/ApiSuccessResponse" },
+      {
+        type: "object" as const,
+        properties: {
+          data: {
+            allOf: [
+              { $ref: "#/components/schemas/ChatMessage" },
+              {
+                type: "object" as const,
+                properties: {
+                  idempotent: {
+                    type: "boolean" as const,
+                    description:
+                      "True when this send collapsed onto a pre-existing message (replay).",
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  return {
+    "201": {
+      description: "Message sent (fresh insert).",
+      content: { "application/json": { schema: sentSchema } },
+    },
+    "200": {
+      description:
+        "Idempotent replay — `clientMessageId` matched an existing message; the original is returned with `idempotent: true`.",
+      content: { "application/json": { schema: sentSchema } },
+    },
+  };
+}
+
+/**
+ * Request body + responses for the REST mark-read endpoints. roomId comes from
+ * the path; the reader is the authenticated caller. PRIVATE/GROUP advance the
+ * read pointer to `upToMessageId` and return its `readToSeq` (the per-room
+ * sequence high-water mark) — they also emit `message:read` to the conversation
+ * and `read_sync` to the reader's other devices.
+ */
+const markReadRequestBody = {
+  required: true,
+  content: {
+    "application/json": {
+      schema: {
+        type: "object" as const,
+        required: ["upToMessageId"],
+        properties: {
+          upToMessageId: {
+            type: "string" as const,
+            minLength: 1,
+            description: "Highest message ID the caller has now read.",
+          },
+        },
+      },
+    },
+  },
+};
+
+function markReadResponse(includeReadToSeq: boolean) {
+  return ok("Conversation marked read.", {
+    allOf: [
+      { $ref: "#/components/schemas/ApiSuccessResponse" },
+      {
+        type: "object" as const,
+        properties: {
+          data: {
+            type: "object" as const,
+            properties: {
+              ok: { type: "boolean" as const, example: true },
+              ...(includeReadToSeq
+                ? {
+                    readToSeq: {
+                      type: "integer" as const,
+                      description:
+                        "Per-room sequenceNumber of upToMessageId (read high-water mark); 0 if unknown.",
+                    },
+                  }
+                : {}),
+            },
+          },
+        },
+      },
+    ],
+  });
+}
+
 const roomIdParam = {
   name: "roomId",
   in: "path" as const,
@@ -191,6 +375,44 @@ const privateMessages = {
       "404": notFound,
     },
   },
+  post: {
+    tags: ["Chat — Private"],
+    summary: "Send a private message",
+    description:
+      "Sends a message into the private room. The server broadcasts `message:new` to the `conv:<roomId>` Socket.IO room, bumps the conversation to the top of both inboxes, and triggers an FCM/APNs push to the peer. Requires friendship. Idempotent via `clientMessageId` (a replay answers 200 with `idempotent: true`).",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    requestBody: sendMessageRequestBody(true),
+    responses: {
+      ...sendMessageResponses(),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+// --------------------------------------------------------------------------
+// POST /chat/private/rooms/{roomId}/read
+// --------------------------------------------------------------------------
+const privateMarkRead = {
+  post: {
+    tags: ["Chat — Private"],
+    summary: "Mark private conversation read",
+    description:
+      "Advances the caller's read pointer up to `upToMessageId`. Emits a `message:read` receipt to the `conv:<roomId>` Socket.IO room (the peer) and a `read_sync` to the caller's other devices. Returns the `readToSeq` high-water mark.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    requestBody: markReadRequestBody,
+    responses: {
+      ...markReadResponse(true),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
 };
 
 // --------------------------------------------------------------------------
@@ -273,6 +495,66 @@ const groupMessages = {
           },
         ],
       }),
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+  post: {
+    tags: ["Chat — Groups"],
+    summary: "Send a group message",
+    description:
+      "Sends a message into the group room. The server broadcasts `message:new` to `conv:<roomId>`, bumps the conversation for every member's inbox, and fans out an FCM/APNs push to active members. Requires active membership. Idempotent via `clientMessageId` (a replay answers 200 with `idempotent: true`).",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    requestBody: sendMessageRequestBody(false),
+    responses: {
+      ...sendMessageResponses(),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+// --------------------------------------------------------------------------
+// POST /chat/groups/{roomId}/read
+// --------------------------------------------------------------------------
+const groupMarkRead = {
+  post: {
+    tags: ["Chat — Groups"],
+    summary: "Mark group read",
+    description:
+      "Advances the caller's group-member read pointer up to `upToMessageId`. Emits a `message:read` receipt to `conv:<roomId>` and a `read_sync` to the caller's other devices. Returns the `readToSeq` high-water mark.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    requestBody: markReadRequestBody,
+    responses: {
+      ...markReadResponse(true),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+// --------------------------------------------------------------------------
+// POST /chat/community/rooms/{roomId}/read
+// --------------------------------------------------------------------------
+const communityMarkRead = {
+  post: {
+    tags: ["Chat — Community"],
+    summary: "Mark community room read",
+    description:
+      "Marks the community room read for the caller. Community read is **coarser** than private/group: it advances the member's read pointer to *now* (read-to-now) rather than to a specific message, and emits **no** socket receipt. The body's `upToMessageId` is accepted for request parity but is not used as a per-message high-water mark.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdParam],
+    requestBody: markReadRequestBody,
+    responses: {
+      ...markReadResponse(false),
+      "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
       "404": notFound,
@@ -433,8 +715,11 @@ const chatSync = {
 
 export const chatExtrasPaths = {
   "/chat/private/rooms/{roomId}/messages": privateMessages,
+  "/chat/private/rooms/{roomId}/read": privateMarkRead,
   "/chat/private/rooms/{roomId}/messages/{messageId}/pin": privatePinMessage,
   "/chat/groups/{roomId}/messages": groupMessages,
+  "/chat/groups/{roomId}/read": groupMarkRead,
   "/chat/groups/{roomId}/messages/{messageId}/pin": groupPinMessage,
+  "/chat/community/rooms/{roomId}/read": communityMarkRead,
   "/chat/sync": chatSync,
 };

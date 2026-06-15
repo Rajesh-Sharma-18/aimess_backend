@@ -1316,6 +1316,100 @@ const communityMessages = {
       "404": notFound,
     },
   },
+  post: {
+    tags: ["Chat — Community"],
+    summary: "Send a community message",
+    description:
+      "Sends a message into the community room. `roomId` (the chat room id) comes from the path; `communityId` (used for the broadcast + activity bump) is required in the body. The server broadcasts `community:message:new` to the `community:<communityId>` Socket.IO room, denormalizes community activity (orders GET /communities/mine), and bumps the room for every member. Requires active membership; the room must not be suspended.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["communityId", "messageType"],
+            properties: {
+              communityId: {
+                type: "string" as const,
+                description:
+                  "The community-service Community.id (used for the broadcast + activity bump).",
+              },
+              message: {
+                type: "string" as const,
+                maxLength: 4000,
+                description: "Plain-text body (max 4000 chars).",
+              },
+              messageType: {
+                type: "string" as const,
+                description:
+                  "Community message kind (accepted case-insensitively; lower-case spelling + 'custom'). Normalized to UPPER-CASE on the wire.",
+              },
+              parentMessageId: {
+                type: "string" as const,
+                nullable: true,
+                description: "ID of the message being replied to.",
+              },
+              clientMessageId: {
+                type: "string" as const,
+                description: "Idempotency key.",
+              },
+              media: {
+                type: "object" as const,
+                description: "Structured media attachments.",
+                properties: {
+                  files: {
+                    type: "array" as const,
+                    items: { type: "object" as const },
+                  },
+                },
+              },
+              location: {
+                $ref: "#/components/schemas/ChatLocationAttachment",
+              },
+              contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+              sticker: { $ref: "#/components/schemas/ChatSticker" },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "201": {
+        description:
+          "Message sent. The data payload is the canonical community wire message (byte-identical to the Socket.IO `community:message:new`).",
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/ApiSuccessResponse" },
+                {
+                  type: "object" as const,
+                  properties: {
+                    data: {
+                      $ref: "#/components/schemas/ChatCommunityMessage",
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
 };
 
 const communityRoomSync = {
