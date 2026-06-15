@@ -500,6 +500,16 @@ export class PrivateMessageService {
     return this.messageRepo.addReactions(messageId, updated);
   }
 
+  /**
+   * Authorize a REST react/remove-reaction: the caller MUST be a participant of
+   * the private room. The shared `react()` primitive deliberately does NOT guard
+   * (the socket/gRPC path is pre-authorized by room membership at join), so the
+   * REST boundary enforces participation here — the same rule the read paths use.
+   */
+  async assertParticipant(roomId: string, userId: string): Promise<void> {
+    await assertPrivateParticipant(this.roomRepo, roomId, userId);
+  }
+
   async countMessages(roomId: string): Promise<number> {
     return this.messageRepo.countByRoom(roomId);
   }

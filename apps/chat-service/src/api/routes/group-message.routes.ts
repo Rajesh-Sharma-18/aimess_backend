@@ -3,6 +3,7 @@ import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateQuery } from "../middleware/validate-query.js";
+import { validateParams } from "../middleware/validate-params.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
   deleteGroupMessageSchema,
@@ -10,6 +11,8 @@ import {
   editGroupMessageSchema,
   sendGroupMessageBodySchema,
   markGroupReadBodySchema,
+  reactionBodySchema,
+  reactionParamSchema,
 } from "../validators/group-message.validator.js";
 import {
   messageTimelineQuerySchema,
@@ -114,6 +117,24 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     "/:roomId/messages/:messageId/reactions",
     authenticate,
     ctrl.getMessageReactions
+  );
+
+  // Add the caller's reaction (idempotent toggle-ON → message:reaction broadcast)
+  router.post(
+    "/:roomId/messages/:messageId/reactions",
+    authenticate,
+    sendLimit,
+    validateBody(reactionBodySchema),
+    ctrl.addReaction
+  );
+
+  // Remove the caller's reaction (idempotent toggle-OFF → message:reaction broadcast)
+  router.delete(
+    "/:roomId/messages/:messageId/reactions/:emoji",
+    authenticate,
+    sendLimit,
+    validateParams(reactionParamSchema),
+    ctrl.removeReaction
   );
 
   return router;

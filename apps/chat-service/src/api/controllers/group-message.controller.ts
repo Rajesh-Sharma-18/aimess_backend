@@ -530,4 +530,48 @@ export class GroupMessageController {
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
+
+  /**
+   * POST /groups/:roomId/messages/:messageId/reactions — add the caller's `emoji`
+   * reaction. Delegates to the orchestrator (active-member guard + idempotent
+   * toggle-ON + message:reaction broadcast). Returns the updated ChatReactionGroup[]
+   * under `{ reactions }`. Idempotent: re-adding an existing reaction is a no-op.
+   */
+  addReaction = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const { emoji } = req.body as { emoji: string };
+    const { reactions } = await this.orchestrator.reactDirect({
+      conversationType: "GROUP",
+      roomId,
+      messageId,
+      userId,
+      emoji,
+      op: "add",
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
+  });
+
+  /**
+   * DELETE /groups/:roomId/messages/:messageId/reactions/:emoji — remove the
+   * caller's `emoji` reaction. Delegates to the orchestrator (active-member guard +
+   * idempotent toggle-OFF + message:reaction broadcast). Returns the updated
+   * ChatReactionGroup[]. Idempotent: removing an absent reaction is a no-op.
+   */
+  removeReaction = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const emoji = req.params.emoji as string;
+    const { reactions } = await this.orchestrator.reactDirect({
+      conversationType: "GROUP",
+      roomId,
+      messageId,
+      userId,
+      emoji,
+      op: "remove",
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ reactions }));
+  });
 }

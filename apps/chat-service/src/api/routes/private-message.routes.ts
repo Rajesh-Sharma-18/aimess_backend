@@ -3,6 +3,7 @@ import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { validateBody } from "../middleware/validate-body.js";
+import { validateParams } from "../middleware/validate-params.js";
 import { createRateLimit } from "../../middleware/rate-limit.js";
 import {
   deleteMessageQuerySchema,
@@ -12,6 +13,8 @@ import {
   reportMessageSchema,
   sendPrivateMessageBodySchema,
   markReadBodySchema,
+  reactionBodySchema,
+  reactionParamSchema,
 } from "../validators/private-message.validator.js";
 import {
   messageTimelineQuerySchema,
@@ -169,6 +172,24 @@ export function createPrivateMessageRoutes(
     "/rooms/:roomId/messages/:messageId/reactions",
     authenticate,
     messageCtrl.getMessageReactions
+  );
+
+  // Add the caller's reaction (idempotent toggle-ON → message:reaction broadcast)
+  router.post(
+    "/rooms/:roomId/messages/:messageId/reactions",
+    authenticate,
+    sendLimit,
+    validateBody(reactionBodySchema),
+    messageCtrl.addReaction
+  );
+
+  // Remove the caller's reaction (idempotent toggle-OFF → message:reaction broadcast)
+  router.delete(
+    "/rooms/:roomId/messages/:messageId/reactions/:emoji",
+    authenticate,
+    sendLimit,
+    validateParams(reactionParamSchema),
+    messageCtrl.removeReaction
   );
 
   return router;

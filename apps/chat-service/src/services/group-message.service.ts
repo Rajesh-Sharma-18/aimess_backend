@@ -511,6 +511,16 @@ export class GroupMessageService {
     return this.messageRepo.addReactions(messageId, updated);
   }
 
+  /**
+   * Authorize a REST react/remove-reaction: the caller MUST be an ACTIVE member
+   * of the group. The shared `react()` primitive deliberately does NOT guard (the
+   * socket/gRPC path is pre-authorized at join), so the REST boundary enforces
+   * membership here — the same rule the read/send paths use.
+   */
+  async assertMember(roomId: string, userId: string): Promise<void> {
+    await assertGroupMember(this.memberRepo, roomId, userId);
+  }
+
   async forwardMessage(params: {
     sourceMessageId: string;
     targetRoomId: string;

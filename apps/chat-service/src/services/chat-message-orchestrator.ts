@@ -18,9 +18,12 @@ import {
   buildChatMessageEvent,
   buildCanonicalQuote,
   normalizeMessageType,
+  type ReactionGroup,
 } from "../lib/chat-message.serializer.js";
 import {
   resolveMediaUrl,
+  resolveMediaUrlMap,
+  urlFromMap,
   resolveContentFiles,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
@@ -121,6 +124,22 @@ export interface MarkReadDirectParams {
 export interface MarkReadDirectResult {
   /** The `sequenceNumber` of `upToMessageId` (read_to_seq high-water mark); 0 if missing. */
   readToSeq: number;
+}
+
+export interface ReactDirectParams {
+  conversationType: "PRIVATE" | "GROUP";
+  roomId: string;
+  messageId: string;
+  /** Reacting user (the access-token subject). */
+  userId: string;
+  emoji: string;
+  /** add = toggle the reaction ON if absent; remove = toggle it OFF if present. */
+  op: "add" | "remove";
+}
+
+export interface ReactDirectResult {
+  /** Canonical grouped reactions after the op, reactor avatars resolved-on-read. */
+  reactions: ReactionGroup[];
 }
 
 /**
@@ -520,6 +539,99 @@ export class ChatMessageOrchestrator {
       );
 
     return { readToSeq };
+  }
+
+  /**
+   * React to / un-react from a PRIVATE or GROUP message over REST and run the
+   * identical effect the gRPC `sendReaction` handler performs — broadcast the
+   * full `ChatReactionGroup[]` (`message:reaction`) on conv:<roomId> with reactor
+   * avatars resolved-on-read — so the REST and socket reaction paths produce the
+   * SAME side-effect through ONE place.
+   *
+   * The underlying `service.react()` is a TOGGLE; this wrapper makes POST=add and
+   * DELETE=remove IDEMPOTENT by first reading whether the caller already reacted
+   * with `emoji` and only toggling when the op would actually change state:
+   *   - op:"add"    && not present → react() (toggles ON)
+   *   - op:"remove" && present     → react() (toggles OFF)
+   *   - otherwise                  → NO-OP (no write, no broadcast)
+   *
+   * Authorization lives HERE at the REST boundary (participant for PRIVATE, active
+   * member for GROUP) — NOT inside the shared `react()` primitive, which stays
+   * un-guarded so the socket/gRPC path (pre-authorized at join) is unchanged.
+   */
+  async reactDirect(params: ReactDirectParams): Promise<ReactDirectResult> {
+    const conversationType: "PRIVATE" | "GROUP" =
+      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+
+    // Authorize the caller at the REST boundary (same rule as the read paths).
+    if (conversationType === "GROUP") {
+      await this.groupMessageService.assertMember(params.roomId, params.userId);
+    } else {
+      await this.privateMessageService.assertParticipant(
+        params.roomId,
+        params.userId
+      );
+    }
+
+    const service =
+      conversationType === "GROUP"
+        ? this.groupMessageService
+        : this.privateMessageService;
+
+    // 1. Read current state to decide whether the toggle must fire (idempotency).
+    const before = await service.getMessageReactions({
+      messageId: params.messageId,
+      roomId: params.roomId,
+      requesterId: params.userId,
+    });
+    const already =
+      before.reactions[params.emoji]?.selfReacted ??
+      (before.reactions[params.emoji]?.users.some(
+        (u) => u.userId === params.userId
+      ) ||
+        false);
+
+    // 2. Toggle only when the op would actually change state; else NO-OP.
+    const shouldToggle =
+      (params.op === "add" && !already) || (params.op === "remove" && already);
+    if (shouldToggle) {
+      await service.react(params.messageId, params.userId, params.emoji);
+    }
+
+    // 3. Re-read, map to ChatReactionGroup[], resolve reactor avatars on read,
+    //    and broadcast message:reaction exactly like the gRPC sendReaction handler.
+    const after = await service.getMessageReactions({
+      messageId: params.messageId,
+      roomId: params.roomId,
+      requesterId: params.userId,
+    });
+    const groups: ReactionGroup[] = Object.entries(after.reactions).map(
+      ([emoji, d]) => ({ emoji, count: d.count, users: d.users })
+    );
+    const avatarMap = await resolveMediaUrlMap(
+      groups.flatMap((g) => g.users.map((u) => u.avatar))
+    );
+    const resolvedGroups: ReactionGroup[] = groups.map((g) => ({
+      ...g,
+      users: g.users.map((u) => ({
+        ...u,
+        avatar: urlFromMap(avatarMap, u.avatar),
+      })),
+    }));
+
+    await this.redis.publish(
+      `conv:${params.roomId}`,
+      JSON.stringify({
+        event: "message:reaction",
+        data: {
+          messageId: params.messageId,
+          conversationId: params.roomId,
+          reactions: resolvedGroups,
+        },
+      })
+    );
+
+    return { reactions: resolvedGroups };
   }
 
   /**
