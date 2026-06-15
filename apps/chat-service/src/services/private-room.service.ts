@@ -201,4 +201,42 @@ export class PrivateRoomService {
     const updated = await this.privateRoomRepo.setUnmuted(roomId, userId);
     return updated ?? room;
   }
+
+  async archiveRoom(roomId: string, userId: string): Promise<PrivateRoom> {
+    const room = await this.privateRoomRepo.findByRoomId(roomId);
+    if (!room || !room.participants?.includes(userId))
+      throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const updated = await this.privateRoomRepo.setArchived(roomId, userId);
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:archived",
+          data: {
+            roomId,
+            type: "PRIVATE",
+            archivedAt: new Date().toISOString(),
+          },
+        })
+      )
+      .catch(() => {});
+    return updated ?? room;
+  }
+
+  async unarchiveRoom(roomId: string, userId: string): Promise<PrivateRoom> {
+    const room = await this.privateRoomRepo.findByRoomId(roomId);
+    if (!room || !room.participants?.includes(userId))
+      throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    const updated = await this.privateRoomRepo.setUnarchived(roomId, userId);
+    this.redis
+      .publish(
+        `user:${userId}`,
+        JSON.stringify({
+          event: "conv:unarchived",
+          data: { roomId, type: "PRIVATE" },
+        })
+      )
+      .catch(() => {});
+    return updated ?? room;
+  }
 }
