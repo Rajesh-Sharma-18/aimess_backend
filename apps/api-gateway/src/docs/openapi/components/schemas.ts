@@ -6547,6 +6547,56 @@ export const openApiSchemas = {
     },
     required: ["reactions"],
   },
+  /** Body for POST .../messages/{messageId}/reactions (add a reaction). */
+  ChatReactRequest: {
+    type: "object",
+    required: ["emoji"],
+    properties: {
+      emoji: {
+        type: "string",
+        minLength: 1,
+        maxLength: 32,
+        example: "👍",
+        description: "Unicode emoji to add as the caller's reaction.",
+      },
+    },
+  },
+  /**
+   * Grouped emoji reaction in the POST/DELETE reaction response. Unlike
+   * ChatReactionGroup (used by the GET reactions read), this omits `selfReacted`
+   * — the add/remove response mirrors the `message:reaction` broadcast, which is
+   * per-conversation (not per-viewer); a client derives selfReacted from
+   * users[].userId === myUserId.
+   */
+  ChatReactGroup: {
+    type: "object",
+    properties: {
+      emoji: { type: "string", example: "👍" },
+      count: { type: "integer", description: "Number of users who reacted." },
+      users: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatReactionUser" },
+      },
+    },
+    required: ["emoji", "count", "users"],
+  },
+  /**
+   * Response for POST/DELETE .../messages/{messageId}/reactions[/{emoji}].
+   * Carries the full grouped reaction state after the op — the same `reactions`
+   * array the server broadcasts on the `message:reaction` Socket.IO event.
+   */
+  ChatReactResponse: {
+    type: "object",
+    properties: {
+      reactions: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatReactGroup" },
+        description:
+          "Full grouped reaction state for the message after the op.",
+      },
+    },
+    required: ["reactions"],
+  },
   ChatEditMessageRequest: {
     type: "object",
     required: ["content"],

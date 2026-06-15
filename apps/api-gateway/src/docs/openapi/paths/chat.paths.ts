@@ -1786,6 +1786,59 @@ const privateMessageReactions = {
       "404": notFound,
     },
   },
+  post: {
+    tags: ["Chat — Private"],
+    summary: "Add a reaction to a private message",
+    description:
+      "Adds the caller's `emoji` reaction. **Idempotent**: re-adding an emoji the caller already reacted with is a no-op (no duplicate). The caller must be a participant of the room. " +
+      "On success the server broadcasts a `message:reaction` Socket.IO event on `conv:<roomId>` carrying the same `reactions` array as the REST response. To remove a reaction, use `DELETE .../reactions/{emoji}`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdPathParam, messageIdPathParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatReactRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Reaction added", "ChatReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const privateMessageRemoveReaction = {
+  delete: {
+    tags: ["Chat — Private"],
+    summary: "Remove a reaction from a private message",
+    description:
+      "Removes the caller's `emoji` reaction. **Idempotent**: removing an emoji the caller has not reacted with is a no-op. The caller must be a participant of the room. " +
+      "On success the server broadcasts a `message:reaction` Socket.IO event on `conv:<roomId>` carrying the same `reactions` array as the REST response.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      roomIdPathParam,
+      messageIdPathParam,
+      {
+        name: "emoji",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const, minLength: 1, maxLength: 32 },
+        description: "URL-encoded Unicode emoji to remove.",
+      },
+    ],
+    responses: {
+      ...successResponse("Reaction removed", "ChatReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
 };
 
 // =============================================================================
@@ -1863,6 +1916,59 @@ const groupMessageReactions = {
     responses: {
       ...successResponse("Reactions", "ChatMessageReactions"),
       "401": unauthorized,
+      "404": notFound,
+    },
+  },
+  post: {
+    tags: ["Chat — Groups"],
+    summary: "Add a reaction to a group message",
+    description:
+      "Adds the caller's `emoji` reaction. **Idempotent**: re-adding an emoji the caller already reacted with is a no-op (no duplicate). The caller must be an active member of the group. " +
+      "On success the server broadcasts a `message:reaction` Socket.IO event on `conv:<roomId>` carrying the same `reactions` array as the REST response. To remove a reaction, use `DELETE .../reactions/{emoji}`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdPathParam, messageIdPathParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatReactRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Reaction added", "ChatReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMessageRemoveReaction = {
+  delete: {
+    tags: ["Chat — Groups"],
+    summary: "Remove a reaction from a group message",
+    description:
+      "Removes the caller's `emoji` reaction. **Idempotent**: removing an emoji the caller has not reacted with is a no-op. The caller must be an active member of the group. " +
+      "On success the server broadcasts a `message:reaction` Socket.IO event on `conv:<roomId>` carrying the same `reactions` array as the REST response.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      roomIdPathParam,
+      messageIdPathParam,
+      {
+        name: "emoji",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const, minLength: 1, maxLength: 32 },
+        description: "URL-encoded Unicode emoji to remove.",
+      },
+    ],
+    responses: {
+      ...successResponse("Reaction removed", "ChatReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
       "404": notFound,
     },
   },
@@ -2088,10 +2194,14 @@ export const chatPaths = {
     privateMessageForward,
   "/chat/private/rooms/{roomId}/messages/{messageId}/reactions":
     privateMessageReactions,
+  "/chat/private/rooms/{roomId}/messages/{messageId}/reactions/{emoji}":
+    privateMessageRemoveReaction,
 
   // Groups — forward & reactions
   "/chat/groups/{roomId}/messages/{messageId}/forward": groupMessageForward,
   "/chat/groups/{roomId}/messages/{messageId}/reactions": groupMessageReactions,
+  "/chat/groups/{roomId}/messages/{messageId}/reactions/{emoji}":
+    groupMessageRemoveReaction,
 
   // Calls
   "/chat/calls": callHistory,
