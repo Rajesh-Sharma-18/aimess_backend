@@ -4,6 +4,7 @@ import { verifyAccessToken, extractBearerToken } from "@aimess/auth-jwt";
 import { logger } from "@aimess/logger";
 import { resolveLocale, type SupportedLocale } from "@aimess/constants";
 import { env } from "../config/env.js";
+import type { SocketUserDetails } from "./user-details.js";
 
 declare module "socket.io" {
   interface SocketData {
@@ -15,6 +16,8 @@ declare module "socket.io" {
     tokenExpiresAt: number;
     /** Raw JWT access token — kept so socket handlers can make authenticated internal HTTP calls on behalf of the user. Updated when auth:refresh succeeds. */
     accessToken: string;
+    /** Resolved once per namespace connection; reused for every typing broadcast. */
+    userDetails: SocketUserDetails;
   }
 }
 

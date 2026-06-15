@@ -210,6 +210,14 @@ channels:
         { $ref: "#/components/messages/CommunityMessageUnpin" }
       communityMessageUnpinned:
         { $ref: "#/components/messages/CommunityMessageUnpinned" }
+      communityTypingStart:
+        { $ref: "#/components/messages/CommunityTypingStartRequest" }
+      communityTypingStop:
+        { $ref: "#/components/messages/CommunityTypingStopRequest" }
+      communityTypingStartBroadcast:
+        { $ref: "#/components/messages/CommunityTypingStartBroadcast" }
+      communityTypingStopBroadcast:
+        { $ref: "#/components/messages/CommunityTypingStopBroadcast" }
 
   # -------------------------------------------------------------- /notify
   notify:
@@ -771,6 +779,33 @@ operations:
       `pinnedIds` is the COMPLETE remaining list after this unpin — replace, do not merge.
     messages:
       [{ $ref: "#/channels/community/messages/communityMessageUnpinned" }]
+  community.typingStart:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:start — broadcast to community:<communityId> (fire-and-forget)"
+    description: |
+      Fire-and-forget. Re-emit every ~3–5 s while typing; send one typing:stop
+      when typing ends. The gateway keeps a per-socket 6 s countdown and
+      auto-broadcasts typing:stop if no fresh typing:start arrives (and on
+      disconnect). The broadcast carries server-authoritative userDetails.
+    messages: [{ $ref: "#/channels/community/messages/communityTypingStart" }]
+  community.typingStop:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:stop — broadcast to community:<communityId> (fire-and-forget)"
+    messages: [{ $ref: "#/channels/community/messages/communityTypingStop" }]
+  community.onTypingStart:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:start — a member starts typing in community:<communityId>"
+    messages:
+      [{ $ref: "#/channels/community/messages/communityTypingStartBroadcast" }]
+  community.onTypingStop:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:stop — a member stops typing in community:<communityId>"
+    messages:
+      [{ $ref: "#/channels/community/messages/communityTypingStopBroadcast" }]
 
   # ================================================= /notify client -> server
   notify.fetch:
@@ -1076,15 +1111,16 @@ components:
         pending timers are flushed and typing:stop is broadcast for every
         active conversation. The RECEIVER should also auto-clear after ~6 s
         without a fresh typing:start (belt-and-suspenders).
-      payload: { $ref: "#/components/schemas/ConversationRef" }
+      payload: { $ref: "#/components/schemas/TypingRequest" }
       examples:
         - name: Start typing indicator
           payload:
             conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderName: "Alice"
     TypingStopRequest:
       name: "typing:stop"
       title: "typing:stop (request)"
-      payload: { $ref: "#/components/schemas/ConversationRef" }
+      payload: { $ref: "#/components/schemas/TypingRequest" }
       examples:
         - name: Stop typing indicator
           payload:
@@ -1509,8 +1545,15 @@ components:
       examples:
         - name: Peer started typing
           payload:
-            userId: "user_abc123"
             conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_abc123"
+            userDetails:
+              userId: "user_abc123"
+              username: "alice"
+              displayName: "Alice"
+              avatarUrl: "https://cdn.aimess.com/avatars/alice.jpg"
+            timestamp: "2026-06-15T10:00:10Z"
+            senderName: "Alice"
     TypingStopBroadcast:
       name: "typing:stop"
       title: "typing:stop (broadcast)"
@@ -1518,8 +1561,71 @@ components:
       examples:
         - name: Peer stopped typing
           payload:
-            userId: "user_abc123"
             conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_abc123"
+            userDetails:
+              userId: "user_abc123"
+              username: "alice"
+              displayName: "Alice"
+              avatarUrl: null
+            timestamp: "2026-06-15T10:00:16Z"
+            senderName: "Alice"
+    CommunityTypingStartRequest:
+      name: "typing:start"
+      title: "typing:start (community request)"
+      summary: |
+        Fire-and-forget. Re-emit every ~3–5 s while typing; send one typing:stop
+        when typing ends. Server-side auto-expiry: the gateway keeps a per-socket
+        6 s countdown and broadcasts typing:stop automatically if no fresh
+        typing:start arrives, and on disconnect for every active community.
+      payload: { $ref: "#/components/schemas/CommunityTypingRequest" }
+      examples:
+        - name: Start typing in a community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderName: "Alice"
+    CommunityTypingStopRequest:
+      name: "typing:stop"
+      title: "typing:stop (community request)"
+      payload: { $ref: "#/components/schemas/CommunityTypingRequest" }
+      examples:
+        - name: Stop typing in a community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+    CommunityTypingStartBroadcast:
+      name: "typing:start"
+      title: "typing:start (community broadcast)"
+      payload: { $ref: "#/components/schemas/TypingBroadcastPayload" }
+      examples:
+        - name: Member started typing
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_abc123"
+            userDetails:
+              userId: "user_abc123"
+              username: "alice"
+              displayName: "Alice"
+              avatarUrl: "https://cdn.aimess.com/avatars/alice.jpg"
+            timestamp: "2026-06-15T10:00:10Z"
+            senderName: "Alice"
+    CommunityTypingStopBroadcast:
+      name: "typing:stop"
+      title: "typing:stop (community broadcast)"
+      payload: { $ref: "#/components/schemas/TypingBroadcastPayload" }
+      examples:
+        - name: Member stopped typing
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_abc123"
+            userDetails:
+              userId: "user_abc123"
+              username: "alice"
+              displayName: "Alice"
+              avatarUrl: null
+            timestamp: "2026-06-15T10:00:16Z"
+            senderName: "Alice"
     PresenceStatus:
       name: "presence:status"
       title: "presence:status"
@@ -2288,6 +2394,50 @@ components:
       properties:
         conversationId: { type: string }
       required: [conversationId]
+    UserDetails:
+      type: object
+      description: |
+        Server-authoritative sender identity on typing broadcasts. Resolved once at
+        socket connection (gRPC UserService.BulkGetUserSnapshots + media presign);
+        never derived from client fields. `userId` = the authenticated socket user.
+      properties:
+        userId: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        avatarUrl:
+          {
+            type: string,
+            nullable: true,
+            description: "Presigned URL; null when no avatar.",
+          }
+      required: [userId, username, displayName, avatarUrl]
+    TypingRequest:
+      type: object
+      description: |
+        Inbound typing signal on /chat. `senderName` is optional and legacy — the
+        server overrides the broadcast senderName with the resolved displayName.
+      properties:
+        conversationId: { type: string }
+        senderName:
+          {
+            type: string,
+            description: "Legacy/optional; server prefers displayName.",
+          }
+      required: [conversationId]
+    CommunityTypingRequest:
+      type: object
+      description: |
+        Inbound typing signal on /community. Broadcasts to the
+        `community:<communityId>` room. `roomId`/`senderName` are optional.
+      properties:
+        communityId: { type: string }
+        roomId: { type: string, description: "Optional sub-room hint." }
+        senderName:
+          {
+            type: string,
+            description: "Legacy/optional; server prefers displayName.",
+          }
+      required: [communityId]
     CommunityRef:
       type: object
       properties:
@@ -2899,14 +3049,34 @@ components:
     TypingBroadcastPayload:
       type: object
       description: |
-        Fire-and-forget typing signal re-emitted to the room. The server keeps NO
-        typing state, so a crashed sender cannot be cleaned up server-side. EXPIRY
-        CONTRACT: the RECEIVER auto-clears a "typing…" indicator after ~6 s with no
-        fresh typing:start; the SENDER re-emits typing:start every ~3–5 s while
-        typing and one typing:stop when it ends.
+        Typing signal re-emitted to the room, enriched with server-authoritative
+        sender identity (userDetails + timestamp). EXPIRY CONTRACT: the gateway
+        keeps a per-socket 6 s countdown and auto-broadcasts typing:stop if no
+        fresh typing:start arrives (and on disconnect); the RECEIVER should also
+        auto-clear after ~6 s. The SENDER re-emits typing:start every ~3–5 s while
+        typing and one typing:stop when it ends. Legacy top-level `userId` /
+        `senderName` are retained for back-compat (senderName == displayName).
       properties:
-        userId: { type: string }
         conversationId: { type: string }
+        communityId:
+          {
+            type: string,
+            description: "Present on /community typing broadcasts.",
+          }
+        userId:
+          {
+            type: string,
+            description: "Legacy top-level sender id (kept for back-compat).",
+          }
+        userDetails: { $ref: "#/components/schemas/UserDetails" }
+        timestamp:
+          {
+            type: string,
+            format: date-time,
+            description: "ISO-8601 emit time.",
+          }
+        senderName:
+          { type: string, description: "Legacy = userDetails.displayName." }
     PresenceStatusPayload:
       type: object
       properties:

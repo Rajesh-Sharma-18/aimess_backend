@@ -465,11 +465,16 @@ export function SocketProvider({
     chat.on("read_sync", (p) => {
       /* my other device read — clear unread for p.conversationId */
     });
+    // p.userDetails ({ username, displayName, avatarUrl }) is resolved
+    // server-side at connect — render "Alice is typing…" with an avatar from
+    // p.userDetails.displayName / p.userDetails.avatarUrl, no profile fetch.
     chat.on("typing:start", (p) =>
       dispatch(
         chatActions.typingChanged({
           roomId: p.conversationId,
           userId: p.userId,
+          displayName: p.userDetails.displayName,
+          avatarUrl: p.userDetails.avatarUrl,
           typing: true,
         })
       )
@@ -831,6 +836,29 @@ export function useTyping(conversationId: string) {
 > `typing:start` (the server also auto-expires after 6 s, but expire client-side
 > too). The `typingByRoom` map stores `expiresAt`; filter it on render.
 
+> **Enriched broadcast.** The listen payload is now
+> `{ conversationId, userId, userDetails, timestamp, senderName }`. Render the
+> indicator straight from `p.userDetails.displayName` / `p.userDetails.avatarUrl`
+> (`avatarUrl` may be `null`) — **no profile fetch needed**. `userId` is
+> server-authoritative; `senderName` mirrors `displayName` for legacy clients.
+> The same shape arrives on the server's 6 s auto-expiry stop and the
+> disconnect-flush stop.
+
+**Community typing.** Identical UX on the `/community` namespace — emit
+`typing:start { communityId }` / `typing:stop { communityId }` (throttle the same
+way), and listen for the same enriched broadcast on `community.on("typing:start"|"typing:stop")`.
+The broadcast carries both `communityId` and `conversationId` (set equal to the
+communityId) plus `userDetails`/`timestamp`.
+
+```ts
+const { community } = getSockets();
+community.emit("typing:start", { communityId }); // throttled ≤ 1 per 3s
+community.on("typing:start", (p) =>
+  showTyping(p.communityId, p.userDetails.displayName, p.userDetails.avatarUrl)
+);
+community.on("typing:stop", (p) => hideTyping(p.communityId, p.userId));
+```
+
 **Presence.** Subscribe to peers you display; heartbeat to stay online.
 
 ```ts
@@ -986,6 +1014,10 @@ await emitAck(chat, "call:end", { callId }); // → call:ended { endedBy, durati
 `message:delivered` · `message:reaction` · `message:delete` · `read_sync` ·
 `pin:updated` · `typing:start` · `typing:stop` · `presence:status` ·
 `call:incoming` · `call:answered` · `call:declined` · `call:ended` · `call:ice`
+
+**Typing (client ↔ server, `/community`):** emit `typing:start` · `typing:stop`
+(`{ communityId }`); listen `typing:start` · `typing:stop` (enriched broadcast
+with `userDetails`/`timestamp`, room `community:<communityId>`).
 
 See [`SOCKET_EVENTS.md`](SOCKET_EVENTS.md) §10 for the full index including
 `/community` and `/notify`.

@@ -10,10 +10,13 @@ import { registerNotifyNamespace } from "./namespaces/notify.ns.js";
 import type { MessagingClient } from "../grpc/clients/messaging.client.js";
 import { createCommunityClient } from "../grpc/clients/community.client.js";
 import { createNotificationClient } from "../grpc/clients/notification.client.js";
+import { createUserClient } from "../grpc/clients/user.client.js";
+import type { MediaClient } from "../grpc/clients/media.client.js";
 
 export async function setupSockets(
   httpServer: HttpServer,
-  messagingClient: MessagingClient
+  messagingClient: MessagingClient,
+  mediaClient: MediaClient
 ): Promise<void> {
   const { pub, sub } = createGatewayRedisClients();
   await Promise.all([pub.connect(), sub.connect()]);
@@ -49,9 +52,23 @@ export async function setupSockets(
 
   const communityClient = createCommunityClient();
   const notificationClient = createNotificationClient();
+  const userClient = createUserClient();
 
-  registerChatNamespace(io, messagingClient, chatSub, pub);
-  registerCommunityNamespace(io, communityClient, communitySub);
+  registerChatNamespace(
+    io,
+    messagingClient,
+    chatSub,
+    pub,
+    userClient,
+    mediaClient
+  );
+  registerCommunityNamespace(
+    io,
+    communityClient,
+    communitySub,
+    userClient,
+    mediaClient
+  );
   registerNotifyNamespace(io, notificationClient, notifySub);
 
   io.engine.on(

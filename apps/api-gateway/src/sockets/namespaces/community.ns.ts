@@ -5,6 +5,12 @@ import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import type { CommunityClient } from "../../grpc/clients/community.client.js";
+import type { UserClient } from "../../grpc/clients/user.client.js";
+import type { MediaClient } from "../../grpc/clients/media.client.js";
+import {
+  resolveSocketUserDetails,
+  buildTypingBroadcast,
+} from "../user-details.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -17,6 +23,15 @@ const CommunityJoinSchema = z.object({
   roomId: z.string().min(1).optional(),
 });
 const CommunityLeaveSchema = z.object({ communityId: z.string().min(1) });
+const CommunityTypingSchema = z.object({
+  communityId: z.string().min(1),
+  // roomId is accepted for forward-compat/contract symmetry but is intentionally
+  // NOT used for fan-out: typing is community-scoped and broadcasts to the whole
+  // `community:<communityId>` room (the only room clients join). senderName is a
+  // legacy display fallback only — never an identity source (userId is server-side).
+  roomId: z.string().min(1).optional(),
+  senderName: z.string().max(100).optional(),
+});
 const CommunityMsgSendFileSchema = z.object({
   url: z.string().url().optional(),
   objectKey: z.string().min(1).max(500).optional(),
@@ -176,7 +191,9 @@ interface RedisSocketEvent {
 export function registerCommunityNamespace(
   io: SocketIOServer,
   communityClient: CommunityClient,
-  redisSub: Redis
+  redisSub: Redis,
+  userClient: UserClient,
+  mediaClient: MediaClient
 ): void {
   const community: Namespace = io.of("/community");
   community.use(gatewaySocketAuthMiddleware);
@@ -204,6 +221,72 @@ export function registerCommunityNamespace(
     const { userId, locale } = socket.data;
     void socket.join(`user:${userId}`);
     logger.debug(`/community connected userId=${userId}`);
+
+    // Resolve sender identity ONCE per connection (gRPC snapshot + avatar
+    // presign) so typing broadcasts carry userDetails without a per-event fetch.
+    // Fire-and-forget: a safe default is set immediately and overwritten when
+    // the resolved value is ready, keeping connect latency zero.
+    socket.data.userDetails = {
+      userId,
+      username: "",
+      displayName: "",
+      avatarUrl: null,
+    };
+    void resolveSocketUserDetails(userClient, mediaClient, userId).then(
+      (ud) => {
+        socket.data.userDetails = ud;
+      }
+    );
+
+    // ── Typing indicator (mirrors /chat) ────────────────────────────────────
+    // Fire-and-forget (no ack). Server holds a 6 s countdown per communityId;
+    // if typing:stop is never received the timer fires the stop automatically.
+    // On disconnect all pending timers are flushed and stops are broadcast.
+    const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+    const clearTyping = (communityId: string): void => {
+      const t = typingTimers.get(communityId);
+      if (t !== undefined) {
+        clearTimeout(t);
+        typingTimers.delete(communityId);
+      }
+    };
+    const communityTypingPayload = (communityId: string, senderName?: string) =>
+      buildTypingBroadcast(
+        userId,
+        socket.data.userDetails,
+        communityId,
+        new Date().toISOString(),
+        { senderName, communityId }
+      );
+
+    socket.on("typing:start", (payload: unknown) => {
+      const r = CommunityTypingSchema.safeParse(payload);
+      if (!r.success) return;
+      const { communityId, senderName } = r.data;
+      clearTyping(communityId);
+      community
+        .to(`community:${communityId}`)
+        .emit("typing:start", communityTypingPayload(communityId, senderName));
+      typingTimers.set(
+        communityId,
+        setTimeout(() => {
+          typingTimers.delete(communityId);
+          community
+            .to(`community:${communityId}`)
+            .emit("typing:stop", communityTypingPayload(communityId));
+        }, 6000)
+      );
+    });
+
+    socket.on("typing:stop", (payload: unknown) => {
+      const r = CommunityTypingSchema.safeParse(payload);
+      if (!r.success) return;
+      const { communityId, senderName } = r.data;
+      clearTyping(communityId);
+      community
+        .to(`community:${communityId}`)
+        .emit("typing:stop", communityTypingPayload(communityId, senderName));
+    });
 
     socket.on(
       "community:join",
@@ -667,6 +750,16 @@ export function registerCommunityNamespace(
 
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/community disconnected userId=${userId} reason=${reason}`);
+
+      // Flush all pending typing-expiry timers and broadcast stop so members are
+      // never stuck with a "typing…" indicator after the socket closes.
+      for (const [communityId, timer] of typingTimers) {
+        clearTimeout(timer);
+        community
+          .to(`community:${communityId}`)
+          .emit("typing:stop", communityTypingPayload(communityId));
+      }
+      typingTimers.clear();
     });
   });
 }

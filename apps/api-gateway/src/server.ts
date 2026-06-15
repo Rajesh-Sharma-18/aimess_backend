@@ -16,7 +16,7 @@ async function start() {
     const httpServer = createServer(app);
 
     // Attach Socket.IO (Redis adapter init + namespace registration)
-    await setupSockets(httpServer, messagingClient);
+    await setupSockets(httpServer, messagingClient, mediaClient);
 
     // Bounded EADDRINUSE retry: under `tsx watch`, a packages/* rebuild restarts
     // every service at once and the new instance can try to bind before the old

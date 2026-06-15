@@ -328,12 +328,59 @@ event is) · [`SOCKET_FRONTEND_GUIDE.md`](SOCKET_FRONTEND_GUIDE.md) (architectur
 
 ### `typing:start` / `typing:stop` (fire-and-forget — no ack)
 
+The inbound payload is unchanged (`senderName` optional). Every broadcast now
+carries server-authoritative `userDetails` + `timestamp`; the legacy top-level
+`userId`/`senderName` are kept for back-compat (`senderName` always equals
+`userDetails.displayName`). `userId` is the authenticated socket user — never
+client-trusted. The same enriched shape is emitted on the 6 s auto-expiry stop
+and the disconnect-flush stop.
+
 ```jsonc
 // → emit
-{ "conversationId": "conv_64f1a2b3c4d5e6f7" }
+{ "conversationId": "conv_64f1a2b3c4d5e6f7" } // senderName optional (legacy)
 
 // ← broadcast to conv:<id>
-{ "userId": "usr_a1b2c3", "conversationId": "conv_64f1a2b3c4d5e6f7" }
+{
+  "conversationId": "conv_64f1a2b3c4d5e6f7",
+  "userId": "usr_a1b2c3",
+  "userDetails": {
+    "userId": "usr_a1b2c3",
+    "username": "alice",
+    "displayName": "Alice",
+    "avatarUrl": "https://cdn.aimess.com/avatars/alice.jpg" // null when no avatar
+  },
+  "timestamp": "2026-06-15T10:00:10.000Z",
+  "senderName": "Alice"
+}
+```
+
+---
+
+## 5b. `/community` — typing
+
+### `typing:start` / `typing:stop` (fire-and-forget — no ack)
+
+Mirrors `/chat`, broadcast to the `community:<communityId>` room. Server holds a
+6 s per-socket auto-expiry and flushes a stop on disconnect.
+
+```jsonc
+// → emit
+{ "communityId": "comm_64f1a2b3c4d5e6f7" } // roomId?, senderName? optional
+
+// ← broadcast to community:<communityId>
+{
+  "conversationId": "comm_64f1a2b3c4d5e6f7", // == communityId
+  "communityId": "comm_64f1a2b3c4d5e6f7",
+  "userId": "usr_a1b2c3",
+  "userDetails": {
+    "userId": "usr_a1b2c3",
+    "username": "alice",
+    "displayName": "Alice",
+    "avatarUrl": "https://cdn.aimess.com/avatars/alice.jpg" // null when no avatar
+  },
+  "timestamp": "2026-06-15T10:00:10.000Z",
+  "senderName": "Alice"
+}
 ```
 
 ---

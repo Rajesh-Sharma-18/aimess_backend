@@ -5,6 +5,12 @@ import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
+import type { UserClient } from "../../grpc/clients/user.client.js";
+import type { MediaClient } from "../../grpc/clients/media.client.js";
+import {
+  resolveSocketUserDetails,
+  buildTypingBroadcast,
+} from "../user-details.js";
 import { env } from "../../config/env.js";
 
 // §3: bound free-text + array fields so a naive or abusive client cannot exceed
@@ -156,7 +162,9 @@ export function registerChatNamespace(
   io: SocketIOServer,
   messagingClient: MessagingClient,
   redisSub: Redis,
-  redisPub: Redis
+  redisPub: Redis,
+  userClient: UserClient,
+  mediaClient: MediaClient
 ): void {
   const chat: Namespace = io.of("/chat");
   chat.use(gatewaySocketAuthMiddleware);
@@ -253,6 +261,22 @@ export function registerChatNamespace(
     const deviceId = socket.data.sessionId ?? socket.id;
     void socket.join(`user:${userId}`);
     logger.debug(`/chat connected userId=${userId}`);
+
+    // Resolve sender identity ONCE per connection (gRPC snapshot + avatar
+    // presign) so every typing broadcast can carry userDetails without a
+    // per-event fetch. Fire-and-forget: a safe default is set immediately and
+    // the resolved value overwrites it when ready, keeping connect latency zero.
+    socket.data.userDetails = {
+      userId,
+      username: "",
+      displayName: "",
+      avatarUrl: null,
+    };
+    void resolveSocketUserDetails(userClient, mediaClient, userId).then(
+      (ud) => {
+        socket.data.userDetails = ud;
+      }
+    );
 
     // Presence key for FCM routing: notifications-service checks this before
     // pushing to avoid sending FCM to a user who is actively connected.
@@ -714,6 +738,18 @@ export function registerChatNamespace(
       }
     };
 
+    // Build the enriched typing broadcast body from the per-connection identity
+    // resolved at handshake (socket.data.userDetails). userId is always the
+    // authenticated socket user; legacy top-level userId/senderName are kept.
+    const typingPayload = (conversationId: string, senderName?: string) =>
+      buildTypingBroadcast(
+        userId,
+        socket.data.userDetails,
+        conversationId,
+        new Date().toISOString(),
+        { senderName }
+      );
+
     socket.on("typing:start", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
@@ -722,13 +758,9 @@ export function registerChatNamespace(
       // Reset the expiry window each time the client refreshes typing:start.
       clearTyping(conversationId);
 
-      chat.to(`conv:${conversationId}`).emit("typing:start", {
-        userId,
-        conversationId,
-        // V2 §2.8: include sender name when supplied so recipients don't need a
-        // profile fetch to render "Alice is typing…"
-        ...(senderName ? { senderName } : {}),
-      });
+      chat
+        .to(`conv:${conversationId}`)
+        .emit("typing:start", typingPayload(conversationId, senderName));
 
       typingTimers.set(
         conversationId,
@@ -736,7 +768,7 @@ export function registerChatNamespace(
           typingTimers.delete(conversationId);
           chat
             .to(`conv:${conversationId}`)
-            .emit("typing:stop", { userId, conversationId });
+            .emit("typing:stop", typingPayload(conversationId));
         }, 6000)
       );
     });
@@ -747,11 +779,9 @@ export function registerChatNamespace(
       const { conversationId, senderName } = r.data;
 
       clearTyping(conversationId);
-      chat.to(`conv:${conversationId}`).emit("typing:stop", {
-        userId,
-        conversationId,
-        ...(senderName ? { senderName } : {}),
-      });
+      chat
+        .to(`conv:${conversationId}`)
+        .emit("typing:stop", typingPayload(conversationId, senderName));
     });
 
     // Feature 1: Forward message
@@ -1122,7 +1152,7 @@ export function registerChatNamespace(
         clearTimeout(timer);
         chat
           .to(`conv:${conversationId}`)
-          .emit("typing:stop", { userId, conversationId });
+          .emit("typing:stop", typingPayload(conversationId));
       }
       typingTimers.clear();
 
