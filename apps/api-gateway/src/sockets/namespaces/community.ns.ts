@@ -356,9 +356,89 @@ export function registerCommunityNamespace(
         }
         communityClient
           .getCommunityMessages({ ...r.data, requesterId: userId })
-          .then((result) =>
-            ackOk(callback, "SOCKET_COMMUNITY_MESSAGES_FETCHED", locale, result)
-          )
+          .then((result) => {
+            // Reshape each gRPC DTO into the wire shape the FE expects.
+            // Real-time sends use `content: { text, files }` — history fetch
+            // must match that shape so mapCommunityMessage renders images.
+            const messages = result.messages.map((m) => {
+              let files: unknown[] = [];
+              if (m.attachmentsJson) {
+                try {
+                  const parsed = JSON.parse(m.attachmentsJson) as unknown[];
+                  if (Array.isArray(parsed)) files = parsed;
+                } catch (err) {
+                  logger.error(
+                    "Failed to parse attachmentsJson from community message:",
+                    err
+                  );
+                }
+              }
+              if (files.length === 0 && m.mediaKey) {
+                files = [{ url: m.mediaKey }];
+              }
+
+              let reactions: unknown[] = [];
+              if (m.reactionsJson) {
+                try {
+                  const parsed = JSON.parse(m.reactionsJson) as unknown[];
+                  if (Array.isArray(parsed)) reactions = parsed;
+                } catch (err) {
+                  logger.error(
+                    "Failed to parse reactionsJson from community message:",
+                    err
+                  );
+                }
+              }
+
+              let quoteData: unknown = null;
+              if (m.quoteDataJson) {
+                try {
+                  quoteData = JSON.parse(m.quoteDataJson);
+                } catch (err) {
+                  logger.error(
+                    "Failed to parse quoteDataJson from community message:",
+                    err
+                  );
+                }
+              }
+
+              return {
+                id: m.messageId,
+                messageId: m.messageId,
+                roomId: m.roomId,
+                senderId: m.senderId,
+                senderName: m.senderName || undefined,
+                senderAvatar: m.senderAvatar || undefined,
+                contentType: m.contentType,
+                content: {
+                  text: m.message || undefined,
+                  files: files.length > 0 ? files : undefined,
+                },
+                message: m.message,
+                reactions,
+                quoteData: quoteData || undefined,
+                sentAt: m.sentAt,
+              };
+            });
+            console.log(
+              "[community:messages:fetch] first raw gRPC msg:",
+              JSON.stringify(result.messages[0], null, 2)
+            );
+            console.log(
+              "[community:messages:fetch] first transformed msg:",
+              JSON.stringify(messages[0], null, 2)
+            );
+            return ackOk(
+              callback,
+              "SOCKET_COMMUNITY_MESSAGES_FETCHED",
+              locale,
+              {
+                messages,
+                nextCursor: result.nextCursor,
+                hasMore: result.hasMore,
+              }
+            );
+          })
           .catch((err: unknown) => {
             logger.warn(`/community messages:fetch gRPC error: ${String(err)}`);
             ackError(callback, "SERVICE_ERROR", locale);

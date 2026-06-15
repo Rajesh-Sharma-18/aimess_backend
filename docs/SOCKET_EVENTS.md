@@ -22,7 +22,7 @@ Redis channel and the gateway re-emits to the matching room.
 | -------------- | -------------------------------------------------------------------------------------- |
 | Transport path | `/socket.io/`                                                                          |
 | Base URL       | gateway origin (e.g. `https://api.aimess…` / `http://localhost:8000`)                  |
-| Namespaces     | `/chat`, `/community`, `/notify`                                                       |
+| Namespaces     | `/chat`, `/community`, `/notify`, `/stream`                                            |
 | Max payload    | `1 MB` (`maxHttpBufferSize`)                                                           |
 | State recovery | `connectionStateRecovery` — up to **2 min** disconnection window                       |
 | Heartbeat      | Socket.IO defaults — `pingInterval` **25 s** / `pingTimeout` **20 s** (not overridden) |
@@ -528,6 +528,69 @@ Each connected user's `notify:<userId>` Redis channel is subscribed
 
 ---
 
+## 6.5 `/stream` namespace
+
+Live-stream watch experience: viewer presence, live comments, and ephemeral
+reactions for an in-progress livestream. Delegates to **stream-service** over
+gRPC (`PostComment` / `GetComments`); stream-service is the **canonical owner of
+livestream comments** (`stream_comments` collection). The gateway validates
+payloads and re-emits stream-service Redis publishes to the stream room.
+
+Room: **`stream:<streamId>`** — joined when the client emits `stream:join`,
+left on `stream:leave` (and on disconnect). Comments are persisted (cursor-paged
+history via `GetComments`); reactions are **ephemeral** (fan-out only, never
+stored). Comment writes are **rate-limited** server-side → `RATE_LIMITED`
+(retryable) ack.
+
+### 6.5.1 Client → Server
+
+| Event            | Ack | Payload                                   | Notes                                                                                                  |
+| ---------------- | --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `stream:join`    | yes | `{ streamId }`                            | joins `stream:<streamId>` — **idempotent**; ack `data` = `{ viewerCount, recentComments }` (see below) |
+| `stream:leave`   | yes | `{ streamId }`                            | leaves `stream:<streamId>` — **idempotent** (leaving a non-joined stream is `success:true`)            |
+| `stream:comment` | yes | `{ streamId, message, clientCommentId? }` | post a live comment (`clientCommentId` = client idempotency key); **rate-limited** → `RATE_LIMITED`    |
+| `stream:react`   | no  | `{ streamId, emoji }`                     | send an **ephemeral** reaction — fire-and-forget, not persisted; fanned out as `stream:react:new`      |
+
+**`stream:join` ack `data`**
+
+```jsonc
+{
+  "viewerCount": 0, // current live viewers in stream:<streamId>
+  "recentComments": [
+    // oldest-first (chronological) page; live
+    // stream:comment:new events append after it
+    {
+      "id": "string",
+      "sentBy": "string", // author userId
+      "senderName": "string", // snapshot display name ("" if unknown)
+      "senderAvatar": "string", // snapshot avatar object key ("" if none)
+      "message": "string",
+      "createdAt": 0, // epoch ms
+    },
+  ],
+}
+```
+
+### 6.5.2 Server → Client
+
+Published by stream-service to the `stream:<streamId>` Redis channel; the gateway
+re-emits to the `stream:<streamId>` room.
+
+| Event                 | Room          | Payload                                                                                                                              | Trigger                                                               |
+| --------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `stream:comment:new`  | `stream:<id>` | `{ id, streamId, sentBy, senderName, senderAvatar, message, createdAt }` (same render fields as `recentComments[]`, plus `streamId`) | a viewer posted a comment (`stream:comment` accepted + persisted)     |
+| `stream:viewer_count` | `stream:<id>` | `{ streamId, viewerCount }`                                                                                                          | viewer count changed (a viewer joined/left)                           |
+| `stream:react:new`    | `stream:<id>` | `{ streamId, userId, emoji }`                                                                                                        | a viewer reacted — **ephemeral**, render the floating emoji and drop  |
+| `stream:status`       | `stream:<id>` | `{ streamId, status }`                                                                                                               | stream lifecycle changed (e.g. `LIVE` → `ENDED`); driven by SRS hooks |
+
+> Reactions are **not persisted** — `stream:react:new` is a transient fan-out
+> (animate and discard; never reconcile on reconnect). Comments **are** persisted;
+> on (re)join the `stream:join` ack returns `recentComments` so a late joiner sees
+> recent history without a separate fetch. On `stream:status` `ENDED`, clients
+> should stop the player and surface the post-stream state.
+
+---
+
 ## 7. End-to-end scenarios
 
 ### 7.1 Send a 1-1 message
@@ -891,6 +954,8 @@ emitter and listener:
 `community:message:edit` · `community:message:delete` · `community:message:pin` ·
 `community:message:unpin` · `typing:start` (`/community`) · `typing:stop` (`/community`) ·
 `notifications:fetch` · `notifications:mark_read`
+`community:message:unpin` · `notifications:fetch` · `notifications:mark_read` ·
+`stream:join` · `stream:leave` · `stream:comment` · `stream:react`
 
 **Server → Client:** `message:new` · `message:edited` · `conv:updated` ·
 `community:updated` · `chat:catchup:result` · `message:read` ·
@@ -902,6 +967,9 @@ emitter and listener:
 `community:catchup:result` · `community:member:joined` · `typing:start` (`/community`) ·
 `typing:stop` (`/community`) · `notification:new` ·
 `notification:count` · `notification:count_update`
+`community:catchup:result` · `community:member:joined` · `notification:new` ·
+`notification:count` · `notification:count_update` ·
+`stream:comment:new` · `stream:viewer_count` · `stream:react:new` · `stream:status`
 
 ---
 

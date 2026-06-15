@@ -1,7 +1,8 @@
 // =============================================================================
 // chat-service  ·  MongoDB  ·  chat_db
 // Owns: private messaging, group messaging, community rooms,
-//       notifications, livestream comments, pins.
+//       notifications, pins.
+//       (Livestream comments are owned by stream-service.)
 // =============================================================================
 
 generator client {
@@ -405,26 +406,6 @@ model Livestream {
 
   @@index([roomId])
   @@map("livestreams")
-}
-
-// -----------------------------------------------------------------------------
-// LivestreamComment
-// -----------------------------------------------------------------------------
-model LivestreamComment {
-  id              String   @id @default(auto()) @map("_id") @db.ObjectId
-  livestreamId    String
-  roomId          String
-  sentBy          String
-  senderName      String   @default("")
-  senderAvatar    String   @default("")
-  message         String
-  clientCommentId String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  @@index([livestreamId, createdAt(sort: Desc)])
-  @@index([livestreamId, sentBy, clientCommentId])
-  @@map("chat_livestream_comments")
 }
 
 // -----------------------------------------------------------------------------

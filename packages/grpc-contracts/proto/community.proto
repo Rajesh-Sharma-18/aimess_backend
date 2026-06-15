@@ -15,6 +15,10 @@ service CommunityService {
   // Admin dashboard: count of active (non-soft-deleted) communities.
   rpc GetCommunityCount (GetCommunityCountRequest) returns (CommunityCount);
 
+  // Authorization gate for stream-service: is `user_id` an ACTIVE member of
+  // `community_id`, and what is their role. Backs the go-live check.
+  rpc ValidateMembership (ValidateMembershipRequest) returns (ValidateMembershipResponse);
+
   // ---- Backoffice (admin panel) Community Management ----
   // Read-through queries for the admin Community Management screen + the
   // close/reopen moderation command. backoffice-service is the only caller.
@@ -248,6 +252,17 @@ message AdminSetModerationStatusResponse {
 message GetCommunityCountRequest {}
 message CommunityCount {
   int64 total = 1;
+}
+
+// ---- Membership validation (stream-service go-live gate) ----
+message ValidateMembershipRequest {
+  string community_id = 1;
+  string user_id      = 2;
+}
+message ValidateMembershipResponse {
+  bool   is_member = 1;  // true only when an ACTIVE member
+  string role      = 2;  // ADMIN | MODERATOR | MEMBER | "" when not a member
+  string status    = 3;  // ACTIVE | PENDING | BANNED | LEFT | "" when no row
 }
 
 message SendCommunityMessageRequest {

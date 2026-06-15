@@ -71,6 +71,18 @@ if (env.MEDIA_SERVICE_URL) {
   });
 }
 
+if (env.STREAM_SERVICE_URL) {
+  // Livestream REST surface. stream-service mounts its routes under /api/v1/*
+  // (e.g. /streams), so the gateway strips the /api/v1/streams mount and this
+  // prefix restores it.
+  v1Services.push({
+    segment: "streams",
+    target: env.STREAM_SERVICE_URL,
+    downstreamPrefix: "/api/v1/streams",
+    swaggerTag: "Streams",
+  });
+}
+
 const servicesByVersion: Record<ApiVersion, VersionedServiceConfig[]> = {
   v1: v1Services,
 };

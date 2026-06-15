@@ -196,6 +196,24 @@ export const SOCKET_MESSAGES = {
     en: "Community deleted successfully",
   },
 
+  // ── /stream — livestream ────────────────────────────────────────────────
+  SOCKET_STREAM_JOINED: {
+    vi: "Đã tham gia buổi phát trực tiếp",
+    en: "Joined the livestream successfully",
+  },
+  SOCKET_STREAM_LEFT: {
+    vi: "Đã rời buổi phát trực tiếp",
+    en: "Left the livestream successfully",
+  },
+  SOCKET_STREAM_COMMENT_POSTED: {
+    vi: "Đã gửi bình luận",
+    en: "Comment posted successfully",
+  },
+  SOCKET_STREAM_REACTED: {
+    vi: "Đã thêm cảm xúc",
+    en: "Reaction added successfully",
+  },
+
   // ── /notify ─────────────────────────────────────────────────────────────
   SOCKET_NOTIFICATIONS_FETCHED: {
     vi: "Lấy thông báo thành công",

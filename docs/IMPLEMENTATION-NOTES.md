@@ -7,6 +7,20 @@
 
 ---
 
+## stream-service V1 — livestream lifecycle, comments & SRS hooks (shipped 2026-06-15)
+
+New service (port **3007** HTTP / **4007** gRPC, MongoDB `stream_db`). First livestream wave: stream lifecycle, viewer comments (now owned here), SRS media-server integration, and the go-live gate. Built/reviewed via the agent team.
+
+- **Lifecycle REST** — `POST /api/v1/streams` (create / schedule), `GET /api/v1/streams` (list, e.g. active by community), `GET /api/v1/streams/:id` (detail), `POST /api/v1/streams/:id/stop` (end), `GET /api/v1/streams/:id/comments` (cursor-paged comment history).
+- **SRS `http_hooks`** — stream-service exposes `POST /internal/srs/hooks`; SRS calls back on publish/unpublish/play/stop. The endpoint is **key-based** (validates `SRS_HOOK_SECRET`) and **protocol-agnostic** — the same hook handles WHIP (WebRTC) and RTMP ingest, so switching/adding an ingest mode is an env swap (`STREAM_INGEST_MODES=whip,rtmp`), not a code change. SRS API/HLS/WHIP bases are env-driven (`SRS_API_URL`, `SRS_RTMP_HOST`, `SRS_HLS_BASE`, `SRS_WHIP_BASE`).
+- **gRPC** — `PostComment`, `GetComments`, `GetActiveStreamsByCommunityIds` (the last lets other services resolve which communities are currently live in one round-trip).
+- **Comment ownership moved to stream-service** — livestream comments are now canonically owned here (`stream_comments` collection). chat-service's duplicate was **dead code** (orphaned, zero live references) and was removed this wave: deleted `apps/chat-service/src/repositories/livestream-comment.repository.ts` + `apps/chat-service/src/services/livestream-comment.service.ts`, dropped the `LivestreamComment` model (`chat_livestream_comments`) from `apps/chat-service/prisma/schema.prisma`, and removed the orphaned compiled `apps/chat-service/dist/sockets/handlers/livestream.handler.{js,d.ts}` (chat-service no longer holds sockets — there is no `src/sockets/`). Pre-GA, so no data migration. chat-service `tsc --noEmit` is clean of all livestream errors after the cleanup (the cleanup removed 5 stale type errors; the only remaining 2 errors are a pre-existing, unrelated `private-room.controller.ts` `archiveRoom`/`unarchiveRoom` gap).
+- **Go-live gate** — `community.ValidateMembership` is the authorization gate for going live: a creator must be an ACTIVE member of the target community (`STREAM_REQUIRE_MEMBERSHIP`), with `STREAM_MAX_CONCURRENT_PER_COMMUNITY` capping simultaneous PENDING+LIVE streams.
+- **Real-time** — new SOCKET_EVENTS `/stream` namespace (room `stream:<streamId>`): client `stream:join` (ack `{ viewerCount, recentComments }`) / `stream:leave` / `stream:comment` (rate-limited) / `stream:react` (ephemeral); server `stream:comment:new` / `stream:viewer_count` / `stream:react:new` / `stream:status`. Comments persisted; reactions fan-out only.
+- **docker-compose** — added a `stream-service` block (container `aimess-stream-service`, `3007:3007` + `4007:4007`, `depends_on` mongodb/redis/srs, `host.docker.internal` extra_hosts) + a multi-stage `apps/stream-service/Dockerfile` (mirrors chat-service). Root `.env`/`.env.example` gained `NODE_ENV` / `JWT_ACCESS_SECRET` / `SRS_HOOK_SECRET` for compose substitution; `docker compose config` validates clean.
+
+---
+
 ## Media-URL standardization — resolve-on-read everywhere (shipped 2026-06-12)
 
 Every REST / gRPC / socket / FCM-push response now returns **fully-qualified presigned download URLs** for media; **no API leaks a raw MinIO object key**. Closes the 41 leaks in `docs/EVENT-MEDIA-AUDIT.md` §4. Run via the agent team (Pro Coders → DRY + Contract reviewers + Quality Tester).

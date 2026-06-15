@@ -1,0 +1,50 @@
+{
+  "name": "@aimess/stream-service",
+  "version": "1.0.0",
+  "description": "Livestreams (lifecycle, SRS integration, comments) — MongoDB / Prisma.",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch --include ./src --clear-screen=false src/server.ts",
+    "start": "node dist/server.js",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "build": "prisma generate && tsc",
+    "typecheck": "prisma generate && tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@aimess/auth-jwt": "workspace:*",
+    "@aimess/constants": "workspace:*",
+    "@aimess/errors": "workspace:*",
+    "@aimess/grpc-utils": "workspace:*",
+    "@aimess/logger": "workspace:*",
+    "@aimess/redis": "workspace:*",
+    "@aimess/shared-types": "workspace:*",
+    "@aimess/storage": "workspace:*",
+    "@aimess/utils": "workspace:*",
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.1",
+    "@prisma/client": "^6.19.0",
+    "amqplib": "^2.0.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.10.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.7",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.2",
+    "prisma": "^6.19.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

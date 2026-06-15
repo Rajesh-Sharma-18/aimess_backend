@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   PrismaClient,
   LivestreamComment,
 } from "../generated/prisma/index.js";
@@ -8,16 +8,25 @@ export class LivestreamCommentRepository {
 
   async createComment(data: {
     livestreamId: string;
-    roomId: string;
     sentBy: string;
-    senderName: string;
-    senderAvatar: string;
+    senderName?: string;
+    senderAvatar?: string;
     message: string;
-    clientCommentId: string | null;
+    clientCommentId?: string | null;
   }): Promise<LivestreamComment> {
-    return this.prisma.livestreamComment.create({ data });
+    return this.prisma.livestreamComment.create({
+      data: {
+        livestreamId: data.livestreamId,
+        sentBy: data.sentBy,
+        senderName: data.senderName ?? "",
+        senderAvatar: data.senderAvatar ?? "",
+        message: data.message,
+        clientCommentId: data.clientCommentId ?? null,
+      },
+    });
   }
 
+  /** Idempotency lookup — matching (livestreamId, sentBy, clientCommentId). */
   async findByClientCommentId(
     livestreamId: string,
     sentBy: string,
@@ -28,6 +37,10 @@ export class LivestreamCommentRepository {
     });
   }
 
+  /**
+   * Newest-first cursor page. When `before` is given, returns comments with
+   * id < before (older). Used by REST + gRPC GetComments.
+   */
   async findByLivestreamId(
     livestreamId: string,
     options: { limit: number; before?: string }

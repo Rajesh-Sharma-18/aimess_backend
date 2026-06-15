@@ -24,12 +24,16 @@ const envSchema = z.object({
   NOTIFICATION_SERVICE_URL: z.string().url().optional(),
   MEDIA_SERVICE_URL: z.string().url().optional(),
   MEDIA_GRPC_URL: z.string().min(1).default("0.0.0.0:4009"),
+  /** Stream service REST URL — gated proxy for /api/v1/streams/*. */
+  STREAM_SERVICE_URL: z.string().url().optional(),
   AUTH_GRPC_URL: z.string().optional(),
   USER_GRPC_URL: z.string().optional(),
   /** gRPC URLs for socket-facing services (required — sockets cannot operate without them). */
   MESSAGING_GRPC_URL: z.string().min(1),
   COMMUNITY_GRPC_URL: z.string().min(1),
   NOTIFICATION_GRPC_URL: z.string().min(1),
+  /** stream-service gRPC URL (livestream comments) — used by the /stream socket namespace. */
+  STREAM_GRPC_URL: z.string().min(1).default("0.0.0.0:4007"),
   /** Same JWT secret as auth-service — used by socket auth middleware. */
   JWT_ACCESS_SECRET: z.string().min(1),
   /** Downstream backoffice (admin) service. */

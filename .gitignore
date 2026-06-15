@@ -28,3 +28,9 @@ Thumbs.db
 .claude/worktrees/
 /graphify-out
 /testing-suite
+
+*.md
+tree-data.json
+community_*.json
+demo-frontend/
+demo-frontend/*.tsx

@@ -1,0 +1,50 @@
+syntax = "proto3";
+package stream;
+
+service StreamService {
+  // Post a livestream comment. Idempotent on (livestream_id, client_comment_id).
+  rpc PostComment (PostCommentRequest) returns (PostCommentResponse);
+  // Cursor-paginated comment history for a livestream (newest first).
+  rpc GetComments (GetCommentsRequest) returns (GetCommentsResponse);
+  // Bulk: which of the given communities currently have a LIVE stream.
+  // Backs community-service `isLive` on GET /communities/mine (fail-open).
+  rpc GetActiveStreamsByCommunityIds (GetActiveStreamsRequest) returns (GetActiveStreamsResponse);
+}
+
+// One livestream comment row, shared by PostComment + GetComments.
+message Comment {
+  string id            = 1;
+  string sent_by       = 2;  // author userId (auth-service AuthUser.id)
+  string sender_name   = 3;  // snapshot display name; "" if unknown
+  string sender_avatar = 4;  // snapshot avatar key/url; "" if none
+  string message       = 5;
+  int64  created_at    = 6;  // epoch ms
+}
+
+message PostCommentRequest {
+  string livestream_id    = 1;
+  string user_id          = 2;
+  string message          = 3;
+  string client_comment_id = 4; // "" if not provided; used for idempotency
+}
+message PostCommentResponse {
+  Comment comment = 1;
+}
+
+message GetCommentsRequest {
+  string livestream_id = 1;
+  int32  limit         = 2; // page size; 0 = server default
+  string before        = 3; // exclusive cursor (comment id); "" = latest page
+}
+message GetCommentsResponse {
+  repeated Comment comments = 1;
+  string next_cursor        = 2; // pass back as `before` for the next page
+  bool   has_more           = 3;
+}
+
+message GetActiveStreamsRequest {
+  repeated string community_ids = 1;
+}
+message GetActiveStreamsResponse {
+  repeated string live_community_ids = 1; // subset of community_ids currently LIVE
+}

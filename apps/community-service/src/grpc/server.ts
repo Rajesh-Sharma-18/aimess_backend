@@ -7,6 +7,7 @@ import { isAppError } from "@aimess/errors";
 
 import {
   CommunityMemberRole,
+  CommunityMemberStatus,
   CommunityModerationStatus,
   CommunityType,
 } from "../generated/prisma/index.js";
@@ -128,6 +129,41 @@ const communityImpl: grpc.UntypedServiceImplementation = {
           code: grpc.status.INTERNAL,
           message: "getCommunityCount failed",
         } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Membership gate for stream-service ("who can go live"): is_member is true
+  // ONLY for an ACTIVE member. role/status are the raw membership enum strings
+  // ("" when there is no membership row). Fail-safe: any error → not-a-member
+  // (never throw to the gRPC layer, so a transient DB blip can't grant access).
+  validateMembership: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { communityId?: string; userId?: string };
+        const communityId = (req.communityId ?? "").trim();
+        const userId = (req.userId ?? "").trim();
+
+        if (!communityId || !userId) {
+          callback(null, { isMember: false, role: "", status: "" });
+          return;
+        }
+
+        const row = await communityRepository.findMembership(
+          communityId,
+          userId
+        );
+        callback(null, {
+          isMember: row?.status === CommunityMemberStatus.ACTIVE,
+          role: row?.role ?? "",
+          status: row?.status ?? "",
+        });
+      } catch (err) {
+        logger.error("validateMembership gRPC handler failed", err);
+        callback(null, { isMember: false, role: "", status: "" });
       }
     })();
   },

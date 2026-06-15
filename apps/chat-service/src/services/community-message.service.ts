@@ -922,6 +922,11 @@ export class CommunityMessageService {
           )
         : new Map<string, Record<string, unknown>>();
 
+    const avatarKeys = [...snaps.values()]
+      .map((s) => s?.avatar as string)
+      .filter(Boolean);
+    const avatarUrlMap = await resolveMediaUrlMap(avatarKeys);
+
     const reactionGroups = Object.entries(updatedReactions)
       .filter(([, users]) => users.length > 0) // skip defensively if empty
       .map(([emoji, users]) => ({
@@ -929,10 +934,11 @@ export class CommunityMessageService {
         count: users.length,
         users: users.map((u) => {
           const snap = snaps.get(u.userId);
+          const rawAvatar = (snap?.avatar as string) || u.avatar || "";
           return {
             userId: u.userId,
             displayName: (snap?.displayName as string) || u.userName || "",
-            avatar: (snap?.avatar as string) || u.avatar || "",
+            avatar: avatarUrlMap.get(rawAvatar) || rawAvatar,
           };
         }),
       }));

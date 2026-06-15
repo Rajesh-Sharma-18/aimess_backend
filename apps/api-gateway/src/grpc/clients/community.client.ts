@@ -75,9 +75,17 @@ export interface CommunityMessageDto {
   messageId: string;
   roomId: string;
   senderId: string;
+  senderName: string;
+  senderAvatar: string;
   message: string;
   contentType: string;
   mediaKey: string;
+  /** JSON-serialised SocketFileAttachment[] with presigned URLs. */
+  attachmentsJson: string;
+  /** JSON-serialised reaction groups. */
+  reactionsJson: string;
+  /** JSON-serialised quote data, or empty string. */
+  quoteDataJson: string;
   sentAt: number;
 }
 

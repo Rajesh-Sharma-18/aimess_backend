@@ -1701,6 +1701,11 @@ export function createCommunityImpl(
               messageId: m.id,
               roomId: m.roomId,
               senderId: m.sentBy,
+              senderName: m.senderName ?? "",
+              // senderAvatar is already resolved to a presigned URL by toWire
+              senderAvatar:
+                ((m as unknown as Record<string, unknown>)
+                  .senderAvatar as string) ?? "",
               message: m.message ?? "",
               // getMessages now returns the wire shape: `contentType` is already
               // the canonical UPPER-CASE value (§1), so no re-normalize needed.
@@ -1709,8 +1714,15 @@ export function createCommunityImpl(
                 const att = Array.isArray(m.attachments)
                   ? (m.attachments[0] as Record<string, unknown> | undefined)
                   : undefined;
-                return (att?.objectKey as string) ?? "";
+                return (att?.url as string) ?? (att?.objectKey as string) ?? "";
               })(),
+              // Full attachment array (URLs already resolved by toWire/applyUrlMapToFiles).
+              // The api-gateway uses this to build content.files for the FE.
+              attachmentsJson: Array.isArray(m.attachments)
+                ? JSON.stringify(m.attachments)
+                : "[]",
+              reactionsJson: JSON.stringify(m.reactions ?? []),
+              quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
               sentAt:
                 m.createdAt instanceof Date
                   ? m.createdAt.getTime()
@@ -1803,8 +1815,8 @@ export function createCommunityImpl(
             sinceTs: number; // epoch-ms; 0 or absent → use sinceId mode
           };
 
-          const sinceTs =
-            req.sinceTs && req.sinceTs > 0 ? new Date(req.sinceTs) : undefined;
+          const sinceTsMs = Number(req.sinceTs);
+          const sinceTs = sinceTsMs > 0 ? new Date(sinceTsMs) : undefined;
 
           const result = await deps.communityMessageService.catchup({
             roomId: req.roomId,

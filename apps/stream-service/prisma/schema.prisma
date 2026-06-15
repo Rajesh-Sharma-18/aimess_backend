@@ -1,0 +1,72 @@
+// =============================================================================
+// stream-service  ·  MongoDB  ·  stream_db
+// Owns: livestream lifecycle (phone-camera WHIP + URL re-stream) and comments.
+//
+// creatorId / sentBy / userId here = auth-service AuthUser.id (UUID string,
+// no FK across DBs / services).
+//
+// NOTE: the local Mongo runs as a single-node replica set rs0
+// (directConnection=true). Prisma's Mongo connector requires a replica set for
+// @unique-indexed writes (e.g. streamKey).
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("STREAM_DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Livestream — one go-live session for a community, either ingest mode.
+//   sourceType: PHONE_CAMERA (WebRTC/WHIP) | URL (backend ffmpeg re-stream)
+//   status:     PENDING | LIVE | ENDED | CANCELLED
+// -----------------------------------------------------------------------------
+model Livestream {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  communityId String
+  creatorId   String
+  title       String
+  description String    @default("")
+  thumbnail   String?
+  sourceType  String // PHONE_CAMERA | URL
+  sourceUrl   String? // set for URL mode only
+  streamKey   String    @unique
+  status      String    @default("PENDING")
+  hlsUrl      String?
+  flvUrl      String?
+  viewerCount Int       @default(0)
+  peakViewers Int       @default(0)
+  livedAt     DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([communityId])
+  @@index([status])
+  @@map("livestreams")
+}
+
+// -----------------------------------------------------------------------------
+// LivestreamComment — realtime comments on a livestream.
+//   Cursor pagination on (livestreamId, createdAt desc); clientCommentId gives
+//   idempotency for at-least-once delivery from the gateway socket.
+// -----------------------------------------------------------------------------
+model LivestreamComment {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  livestreamId    String
+  sentBy          String
+  senderName      String   @default("")
+  senderAvatar    String   @default("")
+  message         String
+  clientCommentId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([livestreamId, createdAt(sort: Desc)])
+  @@index([livestreamId, sentBy, clientCommentId])
+  @@map("stream_comments")
+}

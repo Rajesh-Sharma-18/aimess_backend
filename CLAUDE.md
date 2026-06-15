@@ -9,8 +9,8 @@ Read **`docs/SOCKET_EVENTS.md`** for the real-time contract — Socket.IO namesp
 ## Quick facts
 
 - **Monorepo:** pnpm workspaces + Turborepo. Use **pnpm only**.
-- **Apps (today):** `api-gateway`, `auth-service`, `user-service`, `notifications-service`
-- **Planned apps:** `community-service`, `messaging-service`, `delivery-service`, `stream-service`, `call-service`
+- **Apps (today):** `api-gateway`, `auth-service`, `user-service`, `notifications-service`, `community-service`, `chat-service`, `media-service`, `backoffice-service`, `stream-service`
+- **Planned apps:** `delivery-service`, `call-service`
 - **Shared libs:** `packages/*` (`@aimess/logger`, `errors`, `constants`, `auth-jwt`, `redis`, …)
 - **After clone:** `pnpm install` → `pnpm build:packages` → copy `.env` files → `pnpm docker:up` → `pnpm db:generate` → `pnpm db:migrate:deploy` → `pnpm db:setup:community` (Mongo: db push + seed categories — required, not auto) → `pnpm dev`
 - **TypeScript ESM:** imports use `.js` extension (e.g. `./config/env.js`); `module: NodeNext`

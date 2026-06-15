@@ -2316,9 +2316,13 @@ export const communityService = {
       favRows.map((r) => [r.communityId, r.createdAt.toISOString()])
     );
 
-    const [communities, muteMap] = await Promise.all([
+    const [communities, muteMap, pendingRequestSet] = await Promise.all([
       communityRepository.findManyByIds(communityIds),
       loadMuteMap(callerId, communityIds),
+      communityRepository.findPendingRequestedCommunityIds(
+        callerId,
+        communityIds
+      ),
     ]);
 
     // Resolve membership in bulk via findMemberships if available, else serial.
@@ -2344,7 +2348,8 @@ export const communityService = {
           const base = await toDiscoverItem(
             community,
             muteMap.get(community.id) ?? null,
-            isJoined
+            isJoined,
+            pendingRequestSet.has(community.id)
           );
           return { ...base, likedAt: likedAtByCommunityId.get(community.id)! };
         })
