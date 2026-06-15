@@ -13,7 +13,7 @@ import {
 } from "../../lib/pagination.js";
 import {
   normalizeMessageType,
-  toWireMessage,
+  buildDeletePayload,
 } from "../../lib/chat-message.serializer.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
@@ -265,33 +265,28 @@ export class CommunityMessageController {
     // result.roomId is the correct channel for all legitimate messages). Using
     // the body-supplied communityId here would let a member of community A fan
     // the event onto community B's channel (cross-channel info disclosure).
+    // §1: community edit uses thin payload (not buildChatMessageEvent) until Phase 3.
+    // REST body == socket payload so the client uses one shape for both.
+    const editedPayload = {
+      messageId: result.id,
+      communityId: result.roomId,
+      roomId: result.roomId,
+      senderId: result.sentBy,
+      message: result.message ?? "",
+      contentType: normalizeMessageType(result.messageType),
+      editedAt:
+        result.editedAt instanceof Date
+          ? result.editedAt.getTime()
+          : Date.now(),
+    };
     await this.redis.publish(
       `community:${result.roomId}`,
-      JSON.stringify({
-        event: "community:message:edited",
-        data: {
-          messageId: result.id,
-          communityId: result.roomId,
-          roomId: result.roomId,
-          senderId: result.sentBy,
-          message: result.message ?? "",
-          // §1: unified UPPER casing — single client-facing field `contentType`
-          // in UPPER, matching community:message:new (not the raw lower value).
-          contentType: normalizeMessageType(result.messageType),
-          editedAt:
-            result.editedAt instanceof Date
-              ? result.editedAt.getTime()
-              : Date.now(),
-        },
-      })
+      JSON.stringify({ event: "community:message:edited", data: editedPayload })
     );
     res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse(
-          toWireMessage(result),
-          t("CHAT_MESSAGE_EDITED", req.locale)
-        )
+        new ApiResponse(editedPayload, t("CHAT_MESSAGE_EDITED", req.locale))
       );
   });
 
@@ -344,25 +339,21 @@ export class CommunityMessageController {
 
     // Emit real-time deletion event to the community room.
     // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
+    // §2.3: canonical tombstone — REST body == socket payload byte-for-byte.
+    const tombstone = buildDeletePayload({
+      conversationType: "COMMUNITY",
+      messageId: result.id,
+      roomId: result.roomId,
+      scope: type === "forEveryone" ? "forEveryone" : "forMe",
+      deletedBy: userId,
+    });
     if (result?.roomId) {
       await this.redis.publish(
         `community:${result.roomId}`,
-        JSON.stringify({
-          event: "community:message:deleted",
-          data: {
-            messageId: result.id,
-            communityId: result.roomId,
-            roomId: result.roomId,
-            deleteType: type === "forEveryone" ? "forEveryone" : "forMe",
-            deletedBy: userId,
-          },
-        })
+        JSON.stringify({ event: "community:message:deleted", data: tombstone })
       );
     }
-
-    res
-      .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result ? toWireMessage(result) : result));
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
   });
 
   /**

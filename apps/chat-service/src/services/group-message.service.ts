@@ -13,6 +13,7 @@ import {
 } from "../constants/media-limits.js";
 import {
   normalizeMessageType,
+  buildCanonicalQuote,
   buildReactionGroups,
   reactionUserIdMap,
   toggleStoredReaction,
@@ -862,6 +863,13 @@ export class GroupMessageService {
         wire.reactions = resolvedReactions;
       }
 
+      wire.conversationType = "GROUP";
+      wire.quoteData = buildCanonicalQuote(wire.quoteData);
+      wire.clientTs = Number(
+        (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+      );
+      wire.serverTs =
+        message.createdAt instanceof Date ? message.createdAt.getTime() : 0;
       return wire;
     });
   }
