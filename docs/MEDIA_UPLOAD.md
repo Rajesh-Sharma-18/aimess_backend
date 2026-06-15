@@ -116,6 +116,24 @@ Content-Type: image/jpeg
 | Audio    | `audio/mpeg` · `audio/ogg` · `audio/wav`                                       |
 | Document | `application/pdf` · `application/msword` · `…wordprocessingml.document` (docx) |
 
+> **2026-06-15 (Phase 1 — Telegram-parity formats).** The allowed MIME set above
+> was widened: **video** adds `video/x-matroska` (mkv) · `video/webm` ·
+> `video/x-msvideo` (avi) · `video/x-m4v`; **audio** adds `audio/mp4` /
+> `audio/x-m4a` (m4a) · `audio/aac` · `audio/flac`; **documents** add
+> `application/vnd.ms-excel` (xls) · `…spreadsheetml.sheet` (xlsx) ·
+> `application/vnd.ms-powerpoint` (ppt) · `…presentationml.presentation` (pptx) ·
+> `text/plain` · `text/csv` · `application/json` · `application/xml` / `text/xml`.
+> Not accepted yet: HEIC/HEIF and archives/source-code. The upload-url request
+> now takes an optional **`originalFileName`** (sanitized server-side; its
+> extension must match the declared `contentType` or the request is rejected
+> `415`). **Per-MIME upload caps:** images 25 MB, GIFs 30 MB; video/audio/
+> documents fall back to the category ceiling (`CHAT_*_MAX_BYTES`, 100 MB). On the
+> **download-url** endpoint, non-media objects (documents/data) are returned with
+> `Content-Disposition: attachment` (forced download); images/video/audio stay
+> inline. Message-kind `contentType` is now the single `@aimess/constants`
+> `CONTENT_TYPES` source of truth — the private/group send paths accept `AUDIO`
+> and `GIF` (previously community-only).
+
 **Size limits** are enforced when the message is **sent** (per-type, in the
 send validators / service guard — e.g. image vs. video vs. document caps from
 `CHAT_*_MAX_BYTES`), not at presign time. A PUT that exceeds the eventual

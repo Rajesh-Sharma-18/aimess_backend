@@ -1,6 +1,6 @@
 # AIMess Media Architecture — Principal Review & Telegram-Parity Plan
 
-**Date:** 2026-06-15 · **Scope:** all media surfaces (private/group/community chat, profiles, community/livestream/admin) · **Status:** review complete; implementation phased & gated on the decisions in §12.
+**Date:** 2026-06-15 · **Scope:** all media surfaces (private/group/community chat, profiles, community/livestream/admin) · **Status:** review complete; **Phase 1 foundation SHIPPED 2026-06-15** (commit `14315e2` + tests) — enum centralization, widened formats, per-MIME caps, validation hardening, safe-serving, `MediaScanner` hook. Phases 2–5 pending (§13).
 
 > **TL;DR.** The platform already has a clean, correct, presigned, resolve-on-read media spine (`@aimess/storage` + `@aimess/shared-types` + centralized `media-service`), rich per-file metadata, albums up to 30, and structured location/contact/sticker. Telegram parity is **not a rewrite** — it is four additive deltas: (1) **centralize the drifting message-kind enum**, (2) **widen the MIME/extension allow-lists & make size limits per-category**, (3) **harden upload validation** (extension + magic-byte + virus-scan hook + safe-serving headers), (4) **add the missing kinds** (POLL and friends) where the product wants them. Everything below is backward-compatible by construction.
 
