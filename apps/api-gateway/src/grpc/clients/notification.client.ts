@@ -77,7 +77,16 @@ export function createNotificationClient(): NotificationClient {
         userId: p.userId,
         cursor: p.cursor ?? "",
         limit: p.limit ?? 20,
-      })
+        // int64 created_at arrives as a string (proto-loader longs:String);
+        // coerce each notification's epoch-ms timestamp so the
+        // notifications:fetch ack matches the notification:new broadcast.
+      }).then((r) => ({
+        ...r,
+        notifications: r.notifications.map((n) => ({
+          ...n,
+          createdAt: Number(n.createdAt),
+        })),
+      }))
   );
   const markReadBreaker = makeBreaker(
     "notification.markNotificationsRead",
