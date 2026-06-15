@@ -27,6 +27,7 @@ import {
 
 import type { PrivateMessageService } from "./private-message.service.js";
 import type { GroupMessageService } from "./group-message.service.js";
+import type { GroupMemberService } from "./group-member.service.js";
 import type { CommunityMessageService } from "./community-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
@@ -115,6 +116,19 @@ export interface SendCommunityResult {
   message: Record<string, unknown>;
 }
 
+export interface MarkReadDirectParams {
+  conversationType: "PRIVATE" | "GROUP";
+  roomId: string;
+  readerId: string;
+  /** Highest message id the reader has now seen (read high-water mark). */
+  upToMessageId: string;
+}
+
+export interface MarkReadDirectResult {
+  /** The `sequenceNumber` of `upToMessageId` (read_to_seq high-water mark); 0 if missing. */
+  readToSeq: number;
+}
+
 /**
  * Single owner of message SEND for every conversation kind. Wraps the per-kind
  * CRUD service (`*MessageService.sendMessage`) with the identical post-write
@@ -129,6 +143,7 @@ export class ChatMessageOrchestrator {
   constructor(
     private readonly privateMessageService: PrivateMessageService,
     private readonly groupMessageService: GroupMessageService,
+    private readonly groupMemberService: GroupMemberService,
     private readonly communityMessageService: CommunityMessageService,
     private readonly userSnapshotService: UserSnapshotService,
     private readonly cacheRepo: CacheRepository,
@@ -419,6 +434,85 @@ export class ChatMessageOrchestrator {
       sequenceNumber: saved.sequenceNumber,
       message: wireEvent,
     };
+  }
+
+  /**
+   * Mark a PRIVATE or GROUP conversation read up to `upToMessageId` and run the
+   * identical post-write effects the gRPC `markMessagesRead` handler performs:
+   *   1. advance the reader's read high-water mark (private room read pointer or
+   *      group-member read pointer);
+   *   2. resolve the `read_to_seq` from the message's per-room sequenceNumber;
+   *   3. broadcast `message:read` to conv:<roomId> (the other participant(s));
+   *   4. fan out `read_sync` to user:<readerId> so the reader's OTHER devices
+   *      clear their unread badge (fire-and-forget).
+   * Mirrors the gRPC handler exactly so the REST and gRPC read paths produce the
+   * SAME side-effects through ONE code path. (Community read is coarser and has
+   * no socket broadcast today, so it intentionally does NOT route through here —
+   * the community controller calls communityMessageService.bulkMarkRead directly.)
+   */
+  async markReadDirect(
+    params: MarkReadDirectParams
+  ): Promise<MarkReadDirectResult> {
+    const conversationType: "PRIVATE" | "GROUP" =
+      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+
+    // Assigned in both branches below before it's read — no initializer needed.
+    let readToSeq: number;
+    if (conversationType === "GROUP") {
+      await this.groupMemberService.markRead({
+        roomId: params.roomId,
+        userId: params.readerId,
+        lastMessageId: params.upToMessageId,
+      });
+      readToSeq = await this.groupMessageService
+        .getMessageSequence(params.upToMessageId)
+        .catch(() => 0);
+    } else {
+      await this.privateMessageService.markRead({
+        roomId: params.roomId,
+        userId: params.readerId,
+        lastMessageId: params.upToMessageId,
+      });
+      readToSeq = await this.privateMessageService
+        .getMessageSequence(params.upToMessageId)
+        .catch(() => 0);
+    }
+
+    // Read receipt to the conversation room (the other participant(s)).
+    await this.redis.publish(
+      `conv:${params.roomId}`,
+      JSON.stringify({
+        event: "message:read",
+        data: {
+          conversationId: params.roomId,
+          readerId: params.readerId,
+          upToMessageId: params.upToMessageId,
+        },
+      })
+    );
+
+    // read_sync to the reader's OWN other devices so their unread badge clears
+    // too. Published to user:<readerId> (every device of that user joins this
+    // room on connect). Fire-and-forget — never blocks/rejects the read.
+    void this.redis
+      .publish(
+        `user:${params.readerId}`,
+        JSON.stringify({
+          event: "read_sync",
+          data: {
+            conversationId: params.roomId,
+            readerId: params.readerId,
+            read_to_seq: readToSeq,
+            unreadCount: 0,
+            conversationType,
+          },
+        })
+      )
+      .catch((e: unknown) =>
+        logger.warn(`read_sync publish failed: ${String(e)}`)
+      );
+
+    return { readToSeq };
   }
 
   /**

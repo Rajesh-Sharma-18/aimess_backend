@@ -77,6 +77,27 @@ export class PrivateMessageController {
       );
   });
 
+  /**
+   * POST /private/rooms/:roomId/read — mark this private conversation read up to
+   * `upToMessageId`. Delegates to the ChatMessageOrchestrator (advance read
+   * pointer + message:read receipt + read_sync to the reader's other devices),
+   * mirroring the gRPC markMessagesRead effects. Returns { ok, readToSeq }.
+   */
+  markRead = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { upToMessageId } = req.body as { upToMessageId: string };
+
+    const { readToSeq } = await this.orchestrator.markReadDirect({
+      conversationType: "PRIVATE",
+      roomId,
+      readerId: userId,
+      upToMessageId,
+    });
+
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true, readToSeq }));
+  });
+
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;

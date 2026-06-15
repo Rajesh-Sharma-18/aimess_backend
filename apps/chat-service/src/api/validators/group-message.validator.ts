@@ -81,6 +81,15 @@ export const sendGroupMessageBodySchema = z
     enforceMediaLimits(val.messageType, val.content.files, ctx);
   });
 
+/**
+ * REST body for `POST /groups/:roomId/read` (mark-read up to a message). roomId
+ * comes from the path; the caller id from the access token — so the body carries
+ * only the read high-water mark.
+ */
+export const markGroupReadBodySchema = z.object({
+  upToMessageId: z.string().min(1).max(150),
+});
+
 export const editGroupMessageSchema = z.object({
   content: z.object({
     text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),

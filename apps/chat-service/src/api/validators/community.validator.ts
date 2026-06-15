@@ -100,6 +100,16 @@ export const sendCommunityMessageBodySchema = z
     enforceMediaLimits(val.messageType, val.media?.files, ctx);
   });
 
+/**
+ * REST body for `POST /community/rooms/:roomId/read`. The body accepts
+ * `upToMessageId` for parity with private/group, but community read is COARSER:
+ * it advances the member's read pointer to "now" (no per-message high-water
+ * mark) and has no socket broadcast — see CommunityMessageController.markRead.
+ */
+export const markCommunityReadBodySchema = z.object({
+  upToMessageId: z.string().min(1).max(150),
+});
+
 export const editCommunityMessageSchema = z.object({
   // communityId is required so the edit broadcast reaches the right /community
   // room (clients join community:<communityId>, mirroring the send path).

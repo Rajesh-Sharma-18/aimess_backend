@@ -265,6 +265,7 @@ export function buildApp(): BuiltApp {
   const chatMessageOrchestrator = new ChatMessageOrchestrator(
     privateMessageService,
     groupMessageService,
+    groupMemberService,
     communityMessageService,
     userSnapshotService,
     cacheRepo,

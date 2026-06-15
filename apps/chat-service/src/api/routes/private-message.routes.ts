@@ -11,6 +11,7 @@ import {
   muteRoomSchema,
   reportMessageSchema,
   sendPrivateMessageBodySchema,
+  markReadBodySchema,
 } from "../validators/private-message.validator.js";
 import {
   messageTimelineQuerySchema,
@@ -83,6 +84,15 @@ export function createPrivateMessageRoutes(
     sendLimit,
     validateBody(sendPrivateMessageBodySchema),
     messageCtrl.sendMessage
+  );
+
+  // Mark this conversation read up to a message (REST read → orchestrator)
+  router.post(
+    "/rooms/:roomId/read",
+    authenticate,
+    sendLimit,
+    validateBody(markReadBodySchema),
+    messageCtrl.markRead
   );
 
   // Get messages in a room

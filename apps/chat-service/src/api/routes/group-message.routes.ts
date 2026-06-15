@@ -9,6 +9,7 @@ import {
   forwardGroupMessageSchema,
   editGroupMessageSchema,
   sendGroupMessageBodySchema,
+  markGroupReadBodySchema,
 } from "../validators/group-message.validator.js";
 import {
   messageTimelineQuerySchema,
@@ -40,6 +41,14 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     sendLimit,
     validateBody(sendGroupMessageBodySchema),
     ctrl.sendMessage
+  );
+  // Mark this group read up to a message (REST read → orchestrator)
+  router.post(
+    "/:roomId/read",
+    authenticate,
+    sendLimit,
+    validateBody(markGroupReadBodySchema),
+    ctrl.markRead
   );
   router.get(
     "/:roomId/messages",

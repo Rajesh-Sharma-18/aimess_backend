@@ -84,6 +84,21 @@ export class CommunityMessageController {
       );
   });
 
+  /**
+   * POST /community/rooms/:roomId/read — mark this community room read.
+   * Community read is COARSER than private/group: it advances the member's read
+   * pointer to "now" (read-to-now) rather than to a specific message, and has NO
+   * socket broadcast today — so this stays thin and calls bulkMarkRead directly
+   * instead of routing through the orchestrator. The body's `upToMessageId` is
+   * accepted (request parity) but not used for a per-message high-water mark.
+   */
+  markRead = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    await this.service.bulkMarkRead(userId, [roomId]);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
+  });
+
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;

@@ -404,6 +404,7 @@ const startServer = async () => {
     const chatMessageOrchestrator = new ChatMessageOrchestrator(
       privateMessageService,
       groupMessageService,
+      groupMemberService,
       communityMessageService,
       userSnapshotService,
       cacheRepo,
