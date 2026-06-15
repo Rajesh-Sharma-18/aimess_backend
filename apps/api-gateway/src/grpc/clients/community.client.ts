@@ -331,7 +331,9 @@ export function createCommunityClient(): CommunityClient {
           ...(p.contact ? { contact: p.contact } : {}),
           ...(p.sticker ? { sticker: p.sticker } : {}),
         }),
-      })
+        // int64 `sentAt` arrives as a string (proto-loader longs:String); coerce
+        // so the ack matches the `community:message:new` broadcast (a number).
+      }).then((r) => ({ ...r, sentAt: Number(r.sentAt) }))
   );
   const getMsgsBreaker = makeBreaker(
     "community.getCommunityMessages",
@@ -341,7 +343,11 @@ export function createCommunityClient(): CommunityClient {
         requesterId: p.requesterId,
         cursor: p.cursor ?? "",
         limit: p.limit ?? 30,
-      })
+        // int64 `sentAt` arrives as a string (proto-loader longs:String).
+      }).then((r) => ({
+        ...r,
+        messages: r.messages.map((m) => ({ ...m, sentAt: Number(m.sentAt) })),
+      }))
   );
   const catchupBreaker = makeBreaker(
     "community.communityCatchup",
@@ -373,7 +379,8 @@ export function createCommunityClient(): CommunityClient {
         communityId: p.communityId,
         userId: p.userId,
         text: p.text,
-      })
+        // int64 `editedAt` arrives as a string (proto-loader longs:String).
+      }).then((r) => ({ ...r, editedAt: Number(r.editedAt) }))
   );
   const deleteMsgBreaker = makeBreaker(
     "community.deleteCommunityMessage",
@@ -393,7 +400,8 @@ export function createCommunityClient(): CommunityClient {
         communityId: p.communityId,
         roomId: p.roomId,
         userId: p.userId,
-      })
+        // int64 `pinnedAt` arrives as a string (proto-loader longs:String).
+      }).then((r) => ({ ...r, pinnedAt: Number(r.pinnedAt) }))
   );
   const unpinMsgBreaker = makeBreaker(
     "community.unpinCommunityMessage",

@@ -331,9 +331,14 @@ export function createMessagingClient(): MessagingClient {
         senderName: p.senderName ?? "",
         senderAvatar: p.senderAvatar ?? "",
         clientTs: p.clientTs ?? 0,
-        // int64 sequence_number arrives as a string (proto-loader longs:String);
-        // coerce so the relayed ack matches the declared `number` type.
-      }).then((r) => ({ ...r, sequenceNumber: Number(r.sequenceNumber) }));
+        // int64 `sentAt` + `sequenceNumber` arrive as strings (proto-loader
+        // longs:String); coerce BOTH so the relayed ack matches the declared
+        // `number` types and is identical to the `message:new` broadcast.
+      }).then((r) => ({
+        ...r,
+        sentAt: Number(r.sentAt),
+        sequenceNumber: Number(r.sequenceNumber),
+      }));
     }
   );
 
@@ -354,9 +359,11 @@ export function createMessagingClient(): MessagingClient {
         }
       ).then((r) => ({
         ...r,
-        // int64 sequence_number arrives as a string (proto-loader longs:String).
+        // int64 `sentAt` + `sequenceNumber` arrive as strings (proto-loader
+        // longs:String); coerce both to numbers.
         messages: r.messages.map((m) => ({
           ...m,
+          sentAt: Number(m.sentAt),
           sequenceNumber: Number(m.sequenceNumber),
         })),
       }));
@@ -391,7 +398,12 @@ export function createMessagingClient(): MessagingClient {
         contentText: p.contentText ?? "",
         contentJson: p.contentJson ?? "",
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
-      }).then((r) => ({ ...r, sequenceNumber: Number(r.sequenceNumber) }));
+        // int64 `editedAt` + `sequenceNumber` arrive as strings; coerce both.
+      }).then((r) => ({
+        ...r,
+        editedAt: Number(r.editedAt),
+        sequenceNumber: Number(r.sequenceNumber),
+      }));
     }
   );
 
@@ -472,7 +484,12 @@ export function createMessagingClient(): MessagingClient {
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
         senderName: p.senderName ?? "",
         senderAvatar: p.senderAvatar ?? "",
-      }).then((r) => ({ ...r, sequenceNumber: Number(r.sequenceNumber) }));
+        // int64 `sentAt` + `sequenceNumber` arrive as strings; coerce both.
+      }).then((r) => ({
+        ...r,
+        sentAt: Number(r.sentAt),
+        sequenceNumber: Number(r.sequenceNumber),
+      }));
     }
   );
 
