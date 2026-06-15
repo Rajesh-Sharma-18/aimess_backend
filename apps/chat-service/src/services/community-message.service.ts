@@ -87,6 +87,27 @@ export class CommunityMessageService {
     private readonly userSnapshotService: UserSnapshotService
   ) {}
 
+  /**
+   * Idempotently provision (or re-activate) a community's chat room
+   * (GeneralRoom, id === communityId). Invoked synchronously by community-service
+   * at creation time via gRPC so a member's first send can't race ahead of the
+   * async `community.created` event (which remains a backstop). Delegates to the
+   * same repository upsert the event consumer and boot reconciler use, so all
+   * three provisioning paths produce identical rows.
+   */
+  async provisionRoom(params: {
+    communityId: string;
+    name: string;
+    owner?: string | null;
+    logo?: string | null;
+  }): Promise<void> {
+    await this.roomRepo.provisionForCommunity(params.communityId, {
+      name: params.name,
+      owner: params.owner ?? null,
+      logo: params.logo ?? null,
+    });
+  }
+
   async sendMessage(params: {
     roomId: string;
     sentBy: string;

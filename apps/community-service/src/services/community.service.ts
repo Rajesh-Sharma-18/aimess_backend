@@ -876,6 +876,22 @@ export const communityService = {
 
     // Provision the community's chat room in chat-service (GeneralRoom id ===
     // community.id) so community chat works and drives lastActivityAt ordering.
+    // Synchronous first: guarantees the room exists before this returns, so a
+    // member's first message can't race ahead of room creation. The async event
+    // below stays as a backstop for the rare case chat-service is briefly
+    // unavailable (provisionForCommunity is an idempotent upsert).
+    try {
+      await getChatClient().ensureCommunityRoom({
+        communityId: community.id,
+        name: community.name,
+        ownerId: creatorId,
+        avatarUrl: community.avatarUrl ?? null,
+      });
+    } catch (err) {
+      logger.warn(
+        `ensureCommunityRoom failed for community ${community.id}; relying on async community.created backstop: ${String(err)}`
+      );
+    }
     publishCommunityCreatedForChatSafe({
       communityId: community.id,
       name: community.name,

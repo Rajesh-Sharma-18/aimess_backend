@@ -4,6 +4,11 @@ package community;
 service CommunityService {
   rpc SendCommunityMessage (SendCommunityMessageRequest) returns (SendCommunityMessageResponse);
   rpc GetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
+  // Synchronous, idempotent provisioning of a community's chat room (GeneralRoom,
+  // id === communityId). community-service calls this during community creation so
+  // a member's first message can never race ahead of the async community.created
+  // event (which remains as a backstop). Safe to call repeatedly.
+  rpc EnsureCommunityRoom (EnsureCommunityRoomRequest) returns (EnsureCommunityRoomResponse);
   // Reconciliation: chat-service pulls communities (+ members) on boot to
   // provision any missing community chat rooms / sync RoomMember rows.
   rpc ListCommunities (ListCommunitiesRequest) returns (ListCommunitiesResponse);
@@ -78,6 +83,18 @@ message CommunityChatSummary {
 }
 message GetCommunityChatSummariesResponse {
   repeated CommunityChatSummary summaries = 1;
+}
+
+// ---- Synchronous chat-room provisioning (community creation) ----
+message EnsureCommunityRoomRequest {
+  string communityId = 1;
+  string name        = 2;
+  string ownerId     = 3;
+  string avatarUrl   = 4;
+}
+message EnsureCommunityRoomResponse {
+  bool   ok          = 1;
+  string communityId = 2;
 }
 
 // ---- Backoffice Community Management ----

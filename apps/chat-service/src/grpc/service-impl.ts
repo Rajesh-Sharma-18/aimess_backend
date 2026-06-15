@@ -788,21 +788,15 @@ export function createMessagingImpl(
               ? deps.groupMessageService
               : deps.privateMessageService;
 
-          // reactions shape: Record<emoji, Array<{userId, userName, avatar, memberId}>>
-          const reactionsMap: Record<
-            string,
-            Array<{
-              userId: string;
-              userName: string;
-              avatar: string;
-              memberId: string;
-            }>
-          > = {
-            [req.emoji]: [
-              { userId: req.userId, userName: "", avatar: "", memberId: "" },
-            ],
-          };
-          const msg = await reactionService.react(req.messageId, reactionsMap);
+          // §2.4 toggle: react() reads-modifies-writes the stored reactor map —
+          // adds the reactor on first react, removes it on a duplicate react
+          // (toggle-off) — and persists the canonical reactor-object shape. The
+          // getMessageReactions call below flattens it to the wire shape.
+          const msg = await reactionService.react(
+            req.messageId,
+            req.userId,
+            req.emoji
+          );
 
           // Flatten stored reactions for the gRPC ack (V1 thin shape — the
           // ReactionDto proto carries {userId, emoji}; the gateway maps it).
@@ -1457,6 +1451,42 @@ export function createCommunityImpl(
   deps: GrpcDeps
 ): grpc.UntypedServiceImplementation {
   return {
+    // Synchronous, idempotent room provisioning called by community-service at
+    // community-creation time so a member's first send can't race the async
+    // community.created event. Delegates to the same upsert as the event path.
+    ensureCommunityRoom: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            communityId: string;
+            name: string;
+            ownerId: string;
+            avatarUrl: string;
+          };
+          if (!req.communityId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "communityId is required",
+            });
+            return;
+          }
+          await deps.communityMessageService.provisionRoom({
+            communityId: req.communityId,
+            name: req.name || "",
+            owner: req.ownerId || null,
+            logo: req.avatarUrl || null,
+          });
+          callback(null, { ok: true, communityId: req.communityId });
+        } catch (err) {
+          logger.error(`gRPC ensureCommunityRoom error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     sendCommunityMessage: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>

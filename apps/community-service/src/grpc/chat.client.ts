@@ -37,6 +37,18 @@ export interface ChatClient {
     userId: string;
     communityIds: string[];
   }): Promise<number>;
+  /**
+   * Synchronously provision the community's chat room in chat-service. Called at
+   * community-creation time so a member's first message can't race ahead of the
+   * async `community.created` event. Resolves true on success; throws if
+   * chat-service is unreachable / the breaker is open (caller decides handling).
+   */
+  ensureCommunityRoom(params: {
+    communityId: string;
+    name: string;
+    ownerId: string;
+    avatarUrl: string | null;
+  }): Promise<boolean>;
 }
 
 export function createChatClient(): ChatClient {
@@ -80,6 +92,29 @@ export function createChatClient(): ChatClient {
   );
   bulkMarkBreaker.fallback(() => ({ updatedCount: 0 }));
 
+  const ensureRoomBreaker = makeBreaker(
+    "chat.ensureCommunityRoom",
+    (p: {
+      communityId: string;
+      name: string;
+      ownerId: string;
+      avatarUrl: string | null;
+    }) =>
+      makeGrpcCall<unknown, { ok?: boolean; communityId?: string }>(
+        client,
+        "ensureCommunityRoom",
+        {
+          communityId: p.communityId,
+          name: p.name,
+          ownerId: p.ownerId,
+          avatarUrl: p.avatarUrl ?? "",
+        }
+      )
+  );
+  // No fallback: the caller awaits this to guarantee the room exists, and on
+  // failure logs + relies on the async community.created backstop — a silent
+  // success fallback would re-open the send-before-provision race.
+
   return {
     getCommunityChatSummaries: async (params) => {
       if (!params.communityIds.length) return [];
@@ -120,6 +155,11 @@ export function createChatClient(): ChatClient {
         );
         return 0;
       }
+    },
+
+    ensureCommunityRoom: async (params) => {
+      const res = await ensureRoomBreaker.fire(params);
+      return Boolean(res.ok);
     },
   };
 }
