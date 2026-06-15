@@ -44,6 +44,43 @@ export const sendGroupMessageSchema = z
     enforceMediaLimits(val.messageType, val.content.files, ctx);
   });
 
+/**
+ * REST send body for `POST /groups/:roomId/messages`. roomId comes from the
+ * path, so only the message fields live in the body. clientMessageId is optional
+ * (the orchestrator defaults it) but recommended for idempotency.
+ */
+export const sendGroupMessageBodySchema = z
+  .object({
+    content: z.object({
+      text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+      urls: z.array(z.string()).default([]),
+      files: z
+        .array(
+          z.object({
+            objectKey: z.string().min(1).max(500).optional(),
+            url: z.string().url().optional(),
+            name: z.string().default(""),
+            size: z.number().default(0),
+            mime: z.string().default(""),
+            width: z.number().nullish(),
+            height: z.number().nullish(),
+            durationMs: z.number().nonnegative().optional(),
+          })
+        )
+        .default([]),
+      location: locationSchema.optional(),
+      contact: contactSchema.optional(),
+      sticker: stickerSchema.optional(),
+    }),
+    messageType: z.enum(CONTENT_TYPES),
+    parentMessageId: z.string().nullish(),
+    clientMessageId: z.string().min(1).max(100).nullish(),
+    clientTs: z.number().nonnegative().nullish(),
+  })
+  .superRefine((val, ctx) => {
+    enforceMediaLimits(val.messageType, val.content.files, ctx);
+  });
+
 export const editGroupMessageSchema = z.object({
   content: z.object({
     text: z.string().min(1).max(CHAT_TEXT_MAX_CHARS),

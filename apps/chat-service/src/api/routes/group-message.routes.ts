@@ -8,6 +8,7 @@ import {
   deleteGroupMessageSchema,
   forwardGroupMessageSchema,
   editGroupMessageSchema,
+  sendGroupMessageBodySchema,
 } from "../validators/group-message.validator.js";
 import {
   messageTimelineQuerySchema,
@@ -31,6 +32,14 @@ export function createGroupMessageRoutes(ctrl: GroupMessageController): Router {
     authenticate,
     validateQuery(messageSearchQuerySchema),
     ctrl.searchMessages
+  );
+  // Send a message into a group room (REST send → orchestrator)
+  router.post(
+    "/:roomId/messages",
+    authenticate,
+    sendLimit,
+    validateBody(sendGroupMessageBodySchema),
+    ctrl.sendMessage
   );
   router.get(
     "/:roomId/messages",

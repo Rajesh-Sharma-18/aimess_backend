@@ -54,6 +54,52 @@ export const sendCommunityMessageSchema = z
     enforceMediaLimits(val.messageType, val.media?.files, ctx);
   });
 
+/**
+ * REST send body for `POST /community/rooms/:roomId/messages`. roomId (the chat
+ * GeneralRoom id) comes from the path; communityId (the community-service
+ * Community.id, used for the broadcast + activity bump) is required in the body.
+ * messageType accepts the community lower-case spelling (+ "custom"). attachments
+ * mirror the gRPC handler's attachmentsJson (media.files / location / contact /
+ * sticker); the controller flattens them into the service attachments array.
+ */
+export const sendCommunityMessageBodySchema = z
+  .object({
+    communityId: z.string().min(1),
+    message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+    messageType: z
+      .string()
+      .min(1)
+      .transform((v) => v.toLowerCase())
+      .refine(isCommunityContentType, {
+        message: "Unsupported community messageType",
+      }),
+    parentMessageId: z.string().nullish(),
+    clientMessageId: z.string().min(1).max(100).nullish(),
+    media: z
+      .object({
+        files: z.array(
+          z.object({
+            url: z.string().url().optional(),
+            objectKey: z.string().optional(),
+            key: z.string().optional(),
+            mime: z.string().default(""),
+            size: z.number().default(0),
+            name: z.string().default(""),
+            width: z.number().optional(),
+            height: z.number().optional(),
+            durationMs: z.number().nonnegative().optional(),
+          })
+        ),
+      })
+      .optional(),
+    location: locationSchema.optional(),
+    contact: contactSchema.optional(),
+    sticker: stickerSchema.optional(),
+  })
+  .superRefine((val, ctx) => {
+    enforceMediaLimits(val.messageType, val.media?.files, ctx);
+  });
+
 export const editCommunityMessageSchema = z.object({
   // communityId is required so the edit broadcast reaches the right /community
   // room (clients join community:<communityId>, mirroring the send path).

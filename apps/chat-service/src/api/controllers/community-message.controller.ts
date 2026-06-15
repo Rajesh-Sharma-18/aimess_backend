@@ -17,13 +17,72 @@ import {
 } from "../../lib/chat-message.serializer.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
+import type { ChatMessageOrchestrator } from "../../services/chat-message-orchestrator.js";
 
 export class CommunityMessageController {
   constructor(
     private readonly service: CommunityMessageService,
     private readonly pinService: CommunityPinService,
-    private readonly redis: Redis | Cluster
+    private readonly redis: Redis | Cluster,
+    private readonly orchestrator: ChatMessageOrchestrator
   ) {}
+
+  /**
+   * POST /community/rooms/:roomId/messages — send a community message. Delegates
+   * to the ChatMessageOrchestrator (send + community:message:new broadcast +
+   * community-activity + community:updated bump). Active-membership and
+   * suspended-room guards + idempotency live in the service. roomId (chat
+   * GeneralRoom id) comes from the path; communityId (used for the broadcast) is
+   * in the body. Returns the canonical wire message (201; community sends have no
+   * idempotent-replay status distinction in the gRPC contract).
+   */
+  sendMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const body = req.body as {
+      communityId: string;
+      message: string;
+      messageType: string;
+      parentMessageId?: string | null;
+      clientMessageId?: string | null;
+      media?: { files: Array<Record<string, unknown>> };
+      location?: Record<string, unknown>;
+      contact?: Record<string, unknown>;
+      sticker?: Record<string, unknown>;
+    };
+
+    // Flatten the structured body into the service attachments array, mirroring
+    // the gRPC handler's priority: structured files > location > contact >
+    // sticker. The orchestrator re-splits location/contact/sticker for the
+    // broadcast shape via their `type` discriminator.
+    let attachments: Array<Record<string, unknown>> | undefined;
+    if (body.media?.files?.length) {
+      attachments = body.media.files;
+    } else if (body.location) {
+      attachments = [{ type: "location", ...body.location }];
+    } else if (body.contact) {
+      attachments = [{ type: "contact", ...body.contact }];
+    } else if (body.sticker) {
+      attachments = [{ type: "sticker", ...body.sticker }];
+    }
+
+    const result = await this.orchestrator.sendCommunity({
+      communityId: body.communityId,
+      roomId,
+      senderId: userId,
+      message: body.message,
+      messageType: body.messageType,
+      parentMessageId: body.parentMessageId ?? null,
+      clientMessageId: body.clientMessageId ?? null,
+      attachments,
+    });
+
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(
+        new ApiResponse(result.message, t("CHAT_MESSAGE_SENT", req.locale))
+      );
+  });
 
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;

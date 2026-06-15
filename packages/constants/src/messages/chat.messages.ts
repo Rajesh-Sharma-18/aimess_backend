@@ -107,6 +107,10 @@ export const CHAT_MESSAGES = {
   },
 
   // --- Mutation success ---
+  CHAT_MESSAGE_SENT: {
+    vi: "Đã gửi tin nhắn",
+    en: "Message sent",
+  },
   CHAT_MESSAGE_FORWARDED: {
     vi: "Đã chuyển tiếp tin nhắn",
     en: "Message forwarded",

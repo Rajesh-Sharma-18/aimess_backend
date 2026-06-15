@@ -19,13 +19,61 @@ import {
 } from "../../lib/chat-message.serializer.js";
 import type { GroupMessageService } from "../../services/group-message.service.js";
 import type { GroupPinService } from "../../services/group-pin.service.js";
+import type { ChatMessageOrchestrator } from "../../services/chat-message-orchestrator.js";
 
 export class GroupMessageController {
   constructor(
     private readonly messageService: GroupMessageService,
     private readonly pinService: GroupPinService,
-    private readonly redis: Redis | Cluster
+    private readonly redis: Redis | Cluster,
+    private readonly orchestrator: ChatMessageOrchestrator
   ) {}
+
+  /**
+   * POST /groups/:roomId/messages — send a group message. Delegates to the
+   * ChatMessageOrchestrator (send + message:new broadcast + conv:updated bump +
+   * FCM push fan-out to active members). Active-membership and idempotency live
+   * in the service. Returns the canonical wire message; 201 on a fresh insert,
+   * 200 on an idempotent replay (`idempotent: true`).
+   */
+  sendMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const body = req.body as {
+      content: {
+        text: string;
+        urls?: string[];
+        files?: Array<Record<string, unknown>>;
+        location?: Record<string, unknown>;
+        contact?: Record<string, unknown>;
+        sticker?: Record<string, unknown>;
+      };
+      messageType: string;
+      parentMessageId?: string | null;
+      clientMessageId?: string | null;
+      clientTs?: number | null;
+    };
+
+    const result = await this.orchestrator.sendDirect({
+      conversationType: "GROUP",
+      roomId,
+      senderId: userId,
+      content: body.content,
+      messageType: body.messageType,
+      parentMessageId: body.parentMessageId ?? null,
+      clientMessageId: body.clientMessageId ?? null,
+      clientTs: body.clientTs ?? null,
+    });
+
+    res
+      .status(result.alreadySent ? HTTP_STATUS.OK : HTTP_STATUS.CREATED)
+      .json(
+        new ApiResponse(
+          { ...result.message, idempotent: result.alreadySent },
+          t("CHAT_MESSAGE_SENT", req.locale)
+        )
+      );
+  });
 
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;

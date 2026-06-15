@@ -47,6 +47,32 @@ export const sendPrivateMessageSchema = z
     enforceMediaLimits(val.messageType, val.content.files, ctx);
   });
 
+/**
+ * REST send body for `POST /private/rooms/:roomId/messages`. roomId comes from
+ * the path, so only the message fields live in the body. receiverId (the peer)
+ * is still required — the private friendship gate needs both ids. clientMessageId
+ * is optional (the orchestrator defaults it) but recommended for idempotency.
+ */
+export const sendPrivateMessageBodySchema = z
+  .object({
+    receiverId: z.string().min(5).max(100),
+    content: z.object({
+      text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+      urls: z.array(z.string().url()).default([]),
+      files: z.array(messageFileSchema).default([]),
+      location: locationSchema.optional(),
+      contact: contactSchema.optional(),
+      sticker: stickerSchema.optional(),
+    }),
+    messageType: z.enum(CONTENT_TYPES),
+    parentMessageId: z.string().nullish(),
+    clientMessageId: z.string().min(1).max(100).nullish(),
+    clientTs: z.number().nonnegative().nullish(),
+  })
+  .superRefine((val, ctx) => {
+    enforceMediaLimits(val.messageType, val.content.files, ctx);
+  });
+
 export const markReadSchema = z.object({
   receiverId: z.string().min(4).max(150),
   roomId: z.string().min(4).max(150),

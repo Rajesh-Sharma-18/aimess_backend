@@ -44,6 +44,7 @@ import { CommunityPinService } from "./services/community-pin.service.js";
 import { NotificationService } from "./services/notification.service.js";
 import { CommunityRoomService } from "./services/community-room.service.js";
 import { CommunityMessageService } from "./services/community-message.service.js";
+import { ChatMessageOrchestrator } from "./services/chat-message-orchestrator.js";
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
 import { AdminGroupService } from "./services/admin-group.service.js";
 import { CallService } from "./services/call.service.js";
@@ -397,6 +398,18 @@ const startServer = async () => {
       groupMessageService
     );
 
+    // Single owner of message SEND + post-write effects (broadcast, inbox bump,
+    // FCM push) for private/group/community — shared by the REST send endpoints
+    // (and, in a later slice, the gRPC handlers).
+    const chatMessageOrchestrator = new ChatMessageOrchestrator(
+      privateMessageService,
+      groupMessageService,
+      communityMessageService,
+      userSnapshotService,
+      cacheRepo,
+      redis
+    );
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
@@ -422,13 +435,15 @@ const startServer = async () => {
       privateMessageCtrl: new PrivateMessageController(
         privateMessageService,
         privatePinService,
-        redis
+        redis,
+        chatMessageOrchestrator
       ),
       groupRoomCtrl: new GroupRoomController(groupRoomService),
       groupMessageCtrl: new GroupMessageController(
         groupMessageService,
         groupPinService,
-        redis
+        redis,
+        chatMessageOrchestrator
       ),
       groupMemberCtrl: new GroupMemberController(groupMemberService),
       groupInviteLinkCtrl: new GroupInviteLinkController(
@@ -440,7 +455,8 @@ const startServer = async () => {
       communityMessageCtrl: new CommunityMessageController(
         communityMessageService,
         communityPinService,
-        redis
+        redis,
+        chatMessageOrchestrator
       ),
       callCtrl: new CallController(callService),
       presenceCtrl: new PresenceController(presenceService),

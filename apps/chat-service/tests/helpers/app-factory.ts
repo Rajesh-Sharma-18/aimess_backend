@@ -39,6 +39,7 @@ import { NotificationService } from "../../src/services/notification.service.js"
 import { CommunityRoomService } from "../../src/services/community-room.service.js";
 import { CommunityMessageService } from "../../src/services/community-message.service.js";
 import { CommunityPinService } from "../../src/services/community-pin.service.js";
+import { ChatMessageOrchestrator } from "../../src/services/chat-message-orchestrator.js";
 import { UserSnapshotService } from "../../src/services/user-snapshot.service.js";
 import { CallService } from "../../src/services/call.service.js";
 import { PresenceService } from "../../src/services/presence.service.js";
@@ -261,6 +262,14 @@ export function buildApp(): BuiltApp {
     privateMessageService,
     groupMessageService
   );
+  const chatMessageOrchestrator = new ChatMessageOrchestrator(
+    privateMessageService,
+    groupMessageService,
+    communityMessageService,
+    userSnapshotService,
+    cacheRepo,
+    redis
+  );
 
   // -- Real controllers --
   const controllers: Controllers = {
@@ -270,13 +279,15 @@ export function buildApp(): BuiltApp {
     privateMessageCtrl: new PrivateMessageController(
       privateMessageService,
       privatePinService,
-      redis
+      redis,
+      chatMessageOrchestrator
     ),
     groupRoomCtrl: new GroupRoomController(groupRoomService),
     groupMessageCtrl: new GroupMessageController(
       groupMessageService,
       groupPinService,
-      redis
+      redis,
+      chatMessageOrchestrator
     ),
     groupMemberCtrl: new GroupMemberController(groupMemberService),
     groupInviteLinkCtrl: new GroupInviteLinkController(
@@ -288,7 +299,8 @@ export function buildApp(): BuiltApp {
     communityMessageCtrl: new CommunityMessageController(
       communityMessageService,
       communityPinService,
-      redis
+      redis,
+      chatMessageOrchestrator
     ),
     callCtrl: new CallController(callService),
     presenceCtrl: new PresenceController(presenceService),

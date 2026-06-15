@@ -10,6 +10,7 @@ import {
   editMessageSchema,
   muteRoomSchema,
   reportMessageSchema,
+  sendPrivateMessageBodySchema,
 } from "../validators/private-message.validator.js";
 import {
   messageTimelineQuerySchema,
@@ -73,6 +74,15 @@ export function createPrivateMessageRoutes(
     authenticate,
     validateQuery(messageSearchQuerySchema),
     messageCtrl.searchMessages
+  );
+
+  // Send a message into a room (REST send → orchestrator)
+  router.post(
+    "/rooms/:roomId/messages",
+    authenticate,
+    sendLimit,
+    validateBody(sendPrivateMessageBodySchema),
+    messageCtrl.sendMessage
   );
 
   // Get messages in a room
