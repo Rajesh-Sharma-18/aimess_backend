@@ -130,26 +130,21 @@ export const UPLOAD_CATEGORIES: Record<MediaCategoryKey, UploadTypeDef> = {
  * Extensions safe to render inline in a browser (the media kinds). Any other
  * stored object (documents, text, data) is served as a forced download so an
  * uploaded HTML/SVG/XML payload can never execute inline from our origin.
+ *
+ * DERIVED from CHAT_MIME (image/video/audio only) so a future codec added to the
+ * allow-list can't silently become download-only — or, worse, a future document
+ * type slip through as inline — by forgetting to update a second hand-kept list.
  */
-const INLINE_RENDER_EXTS = new Set([
-  "jpg",
-  "jpeg",
-  "png",
-  "webp",
-  "gif",
-  "mp4",
-  "mov",
-  "mkv",
-  "webm",
-  "avi",
-  "m4v",
-  "mp3",
-  "ogg",
-  "wav",
-  "m4a",
-  "aac",
-  "flac",
-]);
+const INLINE_RENDER_EXTS = new Set<string>(
+  Object.entries(CHAT_MIME)
+    .filter(
+      ([mime]) =>
+        mime.startsWith("image/") ||
+        mime.startsWith("video/") ||
+        mime.startsWith("audio/")
+    )
+    .map(([, ext]) => ext)
+);
 
 /**
  * Content-Disposition for a download of `objectKey`, decided by its extension:
