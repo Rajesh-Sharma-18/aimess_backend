@@ -23,6 +23,7 @@ export const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
 export const MEDIA_MESSAGE_TYPES = [
   "IMAGE",
   "VIDEO",
+  "AUDIO",
   "GIF",
   "VOICE",
   "DOCUMENT",

@@ -2,6 +2,7 @@ import type { MediaObject } from "@aimess/shared-types";
 import {
   buildUploadMediaObject,
   createUploadUrl,
+  createPresignedViewUrl,
   toMediaObject,
   assertObjectKeyOwnedBy,
   deleteObject,
@@ -18,7 +19,11 @@ import {
   storageClient,
   mediaUrlStrategy,
 } from "../config/storage.js";
-import { UPLOAD_CATEGORIES, type MediaCategoryKey } from "../config/uploads.js";
+import {
+  UPLOAD_CATEGORIES,
+  dispositionForKey,
+  type MediaCategoryKey,
+} from "../config/uploads.js";
 import { env } from "../config/env.js";
 
 export type GenerateUploadUrlParams = {
@@ -26,6 +31,8 @@ export type GenerateUploadUrlParams = {
   contentType: string;
   contentLength: number;
   ownerId: string;
+  /** Optional client-declared original filename (display metadata only). */
+  fileName?: string;
 };
 
 export type GenerateUploadUrlResult = {
@@ -71,6 +78,7 @@ export const mediaService = {
         contentType: params.contentType,
         contentLength: params.contentLength,
         ownerId: params.ownerId,
+        fileName: params.fileName,
         expiresIn: env.MINIO_PRESIGN_EXPIRES_IN,
       });
 
@@ -90,6 +98,7 @@ export const mediaService = {
           ...buildUploadMediaObject({
             result,
             contentType: params.contentType,
+            fileName: result.fileName,
           }),
           downloadUrl: download.downloadUrl,
           downloadUrlExpiresIn: download.downloadUrlExpiresIn,
@@ -99,6 +108,7 @@ export const mediaService = {
       if (error instanceof StorageValidationError) {
         switch (error.code) {
           case "UNSUPPORTED_CONTENT_TYPE":
+          case "EXTENSION_MIME_MISMATCH":
             throw new UnsupportedMediaTypeError(
               "UPLOAD_UNSUPPORTED_CONTENT_TYPE"
             );
@@ -161,6 +171,21 @@ export const mediaService = {
       prefixes: [def.keyPrefix],
       strategy: mediaUrlStrategy,
     });
+
+    // Safe-serving: force a download (Content-Disposition: attachment) for
+    // non-media object types so an uploaded HTML/SVG/XML payload can never
+    // render inline from our origin. Media (image/video/audio) stay inline. Only
+    // the small set of document/data downloads is re-signed.
+    const disposition = dispositionForKey(params.objectKey);
+    if (disposition && media.objectKey) {
+      media.downloadUrl = await createPresignedViewUrl({
+        client: presignClient,
+        bucket: def.bucket,
+        objectKey: params.objectKey,
+        expiresIn: env.MINIO_VIEW_EXPIRES_IN,
+        responseContentDisposition: disposition,
+      });
+    }
 
     return {
       downloadUrl: media.downloadUrl ?? "",

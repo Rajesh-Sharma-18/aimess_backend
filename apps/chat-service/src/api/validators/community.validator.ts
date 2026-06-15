@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isCommunityContentType } from "@aimess/constants";
 
 import {
   locationSchema,
@@ -14,19 +15,17 @@ export const sendCommunityMessageSchema = z
   .object({
     roomId: z.string().min(5).max(50),
     message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
-    messageType: z.enum([
-      "text",
-      "image",
-      "video",
-      "voice",
-      "audio",
-      "document",
-      "gif",
-      "location",
-      "contact",
-      "sticker",
-      "custom",
-    ]),
+    // Single source of truth: derived from @aimess/constants CONTENT_TYPES. The
+    // community path uses the lower-case spelling (+ "custom"); accept
+    // case-insensitively and normalize to lower-case for storage parity with
+    // pre-existing docs.
+    messageType: z
+      .string()
+      .min(1)
+      .transform((v) => v.toLowerCase())
+      .refine(isCommunityContentType, {
+        message: "Unsupported community messageType",
+      }),
     parentMessageId: z.string().nullish(),
     clientMessageId: z.string().optional(),
     username: z.string().min(5).max(50),

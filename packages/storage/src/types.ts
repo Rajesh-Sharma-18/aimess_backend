@@ -1,7 +1,8 @@
 export type StorageValidationCode =
   | "UNSUPPORTED_CONTENT_TYPE"
   | "FILE_EMPTY"
-  | "FILE_TOO_LARGE";
+  | "FILE_TOO_LARGE"
+  | "EXTENSION_MIME_MISMATCH";
 
 /** Raised by storage validators; services map the code to their own error. */
 export class StorageValidationError extends Error {

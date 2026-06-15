@@ -34,6 +34,14 @@ export type CreatePresignedViewUrlParams = {
   bucket: string;
   objectKey: string;
   expiresIn: number;
+  /**
+   * Optional S3 response-header overrides baked into the presigned GET. Used for
+   * safe-serving (e.g. `attachment; filename="…"` to force download of
+   * documents). Omitted → the object is served with its stored headers (current
+   * behavior), so every existing caller is unaffected.
+   */
+  responseContentDisposition?: string;
+  responseContentType?: string;
 };
 
 /** Short-lived presigned GET URL for a private object. */
@@ -43,6 +51,8 @@ export async function createPresignedViewUrl(
   const command = new GetObjectCommand({
     Bucket: params.bucket,
     Key: params.objectKey,
+    ResponseContentDisposition: params.responseContentDisposition,
+    ResponseContentType: params.responseContentType,
   });
 
   return getSignedUrl(params.client, command, {

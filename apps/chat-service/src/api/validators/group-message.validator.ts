@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CONTENT_TYPES } from "@aimess/constants";
 
 import {
   locationSchema,
@@ -34,17 +35,8 @@ export const sendGroupMessageSchema = z
       contact: contactSchema.optional(),
       sticker: stickerSchema.optional(),
     }),
-    messageType: z.enum([
-      "TEXT",
-      "IMAGE",
-      "DOCUMENT",
-      "VIDEO",
-      "VOICE",
-      "SYSTEM",
-      "LOCATION",
-      "CONTACT",
-      "STICKER",
-    ]),
+    // Single source of truth: @aimess/constants CONTENT_TYPES (UPPER-CASE).
+    messageType: z.enum(CONTENT_TYPES),
     parentMessageId: z.string().nullish(),
     clientMessageId: z.string().nullish(),
   })
