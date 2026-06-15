@@ -1908,7 +1908,6 @@ export function createCommunityImpl(
           const result = await deps.communityMessageService.reactToMessage({
             messageId: req.messageId,
             userId: req.userId,
-            communityId: req.communityId,
             emoji: req.emoji,
           });
 
@@ -1925,12 +1924,12 @@ export function createCommunityImpl(
           }));
 
           await redis.publish(
-            `community:${req.communityId}`,
+            `community:${result.roomId}`,
             JSON.stringify({
               event: "community:message:reaction",
               data: {
                 messageId: result.messageId,
-                communityId: result.communityId,
+                communityId: result.roomId,
                 reactions: resolvedReactions,
               },
             })
@@ -1938,7 +1937,7 @@ export function createCommunityImpl(
 
           callback(null, {
             messageId: result.messageId,
-            communityId: result.communityId,
+            communityId: result.roomId,
             reactions: resolvedReactions.map((g) => ({
               emoji: g.emoji,
               count: g.count,
@@ -1983,12 +1982,12 @@ export function createCommunityImpl(
             content: { text: req.text },
           });
           await redis.publish(
-            `community:${req.communityId}`,
+            `community:${result.roomId}`,
             JSON.stringify({
               event: "community:message:edited",
               data: {
                 messageId: result.id,
-                communityId: req.communityId,
+                communityId: result.roomId,
                 roomId: result.roomId,
                 senderId: result.sentBy,
                 message: result.message ?? "",
@@ -2002,7 +2001,7 @@ export function createCommunityImpl(
           );
           callback(null, {
             messageId: result.id,
-            communityId: req.communityId,
+            communityId: result.roomId,
             roomId: result.roomId,
             editedAt:
               result.editedAt instanceof Date

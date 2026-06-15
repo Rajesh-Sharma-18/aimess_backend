@@ -444,7 +444,7 @@ describe("createCommunityImpl — broadcast media resolve-on-read", () => {
       communityMessageService: {
         reactToMessage: jest.fn(async () => ({
           messageId: "cm1",
-          communityId: "comm1",
+          roomId: "comm1",
           reactions: [
             {
               emoji: "🔥",

@@ -383,8 +383,10 @@ describe("PATCH /messages/:messageId (edit)", () => {
       .send({ communityId: "comm-1", content: { text: "edited" } });
 
     expect(res.status).toBe(200);
+    // After the cross-channel fix: broadcast goes to the message's OWN room
+    // (result.roomId), NOT the body-supplied communityId ("comm-1").
     expect(mocks.redis.publish).toHaveBeenCalledWith(
-      "community:comm-1",
+      `community:${ROOM}`,
       expect.stringContaining("community:message:edited")
     );
   });

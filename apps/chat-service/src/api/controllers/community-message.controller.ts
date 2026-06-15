@@ -252,7 +252,7 @@ export class CommunityMessageController {
   editMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { communityId, content } = req.body as {
+    const { content } = req.body as {
       communityId: string;
       content: { text: string };
     };
@@ -261,16 +261,17 @@ export class CommunityMessageController {
       userId,
       content,
     });
-    // Broadcast on the /community channel: clients join community:<communityId>
-    // rooms and the gateway only psubscribes "community:*", so the edit must
-    // mirror the send path (community:<communityId> / community:message:new).
+    // Broadcast on the message's OWN room (GeneralRoom.id === communityId, so
+    // result.roomId is the correct channel for all legitimate messages). Using
+    // the body-supplied communityId here would let a member of community A fan
+    // the event onto community B's channel (cross-channel info disclosure).
     await this.redis.publish(
-      `community:${communityId}`,
+      `community:${result.roomId}`,
       JSON.stringify({
         event: "community:message:edited",
         data: {
           messageId: result.id,
-          communityId,
+          communityId: result.roomId,
           roomId: result.roomId,
           senderId: result.sentBy,
           message: result.message ?? "",
@@ -297,7 +298,7 @@ export class CommunityMessageController {
   reactToMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { communityId, emoji } = req.body as {
+    const { emoji } = req.body as {
       communityId: string;
       emoji: string;
     };
@@ -305,18 +306,17 @@ export class CommunityMessageController {
     const result = await this.service.reactToMessage({
       messageId,
       userId,
-      communityId,
       emoji,
     });
 
     this.redis
       .publish(
-        `community:${communityId}`,
+        `community:${result.roomId}`,
         JSON.stringify({
           event: "community:message:reaction",
           data: {
             messageId: result.messageId,
-            communityId: result.communityId,
+            communityId: result.roomId,
             reactions: result.reactions,
           },
         })
