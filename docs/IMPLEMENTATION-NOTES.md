@@ -7,6 +7,45 @@
 
 ---
 
+## Phase 1 — Chat contract unification: REST == Socket payload (shipped 2026-06-15)
+
+Single canonical serializer (`chat-service/src/lib/chat-message.serializer.ts`) is now the **only** output boundary for all chat write paths. The frontend maps one TypeScript interface across REST and Socket.IO with no transformation layer.
+
+### What shipped
+
+| Change                                                                                                                                                                                                   | Files                                             | Commit    |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | --------- |
+| `buildDeletePayload()` — canonical delete tombstone for both transports                                                                                                                                  | `chat-message.serializer.ts`                      | `17efdcb` |
+| Private/group/community **edit** REST body == `message:edited` socket payload                                                                                                                            | `{private,group,community}-message.controller.ts` | `17efdcb` |
+| Private/group/community **delete** REST body == `message:delete` socket payload                                                                                                                          | same                                              | `17efdcb` |
+| Private/group **forward** REST body == `message:new` socket payload                                                                                                                                      | same                                              | `17efdcb` |
+| Group history `enrichForWire` gains canonical `conversationType`, `quoteData`, `clientTs`, `serverTs`                                                                                                    | `group-message.service.ts`                        | `17efdcb` |
+| `@aimess/shared-types` chat DTO module (`packages/shared-types/src/chat.ts`)                                                                                                                             | `packages/shared-types/`                          | `17efdcb` |
+| OpenAPI: new `ChatDeleteTombstone`, `ChatCommunityDeleteTombstone`, `ChatCommunityEditResponse` schemas; `ChatWireMessage` gains `isForwarded`; edit/delete/forward endpoints reference specific schemas | `openapi/components/schemas.ts`, `chat.paths.ts`  | `2955efe` |
+
+### Wire shapes (non-breaking — V1 aliases kept)
+
+- **Edit (private/group)** — `buildChatMessageEvent()` output: flat sender fields, `content` object, canonical `quoteData`, epoch-ms `serverTs`/`editedAt`. V1 aliases (`messageId`/`conversationId`/`contentType`/`sentAt`) preserved.
+- **Delete tombstone (private/group)** — `{ messageId, conversationId, type, deletedBy, sequenceNumber, deletedType? }`. Identical to the `message:delete` socket broadcast.
+- **Delete tombstone (community)** — `{ messageId, communityId, roomId, deleteType, deletedBy }`. Identical to the `community:message:deleted` socket broadcast.
+- **Community edit** — thin payload `{ messageId, communityId, roomId, content, contentType, editedAt, sequenceNumber }`. Matches `community:message:edited` socket event. Full `buildChatMessageEvent` canonicalization deferred to Phase 3 (requires community socket V2 contract change).
+- **Forward (private/group)** — `buildChatMessageEvent()` output; identical shape to the `message:new` socket payload.
+
+### Key files
+
+- `apps/chat-service/src/lib/chat-message.serializer.ts` — `buildChatMessageEvent`, `buildDeletePayload`, `buildCanonicalQuote`
+- `apps/chat-service/src/api/controllers/{private,group,community}-message.controller.ts` — single hoisted event const used for both Redis publish and REST response (no divergence possible)
+- `apps/chat-service/src/services/group-message.service.ts` — `enrichForWire` now emits canonical fields
+- `packages/shared-types/src/chat.ts` — shared TS DTOs: `MessageDto`, `ReplyDto`, `DeletePayloadDto`, `CommunityEditResponseDto`, `MessageSyncDto`
+
+### Deferred
+
+- Conform serializer argument types to shared-types DTOs (type-only import; no runtime change) — Phase 2
+- Community edit full canonicalization via `buildChatMessageEvent` — Phase 3
+- Conformance tests: `buildDeletePayload` unit test + REST == socket integration test
+
+---
+
 ## Media-URL standardization — resolve-on-read everywhere (shipped 2026-06-12)
 
 Every REST / gRPC / socket / FCM-push response now returns **fully-qualified presigned download URLs** for media; **no API leaks a raw MinIO object key**. Closes the 41 leaks in `docs/EVENT-MEDIA-AUDIT.md` §4. Run via the agent team (Pro Coders → DRY + Contract reviewers + Quality Tester).
