@@ -26,6 +26,7 @@ import {
 } from "../lib/chat-message.serializer.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
 import { assertCommunityMember } from "../lib/access-guard.js";
+import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
   resolveMediaUrlMap,
   urlFromMap,
@@ -136,6 +137,12 @@ export class CommunityMessageService {
       }
     }
 
+    // Allocate a per-room monotonic sequence number (parity with private/group
+    // rooms) so community sync/pagination can use gap-safe keyset cursors. Runs
+    // after the idempotency pre-check so replays don't burn numbers; a rare
+    // concurrent-race P2002 below may leave a one-number gap (acceptable).
+    const sequenceNumber = await this.roomRepo.allocateSequence(params.roomId);
+
     const entity: Record<string, unknown> = {
       roomId: params.roomId,
       sentBy: params.sentBy,
@@ -149,6 +156,7 @@ export class CommunityMessageService {
       messageType: normalizeMessageType(params.messageType),
       parentMessageId: params.parentMessageId || null,
       clientMessageId: params.clientMessageId || null,
+      sequenceNumber,
     };
 
     if (params.attachments?.length) {
@@ -174,9 +182,10 @@ export class CommunityMessageService {
         entity as Parameters<typeof this.messageRepo.save>[0]
       );
     } catch (err) {
-      // P2002 = unique constraint violation from the sparse idempotency index
-      const pe = err as { code?: string };
-      if (pe?.code === "P2002" && params.clientMessageId) {
+      // Concurrent send with the same clientMessageId lost the unique-index
+      // insert (E11000/P2002 from the sparse idempotency index) — re-read and
+      // return the winner so both collapse to one message.
+      if (isDuplicateKeyError(err) && params.clientMessageId) {
         const dup = await this.messageRepo.findOne({
           roomId: params.roomId,
           sentBy: params.sentBy,

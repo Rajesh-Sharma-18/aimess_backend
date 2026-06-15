@@ -296,6 +296,7 @@ model GeneralRoom {
   listPinedMessage Json      @default("[]")
   pinnedCount      Int       @default(0)
   lastPinnedAt     DateTime?
+  lastSequence     Int       @default(0)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -320,6 +321,7 @@ model GeneralRoomMessage {
   messageType     String   @default("text")
   attachments     Json     @default("[]")
   clientMessageId String?
+  sequenceNumber  Int      @default(0)
   deletedBy       Json     @default("[]")
   deletedForAll   Boolean  @default(false)
   reports         Json     @default("[]")
@@ -332,6 +334,7 @@ model GeneralRoomMessage {
   @@index([roomId, sentBy])
   @@index([deletedForAll])
   @@index([roomId, messageType, createdAt(sort: Desc)])
+  @@index([roomId, sequenceNumber])
   @@map("general_room_messages")
 }
 

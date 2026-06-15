@@ -29,6 +29,7 @@ export class GeneralRoomMessageRepository {
         messageType: (data.messageType as string) ?? "text",
         attachments: (data.attachments as object) ?? [],
         clientMessageId: (data.clientMessageId as string) ?? null,
+        sequenceNumber: (data.sequenceNumber as number) ?? 0,
         deletedBy: (data.deletedBy as object) ?? [],
         deletedForAll: (data.deletedForAll as boolean) ?? false,
         reports: (data.reports as object) ?? [],
