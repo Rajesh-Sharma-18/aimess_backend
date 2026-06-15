@@ -8,6 +8,7 @@ import {
 } from "./attachment.validator.js";
 import {
   CHAT_TEXT_MAX_CHARS,
+  CHAT_EMOJI_MAX_CHARS,
   enforceMediaLimits,
 } from "../../constants/media-limits.js";
 
@@ -102,19 +103,19 @@ export const reactMessageSchema = z.object({
  * REST body for `POST /private/rooms/:roomId/messages/:messageId/reactions`
  * (add a reaction — idempotent toggle-ON). roomId/messageId come from the path,
  * the caller from the token, so only the emoji lives in the body. Emoji is capped
- * 1–32 chars to match the socket reaction contract.
+ * 1–CHAT_EMOJI_MAX_CHARS chars to match the socket reaction contract.
  */
 export const reactionBodySchema = z.object({
-  emoji: z.string().min(1).max(32),
+  emoji: z.string().min(1).max(CHAT_EMOJI_MAX_CHARS),
 });
 
 /**
  * URL-param validator for `DELETE …/reactions/:emoji` (remove a reaction —
  * idempotent toggle-OFF). Express already URL-decodes the path param; this just
- * enforces the same 1–32 char cap as the POST body.
+ * enforces the same cap as the POST body.
  */
 export const reactionParamSchema = z.object({
-  emoji: z.string().min(1).max(32),
+  emoji: z.string().min(1).max(CHAT_EMOJI_MAX_CHARS),
 });
 
 export const pinMessageSchema = z.object({

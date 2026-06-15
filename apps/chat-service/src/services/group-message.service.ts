@@ -521,6 +521,20 @@ export class GroupMessageService {
     await assertGroupMember(this.memberRepo, roomId, userId);
   }
 
+  /**
+   * Bind a message to its room: throw CHAT_MESSAGE_NOT_FOUND unless `messageId`
+   * actually belongs to `roomId`. The `react()` primitive mutates a message by id
+   * ALONE, so a REST caller who is an active member of group A could otherwise
+   * pass a messageId from group B (one they're not in) and mutate/broadcast that
+   * foreign message. Loading the row and asserting `roomId` matches closes that
+   * cross-room IDOR; call this AFTER the member guard, BEFORE react().
+   */
+  async assertMessageInRoom(roomId: string, messageId: string): Promise<void> {
+    const msg = await this.messageRepo.findById(messageId);
+    if (!msg || msg.roomId !== roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
   async forwardMessage(params: {
     sourceMessageId: string;
     targetRoomId: string;

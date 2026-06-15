@@ -510,6 +510,19 @@ export class PrivateMessageService {
     await assertPrivateParticipant(this.roomRepo, roomId, userId);
   }
 
+  /**
+   * Bind a message to its room: throw CHAT_MESSAGE_NOT_FOUND unless `messageId`
+   * actually belongs to `roomId`. The `react()` primitive mutates a message by id
+   * ALONE, so a REST caller authorized for room A could otherwise pass a messageId
+   * from room B (a DM they're not in) and mutate/broadcast that foreign message.
+   * Querying by BOTH id + roomId (same `findMessageMeta` the pin path uses) closes
+   * that cross-room IDOR; call this AFTER the participant guard, BEFORE react().
+   */
+  async assertMessageInRoom(roomId: string, messageId: string): Promise<void> {
+    const msg = await this.messageRepo.findMessageMeta({ roomId, messageId });
+    if (!msg) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
   async countMessages(roomId: string): Promise<number> {
     return this.messageRepo.countByRoom(roomId);
   }
