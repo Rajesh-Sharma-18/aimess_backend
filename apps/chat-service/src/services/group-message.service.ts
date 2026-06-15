@@ -432,7 +432,11 @@ export class GroupMessageService {
     roomId: string
   ): Promise<GroupMessage | null> {
     const message = await this.messageRepo.findById(messageId);
-    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room: an active member of group A must not delete-for-me a
+    // message that lives in group B (cross-room IDOR). NotFound (not Forbidden)
+    // so foreign-message existence isn't leaked.
+    if (!message || message.roomId !== roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
@@ -449,7 +453,11 @@ export class GroupMessageService {
     roomId: string
   ): Promise<GroupMessage | null> {
     const message = await this.messageRepo.findById(messageId);
-    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room BEFORE any role check or broadcast: an admin/owner of
+    // group A must not delete a message that lives in group B (cross-room IDOR).
+    // NotFound (not Forbidden) so foreign-message existence isn't leaked.
+    if (!message || message.roomId !== roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
@@ -480,6 +488,15 @@ export class GroupMessageService {
   }): Promise<GroupMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The edit route carries no roomId; derive the room from the message and
+    // authorize the caller as an ACTIVE member of THAT room before any sender/
+    // type/window check. A non-member (or someone not in the message's room)
+    // must not mutate it — NotFound so existence isn't leaked. (cross-room IDOR)
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      message.roomId,
+      params.userId
+    );
+    if (!member) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -537,6 +554,10 @@ export class GroupMessageService {
 
   async forwardMessage(params: {
     sourceMessageId: string;
+    /** SOURCE room the message is being forwarded FROM (REST path param). When
+     * provided, the caller must be an active member of it AND the message must
+     * belong to it — closes the forward read-IDOR. Null on the gRPC path. */
+    sourceRoomId?: string | null;
     targetRoomId: string;
     senderId: string;
     senderName: string;
@@ -569,6 +590,20 @@ export class GroupMessageService {
     const source = await this.messageRepo.findById(params.sourceMessageId);
     if (!source || source.isDeleted)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    // Bind the SOURCE message to its room: forwarding READS the source, so a
+    // caller could otherwise exfiltrate any message from a group they're not in.
+    // When the source room is known (REST path param), require active membership
+    // there AND that the message belongs to it. NotFound so existence isn't leaked.
+    if (params.sourceRoomId != null) {
+      const sourceMember = await this.memberRepo.findActiveByRoomAndUser(
+        params.sourceRoomId,
+        params.senderId
+      );
+      if (!sourceMember || source.roomId !== params.sourceRoomId)
+        throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    }
+    // TODO(security): gRPC forward lacks a source-room field; bind once proto carries sourceConversationId
 
     const forwardData = {
       originalMessageId: source.id,

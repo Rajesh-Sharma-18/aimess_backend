@@ -800,6 +800,22 @@ export function createMessagingImpl(
               ? deps.groupMessageService
               : deps.privateMessageService;
 
+          // Bind message↔room BEFORE the react: react() mutates/broadcasts by
+          // messageId ALONE, so a socket caller in room A could otherwise react
+          // to (and re-broadcast) a message from room B. assertMessageInRoom
+          // throws NotFound on mismatch (the catch below maps it to gRPC INTERNAL).
+          if (reactConversationType === "GROUP") {
+            await deps.groupMessageService.assertMessageInRoom(
+              req.conversationId,
+              req.messageId
+            );
+          } else {
+            await deps.privateMessageService.assertMessageInRoom(
+              req.conversationId,
+              req.messageId
+            );
+          }
+
           // §2.4 toggle: react() reads-modifies-writes the stored reactor map —
           // adds the reactor on first react, removes it on a duplicate react
           // (toggle-off) — and persists the canonical reactor-object shape. The
@@ -939,6 +955,9 @@ export function createMessagingImpl(
           if (conversationType === "GROUP") {
             message = await deps.groupMessageService.forwardMessage({
               sourceMessageId: req.messageId ?? "",
+              // gRPC request carries only targetConversationId — no source-room
+              // field — so the source-room bind is skipped (preserves behavior).
+              sourceRoomId: null,
               targetRoomId: req.targetConversationId ?? "",
               senderId: req.senderId ?? "",
               senderName: req.senderName ?? "",
@@ -948,6 +967,9 @@ export function createMessagingImpl(
           } else {
             message = await deps.privateMessageService.forwardMessage({
               sourceMessageId: req.messageId ?? "",
+              // gRPC request carries only targetConversationId — no source-room
+              // field — so the source-room bind is skipped (preserves behavior).
+              sourceRoomId: null,
               targetRoomId: req.targetConversationId ?? "",
               senderId: req.senderId ?? "",
               receiverId: req.receiverId ?? "",

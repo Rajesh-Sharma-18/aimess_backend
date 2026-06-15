@@ -845,6 +845,16 @@ export class CommunityMessageService {
   }): Promise<GeneralRoomMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // the caller must be an ACTIVE member of the room the message lives in BEFORE
+    // any sender/type/window check. Mirrors reactToMessage/listMedia; NotFound so
+    // foreign-message existence isn't leaked. (cross-room IDOR)
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      params.userId
+    );
+    if (!member || member.status !== "active")
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.sentBy !== params.userId)
@@ -950,6 +960,15 @@ export class CommunityMessageService {
   ): Promise<GeneralRoomMessage | null> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // only an ACTIVE member of the room the message lives in may hide it. Mirrors
+    // reactToMessage; NotFound so foreign-message existence isn't leaked.
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      userId
+    );
+    if (!member || member.status !== "active")
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     await this.messageRepo.deleteForUser(messageId, userId);
     return this.messageRepo.findById(messageId);
@@ -962,14 +981,20 @@ export class CommunityMessageService {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // the caller must be an ACTIVE member of the room the message lives in. NotFound
+    // so foreign-message existence isn't leaked. (cross-room IDOR)
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      userId
+    );
+    if (!member || member.status !== "active")
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
     // Sender can always delete their own message for everyone.
     // Others need admin or moderator role.
     if (message.sentBy !== userId) {
-      const member = await this.memberRepo.findByRoomAndUser(
-        message.roomId,
-        userId
-      );
-      if (!member || !["admin", "moderator"].includes(member.role)) {
+      if (!["admin", "moderator"].includes(member.role)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
     }

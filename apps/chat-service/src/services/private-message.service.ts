@@ -374,6 +374,15 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The route carries no roomId. Derive the room from the message and authorize
+    // the caller as a participant of THAT room BEFORE any mutation — otherwise any
+    // authed user could delete-for-me a message in a DM they're not in (IDOR).
+    // NotFound (not Forbidden) so foreign-message existence isn't leaked.
+    const room = await this.roomRepo.findByRoomId(message.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room?.participants?.includes(userId))
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     // isDeleted=true means already deleted for everyone — can't delete for me again
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
@@ -390,6 +399,14 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room BEFORE the sender check: a user not in (or removed from)
+    // the room can't mutate even their own old message. NotFound so existence
+    // isn't leaked; keeps the room-bind uniform across all private writes.
+    const room = await this.roomRepo.findByRoomId(message.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room?.participants?.includes(userId))
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== userId) {
@@ -409,6 +426,14 @@ export class PrivateMessageService {
   }): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room BEFORE the sender check: a user not in (or removed from)
+    // the room can't mutate even their own old message. NotFound so existence
+    // isn't leaked; keeps the room-bind uniform across all private writes.
+    const room = await this.roomRepo.findByRoomId(message.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room?.participants?.includes(params.userId))
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -533,6 +558,10 @@ export class PrivateMessageService {
 
   async forwardMessage(params: {
     sourceMessageId: string;
+    /** SOURCE room the message is being forwarded FROM (REST path param). When
+     * provided, the caller must be a participant of it AND the message must
+     * belong to it — closes the forward read-IDOR. Null on the gRPC path. */
+    sourceRoomId?: string | null;
     targetRoomId: string;
     senderId: string;
     receiverId: string;
@@ -559,6 +588,22 @@ export class PrivateMessageService {
     const source = await this.messageRepo.findById(params.sourceMessageId);
     if (!source || source.isDeleted)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    // Bind the SOURCE message to its room: forwarding READS the source, so a
+    // caller could otherwise exfiltrate any message from a DM they're not in.
+    // When the source room is known (REST path param), require participation
+    // there AND that the message belongs to it. NotFound so existence isn't leaked.
+    if (params.sourceRoomId != null) {
+      const sourceRoom = await this.roomRepo.findByRoomId(params.sourceRoomId, {
+        projection: { roomId: 1, participants: 1 },
+      });
+      if (
+        !sourceRoom?.participants?.includes(params.senderId) ||
+        source.roomId !== params.sourceRoomId
+      )
+        throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    }
+    // TODO(security): gRPC forward lacks a source-room field; bind once proto carries sourceConversationId
 
     const forwardData = {
       originalMessageId: source.id,

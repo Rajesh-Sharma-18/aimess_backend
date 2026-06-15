@@ -380,6 +380,9 @@ export class PrivateMessageController {
     };
     const result = await this.messageService.forwardMessage({
       sourceMessageId: messageId,
+      // :roomId path param is the SOURCE room — bind the source message to it so
+      // a caller can't forward (and thereby read) a message from a DM they're not in.
+      sourceRoomId: req.params.roomId as string,
       targetRoomId,
       senderId: userId,
       receiverId,
