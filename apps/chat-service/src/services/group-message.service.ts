@@ -555,8 +555,9 @@ export class GroupMessageService {
   async forwardMessage(params: {
     sourceMessageId: string;
     /** SOURCE room the message is being forwarded FROM (REST path param). When
-     * provided, the caller must be an active member of it AND the message must
-     * belong to it — closes the forward read-IDOR. Null on the gRPC path. */
+     * provided, it must MATCH the message's actual room (cross-check). Null on the
+     * gRPC path. Either way the caller must be an active member of the message's
+     * ACTUAL room — that bind is unconditional and closes the forward read-IDOR. */
     sourceRoomId?: string | null;
     targetRoomId: string;
     senderId: string;
@@ -591,19 +592,17 @@ export class GroupMessageService {
     if (!source || source.isDeleted)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
-    // Bind the SOURCE message to its room: forwarding READS the source, so a
-    // caller could otherwise exfiltrate any message from a group they're not in.
-    // When the source room is known (REST path param), require active membership
-    // there AND that the message belongs to it. NotFound so existence isn't leaked.
-    if (params.sourceRoomId != null) {
-      const sourceMember = await this.memberRepo.findActiveByRoomAndUser(
-        params.sourceRoomId,
-        params.senderId
-      );
-      if (!sourceMember || source.roomId !== params.sourceRoomId)
-        throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
-    }
-    // TODO(security): gRPC forward lacks a source-room field; bind once proto carries sourceConversationId
+    // If the caller asserted a source room (REST path param), it must match the message's room.
+    if (params.sourceRoomId != null && source.roomId !== params.sourceRoomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The caller MUST belong to the message's ACTUAL room — on BOTH transports. Forwarding
+    // READS source.content, so without this a socket caller (gRPC carries no sourceRoomId)
+    // could exfiltrate any message from a group they're not in. Closes the cross-room read-IDOR.
+    const sourceMember = await this.memberRepo.findActiveByRoomAndUser(
+      source.roomId,
+      params.senderId
+    );
+    if (!sourceMember) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     const forwardData = {
       originalMessageId: source.id,

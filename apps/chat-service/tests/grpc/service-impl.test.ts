@@ -41,6 +41,8 @@ import {
   type GrpcDeps,
 } from "../../src/grpc/service-impl.js";
 import { redis } from "../../src/config/redis.js";
+import { PrivateMessageService } from "../../src/services/private-message.service.js";
+import { GroupMessageService } from "../../src/services/group-message.service.js";
 
 const AVATARS = "aimess-avatars";
 const CHAT = "aimess-chat-test";
@@ -539,5 +541,155 @@ describe("createCommunityImpl — broadcast media resolve-on-read", () => {
 
     expect(res.events[0].senderAvatar).toBe(url(AVATARS, "avatars/u1/a.png"));
     expect(res.events[1].senderAvatar).toBe("https://cdn.example.com/bob.png");
+  });
+});
+
+/**
+ * H-1 regression — cross-room READ-IDOR via the gRPC/socket forward path.
+ *
+ * The gateway `message:forward` socket handler reaches the gRPC `forwardMessage`
+ * handler, which carries NO source-room field and so passes `sourceRoomId: null`
+ * to the service. Forwarding READS + re-broadcasts `source.content`, so before the
+ * fix a caller could forward ANY message from a room they're not in and exfiltrate
+ * its content. The fix makes the source-room membership bind UNCONDITIONAL in the
+ * service (it no longer hangs off `sourceRoomId != null`).
+ *
+ * Unlike the resolve-on-read suites above (which stub the service method), these
+ * wire the REAL PrivateMessageService / GroupMessageService onto auto-vivified
+ * mock repos so the genuine null-source bind runs end-to-end through the handler.
+ * Expectation: the handler rejects (NotFound → gRPC INTERNAL), the source message's
+ * room-membership repo says the caller is ABSENT, `createForwardedMessage` is NEVER
+ * called, and ZERO `message:new` is published to the target conversation.
+ */
+describe("createMessagingImpl — forwardMessage cross-room read-IDOR (H-1)", () => {
+  /** Proxy whose every property is a memoized jest.fn() resolving undefined —
+   *  matches tests/helpers/app-factory.ts repoMock(). */
+  function repoMock(): any {
+    const cache: Record<string, jest.Mock> = {};
+    return new Proxy(
+      {},
+      {
+        get: (_t, p: string) => {
+          if (p === "then") return undefined;
+          if (!(p in cache)) cache[p] = jest.fn(async () => undefined);
+          return cache[p];
+        },
+        set: (_t, p: string, v) => {
+          cache[p] = v as jest.Mock;
+          return true;
+        },
+      }
+    );
+  }
+
+  it("PRIVATE: gRPC forward by a NON-participant of the source room → INTERNAL, createForwardedMessage skipped, no message:new", async () => {
+    const messageRepo = repoMock();
+    const roomRepo = repoMock();
+    // Source message truthfully lives in prv_secret…
+    messageRepo.findById.mockResolvedValue({
+      id: "src1",
+      roomId: "prv_secret",
+      isDeleted: false,
+      messageType: "TEXT",
+      content: { text: "secret" },
+      createdAt: new Date(10),
+    });
+    // …but the caller is NOT a participant of prv_secret (the message's ACTUAL
+    // room). gRPC passes sourceRoomId:null, so ONLY the unconditional bind guards.
+    roomRepo.findByRoomId.mockResolvedValue({
+      roomId: "prv_secret",
+      participants: ["victim", "peer"],
+    });
+    const userServiceClient: any = {
+      checkFriendship: jest.fn(async () => true),
+    };
+
+    const privateMessageService = new PrivateMessageService(
+      messageRepo,
+      roomRepo,
+      repoMock(), // cacheRepo
+      {} as any, // userSnapshotService (unused on this path)
+      userServiceClient,
+      repoMock() // reportRepo
+    );
+
+    const deps = makeDeps({ privateMessageService });
+
+    await expect(
+      invoke(createMessagingImpl(deps).forwardMessage as Handler, {
+        messageId: "src1",
+        targetConversationId: "prv_target",
+        senderId: "attacker",
+        receiverId: "peer-2",
+        clientMessageId: "c1",
+        conversationType: "PRIVATE",
+        senderName: "Mallory",
+        senderAvatar: "",
+      })
+    ).rejects.toBeDefined();
+
+    expect(messageRepo.createForwardedMessage).not.toHaveBeenCalled();
+    expect(
+      publishMock.mock.calls.filter(
+        (c: unknown[]) =>
+          c[0] === "conv:prv_target" &&
+          typeof c[1] === "string" &&
+          (c[1] as string).includes("message:new")
+      )
+    ).toHaveLength(0);
+  });
+
+  it("GROUP: gRPC forward by a NON-member of the source room → INTERNAL, createForwardedMessage skipped, no message:new", async () => {
+    const messageRepo = repoMock();
+    const memberRepo = repoMock();
+    const roomRepo = repoMock();
+    // Source message truthfully lives in grp_secret.
+    messageRepo.findById.mockResolvedValue({
+      id: "src1",
+      roomId: "grp_secret",
+      isDeleted: false,
+      messageType: "TEXT",
+      content: { text: "secret" },
+      createdAt: new Date(10),
+    });
+    // Member-of-TARGET check passes (first lookup) so we get past it, but the
+    // member-of-SOURCE check on the message's ACTUAL room returns null → the
+    // unconditional source bind rejects (gRPC carries no sourceRoomId).
+    memberRepo.findActiveByRoomAndUser
+      .mockResolvedValueOnce({ role: "MEMBER" }) // target room
+      .mockResolvedValueOnce(null); // source room (grp_secret)
+
+    const groupMessageService = new GroupMessageService(
+      messageRepo,
+      roomRepo,
+      memberRepo,
+      repoMock(), // cacheRepo
+      {} as any // userSnapshotService (unused on this path)
+    );
+
+    const deps = makeDeps({ groupMessageService });
+
+    await expect(
+      invoke(createMessagingImpl(deps).forwardMessage as Handler, {
+        messageId: "src1",
+        targetConversationId: "grp_target",
+        senderId: "attacker",
+        receiverId: "",
+        clientMessageId: "g1",
+        conversationType: "GROUP",
+        senderName: "Mallory",
+        senderAvatar: "",
+      })
+    ).rejects.toBeDefined();
+
+    expect(messageRepo.createForwardedMessage).not.toHaveBeenCalled();
+    expect(
+      publishMock.mock.calls.filter(
+        (c: unknown[]) =>
+          c[0] === "conv:grp_target" &&
+          typeof c[1] === "string" &&
+          (c[1] as string).includes("message:new")
+      )
+    ).toHaveLength(0);
   });
 });

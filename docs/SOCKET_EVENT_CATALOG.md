@@ -98,7 +98,8 @@ chat.on("connect_error", (e) => {
 Branch on `success` / `error` / `retryable` — **never** on `message` (it's a
 localized display string). Error codes: `INVALID_PAYLOAD` (false), `SERVICE_ERROR`
 (true), `RATE_LIMITED` (true), `FORBIDDEN` (false), `NOT_FOUND` (false), `CONFLICT`
-(false). Handle all six. Coerce ack numeric fields (e.g. `sentAt`) with `Number()`.
+(false). Handle all six. Ack numeric fields (e.g. `sentAt`) are plain **numbers** —
+same as broadcasts (the gateway coerces the gRPC int64 wire-strings).
 
 ---
 
@@ -788,7 +789,7 @@ the resulting `notification:new` (and refetch where noted).
    (conv room). Handle out-of-order.
 3. **One mapper** for `message:new` / `message:edited` / forwards (shared canonical
    shape).
-4. **Coerce ack numerics** (`Number(sentAt)`); broadcasts already send numbers.
+4. **Ack numerics are numbers** (`sentAt`, `sequenceNumber`, …) — gateway coerces the gRPC int64 wire-strings; matches broadcasts.
 5. **`contentType` is UPPER-CASE** everywhere; calls use `callType`.
 6. **Idempotency** via `clientMessageId` on every send; replay-safe.
 7. **Full-set replaces** — reactions and `pinnedIds` always send the complete set;

@@ -6,6 +6,8 @@
  *   DELETE /api/chat/private/rooms/:roomId          (delete-for-me)
  *   POST   /api/chat/private/rooms/:roomId/mute
  *   POST   /api/chat/private/rooms/:roomId/unmute
+ *   PATCH  /api/chat/private/rooms/:roomId/archive
+ *   PATCH  /api/chat/private/rooms/:roomId/unarchive
  */
 import request from "supertest";
 
@@ -235,6 +237,97 @@ describe("POST /api/chat/private/rooms/:roomId/mute + /unmute", () => {
   it("SECURITY: 401 with a forged token on unmute", async () => {
     const res = await request(app)
       .post("/api/chat/private/rooms/prv_1/unmute")
+      .set(bearer(makeForgedAccessToken()));
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("PATCH /api/chat/private/rooms/:roomId/archive + /unarchive", () => {
+  it("POSITIVE: archives the conversation for a participant", async () => {
+    const room = { roomId: "prv_1", participants: [TEST_USER_ID, "peer-1"] };
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(room);
+    mocks.privateRoomRepo.setArchived.mockResolvedValue({
+      ...room,
+      archivedBy: {
+        [TEST_USER_ID]: { archivedAt: "2030-01-01T00:00:00.000Z" },
+      },
+    });
+
+    const res = await request(app)
+      .patch("/api/chat/private/rooms/prv_1/archive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(mocks.privateRoomRepo.setArchived).toHaveBeenCalledWith(
+      "prv_1",
+      TEST_USER_ID
+    );
+    // Emits conv:archived to the caller's own user channel.
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining("conv:archived")
+    );
+  });
+
+  it("NEGATIVE: 404 archiving a room that does not exist", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(null);
+
+    const res = await request(app)
+      .patch("/api/chat/private/rooms/ghost/archive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(404);
+    expect(mocks.privateRoomRepo.setArchived).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: IDOR — 404 archiving a room the caller is not a participant of", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: "prv_1",
+      participants: ["other-a", "other-b"],
+    });
+
+    const res = await request(app)
+      .patch("/api/chat/private/rooms/prv_1/archive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(404);
+    expect(mocks.privateRoomRepo.setArchived).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE: unarchive returns 200 and clears the caller's archive flag", async () => {
+    const room = { roomId: "prv_1", participants: [TEST_USER_ID, "peer-1"] };
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue(room);
+    mocks.privateRoomRepo.setUnarchived.mockResolvedValue(room);
+
+    const res = await request(app)
+      .patch("/api/chat/private/rooms/prv_1/unarchive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.privateRoomRepo.setUnarchived).toHaveBeenCalledWith(
+      "prv_1",
+      TEST_USER_ID
+    );
+  });
+
+  it("SECURITY: IDOR — 404 unarchiving a room the caller is not a participant of", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: "prv_1",
+      participants: ["other-a", "other-b"],
+    });
+
+    const res = await request(app)
+      .patch("/api/chat/private/rooms/prv_1/unarchive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(404);
+    expect(mocks.privateRoomRepo.setUnarchived).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: 401 with a forged token on archive", async () => {
+    const res = await request(app)
+      .patch("/api/chat/private/rooms/prv_1/archive")
       .set(bearer(makeForgedAccessToken()));
     expect(res.status).toBe(401);
   });

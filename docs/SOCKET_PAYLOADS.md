@@ -15,9 +15,9 @@ event is) · [`SOCKET_FRONTEND_GUIDE.md`](SOCKET_FRONTEND_GUIDE.md) (architectur
 > - **Ack response** = the object delivered to your `cb` (the envelope below). Only
 >   **acked** events have one.
 > - **Broadcast** = what arrives in `socket.on(event, payload => …)`.
-> - Values are illustrative. **Numbers in an ack `data` are stringified epoch-ms**
->   (gRPC int64 → string) — coerce with `Number()`. The same field in a **broadcast**
->   is a real number.
+> - Values are illustrative. Numeric fields (`sentAt`, `editedAt`, `pinnedAt`,
+>   `sequenceNumber`) are real **numbers** in both ack `data` and broadcasts — the
+>   gateway coerces the gRPC `int64` wire-strings before relaying.
 
 ### The ack envelope (every acked event)
 
@@ -84,15 +84,15 @@ event is) · [`SOCKET_FRONTEND_GUIDE.md`](SOCKET_FRONTEND_GUIDE.md) (architectur
   "repliedToId": null
 }
 
-// ← ack response — MessageSendResult (numbers are STRINGIFIED here)
+// ← ack response — MessageSendResult (sentAt + sequenceNumber are numbers)
 {
   "success": true,
   "message": "Message sent successfully",
   "data": {
     "messageId": "msg_66a0f1e2d3c4b5a6",
     "conversationId": "conv_64f1a2b3c4d5e6f7",
-    "sequenceNumber": "1487",          // coerce: Number(data.sequenceNumber)
-    "sentAt": "1749633123456",         // coerce: Number(data.sentAt)
+    "sequenceNumber": 1487,
+    "sentAt": 1749633123456,
     "alreadySent": false               // true if this clientMessageId was already processed (idempotent replay)
   }
 }
@@ -570,11 +570,11 @@ Mirrors `/chat`, broadcast to the `community:<communityId>` room. Server holds a
   "receiverId": "usr_z9"
 }
 
-// ← ack — MessageSendResult (stringified numbers)
+// ← ack — MessageSendResult (sentAt + sequenceNumber are numbers)
 {
   "success": true,
   "message": "Message forwarded successfully",
-  "data": { "messageId": "msg_88c2...", "conversationId": "conv_other_555", "sequenceNumber": "42", "sentAt": "1749633600000", "alreadySent": false }
+  "data": { "messageId": "msg_88c2...", "conversationId": "conv_other_555", "sequenceNumber": 42, "sentAt": 1749633600000, "alreadySent": false }
 }
 // target room receives a message:new with "isForwarded": true
 ```
@@ -735,8 +735,8 @@ Mirrors `/chat`, broadcast to the `community:<communityId>` room. Server holds a
     "communityId": "comm_12345",
     "roomId": "comm_room_678",
     "clientMessageId": "aaa11122-bbb3-cccc-ddd4-eeeeffff5555",
-    "sentAt": "1749633900000",      // stringified on ack
-    "serverTs": "1749633900000"
+    "sentAt": 1749633900000,
+    "serverTs": 1749633900000
   }
 }
 ```
@@ -1025,8 +1025,8 @@ export interface ChatMessage {
 export interface MessageSendResult {
   messageId: string;
   conversationId: string;
-  sequenceNumber: string; // stringified on ack — Number(it)
-  sentAt: string; // stringified on ack — Number(it)
+  sequenceNumber: number;
+  sentAt: number; // epoch ms
   alreadySent: boolean;
 }
 

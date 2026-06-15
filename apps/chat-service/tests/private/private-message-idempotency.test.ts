@@ -29,6 +29,14 @@ function buildService() {
   const roomRepo = {
     allocateSequence: jest.fn(async () => 7),
     updateRoomOnNewMessage: jest.fn(async () => undefined),
+    // forwardMessage now unconditionally binds the caller to the SOURCE message's
+    // ACTUAL room (closes the gRPC/socket read-IDOR, H-1). This idempotency-race
+    // test is about P2002 collapse, not authz, so make SENDER a participant of the
+    // source room (ROOM) the mocked source message lives in.
+    findByRoomId: jest.fn(async () => ({
+      roomId: ROOM,
+      participants: [SENDER, RECEIVER],
+    })),
   };
   const cacheRepo = {};
   const userSnapshotService = { getUserSnapshotsMap: jest.fn() };

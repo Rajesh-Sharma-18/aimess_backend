@@ -168,9 +168,9 @@ export function emitAck<T = unknown>(
 > contract; handle them all today even though the gateway currently only emits
 > `INVALID_PAYLOAD` and `SERVICE_ERROR` directly.
 >
-> **Numeric ack fields** (e.g. `sentAt`) arrive as **stringified** epoch-ms on the
-> ack path (gRPC int64 → string), but as plain **numbers** in server→client
-> broadcasts. Always coerce ack values with `Number(...)`.
+> **Numeric ack fields** (`sentAt`, `editedAt`, `pinnedAt`, `sequenceNumber`) are
+> plain epoch-ms / integer **numbers** on both the ack path and server→client
+> broadcasts — the gateway coerces the gRPC `int64` wire-strings before relaying.
 
 ---
 
@@ -988,8 +988,8 @@ await emitAck(chat, "call:end", { callId }); // → call:ended { endedBy, durati
   out-of-order defensively.
 - **A user inside a conversation gets both** `message:new` (append in-room) **and**
   `conv:updated` (reorder list) — handle independently; both are idempotent.
-- **Coerce ack numerics** with `Number(sentAt)` (stringified on ack, number on
-  broadcast).
+- **Ack numerics are numbers** (`sentAt`, `sequenceNumber`, …) — same as
+  broadcasts; the gateway coerces the gRPC int64 wire-strings.
 - **`contentType` is always UPPER-CASE** on every surface; call type uses
   `callType` (`"AUDIO"`/`"VIDEO"`).
 - **Never double-apply** your own REST edit/delete and its socket echo

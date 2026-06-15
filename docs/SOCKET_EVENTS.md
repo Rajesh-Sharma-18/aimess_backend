@@ -185,11 +185,12 @@ high-frequency signaling events `typing:start`, `typing:stop`,
 `presence:heartbeat`, and `call:ice` are intentionally fire-and-forget (clients
 emit them continuously and never await a reply), so they return **no** `message`.
 
-> **Numeric fields in ack `data`:** values backed by gRPC `int64` (e.g.
-> `sentAt`) arrive in the **ack** as a **stringified** epoch-ms (the gRPC client
-> loads `longs` as strings). The same field in a **server→client broadcast**
-> (e.g. `community:message:new`) is a plain **number**. Coerce defensively with
-> `Number(sentAt)` on the ack path.
+> **Numeric fields in ack `data`:** values backed by gRPC `int64` (`sentAt`,
+> `editedAt`, `pinnedAt`, `sequenceNumber`) are plain epoch-ms / integer
+> **numbers** on the **ack** — the gateway coerces the gRPC `longs:String`
+> wire-strings before relaying, so they match the **server→client broadcast**
+> (e.g. `community:message:new`). Any existing `Number(sentAt)` coercion on the
+> client stays harmless.
 
 ```js
 chat.emit("message:send", payload, (res) => {

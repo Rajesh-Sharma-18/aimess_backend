@@ -955,8 +955,9 @@ export function createMessagingImpl(
           if (conversationType === "GROUP") {
             message = await deps.groupMessageService.forwardMessage({
               sourceMessageId: req.messageId ?? "",
-              // gRPC request carries only targetConversationId — no source-room
-              // field — so the source-room bind is skipped (preserves behavior).
+              // gRPC carries only targetConversationId (no source-room field), so we
+              // pass null — but the service ALWAYS binds the caller to the source
+              // message's actual room, closing the cross-room read-IDOR on this path.
               sourceRoomId: null,
               targetRoomId: req.targetConversationId ?? "",
               senderId: req.senderId ?? "",
@@ -967,8 +968,9 @@ export function createMessagingImpl(
           } else {
             message = await deps.privateMessageService.forwardMessage({
               sourceMessageId: req.messageId ?? "",
-              // gRPC request carries only targetConversationId — no source-room
-              // field — so the source-room bind is skipped (preserves behavior).
+              // gRPC carries only targetConversationId (no source-room field), so we
+              // pass null — but the service ALWAYS binds the caller to the source
+              // message's actual room, closing the cross-room read-IDOR on this path.
               sourceRoomId: null,
               targetRoomId: req.targetConversationId ?? "",
               senderId: req.senderId ?? "",
