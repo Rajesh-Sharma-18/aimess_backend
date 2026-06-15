@@ -142,7 +142,11 @@ export class CommunityMessageService {
       senderName: params.senderName,
       senderAvatar: params.senderAvatar,
       message: params.message || "",
-      messageType: params.messageType || "text",
+      // §1 single casing: store the canonical UPPER-CASE type (matches the
+      // private/group services, which both persist via normalizeMessageType).
+      // The gRPC send handler already upper-cases contentType, so this is a
+      // no-op for live sends but guarantees UPPER for any other caller.
+      messageType: normalizeMessageType(params.messageType),
       parentMessageId: params.parentMessageId || null,
       clientMessageId: params.clientMessageId || null,
     };
@@ -808,7 +812,11 @@ export class CommunityMessageService {
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.sentBy !== params.userId)
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
-    if (message.messageType !== "text")
+    // Community messages are persisted with the canonical UPPER-CASE type
+    // ("TEXT"), so the guard must compare against UPPER — comparing to the old
+    // lower-case "text" rejected every edit (→ SERVICE_ERROR). normalizeMessageType
+    // also tolerates any legacy lower-case rows. Mirrors private/group (!== "TEXT").
+    if (normalizeMessageType(message.messageType) !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
     if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
