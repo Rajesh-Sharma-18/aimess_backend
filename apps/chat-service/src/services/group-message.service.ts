@@ -492,11 +492,7 @@ export class GroupMessageService {
     // authorize the caller as an ACTIVE member of THAT room before any sender/
     // type/window check. A non-member (or someone not in the message's room)
     // must not mutate it — NotFound so existence isn't leaked. (cross-room IDOR)
-    const member = await this.memberRepo.findActiveByRoomAndUser(
-      message.roomId,
-      params.userId
-    );
-    if (!member) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await this.assertActiveMemberOfMessageRoom(message, params.userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -552,6 +548,21 @@ export class GroupMessageService {
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
   }
 
+  /** Bind a loaded message to its OWN room and require the caller to be an ACTIVE
+   * member of that room (cross-room IDOR guard for paths that derive the room from
+   * the message — edit, and the forward source-read). NotFound — never Forbidden —
+   * so a foreign message's existence isn't leaked. */
+  private async assertActiveMemberOfMessageRoom(
+    message: GroupMessage,
+    userId: string
+  ): Promise<void> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      message.roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
   async forwardMessage(params: {
     sourceMessageId: string;
     /** SOURCE room the message is being forwarded FROM (REST path param). When
@@ -598,11 +609,7 @@ export class GroupMessageService {
     // The caller MUST belong to the message's ACTUAL room — on BOTH transports. Forwarding
     // READS source.content, so without this a socket caller (gRPC carries no sourceRoomId)
     // could exfiltrate any message from a group they're not in. Closes the cross-room read-IDOR.
-    const sourceMember = await this.memberRepo.findActiveByRoomAndUser(
-      source.roomId,
-      params.senderId
-    );
-    if (!sourceMember) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await this.assertActiveMemberOfMessageRoom(source, params.senderId);
 
     const forwardData = {
       originalMessageId: source.id,

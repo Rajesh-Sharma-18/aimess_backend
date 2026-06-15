@@ -377,12 +377,7 @@ export class PrivateMessageService {
     // The route carries no roomId. Derive the room from the message and authorize
     // the caller as a participant of THAT room BEFORE any mutation — otherwise any
     // authed user could delete-for-me a message in a DM they're not in (IDOR).
-    // NotFound (not Forbidden) so foreign-message existence isn't leaked.
-    const room = await this.roomRepo.findByRoomId(message.roomId, {
-      projection: { roomId: 1, participants: 1 },
-    });
-    if (!room?.participants?.includes(userId))
-      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await this.assertCallerInMessageRoom(message, userId);
     // isDeleted=true means already deleted for everyone — can't delete for me again
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
@@ -402,11 +397,7 @@ export class PrivateMessageService {
     // Bind message↔room BEFORE the sender check: a user not in (or removed from)
     // the room can't mutate even their own old message. NotFound so existence
     // isn't leaked; keeps the room-bind uniform across all private writes.
-    const room = await this.roomRepo.findByRoomId(message.roomId, {
-      projection: { roomId: 1, participants: 1 },
-    });
-    if (!room?.participants?.includes(userId))
-      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await this.assertCallerInMessageRoom(message, userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== userId) {
@@ -429,11 +420,7 @@ export class PrivateMessageService {
     // Bind message↔room BEFORE the sender check: a user not in (or removed from)
     // the room can't mutate even their own old message. NotFound so existence
     // isn't leaked; keeps the room-bind uniform across all private writes.
-    const room = await this.roomRepo.findByRoomId(message.roomId, {
-      projection: { roomId: 1, participants: 1 },
-    });
-    if (!room?.participants?.includes(params.userId))
-      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await this.assertCallerInMessageRoom(message, params.userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -548,6 +535,20 @@ export class PrivateMessageService {
     if (!msg) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
   }
 
+  /** Bind a loaded message to a room the caller participates in (cross-room IDOR
+   * guard for routes that carry no roomId). NotFound — never Forbidden — so a
+   * foreign message's existence isn't leaked. */
+  private async assertCallerInMessageRoom(
+    message: PrivateMessage,
+    userId: string
+  ): Promise<void> {
+    const room = await this.roomRepo.findByRoomId(message.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room?.participants?.includes(userId))
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
   async countMessages(roomId: string): Promise<number> {
     return this.messageRepo.countByRoom(roomId);
   }
@@ -596,11 +597,7 @@ export class PrivateMessageService {
     // The caller MUST belong to the message's ACTUAL room — on BOTH transports. Forwarding
     // READS source.content, so without this a socket caller (gRPC carries no sourceRoomId)
     // could exfiltrate any message from a DM they're not in. Closes the cross-room read-IDOR.
-    const sourceRoom = await this.roomRepo.findByRoomId(source.roomId, {
-      projection: { roomId: 1, participants: 1 },
-    });
-    if (!sourceRoom?.participants?.includes(params.senderId))
-      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    await this.assertCallerInMessageRoom(source, params.senderId);
 
     const forwardData = {
       originalMessageId: source.id,
