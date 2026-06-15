@@ -334,6 +334,10 @@ describe("PATCH /messages/:messageId (edit)", () => {
       isDeleted: false,
       createdAt: new Date(now - 1000),
     });
+    // Room-bind guard: caller is an active member of the message's room.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
     mocks.groupMessageRepo.editMessage.mockResolvedValue({
       id: "g1",
       roomId: ROOM,
@@ -354,10 +358,15 @@ describe("PATCH /messages/:messageId (edit)", () => {
   it("SECURITY: 400 editing a non-TEXT message", async () => {
     mocks.groupMessageRepo.findById.mockResolvedValue({
       id: "g1",
+      roomId: ROOM,
       senderId: TEST_USER_ID,
       messageType: "IMAGE",
       isDeleted: false,
       createdAt: new Date(),
+    });
+    // Member guard passes, so the TEXT-only check is what rejects with 400.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
     });
 
     const res = await request(app)

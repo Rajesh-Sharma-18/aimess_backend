@@ -300,6 +300,11 @@ describe("DELETE /messages/:messageId", () => {
         messageType: "text",
         deletedForAll: true,
       });
+    // Room-bind guard: caller is an active member of the message's room.
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "member",
+      status: "active",
+    });
     mocks.generalRoomMessageRepo.deleteForAll.mockResolvedValue({
       id: "m1",
       roomId: ROOM,
@@ -358,6 +363,11 @@ describe("PATCH /messages/:messageId (edit)", () => {
       deletedForAll: false,
       createdAt: new Date(now - 1000),
     });
+    // Room-bind guard: caller is an active member of the message's room.
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "member",
+      status: "active",
+    });
     mocks.generalRoomMessageRepo.editMessage.mockResolvedValue({
       id: "m1",
       roomId: ROOM,
@@ -382,10 +392,17 @@ describe("PATCH /messages/:messageId (edit)", () => {
   it("SECURITY: 400 editing another user's message", async () => {
     mocks.generalRoomMessageRepo.findById.mockResolvedValue({
       id: "m1",
+      roomId: ROOM,
       sentBy: "not-me",
       messageType: "text",
       deletedForAll: false,
       createdAt: new Date(),
+    });
+    // Member guard passes (caller is active in the message's room), so the
+    // own-only sender check is what rejects with 400 — not the room-bind 404.
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "member",
+      status: "active",
     });
 
     const res = await request(app)

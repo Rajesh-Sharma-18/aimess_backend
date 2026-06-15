@@ -341,6 +341,10 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
   it("sendReaction (PRIVATE) → message:reaction resolves reactor avatars (key signed, url passthrough)", async () => {
     const deps = makeDeps({
       privateMessageService: {
+        // Cross-room IDOR bind (fix 01a131f): sendReaction now calls
+        // assertMessageInRoom(conversationId, messageId) BEFORE react() — a no-op
+        // here means the message belongs to the conversation and the toggle proceeds.
+        assertMessageInRoom: jest.fn(async () => undefined),
         react: jest.fn(async () => ({
           reactions: { "👍": [{ userId: "u2" }] },
         })),
