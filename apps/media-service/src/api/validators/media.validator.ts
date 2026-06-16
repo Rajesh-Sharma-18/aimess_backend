@@ -15,9 +15,6 @@ export const uploadUrlSchema = z.object({
   contentType: z.string().min(1).max(128),
   contentLength: z.coerce.number().int().positive(),
   ownerId: z.string().uuid().optional(),
-  // Optional display metadata; sanitized server-side and checked against the
-  // MIME-derived extension. The stored object key never uses this value.
-  originalFileName: z.string().max(255).optional(),
 });
 
 export const downloadUrlSchema = z.object({

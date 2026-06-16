@@ -99,11 +99,16 @@ const mediaUploadUrl = {
 3. Call **POST /media/confirm** with the same \`objectKey\` + \`contentType\`. The file undergoes magic-byte validation, ZIP inspection (for archives), and antivirus scanning.
 4. Only files that pass confirm (\`scanStatus: "CLEAN"\`) can be downloaded.
 
-**Size limits (per MIME type):**
-- DOC / DOCX / XLS / XLSX / PDF / CSV: 50 MB
-- PPT / PPTX / ZIP: 100 MB
-- Images: 25–30 MB
-- Videos: up to 100 MB (category ceiling)`,
+**Allowed \`contentType\` by category:**
+- **Avatars & covers** (\`USER_AVATAR\`, \`COMMUNITY_AVATAR\`, \`COMMUNITY_COVER\`, \`GROUP_AVATAR\`) — images only: \`image/jpeg\`, \`image/png\`, \`image/webp\`. Max 5 MB.
+- **Chat attachments** (\`CHAT_ATTACHMENT\`, \`GROUP_CHAT_ATTACHMENT\`, \`COMMUNITY_CHAT_ATTACHMENT\`) — the full media set below.
+
+**Chat attachment types & per-MIME size caps:**
+- **Images** — \`image/jpeg\`, \`image/png\`, \`image/webp\` (25 MB), \`image/gif\` (30 MB)
+- **Video** — \`video/mp4\`, \`video/quicktime\` (mov), \`video/x-matroska\` (mkv), \`video/webm\`, \`video/x-msvideo\` (avi), \`video/x-m4v\` (≤100 MB ceiling)
+- **Audio / voice** — \`audio/mpeg\` (mp3), \`audio/ogg\`, \`audio/wav\`, \`audio/mp4\` / \`audio/x-m4a\` (m4a), \`audio/aac\`, \`audio/flac\`
+- **Documents** — \`application/pdf\` (50 MB); Word \`application/msword\` / \`…wordprocessingml.document\` (50 MB); Excel \`application/vnd.ms-excel\` / \`…spreadsheetml.sheet\` (50 MB); PowerPoint \`application/vnd.ms-powerpoint\` / \`…presentationml.presentation\` (100 MB); \`text/plain\`, \`application/json\`, \`application/xml\`, \`text/xml\` (10 MB); \`text/csv\` (25 MB)
+- **Archives** — \`application/zip\`, \`application/x-zip-compressed\` (100 MB)`,
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -125,7 +130,7 @@ const mediaUploadUrl = {
                 example:
                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 description:
-                  "Declared MIME type. Must match the file's actual content (verified by /confirm).",
+                  "Declared MIME type. Allowed values DEPEND on category (avatars/covers accept only image/jpeg|png|webp; chat categories accept the full set) — see the table in the endpoint description. Must match the file's actual bytes (verified by /confirm).",
               },
               contentLength: {
                 type: "integer" as const,
@@ -138,13 +143,6 @@ const mediaUploadUrl = {
                 format: "uuid",
                 description:
                   "Community/group id for COMMUNITY_AVATAR/COVER categories; defaults to caller userId for all others.",
-              },
-              originalFileName: {
-                type: "string" as const,
-                maxLength: 255,
-                example: "Q3_Report.docx",
-                description:
-                  "Original client filename (display only). Sanitised server-side.",
               },
             },
           },
