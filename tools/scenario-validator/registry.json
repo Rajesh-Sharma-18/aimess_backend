@@ -1,0 +1,630 @@
+{
+  "$comment": "AIMess Scenario Validation Framework — contract registry. Each business action declares its expected side-effects AND the source-code evidence that proves each is wired. The runner greps the evidence against the working tree, so output is GROUND TRUTH, not contract-trust. When you add a feature, add its entry here (Phase 10). The LLM scenario-validator agent discovers actions MISSING from this registry and proposes new entries. Seeded subset — extend toward the full catalog in docs/SCENARIO_VALIDATION_FRAMEWORK.md.",
+  "actions": [
+    {
+      "id": "community.member_added",
+      "title": "Community Member Added",
+      "domain": "Community",
+      "service": "community-service",
+      "ruleSet": "member_mutation",
+      "impact": "User added to a community but never told.",
+      "fix": "Already wired on disk. Commit S1 (notify: bridge in chat-service service-impl.ts) + redeploy. Add an audit record for admin-initiated adds.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "createManyMembers|reactivateMemberWithSnapshot",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishCommunityMemberAddedSafe",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "MEMBER_ADDED",
+            "files": [
+              "apps/notifications-service/src/consumers/community.consumer.ts"
+            ]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "notify:",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "audit": {
+          "waived": "Community adds write no audit record (LOW; backlog §10.7)."
+        },
+        "analytics": { "waived": "Analytics not instrumented platform-wide." }
+      }
+    },
+    {
+      "id": "community.member_muted",
+      "title": "Community Member Muted",
+      "domain": "Community",
+      "service": "community-service",
+      "ruleSet": "member_mutation",
+      "impact": "User muted but unaware they cannot post.",
+      "fix": "Wired (commit 3792a73). Deploy with the spine.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "muteMember",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishCommunityMemberMutedSafe",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "MEMBER_MUTED",
+            "files": [
+              "apps/notifications-service/src/consumers/community.consumer.ts"
+            ]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "notify:",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "recordAudit",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "community.member_warned",
+      "title": "Community Member Warned",
+      "domain": "Community",
+      "service": "community-service",
+      "ruleSet": "member_mutation",
+      "impact": "User warned by a moderator but never sees the warning.",
+      "fix": "Wired (commit 3792a73). Deploy with the spine.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "warnMember",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishCommunityMemberWarnedSafe",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "MEMBER_WARNED",
+            "files": [
+              "apps/notifications-service/src/consumers/community.consumer.ts"
+            ]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "notify:",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "recordAudit",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "community.member_kicked",
+      "title": "Community Member Removed (kick)",
+      "domain": "Community",
+      "service": "community-service",
+      "ruleSet": "member_mutation",
+      "impact": "User removed from a community but never told.",
+      "fix": "Wired. Deploy spine; add audit.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "kickMember",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishCommunityMemberKickedSafe",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "MEMBER_KICKED",
+            "files": [
+              "apps/notifications-service/src/consumers/community.consumer.ts"
+            ]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "notify:",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "recordAudit",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "community.created",
+      "title": "Community Created",
+      "domain": "Community",
+      "service": "community-service",
+      "ruleSet": "lifecycle_self",
+      "impact": "Self-action (creator already knows); chat room must still be provisioned.",
+      "fix": "OK. Optional members fanout; audit if admin-initiated.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "createCommunity|create\\(",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "community.created",
+            "dir": "apps/community-service/src"
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "community.created|EnsureCommunityRoom|provisionRoom",
+            "dir": "apps/chat-service/src"
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "recordAudit",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "chat.group.member_added",
+      "title": "Group Member Added",
+      "domain": "Group Chat",
+      "service": "chat-service",
+      "ruleSet": "member_mutation",
+      "impact": "User added to a group sees nothing until they open it (in-room system message only).",
+      "fix": "Publish chat.group_member_added → notifications consumer → pushToUser (mirror community MEMBER_ADDED). [spawned task]",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "addMember",
+            "files": ["apps/chat-service/src/services/group-member.service.ts"]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "group_member_added|chat.group.queue",
+            "dir": "apps/chat-service/src"
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "group_member_added|GROUP_MEMBER_ADDED",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "message:new",
+            "files": [
+              "apps/chat-service/src/services/group-system-message.service.ts"
+            ]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "group_member_added",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "group_member_added",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "group_member_added",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        }
+      }
+    },
+    {
+      "id": "chat.message_sent",
+      "title": "Private Message Sent",
+      "domain": "Private Chat",
+      "service": "chat-service",
+      "ruleSet": "message_send",
+      "impact": "—",
+      "fix": "OK.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "sendMessage",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "message:new",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "publishMessageSentSafe",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "publishConvUpdatedSafe",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "delivery": {
+          "evidence": {
+            "pattern": "message:delivered|markDelivered",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        }
+      }
+    },
+    {
+      "id": "admin.user_banned",
+      "title": "Admin: User Banned",
+      "domain": "Admin / User Management",
+      "service": "backoffice-service",
+      "ruleSet": "privileged_action",
+      "impact": "Banned user keeps a live session (forceLogout is a no-op) and is never notified.",
+      "fix": "Build auth-service consumer on admin.user.queue → revoke sessions on forceLogout + notify on notifyUser. [spawned task]",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "setStatus",
+            "dir": "apps/backoffice-service/src"
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishUserBannedSafe|admin.user_banned",
+            "dir": "apps/backoffice-service/src"
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "admin.user.queue",
+            "dir": "apps/auth-service/src"
+          }
+        },
+        "sessionInvalidation": {
+          "evidence": {
+            "pattern": "forceLogout",
+            "dir": "apps/auth-service/src"
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "admin.user|admin_user",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "admin.user|admin_user",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "USER_BANNED",
+            "dir": "apps/backoffice-service/src"
+          }
+        }
+      }
+    },
+    {
+      "id": "admin.user_suspended",
+      "title": "Admin: User Suspended",
+      "domain": "Admin / User Management",
+      "service": "backoffice-service",
+      "ruleSet": "privileged_action",
+      "impact": "Suspended user keeps a live session and is never notified.",
+      "fix": "Same auth-service admin.user.queue consumer as ban.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "setStatus",
+            "dir": "apps/backoffice-service/src"
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishUserSuspendedSafe|admin.user_suspended",
+            "dir": "apps/backoffice-service/src"
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "admin.user.queue",
+            "dir": "apps/auth-service/src"
+          }
+        },
+        "sessionInvalidation": {
+          "evidence": {
+            "pattern": "forceLogout",
+            "dir": "apps/auth-service/src"
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "admin.user|admin_user",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "admin.user|admin_user",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "USER_SUSPENDED",
+            "dir": "apps/backoffice-service/src"
+          }
+        }
+      }
+    },
+    {
+      "id": "media.scan_failed",
+      "title": "Media: Virus Scan Failed",
+      "domain": "Media",
+      "service": "media-service",
+      "ruleSet": "media_lifecycle",
+      "impact": "Async scan rejection is poll-only; a client that stopped polling never learns the upload was blocked.",
+      "fix": "Publish notify:<uploaderId> media:scan_result on QUARANTINED/INFECTED/ERROR. Download gate is already safe.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "QUARANTINED|scanStatusStore",
+            "files": ["apps/media-service/src/lib/scanner.ts"]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "redis.publish|notify:",
+            "dir": "apps/media-service/src"
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "media.scan|scan_result",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "media.scan|scan_result",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "MEDIA_SCAN",
+            "dir": "apps/media-service/src"
+          }
+        }
+      }
+    },
+    {
+      "id": "notification.deleted",
+      "title": "Notification Deleted",
+      "domain": "Notifications",
+      "service": "chat-service",
+      "ruleSet": "notification_lifecycle",
+      "riskOverride": "LOW",
+      "impact": "Delete path unbuilt — orphan deleteById, no proto RPC/handler/notification:deleted event.",
+      "fix": "Add DeleteNotification proto RPC + owner-scoped impl → publish notification:deleted + count_update; expose via /notify socket. Or remove the dead deleteById.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "deleteNotification",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "notification:deleted",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "notification:deleted",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        }
+      }
+    },
+    {
+      "id": "friend.request_sent",
+      "title": "Friend Request Sent",
+      "domain": "Friend System",
+      "service": "user-service",
+      "ruleSet": "social_request",
+      "impact": "—",
+      "fix": "OK (badge fixed by S1; deploy).",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "friendRequest|createFriendRequest|FriendRequest",
+            "dir": "apps/user-service/src"
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "friend.requested|publishFriend",
+            "dir": "apps/user-service/src"
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "friend",
+            "files": [
+              "apps/notifications-service/src/consumers/friend.consumer.ts"
+            ]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        }
+      }
+    }
+  ]
+}

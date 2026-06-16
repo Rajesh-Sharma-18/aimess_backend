@@ -12,6 +12,7 @@
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "validate:scenarios": "node tools/scenario-validator/validate.mjs",
     "test:all": "node node_modules/jest/bin/jest.js",
     "test:ci": "node node_modules/jest/bin/jest.js --ci --runInBand",
     "test:coverage": "node node_modules/jest/bin/jest.js --coverage",
