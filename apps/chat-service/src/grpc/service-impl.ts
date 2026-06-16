@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
+import { publishUserSocketEvent } from "@aimess/redis";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
@@ -28,6 +29,8 @@ import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { AdminGroupService } from "../services/admin-group.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
@@ -51,6 +54,11 @@ import {
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
+import {
+  assertPrivateParticipant,
+  assertGroupMember,
+  assertCommunityMember,
+} from "../lib/access-guard.js";
 
 /**
  * Resolve attachment object-keys inside a message `content` blob to full,
@@ -76,6 +84,8 @@ export interface GrpcDeps {
   groupMemberService: GroupMemberService;
   groupRoomRepo: GroupRoomRepository;
   groupMemberRepo: GroupMemberRepository;
+  privateRoomRepo: PrivateRoomRepository;
+  roomMemberRepo: RoomMemberRepository;
   adminGroupService: AdminGroupService;
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
@@ -1480,6 +1490,64 @@ export function createMessagingImpl(
         }
       })();
     },
+
+    // Authorize a media download against chat-resource membership. media-service
+    // calls this because an object key encodes the uploader, not the room the
+    // attachment belongs to. Routes the scope through the centralized access
+    // guards (which THROW on denial). A normal authz denial is NOT a gRPC error —
+    // it returns { allowed: false }; only the guard's throw distinguishes
+    // allowed vs. denied. Catch-all → allowed:false so a transient/internal
+    // failure can never accidentally grant access (fail-closed).
+    checkMediaAccess: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        const req = call.request as {
+          userId?: string;
+          scope?: string;
+          resourceId?: string;
+        };
+        const userId = req.userId ?? "";
+        const resourceId = req.resourceId ?? "";
+        const scope = String(req.scope ?? "").toUpperCase();
+
+        try {
+          switch (scope) {
+            case "PRIVATE_CHAT":
+              await assertPrivateParticipant(
+                deps.privateRoomRepo,
+                resourceId,
+                userId
+              );
+              break;
+            case "GROUP_CHAT":
+              await assertGroupMember(deps.groupMemberRepo, resourceId, userId);
+              break;
+            case "COMMUNITY_CHAT":
+              await assertCommunityMember(
+                deps.roomMemberRepo,
+                resourceId,
+                userId
+              );
+              break;
+            default:
+              callback(null, { allowed: false });
+              return;
+          }
+          callback(null, { allowed: true });
+        } catch (err) {
+          // Guards throw ForbiddenError/NotFoundError on a normal denial — that
+          // is the expected "no" answer, not an RPC failure. Log at debug so an
+          // unexpected internal error is still traceable without alarming on the
+          // routine denials. Either way the answer is fail-closed: allowed:false.
+          logger.debug(
+            `checkMediaAccess denied (scope=${scope}, user=${userId}, resource=${resourceId}): ${String(err)}`
+          );
+          callback(null, { allowed: false });
+        }
+      })();
+    },
   };
 }
 
@@ -2264,16 +2332,17 @@ export function createNotificationImpl(
               isRead: false,
               createdAt: created.createdAt.getTime(),
             };
-            await redis.publish(
-              `notify:${req.userId}`,
-              JSON.stringify({ event: "notification:new", data: dto })
+            await publishUserSocketEvent(
+              redis,
+              req.userId,
+              "notification:new",
+              dto
             );
-            await redis.publish(
-              `notify:${req.userId}`,
-              JSON.stringify({
-                event: "notification:count_update",
-                data: { count: unreadCount },
-              })
+            await publishUserSocketEvent(
+              redis,
+              req.userId,
+              "notification:count_update",
+              { count: unreadCount }
             );
           } catch (err) {
             logger.warn(
@@ -2436,12 +2505,13 @@ export function createNotificationImpl(
           // Best-effort: a relay error must never fail the delete.
           if (deleted) {
             try {
-              await redis.publish(
-                `notify:${userId}`,
-                JSON.stringify({
-                  event: "notification:deleted",
-                  data: { notificationId: req.notificationId },
-                })
+              await publishUserSocketEvent(
+                redis,
+                userId,
+                "notification:deleted",
+                {
+                  notificationId: req.notificationId,
+                }
               );
             } catch (err) {
               logger.warn(
