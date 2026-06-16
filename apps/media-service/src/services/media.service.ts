@@ -12,7 +12,6 @@ import {
 import {
   BadRequestError,
   ForbiddenError,
-  GoneError,
   UnsupportedMediaTypeError,
 } from "@aimess/errors";
 
@@ -181,19 +180,32 @@ export const mediaService = {
       declaredMime: params.contentType,
     });
 
-    // Structural rejection (magic-byte / ZIP bomb / OOXML mismatch) — throw
-    // immediately so the frontend gets an error during the upload flow.
+    // Structural rejection (magic-byte / ZIP bomb / OOXML mismatch) is terminal:
+    // mark the object unsafe and remove it. confirm always RESPONDS 200 with the
+    // verdict in `scanStatus` (the published OpenAPI contract + the async poll
+    // model — PENDING cannot be thrown, so every verdict returns uniformly). The
+    // download gate blocks anything outside {CLEAN, SKIPPED}, so a rejected file
+    // is never served regardless of label.
     if (result.status === "REJECTED") {
       await scanStatusStore.set(params.objectKey, "INFECTED");
       await deleteObject(storageClient, def.bucket, params.objectKey);
-      throw new UnsupportedMediaTypeError("MEDIA_FILE_REJECTED");
+      return {
+        objectKey: params.objectKey,
+        scanStatus: "INFECTED",
+        fileSize: result.fileSize,
+      };
     }
 
-    // AV scan: virus detected — throw so the frontend is notified immediately.
+    // AV scan flagged the file (only reachable if the structural validator ever
+    // surfaces a QUARANTINED verdict). Same terminal treatment.
     if (result.status === "QUARANTINED") {
       await scanStatusStore.set(params.objectKey, "QUARANTINED");
       await deleteObject(storageClient, def.bucket, params.objectKey);
-      throw new GoneError("MEDIA_FILE_QUARANTINED");
+      return {
+        objectKey: params.objectKey,
+        scanStatus: "QUARANTINED",
+        fileSize: result.fileSize,
+      };
     }
 
     if (result.status === "ERROR") {

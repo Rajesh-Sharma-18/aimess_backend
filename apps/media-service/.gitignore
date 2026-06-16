@@ -1,0 +1,6 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+# Prisma client is generated from prisma/schema.prisma (pnpm db:generate)
+/src/generated/prisma

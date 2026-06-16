@@ -80,6 +80,16 @@ const envSchema = z.object({
   MEDIA_SCAN_CONCURRENCY: z.coerce.number().int().positive().default(2),
   MEDIA_SCAN_JOB_ATTEMPTS: z.coerce.number().int().positive().default(3),
   MEDIA_SCAN_BACKOFF_MS: z.coerce.number().int().positive().default(5000),
+
+  // MongoDB (media_db) — the MediaFile registry. Provide EITHER a complete
+  // MONGO_DATABASE_URL, OR the MONGO_* parts below (the URL is composed from
+  // them). Mirrors chat-service so the running Mongo replica set is reused.
+  MONGO_ROOT_USERNAME: z.string().min(1).optional(),
+  MONGO_ROOT_PASSWORD: z.string().min(1).optional(),
+  MONGO_DATABASE: z.string().min(1).optional(), // auth source (where root user lives)
+  MONGODB_PORT: z.coerce.number().positive().optional(),
+  MONGO_HOST: z.string().default("localhost"),
+  MONGO_DB_NAME: z.string().default("aimess_media"), // database holding media records
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -91,4 +101,41 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+const data = parsed.data;
+
+/**
+ * Resolve the MongoDB connection URL: prefer a complete MONGO_DATABASE_URL,
+ * otherwise compose it from the MONGO_* parts. Exits with a clear message if
+ * neither is usable. Mirrors chat-service so the same running replica set works.
+ */
+function resolveMongoUrl(): string {
+  const preBuilt = process.env.MONGO_DATABASE_URL;
+  if (preBuilt && /^mongodb(\+srv)?:\/\/[^@/]+/.test(preBuilt)) {
+    return preBuilt;
+  }
+
+  if (
+    data.MONGO_ROOT_USERNAME &&
+    data.MONGO_ROOT_PASSWORD &&
+    data.MONGODB_PORT
+  ) {
+    const user = encodeURIComponent(data.MONGO_ROOT_USERNAME);
+    const pass = encodeURIComponent(data.MONGO_ROOT_PASSWORD);
+    const authSource = data.MONGO_DATABASE ?? "admin";
+    return (
+      `mongodb://${user}:${pass}@${data.MONGO_HOST}:${data.MONGODB_PORT}/` +
+      `${data.MONGO_DB_NAME}?authSource=${authSource}&directConnection=true`
+    );
+  }
+
+  logger.error(
+    "Invalid Mongo config: provide a complete MONGO_DATABASE_URL, or the " +
+      "MONGO_ROOT_USERNAME / MONGO_ROOT_PASSWORD / MONGODB_PORT parts."
+  );
+  process.exit(1);
+}
+
+export const env = {
+  ...data,
+  MONGO_DATABASE_URL: resolveMongoUrl(),
+};

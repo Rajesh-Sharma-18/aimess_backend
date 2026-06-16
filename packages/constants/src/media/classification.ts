@@ -123,6 +123,17 @@ export function isDownloadableScanStatus(status: string): boolean {
   return (DOWNLOADABLE_SCAN_STATUSES as readonly string[]).includes(status);
 }
 
+// ─── Usage / lifecycle status (Phase 12) ───────────────────────────────────
+
+/**
+ * Lifecycle state of a registered object, driving cleanup.
+ *   ACTIVE  — referenced & live.
+ *   UNUSED  — dereferenced (e.g. owning message deleted); grace clock running.
+ *   DELETED — object removed from storage; row retained for audit until pruned.
+ */
+export const MEDIA_USAGE_STATUSES = ["ACTIVE", "UNUSED", "DELETED"] as const;
+export type MediaUsageStatus = (typeof MEDIA_USAGE_STATUSES)[number];
+
 // ─── Download-access policy (Phase 9) ──────────────────────────────────────
 
 /**

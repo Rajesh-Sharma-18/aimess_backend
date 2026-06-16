@@ -1,0 +1,74 @@
+// =============================================================================
+// media-service  ·  MongoDB  ·  media_db
+// Owns: the centralized MediaFile registry — one row per uploaded object, the
+//       single source of truth for ownership, resource classification, scan
+//       status, and lifecycle across the platform. The service still mints
+//       presigned URLs and never touches file bytes; the registry is what makes
+//       resource-driven download authorization and orphan cleanup possible.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  // Required by the Prisma CLI. Runtime PrismaClient overrides this via
+  // datasourceUrl (composed from MONGO_* parts in src/config/env.ts);
+  // prisma.config.ts composes it for `prisma generate` / `db push`.
+  url      = env("MONGO_DATABASE_URL")
+}
+
+/// One record per uploaded object. Created on /confirm (and best-effort on
+/// upload-url mint), it binds an immutable storage key to its owner, the
+/// resource it belongs to, its scan verdict, and its lifecycle state.
+///
+/// This binding is what makes correct authorization possible: a chat
+/// attachment's object key ({prefix}/{uploaderId}/{fileId}) does NOT encode
+/// which room/group/community it belongs to, so without this row media-service
+/// cannot know whose membership to verify on download.
+///
+/// String fields are validated against the @aimess/constants media
+/// classification enums (MediaOwnerType / MediaResourceType / MediaScanStatus /
+/// MediaUsageStatus) at the application layer.
+model MediaFile {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+
+  // Storage reference (immutable)
+  objectKey      String    @unique // {prefix}/{ownerId}/{fileId}.{ext}
+  bucket         String // MinIO bucket
+  uploadCategory String // MediaCategoryKey that minted the key
+
+  // Classification
+  ownerType      String // MediaOwnerType
+  resourceType   String // MediaResourceType
+  ownerId        String // uploader userId (UUID)
+  resourceId     String? // room/group/community/user the file is scoped to
+
+  // File metadata
+  fileName       String? // sanitized original filename (display)
+  contentType    String // MIME
+  size           Int? // bytes (null until confirmed)
+  fileHash       String? // SHA-256 hex (reserved: dedup)
+
+  // Safety
+  scanStatus     String    @default("PENDING") // MediaScanStatus
+  scanDetail     String? // signature (INFECTED) / reason (REJECTED/ERROR)
+  scannedAt      DateTime?
+
+  // Lifecycle
+  usageStatus    String    @default("ACTIVE") // MediaUsageStatus
+  unusedAt       DateTime? // when marked UNUSED (grace clock start)
+  deletedAt      DateTime? // when hard-deleted from storage
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([ownerId, resourceType]) // a user's media of a kind
+  @@index([resourceId, resourceType]) // media within a room/community
+  @@index([scanStatus]) // find pending / quarantined
+  @@index([usageStatus, unusedAt]) // orphan cleanup sweep
+  @@index([createdAt])
+  @@map("media_files")
+}
