@@ -4,20 +4,20 @@
 > evidence over the working tree). Pair with the LLM `scenario-validator` agent for
 > discovery of actions missing from the registry. **Do not edit by hand.**
 >
-> Generated: 2026-06-16T07:28:52.525Z
+> Generated: 2026-06-16T08:53:33.120Z
 
 ## Summary
 
 | Result            | Count |
 | ----------------- | ----- |
-| ✅ PASS           | 7     |
+| ✅ PASS           | 10    |
 | ⚠️ WARN           | 1     |
-| ❌ FAILED         | 4     |
+| ❌ FAILED         | 1     |
 | **Total actions** | 12    |
 
-Open risk (non-PASS): **HIGH 3 · MEDIUM 1 · LOW 1**
+Open risk (non-PASS): **HIGH 0 · MEDIUM 1 · LOW 1**
 
-**CI gate (fail at ≥ HIGH):** ❌ FAIL — 3 blocking action(s): chat.group.member_added, admin.user_banned, admin.user_suspended
+**CI gate (fail at ≥ HIGH):** ✅ PASS
 
 Legend: ✅ wired · ❌ missing · ➖ waived (documented n/a) · · not applicable
 
@@ -104,23 +104,21 @@ Recommendation: —
 
 ## Group Chat
 
-### Group Member Added — ❌ FAILED · Risk: HIGH
+### Group Member Added — ✅ PASS
 
 ```
 Feature: Group Member Added   [chat.group.member_added]
 ✅ Database update          PASS
-❌ Domain event             FAIL
-❌ Event consumer           FAIL
+✅ Domain event             PASS
+✅ Event consumer           PASS
 ✅ Socket event             PASS
-❌ Push notification (FCM)  FAIL
-❌ In-app notification      FAIL
-❌ Unread counter update    FAIL
-❌ Audit log                MISSING
-Risk: HIGH
-Recommendation: Publish chat.group_member_added → notifications consumer → pushToUser (mirror community MEMBER_ADDED). [spawned task]  (missing: Domain event, Event consumer, Push notification (FCM), In-app notification, Unread counter update, Audit log)
+✅ Push notification (FCM)  PASS
+✅ In-app notification      PASS
+✅ Unread counter update    PASS
+➖ Audit log                WAIVED
+Risk: —
+Recommendation: —
 ```
-
-Impact: User added to a group sees nothing until they open it (in-room system message only).
 
 ## Private Chat
 
@@ -139,39 +137,35 @@ Recommendation: —
 
 ## Admin / User Management
 
-### Admin: User Banned — ❌ FAILED · Risk: HIGH
+### Admin: User Banned — ✅ PASS
 
 ```
 Feature: Admin: User Banned   [admin.user_banned]
 ✅ Database update          PASS
 ✅ Domain event             PASS
-❌ Event consumer           FAIL
-❌ Push notification (FCM)  FAIL
-❌ In-app notification      FAIL
-❌ Session invalidation     FAIL
+✅ Event consumer           PASS
+✅ Push notification (FCM)  PASS
+✅ In-app notification      PASS
+✅ Session invalidation     PASS
 ✅ Audit log                PASS
-Risk: HIGH
-Recommendation: Build auth-service consumer on admin.user.queue → revoke sessions on forceLogout + notify on notifyUser. [spawned task]  (missing: Event consumer, Session invalidation, Push notification (FCM), In-app notification)
+Risk: —
+Recommendation: —
 ```
 
-Impact: Banned user keeps a live session (forceLogout is a no-op) and is never notified.
-
-### Admin: User Suspended — ❌ FAILED · Risk: HIGH
+### Admin: User Suspended — ✅ PASS
 
 ```
 Feature: Admin: User Suspended   [admin.user_suspended]
 ✅ Database update          PASS
 ✅ Domain event             PASS
-❌ Event consumer           FAIL
-❌ Push notification (FCM)  FAIL
-❌ In-app notification      FAIL
-❌ Session invalidation     FAIL
+✅ Event consumer           PASS
+✅ Push notification (FCM)  PASS
+✅ In-app notification      PASS
+✅ Session invalidation     PASS
 ✅ Audit log                PASS
-Risk: HIGH
-Recommendation: Same auth-service admin.user.queue consumer as ban.  (missing: Event consumer, Session invalidation, Push notification (FCM), In-app notification)
+Risk: —
+Recommendation: —
 ```
-
-Impact: Suspended user keeps a live session and is never notified.
 
 ## Media
 
@@ -225,17 +219,17 @@ Recommendation: —
 
 ## Findings table
 
-| Feature                         | Status | Risk   | Missing                                                                                                      | Service            |
-| ------------------------------- | ------ | ------ | ------------------------------------------------------------------------------------------------------------ | ------------------ |
-| Community Member Added          | PASS   | —      | —                                                                                                            | community-service  |
-| Community Member Muted          | PASS   | —      | —                                                                                                            | community-service  |
-| Community Member Warned         | PASS   | —      | —                                                                                                            | community-service  |
-| Community Member Removed (kick) | PASS   | —      | —                                                                                                            | community-service  |
-| Community Created               | PASS   | —      | —                                                                                                            | community-service  |
-| Group Member Added              | FAILED | HIGH   | Domain event, Event consumer, Push notification (FCM), In-app notification, Unread counter update, Audit log | chat-service       |
-| Private Message Sent            | PASS   | —      | —                                                                                                            | chat-service       |
-| Admin: User Banned              | FAILED | HIGH   | Event consumer, Session invalidation, Push notification (FCM), In-app notification                           | backoffice-service |
-| Admin: User Suspended           | FAILED | HIGH   | Event consumer, Session invalidation, Push notification (FCM), In-app notification                           | backoffice-service |
-| Media: Virus Scan Failed        | WARN   | MEDIUM | Socket event, Push notification (FCM), In-app notification                                                   | media-service      |
-| Notification Deleted            | FAILED | LOW    | Database update, Socket event, Unread counter update                                                         | chat-service       |
-| Friend Request Sent             | PASS   | —      | —                                                                                                            | user-service       |
+| Feature                         | Status | Risk   | Missing                                                    | Service            |
+| ------------------------------- | ------ | ------ | ---------------------------------------------------------- | ------------------ |
+| Community Member Added          | PASS   | —      | —                                                          | community-service  |
+| Community Member Muted          | PASS   | —      | —                                                          | community-service  |
+| Community Member Warned         | PASS   | —      | —                                                          | community-service  |
+| Community Member Removed (kick) | PASS   | —      | —                                                          | community-service  |
+| Community Created               | PASS   | —      | —                                                          | community-service  |
+| Group Member Added              | PASS   | —      | —                                                          | chat-service       |
+| Private Message Sent            | PASS   | —      | —                                                          | chat-service       |
+| Admin: User Banned              | PASS   | —      | —                                                          | backoffice-service |
+| Admin: User Suspended           | PASS   | —      | —                                                          | backoffice-service |
+| Media: Virus Scan Failed        | WARN   | MEDIUM | Socket event, Push notification (FCM), In-app notification | media-service      |
+| Notification Deleted            | FAILED | LOW    | Database update, Socket event, Unread counter update       | chat-service       |
+| Friend Request Sent             | PASS   | —      | —                                                          | user-service       |

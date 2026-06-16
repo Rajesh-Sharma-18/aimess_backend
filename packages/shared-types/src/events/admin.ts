@@ -14,6 +14,38 @@ export type AdminPasswordResetOtpRequestedPayload = {
   requestedAt: string;
 };
 
+/**
+ * Cross-service admin account-state events (backoffice-service → auth-service).
+ * Published by backoffice on ban/suspend/unban to the durable `admin.user.queue`;
+ * auth-service is the sole consumer (revokes sessions + re-publishes a notify).
+ * String values MUST match backoffice ADMIN_USER_EVENTS — the wire contract.
+ */
+export const AdminUserEvents = {
+  USER_BANNED: "admin.user_banned",
+  USER_UNBANNED: "admin.user_unbanned",
+  USER_SUSPENDED: "admin.user_suspended",
+} as const;
+
+export type AdminUserEventType =
+  (typeof AdminUserEvents)[keyof typeof AdminUserEvents];
+
+/**
+ * Payload carried by every admin.user_* event. Mirrors the backoffice publisher
+ * (apps/backoffice-service/src/messaging/publish-admin-user-event.ts) exactly —
+ * `forceLogout`/`notifyUser` are the action flags the auth-service consumer
+ * honors; both are absent on unban events.
+ */
+export type AdminUserEventPayload = {
+  userId: string;
+  reason?: string | null;
+  suspendedUntil?: string | null;
+  forceLogout?: boolean;
+  notifyUser?: boolean;
+  actorId: string;
+  /** ISO timestamp the mutation was applied. */
+  at: string;
+};
+
 /** Cross-service admin report-ingestion events (community/chat → backoffice-service). */
 export const AdminReportEvents = {
   REPORT_INGEST: "admin.report.ingest",

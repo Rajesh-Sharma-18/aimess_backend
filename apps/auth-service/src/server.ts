@@ -5,6 +5,7 @@ import { env } from "./config/env.js";
 import { prisma } from "./config/prisma.js";
 import { connectAuthRedis, redis } from "./config/redis.js";
 import { startProfileUpdatedConsumer } from "./messaging/profile-updated-consumer.js";
+import { startAdminUserConsumer } from "./messaging/admin-user-consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
 import { logger } from "@aimess/logger";
 import type * as grpc from "@grpc/grpc-js";
@@ -48,6 +49,19 @@ const startServer = async () => {
     } catch (error) {
       logger.warn(
         "RabbitMQ unavailable after retries — profile-completion sync will not run until auth-service restarts"
+      );
+      logger.warn(error);
+    }
+
+    // Consume backoffice admin.user_* events: force-logout banned/suspended
+    // users + bridge a notify to notifications-service. Wrapped so a broker
+    // outage never blocks startup.
+    try {
+      await startAdminUserConsumer();
+      logger.info("RabbitMQ admin.user consumer started");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable after retries — admin force-logout/notify will not run until auth-service restarts"
       );
       logger.warn(error);
     }

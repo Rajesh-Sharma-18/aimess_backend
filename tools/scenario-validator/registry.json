@@ -311,7 +311,7 @@
       "service": "chat-service",
       "ruleSet": "member_mutation",
       "impact": "User added to a group sees nothing until they open it (in-room system message only).",
-      "fix": "Publish chat.group_member_added → notifications consumer → pushToUser (mirror community MEMBER_ADDED). [spawned task]",
+      "fix": "Wired: chat.group_member_added → group.consumer → pushToUser (mirrors community MEMBER_ADDED).",
       "effects": {
         "db": {
           "evidence": {
@@ -341,21 +341,30 @@
         },
         "push": {
           "evidence": {
-            "pattern": "group_member_added",
-            "dir": "apps/notifications-service/src/consumers"
+            "pattern": "pushToUser",
+            "files": [
+              "apps/notifications-service/src/consumers/group.consumer.ts"
+            ]
           }
         },
         "inapp": {
           "evidence": {
-            "pattern": "group_member_added",
-            "dir": "apps/notifications-service/src/consumers"
+            "pattern": "pushToUser",
+            "files": [
+              "apps/notifications-service/src/consumers/group.consumer.ts"
+            ]
           }
         },
         "badge": {
           "evidence": {
-            "pattern": "group_member_added",
-            "dir": "apps/notifications-service/src/consumers"
+            "pattern": "pushToUser",
+            "files": [
+              "apps/notifications-service/src/consumers/group.consumer.ts"
+            ]
           }
+        },
+        "audit": {
+          "waived": "Peer group add (not a privileged/admin action); no audit record by design."
         }
       }
     },
