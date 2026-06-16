@@ -46,6 +46,21 @@ export type AdminUserEventPayload = {
   at: string;
 };
 
+/**
+ * Notify-ready payload on `admin.user.notify.queue`: auth-service re-publishes
+ * admin ban/suspend/unban actions here after processing admin.user.queue, and
+ * notifications-service consumes them → pushToUser. `type` is the domain event
+ * (e.g. admin.user_banned) persisted on the inbox row; `data` is extra
+ * string→string context (actorId, reason, suspendedUntil).
+ */
+export type AdminUserNotifyPayload = {
+  userId: string;
+  type: string;
+  title: string;
+  body: string;
+  data?: Record<string, string>;
+};
+
 /** Cross-service admin report-ingestion events (community/chat → backoffice-service). */
 export const AdminReportEvents = {
   REPORT_INGEST: "admin.report.ingest",

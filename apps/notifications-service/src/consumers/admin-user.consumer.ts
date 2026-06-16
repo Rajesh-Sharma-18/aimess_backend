@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { type AdminUserNotifyPayload } from "@aimess/shared-types";
 import amqp from "amqplib";
 
 import { env } from "../config/env.js";
@@ -13,14 +14,6 @@ import { pushToUser } from "../services/push.service.js";
  * notify-ready payload published by auth-service publish-admin-user-notify.ts.
  */
 const ADMIN_USER_NOTIFY_QUEUE = "admin.user.notify.queue";
-
-type AdminUserNotifyPayload = {
-  userId: string;
-  type: string;
-  title: string;
-  body: string;
-  data?: Record<string, string>;
-};
 
 async function handleAdminUserNotify(
   type: string,

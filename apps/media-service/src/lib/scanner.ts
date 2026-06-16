@@ -21,9 +21,10 @@
 import * as net from "node:net";
 import Queue from "bull";
 import type { Queue as BullQueue, Job } from "bull";
-import type { Redis } from "@aimess/redis";
+import { publishUserSocketEvent, type Redis } from "@aimess/redis";
 
 import { logger } from "@aimess/logger";
+import type { MediaScanStatus } from "@aimess/constants";
 import {
   getObjectBytes,
   deleteObject,
@@ -36,22 +37,11 @@ import { storageClient } from "../config/storage.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-/**
- * Lifecycle status for an uploaded object:
- *   PENDING    → confirm called, scan in progress
- *   CLEAN      → all checks passed; file is downloadable
- *   INFECTED   → virus detected by AV scanner
- *   QUARANTINED → rejected by magic-byte / ZIP checks or after INFECTED
- *   SKIPPED    → no-op scanner active (dev mode); file accessible but unscanned
- *   ERROR      → scanner error; confirm should be retried
- */
-export type MediaScanStatus =
-  | "PENDING"
-  | "CLEAN"
-  | "INFECTED"
-  | "QUARANTINED"
-  | "SKIPPED"
-  | "ERROR";
+// Scan-status lifecycle is the canonical @aimess/constants vocabulary (single
+// source of truth shared with the MediaFile registry + download-access gate),
+// imported above. Re-exported so callers can keep importing it from the scanner
+// module rather than reaching into @aimess/constants directly.
+export type { MediaScanStatus };
 
 export interface MediaScanInput {
   bucket: string;
@@ -275,11 +265,12 @@ export function publishScanResult(
     });
     return;
   }
-  const payload = JSON.stringify({
-    event: "media:scan_result",
-    data: { objectKey, status, reason: reason ?? "", at: Date.now() },
-  });
-  void redis.publish(`notify:${uploaderId}`, payload).catch((err: unknown) =>
+  void publishUserSocketEvent(redis, uploaderId, "media:scan_result", {
+    objectKey,
+    status,
+    reason: reason ?? "",
+    at: Date.now(),
+  }).catch((err: unknown) =>
     logger.warn("media-scan: scan_result notify publish failed", {
       objectKey,
       error: err instanceof Error ? err.message : String(err),

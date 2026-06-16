@@ -1,8 +1,12 @@
 import { logger } from "@aimess/logger";
+import {
+  AdminUserEvents,
+  type AdminUserEventType,
+  type AdminUserEventPayload,
+} from "@aimess/shared-types";
 import amqp from "amqplib";
 
 import { env } from "../config/env.js";
-import { ADMIN_USER_EVENTS } from "../constants/index.js";
 
 /**
  * Publisher for `admin.user_*` account-state events. auth-service is the
@@ -42,26 +46,8 @@ async function getChannel(): Promise<amqp.Channel> {
   return channelPromise;
 }
 
-/** Payload carried by every admin.user_* event. */
-export type AdminUserEventPayload = {
-  userId: string;
-  reason?: string | null;
-  suspendedUntil?: string | null;
-  /**
-   * Ban/suspend action flags the auth-service consumer honors:
-   *  - forceLogout: revoke the user's active sessions on ban.
-   *  - notifyUser:  send the user a notification about the action.
-   * Absent on unban events.
-   */
-  forceLogout?: boolean;
-  notifyUser?: boolean;
-  actorId: string;
-  /** ISO timestamp the mutation was applied. */
-  at: string;
-};
-
 async function publish(
-  type: (typeof ADMIN_USER_EVENTS)[keyof typeof ADMIN_USER_EVENTS],
+  type: AdminUserEventType,
   data: AdminUserEventPayload
 ): Promise<void> {
   const channel = await getChannel();
@@ -73,21 +59,21 @@ async function publish(
 
 /** Fire-and-forget; an admin action must not fail if the broker is down. */
 export function publishUserBannedSafe(data: AdminUserEventPayload): void {
-  void publish(ADMIN_USER_EVENTS.USER_BANNED, data).catch((error) => {
+  void publish(AdminUserEvents.USER_BANNED, data).catch((error) => {
     logger.error("Failed to publish admin.user_banned event");
     logger.error(error);
   });
 }
 
 export function publishUserUnbannedSafe(data: AdminUserEventPayload): void {
-  void publish(ADMIN_USER_EVENTS.USER_UNBANNED, data).catch((error) => {
+  void publish(AdminUserEvents.USER_UNBANNED, data).catch((error) => {
     logger.error("Failed to publish admin.user_unbanned event");
     logger.error(error);
   });
 }
 
 export function publishUserSuspendedSafe(data: AdminUserEventPayload): void {
-  void publish(ADMIN_USER_EVENTS.USER_SUSPENDED, data).catch((error) => {
+  void publish(AdminUserEvents.USER_SUSPENDED, data).catch((error) => {
     logger.error("Failed to publish admin.user_suspended event");
     logger.error(error);
   });

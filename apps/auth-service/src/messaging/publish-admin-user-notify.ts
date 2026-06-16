@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { type AdminUserNotifyPayload } from "@aimess/shared-types";
 import amqp from "amqplib";
 
 import { env } from "../config/env.js";
@@ -10,17 +11,6 @@ import { env } from "../config/env.js";
  * project's async fan-out convention; envelope is JSON.stringify({ type, data }).
  */
 const ADMIN_USER_NOTIFY_QUEUE = "admin.user.notify.queue";
-
-/** Notify-ready payload consumed by notifications-service. */
-export type AdminUserNotifyPayload = {
-  userId: string;
-  /** Domain event type, persisted on the inbox row (e.g. admin.user_banned). */
-  type: string;
-  title: string;
-  body: string;
-  /** Extra string→string context (actorId, reason, suspendedUntil). */
-  data?: Record<string, string>;
-};
 
 let channelPromise: Promise<amqp.Channel> | null = null;
 
