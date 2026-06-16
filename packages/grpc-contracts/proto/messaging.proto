@@ -31,6 +31,23 @@ service MessagingService {
   rpc AdminListGroups         (AdminListGroupsRequest)         returns (AdminListGroupsResponse);
   rpc AdminGetGroup           (AdminGetGroupRequest)           returns (AdminGroupDetail);
   rpc AdminListGroupMembers   (AdminListGroupMembersRequest)   returns (AdminListGroupMembersResponse);
+
+  // Authorize a media download against resource membership. media-service calls
+  // this for chat-scoped attachments because the object key encodes the uploader,
+  // not the room/group/community the file belongs to. Reuses chat-service's
+  // access guards (assertPrivateParticipant / assertGroupMember / assertCommunityMember).
+  rpc CheckMediaAccess        (CheckMediaAccessRequest)        returns (CheckMediaAccessResponse);
+}
+
+// scope is PRIVATE_CHAT | GROUP_CHAT | COMMUNITY_CHAT; resource_id is the
+// roomId / groupId / communityId the attachment belongs to.
+message CheckMediaAccessRequest {
+  string user_id     = 1;
+  string scope       = 2;
+  string resource_id = 3;
+}
+message CheckMediaAccessResponse {
+  bool allowed = 1;
 }
 
 message GetGroupCountRequest {}
