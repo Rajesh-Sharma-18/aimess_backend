@@ -189,21 +189,20 @@ const mediaConfirm = {
 1. Verifies the object exists in storage.
 2. Downloads the first 512 bytes and validates file-signature (magic bytes) against the declared MIME type.
 3. For ZIP / OOXML files: inspects the archive structure for ZIP bombs, nested archives, and correct OOXML content-type.
-4. Violations are **terminal**: file is deleted from storage and an HTTP error is returned immediately.
+4. Violations are **terminal**: the file is deleted from storage and confirm returns **HTTP 200** with a terminal \`scanStatus\` (it does NOT throw) — read the verdict below.
 
 **Antivirus scan (asynchronous — when \`CLAMAV_ENABLED=true\`):**
 The AV scan is enqueued as a Bull job and this endpoint returns \`scanStatus: "PENDING"\` immediately. The in-process worker scans, writes \`CLEAN\`/\`QUARANTINED\` to Redis, and deletes the file if a virus is found. Poll \`GET /media/scan-status\` until \`CLEAN\` before requesting a download URL. In dev (\`CLAMAV_ENABLED=false\`) confirm returns \`CLEAN\` synchronously.
 
-**Success response \`scanStatus\` values (HTTP 200):**
-- \`PENDING\` — structural checks passed; AV scan is in progress.
+**This endpoint always responds HTTP 200 with a \`scanStatus\` verdict (the only non-200s are 400/401/403). Read \`data.scanStatus\`:**
 - \`CLEAN\` — all checks passed; file is downloadable.
+- \`PENDING\` — structural checks passed; AV scan in progress (poll /media/scan-status).
 - \`SKIPPED\` — scanner disabled (dev mode); file accessible but unscanned.
+- \`INFECTED\` — structural reject (magic-byte mismatch, ZIP bomb, nested archive, OOXML type mismatch). File deleted; not downloadable.
+- \`QUARANTINED\` — virus detected by the AV scanner. File deleted; not downloadable.
 - \`ERROR\` — scanner error; retry /confirm.
 
-**Error responses (HTTP 4xx — file rejected, deleted from storage):**
-- \`415\` — magic-byte mismatch, ZIP bomb, nested archive, or OOXML type mismatch (\`MEDIA_FILE_REJECTED\`).
-- \`410\` — virus detected by AV scanner (\`MEDIA_FILE_QUARANTINED\`).
-- \`403\` — caller does not own the object (\`MEDIA_CONFIRM_FORBIDDEN\`).`,
+\`403\` (\`MEDIA_CONFIRM_FORBIDDEN\`) is returned only when the caller does not own the object.`,
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -252,10 +251,17 @@ The AV scan is enqueued as a Bull job and this endpoint returns \`scanStatus: "P
                     },
                     scanStatus: {
                       type: "string" as const,
-                      enum: ["CLEAN", "PENDING", "SKIPPED", "ERROR"],
+                      enum: [
+                        "CLEAN",
+                        "PENDING",
+                        "SKIPPED",
+                        "ERROR",
+                        "INFECTED",
+                        "QUARANTINED",
+                      ],
                       example: "CLEAN",
                       description:
-                        "PENDING = AV scan in progress (poll /media/scan-status). ERROR = scanner down; retry /confirm.",
+                        "Terminal verdict in a uniform HTTP 200 body. CLEAN/SKIPPED = downloadable. PENDING = AV scan in progress (poll /media/scan-status). INFECTED = structural reject (magic-byte/ZIP/OOXML), file deleted. QUARANTINED = virus found, file deleted. ERROR = scanner down; retry /confirm.",
                     },
                     fileSize: {
                       type: "integer" as const,
@@ -284,38 +290,6 @@ The AV scan is enqueued as a Bull job and this endpoint returns \`scanStatus: "P
           },
         },
       },
-      "410": {
-        description:
-          "Virus detected — file deleted from storage (MEDIA_FILE_QUARANTINED).",
-        content: {
-          "application/json": {
-            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            example: {
-              success: false,
-              error: {
-                code: "MEDIA_FILE_QUARANTINED",
-                message: "File was quarantined — virus detected",
-              },
-            },
-          },
-        },
-      },
-      "415": {
-        description:
-          "File rejected — magic-byte mismatch, ZIP bomb, nested archive, or OOXML type mismatch. File deleted from storage (MEDIA_FILE_REJECTED).",
-        content: {
-          "application/json": {
-            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            example: {
-              success: false,
-              error: {
-                code: "MEDIA_FILE_REJECTED",
-                message: "File content does not match declared type",
-              },
-            },
-          },
-        },
-      },
       "500": internalError,
     },
   },
@@ -333,6 +307,7 @@ If the file has never been confirmed, this endpoint automatically runs the secur
 **Blocked when:**
 - Scan status is \`PENDING\` (async AV scan in progress; poll /media/scan-status and retry) → 403 MEDIA_SCAN_PENDING
 - Scan status is \`QUARANTINED\` or \`INFECTED\` (file rejected; deleted from storage) → 403 MEDIA_QUARANTINED
+- Scan status is \`ERROR\` or any value outside the allow-list (\`CLEAN\`/\`SKIPPED\`) → 403 MEDIA_SCAN_PENDING (defense-in-depth allow-list gate)
 
 **Safe-serving headers applied to the response:**
 - \`X-Content-Type-Options: nosniff\`
@@ -473,9 +448,76 @@ const mediaScanStatus = {
   },
 };
 
+const mediaCancelUpload = {
+  delete: {
+    tags: ["Media"],
+    summary: "Cancel an upload (delete the object)",
+    description:
+      "Deletes an uploaded object from storage — used to cancel an in-progress upload or discard an object the client decided not to reference. Ownership is enforced (the objectKey must be owned by the caller). Idempotent: deleting an already-absent object still returns 200.\n\n" +
+      "`:objectKey` must be URL-encoded (it contains slashes), and `category` is passed as a query parameter.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "objectKey",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const, maxLength: 500 },
+        description:
+          "URL-encoded object key returned by /upload-url, e.g. chat-uploads%2Fuser-uuid%2Ffile-uuid.pdf",
+      },
+      {
+        name: "category",
+        in: "query" as const,
+        required: true,
+        schema: { type: "string" as const, enum: UPLOAD_CATEGORIES },
+      },
+    ],
+    responses: {
+      "200": {
+        description: "Object deleted (or already absent).",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                message: {
+                  type: "string" as const,
+                  example: "Upload cancelled",
+                },
+                data: {
+                  type: "object" as const,
+                  nullable: true,
+                  example: null,
+                },
+              },
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": {
+        description: "Caller does not own the object (MEDIA_CANCEL_FORBIDDEN).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            example: {
+              success: false,
+              error: { code: "MEDIA_CANCEL_FORBIDDEN", message: "Forbidden" },
+            },
+          },
+        },
+      },
+      "500": internalError,
+    },
+  },
+};
+
 export const mediaPaths = {
   "/media/upload-url": mediaUploadUrl,
   "/media/confirm": mediaConfirm,
   "/media/download-url": mediaDownloadUrl,
   "/media/scan-status": mediaScanStatus,
+  "/media/uploads/{objectKey}": mediaCancelUpload,
 };
