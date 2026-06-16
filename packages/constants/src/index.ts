@@ -5,3 +5,4 @@ export * from "./media/classification.js";
 export * from "./media/content-type.js";
 export * from "./messages/index.js";
 export * from "./webrtc.js";
+export * from "./community/system-message.js";

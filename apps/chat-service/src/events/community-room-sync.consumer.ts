@@ -1,13 +1,18 @@
 import type { Channel, ConsumeMessage, ChannelModel } from "amqplib";
 import { logger } from "@aimess/logger";
+import { CommunitySystemMessageType } from "@aimess/constants";
 
 import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { GeneralRoomRepository } from "../repositories/general-room.repository.js";
+import { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
 import { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import { PrivateMessageRepository } from "../repositories/private-message.repository.js";
+import { CacheRepository } from "../repositories/cache.repository.js";
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
+import { CommunitySystemMessageService } from "../services/community-system-message.service.js";
+import { UserSnapshotService } from "../services/user-snapshot.service.js";
 
 /** community member status → chat RoomMember status. */
 export function mapMemberStatus(status: string | undefined): string | null {
@@ -91,6 +96,10 @@ interface CommunityRoomSyncEvent {
     inviterId?: string;
     recipientId?: string;
     eventAt?: string;
+    // community.system_message
+    systemMessageType?: string;
+    metadata?: Record<string, unknown>;
+    triggeredByUserId?: string;
   };
 }
 
@@ -100,6 +109,13 @@ export class CommunityRoomSyncConsumer {
   private memberRepo = new RoomMemberRepository(prisma);
   private privateRoomRepo = new PrivateRoomRepository(prisma);
   private privateMessageRepo = new PrivateMessageRepository(prisma);
+  private communitySystemMessageService = new CommunitySystemMessageService(
+    new GeneralRoomMessageRepository(prisma),
+    new GeneralRoomRepository(prisma),
+    new CacheRepository(redis),
+    new UserSnapshotService(),
+    redis
+  );
 
   async start(connection: ChannelModel): Promise<void> {
     this.channel = await connection.createChannel();
@@ -200,6 +216,37 @@ export class CommunityRoomSyncConsumer {
             communityId: cId,
             communityName: communityName ?? "",
           });
+          break;
+        }
+
+        case "community.system_message": {
+          const { systemMessageType, metadata, triggeredByUserId } = event.data;
+          if (!systemMessageType || !triggeredByUserId) {
+            logger.warn(
+              "community.system_message: missing systemMessageType or triggeredByUserId — skipping"
+            );
+            break;
+          }
+          const knownTypes = Object.values(CommunitySystemMessageType);
+          if (
+            !knownTypes.includes(
+              systemMessageType as CommunitySystemMessageType
+            )
+          ) {
+            logger.warn(
+              `community.system_message: unknown type="${systemMessageType}" — skipping`
+            );
+            break;
+          }
+          await this.communitySystemMessageService.post({
+            communityId,
+            systemMessageType: systemMessageType as CommunitySystemMessageType,
+            metadata: (metadata ?? {}) as Record<string, unknown>,
+            triggeredByUserId,
+          });
+          logger.debug(
+            `community.system_message: posted type=${systemMessageType} communityId=${communityId}`
+          );
           break;
         }
 
