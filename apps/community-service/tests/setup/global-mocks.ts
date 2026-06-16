@@ -81,6 +81,8 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityDeletedSafe: jest.fn(),
   publishCommunityMemberLeftSafe: jest.fn(),
   publishCommunityJoinRequestedSafe: jest.fn(),
+  publishCommunityJoinRequestApprovedSafe: jest.fn(),
+  publishCommunityJoinRequestRejectedSafe: jest.fn(),
   publishCommunityInviteSentSafe: jest.fn(),
   publishCommunityInviteAcceptedSafe: jest.fn(),
   publishCommunityReportCreatedSafe: jest.fn(),

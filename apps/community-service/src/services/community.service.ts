@@ -1677,14 +1677,22 @@ export const communityService = {
     actorId: string;
     via: CommunityMemberAddedPayload["via"];
     requestId?: string;
+    /**
+     * Optional pre-resolved ADMIN/MODERATOR roster. Bulk callers (addMembers,
+     * bulkApproveJoinRequests) hoist it once and pass it in to avoid an N+1 of
+     * identical roster reads — one per member. Single-member callers omit it and
+     * fall back to the lazy internal resolution below.
+     */
+    moderatorRecipientIds?: string[];
   }): Promise<void> {
     const { community, member, actorId, via, requestId } = args;
 
     const moderatorRecipientIds =
-      await communityRepository.findActiveMemberIdsByRoles(community.id, [
+      args.moderatorRecipientIds ??
+      (await communityRepository.findActiveMemberIdsByRoles(community.id, [
         CommunityMemberRole.ADMIN,
         CommunityMemberRole.MODERATOR,
-      ]);
+      ]));
 
     publishCommunityMemberAddedSafe({
       communityId: community.id,
@@ -1887,6 +1895,15 @@ export const communityService = {
 
       added = [...reactivated, ...created];
 
+      // Resolve the ADMIN/MODERATOR roster ONCE for the whole batch and pass it
+      // into every notifyMemberJoined call below — the roster is identical for
+      // each added member, so hoisting it kills the per-member N+1 roster read.
+      const moderatorRecipientIds =
+        await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]);
+
       // Notify once per added user (skipped[] are NOT emitted): enriched
       // member_added (moderator awareness) + community room roster broadcast.
       for (const m of toReactivate) {
@@ -1903,6 +1920,7 @@ export const communityService = {
           },
           actorId: callerId,
           via: "add_members",
+          moderatorRecipientIds,
         });
       }
       for (const row of createdRows) {
@@ -1911,6 +1929,7 @@ export const communityService = {
           member: row,
           actorId: callerId,
           via: "add_members",
+          moderatorRecipientIds,
         });
       }
     }
@@ -3189,13 +3208,22 @@ export const communityService = {
       await communityRepository.setMemberCount(communityId, count);
 
       // Re-read the now-ACTIVE member rows in one batch (real joinedAt/role) so
-      // the per-member join notification carries the roster DTO without N+1.
+      // the per-member join notification carries the roster DTO without an N+1
+      // member-row read; the ADMIN/MODERATOR recipient roster is likewise hoisted
+      // ONCE here (identical for every approved member) instead of being resolved
+      // per member inside notifyMemberJoined.
       const approvedUserIds = approved.map((id) => rowMap.get(id)!.userId);
       const joinedRows = await communityRepository.findMembersByUserIds(
         communityId,
         approvedUserIds
       );
       const joinedRowMap = new Map(joinedRows.map((m) => [m.userId, m]));
+
+      const moderatorRecipientIds =
+        await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]);
 
       for (const requestId of approved) {
         const request = rowMap.get(requestId)!;
@@ -3216,6 +3244,7 @@ export const communityService = {
             actorId: callerId,
             via: "join_request_approved",
             requestId,
+            moderatorRecipientIds,
           });
         }
 

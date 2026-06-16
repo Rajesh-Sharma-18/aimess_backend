@@ -250,11 +250,16 @@ channels:
       notificationsFetch: { $ref: "#/components/messages/NotificationsFetch" }
       notificationsMarkRead:
         { $ref: "#/components/messages/NotificationsMarkRead" }
+      notificationsDelete: { $ref: "#/components/messages/NotificationsDelete" }
       notificationCount: { $ref: "#/components/messages/NotificationCount" }
       notificationCountUpdate:
         { $ref: "#/components/messages/NotificationCountUpdate" }
       notificationForwarded:
         { $ref: "#/components/messages/NotificationForwarded" }
+      notificationDeleted: { $ref: "#/components/messages/NotificationDeleted" }
+      mediaScanResult: { $ref: "#/components/messages/MediaScanResult" }
+      communityJoinRequestUpdate:
+        { $ref: "#/components/messages/CommunityJoinRequestUpdate" }
 
 operations:
   # =================================================== /chat client -> server
@@ -1008,6 +1013,25 @@ operations:
     reply:
       channel: { $ref: "#/channels/notify" }
       messages: [{ $ref: "#/components/messages/Ack" }]
+  notify.delete:
+    action: send
+    channel: { $ref: "#/channels/notify" }
+    summary: "notifications:delete — owner-scoped soft-delete"
+    description: |
+      Soft-deletes a single notification the caller owns.
+      Ack `data` on success:
+      ```json
+      { "deleted": true, "remainingUnread": 4 }
+      ```
+      An unowned / unknown id is a no-op: `{ "deleted": false }` with the unread
+      count unchanged. On success the gateway also pushes a
+      `notification:count_update` to `user:<userId>` (all devices), and the
+      notifications-service relays a `notification:deleted` to the user's OTHER
+      sockets so they drop the row too.
+    messages: [{ $ref: "#/channels/notify/messages/notificationsDelete" }]
+    reply:
+      channel: { $ref: "#/channels/notify" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
 
   # ================================================= /notify server -> client
   notify.onCount:
@@ -1036,6 +1060,38 @@ operations:
     channel: { $ref: "#/channels/notify" }
     summary: "notification:new — in-app notification (+ any event forwarded verbatim from notify:<userId>)"
     messages: [{ $ref: "#/channels/notify/messages/notificationForwarded" }]
+  notify.onDeleted:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "notification:deleted — a row was soft-deleted on another device"
+    description: |
+      Forwarded verbatim from `notify:<userId>` when a notification is
+      soft-deleted (via `notifications:delete`) so the user's OTHER connected
+      devices drop the row too. A `notification:count_update` follows with the
+      refreshed unread total.
+    messages: [{ $ref: "#/channels/notify/messages/notificationDeleted" }]
+  notify.onScanResult:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "media:scan_result — terminal media-scan verdict for the uploader"
+    description: |
+      Emitted to the uploader's `notify:<uploaderId>` channel when a media upload
+      hits a terminal scan failure (QUARANTINED / INFECTED / ERROR, or a
+      synchronous confirm-upload reject). Socket-only by design — no inbox row and
+      no offline FCM. Treat any `status` as "upload blocked".
+    messages: [{ $ref: "#/channels/notify/messages/mediaScanResult" }]
+  notify.onJoinRequestUpdate:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "community:join_request:update — requester's join request was approved/rejected"
+    description: |
+      Forwarded verbatim from `notify:<userId>` when an ADMIN/MODERATOR approves
+      or rejects the user's community join request. Drives the FE state flip
+      (pending → joined / rejected). An in-app `notification:new`
+      (`community.join_request_approved` / `community.join_request_rejected`) is
+      delivered alongside it.
+    messages:
+      [{ $ref: "#/channels/notify/messages/communityJoinRequestUpdate" }]
 
 components:
   securitySchemes:
@@ -2099,6 +2155,82 @@ components:
             reactions: []
             serverTs: 1749465233000
             sentAt: 1749465233000
+        - name: community_system_created
+          summary: Community lifecycle system message — community created
+          payload:
+            id: "684abc123def456789012345"
+            messageId: "684abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_xyz"
+            senderName: "Jane Doe"
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Jane Doe created the community"
+              files: []
+            message: "Jane Doe created the community"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000000000
+            sentAt: 1750000000000
+            systemMessageType: COMMUNITY_CREATED
+            systemMetadata:
+              communityName: Tech Enthusiasts
+              creatorId: user_xyz
+              creatorName: Jane Doe
+        - name: community_system_updated
+          summary: Community lifecycle system message — community updated
+          payload:
+            id: "684abc123def456789012346"
+            messageId: "684abc123def456789012346"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_xyz"
+            senderName: "Jane Doe"
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Jane Doe updated the community (avatar)"
+              files: []
+            message: "Jane Doe updated the community (avatar)"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000100000
+            sentAt: 1750000100000
+            systemMessageType: COMMUNITY_UPDATED
+            systemMetadata:
+              updaterId: user_xyz
+              updaterName: Jane Doe
+              changedFields:
+                - avatar
+        - name: community_system_role_changed
+          summary: Community lifecycle system message — member role changed
+          payload:
+            id: "684abc123def456789012347"
+            messageId: "684abc123def456789012347"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_xyz"
+            senderName: "Jane Doe"
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Jane Doe changed Bob Smith's role to MODERATOR"
+              files: []
+            message: "Jane Doe changed Bob Smith's role to MODERATOR"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000200000
+            sentAt: 1750000200000
+            systemMessageType: MEMBER_ROLE_CHANGED
+            systemMetadata:
+              actorId: user_xyz
+              actorName: Jane Doe
+              targetUserId: user_abc
+              targetName: Bob Smith
+              oldRole: MEMBER
+              newRole: MODERATOR
     CommunityMemberJoined:
       name: "community:member:joined"
       title: "community:member:joined"
@@ -2112,6 +2244,25 @@ components:
             avatarUrl: ""
             role: MEMBER
             joinedAt: 1749465800000
+    CommunityJoinRequestUpdate:
+      name: "community:join_request:update"
+      title: "community:join_request:update"
+      payload: { $ref: "#/components/schemas/CommunityJoinRequestUpdateDTO" }
+      examples:
+        - name: Join request approved
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+            status: APPROVED
+            communityName: "Photography Club"
+            decidedAt: "2026-06-16T11:00:00.000Z"
+        - name: Join request rejected
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+            status: REJECTED
+            communityName: "Photography Club"
+            decidedAt: "2026-06-16T11:00:00.000Z"
     CommunityCatchup:
       name: "community:catchup"
       title: "community:catchup"
@@ -2499,6 +2650,15 @@ components:
         - name: Mark all as read
           payload:
             notificationIds: []
+    NotificationsDelete:
+      name: "notifications:delete"
+      title: "notifications:delete"
+      summary: "Owner-scoped soft-delete of a single notification."
+      payload: { $ref: "#/components/schemas/NotificationsDeletePayload" }
+      examples:
+        - name: Delete one notification
+          payload:
+            notificationId: "683abc100def000000000099"
     NotificationCount:
       name: "notification:count"
       title: "notification:count"
@@ -2586,6 +2746,40 @@ components:
             createdAt: 1749465400000
             data:
               communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+    NotificationDeleted:
+      name: "notification:deleted"
+      title: "notification:deleted"
+      summary: |
+        A notification row was soft-deleted (via `notifications:delete`) and is
+        relayed verbatim to the user's OTHER connected devices so they drop the
+        row. A `notification:count_update` follows with the refreshed unread total.
+      payload: { $ref: "#/components/schemas/NotificationDeletedPayload" }
+      examples:
+        - name: Row deleted on another device
+          payload:
+            notificationId: "683abc100def000000000099"
+    MediaScanResult:
+      name: "media:scan_result"
+      title: "media:scan_result"
+      summary: |
+        Terminal media-scan verdict pushed to the uploader's `notify:<uploaderId>`
+        channel when an upload fails scanning (QUARANTINED / INFECTED / ERROR) or
+        is rejected on synchronous confirm-upload. Socket-only — no inbox row and
+        no offline FCM. Treat any `status` as "upload blocked".
+      payload: { $ref: "#/components/schemas/MediaScanResultPayload" }
+      examples:
+        - name: Infected upload quarantined
+          payload:
+            objectKey: "group-chat-uploads/7c9e6679-7425-40de-944b-e07fc1f90ae7/6843e1a2b5c3d4e5f6a7b8c9.png"
+            status: QUARANTINED
+            reason: "Win.Test.EICAR_HDB-1"
+            at: 1749465231234
+        - name: Scan errored (no detail)
+          payload:
+            objectKey: "community-chat-uploads/7c9e6679-7425-40de-944b-e07fc1f90ae7/6843e1a2b5c3d4e5f6a7b8c9.pdf"
+            status: ERROR
+            reason: ""
+            at: 1749465240000
 
   schemas:
     # -------- generic --------
@@ -3479,21 +3673,61 @@ components:
         clientMessageId: { type: string }
         serverTs: { type: integer, description: epoch ms. }
         sentAt: { type: integer, description: epoch ms (== serverTs). }
+        systemMessageType:
+          type: string
+          nullable: true
+          enum:
+            - COMMUNITY_CREATED
+            - COMMUNITY_UPDATED
+            - MEMBER_ROLE_CHANGED
+          description: >-
+            Present when contentType is SYSTEM. Identifies the lifecycle event.
+            Null/absent for normal messages.
+        systemMetadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            Structured payload for system message rendering.
+            Shape varies by systemMessageType. Null/absent for normal messages.
     CommunityMemberDTO:
       type: object
       additionalProperties: true
       description: |
-        Member snapshot for `community:member:joined`. NOTE: in V1 NO backend
-        service publishes this event yet — the schema is reserved; the gateway
-        will forward it verbatim once a producer exists.
+        Member snapshot for `community:member:joined`. Produced by
+        community-service (`notifyMemberJoined`) on every path that turns a
+        member ACTIVE (add_members, join-request approve / bulk-approve,
+        invite-link redeem); published to Redis `community:<communityId>` and
+        forwarded verbatim by the gateway to room `community:<communityId>`.
       properties:
         userId: { type: string }
         username: { type: string }
         displayName: { type: string }
-        avatarUrl: { type: string }
+        avatarUrl: { type: string, nullable: true }
         role: { type: string, enum: [ADMIN, MODERATOR, MEMBER] }
         joinedAt: { type: integer, description: "epoch ms." }
       required: [userId]
+    CommunityJoinRequestUpdateDTO:
+      type: object
+      description: |
+        Server → client (`/notify`, room `user:<userId>`). Real-time UI-state
+        flip for the requester when an ADMIN/MODERATOR approves or rejects their
+        community join request. Published by notifications-service to
+        `notify:<userId>` and forwarded verbatim by the gateway. An in-app
+        `notification:new` (type `community.join_request_approved` /
+        `community.join_request_rejected`) is delivered alongside it.
+      properties:
+        communityId: { type: string }
+        requestId: { type: string }
+        status: { type: string, enum: [APPROVED, REJECTED] }
+        communityName: { type: string }
+        decidedAt:
+          {
+            type: string,
+            format: date-time,
+            description: "ISO-8601 decision timestamp.",
+          }
+      required: [communityId, requestId, status]
     CommunityCatchupPayload:
       type: object
       properties:
@@ -3762,7 +3996,8 @@ components:
           description: |
             Discriminator. Known in-app values:
             `MESSAGE` · `friend.requested` · `friend.accepted` ·
-            `community.join_requested` · `community.member_added` ·
+            `community.join_requested` · `community.join_request_approved` ·
+            `community.join_request_rejected` · `community.member_added` ·
             `community.admin_transferred` · `community.member_role_changed` ·
             `community.member_kicked` · `community.member_banned` ·
             `community.invite_sent` · `community.invite_accepted` ·
@@ -3787,6 +4022,47 @@ components:
             For `friend.*`: `{ friendshipId, requesterId | addresseeId }`.
             For `community.*`: `{ communityId, … }`.
       required: [type]
+    NotificationsDeletePayload:
+      type: object
+      description: "Client → server. Soft-deletes a single notification the caller owns."
+      properties:
+        notificationId: { type: string }
+      required: [notificationId]
+    NotificationDeletedPayload:
+      type: object
+      description: |
+        Server → client. The id of a notification soft-deleted on another device;
+        drop this row from the list (a `notification:count_update` follows).
+      properties:
+        notificationId: { type: string }
+      required: [notificationId]
+    MediaScanResultPayload:
+      type: object
+      description: |
+        Server → client. Terminal media-scan verdict for an upload, delivered to
+        the uploader only (their `notify:<uploaderId>` channel). Any `status` here
+        means the upload is blocked.
+      properties:
+        objectKey:
+          {
+            type: string,
+            description: "the upload's storage key (`{prefix}/{ownerId}/{fileId}.ext`).",
+          }
+        status:
+          type: string
+          enum: [INFECTED, QUARANTINED, ERROR]
+          description: "terminal scan verdict — all values are upload-blocking."
+        reason:
+          {
+            type: string,
+            description: "engine-specific detail (signature name on INFECTED, message on ERROR); may be an empty string.",
+          }
+        at:
+          {
+            type: integer,
+            description: "epoch ms when the verdict was published.",
+          }
+      required: [objectKey, status, reason, at]
 
     # -------- /chat friend management + session payloads --------
     FriendRequestPayload:
