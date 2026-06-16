@@ -94,7 +94,7 @@ const mediaUploadUrl = {
     description: `Returns a short-lived presigned PUT URL for direct-to-storage upload.
 
 **Upload flow:**
-1. Call this endpoint to get \`uploadUrl\` + \`objectKey\`.
+1. Call this endpoint to get \`uploadUrl\` + \`objectKey\`. The file owner is derived from your JWT token (cannot be overridden).
 2. PUT the file directly to \`uploadUrl\` with the \`Content-Type\` header set to the declared \`contentType\`.
 3. Call **POST /media/confirm** with the same \`objectKey\` + \`contentType\`. The file undergoes magic-byte validation, ZIP inspection (for archives), and antivirus scanning.
 4. Only files that pass confirm (\`scanStatus: "CLEAN"\`) can be downloaded.
@@ -137,12 +137,6 @@ const mediaUploadUrl = {
                 example: 204800,
                 description:
                   "File size in bytes. Must not exceed the per-MIME cap.",
-              },
-              ownerId: {
-                type: "string" as const,
-                format: "uuid",
-                description:
-                  "Community/group id for COMMUNITY_AVATAR/COVER categories; defaults to caller userId for all others.",
               },
               resourceId: {
                 type: "string" as const,

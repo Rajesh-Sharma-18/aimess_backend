@@ -44,9 +44,8 @@ export type GenerateUploadUrlParams = {
   category: MediaCategoryKey;
   contentType: string;
   contentLength: number;
+  /** Authenticated owner (from JWT token). */
   ownerId: string;
-  /** Authenticated uploader (registry owner). Falls back to ownerId if absent. */
-  uploaderId?: string;
   /** Entity the file belongs to (roomId/groupId/communityId) — drives download authz. */
   resourceId?: string;
   /** Optional client-declared original filename (display metadata only). */
@@ -150,7 +149,7 @@ export const mediaService = {
           uploadCategory: params.category,
           ownerType: RESOURCE_OWNER_TYPE[resourceType],
           resourceType,
-          ownerId: params.uploaderId ?? params.ownerId,
+          ownerId: params.ownerId,
           resourceId: params.resourceId ?? null,
           fileName: result.fileName ?? null,
           contentType: params.contentType,

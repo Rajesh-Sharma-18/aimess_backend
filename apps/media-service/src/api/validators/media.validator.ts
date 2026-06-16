@@ -14,7 +14,6 @@ export const uploadUrlSchema = z.object({
   category: z.enum(VALID_CATEGORIES),
   contentType: z.string().min(1).max(128),
   contentLength: z.coerce.number().int().positive(),
-  ownerId: z.string().uuid().optional(),
   // The entity the file belongs to (roomId / groupId / communityId for chat
   // categories). Recorded in the media registry so downloads can be authorized
   // against membership of that resource. Optional for public avatars/covers.
