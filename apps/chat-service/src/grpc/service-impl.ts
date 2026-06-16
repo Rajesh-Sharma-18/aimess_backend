@@ -1807,6 +1807,10 @@ export function createCommunityImpl(
                 m.createdAt instanceof Date
                   ? m.createdAt.getTime()
                   : Date.now(),
+              systemMessageType:
+                (m as Record<string, unknown>).systemMessageType ?? null,
+              systemMetadata:
+                (m as Record<string, unknown>).systemMetadata ?? null,
             })),
             nextCursor,
             hasMore,
@@ -1946,6 +1950,10 @@ export function createCommunityImpl(
                 reactions: groupStoredReactions(
                   m.reactions as Record<string, unknown> | null | undefined
                 ),
+                systemMessageType:
+                  (m as Record<string, unknown>).systemMessageType ?? null,
+                systemMetadata:
+                  (m as Record<string, unknown>).systemMetadata ?? null,
               };
             }),
             hasMore: result.hasMore,

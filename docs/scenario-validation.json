@@ -1,0 +1,303 @@
+{
+  "generatedAt": "2026-06-16T09:34:36.921Z",
+  "summary": {
+    "PASS": 17,
+    "WARN": 0,
+    "FAILED": 0
+  },
+  "openRisk": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
+  },
+  "ciGate": {
+    "failAtRisk": "HIGH",
+    "passed": true,
+    "blocking": []
+  },
+  "actions": [
+    {
+      "id": "community.member_added",
+      "title": "Community Member Added",
+      "service": "community-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS",
+        "socket": "PASS",
+        "audit": "WAIVED",
+        "analytics": "WAIVED"
+      },
+      "missing": []
+    },
+    {
+      "id": "community.member_muted",
+      "title": "Community Member Muted",
+      "service": "community-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS",
+        "socket": "PASS",
+        "audit": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "community.member_warned",
+      "title": "Community Member Warned",
+      "service": "community-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS",
+        "socket": "PASS",
+        "audit": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "community.member_kicked",
+      "title": "Community Member Removed (kick)",
+      "service": "community-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS",
+        "socket": "PASS",
+        "audit": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "community.created",
+      "title": "Community Created",
+      "service": "community-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "audit": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "chat.group.member_added",
+      "title": "Group Member Added",
+      "service": "chat-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS",
+        "socket": "PASS",
+        "audit": "WAIVED"
+      },
+      "missing": []
+    },
+    {
+      "id": "chat.message_sent",
+      "title": "Private Message Sent",
+      "service": "chat-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "socket": "PASS",
+        "push": "PASS",
+        "badge": "PASS",
+        "delivery": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "admin.user_banned",
+      "title": "Admin: User Banned",
+      "service": "backoffice-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "audit": "PASS",
+        "sessionInvalidation": "PASS",
+        "push": "PASS",
+        "inapp": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "admin.user_suspended",
+      "title": "Admin: User Suspended",
+      "service": "backoffice-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "audit": "PASS",
+        "sessionInvalidation": "PASS",
+        "push": "PASS",
+        "inapp": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "media.scan_failed",
+      "title": "Media: Virus Scan Failed",
+      "service": "media-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "socket": "PASS",
+        "push": "WAIVED",
+        "inapp": "WAIVED",
+        "audit": "WAIVED"
+      },
+      "missing": []
+    },
+    {
+      "id": "notification.deleted",
+      "title": "Notification Deleted",
+      "service": "chat-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "socket": "PASS",
+        "badge": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "friend.request_sent",
+      "title": "Friend Request Sent",
+      "service": "user-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "community.member_role_changed",
+      "title": "Community Member Promoted/Demoted (role)",
+      "service": "community-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS",
+        "socket": "PASS",
+        "audit": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "community.deleted",
+      "title": "Community Deleted",
+      "service": "community-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS",
+        "socket": "PASS",
+        "audit": "WAIVED"
+      },
+      "missing": []
+    },
+    {
+      "id": "community.invite_sent",
+      "title": "Community Invite Sent",
+      "service": "community-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "friend.request_accepted",
+      "title": "Friend Request Accepted",
+      "service": "user-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "push": "PASS",
+        "inapp": "PASS",
+        "badge": "PASS"
+      },
+      "missing": []
+    },
+    {
+      "id": "admin.user_unbanned",
+      "title": "Admin: User Unbanned",
+      "service": "backoffice-service",
+      "status": "PASS",
+      "risk": "—",
+      "effects": {
+        "db": "PASS",
+        "event": "PASS",
+        "consumer": "PASS",
+        "audit": "PASS",
+        "sessionInvalidation": "WAIVED",
+        "push": "PASS",
+        "inapp": "PASS"
+      },
+      "missing": []
+    }
+  ]
+}

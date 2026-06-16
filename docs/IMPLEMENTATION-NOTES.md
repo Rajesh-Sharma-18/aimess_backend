@@ -1,9 +1,60 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-06-10**.
+> Update this whenever you ship or change a feature. Last reviewed: **2026-06-16**.
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up** + **calling + forwarding + reactions + WebRTC**), **backoffice-service** (admin auth RBAC + user management + **user-detail screen: user / joined-communities / other-members 3-API split** + community moderation + reports + livestream admin + dashboard).
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up**).
+
+---
+
+## Community System Messages (shipped 2026-06-16)
+
+Auto-generated **read-only, immutable lifecycle notifications** in the community chat timeline when structural events occur (create, update name/avatar/settings, member role change). Flow through the existing `community:message:new` socket event and REST message APIs — **no new transports**.
+
+### What shipped
+
+| Event                 | Trigger                                                                    | Payload                                                                                 | Files                                                     |
+| --------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `COMMUNITY_CREATED`   | Community created                                                          | `systemMetadata: { communityName, creatorId, creatorName }`                             | `community.service.ts:create()`                           |
+| `COMMUNITY_UPDATED`   | Name/avatar/banner/description/visibility/category/handle/settings changed | `systemMetadata: { updaterId, updaterName, changedFields[], newName?, newVisibility? }` | `community.service.ts:update()` + changed-field detection |
+| `MEMBER_ROLE_CHANGED` | Member role transition (MEMBER ↔ MODERATOR, etc.)                          | `systemMetadata: { actorId, actorName, targetUserId, targetName, oldRole, newRole }`    | `community.service.ts:updateMemberRole()`                 |
+
+### Implementation notes
+
+- **RabbitMQ Event:** `community.system_message` routed to `community.chat.sync.queue` (durable, shared with room provisioning events). Published by community-service; consumed by chat-service `CommunityRoomSyncConsumer`.
+- **Service Layer:** New `CommunitySystemMessageService` in chat-service resolves user snapshots, allocates sequence numbers, persists `GeneralRoomMessage` with `messageType: "SYSTEM"`, publishes Redis `community:<communityId>` for real-time delivery, bumps community activity (`publishCommunityActivitySafe`).
+- **Guards:** `CHAT_SYSTEM_MESSAGE_IMMUTABLE` error thrown in 5 mutation paths (editMessage, deleteForMe, deleteForAll, reactToMessage, pinMessage, unpinMessage) — system messages cannot be edited, deleted, reacted to, replied to, forwarded, or pinned.
+- **Database:** Stored in `GeneralRoomMessage` with two new nullable fields: `systemMessageType` (enum: COMMUNITY_CREATED|COMMUNITY_UPDATED|MEMBER_ROLE_CHANGED) and `systemMetadata` (Json). New compound index `[roomId, systemMessageType, createdAt DESC]` for efficient type-filtered queries.
+- **Serialization:** System messages pass through existing serializers (`toWireMessage`, REST history/sync, gRPC catchup) unchanged — the new fields are additive. All three transports (REST, socket, gRPC) receive identical payload shape.
+- **Socket Contract:** Reuses `community:message:new` event (no new events). Message payload extended with `systemMessageType` + `systemMetadata` when `contentType: "SYSTEM"`. `reactions: []`, `parentMessageId: ""`, `quoteData: null`, `editedAt: null` always (immutable).
+- **Frontend Rendering:** Client maps `systemMessageType + systemMetadata` to localized text. English fallback (`content.text`) provided for accessibility but never displayed. Rendered as centered muted pill (no action buttons, no reactions, no reply thread).
+- **Backward Compatibility:** Non-breaking. Existing clients ignore the new fields (nullable). V1 aliases (`messageId`, `conversationId`, `sentAt`, `contentText`) preserved. System messages do not affect existing edit/delete/react contracts (guards return immutability errors).
+
+### Key files
+
+- **Enums:** `packages/constants/src/community/system-message.ts` (`CommunitySystemMessageType`)
+- **Types:** `packages/shared-types/src/chat.ts` (3 metadata interfaces + `SystemMessageMetadata` union, `MessageDto` extended)
+- **Publishers:** `apps/community-service/src/services/community.service.ts` (3 trigger call sites), `src/messaging/publish-community-chat.ts` (`publishCommunitySystemMessageForChatSafe`)
+- **Consumer:** `apps/chat-service/src/events/community-room-sync.consumer.ts` (handles `community.system_message` case)
+- **Service:** `apps/chat-service/src/services/community-system-message.service.ts` (new)
+- **Repository:** `apps/chat-service/src/repositories/general-room-message.repository.ts` (`createSystemMessage` method)
+- **Guards:** `apps/chat-service/src/services/community-message.service.ts` (5 mutation paths + `CHAT_SYSTEM_MESSAGE_IMMUTABLE`)
+- **Schema:** `apps/chat-service/prisma/schema.prisma` (`GeneralRoomMessage` + 2 fields + index)
+- **Docs:** `docs/COMMUNITY_SYSTEM_MESSAGES.md` (full spec), `asyncapi.yaml` (3 examples), `openapi/components/schemas.ts` (system message schema extension)
+
+### Verified
+
+- TypeScript: chat-service, community-service, constants, shared-types all clean
+- Lint: both services clean
+- Contract: socket `community:message:new` + REST history/sync + gRPC catchup all carry `systemMessageType` + `systemMetadata`
+- Guards: 5 mutation paths tested to return `CHAT_SYSTEM_MESSAGE_IMMUTABLE`
+- Async: fire-and-forget — system message creation failures do NOT block lifecycle action (logged, not thrown)
+
+### Deferred (Phase 2)
+
+- Bulk-member operations system message (add/remove multiple members in one PATCH)
+- Community settings per-key granularity (currently generic "settings" covers all changes)
+- Immutability enforcement at the gRPC layer (not just REST)
 
 ---
 
@@ -980,6 +1031,21 @@ Built the notifications-service from a stub into a working push/mail **transport
   - **user-service:** `avatar` on profile (`UserProfileData`), `FriendListItem`, `UserDiscoveryResult`; `media` (upload half) on the avatar upload-url response.
   - **community-service:** `avatar` + `cover` on `CommunityData`, `avatar` on list/discover/muted-member/embedded-user blocks, `snapshotAvatar` on `CommunityMemberData` (member snapshots read the shared avatars bucket — allowed cross-service read); `media` on the community avatar upload-url response. `cover` resolves from `community.coverUrl` (still persisted `null` today → correct all-null MediaObject, future-proof).
   - **chat-service:** `media` added to **both** `/chat/media/upload-url` (upload half) and `/chat/media/download-url` (download half). **Deliberately did NOT presign message `content.files[]` on read** — that would be N presigns per history page and break the existing on-demand `download-url` contract; per-message embedding is a **deferred follow-up**.
+
+#### Media upload security — Phase 3: async AV scan via Bull queue (shipped 2026-06-16)
+
+Phases 1–2 added upload hardening (magic-byte validation, ZIP-bomb/nested-archive inspection, ClamAV) behind a synchronous `POST /media/confirm`. **Phase 3 moves the antivirus scan off the HTTP request thread** so confirm no longer blocks for the 5–30 s a real ClamAV scan of a large file can take.
+
+- **`POST /media/confirm`** now runs only the **structural** checks (magic-byte + ZIP/OOXML) synchronously, marks the object `PENDING`, then:
+  - structural rejection (magic/ZIP/OOXML) → `INFECTED`, object deleted (terminal, still synchronous);
+  - structure clean **and `CLAMAV_ENABLED=true`** → enqueues a **Bull** job `{ bucket, objectKey, contentType }` and returns `scanStatus: "PENDING"`;
+  - structure clean **and `CLAMAV_ENABLED=false`** (dev/no-op scanner) → sets `CLEAN` inline (preserves the synchronous dev experience, no queue needed);
+  - enqueue failure (Bull/Redis down) → falls back to an **inline** scan so a file never gets stuck `PENDING`.
+- **In-process Bull worker** (`apps/media-service/src/lib/scanner.ts` — `startScanWorker`, booted in `server.ts` only when `CLAMAV_ENABLED`): runs ClamAV, writes `CLEAN`/`QUARANTINED` to Redis via `scanStatusStore`, deletes the object on a virus hit, and writes a terminal `ERROR` after Bull exhausts its retries (so pollers stop). `validateUpload` (`magic-validator.ts`) is now **structural-only** — AV logic lives in exactly one place (`runScanAndPersist`, shared by the worker and the inline fallback).
+- **New `GET /media/scan-status?objectKey=&category=`** (auth + rate-limit) lets clients poll until `CLEAN`. A missing Redis record returns `PENDING` (fail-closed — never a false-clean), which intentionally differs from the download gate's fail-open-on-null. Authz mirrors `/download-url`. **No gateway change** — the generic `media` segment proxy already forwards GET.
+- **`/download-url` gate unchanged** — it still blocks `PENDING`/`QUARANTINED`/`INFECTED`, so the async flow preserves the existing "can't download until scanned" guarantee.
+- **Bull = classic `bull@^4.16.5`** (not BullMQ; no `@types/bull` — v4 bundles types) with its **own** Redis connection (the shared `@aimess/redis` singleton's `maxRetriesPerRequest:1` is incompatible with Bull's blocking clients). New env: `BULL_REDIS_HOST/PORT` (default = `REDIS_HOST/PORT`), `MEDIA_SCAN_QUEUE_NAME/CONCURRENCY/JOB_ATTEMPTS/BACKOFF_MS` (job timeout reuses `CLAMAV_SCAN_TIMEOUT_MS`). `pnpm-workspace.yaml` `allowBuilds` pins `msgpackr-extract: false` (bull's optional native transitive dep; pure-JS fallback) — required for a clean pnpm 11 install.
+- **Built with the Agent Team** (PM → Pro Coder → DRY + Contract reviewers → Quality Tester). Tests: 4 new media-service suites (`confirm`, `confirm-scan-enabled`, `scan-status`, `run-scan-and-persist`); full suite **61/61 green**, typecheck + lint clean. **Deferred (pre-existing, surfaced by Contract review):** OpenAPI media error _examples_ document a `{error:{code}}` shape the service never emits (real shape `{success:false,message}`); `MEDIA_*`/`CHAT_MEDIA_FORBIDDEN` codes aren't in the `@aimess/constants` i18n catalog so their `message` degrades to the raw key. Also still deferred: gRPC confirm-handler rewire, admin scan-status visibility, HEIC transcode, CDN cutover.
 
 ---
 

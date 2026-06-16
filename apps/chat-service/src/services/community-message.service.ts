@@ -689,6 +689,9 @@ export class CommunityMessageService {
         createdAt: createdMs,
         updatedAt: updatedMs,
         syncEventType,
+        systemMessageType:
+          (msg as Record<string, unknown>).systemMessageType ?? null,
+        systemMetadata: (msg as Record<string, unknown>).systemMetadata ?? null,
       };
     });
 
@@ -905,6 +908,8 @@ export class CommunityMessageService {
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     // Guard: only active members may react.
     const member = await this.memberRepo.findByRoomAndUser(
@@ -980,6 +985,9 @@ export class CommunityMessageService {
     // reactToMessage; NotFound so foreign-message existence isn't leaked.
     await this.assertActiveMemberOfMessageRoom(message, userId);
 
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
+
     await this.messageRepo.deleteForUser(messageId, userId);
     return this.messageRepo.findById(messageId);
   }
@@ -995,6 +1003,9 @@ export class CommunityMessageService {
     // the caller must be an ACTIVE member of the room the message lives in. NotFound
     // so foreign-message existence isn't leaked. (cross-room IDOR)
     const member = await this.assertActiveMemberOfMessageRoom(message, userId);
+
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     // Sender can always delete their own message for everyone.
     // Others need admin or moderator role.
@@ -1047,6 +1058,8 @@ export class CommunityMessageService {
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
@@ -1093,6 +1106,10 @@ export class CommunityMessageService {
 
     if (!pinnedIds.includes(params.messageId))
       throw new NotFoundError("CHAT_PIN_NOT_FOUND");
+
+    const targetMsg = await this.messageRepo.findById(params.messageId);
+    if (targetMsg && normalizeMessageType(targetMsg.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     const newPinnedIds = pinnedIds.filter((id) => id !== params.messageId);
     await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);

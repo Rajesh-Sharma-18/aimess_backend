@@ -146,6 +146,7 @@ export class CommunityMessageController {
     // Returns every message (new, edited, reacted, deleted tombstone) whose
     // updatedAt >= after_ts. Feed the returned nextCursor as the next after_ts.
     if (afterTs != null) {
+      console.log("afterTs :::", afterTs);
       const result = await this.service.getMessagesSince({
         roomId,
         userId,
@@ -373,6 +374,8 @@ export class CommunityMessageController {
     const roomId = req.params.roomId as string;
     const sinceTs = Number(req.query.since_ts);
     const limit = Number(req.query.limit) || 50;
+
+    console.log("sinceTs :::", sinceTs);
 
     const result = await this.service.getMessagesSince({
       roomId,

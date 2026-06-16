@@ -79,6 +79,34 @@ export interface MessageContentDto {
   mentions?: MentionDto[];
 }
 
+export interface CommunityCreatedMetadata {
+  communityName: string;
+  creatorId: string;
+  creatorName: string;
+}
+
+export interface CommunityUpdatedMetadata {
+  updaterId: string;
+  updaterName: string;
+  changedFields: string[];
+  newName?: string;
+  newVisibility?: string;
+}
+
+export interface MemberRoleChangedMetadata {
+  actorId: string;
+  actorName: string;
+  targetUserId: string;
+  targetName: string;
+  oldRole: string;
+  newRole: string;
+}
+
+export type SystemMessageMetadata =
+  | CommunityCreatedMetadata
+  | CommunityUpdatedMetadata
+  | MemberRoleChangedMetadata;
+
 export interface ReactionUserDto {
   userId: string;
   displayName: string;
@@ -146,6 +174,8 @@ export interface MessageDto extends MessageSenderDto {
   sequenceNumber: number;
   systemEvent?: string;
   systemData?: unknown;
+  systemMessageType?: string | null;
+  systemMetadata?: SystemMessageMetadata | null;
 }
 
 export interface ReadByEntryDto {
