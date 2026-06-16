@@ -93,8 +93,10 @@ const mediaUploadUrl = {
     summary: "Generate presigned upload URL",
     description: `Returns a short-lived presigned PUT URL for direct-to-storage upload.
 
+**Security: File ownership is ALWAYS derived from your JWT token and cannot be overridden.** The \`ownerId\` in the storage key (\`{prefix}/{ownerId}/{fileId}\`) is your authenticated user ID — no parameter accepts it.
+
 **Upload flow:**
-1. Call this endpoint to get \`uploadUrl\` + \`objectKey\`. The file owner is derived from your JWT token (cannot be overridden).
+1. Call this endpoint to get \`uploadUrl\` + \`objectKey\`. The file owner is automatically set to your user ID from the JWT token.
 2. PUT the file directly to \`uploadUrl\` with the \`Content-Type\` header set to the declared \`contentType\`.
 3. Call **POST /media/confirm** with the same \`objectKey\` + \`contentType\`. The file undergoes magic-byte validation, ZIP inspection (for archives), and antivirus scanning.
 4. Only files that pass confirm (\`scanStatus: "CLEAN"\`) can be downloaded.
@@ -122,7 +124,7 @@ const mediaUploadUrl = {
                 type: "string" as const,
                 enum: UPLOAD_CATEGORIES,
                 description:
-                  "Media category — determines bucket, key prefix, and size/type limits.",
+                  "Media category — determines storage bucket, key prefix, authorization policy, and size/type limits. **USER_AVATAR**: stored under the avatars bucket, public, images only. **COMMUNITY_AVATAR/COVER**: community branding, public, images only. **GROUP_AVATAR**: group logo, public, images only. **CHAT_ATTACHMENT**: private chat attachment, auth-gated to room participants. **GROUP_CHAT_ATTACHMENT**: group chat attachment, auth-gated to group members. **COMMUNITY_CHAT_ATTACHMENT**: community chat attachment, auth-gated to community members.",
               },
               contentType: {
                 type: "string" as const,
@@ -130,20 +132,20 @@ const mediaUploadUrl = {
                 example:
                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 description:
-                  "Declared MIME type. Allowed values DEPEND on category (avatars/covers accept only image/jpeg|png|webp; chat categories accept the full set) — see the table in the endpoint description. Must match the file's actual bytes (verified by /confirm).",
+                  "The file's MIME type. Allowed values depend on category (avatars/covers accept only image/jpeg|png|webp; chat categories accept the full set — images, video, audio, documents, ZIP archives). The actual file bytes are validated against this declared type by the /confirm endpoint (magic-byte validation). If the declared type does not match the file's actual signature, /confirm rejects the file and deletes it from storage.",
               },
               contentLength: {
                 type: "integer" as const,
                 example: 204800,
                 description:
-                  "File size in bytes. Must not exceed the per-MIME cap.",
+                  "File size in bytes. Validated against per-MIME size caps (e.g., images ≤25 MB, GIFs ≤30 MB, documents ≤50–100 MB depending on type). If this value is false/inflated, the PUT to MinIO will fail when the actual bytes don't match. The effective cap is the minimum of the category ceiling and the per-MIME cap.",
               },
               resourceId: {
                 type: "string" as const,
                 maxLength: 200,
-                example: "room_abc123",
+                example: "550e8400-e29b-41d4-a716-446655440000",
                 description:
-                  "The entity the file belongs to — roomId / groupId / communityId for chat categories. Recorded in the media registry so the download can be authorized against membership of that resource. Optional for public avatars/covers.",
+                  "The context where this file is used — roomId (private chat), groupId, or communityId for chat categories. **IMPORTANT: resourceId does NOT create the room. It is purely metadata for authorization.** Recorded in the media registry so downloads are authorized against membership of that resource. Example: User A uploads a file to Group 123 with resourceId=group-123-uuid. User B (a group member) can download because the registry shows the file belongs to Group 123 and B is a member. User C (not in the group) cannot download because they're not a member of the resource. Optional for public avatars/covers (user and group avatars are always public).",
               },
             },
           },
@@ -309,9 +311,14 @@ If the file has never been confirmed, this endpoint automatically runs the secur
 - Scan status is \`ERROR\` or any value outside the allow-list (\`CLEAN\`/\`SKIPPED\`) → 403 MEDIA_SCAN_PENDING (defense-in-depth allow-list gate)
 
 **Authorization (resource-driven):**
-- Avatars / community branding → public (any authenticated user).
-- Chat attachments → membership of the owning room/group/community is verified (media-service checks against chat-service). The owning resource is taken from the media registry (bound at upload via \`resourceId\`), NOT from this request — so it cannot be spoofed, and you do NOT send \`resourceId\` here.
-- A caller who is not a participant/member → 403 (CHAT_MEDIA_FORBIDDEN). Objects uploaded before the registry fall back to the legacy owner/prefix check until backfilled.
+- **Avatars / community branding** → public (any authenticated user can download).
+- **Chat attachments** → membership of the owning room/group/community is verified. The owning resource (\`resourceId\`) is taken from the media registry (stored at upload time), NOT from this request — it cannot be spoofed. Media-service queries chat-service gRPC to verify you are a member of the resource before issuing the URL.
+  - Private chat: Only room participants can download.
+  - Group chat: Only group members can download.
+  - Community chat: Only community members can download.
+- A caller who is not a participant/member → 403 CHAT_MEDIA_FORBIDDEN. Objects uploaded before the registry fall back to the legacy owner/prefix check until backfilled.
+
+**Important: You do NOT send \`resourceId\` on download** — it is looked up from the registry using the \`objectKey\`. This prevents spoofing (e.g., a user cannot claim an attachment belongs to a different room to bypass access checks).
 
 **Safe-serving headers applied to the response:**
 - \`X-Content-Type-Options: nosniff\`
