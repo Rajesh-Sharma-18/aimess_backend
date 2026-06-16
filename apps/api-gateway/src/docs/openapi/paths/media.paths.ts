@@ -101,6 +101,13 @@ const mediaUploadUrl = {
 3. Call **POST /media/confirm** with the same \`objectKey\` + \`contentType\`. The file undergoes magic-byte validation, ZIP inspection (for archives), and antivirus scanning.
 4. Only files that pass confirm (\`scanStatus: "CLEAN"\`) can be downloaded.
 
+**Why \`resourceId\` matters (authorization & lifecycle):**
+For public media (avatars, community covers), \`resourceId\` is optional — anyone can view them. For chat attachments, \`resourceId\` binds the file to its room/group/community so downloads can be access-controlled:
+- **Private chat**: Only room participants can download. \`resourceId\` = room ID. File stored as \`chat-uploads/{ownerId}/{fileId}\`, but the room binding prevents other users from claiming it belongs to a different room.
+- **Group chat**: Only group members can download. \`resourceId\` = group ID. Media-service queries chat-service to verify membership before issuing the URL.
+- **Community chat**: Only community members can download. \`resourceId\` = community ID. Same membership check as groups.
+Without \`resourceId\`, media-service would have no way to know which room each file belongs to, and authorization would fail. It also enables lifecycle management: when a group/community is deleted, all media with that \`resourceId\` can be marked for cleanup.
+
 **Allowed \`contentType\` by category:**
 - **Avatars & covers** (\`USER_AVATAR\`, \`COMMUNITY_AVATAR\`, \`COMMUNITY_COVER\`, \`GROUP_AVATAR\`) — images only: \`image/jpeg\`, \`image/png\`, \`image/webp\`. Max 5 MB.
 - **Chat attachments** (\`CHAT_ATTACHMENT\`, \`GROUP_CHAT_ATTACHMENT\`, \`COMMUNITY_CHAT_ATTACHMENT\`) — the full media set below.
