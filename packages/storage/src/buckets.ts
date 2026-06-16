@@ -1,9 +1,11 @@
 import {
   CreateBucketCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
+import type { Readable } from "node:stream";
 
 import type { StorageClient } from "./client.js";
 
@@ -31,6 +33,48 @@ export async function headObject(
     };
   } catch {
     return { exists: false };
+  }
+}
+
+/**
+ * Download up to `maxBytes` from the beginning of an object for in-process
+ * inspection (magic-byte check, virus scan). Uses a Range GET — only the
+ * requested bytes are transferred, keeping the operation cheap for large files.
+ *
+ * Pass `maxBytes = Infinity` (or omit) to fetch the full object body. The
+ * caller is responsible for memory budgeting.
+ *
+ * Returns `null` when the object does not exist or the response has no body.
+ */
+export async function getObjectBytes(
+  client: StorageClient,
+  bucket: string,
+  key: string,
+  maxBytes = Infinity
+): Promise<Buffer | null> {
+  try {
+    const range =
+      isFinite(maxBytes) && maxBytes > 0
+        ? `bytes=0-${maxBytes - 1}`
+        : undefined;
+
+    const result = await client.send(
+      new GetObjectCommand({ Bucket: bucket, Key: key, Range: range })
+    );
+
+    if (!result.Body) return null;
+
+    // SDK v3 returns a ReadableStream/Readable depending on environment.
+    const stream = result.Body as Readable;
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(
+        Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+      );
+    }
+    return Buffer.concat(chunks);
+  } catch {
+    return null;
   }
 }
 

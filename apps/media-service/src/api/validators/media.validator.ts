@@ -30,3 +30,20 @@ export const cancelUploadSchema = z.object({
   objectKey: z.string().min(1).max(500),
   category: z.enum(VALID_CATEGORIES),
 });
+
+/**
+ * POST /media/confirm — called by the client after it has PUT the file to
+ * MinIO. Triggers magic-byte validation, ZIP inspection, and AV scan.
+ */
+export const confirmUploadSchema = z.object({
+  objectKey: z.string().min(1).max(500),
+  category: z.enum(VALID_CATEGORIES),
+  /** MIME type declared at upload-url time — must match what the client PUT. */
+  contentType: z.string().min(1).max(128),
+});
+
+/** GET /media/scan-status?objectKey=...&category=... — poll async scan status. */
+export const scanStatusQuerySchema = z.object({
+  objectKey: z.string().min(1).max(500),
+  category: z.enum(VALID_CATEGORIES),
+});

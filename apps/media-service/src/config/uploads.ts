@@ -16,9 +16,10 @@ const MB = 1024 * 1024;
 /**
  * Allowed chat-attachment MIME types → file extension. Telegram-parity set:
  * images, animated GIF, the common video and audio containers, voice-note
- * codecs, and office/text documents. HEIC and archives/source-code are
- * intentionally excluded for Phase 1 (HEIC needs a server transcode to render in
- * browsers; archives/code need deep AV) — see docs/MEDIA_ARCHITECTURE_REVIEW.md.
+ * codecs, office/text documents, and ZIP archives. HEIC needs a server
+ * transcode to render in browsers and is excluded. All document and archive
+ * types require a post-upload /confirm pass (magic-byte + AV scan) before
+ * they become downloadable — see docs/MEDIA_ARCHITECTURE_REVIEW.md.
  */
 const CHAT_MIME = {
   // Images
@@ -56,19 +57,48 @@ const CHAT_MIME = {
   "application/json": "json",
   "application/xml": "xml",
   "text/xml": "xml",
+  // Archives — require magic-byte + AV scan before download is allowed
+  "application/zip": "zip",
+  "application/x-zip-compressed": "zip",
 } as const;
 
 /**
- * Per-MIME byte caps for chat attachments. Images/GIFs are capped well below the
- * 100 MB category ceiling so an oversize "image" cannot be uploaded; video,
- * audio and documents fall back to the category `maxBytes`. MIMEs absent here
- * use the category ceiling.
+ * Per-MIME byte caps for chat attachments. Each value is the hard maximum
+ * enforced at upload-url time (Content-Length check). The effective limit is
+ * min(category.maxBytes, this[mime]) so a high category ceiling cannot be
+ * exploited for smaller document types. MIMEs absent here use the category
+ * ceiling.
+ *
+ * Document caps follow the user-specified requirements:
+ *   DOC/DOCX/XLS/XLSX/CSV  → 50 MB
+ *   PPT/PPTX/ZIP            → 100 MB
  */
 const CHAT_MAX_BYTES_BY_MIME: Record<string, number> = {
+  // Images
   "image/jpeg": 25 * MB,
   "image/png": 25 * MB,
   "image/webp": 25 * MB,
   "image/gif": 30 * MB,
+  // Legacy Office formats
+  "application/msword": 50 * MB,
+  "application/vnd.ms-excel": 50 * MB,
+  "application/vnd.ms-powerpoint": 100 * MB,
+  // Modern Office (OOXML) — same caps
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+    50 * MB,
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": 50 * MB,
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+    100 * MB,
+  // Text/data documents
+  "application/pdf": 50 * MB,
+  "text/plain": 10 * MB,
+  "text/csv": 25 * MB,
+  "application/json": 10 * MB,
+  "application/xml": 10 * MB,
+  "text/xml": 10 * MB,
+  // Archives
+  "application/zip": 100 * MB,
+  "application/x-zip-compressed": 100 * MB,
 };
 
 /** Avatars / covers are images only. */

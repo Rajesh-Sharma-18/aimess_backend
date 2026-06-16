@@ -16,12 +16,94 @@ const badRequest = {
   },
 };
 
+const forbidden = {
+  description: "Forbidden",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
+const internalError = {
+  description: "Internal server error",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+    },
+  },
+};
+
+/**
+ * Supported content-types for chat attachment categories.
+ * Updated with ZIP support (Phase 2).
+ */
+const CHAT_CONTENT_TYPES = [
+  // Images
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  // Video
+  "video/mp4",
+  "video/quicktime",
+  "video/x-matroska",
+  "video/webm",
+  "video/x-msvideo",
+  "video/x-m4v",
+  // Audio
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+  "audio/mp4",
+  "audio/x-m4a",
+  "audio/aac",
+  "audio/flac",
+  // Documents
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/plain",
+  "text/csv",
+  "application/json",
+  "application/xml",
+  "text/xml",
+  // Archives
+  "application/zip",
+  "application/x-zip-compressed",
+] as const;
+
+const UPLOAD_CATEGORIES = [
+  "USER_AVATAR",
+  "COMMUNITY_AVATAR",
+  "COMMUNITY_COVER",
+  "CHAT_ATTACHMENT",
+  "COMMUNITY_CHAT_ATTACHMENT",
+  "GROUP_AVATAR",
+  "GROUP_CHAT_ATTACHMENT",
+] as const;
+
 const mediaUploadUrl = {
   post: {
     tags: ["Media"],
     summary: "Generate presigned upload URL",
-    description:
-      "Returns a short-lived presigned PUT URL for direct-to-storage upload. The client PUTs the file directly to the returned uploadUrl using the provided uploadHeaders.",
+    description: `Returns a short-lived presigned PUT URL for direct-to-storage upload.
+
+**Upload flow:**
+1. Call this endpoint to get \`uploadUrl\` + \`objectKey\`.
+2. PUT the file directly to \`uploadUrl\` with the \`Content-Type\` header set to the declared \`contentType\`.
+3. Call **POST /media/confirm** with the same \`objectKey\` + \`contentType\`. The file undergoes magic-byte validation, ZIP inspection (for archives), and antivirus scanning.
+4. Only files that pass confirm (\`scanStatus: "CLEAN"\`) can be downloaded.
+
+**Size limits (per MIME type):**
+- DOC / DOCX / XLS / XLSX / PDF / CSV: 50 MB
+- PPT / PPTX / ZIP: 100 MB
+- Images: 25–30 MB
+- Videos: up to 100 MB (category ceiling)`,
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -33,29 +115,36 @@ const mediaUploadUrl = {
             properties: {
               category: {
                 type: "string" as const,
-                enum: [
-                  "USER_AVATAR",
-                  "COMMUNITY_AVATAR",
-                  "COMMUNITY_COVER",
-                  "CHAT_ATTACHMENT",
-                  "COMMUNITY_CHAT_ATTACHMENT",
-                  "GROUP_AVATAR",
-                  "GROUP_CHAT_ATTACHMENT",
-                ],
+                enum: UPLOAD_CATEGORIES,
                 description:
-                  "Media category determines bucket, key prefix, and size/type limits.",
+                  "Media category — determines bucket, key prefix, and size/type limits.",
               },
-              contentType: { type: "string" as const, example: "image/jpeg" },
+              contentType: {
+                type: "string" as const,
+                enum: CHAT_CONTENT_TYPES,
+                example:
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                description:
+                  "Declared MIME type. Must match the file's actual content (verified by /confirm).",
+              },
               contentLength: {
                 type: "integer" as const,
                 example: 204800,
-                description: "File size in bytes.",
+                description:
+                  "File size in bytes. Must not exceed the per-MIME cap.",
               },
               ownerId: {
                 type: "string" as const,
                 format: "uuid",
                 description:
-                  "Community id for COMMUNITY_AVATAR/COVER; defaults to caller userId for other categories.",
+                  "Community/group id for COMMUNITY_AVATAR/COVER categories; defaults to caller userId for all others.",
+              },
+              originalFileName: {
+                type: "string" as const,
+                maxLength: 255,
+                example: "Q3_Report.docx",
+                description:
+                  "Original client filename (display only). Sanitised server-side.",
               },
             },
           },
@@ -74,21 +163,160 @@ const mediaUploadUrl = {
       "400": badRequest,
       "401": unauthorized,
       "415": {
-        description: "Unsupported media type",
+        description: "Unsupported or mismatched content type",
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            example: {
+              success: false,
+              message: "Unsupported file content type",
+            },
           },
         },
       },
-      "500": {
-        description: "Internal server error",
+      "500": internalError,
+    },
+  },
+};
+
+const mediaConfirm = {
+  post: {
+    tags: ["Media"],
+    summary: "Confirm upload + run security scan",
+    description: `Called after the client has successfully PUT the file to the presigned MinIO URL. Validates the file immediately so errors surface during the upload flow — not at download time.
+
+**Structural checks (synchronous — run on this request):**
+1. Verifies the object exists in storage.
+2. Downloads the first 512 bytes and validates file-signature (magic bytes) against the declared MIME type.
+3. For ZIP / OOXML files: inspects the archive structure for ZIP bombs, nested archives, and correct OOXML content-type.
+4. Violations are **terminal**: file is deleted from storage and an HTTP error is returned immediately.
+
+**Antivirus scan (asynchronous — when \`CLAMAV_ENABLED=true\`):**
+The AV scan is enqueued as a Bull job and this endpoint returns \`scanStatus: "PENDING"\` immediately. The in-process worker scans, writes \`CLEAN\`/\`QUARANTINED\` to Redis, and deletes the file if a virus is found. Poll \`GET /media/scan-status\` until \`CLEAN\` before requesting a download URL. In dev (\`CLAMAV_ENABLED=false\`) confirm returns \`CLEAN\` synchronously.
+
+**Success response \`scanStatus\` values (HTTP 200):**
+- \`PENDING\` — structural checks passed; AV scan is in progress.
+- \`CLEAN\` — all checks passed; file is downloadable.
+- \`SKIPPED\` — scanner disabled (dev mode); file accessible but unscanned.
+- \`ERROR\` — scanner error; retry /confirm.
+
+**Error responses (HTTP 4xx — file rejected, deleted from storage):**
+- \`415\` — magic-byte mismatch, ZIP bomb, nested archive, or OOXML type mismatch (\`MEDIA_FILE_REJECTED\`).
+- \`410\` — virus detected by AV scanner (\`MEDIA_FILE_QUARANTINED\`).
+- \`403\` — caller does not own the object (\`MEDIA_CONFIRM_FORBIDDEN\`).`,
+    security: [{ bearerAuth: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["objectKey", "category", "contentType"],
+            properties: {
+              objectKey: {
+                type: "string" as const,
+                example: "chat-uploads/user-uuid/file-uuid.docx",
+                description: "The objectKey returned by /upload-url.",
+              },
+              category: {
+                type: "string" as const,
+                enum: UPLOAD_CATEGORIES,
+              },
+              contentType: {
+                type: "string" as const,
+                example:
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                description: "Must match the MIME declared at upload-url time.",
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "200": {
+        description:
+          "Structural checks passed. File is either CLEAN (downloadable), PENDING (AV scan in progress), SKIPPED (dev mode), or ERROR (retry).",
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    objectKey: {
+                      type: "string" as const,
+                      example: "chat-uploads/user-uuid/file-uuid.docx",
+                    },
+                    scanStatus: {
+                      type: "string" as const,
+                      enum: ["CLEAN", "PENDING", "SKIPPED", "ERROR"],
+                      example: "CLEAN",
+                      description:
+                        "PENDING = AV scan in progress (poll /media/scan-status). ERROR = scanner down; retry /confirm.",
+                    },
+                    fileSize: {
+                      type: "integer" as const,
+                      example: 204800,
+                      description: "Actual file size in bytes from storage.",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": {
+        description:
+          "Caller does not own the object (MEDIA_CONFIRM_FORBIDDEN).",
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            example: {
+              success: false,
+              error: { code: "MEDIA_CONFIRM_FORBIDDEN", message: "Forbidden" },
+            },
           },
         },
       },
+      "410": {
+        description:
+          "Virus detected — file deleted from storage (MEDIA_FILE_QUARANTINED).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            example: {
+              success: false,
+              error: {
+                code: "MEDIA_FILE_QUARANTINED",
+                message: "File was quarantined — virus detected",
+              },
+            },
+          },
+        },
+      },
+      "415": {
+        description:
+          "File rejected — magic-byte mismatch, ZIP bomb, nested archive, or OOXML type mismatch. File deleted from storage (MEDIA_FILE_REJECTED).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            example: {
+              success: false,
+              error: {
+                code: "MEDIA_FILE_REJECTED",
+                message: "File content does not match declared type",
+              },
+            },
+          },
+        },
+      },
+      "500": internalError,
     },
   },
 };
@@ -97,8 +325,18 @@ const mediaDownloadUrl = {
   post: {
     tags: ["Media"],
     summary: "Generate presigned download URL",
-    description:
-      "Returns a short-lived presigned GET URL for downloading/viewing a stored media object.",
+    description: `Returns a short-lived presigned GET URL for downloading a stored media object.
+
+**Auto-confirm on first call:**
+If the file has never been confirmed, this endpoint automatically runs the security pipeline (magic-byte validation, ZIP inspection, optional AV scan) before issuing the download URL. No separate /confirm call needed — the frontend just uploads and downloads.
+
+**Blocked when:**
+- Scan status is \`PENDING\` (async AV scan in progress; poll /media/scan-status and retry) → 403 MEDIA_SCAN_PENDING
+- Scan status is \`QUARANTINED\` or \`INFECTED\` (file rejected; deleted from storage) → 403 MEDIA_QUARANTINED
+
+**Safe-serving headers applied to the response:**
+- \`X-Content-Type-Options: nosniff\`
+- Documents / archives are served with \`Content-Disposition: attachment\` baked into the presigned URL, preventing inline browser rendering.`,
     security: [{ bearerAuth: [] }],
     requestBody: {
       required: true,
@@ -110,19 +348,11 @@ const mediaDownloadUrl = {
             properties: {
               objectKey: {
                 type: "string" as const,
-                example: "chat-uploads/user123/file-abc.jpg",
+                example: "chat-uploads/user123/file-abc.docx",
               },
               category: {
                 type: "string" as const,
-                enum: [
-                  "USER_AVATAR",
-                  "COMMUNITY_AVATAR",
-                  "COMMUNITY_COVER",
-                  "CHAT_ATTACHMENT",
-                  "COMMUNITY_CHAT_ATTACHMENT",
-                  "GROUP_AVATAR",
-                  "GROUP_CHAT_ATTACHMENT",
-                ],
+                enum: UPLOAD_CATEGORIES,
               },
             },
           },
@@ -142,26 +372,110 @@ const mediaDownloadUrl = {
       "401": unauthorized,
       "403": {
         description:
-          "Forbidden — you do not own this object key (CHAT_ATTACHMENT category)",
+          "Forbidden — ownership check failed, file quarantined, or scan pending",
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            examples: {
+              quarantined: {
+                summary: "Virus detected",
+                value: {
+                  success: false,
+                  message: "This file was blocked by a security scan",
+                },
+              },
+              scanPending: {
+                summary: "Confirm not yet called",
+                value: {
+                  success: false,
+                  message:
+                    "This file is still being scanned, please try again shortly",
+                },
+              },
+              ownershipFailed: {
+                summary: "Object key not owned by caller",
+                value: {
+                  success: false,
+                  message: "You are not allowed to access this media",
+                },
+              },
+            },
           },
         },
       },
-      "500": {
-        description: "Internal server error",
+      "500": internalError,
+    },
+  },
+};
+
+const mediaScanStatus = {
+  get: {
+    tags: ["Media"],
+    summary: "Poll async media scan status",
+    description:
+      "Returns the current AV scan status for an uploaded object. Poll until CLEAN. PENDING = scan still running or no status yet; QUARANTINED/INFECTED = rejected and deleted.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "objectKey",
+        in: "query" as const,
+        required: true,
+        schema: { type: "string" as const, maxLength: 500 },
+        description: "The objectKey returned by /upload-url.",
+      },
+      {
+        name: "category",
+        in: "query" as const,
+        required: true,
+        schema: { type: "string" as const, enum: UPLOAD_CATEGORIES },
+      },
+    ],
+    responses: {
+      "200": {
+        description: "Current scan status",
         content: {
           "application/json": {
-            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            schema: {
+              type: "object" as const,
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: {
+                  type: "object" as const,
+                  properties: {
+                    objectKey: {
+                      type: "string" as const,
+                      example: "chat-uploads/user-uuid/file-uuid.docx",
+                    },
+                    scanStatus: {
+                      type: "string" as const,
+                      enum: [
+                        "CLEAN",
+                        "PENDING",
+                        "QUARANTINED",
+                        "INFECTED",
+                        "SKIPPED",
+                        "ERROR",
+                      ],
+                      example: "PENDING",
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "500": internalError,
     },
   },
 };
 
 export const mediaPaths = {
   "/media/upload-url": mediaUploadUrl,
+  "/media/confirm": mediaConfirm,
   "/media/download-url": mediaDownloadUrl,
+  "/media/scan-status": mediaScanStatus,
 };

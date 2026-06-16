@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import { z } from "zod/v4";
+import { logger } from "@aimess/logger";
 
 dotenv.config();
 
@@ -41,13 +42,52 @@ const envSchema = z.object({
   CHAT_VIDEO_MAX_BYTES: z.coerce.number().positive().default(104857600),
   COMMUNITY_CHAT_MAX_BYTES: z.coerce.number().positive().default(104857600),
   GROUP_CHAT_MAX_BYTES: z.coerce.number().positive().default(104857600),
+
+  // Redis — used for scan-status cache and rate-limit store
+  REDIS_HOST: z.string().default("127.0.0.1"),
+  REDIS_PORT: z.coerce.number().positive().default(6379),
+
+  // ClamAV antivirus scanner
+  // .default() is placed before .transform() so the default value is a string
+  // ("false") that then passes through the transform to produce `false` (boolean).
+  CLAMAV_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
+  CLAMAV_HOST: z.string().default("127.0.0.1"),
+  CLAMAV_PORT: z.coerce.number().positive().default(3310),
+  CLAMAV_SCAN_TIMEOUT_MS: z.coerce.number().positive().default(30000),
+
+  // ZIP security — maximum allowed uncompressed:compressed ratio before
+  // the archive is classified as a ZIP bomb and rejected.
+  ZIP_MAX_COMPRESSION_RATIO: z.coerce.number().positive().default(100),
+
+  // Scan-status TTL: how long a CLEAN/QUARANTINED status is cached in Redis
+  // before a re-confirm is required (seconds). Default 7 days.
+  SCAN_STATUS_TTL_SECONDS: z.coerce
+    .number()
+    .positive()
+    .default(7 * 24 * 60 * 60),
+
+  // Bull queue Redis — Bull needs its OWN connection (blocking clients require
+  // maxRetriesPerRequest:null), so it cannot reuse the shared @aimess/redis
+  // singleton. Defaults to the same Redis as REDIS_HOST/PORT.
+  BULL_REDIS_HOST: z.string().default("127.0.0.1"),
+  BULL_REDIS_PORT: z.coerce.number().positive().default(6379),
+
+  // Async media-scan worker knobs.
+  MEDIA_SCAN_QUEUE_NAME: z.string().default("media-scan"),
+  MEDIA_SCAN_CONCURRENCY: z.coerce.number().int().positive().default(2),
+  MEDIA_SCAN_JOB_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  MEDIA_SCAN_BACKOFF_MS: z.coerce.number().int().positive().default(5000),
 });
 
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
-  console.error("Invalid environment variables");
-  console.error(parsed.error.format());
+  logger.error("Invalid environment variables", {
+    errors: parsed.error.format(),
+  });
   process.exit(1);
 }
 

@@ -9,3 +9,4 @@ export * from "./types.js";
 export * from "./object-key-parse.js";
 export * from "./media-url-strategy.js";
 export * from "./media-object.js";
+export * from "./magic-bytes.js";

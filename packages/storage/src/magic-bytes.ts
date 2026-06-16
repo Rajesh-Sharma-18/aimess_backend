@@ -1,0 +1,252 @@
+/**
+ * Magic-byte (file signature) validation.
+ *
+ * Clients declare a MIME type when requesting a presigned upload URL. After the
+ * PUT lands in MinIO the caller streams the first N bytes back through
+ * `matchMagicBytes` to verify the actual file format matches the declaration.
+ *
+ * Why this matters: a client can rename `malware.exe` to `report.docx`, declare
+ * MIME `application/vnd.openxmlformats-officedocument.wordprocessingml.document`,
+ * and upload it. Extension + MIME header checks alone cannot catch this — only
+ * inspecting the raw bytes can.
+ *
+ * OOXML note: DOCX, XLSX and PPTX are all ZIP archives (PK\x03\x04 signature).
+ * `matchMagicBytes` returns `"application/zip"` for any PK file. The caller
+ * must additionally inspect the ZIP's internal directory (via `inspectOoxml`) to
+ * confirm the correct Office content-type is present. This two-step approach is
+ * intentional: the magic-byte layer catches non-archives masquerading as OOXML,
+ * while the OOXML inspector catches wrong Office types and plain ZIPs declared as
+ * Office docs.
+ */
+
+/** Minimum number of bytes that must be fetched from storage for detection. */
+export const MAGIC_BYTES_SAMPLE_SIZE = 512;
+
+/** A single file-signature rule. */
+interface Signature {
+  /** Raw bytes to match. `null` entries are wildcard (skip that byte position). */
+  bytes: (number | null)[];
+  /** Byte offset at which the pattern starts in the file. Default 0. */
+  offset?: number;
+  /** MIME type this signature identifies. */
+  mime: string;
+}
+
+/**
+ * Known signatures. Ordered from most-specific to least-specific so an early
+ * match does not shadow a longer pattern.
+ */
+const SIGNATURES: Signature[] = [
+  // PDF
+  { bytes: [0x25, 0x50, 0x44, 0x46], mime: "application/pdf" },
+
+  // ZIP (PK header) — covers DOCX / XLSX / PPTX / plain ZIP
+  { bytes: [0x50, 0x4b, 0x03, 0x04], mime: "application/zip" },
+  // ZIP: empty archive variant
+  { bytes: [0x50, 0x4b, 0x05, 0x06], mime: "application/zip" },
+  // ZIP: spanned archive variant
+  { bytes: [0x50, 0x4b, 0x07, 0x08], mime: "application/zip" },
+
+  // Legacy Office compound document (DOC / XLS / PPT) — Compound File Binary
+  {
+    bytes: [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1],
+    mime: "application/msword",
+  },
+
+  // JPEG
+  { bytes: [0xff, 0xd8, 0xff], mime: "image/jpeg" },
+
+  // PNG
+  {
+    bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    mime: "image/png",
+  },
+
+  // GIF87a / GIF89a
+  { bytes: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61], mime: "image/gif" },
+  { bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61], mime: "image/gif" },
+
+  // WebP (RIFF....WEBP)
+  {
+    bytes: [
+      0x52,
+      0x49,
+      0x46,
+      0x46,
+      null,
+      null,
+      null,
+      null,
+      0x57,
+      0x45,
+      0x42,
+      0x50,
+    ],
+    mime: "image/webp",
+  },
+
+  // MP4 / M4A / M4V (ftyp box at offset 4)
+  {
+    bytes: [null, null, null, null, 0x66, 0x74, 0x79, 0x70],
+    offset: 0,
+    mime: "video/mp4",
+  },
+
+  // MKV / WebM (EBML header)
+  { bytes: [0x1a, 0x45, 0xdf, 0xa3], mime: "video/x-matroska" },
+
+  // OGG (covers audio/ogg and video/ogg)
+  { bytes: [0x4f, 0x67, 0x67, 0x53], mime: "audio/ogg" },
+
+  // MP3 (ID3 tag or sync bytes)
+  { bytes: [0x49, 0x44, 0x33], mime: "audio/mpeg" },
+  { bytes: [0xff, 0xfb], mime: "audio/mpeg" },
+
+  // FLAC
+  { bytes: [0x66, 0x4c, 0x61, 0x43], mime: "audio/flac" },
+
+  // RIFF WAV
+  {
+    bytes: [
+      0x52,
+      0x49,
+      0x46,
+      0x46,
+      null,
+      null,
+      null,
+      null,
+      0x57,
+      0x41,
+      0x56,
+      0x45,
+    ],
+    mime: "audio/wav",
+  },
+];
+
+/** Checks whether `buf` starts with the bytes of `sig` at `sig.offset`. */
+function matchesSignature(buf: Buffer, sig: Signature): boolean {
+  const start = sig.offset ?? 0;
+  if (buf.length < start + sig.bytes.length) return false;
+  for (let i = 0; i < sig.bytes.length; i++) {
+    const expected = sig.bytes[i];
+    if (expected !== null && buf[start + i] !== expected) return false;
+  }
+  return true;
+}
+
+/**
+ * Inspect the first `MAGIC_BYTES_SAMPLE_SIZE` bytes of a file and return the
+ * detected MIME type, or `null` when no signature matches.
+ *
+ * For OOXML types (DOCX/XLSX/PPTX) this returns `"application/zip"` — the
+ * caller must perform a second-level OOXML inspection if needed.
+ */
+export function matchMagicBytes(buf: Buffer): string | null {
+  for (const sig of SIGNATURES) {
+    if (matchesSignature(buf, sig)) return sig.mime;
+  }
+  return null;
+}
+
+/**
+ * Set of MIME types whose magic bytes all resolve to `"application/zip"` (i.e.
+ * OOXML files — they ARE ZIP archives internally). When the declared MIME is in
+ * this set and `matchMagicBytes` returns `"application/zip"`, the bytes are
+ * valid; additional OOXML-level inspection decides whether the content-type
+ * is correct.
+ */
+export const OOXML_MIME_TYPES = new Set<string>([
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+]);
+
+/**
+ * Map of declared MIME → acceptable detected MIME(s) from `matchMagicBytes`.
+ *
+ * A declared MIME is valid when `matchMagicBytes(buf)` returns any value in its
+ * set. Multiple acceptable values cover format families (e.g. DOC/XLS/PPT share
+ * the same Compound Document signature; OOXML shares the ZIP signature).
+ */
+export const MAGIC_BYTE_ACCEPT_MAP: Record<string, Set<string>> = {
+  // Images
+  "image/jpeg": new Set(["image/jpeg"]),
+  "image/png": new Set(["image/png"]),
+  "image/webp": new Set(["image/webp"]),
+  "image/gif": new Set(["image/gif"]),
+  // Video
+  "video/mp4": new Set(["video/mp4"]),
+  "video/quicktime": new Set(["video/mp4"]),
+  "video/x-matroska": new Set(["video/x-matroska"]),
+  "video/webm": new Set(["video/x-matroska"]),
+  "video/x-msvideo": new Set([]), // AVI has no reliable universal signature; skip
+  "video/x-m4v": new Set(["video/mp4"]),
+  // Audio
+  "audio/mpeg": new Set(["audio/mpeg"]),
+  "audio/ogg": new Set(["audio/ogg"]),
+  "audio/wav": new Set(["audio/wav"]),
+  "audio/mp4": new Set(["video/mp4"]),
+  "audio/x-m4a": new Set(["video/mp4"]),
+  "audio/aac": new Set([]), // AAC ADTS has variable sync word; skip
+  "audio/flac": new Set(["audio/flac"]),
+  // Documents
+  "application/pdf": new Set(["application/pdf"]),
+  "application/msword": new Set(["application/msword"]),
+  "application/vnd.ms-excel": new Set(["application/msword"]), // same CFB signature
+  "application/vnd.ms-powerpoint": new Set(["application/msword"]), // same CFB signature
+  // OOXML — all are ZIP internally
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+    new Set(["application/zip"]),
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": new Set([
+    "application/zip",
+  ]),
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+    new Set(["application/zip"]),
+  // Text/data (no reliable magic bytes — validated by MIME only)
+  "text/plain": new Set([]),
+  "text/csv": new Set([]),
+  "application/json": new Set([]),
+  "application/xml": new Set([]),
+  "text/xml": new Set([]),
+  // Archives
+  "application/zip": new Set(["application/zip"]),
+  "application/x-zip-compressed": new Set(["application/zip"]),
+};
+
+/**
+ * Validate that `buf` (first bytes of an uploaded file) is consistent with
+ * `declaredMime`. Returns `true` when valid, `false` when the magic bytes
+ * definitively contradict the declared type.
+ *
+ * Empty accept-sets (text/plain, audio/aac, etc.) are skipped — no detectable
+ * signature for those types — and the check passes by default. The caller
+ * should rely on AV scanning to catch malicious payloads in undetectable types.
+ */
+export function assertMagicBytesMatch(buf: Buffer, declaredMime: string): void {
+  const acceptSet = MAGIC_BYTE_ACCEPT_MAP[declaredMime];
+  // Unknown declared MIME or no signature defined → skip check
+  if (!acceptSet || acceptSet.size === 0) return;
+
+  const detected = matchMagicBytes(buf);
+  if (detected === null) {
+    // Could not detect any known signature — conservatively block
+    throw new MagicByteValidationError(
+      `No recognisable file signature found for declared MIME ${declaredMime}`
+    );
+  }
+  if (!acceptSet.has(detected)) {
+    throw new MagicByteValidationError(
+      `File signature mismatch: declared ${declaredMime} but detected ${detected}`
+    );
+  }
+}
+
+export class MagicByteValidationError extends Error {
+  readonly code = "MAGIC_BYTE_MISMATCH" as const;
+  constructor(detail: string) {
+    super(detail);
+    this.name = "MagicByteValidationError";
+  }
+}
