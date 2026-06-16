@@ -315,10 +315,18 @@ export const mediaService = {
       scanStatus = confirmResult.scanStatus;
     }
 
+    // Allow-list gate (defense in depth). Only a terminal CLEAN — or SKIPPED
+    // when AV scanning is disabled (dev/no-op scanner) — is downloadable.
+    // Everything else (PENDING, ERROR, a terminal scanner failure, or any
+    // unexpected/future value) is blocked. Inverting a former block-list to an
+    // allow-list means a new or errored status can never fail open and serve an
+    // unverified object.
     if (scanStatus === "QUARANTINED" || scanStatus === "INFECTED") {
       throw new ForbiddenError("MEDIA_QUARANTINED");
     }
-    if (scanStatus === "PENDING") {
+    if (scanStatus !== "CLEAN" && scanStatus !== "SKIPPED") {
+      // PENDING (scan in flight), ERROR (terminal scan failure), or any value
+      // outside the safe set — not yet/never downloadable.
       throw new ForbiddenError("MEDIA_SCAN_PENDING");
     }
 
