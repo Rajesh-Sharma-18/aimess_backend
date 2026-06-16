@@ -625,6 +625,287 @@
           }
         }
       }
+    },
+    {
+      "id": "community.member_role_changed",
+      "title": "Community Member Promoted/Demoted (role)",
+      "domain": "Community",
+      "service": "community-service",
+      "ruleSet": "member_mutation",
+      "impact": "User's role changed but they are never told.",
+      "fix": "Wired. Deploy spine.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "updateMemberRole",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishCommunityMemberRoleChangedSafe",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "MEMBER_ROLE_CHANGED",
+            "files": [
+              "apps/notifications-service/src/consumers/community.consumer.ts"
+            ]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "notify:",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "recordAudit",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "community.deleted",
+      "title": "Community Deleted",
+      "domain": "Community",
+      "service": "community-service",
+      "ruleSet": "member_mutation",
+      "impact": "A community is deleted; every member should be notified.",
+      "fix": "Wired (pushToUsers(memberIds)). Deploy spine; add admin-delete audit (LOW backlog §10.7).",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "deleteCommunity",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishCommunityDeletedSafe",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "CommunityEvents.DELETED",
+            "files": [
+              "apps/notifications-service/src/consumers/community.consumer.ts"
+            ]
+          }
+        },
+        "socket": {
+          "evidence": {
+            "pattern": "notify:",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        },
+        "audit": {
+          "waived": "Community-delete audit is a LOW backlog item (§10.7)."
+        }
+      }
+    },
+    {
+      "id": "community.invite_sent",
+      "title": "Community Invite Sent",
+      "domain": "Community",
+      "service": "community-service",
+      "ruleSet": "social_request",
+      "impact": "Invitee is never told they were invited.",
+      "fix": "Wired (pushToUser(invitee)). Deploy spine.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "createInvite",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishCommunityInviteSentSafe",
+            "files": [
+              "apps/community-service/src/services/community.service.ts"
+            ]
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "INVITE_SENT",
+            "files": [
+              "apps/notifications-service/src/consumers/community.consumer.ts"
+            ]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        }
+      }
+    },
+    {
+      "id": "friend.request_accepted",
+      "title": "Friend Request Accepted",
+      "domain": "Friend System",
+      "service": "user-service",
+      "ruleSet": "social_request",
+      "impact": "Requester is never told their friend request was accepted.",
+      "fix": "Wired (pushToUser(requester)). Badge fixed by S1; deploy.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "acceptRequest",
+            "files": ["apps/user-service/src/services/friendship.service.ts"]
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "friend.accepted|publishFriend",
+            "dir": "apps/user-service/src"
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "accepted|ACCEPTED",
+            "files": [
+              "apps/notifications-service/src/consumers/friend.consumer.ts"
+            ]
+          }
+        },
+        "push": {
+          "evidence": {
+            "pattern": "sendPush",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "createNotification",
+            "files": ["apps/notifications-service/src/services/push.service.ts"]
+          }
+        },
+        "badge": {
+          "evidence": {
+            "pattern": "count_update",
+            "files": ["apps/chat-service/src/grpc/service-impl.ts"]
+          }
+        }
+      }
+    },
+    {
+      "id": "admin.user_unbanned",
+      "title": "Admin: User Unbanned",
+      "domain": "Admin / User Management",
+      "service": "backoffice-service",
+      "ruleSet": "privileged_action",
+      "impact": "Reinstated user is never told their account is active again.",
+      "fix": "Wired: auth-service admin.user consumer handles USER_UNBANNED (notify only). Deploy.",
+      "effects": {
+        "db": {
+          "evidence": {
+            "pattern": "setStatus",
+            "dir": "apps/backoffice-service/src"
+          }
+        },
+        "event": {
+          "evidence": {
+            "pattern": "publishUserUnbannedSafe|admin.user_unbanned",
+            "dir": "apps/backoffice-service/src"
+          }
+        },
+        "consumer": {
+          "evidence": {
+            "pattern": "admin.user.queue",
+            "dir": "apps/auth-service/src"
+          }
+        },
+        "sessionInvalidation": {
+          "waived": "Unban cannot un-revoke sessions; force-logout is n/a for reinstatement."
+        },
+        "push": {
+          "evidence": {
+            "pattern": "admin.user|admin_user",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "inapp": {
+          "evidence": {
+            "pattern": "admin.user|admin_user",
+            "dir": "apps/notifications-service/src/consumers"
+          }
+        },
+        "audit": {
+          "evidence": {
+            "pattern": "USER_UNBANNED",
+            "dir": "apps/backoffice-service/src"
+          }
+        }
+      }
     }
   ]
 }

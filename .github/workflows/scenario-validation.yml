@@ -1,0 +1,40 @@
+name: Scenario Validation
+
+# Side-effect contract gate. Fails the PR if any business action in
+# tools/scenario-validator/registry.json is FAILED at risk >= ciGate.failAtRisk
+# (HIGH) — i.e. a state-changing action is missing a critical side-effect
+# (notification / socket / push / in-app / audit / session-invalidation).
+# The validator is zero-dependency Node, so no install/build step is needed.
+# See docs/SCENARIO_VALIDATION_FRAMEWORK.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Validate side-effect contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Exits non-zero (fails the job) when a HIGH-risk action is FAILED.
+      - name: Run scenario validator
+        run: node tools/scenario-validator/validate.mjs
+
+      # Always publish the report so reviewers see the full per-action checklist,
+      # even when the gate fails.
+      - name: Upload scenario validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-validation-report
+          path: |
+            docs/SCENARIO_VALIDATION_REPORT.md
+            docs/scenario-validation.json
+          if-no-files-found: error

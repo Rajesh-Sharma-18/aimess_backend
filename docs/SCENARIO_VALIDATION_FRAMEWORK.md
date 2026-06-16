@@ -348,12 +348,13 @@ each run. **Not required** for the gate to function.
 
 Built today (this commit):
 
-1. ✅ Rule engine (`rules.json`) + contract registry (`registry.json`, 12 seeded actions).
+1. ✅ Rule engine (`rules.json`) + contract registry (`registry.json`, **17 seeded actions**).
 2. ✅ Deterministic runner (`validate.mjs`) → report + JSON + CI exit code.
 3. ✅ LLM agent (`.claude/agents/scenario-validator.md`).
 4. ✅ Platform audit ([`SYSTEM_SCENARIO_REVIEW.md`](SYSTEM_SCENARIO_REVIEW.md)).
+5. ✅ `validate:scenarios` script + **GitHub Actions gate** (`.github/workflows/scenario-validation.yml`) — fails any PR with a HIGH missing side-effect.
 
-Build-out backlog: 5. Extend the registry to the full ~45-action catalog (§4) — mechanical. 6. Add the GitHub Actions workflow + `validate:scenarios` script + lint-staged hook. 7. (Optional) `ScenarioValidationRun` table + a backoffice ingest endpoint + a trend panel. 8. Add a **contract-guard unit test** in `notifications-service` that fails if any
+Build-out backlog: 6. Extend the registry from 17 toward the full ~45-action catalog (§4) — mechanical. 7. (Optional) a blocking pre-commit hook (deliberately omitted today so a half-finished feature doesn't block unrelated local commits; CI is the enforcement point). 8. (Optional) `ScenarioValidationRun` table + a backoffice ingest endpoint + a trend panel. 9. Add a **contract-guard unit test** in `notifications-service` that fails if any
 `publish*Safe` constant has no consumer `case` — the runtime twin of the registry
 check (catches the mute/warn class even for actions not yet registered). 9. Wire the LLM agent into a weekly scheduled run that opens a PR appending newly
 discovered actions to the registry.

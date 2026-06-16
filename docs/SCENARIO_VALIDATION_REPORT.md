@@ -4,16 +4,16 @@
 > evidence over the working tree). Pair with the LLM `scenario-validator` agent for
 > discovery of actions missing from the registry. **Do not edit by hand.**
 >
-> Generated: 2026-06-16T09:05:19.599Z
+> Generated: 2026-06-16T09:22:15.636Z
 
 ## Summary
 
 | Result            | Count |
 | ----------------- | ----- |
-| ✅ PASS           | 12    |
+| ✅ PASS           | 17    |
 | ⚠️ WARN           | 0     |
 | ❌ FAILED         | 0     |
-| **Total actions** | 12    |
+| **Total actions** | 17    |
 
 Open risk (non-PASS): **HIGH 0 · MEDIUM 0 · LOW 0**
 
@@ -102,6 +102,52 @@ Risk: —
 Recommendation: —
 ```
 
+### Community Member Promoted/Demoted (role) — ✅ PASS
+
+```
+Feature: Community Member Promoted/Demoted (role)   [community.member_role_changed]
+✅ Database update          PASS
+✅ Domain event             PASS
+✅ Event consumer           PASS
+✅ Socket event             PASS
+✅ Push notification (FCM)  PASS
+✅ In-app notification      PASS
+✅ Unread counter update    PASS
+✅ Audit log                PASS
+Risk: —
+Recommendation: —
+```
+
+### Community Deleted — ✅ PASS
+
+```
+Feature: Community Deleted   [community.deleted]
+✅ Database update          PASS
+✅ Domain event             PASS
+✅ Event consumer           PASS
+✅ Socket event             PASS
+✅ Push notification (FCM)  PASS
+✅ In-app notification      PASS
+✅ Unread counter update    PASS
+➖ Audit log                WAIVED
+Risk: —
+Recommendation: —
+```
+
+### Community Invite Sent — ✅ PASS
+
+```
+Feature: Community Invite Sent   [community.invite_sent]
+✅ Database update          PASS
+✅ Domain event             PASS
+✅ Event consumer           PASS
+✅ Push notification (FCM)  PASS
+✅ In-app notification      PASS
+✅ Unread counter update    PASS
+Risk: —
+Recommendation: —
+```
+
 ## Group Chat
 
 ### Group Member Added — ✅ PASS
@@ -167,6 +213,21 @@ Risk: —
 Recommendation: —
 ```
 
+### Admin: User Unbanned — ✅ PASS
+
+```
+Feature: Admin: User Unbanned   [admin.user_unbanned]
+✅ Database update          PASS
+✅ Domain event             PASS
+✅ Event consumer           PASS
+✅ Push notification (FCM)  PASS
+✅ In-app notification      PASS
+➖ Session invalidation     WAIVED
+✅ Audit log                PASS
+Risk: —
+Recommendation: —
+```
+
 ## Media
 
 ### Media: Virus Scan Failed — ✅ PASS
@@ -211,21 +272,40 @@ Risk: —
 Recommendation: —
 ```
 
+### Friend Request Accepted — ✅ PASS
+
+```
+Feature: Friend Request Accepted   [friend.request_accepted]
+✅ Database update          PASS
+✅ Domain event             PASS
+✅ Event consumer           PASS
+✅ Push notification (FCM)  PASS
+✅ In-app notification      PASS
+✅ Unread counter update    PASS
+Risk: —
+Recommendation: —
+```
+
 ---
 
 ## Findings table
 
-| Feature                         | Status | Risk | Missing | Service            |
-| ------------------------------- | ------ | ---- | ------- | ------------------ |
-| Community Member Added          | PASS   | —    | —       | community-service  |
-| Community Member Muted          | PASS   | —    | —       | community-service  |
-| Community Member Warned         | PASS   | —    | —       | community-service  |
-| Community Member Removed (kick) | PASS   | —    | —       | community-service  |
-| Community Created               | PASS   | —    | —       | community-service  |
-| Group Member Added              | PASS   | —    | —       | chat-service       |
-| Private Message Sent            | PASS   | —    | —       | chat-service       |
-| Admin: User Banned              | PASS   | —    | —       | backoffice-service |
-| Admin: User Suspended           | PASS   | —    | —       | backoffice-service |
-| Media: Virus Scan Failed        | PASS   | —    | —       | media-service      |
-| Notification Deleted            | PASS   | —    | —       | chat-service       |
-| Friend Request Sent             | PASS   | —    | —       | user-service       |
+| Feature                                  | Status | Risk | Missing | Service            |
+| ---------------------------------------- | ------ | ---- | ------- | ------------------ |
+| Community Member Added                   | PASS   | —    | —       | community-service  |
+| Community Member Muted                   | PASS   | —    | —       | community-service  |
+| Community Member Warned                  | PASS   | —    | —       | community-service  |
+| Community Member Removed (kick)          | PASS   | —    | —       | community-service  |
+| Community Created                        | PASS   | —    | —       | community-service  |
+| Group Member Added                       | PASS   | —    | —       | chat-service       |
+| Private Message Sent                     | PASS   | —    | —       | chat-service       |
+| Admin: User Banned                       | PASS   | —    | —       | backoffice-service |
+| Admin: User Suspended                    | PASS   | —    | —       | backoffice-service |
+| Media: Virus Scan Failed                 | PASS   | —    | —       | media-service      |
+| Notification Deleted                     | PASS   | —    | —       | chat-service       |
+| Friend Request Sent                      | PASS   | —    | —       | user-service       |
+| Community Member Promoted/Demoted (role) | PASS   | —    | —       | community-service  |
+| Community Deleted                        | PASS   | —    | —       | community-service  |
+| Community Invite Sent                    | PASS   | —    | —       | community-service  |
+| Friend Request Accepted                  | PASS   | —    | —       | user-service       |
+| Admin: User Unbanned                     | PASS   | —    | —       | backoffice-service |
