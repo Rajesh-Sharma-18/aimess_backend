@@ -25,6 +25,7 @@ import { publishAdminUserNotifySafe } from "./publish-admin-user-notify.js";
  */
 const ADMIN_USER_QUEUE = "admin.user.queue";
 const ADMIN_USER_DLX = "admin.user.queue.dlx";
+const ADMIN_USER_DLQ = "admin.user.queue.dlq";
 const ADMIN_USER_DLQ_ROUTING_KEY = "admin.user.queue.dead";
 
 const PREFETCH = 10;
@@ -145,6 +146,16 @@ export async function startAdminUserConsumer(): Promise<void> {
     deadLetterExchange: ADMIN_USER_DLX,
     deadLetterRoutingKey: ADMIN_USER_DLQ_ROUTING_KEY,
   });
+  // Bind a durable dead-letter queue to the DLX so a nack(no-requeue) on a
+  // transient failure (DB/Redis blip mid force-logout) is RETAINED for replay
+  // rather than routed to an exchange with no queue and silently dropped — the
+  // ban's session-revocation must not be lost.
+  await channel.assertQueue(ADMIN_USER_DLQ, { durable: true });
+  await channel.bindQueue(
+    ADMIN_USER_DLQ,
+    ADMIN_USER_DLX,
+    ADMIN_USER_DLQ_ROUTING_KEY
+  );
 
   await channel.prefetch(PREFETCH);
 

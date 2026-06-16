@@ -173,6 +173,7 @@ below (Vietnamese resolved by the same key — see `SOCKET_MESSAGES` in
 | `/community` | `community:message:unpin`  | Message unpinned successfully                   |
 | `/notify`    | `notifications:fetch`      | Notifications fetched successfully              |
 | `/notify`    | `notifications:mark_read`  | Notifications marked as read                    |
+| `/notify`    | `notifications:delete`     | Notification deleted                            |
 
 Failure acks carry a one-sentence localized `message` per error code (e.g.
 `INVALID_PAYLOAD` → "The request data is invalid", `SERVICE_ERROR` →
@@ -513,19 +514,22 @@ Each connected user's `notify:<userId>` Redis channel is subscribed
 
 ### 6.1 Client → Server
 
-| Event                     | Ack | Payload                         | Notes                           |
-| ------------------------- | --- | ------------------------------- | ------------------------------- |
-| `notifications:fetch`     | yes | `{ cursor?, limit?≤100 }`       | cursor-paged feed               |
-| `notifications:mark_read` | yes | `{ notificationIds: string[] }` | mark read (empty array allowed) |
+| Event                     | Ack | Payload                         | Notes                                                                                                        |
+| ------------------------- | --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `notifications:fetch`     | yes | `{ cursor?, limit?≤100 }`       | cursor-paged feed                                                                                            |
+| `notifications:mark_read` | yes | `{ notificationIds: string[] }` | mark read (empty array allowed)                                                                              |
+| `notifications:delete`    | yes | `{ notificationId: string }`    | owner-scoped soft-delete; ack `SOCKET_NOTIFICATIONS_DELETED`; unowned id → `{ deleted:false }` (no mutation) |
 
 ### 6.2 Server → Client
 
-| Event                       | When                                                                                           | Payload                                                                                                                                                                                                                                                                     |
-| --------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `notification:count`        | once on connect                                                                                | `{ count }` — current unread total (aggregate only; no per-type breakdown in V1)                                                                                                                                                                                            |
-| `notification:count_update` | after `notifications:mark_read` (all devices) **or** when the service emits a new notification | `{ count }` — updated unread total; client should replace the badge count; emitted to `user:<userId>` so **all** connected devices stay in sync                                                                                                                             |
-| `notification:new`          | a new notification is created (forwarded verbatim)                                             | `NotificationItem` — `{ notificationId, type, title, body, referenceId, isRead, createdAt, data }`; `type` is the discriminator (handle unknown values defensively). `notificationId` (canonical) — `id` is a deprecated alias (read `notificationId ?? id`; removed in V2) |
-| _other forwarded events_    | published to `notify:<userId>`                                                                 | event name + payload forwarded verbatim                                                                                                                                                                                                                                     |
+| Event                       | When                                                                                                             | Payload                                                                                                                                                                                                                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notification:count`        | once on connect                                                                                                  | `{ count }` — current unread total (aggregate only; no per-type breakdown in V1)                                                                                                                                                                                            |
+| `notification:count_update` | after `notifications:mark_read` (all devices) **or** when the service emits a new notification                   | `{ count }` — updated unread total; client should replace the badge count; emitted to `user:<userId>` so **all** connected devices stay in sync                                                                                                                             |
+| `notification:new`          | a new notification is created (forwarded verbatim)                                                               | `NotificationItem` — `{ notificationId, type, title, body, referenceId, isRead, createdAt, data }`; `type` is the discriminator (handle unknown values defensively). `notificationId` (canonical) — `id` is a deprecated alias (read `notificationId ?? id`; removed in V2) |
+| `notification:deleted`      | a notification row is soft-deleted (via `notifications:delete`) — reaches the user's other devices               | `{ notificationId }` — drop this row from the list; a `notification:count_update` follows                                                                                                                                                                                   |
+| `media:scan_result`         | a media upload hits a terminal scan failure (QUARANTINED/INFECTED/ERROR, or a synchronous confirm-upload reject) | `{ objectKey, status, reason, at }` (`at` = epoch ms) — emitted to the uploader's `notify:<uploaderId>`; treat any status as "upload blocked". Socket-only (no inbox row / offline FCM by design)                                                                           |
+| _other forwarded events_    | published to `notify:<userId>`                                                                                   | event name + payload forwarded verbatim                                                                                                                                                                                                                                     |
 
 ---
 

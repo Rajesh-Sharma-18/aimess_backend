@@ -2428,10 +2428,12 @@ export function createNotificationImpl(
           const remainingUnread =
             await deps.notificationRepo.getUnreadCount(userId);
 
-          // Real-time bridge (mirrors createNotification): relay BOTH the delete
-          // and the refreshed unread count to the user's connected devices via
-          // the gateway /notify namespace. Only publish when a row actually
-          // changed. Best-effort: a relay error must never fail the delete.
+          // Real-time bridge: relay the delete to the user's OTHER connected
+          // devices so they drop the row too. The refreshed unread count is
+          // emitted once by the gateway's notifications:delete handler (symmetric
+          // with mark_read) — do NOT also publish count_update here or every
+          // device receives it twice. Only relay when a row actually changed.
+          // Best-effort: a relay error must never fail the delete.
           if (deleted) {
             try {
               await redis.publish(
@@ -2439,13 +2441,6 @@ export function createNotificationImpl(
                 JSON.stringify({
                   event: "notification:deleted",
                   data: { notificationId: req.notificationId },
-                })
-              );
-              await redis.publish(
-                `notify:${userId}`,
-                JSON.stringify({
-                  event: "notification:count_update",
-                  data: { count: remainingUnread },
                 })
               );
             } catch (err) {
