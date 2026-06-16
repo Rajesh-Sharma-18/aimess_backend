@@ -10,7 +10,10 @@ import {
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
   type CommunityMemberKickedPayload,
+  type CommunityMemberMutedPayload,
   type CommunityMemberRoleChangedPayload,
+  type CommunityMemberUnmutedPayload,
+  type CommunityMemberWarnedPayload,
   type CommunityReportActionedPayload,
   type CommunityReportCreatedPayload,
 } from "@aimess/shared-types";
@@ -125,6 +128,49 @@ async function handleCommunityEvent(
       });
       break;
     }
+
+    case CommunityEvents.MEMBER_MUTED: {
+      const p = data as CommunityMemberMutedPayload;
+      await pushToUser({
+        userId: p.targetUserId,
+        title: "You have been muted",
+        body: p.mutedUntil
+          ? "You were muted in a community for a limited time."
+          : "You were muted in a community.",
+        ...base(type, p.communityId, p.actorId, {
+          reason: p.reason ?? "",
+          mutedUntil: p.mutedUntil ?? "",
+        }),
+      });
+      break;
+    }
+
+    case CommunityEvents.MEMBER_UNMUTED: {
+      const p = data as CommunityMemberUnmutedPayload;
+      await pushToUser({
+        userId: p.targetUserId,
+        title: "You have been unmuted",
+        body: "You can post in the community again.",
+        ...base(type, p.communityId, p.actorId, {}),
+      });
+      break;
+    }
+
+    case CommunityEvents.MEMBER_WARNED: {
+      const p = data as CommunityMemberWarnedPayload;
+      await pushToUser({
+        userId: p.targetUserId,
+        title: "You received a warning",
+        body: p.note || "A moderator issued you a warning in a community.",
+        ...base(type, p.communityId, p.actorId, { note: p.note }),
+      });
+      break;
+    }
+
+    case CommunityEvents.MEMBER_LEFT:
+      // Self-action — the user voluntarily left; they already know. Explicit
+      // no-op (not `default`) so it does not log "Unknown community event type".
+      break;
 
     case CommunityEvents.INVITE_SENT: {
       const p = data as CommunityInviteSentPayload;
