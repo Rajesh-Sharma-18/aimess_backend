@@ -34,12 +34,20 @@ import {
   publishScanResult,
   type MediaScanStatus,
 } from "../lib/scanner.js";
+import { logger } from "@aimess/logger";
+import { RESOURCE_OWNER_TYPE } from "@aimess/constants";
+import { mediaFileRepository } from "../repositories/media-file.repository.js";
+import { resolveResourceType } from "../lib/resource-type.js";
 
 export type GenerateUploadUrlParams = {
   category: MediaCategoryKey;
   contentType: string;
   contentLength: number;
   ownerId: string;
+  /** Authenticated uploader (registry owner). Falls back to ownerId if absent. */
+  uploaderId?: string;
+  /** Entity the file belongs to (roomId/groupId/communityId) — drives download authz. */
+  resourceId?: string;
   /** Optional client-declared original filename (display metadata only). */
   fileName?: string;
 };
@@ -125,6 +133,35 @@ export const mediaService = {
         prefixes: [def.keyPrefix],
         strategy: mediaUrlStrategy,
       });
+
+      // Register the object in the media registry (best-effort): binds the
+      // storage key to its owner + resource + classification so downloads can be
+      // authorized against resource membership and orphans cleaned up. A registry
+      // failure must never break URL issuance — isolated in its own try/catch.
+      try {
+        const resourceType = resolveResourceType(
+          params.category,
+          params.contentType
+        );
+        await mediaFileRepository.register({
+          objectKey: result.objectKey,
+          bucket: def.bucket,
+          uploadCategory: params.category,
+          ownerType: RESOURCE_OWNER_TYPE[resourceType],
+          resourceType,
+          ownerId: params.uploaderId ?? params.ownerId,
+          resourceId: params.resourceId ?? null,
+          fileName: result.fileName ?? null,
+          contentType: params.contentType,
+          size: params.contentLength,
+          scanStatus: "PENDING",
+        });
+      } catch (err) {
+        logger.warn("media registry: register on upload-url failed", {
+          objectKey: result.objectKey,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
 
       return {
         ...result,

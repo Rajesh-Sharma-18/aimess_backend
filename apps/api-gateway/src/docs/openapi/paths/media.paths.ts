@@ -144,6 +144,13 @@ const mediaUploadUrl = {
                 description:
                   "Community/group id for COMMUNITY_AVATAR/COVER categories; defaults to caller userId for all others.",
               },
+              resourceId: {
+                type: "string" as const,
+                maxLength: 200,
+                example: "room_abc123",
+                description:
+                  "The entity the file belongs to — roomId / groupId / communityId for chat categories. Recorded in the media registry so the download can be authorized against membership of that resource. Optional for public avatars/covers.",
+              },
             },
           },
         },

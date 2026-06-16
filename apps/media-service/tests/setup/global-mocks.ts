@@ -18,6 +18,16 @@ jest.mock("../../src/config/storage.js", () => ({
   },
 }));
 
+// --- MediaFile registry repository (prevents live Mongo/Prisma in tests) ---
+jest.mock("../../src/repositories/media-file.repository.js", () => ({
+  mediaFileRepository: {
+    register: jest.fn(async () => ({})),
+    findByObjectKey: jest.fn(async () => null),
+    setScanStatus: jest.fn(async () => undefined),
+    setUsage: jest.fn(async () => undefined),
+  },
+}));
+
 // --- Redis client (prevents live Redis connection in tests) ----------------
 jest.mock("../../src/config/redis.js", () => ({
   redis: {

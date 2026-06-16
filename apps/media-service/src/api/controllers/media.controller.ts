@@ -17,12 +17,15 @@ export class MediaController {
     const parsed = uploadUrlSchema.safeParse(req.body);
     if (!parsed.success) throw new BadRequestError("MEDIA_REQUEST_INVALID");
 
-    const { category, contentType, contentLength, ownerId } = parsed.data;
+    const { category, contentType, contentLength, ownerId, resourceId } =
+      parsed.data;
     const result = await mediaService.generateUploadUrl({
       category,
       contentType,
       contentLength,
       ownerId: ownerId ?? req.auth.userId,
+      uploaderId: req.auth.userId,
+      resourceId,
     });
 
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
