@@ -1899,8 +1899,14 @@ export function createCommunityImpl(
             sinceTs: number; // epoch-ms; 0 or absent → use sinceId mode
           };
 
+          // sinceTs is an int64 (a string at runtime via proto-loader) — coerce
+          // to a number before constructing the Date, else new Date("<digits>")
+          // parses as a date string and yields an Invalid Date.
+          const sinceTsMs = Number(req.sinceTs);
           const sinceTs =
-            req.sinceTs && req.sinceTs > 0 ? new Date(req.sinceTs) : undefined;
+            Number.isFinite(sinceTsMs) && sinceTsMs > 0
+              ? new Date(sinceTsMs)
+              : undefined;
 
           const result = await deps.communityMessageService.catchup({
             roomId: req.roomId,

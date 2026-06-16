@@ -292,7 +292,7 @@ export class CommunityMessageService {
     const limit = Math.min(Math.max(params.limit || 100, 1), 100);
 
     // since_ts mode: updatedAt-based query that catches all mutation types.
-    if (params.sinceTs) {
+    if (params.sinceTs && !Number.isNaN(params.sinceTs.getTime())) {
       const { messages: tsMessages, hasMore } =
         await this.messageRepo.findUpdatedAtSince({
           roomId: params.roomId,
@@ -612,6 +612,9 @@ export class CommunityMessageService {
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
     }
 
+    if (Number.isNaN(params.fromTs.getTime())) {
+      throw new BadRequestError("CHAT_INVALID_SINCE_TS");
+    }
     const { messages, hasMore } = await this.messageRepo.findUpdatedAtSince({
       roomId: params.roomId,
       userId: params.userId,

@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import type { Redis, Cluster } from "ioredis";
 
 import { logger } from "@aimess/logger";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
@@ -146,7 +147,9 @@ export class CommunityMessageController {
     // Returns every message (new, edited, reacted, deleted tombstone) whose
     // updatedAt >= after_ts. Feed the returned nextCursor as the next after_ts.
     if (afterTs != null) {
-      console.log("afterTs :::", afterTs);
+      if (!Number.isFinite(afterTs) || afterTs < 0) {
+        throw new BadRequestError("CHAT_INVALID_SINCE_TS");
+      }
       const result = await this.service.getMessagesSince({
         roomId,
         userId,
@@ -338,6 +341,10 @@ export class CommunityMessageController {
         ? await this.service.deleteForAll(messageId, userId)
         : await this.service.deleteForMe(messageId, userId);
 
+    if (!result) {
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    }
+
     // Emit real-time deletion event to the community room.
     // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
     // §2.3: canonical tombstone — REST body == socket payload byte-for-byte.
@@ -375,7 +382,9 @@ export class CommunityMessageController {
     const sinceTs = Number(req.query.since_ts);
     const limit = Number(req.query.limit) || 50;
 
-    console.log("sinceTs :::", sinceTs);
+    if (!Number.isFinite(sinceTs) || sinceTs < 0) {
+      throw new BadRequestError("CHAT_INVALID_SINCE_TS");
+    }
 
     const result = await this.service.getMessagesSince({
       roomId,
