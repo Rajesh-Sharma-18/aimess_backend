@@ -33,7 +33,7 @@ const envSchema = z.object({
   MINIO_BUCKET_COMMUNITY: z.string().min(1),
   MINIO_BUCKET: z.string().min(1),
   MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(900),
-  MINIO_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
+  MINIO_VIEW_EXPIRES_IN: z.coerce.number().positive().default(604800),
 
   AVATAR_MAX_UPLOAD_BYTES: z.coerce
     .number()

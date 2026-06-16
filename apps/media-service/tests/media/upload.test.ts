@@ -39,7 +39,7 @@ jest.mock("@aimess/storage", () => {
       contentType: null,
       size: null,
       downloadUrl: "https://minio.test/presigned-get",
-      downloadUrlExpiresIn: 3600,
+      downloadUrlExpiresIn: null,
       uploadUrl: null,
       uploadUrlExpiresIn: null,
     })),
@@ -87,7 +87,7 @@ describe("POST /api/v1/media/upload-url", () => {
     expect(res.body.data.media.uploadUrl).toBe(
       "https://minio.test/presigned-put"
     );
-    expect(typeof res.body.data.media.downloadUrlExpiresIn).toBe("number");
+    expect(res.body.data.media.downloadUrlExpiresIn).toBeNull();
     expect(typeof res.body.data.maxBytes).toBe("number");
     expect(typeof res.body.data.uploadExpiresIn).toBe("number");
   });

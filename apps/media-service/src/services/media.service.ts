@@ -69,7 +69,7 @@ export type GenerateDownloadUrlParams = {
 
 export type GenerateDownloadUrlResult = {
   downloadUrl: string;
-  downloadUrlExpiresIn: number;
+  downloadUrlExpiresIn: number | null;
   media: MediaObject;
 };
 
@@ -399,7 +399,7 @@ export const mediaService = {
 
     return {
       downloadUrl: media.downloadUrl ?? "",
-      downloadUrlExpiresIn: media.downloadUrlExpiresIn ?? 0,
+      downloadUrlExpiresIn: media.downloadUrlExpiresIn,
       media,
     };
   },

@@ -61,7 +61,7 @@ export const mediaImpl: grpc.UntypedServiceImplementation = {
         });
         callback(null, {
           downloadUrl: result.downloadUrl,
-          expiresIn: String(result.downloadUrlExpiresIn),
+          expiresIn: String(result.downloadUrlExpiresIn ?? 0),
           media: toMediaObjectProto(result.media),
         });
       } catch (err) {
