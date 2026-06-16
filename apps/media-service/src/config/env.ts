@@ -13,6 +13,10 @@ const envSchema = z.object({
   MEDIA_SERVICE_PORT: z.coerce.number().positive().default(3009),
   MEDIA_GRPC_PORT: z.coerce.number().positive().default(4009),
 
+  // chat-service gRPC (MessagingService.CheckMediaAccess) — used to authorize
+  // chat-scoped attachment downloads against room/group/community membership.
+  CHAT_GRPC_URL: z.string().default("127.0.0.1:4004"),
+
   JWT_ACCESS_SECRET: z.string().min(1),
 
   CORS_ALLOWED_ORIGINS: z.string().default("*"),

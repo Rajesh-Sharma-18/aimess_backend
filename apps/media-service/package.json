@@ -21,6 +21,7 @@
     "@aimess/auth-jwt": "workspace:*",
     "@aimess/constants": "workspace:*",
     "@aimess/errors": "workspace:*",
+    "@aimess/grpc-utils": "workspace:*",
     "@aimess/logger": "workspace:*",
     "@aimess/redis": "workspace:*",
     "@aimess/shared-types": "workspace:*",

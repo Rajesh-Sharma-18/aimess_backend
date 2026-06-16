@@ -38,6 +38,7 @@ import { logger } from "@aimess/logger";
 import { RESOURCE_OWNER_TYPE } from "@aimess/constants";
 import { mediaFileRepository } from "../repositories/media-file.repository.js";
 import { resolveResourceType } from "../lib/resource-type.js";
+import { authorizeMediaAccess } from "../lib/download-authz.js";
 
 export type GenerateUploadUrlParams = {
   category: MediaCategoryKey;
@@ -322,23 +323,16 @@ export const mediaService = {
       throw new BadRequestError("MEDIA_UNKNOWN_CATEGORY");
     }
 
-    if (params.category === "CHAT_ATTACHMENT") {
-      const owned = assertObjectKeyOwnedBy(
-        params.objectKey,
-        def.keyPrefix,
-        params.requesterId
-      );
-      if (!owned) {
-        throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
-      }
-    } else if (
-      params.category === "COMMUNITY_CHAT_ATTACHMENT" ||
-      params.category === "GROUP_CHAT_ATTACHMENT"
-    ) {
-      if (!params.objectKey.startsWith(def.keyPrefix + "/")) {
-        throw new BadRequestError("MEDIA_INVALID_OBJECT_KEY");
-      }
-    }
+    // Resource-driven authorization. For registered objects this enforces the
+    // resource-type policy (chat attachments → membership verified via
+    // chat-service gRPC, closing the community/group IDOR and the private-chat
+    // recipient gap); for un-backfilled keys it falls back to the legacy
+    // prefix/owner checks.
+    await authorizeMediaAccess({
+      objectKey: params.objectKey,
+      category: params.category,
+      requesterId: params.requesterId,
+    });
 
     // Scan-status gate: only CLEAN (or SKIPPED for no-op scanner) files may
     // be downloaded. If no status exists (file never confirmed), auto-confirm
@@ -417,22 +411,12 @@ export const mediaService = {
     const def = UPLOAD_CATEGORIES[params.category];
     if (!def) throw new BadRequestError("MEDIA_UNKNOWN_CATEGORY");
 
-    // Authz mirrors generateDownloadUrl.
-    if (params.category === "CHAT_ATTACHMENT") {
-      const owned = assertObjectKeyOwnedBy(
-        params.objectKey,
-        def.keyPrefix,
-        params.requesterId
-      );
-      if (!owned) throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
-    } else if (
-      params.category === "COMMUNITY_CHAT_ATTACHMENT" ||
-      params.category === "GROUP_CHAT_ATTACHMENT"
-    ) {
-      if (!params.objectKey.startsWith(def.keyPrefix + "/")) {
-        throw new BadRequestError("MEDIA_INVALID_OBJECT_KEY");
-      }
-    }
+    // Authz mirrors generateDownloadUrl (resource-driven, registry-bound).
+    await authorizeMediaAccess({
+      objectKey: params.objectKey,
+      category: params.category,
+      requesterId: params.requesterId,
+    });
 
     // null (missing / expired / Redis-down) → PENDING. Never report a
     // false-clean to a polling client. (This deliberately differs from

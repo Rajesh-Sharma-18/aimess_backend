@@ -28,6 +28,14 @@ jest.mock("../../src/repositories/media-file.repository.js", () => ({
   },
 }));
 
+// --- chat-service gRPC membership client (no live gRPC in tests) -----------
+// Stable checkMediaAccess fn (same instance across getChatAccessClient() calls)
+// so a test can override the verdict via getChatAccessClient().checkMediaAccess.
+jest.mock("../../src/grpc/clients/chat-access.client.js", () => {
+  const checkMediaAccess = jest.fn(async () => true); // default: allow
+  return { getChatAccessClient: jest.fn(() => ({ checkMediaAccess })) };
+});
+
 // --- Redis client (prevents live Redis connection in tests) ----------------
 jest.mock("../../src/config/redis.js", () => ({
   redis: {

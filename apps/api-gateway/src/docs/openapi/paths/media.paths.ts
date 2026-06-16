@@ -314,6 +314,11 @@ If the file has never been confirmed, this endpoint automatically runs the secur
 - Scan status is \`QUARANTINED\` or \`INFECTED\` (file rejected; deleted from storage) → 403 MEDIA_QUARANTINED
 - Scan status is \`ERROR\` or any value outside the allow-list (\`CLEAN\`/\`SKIPPED\`) → 403 MEDIA_SCAN_PENDING (defense-in-depth allow-list gate)
 
+**Authorization (resource-driven):**
+- Avatars / community branding → public (any authenticated user).
+- Chat attachments → membership of the owning room/group/community is verified (media-service checks against chat-service). The owning resource is taken from the media registry (bound at upload via \`resourceId\`), NOT from this request — so it cannot be spoofed, and you do NOT send \`resourceId\` here.
+- A caller who is not a participant/member → 403 (CHAT_MEDIA_FORBIDDEN). Objects uploaded before the registry fall back to the legacy owner/prefix check until backfilled.
+
 **Safe-serving headers applied to the response:**
 - \`X-Content-Type-Options: nosniff\`
 - Documents / archives are served with \`Content-Disposition: attachment\` baked into the presigned URL, preventing inline browser rendering.`,
