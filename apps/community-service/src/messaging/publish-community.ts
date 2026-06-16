@@ -8,7 +8,9 @@ import {
   type CommunityInviteAcceptedPayload,
   type CommunityInviteSentPayload,
   type CommunityJoinedPayload,
+  type CommunityJoinRequestApprovedPayload,
   type CommunityJoinRequestedPayload,
+  type CommunityJoinRequestRejectedPayload,
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
   type CommunityMemberKickedPayload,
@@ -130,6 +132,26 @@ export function publishCommunityJoinRequestedSafe(
   data: CommunityJoinRequestedPayload
 ): void {
   publishSafe(CommunityEvents.JOIN_REQUESTED, data, "community.join_requested");
+}
+
+export function publishCommunityJoinRequestApprovedSafe(
+  data: CommunityJoinRequestApprovedPayload
+): void {
+  publishSafe(
+    CommunityEvents.JOIN_REQUEST_APPROVED,
+    data,
+    "community.join_request_approved"
+  );
+}
+
+export function publishCommunityJoinRequestRejectedSafe(
+  data: CommunityJoinRequestRejectedPayload
+): void {
+  publishSafe(
+    CommunityEvents.JOIN_REQUEST_REJECTED,
+    data,
+    "community.join_request_rejected"
+  );
 }
 
 export function publishCommunityInviteSentSafe(

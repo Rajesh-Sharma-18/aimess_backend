@@ -8,9 +8,14 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import { publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
-import type { MediaObject } from "@aimess/shared-types";
+import type {
+  CommunityMemberAddedPayload,
+  MediaObject,
+} from "@aimess/shared-types";
 
+import { redis } from "../config/redis.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityCache } from "../lib/community-cache.js";
@@ -89,7 +94,9 @@ import {
   publishCommunityDeletedSafe,
   publishCommunityInviteAcceptedSafe,
   publishCommunityInviteSentSafe,
+  publishCommunityJoinRequestApprovedSafe,
   publishCommunityJoinRequestedSafe,
+  publishCommunityJoinRequestRejectedSafe,
   publishCommunityMemberAddedSafe,
   publishCommunityMemberBannedSafe,
   publishCommunityMemberKickedSafe,
@@ -106,6 +113,7 @@ import {
   publishCommunityDeletedForChatSafe,
   publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
+  publishCommunitySystemMessageForChatSafe,
 } from "../messaging/publish-community-chat.js";
 import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
 
@@ -898,6 +906,17 @@ export const communityService = {
       avatarUrl: community.avatarUrl ?? null,
       ownerId: creatorId,
     });
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "COMMUNITY_CREATED",
+      metadata: {
+        communityName: community.name,
+        creatorId: creatorId,
+        creatorName: "",
+      },
+      triggeredByUserId: creatorId,
+      eventAt: new Date().toISOString(),
+    });
 
     // A brand-new community has no mute row for the creator.
     return toCommunityData(community, CommunityMemberRole.ADMIN, null);
@@ -1015,6 +1034,36 @@ export const communityService = {
             );
     }
 
+    // Detect which fields will actually change for the system message.
+    const changedFields: string[] = [];
+    if (
+      input.name !== undefined &&
+      normalizeName(input.name) !== community.name
+    ) {
+      changedFields.push("name");
+    }
+    if (
+      input.description !== undefined &&
+      input.description !== community.description
+    ) {
+      changedFields.push("description");
+    }
+    if (input.avatarObjectKey !== undefined) {
+      changedFields.push("avatar");
+    }
+    if (input.type !== undefined && input.type !== community.type) {
+      changedFields.push("visibility");
+    }
+    if (input.categoryId !== undefined) {
+      changedFields.push("category");
+    }
+    if (
+      input.handle !== undefined &&
+      normalizeHandle(input.handle) !== community.handle
+    ) {
+      changedFields.push("handle");
+    }
+
     let updated: CommunityWithCategory;
     try {
       updated = await communityRepository.updateCommunity(communityId, data);
@@ -1032,6 +1081,22 @@ export const communityService = {
     if (nextHandle && nextHandle !== previousHandle) {
       await communityCache.invalidateHandleAvailability(previousHandle);
       await communityCache.invalidateHandleAvailability(nextHandle);
+    }
+
+    if (changedFields.length > 0) {
+      publishCommunitySystemMessageForChatSafe({
+        communityId,
+        systemMessageType: "COMMUNITY_UPDATED",
+        metadata: {
+          updaterId: callerId,
+          updaterName: "",
+          changedFields,
+          ...(input.name !== undefined ? { newName: nextName } : {}),
+          ...(input.type !== undefined ? { newVisibility: input.type } : {}),
+        },
+        triggeredByUserId: callerId,
+        eventAt: new Date().toISOString(),
+      });
     }
 
     if (input.memberIds !== undefined) {
@@ -1341,6 +1406,20 @@ export const communityService = {
       oldRole: target.role,
       newRole: role,
     });
+    publishCommunitySystemMessageForChatSafe({
+      communityId,
+      systemMessageType: "MEMBER_ROLE_CHANGED",
+      metadata: {
+        actorId: callerId,
+        actorName: "",
+        targetUserId,
+        targetName: "",
+        oldRole: target.role as string,
+        newRole: role as string,
+      },
+      triggeredByUserId: callerId,
+      eventAt: new Date().toISOString(),
+    });
 
     return toMemberData(updated);
   },
@@ -1575,6 +1654,78 @@ export const communityService = {
     return toMemberData(updated);
   },
 
+  /**
+   * Internal helper (not part of the public API surface — `communityService` is
+   * an object literal, so this is a plain method, not a class `private`). Call it
+   * from every path that turns a member ACTIVE so the side-effects stay DRY:
+   *   1. emit the enriched `community.member_added` domain event (adds
+   *      requestId + communityName + moderatorRecipientIds so the notifications
+   *      consumer can welcome the joiner AND inform admins/mods), and
+   *   2. broadcast a `community:member:joined` roster event into the community
+   *      room (best-effort; never throws into the request path).
+   */
+  async notifyMemberJoined(args: {
+    community: { id: string; name: string };
+    member: {
+      userId: string;
+      role: CommunityMemberRole;
+      joinedAt: Date;
+      snapshotUsername: string;
+      snapshotDisplayName: string;
+      snapshotAvatarKey: string | null;
+    };
+    actorId: string;
+    via: CommunityMemberAddedPayload["via"];
+    requestId?: string;
+  }): Promise<void> {
+    const { community, member, actorId, via, requestId } = args;
+
+    const moderatorRecipientIds =
+      await communityRepository.findActiveMemberIdsByRoles(community.id, [
+        CommunityMemberRole.ADMIN,
+        CommunityMemberRole.MODERATOR,
+      ]);
+
+    publishCommunityMemberAddedSafe({
+      communityId: community.id,
+      eventAt: new Date().toISOString(),
+      actorId,
+      targetUserId: member.userId,
+      via,
+      requestId,
+      communityName: community.name,
+      moderatorRecipientIds,
+    });
+
+    // Roster broadcast — client-facing socket DTO (joinedAt is epoch ms here,
+    // matching the reserved AsyncAPI CommunityMemberDTO). Reuse the avatar
+    // key→URL resolver the REST member list uses; never hand-roll presigning.
+    try {
+      const avatarView = await memberAvatarService.resolveViewUrl(
+        member.snapshotAvatarKey
+      );
+      const memberDto = {
+        userId: member.userId,
+        username: member.snapshotUsername,
+        displayName: member.snapshotDisplayName,
+        avatarUrl: avatarView?.url ?? null,
+        role: member.role,
+        joinedAt: member.joinedAt.getTime(),
+      };
+      await publishCommunityRoomEvent(
+        redis,
+        community.id,
+        "community:member:joined",
+        memberDto
+      );
+    } catch (error) {
+      logger.warn(
+        `community:member:joined broadcast failed for community=${community.id} user=${member.userId}`
+      );
+      logger.warn(error);
+    }
+  },
+
   async addMembers(
     communityId: string,
     callerId: string,
@@ -1721,27 +1872,44 @@ export const communityService = {
       );
 
       let created: CommunityMemberData[] = [];
+      // Raw created rows (with real joinedAt/role) kept for the per-member
+      // join notification below.
+      let createdRows: Awaited<
+        ReturnType<typeof communityRepository.findMembersByUserIds>
+      > = [];
       if (toCreate.length > 0) {
-        const rows = await communityRepository.findMembersByUserIds(
+        createdRows = await communityRepository.findMembersByUserIds(
           communityId,
           toCreate
         );
-        created = await Promise.all(rows.map(toMemberData));
+        created = await Promise.all(createdRows.map(toMemberData));
       }
 
       added = [...reactivated, ...created];
 
-      // Emit MEMBER_ADDED once per added user (skipped[] are NOT emitted).
-      const eventAt = new Date().toISOString();
-      for (const userId of [
-        ...toReactivate.map((m) => m.userId),
-        ...toCreate,
-      ]) {
-        publishCommunityMemberAddedSafe({
-          communityId,
-          eventAt,
+      // Notify once per added user (skipped[] are NOT emitted): enriched
+      // member_added (moderator awareness) + community room roster broadcast.
+      for (const m of toReactivate) {
+        const snap = snapshotMap.get(m.userId)!;
+        await this.notifyMemberJoined({
+          community,
+          member: {
+            userId: m.userId,
+            role: CommunityMemberRole.MEMBER,
+            joinedAt: m.joinedAt,
+            snapshotUsername: snap.username,
+            snapshotDisplayName: snap.displayName,
+            snapshotAvatarKey: snap.avatarObjectKey,
+          },
           actorId: callerId,
-          targetUserId: userId,
+          via: "add_members",
+        });
+      }
+      for (const row of createdRows) {
+        await this.notifyMemberJoined({
+          community,
+          member: row,
+          actorId: callerId,
           via: "add_members",
         });
       }
@@ -2344,7 +2512,8 @@ export const communityService = {
           const base = await toDiscoverItem(
             community,
             muteMap.get(community.id) ?? null,
-            isJoined
+            isJoined,
+            false
           );
           return { ...base, likedAt: likedAtByCommunityId.get(community.id)! };
         })
@@ -2840,18 +3009,34 @@ export const communityService = {
       `Community join-request approved: community=${communityId} request=${requestId} approver=${callerId} target=${request.userId}`
     );
 
-    publishCommunityMemberAddedSafe({
-      communityId,
-      eventAt: new Date().toISOString(),
-      actorId: callerId,
-      targetUserId: request.userId,
-      via: "join_request_approved",
-    });
-
     const row = await communityRepository.findMemberByUserId(
       communityId,
       request.userId
     );
+
+    // Enriched member_added (moderator awareness) + roster broadcast.
+    await this.notifyMemberJoined({
+      community,
+      member: row!,
+      actorId: callerId,
+      via: "join_request_approved",
+      requestId: request.id,
+    });
+
+    // Dedicated approved event → notifies the requester (in-app/push) and drives
+    // the realtime join-request UI-state update.
+    publishCommunityJoinRequestApprovedSafe({
+      communityId: community.id,
+      communityName: community.name,
+      eventAt: new Date().toISOString(),
+      requestId: request.id,
+      userId: request.userId,
+      // findMembership selects only { role, status }; the caller's username is
+      // not in hand and we avoid an extra DB/gRPC call → null (per spec fallback).
+      decidedBy: { userId: callerId, username: null },
+      decidedAt: new Date().toISOString(),
+    });
+
     return {
       request: toJoinRequestData(updatedRequest),
       member: await toMemberData(row!),
@@ -2894,6 +3079,20 @@ export const communityService = {
       action: "JOIN_REQUEST_REJECTED",
       targetUserId: request.userId,
       metadata: { requestId },
+    });
+
+    // Dedicated rejected event → notifies the requester (in-app/push) and drives
+    // the realtime join-request UI-state update.
+    publishCommunityJoinRequestRejectedSafe({
+      communityId: community.id,
+      communityName: community.name,
+      eventAt: new Date().toISOString(),
+      requestId: request.id,
+      userId: request.userId,
+      // findMembership selects only { role, status }; the caller's username is
+      // not in hand and we avoid an extra DB/gRPC call → null (per spec fallback).
+      decidedBy: { userId: callerId, username: null },
+      decidedAt: new Date().toISOString(),
     });
 
     return toJoinRequestData(updated);
@@ -2989,6 +3188,15 @@ export const communityService = {
       const count = await communityRepository.countActiveMembers(communityId);
       await communityRepository.setMemberCount(communityId, count);
 
+      // Re-read the now-ACTIVE member rows in one batch (real joinedAt/role) so
+      // the per-member join notification carries the roster DTO without N+1.
+      const approvedUserIds = approved.map((id) => rowMap.get(id)!.userId);
+      const joinedRows = await communityRepository.findMembersByUserIds(
+        communityId,
+        approvedUserIds
+      );
+      const joinedRowMap = new Map(joinedRows.map((m) => [m.userId, m]));
+
       for (const requestId of approved) {
         const request = rowMap.get(requestId)!;
         void this.recordAudit({
@@ -2998,12 +3206,30 @@ export const communityService = {
           targetUserId: request.userId,
           metadata: { requestId, bulk: true },
         });
-        publishCommunityMemberAddedSafe({
-          communityId,
-          eventAt: decidedAt.toISOString(),
-          actorId: callerId,
-          targetUserId: request.userId,
-          via: "join_request_approved",
+
+        // Enriched member_added (moderator awareness) + roster broadcast.
+        const joinedRow = joinedRowMap.get(request.userId);
+        if (joinedRow) {
+          await this.notifyMemberJoined({
+            community,
+            member: joinedRow,
+            actorId: callerId,
+            via: "join_request_approved",
+            requestId,
+          });
+        }
+
+        // Dedicated approved event for the requester (in-app/push + realtime UI).
+        publishCommunityJoinRequestApprovedSafe({
+          communityId: community.id,
+          communityName: community.name,
+          eventAt: new Date().toISOString(),
+          requestId,
+          userId: request.userId,
+          // findMembership selects only { role, status }; caller username not in
+          // hand and we avoid an extra DB/gRPC call → null (per spec fallback).
+          decidedBy: { userId: callerId, username: null },
+          decidedAt: decidedAt.toISOString(),
         });
       }
 
@@ -3059,6 +3285,19 @@ export const communityService = {
           action: "JOIN_REQUEST_REJECTED",
           targetUserId: request.userId,
           metadata: { requestId, bulk: true },
+        });
+
+        // Dedicated rejected event for the requester (in-app/push + realtime UI).
+        publishCommunityJoinRequestRejectedSafe({
+          communityId: community.id,
+          communityName: community.name,
+          eventAt: new Date().toISOString(),
+          requestId,
+          userId: request.userId,
+          // findMembership selects only { role, status }; caller username not in
+          // hand and we avoid an extra DB/gRPC call → null (per spec fallback).
+          decidedBy: { userId: callerId, username: null },
+          decidedAt: decidedAt.toISOString(),
         });
       }
 
@@ -4509,6 +4748,17 @@ export const communityService = {
             `updateLastActivity failed for community=${community.id}: ${String(err)}`
           )
         );
+
+      // Self-join via invite link: enriched member_added (moderator awareness) +
+      // roster broadcast. actor === target, so the notifications consumer still
+      // welcomes the joiner (the welcome is skipped only for join_request_approved).
+      await this.notifyMemberJoined({
+        community,
+        member,
+        actorId: member.userId,
+        via: "invite_link_redeem",
+        requestId: undefined,
+      });
 
       return {
         link: toInviteLinkData(updatedLink!),

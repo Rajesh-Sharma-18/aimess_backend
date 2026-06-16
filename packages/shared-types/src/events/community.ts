@@ -11,6 +11,8 @@ export const CommunityEvents = {
   ADMIN_TRANSFERRED: "community.admin_transferred",
   DELETED: "community.deleted",
   JOIN_REQUESTED: "community.join_requested",
+  JOIN_REQUEST_APPROVED: "community.join_request_approved",
+  JOIN_REQUEST_REJECTED: "community.join_request_rejected",
   INVITE_SENT: "community.invite_sent",
   INVITE_ACCEPTED: "community.invite_accepted",
   INVITE_LINK_SHARED: "community.invite_link_shared",
@@ -39,6 +41,12 @@ export type CommunityMemberAddedPayload = CommunityEventBase & {
     | "join_request_auto_accept"
     | "invite_auto_approve"
     | "invite_link_redeem";
+  /** The join request this add fulfilled, when via join_request_approved. */
+  requestId?: string;
+  /** Community display name (for notification copy). */
+  communityName?: string;
+  /** Admins + moderators to inform that a member joined (consumer excludes the actor + the joiner). */
+  moderatorRecipientIds?: string[];
 };
 
 export type CommunityMemberKickedPayload = CommunityEventBase & {
@@ -107,6 +115,26 @@ export type CommunityJoinRequestedPayload = CommunityEventBase & {
   message: string | null;
   /** Admins + moderators that can action this request — notify each. */
   moderatorRecipientIds: string[];
+};
+
+export type CommunityJoinRequestApprovedPayload = CommunityEventBase & {
+  communityName: string;
+  requestId: string;
+  /** The requesting user (recipient of the notification). */
+  userId: string;
+  decidedBy: { userId: string; username: string | null };
+  /** ISO-8601. */
+  decidedAt: string;
+};
+
+export type CommunityJoinRequestRejectedPayload = CommunityEventBase & {
+  communityName: string;
+  requestId: string;
+  /** The requesting user (recipient of the notification). */
+  userId: string;
+  decidedBy: { userId: string; username: string | null };
+  /** ISO-8601. */
+  decidedAt: string;
 };
 
 export type CommunityInviteSentPayload = CommunityEventBase & {

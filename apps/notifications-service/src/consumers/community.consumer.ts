@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { publishUserSocketEvent } from "@aimess/redis";
 import amqp from "amqplib";
 import {
   CommunityEvents,
@@ -6,7 +7,9 @@ import {
   type CommunityDeletedPayload,
   type CommunityInviteAcceptedPayload,
   type CommunityInviteSentPayload,
+  type CommunityJoinRequestApprovedPayload,
   type CommunityJoinRequestedPayload,
+  type CommunityJoinRequestRejectedPayload,
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
   type CommunityMemberKickedPayload,
@@ -19,6 +22,7 @@ import {
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { redis } from "../config/redis.js";
 import {
   pushToUser,
   pushToUsers,
@@ -67,14 +71,84 @@ async function handleCommunityEvent(
       break;
     }
 
+    case CommunityEvents.JOIN_REQUEST_APPROVED: {
+      const p = data as CommunityJoinRequestApprovedPayload;
+      await pushToUser({
+        userId: p.userId,
+        title: "Join request approved",
+        body: `Your request to join ${p.communityName} was approved.`,
+        ...base(type, p.communityId, p.decidedBy.userId, {
+          requestId: p.requestId,
+          status: "APPROVED",
+        }),
+      });
+      await publishUserSocketEvent(
+        redis,
+        p.userId,
+        "community:join_request:update",
+        {
+          communityId: p.communityId,
+          requestId: p.requestId,
+          status: "APPROVED",
+          communityName: p.communityName,
+          decidedAt: p.decidedAt,
+        }
+      ).catch((e) => logger.error(e));
+      break;
+    }
+
+    case CommunityEvents.JOIN_REQUEST_REJECTED: {
+      const p = data as CommunityJoinRequestRejectedPayload;
+      await pushToUser({
+        userId: p.userId,
+        title: "Join request declined",
+        body: `Your request to join ${p.communityName} was declined.`,
+        ...base(type, p.communityId, p.decidedBy.userId, {
+          requestId: p.requestId,
+          status: "REJECTED",
+        }),
+      });
+      await publishUserSocketEvent(
+        redis,
+        p.userId,
+        "community:join_request:update",
+        {
+          communityId: p.communityId,
+          requestId: p.requestId,
+          status: "REJECTED",
+          communityName: p.communityName,
+          decidedAt: p.decidedAt,
+        }
+      ).catch((e) => logger.error(e));
+      break;
+    }
+
     case CommunityEvents.MEMBER_ADDED: {
       const p = data as CommunityMemberAddedPayload;
-      await pushToUser({
-        userId: p.targetUserId,
-        title: "Welcome to the community",
-        body: "You were added to a community.",
-        ...base(type, p.communityId, p.actorId, { via: p.via }),
-      });
+      // Welcome the joiner — UNLESS they will get the dedicated "approved" notification.
+      if (p.via !== "join_request_approved") {
+        await pushToUser({
+          userId: p.targetUserId,
+          title: "Welcome to the community",
+          body: "You were added to a community.",
+          ...base(type, p.communityId, p.actorId, { via: p.via }),
+        });
+      }
+      // Admin/moderator awareness: a member joined.
+      const mods = (p.moderatorRecipientIds ?? []).filter(
+        (id) => id !== p.actorId && id !== p.targetUserId
+      );
+      if (mods.length > 0) {
+        await pushToUsers(mods, (userId) => ({
+          userId,
+          title: "New member joined",
+          body: "A new member joined your community.",
+          ...base(type, p.communityId, p.actorId, {
+            via: p.via,
+            joinedUserId: p.targetUserId,
+          }),
+        }));
+      }
       break;
     }
 
