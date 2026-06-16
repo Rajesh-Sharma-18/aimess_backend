@@ -2243,9 +2243,221 @@ export function createNotificationImpl(
             },
           });
 
+          // Real-time bridge. The gateway /notify namespace relays Redis
+          // `notify:<userId>` messages to the user's connected devices. Without
+          // this publish a freshly-created inbox row is invisible until the
+          // client reconnects or manually refetches — and because push.service
+          // suppresses FCM for users with an active socket, an ONLINE recipient
+          // would otherwise receive nothing at all. Best-effort: a relay error
+          // must never fail the inbox write (the row is the source of truth).
+          try {
+            const unreadCount = await deps.notificationRepo.getUnreadCount(
+              req.userId
+            );
+            const dto = {
+              notificationId: created.id,
+              userId: req.userId,
+              type: req.type,
+              title: req.title ?? "",
+              body: req.body ?? "",
+              referenceId: entityId,
+              isRead: false,
+              createdAt: created.createdAt.getTime(),
+            };
+            await redis.publish(
+              `notify:${req.userId}`,
+              JSON.stringify({ event: "notification:new", data: dto })
+            );
+            await redis.publish(
+              `notify:${req.userId}`,
+              JSON.stringify({
+                event: "notification:count_update",
+                data: { count: unreadCount },
+              })
+            );
+          } catch (err) {
+            logger.warn(
+              `notify realtime publish failed for ${req.userId}: ${String(err)}`
+            );
+          }
+
           callback(null, { id: created.id });
         } catch (err) {
           logger.error(`gRPC createNotification error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    getNotifications: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          if (!req.userId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "userId is required",
+            });
+            return;
+          }
+
+          const limit = Math.min(Math.max(req.limit ?? 20, 1), 100);
+          const rows = await deps.notificationRepo.findByUserId(req.userId, {
+            limit,
+            cursor: req.cursor || null,
+          });
+          const unreadCount = await deps.notificationRepo.getUnreadCount(
+            req.userId
+          );
+
+          const notifications = rows.map((n) => {
+            const payload = (n.payload ?? {}) as {
+              title?: string;
+              body?: string;
+            };
+            const entity = (n.entity ?? {}) as { id?: string };
+            return {
+              notificationId: n.id,
+              userId: n.userId,
+              type: n.type,
+              title: payload.title ?? "",
+              body: payload.body ?? "",
+              referenceId: entity.id ?? "",
+              isRead: n.isRead,
+              createdAt: n.createdAt.getTime(),
+            };
+          });
+
+          // Cursor pagination: full page → assume there is a next page, hand
+          // back the oldest row's timestamp as the cursor (findByUserId pages
+          // on createdAt < cursor).
+          const hasMore = rows.length === limit;
+          const nextCursor = hasMore
+            ? rows[rows.length - 1].createdAt.toISOString()
+            : "";
+
+          callback(null, { notifications, nextCursor, hasMore, unreadCount });
+        } catch (err) {
+          logger.error(`gRPC getNotifications error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    markNotificationsRead: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            notificationIds?: string[];
+          };
+          if (!req.userId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "userId is required",
+            });
+            return;
+          }
+
+          const userId = req.userId;
+          const ids = req.notificationIds ?? [];
+          let updatedCount = 0;
+
+          if (ids.length === 0) {
+            // Empty list = mark ALL unread as read (count first so we can report
+            // how many rows flipped).
+            updatedCount = await deps.notificationRepo.getUnreadCount(userId);
+            await deps.notificationRepo.markAllRead(userId);
+          } else {
+            // markRead is owner-scoped (IDOR-safe): a non-owning id returns null
+            // and does not count toward updatedCount.
+            const results = await Promise.all(
+              ids.map((id) => deps.notificationRepo.markRead(id, userId))
+            );
+            updatedCount = results.filter((r) => r !== null).length;
+          }
+
+          const remainingUnread =
+            await deps.notificationRepo.getUnreadCount(userId);
+          callback(null, { updatedCount, remainingUnread });
+        } catch (err) {
+          logger.error(`gRPC markNotificationsRead error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    deleteNotification: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            notificationId?: string;
+          };
+          if (!req.userId || !req.notificationId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "userId and notificationId are required",
+            });
+            return;
+          }
+
+          const userId = req.userId;
+          // Owner-scoped soft-delete (IDOR-safe): a non-owning id mutates
+          // nothing and reports count 0. Idempotent — a re-delete also matches
+          // 0 rows (isDeleted:false filter).
+          const { count } = await deps.notificationRepo.deleteById(
+            req.notificationId,
+            userId
+          );
+          const deleted = count > 0;
+
+          const remainingUnread =
+            await deps.notificationRepo.getUnreadCount(userId);
+
+          // Real-time bridge (mirrors createNotification): relay BOTH the delete
+          // and the refreshed unread count to the user's connected devices via
+          // the gateway /notify namespace. Only publish when a row actually
+          // changed. Best-effort: a relay error must never fail the delete.
+          if (deleted) {
+            try {
+              await redis.publish(
+                `notify:${userId}`,
+                JSON.stringify({
+                  event: "notification:deleted",
+                  data: { notificationId: req.notificationId },
+                })
+              );
+              await redis.publish(
+                `notify:${userId}`,
+                JSON.stringify({
+                  event: "notification:count_update",
+                  data: { count: remainingUnread },
+                })
+              );
+            } catch (err) {
+              logger.warn(
+                `notify delete publish failed for ${userId}: ${String(err)}`
+              );
+            }
+          }
+
+          callback(null, { deleted, remainingUnread });
+        } catch (err) {
+          logger.error(`gRPC deleteNotification error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

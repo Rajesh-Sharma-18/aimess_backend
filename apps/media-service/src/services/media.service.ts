@@ -31,6 +31,7 @@ import {
   scanStatusStore,
   enqueueScan,
   runScanAndPersist,
+  publishScanResult,
   type MediaScanStatus,
 } from "../lib/scanner.js";
 
@@ -189,6 +190,7 @@ export const mediaService = {
     if (result.status === "REJECTED") {
       await scanStatusStore.set(params.objectKey, "INFECTED");
       await deleteObject(storageClient, def.bucket, params.objectKey);
+      publishScanResult(params.objectKey, "INFECTED", result.reason);
       return {
         objectKey: params.objectKey,
         scanStatus: "INFECTED",
@@ -201,6 +203,7 @@ export const mediaService = {
     if (result.status === "QUARANTINED") {
       await scanStatusStore.set(params.objectKey, "QUARANTINED");
       await deleteObject(storageClient, def.bucket, params.objectKey);
+      publishScanResult(params.objectKey, "QUARANTINED", result.reason);
       return {
         objectKey: params.objectKey,
         scanStatus: "QUARANTINED",

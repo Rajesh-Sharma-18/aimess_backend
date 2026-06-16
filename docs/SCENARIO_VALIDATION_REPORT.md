@@ -4,18 +4,18 @@
 > evidence over the working tree). Pair with the LLM `scenario-validator` agent for
 > discovery of actions missing from the registry. **Do not edit by hand.**
 >
-> Generated: 2026-06-16T08:53:33.120Z
+> Generated: 2026-06-16T09:05:19.599Z
 
 ## Summary
 
 | Result            | Count |
 | ----------------- | ----- |
-| ✅ PASS           | 10    |
-| ⚠️ WARN           | 1     |
-| ❌ FAILED         | 1     |
+| ✅ PASS           | 12    |
+| ⚠️ WARN           | 0     |
+| ❌ FAILED         | 0     |
 | **Total actions** | 12    |
 
-Open risk (non-PASS): **HIGH 0 · MEDIUM 1 · LOW 1**
+Open risk (non-PASS): **HIGH 0 · MEDIUM 0 · LOW 0**
 
 **CI gate (fail at ≥ HIGH):** ✅ PASS
 
@@ -169,35 +169,31 @@ Recommendation: —
 
 ## Media
 
-### Media: Virus Scan Failed — ⚠️ WARN · Risk: MEDIUM
+### Media: Virus Scan Failed — ✅ PASS
 
 ```
 Feature: Media: Virus Scan Failed   [media.scan_failed]
 ✅ Database update          PASS
-❌ Socket event             FAIL
-❌ Push notification (FCM)  FAIL
-❌ In-app notification      FAIL
-✅ Audit log                PASS
-Risk: MEDIUM
-Recommendation: Publish notify:<uploaderId> media:scan_result on QUARANTINED/INFECTED/ERROR. Download gate is already safe.  (missing: Socket event, Push notification (FCM), In-app notification)
+✅ Socket event             PASS
+➖ Push notification (FCM)  WAIVED
+➖ In-app notification      WAIVED
+➖ Audit log                WAIVED
+Risk: —
+Recommendation: —
 ```
-
-Impact: Async scan rejection is poll-only; a client that stopped polling never learns the upload was blocked.
 
 ## Notifications
 
-### Notification Deleted — ❌ FAILED · Risk: LOW
+### Notification Deleted — ✅ PASS
 
 ```
 Feature: Notification Deleted   [notification.deleted]
-❌ Database update          FAIL
-❌ Socket event             FAIL
-❌ Unread counter update    FAIL
-Risk: LOW
-Recommendation: Add DeleteNotification proto RPC + owner-scoped impl → publish notification:deleted + count_update; expose via /notify socket. Or remove the dead deleteById.  (missing: Database update, Socket event, Unread counter update)
+✅ Database update          PASS
+✅ Socket event             PASS
+✅ Unread counter update    PASS
+Risk: —
+Recommendation: —
 ```
-
-Impact: Delete path unbuilt — orphan deleteById, no proto RPC/handler/notification:deleted event.
 
 ## Friend System
 
@@ -219,17 +215,17 @@ Recommendation: —
 
 ## Findings table
 
-| Feature                         | Status | Risk   | Missing                                                    | Service            |
-| ------------------------------- | ------ | ------ | ---------------------------------------------------------- | ------------------ |
-| Community Member Added          | PASS   | —      | —                                                          | community-service  |
-| Community Member Muted          | PASS   | —      | —                                                          | community-service  |
-| Community Member Warned         | PASS   | —      | —                                                          | community-service  |
-| Community Member Removed (kick) | PASS   | —      | —                                                          | community-service  |
-| Community Created               | PASS   | —      | —                                                          | community-service  |
-| Group Member Added              | PASS   | —      | —                                                          | chat-service       |
-| Private Message Sent            | PASS   | —      | —                                                          | chat-service       |
-| Admin: User Banned              | PASS   | —      | —                                                          | backoffice-service |
-| Admin: User Suspended           | PASS   | —      | —                                                          | backoffice-service |
-| Media: Virus Scan Failed        | WARN   | MEDIUM | Socket event, Push notification (FCM), In-app notification | media-service      |
-| Notification Deleted            | FAILED | LOW    | Database update, Socket event, Unread counter update       | chat-service       |
-| Friend Request Sent             | PASS   | —      | —                                                          | user-service       |
+| Feature                         | Status | Risk | Missing | Service            |
+| ------------------------------- | ------ | ---- | ------- | ------------------ |
+| Community Member Added          | PASS   | —    | —       | community-service  |
+| Community Member Muted          | PASS   | —    | —       | community-service  |
+| Community Member Warned         | PASS   | —    | —       | community-service  |
+| Community Member Removed (kick) | PASS   | —    | —       | community-service  |
+| Community Created               | PASS   | —    | —       | community-service  |
+| Group Member Added              | PASS   | —    | —       | chat-service       |
+| Private Message Sent            | PASS   | —    | —       | chat-service       |
+| Admin: User Banned              | PASS   | —    | —       | backoffice-service |
+| Admin: User Suspended           | PASS   | —    | —       | backoffice-service |
+| Media: Virus Scan Failed        | PASS   | —    | —       | media-service      |
+| Notification Deleted            | PASS   | —    | —       | chat-service       |
+| Friend Request Sent             | PASS   | —    | —       | user-service       |

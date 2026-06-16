@@ -522,7 +522,7 @@
       "service": "media-service",
       "ruleSet": "media_lifecycle",
       "impact": "Async scan rejection is poll-only; a client that stopped polling never learns the upload was blocked.",
-      "fix": "Publish notify:<uploaderId> media:scan_result on QUARANTINED/INFECTED/ERROR. Download gate is already safe.",
+      "fix": "Wired: scanner publishes notify:<uploaderId> media:scan_result on QUARANTINED/INFECTED/terminal-ERROR (+ synchronous confirmUpload rejects). Download gate is already safe.",
       "effects": {
         "db": {
           "evidence": {
@@ -532,27 +532,18 @@
         },
         "socket": {
           "evidence": {
-            "pattern": "redis.publish|notify:",
-            "dir": "apps/media-service/src"
+            "pattern": "media:scan_result",
+            "files": ["apps/media-service/src/lib/scanner.ts"]
           }
         },
         "push": {
-          "evidence": {
-            "pattern": "media.scan|scan_result",
-            "dir": "apps/notifications-service/src/consumers"
-          }
+          "waived": "Socket-only by design: a scan failure is only actionable while the uploader is actively uploading (foreground/online); an offline FCM hours later is low value."
         },
         "inapp": {
-          "evidence": {
-            "pattern": "media.scan|scan_result",
-            "dir": "apps/notifications-service/src/consumers"
-          }
+          "waived": "No inbox row — transient upload-time UX delivered via the realtime media:scan_result socket; the download gate already blocks the file."
         },
         "audit": {
-          "evidence": {
-            "pattern": "MEDIA_SCAN",
-            "dir": "apps/media-service/src"
-          }
+          "waived": "Not a privileged/admin action; scan outcomes are tracked in media scan-state, not the audit log."
         }
       }
     },

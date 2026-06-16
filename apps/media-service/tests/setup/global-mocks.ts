@@ -24,6 +24,7 @@ jest.mock("../../src/config/redis.js", () => ({
     get: jest.fn(async () => null),
     set: jest.fn(async () => "OK"),
     del: jest.fn(async () => 1),
+    publish: jest.fn(async () => 0),
     connect: jest.fn(async () => undefined),
   },
   connectMediaRedis: jest.fn(async () => undefined),
@@ -47,6 +48,7 @@ jest.mock("../../src/lib/scanner.js", () => ({
   })),
   enqueueScan: jest.fn(async () => true),
   runScanAndPersist: jest.fn(async () => "CLEAN"),
+  publishScanResult: jest.fn(() => undefined),
   startScanWorker: jest.fn(() => undefined),
   getScanQueue: jest.fn(() => ({
     add: jest.fn(async () => ({})),

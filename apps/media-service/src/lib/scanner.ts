@@ -24,7 +24,11 @@ import type { Queue as BullQueue, Job } from "bull";
 import type { Redis } from "@aimess/redis";
 
 import { logger } from "@aimess/logger";
-import { getObjectBytes, deleteObject } from "@aimess/storage";
+import {
+  getObjectBytes,
+  deleteObject,
+  extractOwnerIdFromObjectKey,
+} from "@aimess/storage";
 
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
@@ -246,6 +250,43 @@ export const scanStatusStore = {
   },
 };
 
+// ─── Realtime scan-failure notify ─────────────────────────────────────────────
+
+/**
+ * Best-effort realtime notice to the uploader that their upload was blocked.
+ *
+ * The download gate already protects the file regardless of this publish, so a
+ * failure here must NEVER throw or fail the scan — it only saves an uploader who
+ * stopped polling from never learning the verdict. We derive the uploader id
+ * from the object key (`{prefix}/{ownerId}/...`) and publish to the user's
+ * `notify:<uploaderId>` Redis channel; the gateway `/notify` namespace relays it
+ * verbatim to the uploader's connected sockets. Socket-only by design — offline
+ * FCM is intentionally out of scope.
+ */
+export function publishScanResult(
+  objectKey: string,
+  status: MediaScanStatus,
+  reason?: string
+): void {
+  const uploaderId = extractOwnerIdFromObjectKey(objectKey);
+  if (!uploaderId) {
+    logger.warn("media-scan: cannot derive uploaderId — skipping notify", {
+      objectKey,
+    });
+    return;
+  }
+  const payload = JSON.stringify({
+    event: "media:scan_result",
+    data: { objectKey, status, reason: reason ?? "", at: Date.now() },
+  });
+  void redis.publish(`notify:${uploaderId}`, payload).catch((err: unknown) =>
+    logger.warn("media-scan: scan_result notify publish failed", {
+      objectKey,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  );
+}
+
 // ─── Async scan queue (Bull) ──────────────────────────────────────────────────
 
 export interface MediaScanJob {
@@ -333,6 +374,7 @@ export async function runScanAndPersist(
     });
     await scanStatusStore.set(objectKey, "QUARANTINED");
     await deleteObject(storageClient, bucket, objectKey);
+    publishScanResult(objectKey, "QUARANTINED", result.details);
     return "QUARANTINED";
   }
 
@@ -378,6 +420,7 @@ export function startScanWorker(): void {
         error: err?.message,
       });
       void scanStatusStore.set(job.data.objectKey, "ERROR");
+      publishScanResult(job.data.objectKey, "ERROR", err?.message);
     }
   });
 

@@ -205,6 +205,10 @@ export const SOCKET_MESSAGES = {
     vi: "Đã đánh dấu thông báo là đã đọc",
     en: "Notifications marked as read",
   },
+  SOCKET_NOTIFICATIONS_DELETED: {
+    vi: "Đã xóa thông báo",
+    en: "Notification deleted",
+  },
 
   // ── Error acks — one default sentence per AckErrorCode ───────────────────
   SOCKET_ERR_INVALID_PAYLOAD: {
