@@ -415,13 +415,13 @@ export function createMessagingImpl(
             updatedFull.reactions
           );
           const editReactAvatarMap = await resolveMediaUrlMap(
-            editedReactionGroups.flatMap((g) => g.users.map((u) => u.avatar))
+            editedReactionGroups.flatMap((g) => g.users.map((u) => u.avatarUrl))
           );
           const resolvedEditedReactions = editedReactionGroups.map((g) => ({
             ...g,
             users: g.users.map((u) => ({
               ...u,
-              avatar: urlFromMap(editReactAvatarMap, u.avatar),
+              avatarUrl: urlFromMap(editReactAvatarMap, u.avatarUrl),
             })),
           }));
           await redis.publish(
@@ -892,20 +892,28 @@ export function createMessagingImpl(
           }
 
           // Resolve-on-read: reactor avatars in the live reaction bar.
+          // `reactionGroups` comes from getMessageReactions whose users have an
+          // `avatar` key (raw object-key). Resolve it and surface as `avatarUrl`.
           const reactAvatarMap = await resolveMediaUrlMap(
             reactionGroups.flatMap((g) =>
-              (g.users as Array<Record<string, unknown>>).map((u) =>
-                typeof u.avatar === "string" ? u.avatar : ""
+              (g.users as Array<Record<string, unknown>>).map(
+                (u) =>
+                  (typeof u.avatarUrl === "string"
+                    ? u.avatarUrl
+                    : (u.avatar as string)) || ""
               )
             )
           );
           const resolvedReactionGroups = reactionGroups.map((g) => ({
             ...g,
-            users: (g.users as Array<Record<string, unknown>>).map((u) =>
-              typeof u.avatar === "string"
-                ? { ...u, avatar: urlFromMap(reactAvatarMap, u.avatar) }
-                : u
-            ),
+            users: (g.users as Array<Record<string, unknown>>).map((u) => {
+              const rawKey =
+                (typeof u.avatarUrl === "string"
+                  ? u.avatarUrl
+                  : (u.avatar as string)) || "";
+              const { avatar: _dropped, ...rest } = u;
+              return { ...rest, avatarUrl: urlFromMap(reactAvatarMap, rawKey) };
+            }),
           }));
           await redis.publish(
             `conv:${req.conversationId}`,
@@ -1666,87 +1674,115 @@ export function createCommunityImpl(
               ? saved.createdAt.getTime()
               : Date.now();
 
-          // Resolve-on-read for the live push: sender avatar + attachment keys
-          // → full presigned URLs (the stored snapshot keeps the raw keys).
-          const [bcastSenderAvatar, bcastFiles] = await Promise.all([
-            resolveMediaUrl(senderAvatar || ""),
-            resolveContentFiles((parsed.files ?? []) as MediaFileLike[]),
-          ]);
-          await redis.publish(
-            "community:" + req.communityId,
-            JSON.stringify({
-              event: "community:message:new",
-              data: {
-                // V2 canonical fields
-                id: saved.id,
-                messageId: saved.id,
+          // Suppress all live effects on a duplicate clientMessageId — the
+          // original send already ran broadcast + activity + bump-to-top. Same
+          // guard the private/group path uses (see line 225).
+          const alreadySent = isIdempotentReplay(saved);
+          if (!alreadySent) {
+            // Resolve-on-read for the live push: sender avatar + attachment keys
+            // → full presigned URLs (the stored snapshot keeps the raw keys).
+            const [bcastSenderAvatar, bcastFiles] = await Promise.all([
+              resolveMediaUrl(senderAvatar || ""),
+              resolveContentFiles((parsed.files ?? []) as MediaFileLike[]),
+            ]);
+            await redis.publish(
+              "community:" + req.communityId,
+              JSON.stringify({
+                event: "community:message:new",
+                data: {
+                  // V2 canonical fields
+                  id: saved.id,
+                  messageId: saved.id,
+                  communityId: req.communityId,
+                  roomId: saved.roomId,
+                  senderId: saved.sentBy,
+                  senderName,
+                  senderAvatar: bcastSenderAvatar,
+                  parentMessageId: saved.parentMessageId ?? "",
+                  quoteData: buildCanonicalQuote(saved.quoteData),
+                  content: {
+                    text: saved.message ?? "",
+                    files: bcastFiles,
+                    ...(parsed.location ? { location: parsed.location } : {}),
+                    ...(parsed.contact ? { contact: parsed.contact } : {}),
+                    ...(parsed.sticker ? { sticker: parsed.sticker } : {}),
+                  },
+                  reactions: [],
+                  message: saved.message ?? "",
+                  contentType: normalizeMessageType(saved.messageType),
+                  isEdited: false,
+                  editedAt: 0,
+                  clientMessageId: req.clientMessageId ?? "",
+                  serverTs: sentAt,
+                  sentAt,
+                },
+              })
+            );
+
+            // Denormalize activity to community-service so GET /communities/mine
+            // can order by latest message. Uses req.communityId (the
+            // community-service Community.id), NOT roomId (chat GeneralRoom.id).
+            if (req.communityId) {
+              const messageText = saved.message ?? "";
+              publishCommunityActivitySafe({
                 communityId: req.communityId,
-                roomId: saved.roomId,
-                senderId: saved.sentBy,
-                senderName,
-                senderAvatar: bcastSenderAvatar,
-                parentMessageId: saved.parentMessageId ?? "",
-                quoteData: buildCanonicalQuote(saved.quoteData),
-                content: {
+                lastMessageAt:
+                  saved.createdAt instanceof Date
+                    ? saved.createdAt.toISOString()
+                    : new Date(sentAt).toISOString(),
+                lastMessageId: saved.id,
+                senderUserId: req.senderId,
+                senderUsername: senderName,
+                messagePreview:
+                  messageText.length > 80
+                    ? messageText.slice(0, 80)
+                    : messageText,
+              });
+            }
+
+            // Bump-to-top: fan out community:updated to every member's list.
+            // Fire-and-forget — must never delay the send callback.
+            publishCommunityUpdatedSafe({
+              redis,
+              communityId: req.communityId,
+              // Genuine chat room id — same value as community:message:new emits.
+              roomId: saved.roomId,
+              fetchMembers: () =>
+                deps.communityMessageService.getActiveMemberIds(req.roomId),
+              senderId: req.senderId,
+              senderName,
+              lastMessageId: saved.id,
+              lastMessageAt: sentAt,
+              preview: {
+                contentType: normalizeMessageType(saved.messageType),
+                text: buildMessagePreview(saved.messageType, {
                   text: saved.message ?? "",
-                  files: bcastFiles,
+                  files: parsed.files ?? [],
                   ...(parsed.location ? { location: parsed.location } : {}),
                   ...(parsed.contact ? { contact: parsed.contact } : {}),
-                  ...(parsed.sticker ? { sticker: parsed.sticker } : {}),
-                },
-                reactions: [],
-                message: saved.message ?? "",
-                contentType: normalizeMessageType(saved.messageType),
-                clientMessageId: req.clientMessageId ?? "",
-                serverTs: sentAt,
-                sentAt,
+                }),
               },
-            })
-          );
+            });
 
-          // Denormalize activity to community-service so GET /communities/mine
-          // can order by latest message. Uses req.communityId (the
-          // community-service Community.id), NOT roomId (chat GeneralRoom.id).
-          if (req.communityId) {
-            const messageText = saved.message ?? "";
-            publishCommunityActivitySafe({
+            // FCM push — community messages need the same offline-wake push as
+            // private/group. fetchRecipients is lazy so the DB call only runs
+            // when RabbitMQ is configured.
+            publishMessageSentSafe({
+              conversationId: req.communityId,
+              conversationType: "COMMUNITY",
               communityId: req.communityId,
-              lastMessageAt:
-                saved.createdAt instanceof Date
-                  ? saved.createdAt.toISOString()
-                  : new Date(sentAt).toISOString(),
-              lastMessageId: saved.id,
-              senderUserId: req.senderId,
-              senderUsername: senderName,
-              messagePreview:
-                messageText.length > 80
-                  ? messageText.slice(0, 80)
-                  : messageText,
+              messageId: saved.id,
+              clientMessageId: req.clientMessageId ?? "",
+              senderId: req.senderId,
+              senderName,
+              senderAvatar,
+              preview: buildPushPreview(saved.messageType, saved.message ?? ""),
+              messageType: normalizeMessageType(saved.messageType),
+              sentAt,
+              fetchRecipients: () =>
+                deps.communityMessageService.getActiveMemberIds(req.roomId),
             });
           }
-
-          // Bump-to-top: fan out community:updated to every member's list.
-          // Fire-and-forget — must never delay the send callback.
-          publishCommunityUpdatedSafe({
-            redis,
-            communityId: req.communityId,
-            // Genuine chat room id — same value as community:message:new emits.
-            roomId: saved.roomId,
-            fetchMembers: () =>
-              deps.communityMessageService.getActiveMemberIds(req.roomId),
-            senderId: req.senderId,
-            lastMessageId: saved.id,
-            lastMessageAt: sentAt,
-            preview: {
-              contentType: normalizeMessageType(saved.messageType),
-              text: buildMessagePreview(saved.messageType, {
-                text: saved.message ?? "",
-                files: parsed.files ?? [],
-                ...(parsed.location ? { location: parsed.location } : {}),
-                ...(parsed.contact ? { contact: parsed.contact } : {}),
-              }),
-            },
-          });
 
           callback(null, {
             messageId: saved.id,
@@ -1993,18 +2029,8 @@ export function createCommunityImpl(
             emoji: req.emoji,
           });
 
-          // Resolve-on-read: reactor avatars for both the broadcast and the ack.
-          const rcAvatarMap = await resolveMediaUrlMap(
-            result.reactions.flatMap((g) => g.users.map((u) => u.avatar ?? ""))
-          );
-          const resolvedReactions = result.reactions.map((g) => ({
-            ...g,
-            users: g.users.map((u) => ({
-              ...u,
-              avatar: urlFromMap(rcAvatarMap, u.avatar ?? ""),
-            })),
-          }));
-
+          // reactToMessage already resolves avatar URLs before returning, so
+          // result.reactions carries full presigned avatarUrls — no extra pass needed.
           await redis.publish(
             `community:${result.roomId}`,
             JSON.stringify({
@@ -2012,7 +2038,7 @@ export function createCommunityImpl(
               data: {
                 messageId: result.messageId,
                 communityId: result.roomId,
-                reactions: resolvedReactions,
+                reactions: result.reactions,
               },
             })
           );
@@ -2020,13 +2046,13 @@ export function createCommunityImpl(
           callback(null, {
             messageId: result.messageId,
             communityId: result.roomId,
-            reactions: resolvedReactions.map((g) => ({
+            reactions: result.reactions.map((g) => ({
               emoji: g.emoji,
               count: g.count,
               users: g.users.map((u) => ({
                 userId: u.userId,
                 displayName: u.displayName,
-                avatar: u.avatar,
+                avatarUrl: u.avatarUrl,
               })),
             })),
           });
@@ -2063,6 +2089,10 @@ export function createCommunityImpl(
             userId: req.userId,
             content: { text: req.text },
           });
+          const editedAtMs =
+            result.editedAt instanceof Date
+              ? result.editedAt.getTime()
+              : Date.now();
           await redis.publish(
             `community:${result.roomId}`,
             JSON.stringify({
@@ -2074,10 +2104,8 @@ export function createCommunityImpl(
                 senderId: result.sentBy,
                 message: result.message ?? "",
                 contentType: normalizeMessageType(result.messageType),
-                editedAt:
-                  result.editedAt instanceof Date
-                    ? result.editedAt.getTime()
-                    : Date.now(),
+                isEdited: true,
+                editedAt: editedAtMs,
               },
             })
           );
@@ -2085,10 +2113,8 @@ export function createCommunityImpl(
             messageId: result.id,
             communityId: result.roomId,
             roomId: result.roomId,
-            editedAt:
-              result.editedAt instanceof Date
-                ? result.editedAt.getTime()
-                : Date.now(),
+            isEdited: true,
+            editedAt: editedAtMs,
             message: result.message ?? "",
             contentType: normalizeMessageType(result.messageType),
           });
@@ -2308,6 +2334,19 @@ export function createNotificationImpl(
           }
 
           const data = req.data ?? {};
+          let parsedNavigation: unknown;
+          let parsedActorSnapshot: unknown;
+          try {
+            if (data.navigation) parsedNavigation = JSON.parse(data.navigation);
+          } catch {
+            /* skip */
+          }
+          try {
+            if (data.actorSnapshot)
+              parsedActorSnapshot = JSON.parse(data.actorSnapshot);
+          } catch {
+            /* skip */
+          }
           // referenceId/entityId carried in data (if present) populate `entity`
           // so existing inbox queries that filter on entity.id keep working.
           const entityId = data.entityId ?? data.referenceId ?? "";
@@ -2336,7 +2375,7 @@ export function createNotificationImpl(
             const unreadCount = await deps.notificationRepo.getUnreadCount(
               req.userId
             );
-            const dto = {
+            const dto: Record<string, unknown> = {
               notificationId: created.id,
               userId: req.userId,
               type: req.type,
@@ -2346,6 +2385,10 @@ export function createNotificationImpl(
               isRead: false,
               createdAt: created.createdAt.getTime(),
             };
+            if (parsedNavigation !== undefined)
+              dto.navigation = parsedNavigation;
+            if (parsedActorSnapshot !== undefined)
+              dto.actorSnapshot = parsedActorSnapshot;
             await publishUserSocketEvent(
               redis,
               req.userId,
@@ -2401,21 +2444,42 @@ export function createNotificationImpl(
           );
 
           const notifications = rows.map((n) => {
-            const payload = (n.payload ?? {}) as {
+            const payloadObj = (n.payload ?? {}) as {
               title?: string;
               body?: string;
+              data?: Record<string, string>;
             };
+            const rawData = payloadObj.data ?? {};
             const entity = (n.entity ?? {}) as { id?: string };
-            return {
+
+            let navParsed: unknown;
+            let actorParsed: unknown;
+            try {
+              if (rawData.navigation)
+                navParsed = JSON.parse(rawData.navigation);
+            } catch {
+              /* skip */
+            }
+            try {
+              if (rawData.actorSnapshot)
+                actorParsed = JSON.parse(rawData.actorSnapshot);
+            } catch {
+              /* skip */
+            }
+
+            const row: Record<string, unknown> = {
               notificationId: n.id,
               userId: n.userId,
               type: n.type,
-              title: payload.title ?? "",
-              body: payload.body ?? "",
+              title: payloadObj.title ?? "",
+              body: payloadObj.body ?? "",
               referenceId: entity.id ?? "",
               isRead: n.isRead,
               createdAt: n.createdAt.getTime(),
             };
+            if (navParsed !== undefined) row.navigation = navParsed;
+            if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
+            return row;
           });
 
           // Cursor pagination: full page → assume there is a next page, hand
