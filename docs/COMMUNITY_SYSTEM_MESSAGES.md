@@ -1,7 +1,7 @@
 # Community System Messages
 
-**Status:** Implemented (Phase 1)  
-**Last Updated:** 2026-06-16  
+**Status:** Implemented (Phase 1, Telegram-style overhaul 2026-06-17)  
+**Last Updated:** 2026-06-17  
 **Scope:** Backend + Socket Contract
 
 ---
@@ -83,8 +83,8 @@ System messages are created via an **async event-driven pipeline**:
     "systemMessageType": "COMMUNITY_CREATED",
     "metadata": {
       "communityName": "Tech Enthusiasts",
-      "creatorId": "user_abc123",
-      "creatorName": "Alice"
+      "actorUserId": "user_abc123",
+      "actorName": "Alice"
     },
     "triggeredByUserId": "user_abc123",
     "eventAt": "2026-06-16T12:30:45.123Z"
@@ -148,8 +148,8 @@ community.service.ts:create()
              systemMessageType: "COMMUNITY_CREATED",
              metadata: {
                communityName: "Tech Enthusiasts",
-               creatorId: "user_xyz",
-               creatorName: "Alice"
+               actorUserId: "user_xyz",
+               actorName: "Alice"
              },
              triggeredByUserId: "user_xyz",
              eventAt: "2026-06-16T12:30:45Z"
@@ -193,8 +193,8 @@ community.service.ts:update()
              communityId: "comm_abc",
              systemMessageType: "COMMUNITY_UPDATED",
              metadata: {
-               updaterId: "user_admin",
-               updaterName: "Admin",
+               actorUserId: "user_admin",
+               actorName: "Admin",
                changedFields: ["avatar", "name"],
                newName: "New Community Name",
                newVisibility: "PRIVATE"
@@ -203,6 +203,12 @@ community.service.ts:update()
              eventAt: "2026-06-16T12:35:20Z"
            }
          }
+
+**Important:** When `changedFields` has more than one entry, the chat-service
+splits it into **one system message per field** (Telegram-style). The COMMUNITY_UPDATED
+event above with `["avatar", "name"]` would produce two separate socket events:
+one for `avatar` and one for `name`. Frontend receives them as independent
+`community:message:new` events in sequence.
 ```
 
 **System Message Posted:** `COMMUNITY_UPDATED` (if any fields changed)
@@ -238,7 +244,7 @@ community.service.ts:updateMemberRole()
              communityId: "comm_abc",
              systemMessageType: "MEMBER_ROLE_CHANGED",
              metadata: {
-               actorId: "user_admin",
+               actorUserId: "user_admin",
                actorName: "Admin",
                targetUserId: "user_john",
                targetName: "John",
@@ -271,8 +277,8 @@ community.service.ts:updateMemberRole()
   "systemMessageType": "COMMUNITY_CREATED",
   "systemMetadata": {
     "communityName": "Tech Enthusiasts",
-    "creatorId": "user_abc123",
-    "creatorName": "Alice"
+    "actorUserId": "user_abc123",
+    "actorName": "Alice"
   },
   "content": {
     "text": "Alice created the community"
@@ -287,6 +293,9 @@ community.service.ts:updateMemberRole()
 Alice created the community
 ```
 
+> **"You" rule:** if `systemMetadata.actorUserId === currentUserId`, render `"You"` instead of `actorName`.
+> Example: `"You created the community"`
+
 ---
 
 ### 2. COMMUNITY_UPDATED
@@ -300,32 +309,37 @@ Alice created the community
   "contentType": "SYSTEM",
   "systemMessageType": "COMMUNITY_UPDATED",
   "systemMetadata": {
-    "updaterId": "user_xyz789",
-    "updaterName": "Bob",
-    "changedFields": ["avatar", "name"],
+    "actorUserId": "user_xyz789",
+    "actorName": "Bob",
+    "changedFields": ["avatar"],
     "newName": "DevOps Hub",
     "newVisibility": "PRIVATE"
   },
   "content": {
-    "text": "Bob updated the community (avatar, name)"
+    "text": "Bob changed the community photo"
   }
 }
 ```
 
-**Frontend Logic:**
+> **One message per field.** The backend emits a separate `community:message:new`
+> for each changed field (Telegram-style). `changedFields` always has exactly one
+> entry by the time it reaches the frontend.
 
-| `changedFields`      | Render As                                       |
-| -------------------- | ----------------------------------------------- |
-| `["avatar"]`         | `"Bob updated the community avatar"`            |
-| `["name"]`           | `"Bob updated the community name"`              |
-| `["description"]`    | `"Bob updated the community description"`       |
-| `["banner"]`         | `"Bob updated the community banner"`            |
-| `["visibility"]`     | `"Bob changed community visibility to PRIVATE"` |
-| `["settings"]`       | `"Bob updated the community settings"`          |
-| `["category"]`       | `"Bob updated the community category"`          |
-| `["handle"]`         | `"Bob updated the community handle"`            |
-| `["avatar", "name"]` | `"Bob updated the community profile"`           |
-| Multiple fields      | `"Bob updated the community profile"`           |
+**Frontend Logic** — `changedFields[0]` maps to a human label:
+
+| `changedFields[0]` | Render As                                        |
+| ------------------ | ------------------------------------------------ |
+| `"avatar"`         | `"Bob changed the community photo"`              |
+| `"name"`           | `"Bob changed the community title"`              |
+| `"description"`    | `"Bob changed the community description"`        |
+| `"banner"`         | `"Bob changed the community banner"`             |
+| `"visibility"`     | `"Bob changed the community visibility"`         |
+| `"category"`       | `"Bob changed the community category"`           |
+| `"handle"`         | `"Bob changed the community link"`               |
+| `"rules"`          | `"Bob changed the community rules"`              |
+| unknown field      | `"Bob changed the community <field>"` (fallback) |
+
+> **"You" rule:** if `systemMetadata.actorUserId === currentUserId`, substitute `"You"` for the actor name.
 
 ---
 
@@ -340,7 +354,7 @@ Alice created the community
   "contentType": "SYSTEM",
   "systemMessageType": "MEMBER_ROLE_CHANGED",
   "systemMetadata": {
-    "actorId": "user_admin999",
+    "actorUserId": "user_admin999",
     "actorName": "Admin",
     "targetUserId": "user_john456",
     "targetName": "John",
@@ -353,15 +367,17 @@ Alice created the community
 }
 ```
 
-**Frontend Logic:**
+**Frontend Logic** — use role rank (`ADMIN=2, MODERATOR=1, MEMBER=0`) to determine the verb:
 
-| Transition         | Render As                                        |
-| ------------------ | ------------------------------------------------ |
-| MEMBER → MODERATOR | `"{actor} promoted {target} to Moderator"`       |
-| MODERATOR → MEMBER | `"{actor} changed {target} to Member"`           |
-| MODERATOR → ADMIN  | `"{actor} promoted {target} to Admin"`           |
-| ADMIN → MEMBER     | `"{actor} changed {target} to Member"`           |
-| Any other          | `"{actor} changed {target}'s role to {newRole}"` |
+| `newRole` rank vs `oldRole` rank | Verb       | Example                              |
+| -------------------------------- | ---------- | ------------------------------------ |
+| higher                           | `promoted` | `"Admin promoted John to Moderator"` |
+| lower                            | `demoted`  | `"Admin demoted John to Member"`     |
+
+Format: `"{actor} {verb} {target} to {Title-cased role}"`
+
+> **"You" rule (target):** if `targetUserId === currentUserId`, render `"you"` (lowercase) as the target noun.  
+> **"You" rule (actor):** if `actorUserId === currentUserId`, render `"You"` (uppercase) as the subject.
 
 ---
 
@@ -432,7 +448,7 @@ interface CommunityMessage {
     contentType: "SYSTEM",
     systemMessageType: "MEMBER_ROLE_CHANGED",
     systemMetadata: {
-      actorId: "user_admin999",
+      actorUserId: "user_admin999",
       actorName: "Admin",
       targetUserId: "user_john456",
       targetName: "John",
@@ -558,35 +574,53 @@ function renderCommunityMessage(msg: CommunityMessage) {
   return <NormalMessageBubble msg={msg} />;
 }
 
-function getSystemMessageText(type: string, meta: any): string {
+const FIELD_LABEL: Record<string, string> = {
+  avatar: "community photo",
+  name: "community title",
+  description: "community description",
+  visibility: "community visibility",
+  handle: "community link",
+  category: "community category",
+  rules: "community rules",
+  banner: "community banner",
+};
+
+function roleRank(role: string): number {
+  if (role === "ADMIN") return 2;
+  if (role === "MODERATOR") return 1;
+  return 0;
+}
+
+function titleCase(role: string): string {
+  return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
+}
+
+function getSystemMessageText(
+  type: string,
+  meta: any,
+  currentUserId: string
+): string {
+  const actor = meta.actorUserId === currentUserId ? "You" : (meta.actorName || "Someone");
+
   switch (type) {
-    case 'COMMUNITY_CREATED':
-      return `${meta.creatorName} created the community`;
-    case 'COMMUNITY_UPDATED': {
-      const fields = meta.changedFields as string[];
-      if (fields.length === 1) {
-        const label = {
-          avatar: 'avatar',
-          name: 'name',
-          description: 'description',
-          banner: 'banner',
-          visibility: 'visibility',
-          settings: 'settings',
-          category: 'category',
-          handle: 'handle'
-        }[fields[0]] || fields[0];
-        return `${meta.updaterName} updated the community ${label}`;
-      }
-      return `${meta.updaterName} updated the community profile`;
+    case "COMMUNITY_CREATED":
+      return `${actor} created the community`;
+
+    case "COMMUNITY_UPDATED": {
+      // Backend always sends one field per message, but guard for safety.
+      const field = Array.isArray(meta.changedFields) ? meta.changedFields[0] : "";
+      const label = FIELD_LABEL[field] ?? `community ${field}`;
+      return `${actor} changed the ${label}`;
     }
-    case 'MEMBER_ROLE_CHANGED': {
-      const action =
-        meta.newRole === 'MODERATOR' ? 'promoted' :
-        meta.oldRole === 'MODERATOR' ? 'demoted' : 'changed';
-      return `${meta.actorName} ${action} ${meta.targetName} to ${meta.newRole}`;
+
+    case "MEMBER_ROLE_CHANGED": {
+      const target = meta.targetUserId === currentUserId ? "you" : (meta.targetName || "a member");
+      const verb = roleRank(meta.newRole) > roleRank(meta.oldRole) ? "promoted" : "demoted";
+      return `${actor} ${verb} ${target} to ${titleCase(meta.newRole)}`;
     }
+
     default:
-      return 'Community was updated';
+      return meta.actorName ? `${actor} updated the community` : "Community was updated";
   }
 }
 ```
@@ -727,6 +761,7 @@ socket.on("community:message:new", (msg: CommunityMessage) => {
   - `update()` (line ~1074) → publishes on community property change
   - `updateMemberRole()` (line ~1396) → publishes on role transition
 - **Publisher Function:** `publishCommunitySystemMessageForChatSafe()` from `src/messaging/publish-community-chat.ts`
+- **Normalized actor key:** all three triggers now use `actorUserId` + `actorName` (was `creatorId`/`updaterId`/`actorId`)
 
 **chat-service (Event Consumer & Message Creator)**
 

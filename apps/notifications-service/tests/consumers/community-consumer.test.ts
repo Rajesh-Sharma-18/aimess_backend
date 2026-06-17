@@ -219,3 +219,228 @@ describe("MEMBER_ADDED branch", () => {
     expect(pushMany).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Deep-link navigation tests (T8 — navigation + actorSnapshot in FCM data)
+// ---------------------------------------------------------------------------
+
+describe("community consumer — navigation deep-link", () => {
+  const BASE_COMMUNITY = {
+    communityId: CID,
+    communityName: "Cool Community",
+    communityHandle: "@coolcommunity",
+    communityAvatarUrl: "https://cdn.example.com/cool.png",
+  };
+
+  const JOIN_REQUESTED_PAYLOAD = {
+    ...BASE_COMMUNITY,
+    userId: REQUESTER,
+    requestId: RID,
+    message: null,
+    moderatorRecipientIds: [MOD, "moderator-2"],
+    requesterDisplayName: "Alice Requester",
+    requesterAvatarUrl: "https://cdn.example.com/alice.png",
+    eventAt: "2026-06-17T10:00:00.000Z",
+  };
+
+  const APPROVED_PAYLOAD = {
+    ...BASE_COMMUNITY,
+    requestId: RID,
+    userId: REQUESTER,
+    decidedBy: {
+      userId: MOD,
+      username: "moduser",
+      displayName: "Mod McApprover",
+    },
+    decidedAt: "2026-06-17T10:00:00.000Z",
+    eventAt: "2026-06-17T10:00:00.000Z",
+  };
+
+  const REJECTED_PAYLOAD = {
+    ...BASE_COMMUNITY,
+    requestId: RID,
+    userId: REQUESTER,
+    decidedBy: {
+      userId: MOD,
+      username: "moduser",
+      displayName: "Mod McRejector",
+    },
+    decidedAt: "2026-06-17T10:00:00.000Z",
+    eventAt: "2026-06-17T10:00:00.000Z",
+  };
+
+  // --- Test 1: JOIN_REQUESTED ---
+
+  it("JOIN_REQUESTED — navigation JSON string in FCM data resolves to COMMUNITY_REQUESTS screen", async () => {
+    await deliver(CommunityEvents.JOIN_REQUESTED, JOIN_REQUESTED_PAYLOAD);
+
+    expect(pushMany).toHaveBeenCalledTimes(1);
+    // pushToUsers(recipientIds, builderFn) — call the builder for one recipient
+    const [, builderFn] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => { data: Record<string, string> },
+    ];
+    const { data } = builderFn(MOD);
+
+    // navigation must be a JSON string
+    expect(typeof data.navigation).toBe("string");
+    const nav = JSON.parse(data.navigation);
+    expect(nav).toMatchObject({
+      screen: "COMMUNITY_REQUESTS",
+      communityId: CID,
+      communityName: "Cool Community",
+      communityHandle: "@coolcommunity",
+      requestId: RID,
+    });
+  });
+
+  it("JOIN_REQUESTED — actorSnapshot JSON string in FCM data contains requester info", async () => {
+    await deliver(CommunityEvents.JOIN_REQUESTED, JOIN_REQUESTED_PAYLOAD);
+
+    const [, builderFn] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => { data: Record<string, string> },
+    ];
+    const { data } = builderFn(MOD);
+
+    expect(typeof data.actorSnapshot).toBe("string");
+    const actor = JSON.parse(data.actorSnapshot);
+    expect(actor).toMatchObject({
+      userId: REQUESTER,
+      displayName: "Alice Requester",
+      avatarUrl: "https://cdn.example.com/alice.png",
+    });
+  });
+
+  it("JOIN_REQUESTED — FCM data has plain string communityName and requesterDisplayName", async () => {
+    await deliver(CommunityEvents.JOIN_REQUESTED, JOIN_REQUESTED_PAYLOAD);
+
+    const [, builderFn] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => { data: Record<string, string> },
+    ];
+    const { data } = builderFn(MOD);
+
+    expect(typeof data.communityName).toBe("string");
+    expect(data.communityName).toBe("Cool Community");
+    expect(typeof data.requesterDisplayName).toBe("string");
+    expect(data.requesterDisplayName).toBe("Alice Requester");
+  });
+
+  it("JOIN_REQUESTED — push body contains requesterDisplayName and communityName", async () => {
+    await deliver(CommunityEvents.JOIN_REQUESTED, JOIN_REQUESTED_PAYLOAD);
+
+    const [, builderFn] = pushMany.mock.calls[0] as [
+      string[],
+      (id: string) => { body: string },
+    ];
+    const { body } = builderFn(MOD);
+
+    expect(body).toContain("Alice Requester");
+    expect(body).toContain("Cool Community");
+  });
+
+  // --- Test 2: JOIN_REQUEST_APPROVED ---
+
+  it("JOIN_REQUEST_APPROVED — navigation JSON string in push data resolves to COMMUNITY_DETAILS screen", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, APPROVED_PAYLOAD);
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const arg = push.mock.calls[0][0] as {
+      data: Record<string, string>;
+      body: string;
+    };
+
+    expect(typeof arg.data.navigation).toBe("string");
+    const nav = JSON.parse(arg.data.navigation);
+    expect(nav).toMatchObject({
+      screen: "COMMUNITY_DETAILS",
+      communityId: CID,
+      communityName: "Cool Community",
+      communityHandle: "@coolcommunity",
+    });
+  });
+
+  it("JOIN_REQUEST_APPROVED — actorSnapshot JSON string in push data contains decidedBy info", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, APPROVED_PAYLOAD);
+
+    const arg = push.mock.calls[0][0] as { data: Record<string, string> };
+    expect(typeof arg.data.actorSnapshot).toBe("string");
+    const actor = JSON.parse(arg.data.actorSnapshot);
+    expect(actor).toMatchObject({
+      userId: MOD,
+      displayName: "Mod McApprover",
+    });
+  });
+
+  it("JOIN_REQUEST_APPROVED — push body contains decidedBy.displayName", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, APPROVED_PAYLOAD);
+
+    const arg = push.mock.calls[0][0] as { body: string };
+    expect(arg.body).toContain("Mod McApprover");
+  });
+
+  it("JOIN_REQUEST_APPROVED — socket event payload navigation is a parsed OBJECT (not a string)", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_APPROVED, APPROVED_PAYLOAD);
+
+    expect(pubSocket).toHaveBeenCalledTimes(1);
+    const [, userId, event, data] = pubSocket.mock.calls[0];
+    expect(userId).toBe(REQUESTER);
+    expect(event).toBe("community:join_request:update");
+
+    // navigation on the socket payload must be an object — not a JSON string
+    expect(typeof data.navigation).toBe("object");
+    expect(data.navigation).not.toBeNull();
+    expect(data.navigation).toMatchObject({
+      screen: "COMMUNITY_DETAILS",
+      communityId: CID,
+      communityName: "Cool Community",
+    });
+  });
+
+  // --- Test 3: JOIN_REQUEST_REJECTED ---
+
+  it("JOIN_REQUEST_REJECTED — navigation JSON string in push data resolves to COMMUNITY_DETAILS screen", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_REJECTED, REJECTED_PAYLOAD);
+
+    expect(push).toHaveBeenCalledTimes(1);
+    const arg = push.mock.calls[0][0] as { data: Record<string, string> };
+    expect(typeof arg.data.navigation).toBe("string");
+    const nav = JSON.parse(arg.data.navigation);
+    expect(nav).toMatchObject({
+      screen: "COMMUNITY_DETAILS",
+      communityId: CID,
+      communityName: "Cool Community",
+    });
+  });
+
+  it("JOIN_REQUEST_REJECTED — actorSnapshot JSON string in push data contains decidedBy info", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_REJECTED, REJECTED_PAYLOAD);
+
+    const arg = push.mock.calls[0][0] as { data: Record<string, string> };
+    expect(typeof arg.data.actorSnapshot).toBe("string");
+    const actor = JSON.parse(arg.data.actorSnapshot);
+    expect(actor).toMatchObject({
+      userId: MOD,
+      displayName: "Mod McRejector",
+    });
+  });
+
+  it("JOIN_REQUEST_REJECTED — socket event payload navigation is a parsed OBJECT with COMMUNITY_DETAILS", async () => {
+    await deliver(CommunityEvents.JOIN_REQUEST_REJECTED, REJECTED_PAYLOAD);
+
+    expect(pubSocket).toHaveBeenCalledTimes(1);
+    const [, userId, event, data] = pubSocket.mock.calls[0];
+    expect(userId).toBe(REQUESTER);
+    expect(event).toBe("community:join_request:update");
+    expect(data.status).toBe("REJECTED");
+
+    expect(typeof data.navigation).toBe("object");
+    expect(data.navigation).not.toBeNull();
+    expect(data.navigation).toMatchObject({
+      screen: "COMMUNITY_DETAILS",
+      communityId: CID,
+      communityName: "Cool Community",
+    });
+  });
+});

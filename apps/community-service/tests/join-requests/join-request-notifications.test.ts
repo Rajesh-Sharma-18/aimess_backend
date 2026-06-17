@@ -19,6 +19,38 @@
  *     (actor === target so the consumer still welcomes the joiner).
  */
 
+// Mock user-client so fetchUserSnapshots returns a Map with username: null
+// for any userId — the service uses username ?? null → null as expected.
+jest.mock("../../src/lib/user-client.js", () => ({
+  fetchUserSnapshots: jest.fn(
+    async (ids: string[]) =>
+      new Map(
+        ids.map((id) => [
+          id,
+          {
+            userId: id,
+            username: id,
+            displayName: "Mock User",
+            avatarObjectKey: null,
+          },
+        ])
+      )
+  ),
+  fetchAcceptedFriendIds: jest.fn(async () => []),
+}));
+
+// Mock @aimess/storage so buildCommunityImageMedia / buildAvatarMedia
+// return a minimal MediaObject (downloadUrl: null) without hitting MinIO.
+jest.mock("@aimess/storage", () => ({
+  MEDIA_PREFIXES: { community: [], userAvatars: [] },
+  toMediaObject: jest.fn(async () => ({
+    url: null,
+    downloadUrl: null,
+    objectKey: null,
+    expiresAt: null,
+  })),
+}));
+
 // Re-mock the publishers as a COMPLETE bag (the global setup mock predates the
 // two new fns) so we can assert on the approved/rejected publishers too.
 jest.mock("../../src/messaging/publish-community.js", () => ({
@@ -102,6 +134,8 @@ const REQUESTER = "99999999-9999-4999-8999-999999999999"; // the join requester
 const community = {
   id: CID,
   name: "Cool Community",
+  handle: "cool-community",
+  avatarUrl: null,
   type: "PUBLIC",
   adminId: MOD,
   memberCount: 5,
@@ -163,7 +197,7 @@ describe("approveJoinRequest — events + member fan-out", () => {
       communityName: "Cool Community",
       requestId: RID,
       userId: REQUESTER, // recipient = the requester, NOT the moderator
-      decidedBy: { userId: MOD, username: null },
+      decidedBy: { userId: MOD },
     });
     expect(typeof payload.decidedAt).toBe("string");
     expect(typeof payload.eventAt).toBe("string");
@@ -188,10 +222,14 @@ describe("approveJoinRequest — events + member fan-out", () => {
   it("broadcasts community:member:joined into the community room", async () => {
     await communityService.approveJoinRequest(CID, MOD, RID);
 
-    expect(pubRoomEvent).toHaveBeenCalledTimes(1);
-    const [, roomCommunityId, event, dto] = pubRoomEvent.mock.calls[0];
+    // notifyMemberJoined now emits two room events: community:member:joined + community:stats:updated
+    expect(pubRoomEvent).toHaveBeenCalledTimes(2);
+    const joinedCall = pubRoomEvent.mock.calls.find(
+      ([, , evt]) => evt === "community:member:joined"
+    );
+    expect(joinedCall).toBeDefined();
+    const [, roomCommunityId, , dto] = joinedCall!;
     expect(roomCommunityId).toBe(CID);
-    expect(event).toBe("community:member:joined");
     expect(dto).toMatchObject({
       userId: REQUESTER,
       role: "MEMBER",
@@ -229,7 +267,7 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
       communityName: "Cool Community",
       requestId: RID,
       userId: REQUESTER,
-      decidedBy: { userId: MOD, username: null },
+      decidedBy: { userId: MOD },
     });
     expect(typeof payload.decidedAt).toBe("string");
   });

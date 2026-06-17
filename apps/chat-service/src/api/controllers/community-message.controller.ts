@@ -278,6 +278,7 @@ export class CommunityMessageController {
       senderId: result.sentBy,
       message: result.message ?? "",
       contentType: normalizeMessageType(result.messageType),
+      isEdited: true,
       editedAt:
         result.editedAt instanceof Date
           ? result.editedAt.getTime()

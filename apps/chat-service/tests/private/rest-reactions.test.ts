@@ -90,7 +90,7 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
       {
         emoji: EMOJI,
         count: 1,
-        users: [{ userId: TEST_USER_ID, displayName: "", avatar: "" }],
+        users: [{ userId: TEST_USER_ID, displayName: "", avatarUrl: "" }],
       },
     ]);
     // Toggle fired exactly once (add when absent).
@@ -122,7 +122,7 @@ describe("POST /private/rooms/:roomId/messages/:messageId/reactions (add)", () =
       {
         emoji: EMOJI,
         count: 1,
-        users: [{ userId: TEST_USER_ID, displayName: "", avatar: "" }],
+        users: [{ userId: TEST_USER_ID, displayName: "", avatarUrl: "" }],
       },
     ]);
     // The underlying toggle must NOT run on an idempotent re-add.

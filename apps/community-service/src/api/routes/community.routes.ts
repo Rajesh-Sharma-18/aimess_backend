@@ -17,6 +17,7 @@ import {
   bulkRejectCommunityJoinRequests,
   bulkSendCommunityInviteLink,
   cancelCommunityJoinRequest,
+  cancelMyCommunityJoinRequest,
   checkHandleAvailable,
   checkNameAvailable,
   clearMuteSetting,
@@ -437,6 +438,13 @@ communityRoutes.post(
   validateParams(communityIdParamsSchema),
   validateBody(bulkRejectJoinRequestsSchema),
   bulkRejectCommunityJoinRequests
+);
+
+// Must be registered before /:requestId so Express doesn't eat "mine" as a param.
+communityRoutes.delete(
+  "/:id/join-requests/mine",
+  validateParams(communityIdParamsSchema),
+  cancelMyCommunityJoinRequest
 );
 
 communityRoutes.delete(

@@ -23,7 +23,6 @@ import type {
   RoomMember,
 } from "../generated/prisma/index.js";
 import {
-  buildReactionGroups,
   normalizeMessageType,
   toggleStoredReaction,
   toWireMessage,
@@ -448,10 +447,33 @@ export class CommunityMessageService {
     return resolveMediaUrlMap(keys);
   }
 
+  /** Extract every unique reactor userId from a batch of message rows. */
+  private collectReactionUserIds(rows: GeneralRoomMessage[]): string[] {
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const reactions = row.reactions as Record<string, unknown> | null;
+      if (!reactions || typeof reactions !== "object") continue;
+      for (const list of Object.values(reactions)) {
+        if (!Array.isArray(list)) continue;
+        for (const entry of list) {
+          const uid =
+            typeof entry === "string"
+              ? entry
+              : (entry as Record<string, unknown>)?.userId;
+          if (typeof uid === "string" && uid) ids.add(uid);
+        }
+      }
+    }
+    return [...ids];
+  }
+
   private toWire(
     m: GeneralRoomMessage,
     members?: MemberReadStatus[],
-    urlMap?: Map<string, string>
+    urlMap?: Map<string, string>,
+    resolveReactionUser?: (
+      userId: string
+    ) => { displayName: string; avatarUrl: string } | undefined
   ): CommunityMessageWire {
     const wire = toWireMessage(m) as Record<string, unknown>;
 
@@ -469,11 +491,35 @@ export class CommunityMessageService {
       }
     }
 
-    // Canonical client-facing reaction shape (FE reads `reactionGroups[]`); the
-    // legacy `reactions` map left on the row is deprecated.
-    wire.reactionGroups = buildReactionGroups(wire.reactions, (key) =>
-      urlMap ? urlFromMap(urlMap, key) : key
-    );
+    // Rename avatar → avatarUrl and resolve S3 object-keys to full presigned
+    // download URLs inside the stored reactions map. No new field is added.
+    if (wire.reactions && typeof wire.reactions === "object") {
+      const raw = wire.reactions as Record<string, unknown>;
+      const out: Record<string, unknown[]> = {};
+      for (const [emoji, list] of Object.entries(raw)) {
+        if (!Array.isArray(list)) continue;
+        out[emoji] = list.map((r) => {
+          const reactor = (r ?? {}) as Record<string, unknown>;
+          const { avatar, ...rest } = reactor;
+          const snap = resolveReactionUser?.(reactor.userId as string);
+          return {
+            ...rest,
+            avatarUrl:
+              snap?.avatarUrl ||
+              (urlMap ? urlFromMap(urlMap, (avatar as string) || "") : "") ||
+              "",
+          };
+        });
+      }
+      wire.reactions = out;
+    }
+
+    // Normalize editedAt → epoch ms and derive isEdited so all list/timeline
+    // surfaces are consistent with the edit socket event and sync API.
+    const editedMs =
+      m.editedAt instanceof Date ? m.editedAt.getTime() : (m.editedAt ?? null);
+    wire.isEdited = editedMs !== null && editedMs > 0;
+    wire.editedAt = editedMs;
 
     const msgTs = m.createdAt;
 
@@ -549,13 +595,52 @@ export class CommunityMessageService {
 
     const hasMore = rows.length > params.limit;
     const pageRows = rows.slice(0, params.limit);
-    const last = pageRows[pageRows.length - 1];
-    const nextCursor =
-      hasMore && last ? String(last.createdAt.getTime()) : null;
 
-    const urlMap = await this.resolveRowsMedia(pageRows);
+    // For "before" direction the DB fetches newest-first so LIMIT correctly
+    // selects the closest-to-cursor window. The boundary for the next page is
+    // the oldest item in that window (pageRows tail). Reverse before returning
+    // so every response surface is oldest→newest (ascending chronological order).
+    const boundary = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && boundary ? String(boundary.createdAt.getTime()) : null;
+
+    const orderedItems =
+      params.direction === "before" ? [...pageRows].reverse() : pageRows;
+
+    // Fetch reactor snapshots first so we can collect their avatar object-keys
+    // and resolve them to full presigned download URLs in the same batch as the
+    // rest of the message media.
+    const snapsMap = await this.userSnapshotService.getUserSnapshotsMap(
+      this.collectReactionUserIds(orderedItems),
+      this.cacheRepo
+    );
+    const snapAvatarKeys = [...snapsMap.values()]
+      .map((s) => (s.avatar as string) || "")
+      .filter(Boolean);
+
+    const [msgUrlMap, snapAvatarUrlMap] = await Promise.all([
+      this.resolveRowsMedia(orderedItems),
+      resolveMediaUrlMap(snapAvatarKeys),
+    ]);
+    // Merge so toWire can resolve any avatar object-key (snap or legacy stored)
+    // with a single urlMap lookup, with no separate map needed in the caller.
+    const urlMap = new Map([...msgUrlMap, ...snapAvatarUrlMap]);
+
+    const resolveReactionUser = (userId: string) => {
+      const snap = snapsMap.get(userId);
+      return snap
+        ? {
+            displayName: (snap.displayName as string) || "",
+            avatarUrl:
+              urlFromMap(snapAvatarUrlMap, (snap.avatar as string) || "") || "",
+          }
+        : undefined;
+    };
+
     return {
-      items: pageRows.map((m) => this.toWire(m, members, urlMap)),
+      items: orderedItems.map((m) =>
+        this.toWire(m, members, urlMap, resolveReactionUser)
+      ),
       hasMore,
       nextCursor,
     };
@@ -592,9 +677,14 @@ export class CommunityMessageService {
       reactions: Array<{
         emoji: string;
         count: number;
-        users: Array<{ userId: string; displayName: string; avatar: string }>;
+        users: Array<{
+          userId: string;
+          displayName: string;
+          avatarUrl: string;
+        }>;
       }>;
       deletedForAll: boolean;
+      isEdited: boolean;
       editedAt: number | null;
       createdAt: number;
       updatedAt: number;
@@ -637,18 +727,19 @@ export class CommunityMessageService {
           if (key) mediaKeys.push(key);
         }
       }
-      const reactions = msg.reactions as Record<string, unknown> | null;
-      if (reactions) {
-        for (const reactors of Object.values(reactions)) {
-          if (!Array.isArray(reactors)) continue;
-          for (const reactor of reactors) {
-            const avatar = (reactor as Record<string, unknown>)?.avatar;
-            if (typeof avatar === "string" && avatar) mediaKeys.push(avatar);
-          }
-        }
-      }
     }
-    const urlMap = await resolveMediaUrlMap(mediaKeys);
+    const syncSnapsMap = await this.userSnapshotService.getUserSnapshotsMap(
+      this.collectReactionUserIds(messages),
+      this.cacheRepo
+    );
+    const syncSnapAvatarKeys = [...syncSnapsMap.values()]
+      .map((s) => (s.avatar as string) || "")
+      .filter(Boolean);
+
+    const [urlMap, syncAvatarUrlMap] = await Promise.all([
+      resolveMediaUrlMap(mediaKeys),
+      resolveMediaUrlMap(syncSnapAvatarKeys),
+    ]);
 
     const items = messages.map((msg) => {
       const createdMs = msg.createdAt.getTime();
@@ -670,9 +761,26 @@ export class CommunityMessageService {
         syncEventType = "new";
       }
 
-      const reactionGroups = buildReactionGroups(msg.reactions, (key) =>
-        urlFromMap(urlMap, key)
-      );
+      // Transform stored reactions: rename avatar → avatarUrl, resolve S3 keys.
+      const rawReactions = msg.reactions as Record<string, unknown> | null;
+      const transformedReactions: Record<string, unknown[]> = {};
+      if (rawReactions && typeof rawReactions === "object") {
+        for (const [emoji, list] of Object.entries(rawReactions)) {
+          if (!Array.isArray(list)) continue;
+          transformedReactions[emoji] = list.map((r) => {
+            const reactor = (r ?? {}) as Record<string, unknown>;
+            const { avatar, ...rest } = reactor;
+            const snap = syncSnapsMap.get(reactor.userId as string);
+            return {
+              ...rest,
+              avatarUrl: snap
+                ? urlFromMap(syncAvatarUrlMap, (snap.avatar as string) || "") ||
+                  ""
+                : urlFromMap(urlMap, (avatar as string) || "") || "",
+            };
+          });
+        }
+      }
 
       return {
         id: msg.id,
@@ -685,9 +793,19 @@ export class CommunityMessageService {
         attachments: Array.isArray(msg.attachments)
           ? applyUrlMapToFiles(msg.attachments as MediaFileLike[], urlMap)
           : msg.attachments,
-        reactions: reactionGroups,
-        reactionGroups,
+        reactions: Object.entries(transformedReactions).map(
+          ([emoji, users]) => ({
+            emoji,
+            count: users.length,
+            users: users as Array<{
+              userId: string;
+              displayName: string;
+              avatarUrl: string;
+            }>,
+          })
+        ),
         deletedForAll: msg.deletedForAll,
+        isEdited: editedMs !== null,
         editedAt: editedMs,
         createdAt: createdMs,
         updatedAt: updatedMs,
@@ -904,7 +1022,7 @@ export class CommunityMessageService {
     reactions: Array<{
       emoji: string;
       count: number;
-      users: Array<{ userId: string; displayName: string; avatar: string }>;
+      users: Array<{ userId: string; displayName: string; avatarUrl: string }>;
     }>;
   }> {
     const message = await this.messageRepo.findById(params.messageId);
@@ -931,13 +1049,8 @@ export class CommunityMessageService {
       params.emoji
     );
 
-    await this.messageRepo.updateById(
-      message.roomId,
-      params.messageId,
-      updatedReactions
-    );
-
-    // Collect all unique userIds across all reaction arrays
+    // Fetch snapshots BEFORE persisting so the stored document carries real
+    // userName / avatar / memberId (fixes the raw `reactions` field on read).
     const allUserIds = [
       ...new Set(
         Object.values(updatedReactions)
@@ -955,19 +1068,45 @@ export class CommunityMessageService {
           )
         : new Map<string, Record<string, unknown>>();
 
-    const reactionGroups = Object.entries(updatedReactions)
-      .filter(([, users]) => users.length > 0) // skip defensively if empty
+    // Enrich stored reactor objects with live profile data.
+    const enrichedReactions: Record<string, (typeof updatedReactions)[string]> =
+      {};
+    for (const [emoji, reactors] of Object.entries(updatedReactions)) {
+      enrichedReactions[emoji] = reactors.map((r) => {
+        const snap = snaps.get(r.userId);
+        return {
+          userId: r.userId,
+          userName: (snap?.displayName as string) || r.userName || "",
+          avatar: (snap?.avatar as string) || r.avatar || "",
+          memberId: (snap?.memberId as string) || r.memberId || "",
+        };
+      });
+    }
+
+    await this.messageRepo.updateById(
+      message.roomId,
+      params.messageId,
+      enrichedReactions
+    );
+
+    // Resolve the stored avatar object-keys to full presigned download URLs so
+    // both the REST response and the socket broadcast carry real URLs.
+    const allAvatarKeys = Object.values(enrichedReactions)
+      .flat()
+      .map((r) => r.avatar)
+      .filter(Boolean);
+    const avatarUrlMap = await resolveMediaUrlMap(allAvatarKeys);
+
+    const reactionGroups = Object.entries(enrichedReactions)
+      .filter(([, users]) => users.length > 0)
       .map(([emoji, users]) => ({
         emoji,
         count: users.length,
-        users: users.map((u) => {
-          const snap = snaps.get(u.userId);
-          return {
-            userId: u.userId,
-            displayName: (snap?.displayName as string) || u.userName || "",
-            avatar: (snap?.avatar as string) || u.avatar || "",
-          };
-        }),
+        users: users.map((u) => ({
+          userId: u.userId,
+          displayName: u.userName,
+          avatarUrl: urlFromMap(avatarUrlMap, u.avatar) || "",
+        })),
       }));
 
     return {

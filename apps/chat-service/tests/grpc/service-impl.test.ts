@@ -336,8 +336,8 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
     const { channel, data } = published("message:edited");
     expect(channel).toBe("conv:conv1");
     const users = data.reactions[0].users;
-    expect(users[0].avatar).toBe(url(AVATARS, "avatars/u2/b.png"));
-    expect(users[1].avatar).toBe("https://cdn.example.com/cat.png");
+    expect(users[0].avatarUrl).toBe(url(AVATARS, "avatars/u2/b.png"));
+    expect(users[1].avatarUrl).toBe("https://cdn.example.com/cat.png");
   });
 
   it("sendReaction (PRIVATE) → message:reaction resolves reactor avatars (key signed, url passthrough)", async () => {
@@ -384,8 +384,8 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
     const { channel, data } = published("message:reaction");
     expect(channel).toBe("conv:conv1");
     const users = data.reactions[0].users;
-    expect(users[0].avatar).toBe(url(AVATARS, "avatars/u2/b.png"));
-    expect(users[1].avatar).toBe("https://cdn.example.com/cat.png");
+    expect(users[0].avatarUrl).toBe(url(AVATARS, "avatars/u2/b.png"));
+    expect(users[1].avatarUrl).toBe("https://cdn.example.com/cat.png");
   });
 });
 
@@ -437,9 +437,14 @@ describe("createCommunityImpl — broadcast media resolve-on-read", () => {
     expect(data.content.files[0].url).toBe(
       url(CHAT, "community-chat-uploads/c1/img.png")
     );
+    expect(data.isEdited).toBe(false);
+    expect(data.editedAt).toBe(0);
   });
 
-  it("reactToCommunityMessage → community:message:reaction + ack resolve reactor avatars", async () => {
+  it("reactToCommunityMessage → community:message:reaction + ack carry pre-resolved avatarUrls", async () => {
+    // reactToMessage now pre-resolves avatar object-keys to full presigned URLs
+    // before returning, so the gRPC handler and REST controller receive ready-to-use
+    // avatarUrls and no longer need a second resolution pass.
     const deps = makeDeps({
       communityMessageService: {
         reactToMessage: jest.fn(async () => ({
@@ -453,12 +458,12 @@ describe("createCommunityImpl — broadcast media resolve-on-read", () => {
                 {
                   userId: "u2",
                   displayName: "Bob",
-                  avatar: "avatars/u2/b.png",
+                  avatarUrl: url(AVATARS, "avatars/u2/b.png"), // pre-resolved by service
                 },
                 {
                   userId: "u3",
                   displayName: "Cat",
-                  avatar: "https://cdn.example.com/cat.png",
+                  avatarUrl: "https://cdn.example.com/cat.png",
                 },
               ],
             },
@@ -474,14 +479,14 @@ describe("createCommunityImpl — broadcast media resolve-on-read", () => {
 
     const { channel, data } = published("community:message:reaction");
     expect(channel).toBe("community:comm1");
-    expect(data.reactions[0].users[0].avatar).toBe(
+    expect(data.reactions[0].users[0].avatarUrl).toBe(
       url(AVATARS, "avatars/u2/b.png")
     );
-    expect(data.reactions[0].users[1].avatar).toBe(
+    expect(data.reactions[0].users[1].avatarUrl).toBe(
       "https://cdn.example.com/cat.png"
     );
-    // the gRPC ack carries the same resolved avatars
-    expect(ack.reactions[0].users[0].avatar).toBe(
+    // gRPC ack carries the same pre-resolved avatarUrls
+    expect(ack.reactions[0].users[0].avatarUrl).toBe(
       url(AVATARS, "avatars/u2/b.png")
     );
   });
@@ -691,5 +696,162 @@ describe("createMessagingImpl — forwardMessage cross-room read-IDOR (H-1)", ()
           (c[1] as string).includes("message:new")
       )
     ).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createNotificationImpl — navigation deep-link enrichment (T8)
+// ---------------------------------------------------------------------------
+// publishUserSocketEvent(@aimess/redis) calls redis.publish(channel, json) using
+// the redis client injected from config/redis.js, which is the global jest.fn
+// (see tests/setup/global-mocks.ts). We assert on publishMock directly.
+
+import { createNotificationImpl } from "../../src/grpc/service-impl.js";
+
+describe("createNotificationImpl — navigation deep-link enrichment", () => {
+  /** Build a minimal notificationRepo stub. */
+  function makeNotifRepo(overrides: Record<string, unknown> = {}) {
+    return {
+      create: jest.fn(async () => ({
+        id: "notif-1",
+        createdAt: new Date("2026-06-17T10:00:00.000Z"),
+      })),
+      getUnreadCount: jest.fn(async () => 3),
+      findByUserId: jest.fn(async () => []),
+      markAllRead: jest.fn(async () => undefined),
+      ...overrides,
+    };
+  }
+
+  /** Parse the notification:new redis.publish call and return its data payload. */
+  function notificationNew(): {
+    channel: string;
+    data: Record<string, unknown>;
+  } {
+    const calls = publishMock.mock.calls as Array<[string, string]>;
+    for (const [channel, json] of calls) {
+      let parsed: { event?: string; data?: Record<string, unknown> };
+      try {
+        parsed = JSON.parse(json);
+      } catch {
+        continue;
+      }
+      if (parsed?.event === "notification:new") {
+        return { channel, data: parsed.data ?? {} };
+      }
+    }
+    throw new Error(
+      `No redis.publish for event "notification:new". Seen: [${calls
+        .map((c) => {
+          try {
+            return JSON.parse(c[1]).event;
+          } catch {
+            return "<unparseable>";
+          }
+        })
+        .join(", ")}]`
+    );
+  }
+
+  // Test 4: navigation parsed onto notification:new
+  it("navigation JSON string in data is forwarded as a parsed object on notification:new", async () => {
+    const notifRepo = makeNotifRepo();
+    const deps = makeDeps({ notificationRepo: notifRepo });
+    const handler = createNotificationImpl(deps).createNotification as Handler;
+
+    const nav = {
+      screen: "COMMUNITY_REQUESTS",
+      communityId: "c1",
+      communityName: "Tech",
+    };
+
+    await invoke(handler, {
+      userId: "user-1",
+      type: "community.join_requested",
+      title: "New join request",
+      body: "Someone wants to join Tech",
+      data: {
+        navigation: JSON.stringify(nav),
+      },
+    });
+
+    const { channel, data } = notificationNew();
+    expect(channel).toBe("notify:user-1");
+    // navigation must be a parsed object on the socket event — not a JSON string
+    expect(typeof data.navigation).toBe("object");
+    expect(data.navigation).toMatchObject({
+      screen: "COMMUNITY_REQUESTS",
+      communityId: "c1",
+      communityName: "Tech",
+    });
+  });
+
+  // Test 5: no navigation key when data.navigation is absent
+  it("navigation key is absent on notification:new when data.navigation is not provided", async () => {
+    const notifRepo = makeNotifRepo();
+    const deps = makeDeps({ notificationRepo: notifRepo });
+    const handler = createNotificationImpl(deps).createNotification as Handler;
+
+    await invoke(handler, {
+      userId: "user-2",
+      type: "community.member_added",
+      title: "Welcome",
+      body: "You joined a community",
+      data: {},
+    });
+
+    const { data } = notificationNew();
+    expect(Object.prototype.hasOwnProperty.call(data, "navigation")).toBe(
+      false
+    );
+  });
+
+  // Test 6: getNotifications returns navigation as parsed object
+  it("getNotifications returns navigation as a parsed object (not a JSON string)", async () => {
+    const nav = {
+      screen: "COMMUNITY_DETAILS",
+      communityId: "c1",
+      communityName: "Tech",
+    };
+    const notifRepo = makeNotifRepo({
+      findByUserId: jest.fn(async () => [
+        {
+          id: "notif-2",
+          userId: "user-3",
+          type: "community.join_request_approved",
+          isRead: false,
+          entity: { id: "c1" },
+          actorSnapshot: {},
+          createdAt: new Date("2026-06-17T10:00:00.000Z"),
+          payload: {
+            title: "Approved",
+            body: "Your request was approved",
+            data: {
+              navigation: JSON.stringify(nav),
+            },
+          },
+        },
+      ]),
+      getUnreadCount: jest.fn(async () => 0),
+    });
+
+    const deps = makeDeps({ notificationRepo: notifRepo });
+    const handler = createNotificationImpl(deps).getNotifications as Handler;
+
+    const result = (await invoke(handler, { userId: "user-3", limit: 20 })) as {
+      notifications: Array<Record<string, unknown>>;
+    };
+
+    expect(result.notifications).toHaveLength(1);
+    const row = result.notifications[0];
+
+    // navigation must be a parsed object, not a string
+    expect(typeof row.navigation).toBe("object");
+    expect(row.navigation).not.toBeNull();
+    expect(row.navigation).toMatchObject({
+      screen: "COMMUNITY_DETAILS",
+      communityId: "c1",
+      communityName: "Tech",
+    });
   });
 });

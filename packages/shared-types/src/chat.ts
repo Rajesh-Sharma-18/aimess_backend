@@ -81,20 +81,27 @@ export interface MessageContentDto {
 
 export interface CommunityCreatedMetadata {
   communityName: string;
-  creatorId: string;
-  creatorName: string;
+  /** Normalized actor key — compare against currentUserId to render "You" vs actorName. */
+  actorUserId: string;
+  actorName: string;
 }
 
 export interface CommunityUpdatedMetadata {
-  updaterId: string;
-  updaterName: string;
+  /** Normalized actor key — compare against currentUserId to render "You" vs actorName. */
+  actorUserId: string;
+  actorName: string;
+  /**
+   * Always exactly ONE item per system message (multi-field updates emit one
+   * message per changed field, Telegram-style).
+   */
   changedFields: string[];
   newName?: string;
   newVisibility?: string;
 }
 
 export interface MemberRoleChangedMetadata {
-  actorId: string;
+  /** Normalized actor key — compare against currentUserId to render "You" vs actorName. */
+  actorUserId: string;
   actorName: string;
   targetUserId: string;
   targetName: string;
@@ -110,7 +117,7 @@ export type SystemMessageMetadata =
 export interface ReactionUserDto {
   userId: string;
   displayName: string;
-  avatar: string;
+  avatarUrl: string;
 }
 
 export interface ReactionDto {
