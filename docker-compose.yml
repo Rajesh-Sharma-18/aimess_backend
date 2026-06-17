@@ -234,15 +234,7 @@ services:
     container_name: aimess-redis-node-1
     restart: unless-stopped
     command: >
-      redis-server
-      --cluster-enabled yes
-      --cluster-config-file /data/nodes.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-hostname host.docker.internal
-      --cluster-announce-port 7001
-      --cluster-announce-bus-port 17001
-      --appendonly yes
-      --bind 0.0.0.0
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7001 --cluster-announce-bus-port 17001 --appendonly yes --bind 0.0.0.0
     ports:
       - "7001:6379"
       - "17001:17001"
@@ -256,15 +248,7 @@ services:
     container_name: aimess-redis-node-2
     restart: unless-stopped
     command: >
-      redis-server
-      --cluster-enabled yes
-      --cluster-config-file /data/nodes.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-hostname host.docker.internal
-      --cluster-announce-port 7002
-      --cluster-announce-bus-port 17002
-      --appendonly yes
-      --bind 0.0.0.0
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7002 --cluster-announce-bus-port 17002 --appendonly yes --bind 0.0.0.0
     ports:
       - "7002:6379"
       - "17002:17002"
@@ -278,15 +262,7 @@ services:
     container_name: aimess-redis-node-3
     restart: unless-stopped
     command: >
-      redis-server
-      --cluster-enabled yes
-      --cluster-config-file /data/nodes.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-hostname host.docker.internal
-      --cluster-announce-port 7003
-      --cluster-announce-bus-port 17003
-      --appendonly yes
-      --bind 0.0.0.0
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7003 --cluster-announce-bus-port 17003 --appendonly yes --bind 0.0.0.0
     ports:
       - "7003:6379"
       - "17003:17003"
@@ -332,38 +308,13 @@ services:
       - aimess-network
 
   # ============================================================================
-  # SRS (OSSRS) — livestream media server (RTMP/WebRTC ingest, HLS/FLV playback)
-  #
-  # Owned by stream-service. http_hooks call back to stream-service on
-  # publish/unpublish/play/stop. CANDIDATE must be a host-reachable IP so
-  # browser WebRTC (WHIP) can connect — defaults to host.docker.internal.
-  # ============================================================================
-  srs:
-    image: ossrs/srs:5
-    container_name: aimess-srs
-    restart: unless-stopped
-    command: ["./objs/srs", "-c", "conf/aimess.conf"]
-    ports:
-      - "1935:1935"
-      - "8080:8080"
-      - "1985:1985"
-      - "8000:8000/udp"
-    environment:
-      CANDIDATE: "${SRS_CANDIDATE_IP:-host.docker.internal}"
-    volumes:
-      - "../srs/conf/aimess.conf:/usr/local/srs/conf/aimess.conf:ro"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - aimess-network
-
-  # ============================================================================
   # stream-service (Node, HTTP 3007 / gRPC 4007) is NOT containerized here.
   # Like every other Node app (api-gateway, auth, user, community, chat, …) it
   # runs via `pnpm dev` (Turborepo) against this infra. docker-compose stays
-  # infra-only (databases, cache, queue, object store, SRS media server).
-  # It owns the `stream_db` MongoDB database, receives SRS http_hooks at
-  # /internal/srs/hooks, and talks to user-service/community-service over gRPC.
+  # infra-only (databases, cache, queue, object store).
+  # It owns the `stream_db` MongoDB database, receives SRS http_hooks from
+  # the remote SRS server (ai5stream.tech), and talks to
+  # user-service/community-service over gRPC.
   # ============================================================================
 
 # ============================================================================

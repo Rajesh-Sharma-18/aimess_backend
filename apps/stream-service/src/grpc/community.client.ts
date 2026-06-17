@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { makeBreaker, makeGrpcCall, type Breaker } from "@aimess/grpc-utils";
-import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
 
@@ -51,35 +50,27 @@ const validateMembershipBreaker: Breaker<
 );
 
 /**
- * Circuit-broken community-service client. Backs the go-live authorization gate.
+ * Circuit-broken community-service client. Backs the go-live + join gates.
  *
- * Fail-closed: when the breaker is open / the call errors, we return
- * `{ isMember: false }`. With `STREAM_REQUIRE_MEMBERSHIP=true` that denies
- * go-live rather than letting a non-member through on a community-service
- * outage. The caller (LivestreamService) only consults membership when the env
- * flag is on, so disabling the flag bypasses this client entirely.
+ * Throws on circuit-open / gRPC error — callers decide policy:
+ *   - createStream: fail-closed (deny go-live when membership unverifiable)
+ *   - checkAccess:  fail-open  (allow viewing so a community-service outage
+ *                              doesn't black out all live streams)
  */
 export const communityGrpcClient = {
   async validateMembership(
     communityId: string,
     userId: string
   ): Promise<ValidateMembershipResult> {
-    try {
-      const result = await validateMembershipBreaker.fire({
-        communityId,
-        userId,
-      });
-      return {
-        isMember: Boolean(result?.isMember),
-        role: result?.role ?? "",
-        status: result?.status ?? "",
-      };
-    } catch (error) {
-      logger.warn(
-        `community.validateMembership failed (fail-closed) for community=${communityId} user=${userId}: ${String(error)}`
-      );
-      return { isMember: false, role: "", status: "" };
-    }
+    const result = await validateMembershipBreaker.fire({
+      communityId,
+      userId,
+    });
+    return {
+      isMember: Boolean(result?.isMember),
+      role: result?.role ?? "",
+      status: result?.status ?? "",
+    };
   },
 };
 

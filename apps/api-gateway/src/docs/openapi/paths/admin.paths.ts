@@ -1826,74 +1826,513 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.6 Livestreams  (PLANNED)
+  // §4.6 Livestreams
   // ===========================================================================
   "/admin/v1/livestreams": {
     get: {
       tags: [adminTags.livestreams],
       summary: "List livestreams",
       description:
-        PLANNED +
-        "From `StreamIndex` read-model (stubbed empty for now). Filter `status=live|ended|scheduled`. Requires `livestreams.read`.",
+        "Paginated, filtered list of livestreams from the stream-service read-model. " +
+        "Filters: `search`, `category`, `status` (LIVE/ENDED/CANCELLED), `hasReports`, `minReports`, `communityId`, `creatorId`, `dateFrom`/`dateTo`. " +
+        "Sort whitelist: `createdAt|viewerCount|reportCount|duration` with `:asc|:desc` (default `createdAt:desc`). " +
+        "Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
-        ...listParams,
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Stream title / creator username search.",
+        },
         {
           name: "status",
           in: "query",
           required: false,
-          schema: { type: "string", enum: ["live", "ended", "scheduled"] },
+          schema: { type: "string", enum: ["LIVE", "ENDED", "CANCELLED"] },
+        },
+        {
+          name: "communityId",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+        },
+        {
+          name: "creatorId",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+        },
+        {
+          name: "hasReports",
+          in: "query",
+          required: false,
+          schema: { type: "boolean" },
+        },
+        {
+          name: "minReports",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 0 },
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            pattern:
+              "^(createdAt|viewerCount|reportCount|duration):(asc|desc)$",
+            default: "createdAt:desc",
+          },
+        },
+        {
+          name: "dateFrom",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date" },
+        },
+        {
+          name: "dateTo",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date" },
         },
       ],
       responses: {
-        "200": listRes("Livestreams", "#/components/schemas/AdminLivestream"),
+        "200": listRes(
+          "Livestreams",
+          "#/components/schemas/AdminLivestreamItem"
+        ),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing livestreams.read"),
       },
-      "x-implementation-status": "planned",
     },
   },
-  "/admin/v1/livestreams/{id}": {
+
+  "/admin/v1/livestreams/bulk/end": {
+    post: {
+      tags: [adminTags.livestreams],
+      summary: "Bulk end livestreams",
+      description:
+        "Force-end up to 100 livestreams in a single request. Returns a 207 Multi-Status with per-item results. Audited as `livestream.bulk_ended`. Requires `livestreams.moderate`.",
+      security: adminSecurity,
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["livestreamIds", "reasonCode"],
+              properties: {
+                livestreamIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  minItems: 1,
+                  maxItems: 100,
+                  example: [
+                    "64a1b2c3d4e5f6a7b8c9d0e1",
+                    "64a1b2c3d4e5f6a7b8c9d0e2",
+                  ],
+                },
+                reasonCode: {
+                  type: "string",
+                  enum: [
+                    "POLICY_VIOLATION",
+                    "COMMUNITY_GUIDELINES",
+                    "SPAM",
+                    "HARASSMENT",
+                    "COPYRIGHT",
+                    "NUDITY",
+                    "VIOLENCE",
+                    "MANUAL_ADMIN",
+                  ],
+                  example: "POLICY_VIOLATION",
+                },
+                note: { type: "string", maxLength: 2000 },
+                notifyCreator: { type: "boolean", default: false },
+                issueStrike: { type: "boolean", default: false },
+                takedownRecording: { type: "boolean", default: false },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "207": {
+          description: "Multi-Status result",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: { $ref: "#/components/schemas/AdminBulkResult" },
+                },
+              },
+            },
+          },
+        },
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing livestreams.moderate"),
+      },
+    },
+  },
+
+  "/admin/v1/livestreams/bulk/review-reports": {
+    post: {
+      tags: [adminTags.livestreams],
+      summary: "Bulk review stream reports",
+      description:
+        "Transition up to 100 stream reports to REVIEWING, RESOLVED, or DISMISSED in a single request. Returns 207 Multi-Status. Audited as `livestream.reports_bulk_reviewed`. Requires `livestreams.moderate`.",
+      security: adminSecurity,
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["reportIds", "status"],
+              properties: {
+                reportIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  minItems: 1,
+                  maxItems: 100,
+                },
+                status: {
+                  type: "string",
+                  enum: ["REVIEWING", "RESOLVED", "DISMISSED"],
+                },
+                note: { type: "string", maxLength: 2000 },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "207": {
+          description: "Multi-Status result",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: { $ref: "#/components/schemas/AdminBulkResult" },
+                },
+              },
+            },
+          },
+        },
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing livestreams.moderate"),
+      },
+    },
+  },
+
+  "/admin/v1/livestreams/{livestreamId}": {
     get: {
       tags: [adminTags.livestreams],
       summary: "Get livestream detail",
       description:
-        PLANNED +
-        "Live detail: viewers, community, RTMP state (gRPC-live). Requires `livestreams.read`.",
+        "Full detail view including creator profile, community context, viewer stats (merged with live Redis count via gRPC), report summary, and moderation history. Requires `livestreams.read`.",
       security: adminSecurity,
-      parameters: [idPathParam],
+      parameters: [
+        {
+          name: "livestreamId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+      ],
       responses: {
         "200": okRes(
           "Livestream detail",
-          "#/components/schemas/AdminLivestream"
+          "#/components/schemas/AdminLivestreamDetail"
         ),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing livestreams.read"),
         "404": errRes("Livestream not found"),
       },
-      "x-implementation-status": "planned",
     },
   },
-  "/admin/v1/livestreams/{id}/force-end": {
+
+  "/admin/v1/livestreams/{livestreamId}/reports": {
+    get: {
+      tags: [adminTags.livestreams],
+      summary: "List reports for a livestream",
+      description:
+        "Paginated reports filed against a specific stream. Filter by `status` (OPEN/REVIEWING/RESOLVED/DISMISSED) and `reportType`. Sort on `createdAt:asc|desc`. Requires `livestreams.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "livestreamId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["OPEN", "REVIEWING", "RESOLVED", "DISMISSED"],
+          },
+        },
+        {
+          name: "reportType",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: [
+              "HARASSMENT",
+              "SPAM",
+              "COPYRIGHT",
+              "NUDITY",
+              "VIOLENCE",
+              "HATE_SPEECH",
+              "OTHER",
+            ],
+          },
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            pattern: "^createdAt:(asc|desc)$",
+            default: "createdAt:desc",
+          },
+        },
+      ],
+      responses: {
+        "200": listRes(
+          "Stream reports",
+          "#/components/schemas/AdminLivestreamReport"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing livestreams.read"),
+        "404": errRes("Livestream not found"),
+      },
+    },
+  },
+
+  "/admin/v1/livestreams/{livestreamId}/end": {
     post: {
       tags: [adminTags.livestreams],
-      summary: "Force-end a livestream",
+      summary: "End a livestream",
       description:
-        PLANNED +
-        "gRPC `AdminForceEndStream` + emits `admin.stream_force_ended`. 🔐 step-up TOTP. Audited. Requires `livestreams.moderate`.",
+        "Admin force-ends a single livestream. Records a moderation action and an audit log entry (`livestream.ended`). Optionally notifies the creator and issues a strike. Requires `livestreams.moderate`.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
-      requestBody: jsonBody("#/components/schemas/AdminForceEndRequest", false),
+      parameters: [
+        {
+          name: "livestreamId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["reasonCode"],
+              properties: {
+                reasonCode: {
+                  type: "string",
+                  enum: [
+                    "POLICY_VIOLATION",
+                    "COMMUNITY_GUIDELINES",
+                    "SPAM",
+                    "HARASSMENT",
+                    "COPYRIGHT",
+                    "NUDITY",
+                    "VIOLENCE",
+                    "MANUAL_ADMIN",
+                  ],
+                  example: "POLICY_VIOLATION",
+                },
+                note: { type: "string", maxLength: 2000 },
+                notifyCreator: { type: "boolean", default: false },
+                issueStrike: { type: "boolean", default: false },
+                takedownRecording: { type: "boolean", default: false },
+              },
+            },
+          },
+        },
+      },
       responses: {
         "200": okRes(
           "Stream ended",
-          "#/components/schemas/AdminModerationResult"
+          "#/components/schemas/AdminEndLivestreamResult"
         ),
-        "401": errRes("Unauthorized / invalid TOTP"),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
         "403": errRes("Missing livestreams.moderate"),
         "404": errRes("Livestream not found"),
       },
-      "x-implementation-status": "planned",
+    },
+  },
+
+  "/admin/v1/livestreams/{livestreamId}/thumbnail/presign": {
+    post: {
+      tags: [adminTags.livestreams],
+      summary: "Presign stream thumbnail upload URL",
+      description: `Generate a short-lived presigned PUT URL so the admin client can upload a stream thumbnail directly to MinIO (bucket: \`aimess-stream\`, prefix: \`stream/thumbnail/\`).
+
+**Upload flow:**
+1. Call this endpoint with the image's \`contentType\` and \`contentLength\`.
+2. PUT the image bytes directly to \`uploadUrl\` with the returned \`Content-Type\` header.
+3. Call **PATCH /admin/v1/livestreams/{livestreamId}/thumbnail** with the returned \`objectKey\` to commit the key to the stream record.
+
+**Allowed types:** \`image/jpeg\`, \`image/png\`, \`image/webp\`. Max 5 MB. Requires \`livestreams.moderate\`.`,
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "livestreamId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["contentType", "contentLength"],
+              properties: {
+                contentType: {
+                  type: "string",
+                  enum: ["image/jpeg", "image/png", "image/webp"],
+                  example: "image/jpeg",
+                },
+                contentLength: {
+                  type: "integer",
+                  minimum: 1,
+                  maximum: 5242880,
+                  example: 204800,
+                  description: "Exact file size in bytes (max 5 MB).",
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": okRes(
+          "Presigned upload URL",
+          "#/components/schemas/AdminThumbnailPresignResult"
+        ),
+        "400": errRes(
+          "Unsupported content type, file too large, or stream not found"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing livestreams.moderate"),
+        "404": errRes("Livestream not found"),
+      },
+    },
+  },
+
+  "/admin/v1/livestreams/{livestreamId}/thumbnail": {
+    patch: {
+      tags: [adminTags.livestreams],
+      summary: "Save stream thumbnail",
+      description:
+        "Commits an already-uploaded MinIO object key to the stream's `thumbnail` field by calling stream-service over gRPC. Audited as `livestream.thumbnail_updated`. Requires `livestreams.moderate`.\n\n" +
+        "The `objectKey` must start with `stream/thumbnail/` and must not contain `..`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "livestreamId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              required: ["objectKey"],
+              properties: {
+                objectKey: {
+                  type: "string",
+                  pattern: "^stream/thumbnail/",
+                  maxLength: 512,
+                  example:
+                    "stream/thumbnail/64a1b2c3d4e5f6a7b8c9d0e1/f47ac10b-58cc-4372-a567-0e02b2c3d479.jpg",
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Thumbnail saved",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: {
+                    type: "object",
+                    properties: {
+                      livestreamId: { type: "string" },
+                      thumbnail: {
+                        type: "string",
+                        example: "stream/thumbnail/64a1b2c3/uuid.jpg",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        "400": errRes("Invalid objectKey format"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing livestreams.moderate"),
+        "404": errRes("Livestream not found"),
+      },
     },
   },
 

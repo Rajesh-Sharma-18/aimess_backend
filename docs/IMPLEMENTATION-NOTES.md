@@ -7,6 +7,21 @@
 
 ---
 
+## stream-service V2 — gap-fill: edit/delete, DASH, YouTube, canView gate, session tracking, backoffice stats (shipped 2026-06-16)
+
+Eight previously-missing capabilities implemented. All three touched services typecheck clean (`stream-service`, `api-gateway`, `backoffice-service`). Run `pnpm --filter stream-service exec prisma generate` once after this (the stream-service process must be stopped first on Windows — the DLL gets file-locked while running).
+
+- **PATCH /api/v1/streams/:id** — owner updates `title`, `description`, `thumbnail` (URL). Zod `updateStreamSchema` with at-least-one-field refine. Returns the updated `StreamView`.
+- **DELETE /api/v1/streams/:id** — owner deletes the stream record. Rejects with `STREAM_IS_LIVE` (409) if the stream is currently LIVE — must be stopped first.
+- **Thumbnail** — `thumbnail` (URL string) exposed in both `createStreamSchema` and `updateStreamSchema`; stored in the existing `thumbnail String?` Prisma field; propagated through `toView`.
+- **canView HTTP gate** — `GET /api/v1/streams/:id` now passes `req.auth.userId` to `LivestreamService.getStream()`. If the requesting user is banned from that stream a `STREAM_BANNED` (403) is returned before any stream data is served.
+- **Session tracking** — api-gateway `/stream` namespace maintains a Redis set `stream:session:users:<streamId>` (same 2h TTL as the viewer counter): `SADD` on `stream:join`, `SREM` on `stream:leave`, ban-kick, and disconnect. **GET /api/v1/streams/:id/viewers** (owner-only) reads `SMEMBERS` from stream-service and returns `{ items: userId[] }`.
+- **YouTube sourceType** — `YOUTUBE` added to `createStreamSchema` enum. When selected, `sourceUrl` is required (the YouTube embed URL), and all SRS playback/ingest steps are skipped (hlsUrl / flvUrl / dashUrl all null). The stream key is still generated for internal tracking.
+- **DASH playback URL** — `dashUrl String?` added to the Prisma schema (MongoDB, no migration needed — just `prisma generate`). `SrsService.buildPlaybackUrls` now returns `dashUrl = ${SRS_HLS_BASE}/live/${streamKey}.mpd`. Propagated through `StreamView`, `toView`, `create`, and `handlePublish`.
+- **Backoffice stats** — `GetStreamStats` RPC added to `packages/grpc-contracts/proto/stream.proto` + implemented in stream-service gRPC server (reads DB + merges live Redis count). New `apps/backoffice-service/src/grpc/stream.client.ts` calls it. `livestreamService.getLivestream()` overlays `viewerStats.currentViewers`, `.peakViewers`, `.chatMessageCount` from real stream-service data (fail-open: mock row served unchanged if stream-service is down). `STREAM_GRPC_URL` added to backoffice env (default `0.0.0.0:4007`).
+
+---
+
 ## stream-service V1 — livestream lifecycle, comments & SRS hooks (shipped 2026-06-15)
 
 New service (port **3007** HTTP / **4007** gRPC, MongoDB `stream_db`). First livestream wave: stream lifecycle, viewer comments (now owned here), SRS media-server integration, and the go-live gate. Built/reviewed via the agent team.

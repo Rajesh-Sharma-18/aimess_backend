@@ -113,6 +113,79 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
         }
       })();
     },
+
+    // CheckStreamAccess — join gate: ACTIVE membership (when required) + not banned.
+    checkStreamAccess: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string; userId: string };
+          const access = await deps.livestreamService.checkAccess(
+            req.streamId,
+            req.userId
+          );
+          callback(null, {
+            allowed: access.allowed,
+            isBanned: access.isBanned,
+            status: access.status,
+            reason: access.reason,
+            canComment: access.canComment,
+          });
+        } catch (err) {
+          logger.error(`gRPC checkStreamAccess error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // AdminUpdateThumbnail — admin sets or clears a stream thumbnail object key.
+    adminUpdateThumbnail: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string; thumbnail: string };
+          await deps.livestreamService.adminUpdateThumbnail(
+            req.streamId,
+            req.thumbnail || null
+          );
+          callback(null, { success: true });
+        } catch (err) {
+          logger.error(`gRPC adminUpdateThumbnail error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // GetStreamStats — live viewer stats for the backoffice dashboard.
+    getStreamStats: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string };
+          const stats =
+            await deps.livestreamService.getStreamStatsForBackoffice(
+              req.streamId
+            );
+          callback(null, {
+            found: stats.found,
+            status: stats.status,
+            viewerCount: stats.viewerCount,
+            peakViewers: stats.peakViewers,
+            totalViews: stats.totalViews,
+            totalComments: stats.totalComments,
+          });
+        } catch (err) {
+          logger.error(`gRPC getStreamStats error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
   };
 }
 

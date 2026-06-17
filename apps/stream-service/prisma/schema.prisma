@@ -38,10 +38,14 @@ model Livestream {
   status      String    @default("PENDING")
   hlsUrl      String?
   flvUrl      String?
-  viewerCount Int       @default(0)
-  peakViewers Int       @default(0)
-  livedAt     DateTime?
-  endedAt     DateTime?
+  dashUrl     String?
+  commentStatus Boolean   @default(true)
+  viewerCount   Int       @default(0)
+  peakViewers   Int       @default(0)
+  totalViews    Int       @default(0)
+  totalComments Int       @default(0)
+  livedAt       DateTime?
+  endedAt       DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -69,4 +73,21 @@ model LivestreamComment {
   @@index([livestreamId, createdAt(sort: Desc)])
   @@index([livestreamId, sentBy, clientCommentId])
   @@map("stream_comments")
+}
+
+// -----------------------------------------------------------------------------
+// LivestreamBan — a user barred from a livestream by its owner. Checked on
+//   stream:join (gateway → gRPC CheckStreamAccess) and used to kick the user's
+//   live sockets in real time.
+// -----------------------------------------------------------------------------
+model LivestreamBan {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  livestreamId String
+  bannedUserId String
+  bannedBy     String // owner who issued the ban (auth-service AuthUser.id)
+  reason       String?
+  bannedAt     DateTime @default(now())
+
+  @@index([livestreamId, bannedUserId])
+  @@map("stream_bans")
 }

@@ -9,6 +9,13 @@ service StreamService {
   // Bulk: which of the given communities currently have a LIVE stream.
   // Backs community-service `isLive` on GET /communities/mine (fail-open).
   rpc GetActiveStreamsByCommunityIds (GetActiveStreamsRequest) returns (GetActiveStreamsResponse);
+  // Gate a viewer joining a livestream room: ACTIVE community membership
+  // (when STREAM_REQUIRE_MEMBERSHIP) + not banned from this stream.
+  rpc CheckStreamAccess (CheckStreamAccessRequest) returns (CheckStreamAccessResponse);
+  // Fetch live stats for a single stream (backoffice dashboard enrichment).
+  rpc GetStreamStats (GetStreamStatsRequest) returns (GetStreamStatsResponse);
+  // Admin: update (or clear) the thumbnail object key for a stream.
+  rpc AdminUpdateThumbnail (AdminUpdateThumbnailRequest) returns (AdminUpdateThumbnailResponse);
 }
 
 // One livestream comment row, shared by PostComment + GetComments.
@@ -47,4 +54,36 @@ message GetActiveStreamsRequest {
 }
 message GetActiveStreamsResponse {
   repeated string live_community_ids = 1; // subset of community_ids currently LIVE
+}
+
+message CheckStreamAccessRequest {
+  string stream_id = 1;
+  string user_id   = 2;
+}
+message CheckStreamAccessResponse {
+  bool   allowed     = 1; // may the user join + view the stream?
+  bool   is_banned   = 2; // explicitly banned from this stream
+  string status      = 3; // membership status: ACTIVE|PENDING|...|OWNER|""
+  string reason      = 4; // "" | NOT_MEMBER | BANNED | STREAM_NOT_FOUND
+  bool   can_comment = 5; // reflects stream.commentStatus; false = chat disabled
+}
+
+message GetStreamStatsRequest {
+  string stream_id = 1;
+}
+message GetStreamStatsResponse {
+  bool   found          = 1; // false if stream_id not found
+  string status         = 2; // PENDING | LIVE | ENDED | CANCELLED | ""
+  int64  viewer_count   = 3; // current live viewer count (from Redis when LIVE)
+  int64  peak_viewers   = 4;
+  int64  total_views    = 5;
+  int64  total_comments = 6;
+}
+
+message AdminUpdateThumbnailRequest {
+  string stream_id  = 1;
+  string thumbnail  = 2; // MinIO object key; "" to clear the thumbnail
+}
+message AdminUpdateThumbnailResponse {
+  bool success = 1;
 }

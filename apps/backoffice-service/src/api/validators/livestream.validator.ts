@@ -157,3 +157,30 @@ export const bulkReviewReportsSchema = reviewReportsSchema.extend({
   reportIds: reportIdsField,
 });
 export type BulkReviewReportsInput = z.infer<typeof bulkReviewReportsSchema>;
+
+// ---------------------------------------------------------------------------
+// Thumbnail upload (two-step presign → confirm).
+// ---------------------------------------------------------------------------
+const THUMBNAIL_MIME = ["image/jpeg", "image/png", "image/webp"] as const;
+
+export const thumbnailPresignSchema = z.object({
+  contentType: z.enum(THUMBNAIL_MIME),
+  contentLength: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(5 * 1024 * 1024),
+});
+export type ThumbnailPresignInput = z.infer<typeof thumbnailPresignSchema>;
+
+export const thumbnailSaveSchema = z.object({
+  objectKey: z
+    .string()
+    .trim()
+    .min(1)
+    .max(512)
+    .refine((k) => k.startsWith("stream/thumbnail/") && !k.includes(".."), {
+      message: "objectKey must be a stream/thumbnail/ key",
+    }),
+});
+export type ThumbnailSaveInput = z.infer<typeof thumbnailSaveSchema>;

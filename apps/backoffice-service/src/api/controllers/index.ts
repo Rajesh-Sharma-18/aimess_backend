@@ -24,6 +24,8 @@ export {
   endLivestream,
   bulkEndLivestreams,
   bulkReviewLivestreamReports,
+  presignThumbnailUpload,
+  saveThumbnail,
 } from "./livestream.controller.js";
 export {
   getDashboardOverview,

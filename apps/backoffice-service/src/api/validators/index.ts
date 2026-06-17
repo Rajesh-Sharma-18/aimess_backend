@@ -63,6 +63,10 @@ export {
   type ReviewReportsInput,
   type BulkEndInput,
   type BulkReviewReportsInput,
+  thumbnailPresignSchema,
+  thumbnailSaveSchema,
+  type ThumbnailPresignInput,
+  type ThumbnailSaveInput,
 } from "./livestream.validator.js";
 
 export {

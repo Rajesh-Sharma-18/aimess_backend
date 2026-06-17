@@ -1971,7 +1971,442 @@ export const openApiSchemas = {
     required: ["success", "data"],
   },
 
-  // ---- Livestreams ----
+  // ===========================================================================
+  // Stream Service — user-facing schemas
+  // ===========================================================================
+
+  StreamView: {
+    type: "object",
+    description: "A livestream record as seen by any authenticated user.",
+    required: [
+      "id",
+      "communityId",
+      "creatorId",
+      "title",
+      "sourceType",
+      "status",
+      "commentStatus",
+      "viewerCount",
+      "peakViewers",
+      "totalViews",
+      "totalComments",
+      "createdAt",
+      "updatedAt",
+    ],
+    properties: {
+      id: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
+      communityId: {
+        type: "string",
+        example: "550e8400-e29b-41d4-a716-446655440000",
+      },
+      creatorId: {
+        type: "string",
+        example: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+      },
+      title: { type: "string", example: "Weekly Dev Q&A" },
+      description: { type: "string", example: "Ask me anything." },
+      thumbnail: {
+        type: "string",
+        nullable: true,
+        example: "stream/thumbnail/64a1.../uuid.jpg",
+        description: "MinIO object key for the thumbnail image.",
+      },
+      sourceType: {
+        type: "string",
+        enum: ["PHONE_CAMERA", "URL", "YOUTUBE"],
+        example: "PHONE_CAMERA",
+      },
+      sourceUrl: {
+        type: "string",
+        nullable: true,
+        example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      },
+      status: {
+        type: "string",
+        enum: ["PENDING", "LIVE", "ENDED", "CANCELLED"],
+        example: "LIVE",
+      },
+      commentStatus: {
+        type: "boolean",
+        example: true,
+        description: "true = chat open, false = chat frozen.",
+      },
+      hlsUrl: {
+        type: "string",
+        nullable: true,
+        example: "http://srs.example.com:8080/live/abc123.m3u8",
+      },
+      flvUrl: {
+        type: "string",
+        nullable: true,
+        example: "http://srs.example.com:8080/live/abc123.flv",
+      },
+      dashUrl: {
+        type: "string",
+        nullable: true,
+        example: "http://srs.example.com:8080/live/abc123.mpd",
+      },
+      viewerCount: {
+        type: "integer",
+        example: 42,
+        description:
+          "Live count (from Redis when LIVE, DB fallback otherwise).",
+      },
+      peakViewers: { type: "integer", example: 87 },
+      totalViews: { type: "integer", example: 512 },
+      totalComments: { type: "integer", example: 203 },
+      livedAt: { type: "string", format: "date-time", nullable: true },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  StreamCreateResult: {
+    type: "object",
+    description: "Stream record plus owner-only fields returned on creation.",
+    allOf: [{ $ref: "#/components/schemas/StreamView" }],
+    properties: {
+      streamKey: {
+        type: "string",
+        example: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+        description:
+          "32-char hex key for OBS/SRS RTMP. NEVER share with viewers.",
+      },
+      ingest: {
+        type: "object",
+        description:
+          "Publish endpoints for PHONE_CAMERA mode (null for YOUTUBE).",
+        properties: {
+          whipUrl: {
+            type: "string",
+            nullable: true,
+            example:
+              "http://srs.example.com:1985/rtc/v1/whip/?app=live&stream=abc123",
+          },
+          rtmpUrl: {
+            type: "string",
+            nullable: true,
+            example: "rtmp://srs.example.com/live/abc123",
+          },
+        },
+      },
+    },
+  },
+
+  StreamComment: {
+    type: "object",
+    description: "A single livestream comment.",
+    required: [
+      "id",
+      "livestreamId",
+      "sentBy",
+      "senderName",
+      "message",
+      "createdAt",
+    ],
+    properties: {
+      id: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
+      livestreamId: { type: "string" },
+      sentBy: { type: "string", description: "userId of the author (UUID)." },
+      senderName: {
+        type: "string",
+        example: "alice",
+        description: "Snapshot display name at send time.",
+      },
+      senderAvatar: {
+        type: "string",
+        nullable: true,
+        description: "Snapshot avatar MinIO key.",
+      },
+      message: { type: "string", maxLength: 500, example: "Great stream!" },
+      clientCommentId: {
+        type: "string",
+        nullable: true,
+        description: "Client-supplied idempotency key.",
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  StreamBanItem: {
+    type: "object",
+    description: "A single ban entry on a livestream.",
+    required: ["userId", "bannedAt"],
+    properties: {
+      userId: { type: "string", description: "UUID of the banned user." },
+      reason: { type: "string", nullable: true, example: "Spamming" },
+      bannedAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  // ===========================================================================
+  // Admin Livestream schemas
+  // ===========================================================================
+
+  AdminLivestreamItem: {
+    type: "object",
+    description: "Compact livestream row for the admin list table.",
+    required: [
+      "livestreamId",
+      "title",
+      "status",
+      "community",
+      "creator",
+      "createdAt",
+    ],
+    properties: {
+      livestreamId: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
+      title: { type: "string", example: "Weekly Dev Q&A" },
+      status: { type: "string", enum: ["LIVE", "ENDED", "CANCELLED"] },
+      community: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          slug: { type: "string" },
+        },
+      },
+      creator: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: { type: "string", nullable: true },
+        },
+      },
+      createdAt: { type: "string", format: "date-time" },
+      startedAt: { type: "string", format: "date-time" },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+      durationSeconds: { type: "integer", example: 3600 },
+      viewerCount: { type: "integer", example: 134 },
+      reportCount: { type: "integer", example: 2 },
+      reportSeverity: {
+        type: "string",
+        enum: ["NONE", "LOW", "MEDIUM", "HIGH"],
+      },
+      thumbnailUrl: { type: "string", nullable: true },
+    },
+  },
+
+  AdminLivestreamDetail: {
+    type: "object",
+    description:
+      "Full livestream detail returned by GET /admin/v1/livestreams/{id}.",
+    required: ["livestreamId", "title", "status"],
+    properties: {
+      livestreamId: { type: "string" },
+      title: { type: "string" },
+      description: { type: "string" },
+      status: { type: "string", enum: ["LIVE", "ENDED", "CANCELLED"] },
+      thumbnailUrl: { type: "string", nullable: true },
+      endReasonCode: { type: "string", nullable: true },
+      endedBy: {
+        type: "object",
+        nullable: true,
+        properties: {
+          adminId: { type: "string" },
+          adminName: { type: "string" },
+        },
+      },
+      community: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          slug: { type: "string" },
+          memberCount: { type: "integer" },
+          creatorRole: { type: "string" },
+        },
+      },
+      creator: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: { type: "string", nullable: true },
+          accountStatus: { type: "string" },
+          totalStreams: { type: "integer" },
+          priorStrikes: { type: "integer" },
+        },
+      },
+      viewerStats: {
+        type: "object",
+        properties: {
+          currentViewers: { type: "integer" },
+          peakViewers: { type: "integer" },
+          totalUniqueViewers: { type: "integer" },
+          chatMessageCount: { type: "integer" },
+        },
+      },
+      reportsSummary: {
+        type: "object",
+        properties: {
+          total: { type: "integer" },
+          open: { type: "integer" },
+          reviewing: { type: "integer" },
+          resolved: { type: "integer" },
+          dismissed: { type: "integer" },
+          severity: { type: "string", enum: ["NONE", "LOW", "MEDIUM", "HIGH"] },
+        },
+      },
+      moderationHistory: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            action: { type: "string" },
+            adminId: { type: "string" },
+            adminName: { type: "string" },
+            reasonCode: { type: "string", nullable: true },
+            note: { type: "string", nullable: true },
+            createdAt: { type: "string", format: "date-time" },
+          },
+        },
+      },
+      createdAt: { type: "string", format: "date-time" },
+      startedAt: { type: "string", format: "date-time" },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+    },
+  },
+
+  AdminLivestreamReport: {
+    type: "object",
+    description: "A single report filed against a livestream.",
+    properties: {
+      reportId: { type: "string" },
+      livestreamId: { type: "string" },
+      reporter: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+        },
+      },
+      reportType: {
+        type: "string",
+        enum: [
+          "HARASSMENT",
+          "SPAM",
+          "COPYRIGHT",
+          "NUDITY",
+          "VIOLENCE",
+          "HATE_SPEECH",
+          "OTHER",
+        ],
+      },
+      description: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["OPEN", "REVIEWING", "RESOLVED", "DISMISSED"],
+      },
+      resolution: {
+        type: "object",
+        nullable: true,
+        properties: {
+          action: { type: "string" },
+          note: { type: "string", nullable: true },
+          resolvedBy: { type: "string" },
+          resolvedAt: { type: "string", format: "date-time" },
+        },
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  AdminEndLivestreamResult: {
+    type: "object",
+    description: "Result of ending a single livestream via admin action.",
+    properties: {
+      livestreamId: { type: "string" },
+      status: { type: "string", example: "ENDED" },
+      endedAt: { type: "string", format: "date-time" },
+      endedBy: {
+        type: "object",
+        properties: {
+          adminId: { type: "string" },
+          adminName: { type: "string" },
+        },
+      },
+      reasonCode: { type: "string" },
+      moderationActionId: { type: "string" },
+      auditLogId: { type: "string", nullable: true },
+      creatorNotified: { type: "boolean" },
+      strikeIssued: { type: "boolean" },
+    },
+  },
+
+  AdminBulkResult: {
+    type: "object",
+    description: "Aggregate result of a bulk operation.",
+    properties: {
+      requested: { type: "integer", example: 5 },
+      succeeded: { type: "integer", example: 4 },
+      failed: { type: "integer", example: 1 },
+      results: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            ok: { type: "boolean" },
+            status: { type: "string", nullable: true },
+            error: {
+              type: "object",
+              nullable: true,
+              properties: {
+                code: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+
+  AdminThumbnailPresignResult: {
+    type: "object",
+    description: "Presigned PUT URL for a stream thumbnail admin upload.",
+    required: ["uploadUrl", "objectKey", "expiresIn", "maxBytes", "headers"],
+    properties: {
+      uploadUrl: {
+        type: "string",
+        example:
+          "https://minio.example.com/aimess-stream/stream/thumbnail/abc/uuid.jpg?X-Amz-Expires=300&...",
+        description:
+          "Short-lived presigned PUT URL. PUT the image directly here.",
+      },
+      objectKey: {
+        type: "string",
+        example: "stream/thumbnail/64a1b2c3d4e5f6a7b8c9d0e1/f47ac10b.jpg",
+        description:
+          "Pass this to PATCH /admin/v1/livestreams/{id}/thumbnail to commit the upload.",
+      },
+      expiresIn: {
+        type: "integer",
+        example: 300,
+        description: "URL lifetime in seconds.",
+      },
+      maxBytes: {
+        type: "integer",
+        example: 5242880,
+        description: "Maximum allowed file size in bytes (5 MB).",
+      },
+      headers: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        example: { "Content-Type": "image/jpeg" },
+        description: "Headers the client must set on the PUT request.",
+      },
+    },
+  },
+
+  // ---- Livestreams (legacy stub — kept for backward compat, prefer AdminLivestreamItem) ----
   AdminLivestream: {
     type: "object",
     properties: {

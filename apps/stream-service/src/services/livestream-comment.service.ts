@@ -1,7 +1,10 @@
 import { logger } from "@aimess/logger";
+import { ForbiddenError } from "@aimess/errors";
 
 import type { LivestreamComment } from "../generated/prisma/index.js";
 import type { LivestreamCommentRepository } from "../repositories/livestream-comment.repository.js";
+import type { LivestreamRepository } from "../repositories/livestream.repository.js";
+import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { redis as RedisClient } from "../config/redis.js";
 import type { userGrpcClient as UserGrpcClient } from "../grpc/user.client.js";
 
@@ -35,8 +38,10 @@ function toDto(c: LivestreamComment): CommentDto {
 export class LivestreamCommentService {
   constructor(
     private readonly commentRepo: LivestreamCommentRepository,
+    private readonly streamRepo: LivestreamRepository,
     private readonly userClient: typeof UserGrpcClient,
-    private readonly redis: typeof RedisClient
+    private readonly redis: typeof RedisClient,
+    private readonly banRepo: LivestreamBanRepository
   ) {}
 
   /**
@@ -57,6 +62,18 @@ export class LivestreamCommentService {
         params.clientCommentId
       );
       if (existing) return toDto(existing);
+    }
+
+    // Enforce ban + commentStatus (defend at write path, not just join gate).
+    const stream = await this.streamRepo.findById(params.livestreamId);
+    if (
+      stream &&
+      (await this.banRepo.isBanned(params.livestreamId, params.userId))
+    ) {
+      throw new ForbiddenError("COMMENTS_BANNED");
+    }
+    if (stream && !stream.commentStatus) {
+      throw new ForbiddenError("COMMENTS_DISABLED");
     }
 
     // Enrich author snapshot (best-effort; degrades to empty on user-service down).
@@ -83,6 +100,15 @@ export class LivestreamCommentService {
       message: params.message,
       clientCommentId: params.clientCommentId ?? null,
     });
+
+    // Best-effort counter — never block the comment response on a counter update.
+    this.streamRepo
+      .incrementTotalComments(params.livestreamId)
+      .catch((err: unknown) =>
+        logger.warn(
+          `incrementTotalComments failed stream=${params.livestreamId}: ${String(err)}`
+        )
+      );
 
     const dto = toDto(saved);
 

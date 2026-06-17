@@ -8,7 +8,10 @@ import type { LivestreamCommentService } from "../../services/livestream-comment
 import {
   createStreamSchema,
   listStreamsQuerySchema,
+  updateStreamSchema,
   commentsQuerySchema,
+  banUserSchema,
+  setCommentStatusSchema,
 } from "../validators/index.js";
 
 export class StreamController {
@@ -26,6 +29,7 @@ export class StreamController {
       creatorId: req.auth.userId,
       title: parsed.data.title,
       description: parsed.data.description,
+      thumbnail: parsed.data.thumbnail,
       sourceType: parsed.data.sourceType,
       sourceUrl: parsed.data.sourceUrl,
     });
@@ -45,8 +49,31 @@ export class StreamController {
     const id = typeof req.params.id === "string" ? req.params.id : "";
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
 
-    const result = await this.livestreamService.getStream(id);
+    const result = await this.livestreamService.getStream(id, req.auth.userId);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  updateStream = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = updateStreamSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const result = await this.livestreamService.updateStream(
+      id,
+      req.auth.userId,
+      parsed.data
+    );
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  deleteStream = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.deleteStream(id, req.auth.userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ deleted: id }));
   });
 
   stopStream = asyncHandler(async (req: Request, res: Response) => {
@@ -66,5 +93,68 @@ export class StreamController {
 
     const result = await this.commentService.getComments(id, parsed.data);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  getViewers = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const items = await this.livestreamService.getViewers(id, req.auth.userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ items }));
+  });
+
+  // Owner enables/disables live chat for the stream.
+  setCommentStatus = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = setCommentStatusSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const result = await this.livestreamService.setCommentStatus(
+      id,
+      req.auth.userId,
+      parsed.data.enabled
+    );
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  // Owner bans a user from the stream (kicks them live + blocks rejoin).
+  banUser = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = banUserSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.banUser(
+      id,
+      req.auth.userId,
+      parsed.data.userId,
+      parsed.data.reason
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ banned: parsed.data.userId }));
+  });
+
+  // Owner lifts a ban.
+  unbanUser = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    const userId =
+      typeof req.params.userId === "string" ? req.params.userId : "";
+    if (!id || !userId) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.unbanUser(id, req.auth.userId, userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ unbanned: userId }));
+  });
+
+  // Owner lists banned users.
+  listBans = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const items = await this.livestreamService.listBans(id, req.auth.userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ items }));
   });
 }

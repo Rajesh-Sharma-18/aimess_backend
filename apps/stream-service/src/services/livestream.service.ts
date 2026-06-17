@@ -11,6 +11,7 @@ import {
 import { env } from "../config/env.js";
 import type { Livestream } from "../generated/prisma/index.js";
 import type { LivestreamRepository } from "../repositories/livestream.repository.js";
+import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { SrsService, IngestEndpoints } from "./srs.service.js";
 import type { CommunityGrpcClient } from "../grpc/community.client.js";
 import type { redis as RedisClient } from "../config/redis.js";
@@ -27,10 +28,14 @@ export interface StreamView {
   sourceType: string;
   sourceUrl: string | null;
   status: string;
+  commentStatus: boolean;
   hlsUrl: string | null;
   flvUrl: string | null;
+  dashUrl: string | null;
   viewerCount: number;
   peakViewers: number;
+  totalViews: number;
+  totalComments: number;
   livedAt: Date | null;
   endedAt: Date | null;
   createdAt: Date;
@@ -49,7 +54,33 @@ export interface ListStreamsResult {
   hasMore: boolean;
 }
 
-function toView(s: Livestream): StreamView {
+/** Result of the join gate (CheckStreamAccess). */
+export interface StreamAccess {
+  allowed: boolean;
+  isBanned: boolean;
+  status: string;
+  reason: string; // "" | NOT_MEMBER | BANNED | STREAM_NOT_FOUND
+  canComment: boolean; // reflects stream.commentStatus; false = chat disabled
+}
+
+/** A ban row as exposed over REST. */
+export interface BanView {
+  userId: string;
+  reason: string | null;
+  bannedAt: Date;
+}
+
+/** Stats shape returned to the backoffice over gRPC. */
+export interface StreamStats {
+  found: boolean;
+  status: string;
+  viewerCount: number;
+  peakViewers: number;
+  totalViews: number;
+  totalComments: number;
+}
+
+function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
   return {
     id: s.id,
     communityId: s.communityId,
@@ -60,10 +91,14 @@ function toView(s: Livestream): StreamView {
     sourceType: s.sourceType,
     sourceUrl: s.sourceUrl,
     status: s.status,
+    commentStatus: s.commentStatus,
     hlsUrl: s.hlsUrl,
     flvUrl: s.flvUrl,
+    dashUrl: s.dashUrl ?? null,
     viewerCount: s.viewerCount,
     peakViewers: s.peakViewers,
+    totalViews: s.totalViews,
+    totalComments: s.totalComments,
     livedAt: s.livedAt,
     endedAt: s.endedAt,
     createdAt: s.createdAt,
@@ -71,12 +106,15 @@ function toView(s: Livestream): StreamView {
   };
 }
 
+const sessionKey = (streamId: string) => `stream:session:users:${streamId}`;
+
 export class LivestreamService {
   constructor(
     private readonly streamRepo: LivestreamRepository,
     private readonly srsService: SrsService,
     private readonly communityClient: CommunityGrpcClient,
     private readonly redis: typeof RedisClient,
+    private readonly banRepo: LivestreamBanRepository,
     private readonly eventPublisher: typeof publishStreamEvent = publishStreamEvent
   ) {}
 
@@ -84,20 +122,33 @@ export class LivestreamService {
    * Go-live: authorize the creator (membership gate, optional), enforce the
    * per-community concurrency cap, mint a stream key + playback URLs and persist
    * a PENDING stream. Returns the record plus owner-only ingest endpoints.
+   *
+   * YOUTUBE streams skip SRS entirely — sourceUrl is the embed link, no ingest
+   * endpoints are minted, and all playback URLs are null.
    */
   async createStream(params: {
     communityId: string;
     creatorId: string;
     title: string;
     description?: string;
+    thumbnail?: string;
     sourceType: string;
     sourceUrl?: string;
   }): Promise<CreateStreamResult> {
     if (env.STREAM_REQUIRE_MEMBERSHIP) {
-      const membership = await this.communityClient.validateMembership(
-        params.communityId,
-        params.creatorId
-      );
+      let membership;
+      try {
+        membership = await this.communityClient.validateMembership(
+          params.communityId,
+          params.creatorId
+        );
+      } catch (error) {
+        logger.warn(
+          `createStream membership check failed for community=${params.communityId}: ${String(error)}`
+        );
+        // Fail-closed: can't verify membership → deny go-live.
+        throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
+      }
       if (!membership.isMember) {
         throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
       }
@@ -110,30 +161,37 @@ export class LivestreamService {
       throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
     }
 
-    if (params.sourceType === "URL" && !params.sourceUrl) {
+    const isYoutube = params.sourceType === "YOUTUBE";
+    if ((params.sourceType === "URL" || isYoutube) && !params.sourceUrl) {
       throw new BadRequestError("STREAM_SOURCE_URL_REQUIRED");
     }
 
     const streamKey = randomBytes(16).toString("hex");
-    const playback = this.srsService.buildPlaybackUrls(streamKey);
+
+    // YouTube streams embed a remote source — no SRS ingest/playback.
+    const playback = isYoutube
+      ? null
+      : this.srsService.buildPlaybackUrls(streamKey);
 
     const created = await this.streamRepo.create({
       communityId: params.communityId,
       creatorId: params.creatorId,
       title: params.title,
       description: params.description ?? "",
+      thumbnail: params.thumbnail ?? null,
       sourceType: params.sourceType,
       sourceUrl: params.sourceUrl ?? null,
       streamKey,
       status: "PENDING",
-      hlsUrl: playback.hlsUrl,
-      flvUrl: playback.flvUrl,
+      hlsUrl: playback?.hlsUrl ?? null,
+      flvUrl: playback?.flvUrl ?? null,
+      dashUrl: playback?.dashUrl ?? null,
     });
 
     return {
       ...toView(created),
       streamKey,
-      ingest: this.srsService.buildIngestEndpoints(streamKey),
+      ingest: isYoutube ? {} : this.srsService.buildIngestEndpoints(streamKey),
     };
   }
 
@@ -161,6 +219,7 @@ export class LivestreamService {
       livedAt: new Date(),
       hlsUrl: playback.hlsUrl,
       flvUrl: playback.flvUrl,
+      dashUrl: playback.dashUrl,
     });
 
     await this.publishStatus(updated.id, "LIVE");
@@ -260,6 +319,68 @@ export class LivestreamService {
     return toView(updated);
   }
 
+  /** Owner updates editable stream metadata (title, description, thumbnail). */
+  async updateStream(
+    id: string,
+    requesterId: string,
+    updates: { title?: string; description?: string; thumbnail?: string }
+  ): Promise<StreamView> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+
+    const updated = await this.streamRepo.updateById(id, {
+      ...(updates.title !== undefined ? { title: updates.title } : {}),
+      ...(updates.description !== undefined
+        ? { description: updates.description }
+        : {}),
+      ...(updates.thumbnail !== undefined
+        ? { thumbnail: updates.thumbnail }
+        : {}),
+    });
+
+    // Broadcast so viewers see the updated title/description in real time.
+    try {
+      await this.redis.publish(
+        `stream:${id}`,
+        JSON.stringify({
+          event: "stream:info_updated",
+          data: {
+            streamId: id,
+            title: updated.title,
+            description: updated.description ?? "",
+            thumbnail: updated.thumbnail ?? null,
+          },
+        })
+      );
+    } catch (err) {
+      logger.warn(
+        `info_updated broadcast failed for stream=${id}: ${String(err)}`
+      );
+    }
+
+    return toView(updated);
+  }
+
+  /**
+   * Owner deletes the stream record. Only PENDING, ENDED, and CANCELLED streams
+   * may be deleted — a LIVE stream must be stopped first.
+   */
+  async deleteStream(id: string, requesterId: string): Promise<void> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (stream.status === "LIVE") {
+      throw new ConflictError("STREAM_IS_LIVE");
+    }
+
+    await this.streamRepo.deleteById(id);
+  }
+
   async listStreams(params: {
     communityId?: string;
     status?: string;
@@ -280,10 +401,20 @@ export class LivestreamService {
     return { items, nextCursor, hasMore };
   }
 
-  /** Single stream, with the live Redis viewer count merged in when present. */
-  async getStream(id: string): Promise<StreamView> {
+  /**
+   * Single stream fetch. When `userId` is provided the ban list is checked and
+   * a ForbiddenError is thrown if the user is banned — preventing banned users
+   * from reading stream metadata over REST. The live Redis viewer count is merged
+   * in when present.
+   */
+  async getStream(id: string, userId?: string): Promise<StreamView> {
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+
+    if (userId && (await this.banRepo.isBanned(id, userId))) {
+      throw new ForbiddenError("STREAM_BANNED");
+    }
+
     const view = toView(stream);
 
     try {
@@ -306,6 +437,281 @@ export class LivestreamService {
     communityIds: string[]
   ): Promise<string[]> {
     return this.streamRepo.findLiveCommunityIds(communityIds);
+  }
+
+  /**
+   * Owner lists the userIds currently watching the stream. The list is maintained
+   * by the api-gateway in Redis set `stream:session:users:<streamId>`.
+   */
+  async getViewers(id: string, requesterId: string): Promise<string[]> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+
+    try {
+      const members = await this.redis.smembers(sessionKey(id));
+      return members;
+    } catch (error) {
+      logger.warn(
+        `getViewers Redis read failed for stream=${id}: ${String(error)}`
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Join gate (called by the gateway over gRPC on stream:join). A user may view
+   * a stream when they are not banned AND (the membership gate is off OR they are
+   * the owner OR an ACTIVE community member). Fail-closed on the membership check
+   * is inherited from the community gRPC client (returns isMember:false on error).
+   */
+  async checkAccess(streamId: string, userId: string): Promise<StreamAccess> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) {
+      return {
+        allowed: false,
+        isBanned: false,
+        status: "",
+        reason: "STREAM_NOT_FOUND",
+        canComment: false,
+      };
+    }
+
+    // Bans always win, even for would-be members.
+    if (await this.banRepo.isBanned(streamId, userId)) {
+      return {
+        allowed: false,
+        isBanned: true,
+        status: "",
+        reason: "BANNED",
+        canComment: false,
+      };
+    }
+
+    const canComment = stream.commentStatus;
+
+    // The owner can always watch their own stream.
+    if (stream.creatorId === userId) {
+      this.streamRepo
+        .incrementTotalViews(streamId)
+        .catch((err: unknown) =>
+          logger.warn(
+            `incrementTotalViews failed stream=${streamId}: ${String(err)}`
+          )
+        );
+      return {
+        allowed: true,
+        isBanned: false,
+        status: "OWNER",
+        reason: "",
+        canComment,
+      };
+    }
+
+    if (env.STREAM_REQUIRE_MEMBERSHIP) {
+      // Viewing is always allowed (ban check above is the only hard gate).
+      // Membership only controls commenting: non-members can watch silently.
+      // A community-service outage (throw) is treated as "member" so viewers
+      // aren't locked out of live streams during infra hiccups.
+      let isMember: boolean;
+      try {
+        const membership = await this.communityClient.validateMembership(
+          stream.communityId,
+          userId
+        );
+        isMember = membership.isMember;
+      } catch (error) {
+        logger.warn(
+          `checkAccess: community service unavailable for stream=${streamId} user=${userId}: ${String(error)}`
+        );
+        isMember = true; // fail-open — don't black out live streams
+      }
+      this.streamRepo
+        .incrementTotalViews(streamId)
+        .catch((err: unknown) =>
+          logger.warn(
+            `incrementTotalViews failed stream=${streamId}: ${String(err)}`
+          )
+        );
+      return {
+        allowed: true,
+        isBanned: false,
+        status: "",
+        reason: "",
+        canComment: isMember ? canComment : false,
+      };
+    }
+
+    this.streamRepo
+      .incrementTotalViews(streamId)
+      .catch((err: unknown) =>
+        logger.warn(
+          `incrementTotalViews failed stream=${streamId}: ${String(err)}`
+        )
+      );
+    return {
+      allowed: true,
+      isBanned: false,
+      status: "",
+      reason: "",
+      canComment,
+    };
+  }
+
+  /**
+   * Owner bans a user from the stream. Idempotent. Publishes a `stream:banned`
+   * event so the gateway kicks the user's live sockets in real time. The join
+   * gate (checkAccess) then blocks any rejoin.
+   */
+  async banUser(
+    streamId: string,
+    requesterId: string,
+    targetUserId: string,
+    reason?: string
+  ): Promise<void> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (targetUserId === stream.creatorId) {
+      throw new BadRequestError("STREAM_CANNOT_BAN_OWNER");
+    }
+
+    await this.banRepo.ban({
+      livestreamId: streamId,
+      bannedUserId: targetUserId,
+      bannedBy: requesterId,
+      reason: reason ?? null,
+    });
+
+    try {
+      await this.redis.publish(
+        `stream:${streamId}`,
+        JSON.stringify({
+          event: "stream:banned",
+          data: { streamId, userId: targetUserId },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `ban broadcast failed for stream=${streamId}: ${String(error)}`
+      );
+    }
+  }
+
+  /** Owner lifts a ban. Idempotent. */
+  async unbanUser(
+    streamId: string,
+    requesterId: string,
+    targetUserId: string
+  ): Promise<void> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    await this.banRepo.unban(streamId, targetUserId);
+  }
+
+  /** Owner lists who is banned from the stream. */
+  async listBans(streamId: string, requesterId: string): Promise<BanView[]> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    const bans = await this.banRepo.listByStream(streamId);
+    return bans.map((b) => ({
+      userId: b.bannedUserId,
+      reason: b.reason,
+      bannedAt: b.bannedAt,
+    }));
+  }
+
+  /**
+   * Owner toggles chat on/off. Broadcasts a `stream:comment_status` event via
+   * Redis so all connected viewers' Chat components update `canComment` live.
+   */
+  async setCommentStatus(
+    streamId: string,
+    requesterId: string,
+    enabled: boolean
+  ): Promise<StreamView> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId)
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+
+    const updated = await this.streamRepo.updateById(streamId, {
+      commentStatus: enabled,
+    });
+
+    try {
+      await this.redis.publish(
+        `stream:${streamId}`,
+        JSON.stringify({
+          event: "stream:comment_status",
+          data: { streamId, commentStatus: enabled },
+        })
+      );
+    } catch (err) {
+      logger.warn(
+        `comment_status broadcast failed for stream=${streamId}: ${String(err)}`
+      );
+    }
+
+    return toView(updated);
+  }
+
+  /**
+   * Stats snapshot for the backoffice gRPC endpoint. Merges the live Redis
+   * viewer count so the backoffice always sees a real-time number.
+   */
+  async getStreamStatsForBackoffice(streamId: string): Promise<StreamStats> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) {
+      return {
+        found: false,
+        status: "",
+        viewerCount: 0,
+        peakViewers: 0,
+        totalViews: 0,
+        totalComments: 0,
+      };
+    }
+
+    let viewerCount = stream.viewerCount;
+    try {
+      const liveCount = await this.redis.get(`stream:viewers:${streamId}`);
+      if (liveCount !== null) {
+        const parsed = Number(liveCount);
+        if (Number.isFinite(parsed)) viewerCount = parsed;
+      }
+    } catch {
+      // best-effort
+    }
+
+    return {
+      found: true,
+      status: stream.status,
+      viewerCount,
+      peakViewers: stream.peakViewers,
+      totalViews: stream.totalViews,
+      totalComments: stream.totalComments,
+    };
+  }
+
+  /** Admin override: update (or clear) the thumbnail objectKey without owner check. */
+  async adminUpdateThumbnail(
+    streamId: string,
+    thumbnail: string | null
+  ): Promise<void> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    await this.streamRepo.updateById(streamId, { thumbnail });
   }
 
   private async publishStatus(streamId: string, status: string): Promise<void> {

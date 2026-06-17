@@ -49,9 +49,24 @@ export interface GetCommentsResult {
   hasMore: boolean;
 }
 
+export interface CheckStreamAccessParams {
+  streamId: string;
+  userId: string;
+}
+export interface CheckStreamAccessResult {
+  allowed: boolean;
+  isBanned: boolean;
+  status: string;
+  reason: string;
+  canComment: boolean;
+}
+
 export interface StreamClient {
   postComment(p: PostCommentParams): Promise<PostCommentResult>;
   getComments(p: GetCommentsParams): Promise<GetCommentsResult>;
+  checkStreamAccess(
+    p: CheckStreamAccessParams
+  ): Promise<CheckStreamAccessResult>;
 }
 
 /** int64 createdAt arrives as a string (proto-loader longs:String); coerce. */
@@ -104,8 +119,18 @@ export function createStreamClient(): StreamClient {
       }))
   );
 
+  const checkAccessBreaker = makeBreaker(
+    "stream.checkStreamAccess",
+    (p: CheckStreamAccessParams) =>
+      call<unknown, CheckStreamAccessResult>("checkStreamAccess", {
+        streamId: p.streamId,
+        userId: p.userId,
+      })
+  );
+
   return {
     postComment: (p) => postCommentBreaker.fire(p),
     getComments: (p) => getCommentsBreaker.fire(p),
+    checkStreamAccess: (p) => checkAccessBreaker.fire(p),
   };
 }

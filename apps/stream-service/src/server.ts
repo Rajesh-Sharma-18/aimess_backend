@@ -14,6 +14,7 @@ import { startGrpcServer } from "./grpc/server.js";
 import {
   LivestreamRepository,
   LivestreamCommentRepository,
+  LivestreamBanRepository,
 } from "./repositories/index.js";
 
 // -- Services --
@@ -51,6 +52,7 @@ async function start() {
     // 1. Repositories (inject Prisma client)
     const streamRepo = new LivestreamRepository(prisma);
     const commentRepo = new LivestreamCommentRepository(prisma);
+    const banRepo = new LivestreamBanRepository(prisma);
 
     // 2. Services (inject repos + clients + redis)
     const srsService = new SrsService();
@@ -58,12 +60,15 @@ async function start() {
       streamRepo,
       srsService,
       communityGrpcClient,
-      redis
+      redis,
+      banRepo
     );
     const commentService = new LivestreamCommentService(
       commentRepo,
+      streamRepo,
       userGrpcClient,
-      redis
+      redis,
+      banRepo
     );
 
     // 3. Controllers

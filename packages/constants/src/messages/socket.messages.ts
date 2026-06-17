@@ -213,6 +213,10 @@ export const SOCKET_MESSAGES = {
     vi: "Đã thêm cảm xúc",
     en: "Reaction added successfully",
   },
+  SOCKET_STREAM_LOAD_MORE: {
+    vi: "Đã tải thêm bình luận",
+    en: "Loaded more comments",
+  },
 
   // ── /notify ─────────────────────────────────────────────────────────────
   SOCKET_NOTIFICATIONS_FETCHED: {

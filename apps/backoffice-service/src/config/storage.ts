@@ -3,9 +3,12 @@ import {
   createStorageClient,
   type MediaUrlStrategy,
   type StorageClient,
+  type UploadTypeDef,
 } from "@aimess/storage";
 
 import { env } from "./env.js";
+
+const MB = 1024 * 1024;
 
 /**
  * Client used ONLY to sign presigned view (GET) URLs for user avatars on the
@@ -32,3 +35,19 @@ export const mediaUrlStrategy: MediaUrlStrategy = createMediaUrlStrategy({
   defaultViewExpiresIn: env.MINIO_AVATAR_VIEW_EXPIRES_IN,
   cdnBaseUrl: null,
 });
+
+/**
+ * Upload type definition for admin-managed stream thumbnails.
+ * Backoffice generates presigned PUT URLs; the admin client uploads directly
+ * to MinIO, then confirms with PATCH /v1/livestreams/:id/thumbnail.
+ */
+export const STREAM_THUMBNAIL_UPLOAD_DEF: UploadTypeDef = {
+  bucket: env.MINIO_BUCKET_STREAM,
+  keyPrefix: "stream/thumbnail",
+  maxBytes: 5 * MB,
+  allowedMime: {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+  },
+};

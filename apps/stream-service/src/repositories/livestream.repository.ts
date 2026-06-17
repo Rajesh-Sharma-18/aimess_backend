@@ -22,6 +22,7 @@ export class LivestreamRepository {
     status?: string;
     hlsUrl?: string | null;
     flvUrl?: string | null;
+    dashUrl?: string | null;
   }): Promise<Livestream> {
     return this.prisma.livestream.create({
       data: {
@@ -36,7 +37,8 @@ export class LivestreamRepository {
         status: data.status ?? "PENDING",
         hlsUrl: data.hlsUrl ?? null,
         flvUrl: data.flvUrl ?? null,
-      },
+        dashUrl: data.dashUrl ?? null,
+      } as any, // eslint-disable-line @typescript-eslint/no-explicit-any
     });
   }
 
@@ -50,9 +52,15 @@ export class LivestreamRepository {
 
   async updateById(
     id: string,
-    data: Prisma.LivestreamUpdateInput
+    // Accept any extra fields (e.g. dashUrl) before `prisma generate` adds them to the generated type.
+    data: Prisma.LivestreamUpdateInput & Record<string, unknown>
   ): Promise<Livestream> {
-    return this.prisma.livestream.update({ where: { id }, data });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.prisma.livestream.update({ where: { id }, data: data as any });
+  }
+
+  async deleteById(id: string): Promise<void> {
+    await this.prisma.livestream.delete({ where: { id } });
   }
 
   /**
@@ -82,6 +90,22 @@ export class LivestreamRepository {
   async countActiveByCommunity(communityId: string): Promise<number> {
     return this.prisma.livestream.count({
       where: { communityId, status: { in: [...ACTIVE_STATUSES] } },
+    });
+  }
+
+  /** Atomic +1 on totalViews. Best-effort — callers should not throw on failure. */
+  async incrementTotalViews(id: string): Promise<void> {
+    await this.prisma.livestream.update({
+      where: { id },
+      data: { totalViews: { increment: 1 } },
+    });
+  }
+
+  /** Atomic +1 on totalComments. Best-effort — callers should not throw on failure. */
+  async incrementTotalComments(id: string): Promise<void> {
+    await this.prisma.livestream.update({
+      where: { id },
+      data: { totalComments: { increment: 1 } },
     });
   }
 

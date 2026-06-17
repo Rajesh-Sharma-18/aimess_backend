@@ -28,6 +28,7 @@ const envSchema = z.object({
   USER_GRPC_URL: z.string().default("0.0.0.0:4002"),
   COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
   CHAT_GRPC_URL: z.string().default("0.0.0.0:4004"),
+  STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
 
   /**
    * Comma-separated CORS origin allowlist (e.g. the admin-panel URL). LAN /
@@ -106,9 +107,16 @@ const envSchema = z.object({
   // Community avatar/cover bucket (community-service owns the keys). Backoffice
   // only signs view URLs for it; the strategy resolves any bucket by name.
   MINIO_BUCKET_COMMUNITY: z.string().min(1).default("aimess-community"),
+  // Stream thumbnails bucket — backoffice owns presigned PUT URLs for admin uploads.
+  MINIO_BUCKET_STREAM: z.string().min(1).default("aimess-stream"),
   MINIO_REGION: z.string().default("us-east-1"),
   /** Presigned GET lifetime for avatar display URLs (seconds). */
   MINIO_AVATAR_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
+  /** Presigned PUT lifetime for stream thumbnail admin uploads (seconds). */
+  MINIO_STREAM_THUMBNAIL_UPLOAD_EXPIRES_IN: z.coerce
+    .number()
+    .positive()
+    .default(300),
 });
 
 const parsed = envSchema.safeParse(process.env);

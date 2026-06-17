@@ -12,6 +12,7 @@ export interface IngestEndpoints {
 export interface PlaybackUrls {
   flvUrl: string;
   hlsUrl: string;
+  dashUrl: string;
 }
 
 /**
@@ -52,6 +53,7 @@ export class SrsService {
     return {
       flvUrl: `${env.SRS_HLS_BASE}/live/${streamKey}.flv`,
       hlsUrl: `${env.SRS_HLS_BASE}/live/${streamKey}.m3u8`,
+      dashUrl: `${env.SRS_HLS_BASE}/live/${streamKey}.mpd`,
     };
   }
 

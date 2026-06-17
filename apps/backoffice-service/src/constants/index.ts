@@ -70,6 +70,7 @@ export const AUDIT_ACTIONS = {
   LIVESTREAM_ENDED: "livestream.ended",
   LIVESTREAM_BULK_ENDED: "livestream.bulk_ended",
   LIVESTREAM_REPORTS_BULK_REVIEWED: "livestream.reports_bulk_reviewed",
+  LIVESTREAM_THUMBNAIL_UPDATED: "livestream.thumbnail_updated",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

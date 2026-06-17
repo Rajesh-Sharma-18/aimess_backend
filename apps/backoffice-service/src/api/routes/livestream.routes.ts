@@ -8,6 +8,8 @@ import {
   getLivestreamDetails,
   listLivestreamReports,
   listLivestreams,
+  presignThumbnailUpload,
+  saveThumbnail,
 } from "../controllers/index.js";
 import {
   adminAuth,
@@ -23,6 +25,8 @@ import {
   listLivestreamReportsQuerySchema,
   listLivestreamsQuerySchema,
   livestreamIdParamSchema,
+  thumbnailPresignSchema,
+  thumbnailSaveSchema,
 } from "../validators/index.js";
 
 /** Livestream Management admin API — self-prefixed with `/livestreams`. */
@@ -74,4 +78,20 @@ livestreamRoutes.post(
   validateParams(livestreamIdParamSchema),
   validateBody(endLivestreamSchema),
   endLivestream
+);
+
+// Thumbnail management — two-step: presign → client PUT to MinIO → confirm.
+livestreamRoutes.post(
+  "/livestreams/:livestreamId/thumbnail/presign",
+  requirePermission(PERMISSIONS.LIVESTREAMS_MODERATE),
+  validateParams(livestreamIdParamSchema),
+  validateBody(thumbnailPresignSchema),
+  presignThumbnailUpload
+);
+livestreamRoutes.patch(
+  "/livestreams/:livestreamId/thumbnail",
+  requirePermission(PERMISSIONS.LIVESTREAMS_MODERATE),
+  validateParams(livestreamIdParamSchema),
+  validateBody(thumbnailSaveSchema),
+  saveThumbnail
 );
