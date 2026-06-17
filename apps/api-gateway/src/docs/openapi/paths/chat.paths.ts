@@ -1100,10 +1100,19 @@ const inviteLinksByRoom = {
 // =============================================================================
 // Notifications
 // =============================================================================
+// Real-time notification spine (shipped 2026-06-17):
+// When a business action occurs (community member-added, friend request, chat mention, etc.),
+// notifications-service consumes the RabbitMQ event and calls chat-service's createNotification gRPC.
+// The gRPC writes the inbox row AND publishes to Redis notify:<userId>.
+// The gateway's /notify Socket.IO namespace relays the event to connected clients in real time.
+// Offline users receive FCM push; online users skip push (real-time socket is sufficient).
+// See docs/IMPLEMENTATION-NOTES.md "Real-time Notification Spine" for full flow.
 const notifications = {
   get: {
     tags: ["Chat — Notifications"],
     summary: "List notifications",
+    description:
+      "Fetch the user's in-app notification inbox. Real-time updates arrive via Socket.IO /notify namespace; use this endpoint for initial load and pagination.",
     security: [{ bearerAuth: [] }],
     parameters: [cursorParam(), limitParam(20)],
     responses: {

@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 
 info:
   title: AIMess Real-time API (Socket.IO)
-  version: 1.0.0
+  version: 2.0.0
   description: |
     Real-time contract between AIMess mobile/web clients and the backend.
 
@@ -11,6 +11,12 @@ info:
     microservice over gRPC, and fans events back out via the Redis adapter.
     Backend services never hold sockets — they `publish` to a Redis channel and
     the gateway re-emits to the matching room.
+
+    **Notification spine (2026-06-17):** Real-time inbox delivery is now complete.
+    When any business action triggers (community member-added, friend request, chat mention),
+    chat-service's `createNotification` gRPC writes the inbox row AND publishes to
+    Redis `notify:<userId>`. The gateway relays the event in real time; offline users
+    receive FCM push (suppressed for online users to avoid duplication).
 
     **Perspective.** This document is written from the **client** application's
     point of view: `action: send` = the client emits to the server;
@@ -76,6 +82,12 @@ info:
       socket + REST surface;
     - call field `type` → **`callType`** (`call:initiate`, `call:incoming`);
     - notification event `notification:forwarded` → **`notification:new`**.
+
+    **Major feature: Notification Spine (2026-06-17).** The real-time inbox delivery
+    pipeline is now **complete and working end-to-end**: DB write → RabbitMQ event →
+    consumer → chat-service gRPC → Redis publish → gateway relay → socket → client.
+    Every business action (community member-added, friend request, chat mention) now
+    delivers notifications in real time to all connected devices + FCM to offline users.
 
     Source of truth: `apps/api-gateway/src/sockets/` and `docs/SOCKET_EVENTS.md`.
   contact:
@@ -250,9 +262,19 @@ channels:
     address: /notify
     title: /notify namespace
     description: |
-      In-app notification feed + unread badge. Delegates to notifications-service.
-      Each connected user's `notify:<userId>` Redis channel is subscribed
-      (ref-counted) and re-emitted to `user:<userId>`.
+      Real-time in-app notification feed + unread badge count.
+
+      **Real-time bridge (S1):** chat-service's createNotification gRPC (called by notifications-service consumers)
+      publishes `notification:new` + `notification:count_update` to Redis channel `notify:<userId>`.
+
+      **Inbox read (S2):** notifications are fetched + marked-read from chat-service (`:4004`),
+      the same store that CreateNotification writes to. notifications-service (`:4006`) is FCM-only.
+
+      **Push gating (S3):** for online users (active socket), FCM is suppressed — real-time
+      socket delivery is sufficient. Offline users receive FCM push + inbox row on reconnect.
+
+      The gateway subscribes each logged-in user to their `notify:<userId>` Redis channel and
+      fans events to socket namespaces `/notify` (client connected to gateway).
     x-socketio-namespace: /notify
     messages:
       notificationsFetch: { $ref: "#/components/messages/NotificationsFetch" }
