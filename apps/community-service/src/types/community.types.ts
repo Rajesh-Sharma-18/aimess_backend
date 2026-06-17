@@ -45,6 +45,14 @@ export type CommunityData = {
   role: CommunityMemberRole | null;
   /** True when the caller is an active member of this community. */
   isJoined: boolean;
+  /**
+   * Present when the caller has a PENDING join request for this community.
+   * Null if the caller is already a member, never requested, or their request
+   * was approved/rejected/cancelled. Frontend shows "Requested" + cancel
+   * button when this is non-null.
+   */
+  joinRequestId: string | null;
+  joinRequestStatus: CommunityJoinReqStatus | null;
   /** True if the caller has a mute row for this community (any state). */
   isMuted: boolean;
   /** ISO-8601; null when not muted or muted indefinitely. */
@@ -405,6 +413,29 @@ export type CommunityJoinRequestData = {
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * Discriminated union returned by `communityService.joinCommunity()`.
+ * - JOINED: PUBLIC community — user is now ACTIVE.
+ * - ALREADY_MEMBER: caller was already ACTIVE in any community type.
+ * - REQUEST_CREATED: PRIVATE community — PENDING join request created/recycled.
+ */
+export type CommunityJoinResult =
+  | {
+      status: "JOINED";
+      membershipStatus: "ACTIVE";
+      member: CommunityMemberData;
+    }
+  | {
+      status: "ALREADY_MEMBER";
+      membershipStatus: "ACTIVE";
+      member: CommunityMemberData;
+    }
+  | {
+      status: "REQUEST_CREATED";
+      membershipStatus: "PENDING";
+      request: CommunityJoinRequestData;
+    };
 
 /** Join-request row enriched with requester snapshot — for mod-facing list. */
 export type CommunityJoinRequestWithUserData = CommunityJoinRequestData & {

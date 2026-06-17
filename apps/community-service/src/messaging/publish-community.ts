@@ -13,6 +13,7 @@ import {
   type CommunityJoinRequestRejectedPayload,
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
+  type CommunityMemberJoinedPayload,
   type CommunityMemberKickedPayload,
   type CommunityMemberLeftPayload,
   type CommunityMemberMutedPayload,
@@ -184,4 +185,10 @@ export function publishCommunityReportActionedSafe(
     data,
     "community.report_actioned"
   );
+}
+
+export function publishCommunityMemberJoinedSafe(
+  data: CommunityMemberJoinedPayload
+): void {
+  publishSafe(CommunityEvents.MEMBER_JOINED, data, "community.member_joined");
 }

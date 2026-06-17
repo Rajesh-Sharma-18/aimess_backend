@@ -4632,6 +4632,61 @@ export const openApiSchemas = {
       "updatedAt",
     ],
   },
+  // --- Join endpoint discriminated response shapes -------------------------
+  CommunityJoinedResponse: {
+    type: "object",
+    description:
+      "Returned with HTTP 201 when a user self-joins a PUBLIC community (or reactivates a LEFT membership).",
+    required: ["status", "membershipStatus", "member"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["JOINED"],
+        description: "Discriminator — always JOINED for this shape.",
+      },
+      membershipStatus: {
+        type: "string",
+        enum: ["ACTIVE"],
+      },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+  },
+  CommunityAlreadyMemberResponse: {
+    type: "object",
+    description:
+      "Returned with HTTP 200 when the caller is already an ACTIVE member (idempotent re-join).",
+    required: ["status", "membershipStatus", "member"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["ALREADY_MEMBER"],
+        description: "Discriminator — always ALREADY_MEMBER for this shape.",
+      },
+      membershipStatus: {
+        type: "string",
+        enum: ["ACTIVE"],
+      },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+  },
+  CommunityJoinRequestCreatedResponse: {
+    type: "object",
+    description:
+      "Returned with HTTP 201 when a user requests to join a PRIVATE community. Admins/mods are notified.",
+    required: ["status", "membershipStatus", "request"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["REQUEST_CREATED"],
+        description: "Discriminator — always REQUEST_CREATED for this shape.",
+      },
+      membershipStatus: {
+        type: "string",
+        enum: ["PENDING"],
+      },
+      request: { $ref: "#/components/schemas/JoinRequestData" },
+    },
+  },
   JoinRequestUserSummary: {
     type: "object",
     properties: {
@@ -5824,6 +5879,10 @@ export const openApiSchemas = {
         type: "string",
         description: "UPPER-CASE message kind (TEXT, IMAGE, …).",
       },
+      isEdited: {
+        type: "boolean",
+        description: "Always true on an edit response.",
+      },
       editedAt: {
         type: "integer",
         format: "int64",
@@ -5834,7 +5893,7 @@ export const openApiSchemas = {
         description: "Per-room sequence number.",
       },
     },
-    required: ["messageId", "communityId", "roomId"],
+    required: ["messageId", "communityId", "roomId", "isEdited", "editedAt"],
   },
   ChatDeletePrivateMessageRequest: {
     type: "object",
@@ -6064,16 +6123,91 @@ export const openApiSchemas = {
   },
 
   // --- Notifications ---
+  NotificationNavigation: {
+    type: "object",
+    description:
+      "Deep-link routing object on community join-request notifications. Tells the client which screen to navigate to.",
+    properties: {
+      screen: {
+        type: "string",
+        enum: ["COMMUNITY_REQUESTS", "COMMUNITY_DETAILS", "COMMUNITY_CHAT"],
+        description:
+          "COMMUNITY_REQUESTS: admin/mod join-requests list. COMMUNITY_DETAILS: community info page. COMMUNITY_CHAT: community general chat.",
+      },
+      communityId: { type: "string" },
+      communityName: { type: "string" },
+      communityAvatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Resolved presigned URL. Null if the community has no avatar.",
+      },
+      communityHandle: {
+        type: "string",
+        nullable: true,
+        description: "The community @handle unique slug.",
+      },
+      requestId: {
+        type: "string",
+        description: "Present only for join-request notification types.",
+      },
+    },
+    required: ["screen", "communityId", "communityName"],
+  },
   ChatNotification: {
     type: "object",
     properties: {
       id: { type: "string" },
       userId: { type: "string" },
       actorId: { type: "string" },
-      type: { type: "string" },
+      type: {
+        type: "string",
+        description:
+          "Notification type. Known community values: community.join_requested, " +
+          "community.join_request_approved, community.join_request_rejected, " +
+          "community.member_added, community.invite_accepted.",
+      },
       entity: { type: "object" },
-      actorSnapshot: { type: "object" },
-      payload: { type: "object" },
+      actorSnapshot: {
+        type: "object",
+        nullable: true,
+        description:
+          "Actor details for notification UI. " +
+          "community.join_requested: { userId, displayName, avatarUrl }. " +
+          "approved/rejected: { userId, displayName }. Absent on other types.",
+        properties: {
+          userId: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: { type: "string", nullable: true },
+        },
+      },
+      payload: {
+        type: "object",
+        description:
+          "Structured notification data. payload.data contains type-specific string fields. " +
+          "For community join-request types, payload.data.navigation is a JSON string — " +
+          "parse it to get a NotificationNavigation object.",
+        properties: {
+          title: { type: "string" },
+          body: { type: "string" },
+          data: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description:
+              "String map of type-specific fields. Community join-request keys: " +
+              "communityId, communityName, communityHandle, communityAvatarUrl, " +
+              "requestId, requesterDisplayName, requesterAvatarUrl, " +
+              "decidedByDisplayName, status (APPROVED|REJECTED), " +
+              "navigation (JSON-stringified NotificationNavigation), actorSnapshot (JSON string).",
+          },
+        },
+      },
+      navigation: {
+        $ref: "#/components/schemas/NotificationNavigation",
+        description:
+          "Parsed navigation object. Present in notifications:fetch socket ack and " +
+          "notification:new socket event. On REST GET /chat/notifications, parse from payload.data.navigation instead.",
+      },
       isRead: { type: "boolean" },
       readAt: {
         type: "integer",
@@ -6161,11 +6295,16 @@ export const openApiSchemas = {
         items: { type: "object" },
       },
       deletedForAll: { type: "boolean" },
+      isEdited: {
+        type: "boolean",
+        description: "true when the message has been edited at least once.",
+      },
       editedAt: {
         type: "integer",
         format: "int64",
         nullable: true,
-        description: "Epoch ms. Non-null when the message has been edited.",
+        description:
+          "Epoch ms. Non-null when the message has been edited; 0 otherwise.",
       },
       createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
       updatedAt: {
@@ -6216,7 +6355,7 @@ export const openApiSchemas = {
         },
       },
     },
-    required: ["id", "roomId", "sentBy", "createdAt"],
+    required: ["id", "roomId", "sentBy", "createdAt", "isEdited"],
   },
   ChatCommunityMessageList: {
     type: "array",

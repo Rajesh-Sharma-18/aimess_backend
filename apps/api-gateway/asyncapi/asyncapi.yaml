@@ -150,6 +150,7 @@ channels:
       messageEdited: { $ref: "#/components/messages/MessageEdited" }
       convUpdated: { $ref: "#/components/messages/ConvUpdated" }
       communityUpdated: { $ref: "#/components/messages/CommunityUpdated" }
+      communityCreated: { $ref: "#/components/messages/CommunityCreated" }
       chatCatchupResult: { $ref: "#/components/messages/ChatCatchupResult" }
       messageReadReceipt: { $ref: "#/components/messages/MessageReadReceipt" }
       messageDeliveredReceipt:
@@ -236,6 +237,13 @@ channels:
       communityDelete: { $ref: "#/components/messages/CommunityDelete" }
       # moderation (server -> client)
       communityDeleted: { $ref: "#/components/messages/CommunityDeleted" }
+      # membership real-time (server -> client)
+      communityStatsUpdated:
+        { $ref: "#/components/messages/CommunityStatsUpdated" }
+      communityMemberRemoved:
+        { $ref: "#/components/messages/CommunityMemberRemoved" }
+      communityMemberUnbanned:
+        { $ref: "#/components/messages/CommunityMemberUnbanned" }
 
   # -------------------------------------------------------------- /notify
   notify:
@@ -516,6 +524,11 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "community:updated — community list bump-to-top (delivered on /chat)"
     messages: [{ $ref: "#/channels/chat/messages/communityUpdated" }]
+  chat.onCommunityCreated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "community:created — new community inserted into creator's list (delivered on /chat to user:<creatorId>)"
+    messages: [{ $ref: "#/channels/chat/messages/communityCreated" }]
   chat.onCatchupResult:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -976,6 +989,22 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community.deleted — the community was deleted (broadcast to all members)"
     messages: [{ $ref: "#/channels/community/messages/communityDeleted" }]
+  community.onStatsUpdated:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:stats:updated — memberCount changed (join, leave, kick, or ban)"
+    messages: [{ $ref: "#/channels/community/messages/communityStatsUpdated" }]
+  community.onMemberRemoved:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:member:removed — member left, was kicked, or was banned"
+    messages: [{ $ref: "#/channels/community/messages/communityMemberRemoved" }]
+  community.onMemberUnbanned:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:member:unbanned — admin lifted a member's ban"
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMemberUnbanned" }]
 
   # ================================================= /notify client -> server
   notify.fetch:
@@ -1611,7 +1640,48 @@ components:
               text: "New announcement! 📢"
             lastMessageAt: 1749465500000
             senderId: "user_admin_001"
+            senderName: "Alice"
             unread: true
+    CommunityCreated:
+      name: "community:created"
+      title: "community:created (on /chat)"
+      summary: >
+        Delivered on /chat to room user:<creatorId> immediately after a community
+        is successfully created. Payload is the full CommunityData object — identical
+        to the POST /communities 201 response body.data. Frontend: prepend this item
+        to the joined-communities list; no extra API call or page reload is needed.
+        The creator's role is always ADMIN and isJoined is always true.
+      payload: { $ref: "#/components/schemas/CommunityCreatedPayload" }
+      examples:
+        - name: New public community created by the caller
+          payload:
+            id: "6843e1a2b5c3d4e5f6a7b8c9"
+            name: "Tech Enthusiasts"
+            handle: "tech-enthusiasts"
+            description: "A community for tech lovers"
+            type: PUBLIC
+            category:
+              id: "6843e1a2b5c3d4e5f6a7b8c0"
+              name: "Technology"
+            creatorId: "user_creator_001"
+            adminId: "user_creator_001"
+            memberCount: 1
+            memberLimit: 10000
+            avatarUrl: null
+            avatarUrlExpiresIn: null
+            role: ADMIN
+            isJoined: true
+            joinRequestId: null
+            joinRequestStatus: null
+            isMuted: false
+            muteUntil: null
+            moderationStatus: ACTIVE
+            isLive: false
+            chatEnabled: true
+            streamEnabled: true
+            announcementEnabled: true
+            createdAt: "2026-06-17T10:15:30.000Z"
+            updatedAt: "2026-06-17T10:15:30.000Z"
     ChatCatchupResult:
       name: "chat:catchup:result"
       title: "chat:catchup:result"
@@ -2105,6 +2175,8 @@ components:
             message: "Good morning everyone! 👋"
             clientMessageId: "550e8400-e29b-41d4-a716-446655440010"
             reactions: []
+            isEdited: false
+            editedAt: 0
             serverTs: 1749465231234
             sentAt: 1749465231234
         - name: Image gallery broadcast
@@ -2177,10 +2249,10 @@ components:
             systemMessageType: COMMUNITY_CREATED
             systemMetadata:
               communityName: Tech Enthusiasts
-              creatorId: user_xyz
-              creatorName: Jane Doe
+              actorUserId: user_xyz
+              actorName: Jane Doe
         - name: community_system_updated
-          summary: Community lifecycle system message — community updated
+          summary: Community lifecycle system message — community updated (one message per changed field)
           payload:
             id: "684abc123def456789012346"
             messageId: "684abc123def456789012346"
@@ -2191,17 +2263,17 @@ components:
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "Jane Doe updated the community (avatar)"
+              text: "Jane Doe changed the community photo"
               files: []
-            message: "Jane Doe updated the community (avatar)"
+            message: "Jane Doe changed the community photo"
             clientMessageId: ""
             reactions: []
             serverTs: 1750000100000
             sentAt: 1750000100000
             systemMessageType: COMMUNITY_UPDATED
             systemMetadata:
-              updaterId: user_xyz
-              updaterName: Jane Doe
+              actorUserId: user_xyz
+              actorName: Jane Doe
               changedFields:
                 - avatar
         - name: community_system_role_changed
@@ -2216,16 +2288,16 @@ components:
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "Jane Doe changed Bob Smith's role to MODERATOR"
+              text: "Jane Doe promoted Bob Smith to Moderator"
               files: []
-            message: "Jane Doe changed Bob Smith's role to MODERATOR"
+            message: "Jane Doe promoted Bob Smith to Moderator"
             clientMessageId: ""
             reactions: []
             serverTs: 1750000200000
             sentAt: 1750000200000
             systemMessageType: MEMBER_ROLE_CHANGED
             systemMetadata:
-              actorId: user_xyz
+              actorUserId: user_xyz
               actorName: Jane Doe
               targetUserId: user_abc
               targetName: Bob Smith
@@ -2244,6 +2316,49 @@ components:
             avatarUrl: ""
             role: MEMBER
             joinedAt: 1749465800000
+    CommunityStatsUpdated:
+      name: "community:stats:updated"
+      title: "community:stats:updated"
+      summary: "Broadcast to community:<id> whenever the active memberCount changes."
+      payload: { $ref: "#/components/schemas/CommunityStatsUpdatedPayload" }
+      examples:
+        - name: Member count updated after a join
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            memberCount: 142
+            updatedAt: 1749465800000
+    CommunityMemberRemoved:
+      name: "community:member:removed"
+      title: "community:member:removed"
+      summary: "Broadcast to community:<id> when a member leaves, is kicked, or is banned."
+      payload: { $ref: "#/components/schemas/CommunityMemberRemovedPayload" }
+      examples:
+        - name: Member kicked
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            reason: kicked
+            actorId: "user_admin001"
+            updatedAt: 1749465800000
+        - name: Member left voluntarily
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            reason: left
+            actorId: "user_def456"
+            updatedAt: 1749465800000
+    CommunityMemberUnbanned:
+      name: "community:member:unbanned"
+      title: "community:member:unbanned"
+      summary: "Broadcast to community:<id> when an admin lifts a member's ban."
+      payload: { $ref: "#/components/schemas/CommunityMemberUnbannedPayload" }
+      examples:
+        - name: Member unbanned
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            actorId: "user_admin001"
+            updatedAt: 1749465800000
     CommunityJoinRequestUpdate:
       name: "community:join_request:update"
       title: "community:join_request:update"
@@ -2256,6 +2371,13 @@ components:
             status: APPROVED
             communityName: "Photography Club"
             decidedAt: "2026-06-16T11:00:00.000Z"
+            navigation:
+              screen: COMMUNITY_DETAILS
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              communityName: "Photography Club"
+              communityAvatarUrl: null
+              communityHandle: "photography-club"
+              requestId: "6843e1a2b5c3d4e5f6a7b8d0"
         - name: Join request rejected
           payload:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
@@ -2263,6 +2385,13 @@ components:
             status: REJECTED
             communityName: "Photography Club"
             decidedAt: "2026-06-16T11:00:00.000Z"
+            navigation:
+              screen: COMMUNITY_DETAILS
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              communityName: "Photography Club"
+              communityAvatarUrl: null
+              communityHandle: "photography-club"
+              requestId: "6843e1a2b5c3d4e5f6a7b8d0"
     CommunityCatchup:
       name: "community:catchup"
       title: "community:catchup"
@@ -2443,6 +2572,7 @@ components:
             senderId: "user_abc123"
             message: "Good morning — updated message! 👋"
             contentType: TEXT
+            isEdited: true
             editedAt: 1749465999000
     CommunityMessageDelete:
       name: "community:message:delete"
@@ -2746,6 +2876,63 @@ components:
             createdAt: 1749465400000
             data:
               communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+        - name: Community join request (to moderators)
+          summary: Admin/mod receives a new join request notification
+          payload:
+            notificationId: "684abc100def000000000031"
+            type: "community.join_requested"
+            title: "New join request"
+            body: "Alice Smith requested to join Tech Enthusiasts."
+            referenceId: "684abc100def000000000001"
+            isRead: false
+            createdAt: 1749465231234
+            navigation:
+              screen: COMMUNITY_REQUESTS
+              communityId: "684abc100def000000000001"
+              communityName: "Tech Enthusiasts"
+              communityAvatarUrl: "https://minio.example.com/community/avatar/uid/abc.jpg"
+              communityHandle: "tech-enthusiasts"
+              requestId: "684abc100def000000000022"
+            actorSnapshot:
+              userId: "684abc100def000000000099"
+              displayName: "Alice Smith"
+              avatarUrl: "https://minio.example.com/avatars/uid/abc.jpg"
+        - name: Community join request approved (to requester)
+          summary: Requester receives approval notification
+          payload:
+            notificationId: "684abc100def000000000032"
+            type: "community.join_request_approved"
+            title: "Join request approved"
+            body: "Your request to join Tech Enthusiasts was approved by Bob Jones."
+            referenceId: "684abc100def000000000001"
+            isRead: false
+            createdAt: 1749465299999
+            navigation:
+              screen: COMMUNITY_DETAILS
+              communityId: "684abc100def000000000001"
+              communityName: "Tech Enthusiasts"
+              communityAvatarUrl: "https://minio.example.com/community/avatar/uid/abc.jpg"
+              communityHandle: "tech-enthusiasts"
+              requestId: "684abc100def000000000022"
+            actorSnapshot:
+              userId: "684abc100def000000000010"
+              displayName: "Bob Jones"
+        - name: Community self-joined (to member)
+          summary: Member receives confirmation after joining a public community
+          payload:
+            notificationId: "684abc200def000000000041"
+            type: "community.member_joined"
+            title: "Joined a community"
+            body: "You have joined Photography Club."
+            referenceId: "6843e1a2b5c3d4e5f6a7b8c9"
+            isRead: false
+            createdAt: 1749465500000
+            navigation:
+              screen: COMMUNITY_DETAILS
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              communityName: "Photography Club"
+              communityAvatarUrl: null
+              communityHandle: "photography-club"
     NotificationDeleted:
       name: "notification:deleted"
       title: "notification:deleted"
@@ -3362,7 +3549,54 @@ components:
         lastMessage: { $ref: "#/components/schemas/ListBumpLastMessage" }
         lastMessageAt: { type: integer, description: epoch ms. }
         senderId: { type: string }
+        senderName:
+          {
+            type: string,
+            description: "Display name of the sender — render as 'Alice: Hello' in the community list row.",
+          }
         unread: { type: boolean }
+    CommunityCreatedPayload:
+      type: object
+      description: >
+        Full CommunityData for the newly created community. Shape is identical to
+        POST /communities 201 response body.data. Delivered on /chat to
+        user:<creatorId> so the frontend can prepend the item to the
+        joined-communities list without an extra API call or page reload.
+      properties:
+        id: { type: string }
+        name: { type: string }
+        handle: { type: string }
+        description: { type: string, nullable: true }
+        type: { type: string, enum: [PUBLIC, PRIVATE] }
+        category:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+        creatorId: { type: string }
+        adminId: { type: string }
+        memberCount: { type: integer }
+        memberLimit: { type: integer }
+        avatarUrl: { type: string, nullable: true }
+        avatarUrlExpiresIn: { type: integer, nullable: true }
+        role:
+          {
+            type: string,
+            enum: [ADMIN],
+            description: "Always ADMIN for the creator.",
+          }
+        isJoined: { type: boolean, description: "Always true." }
+        joinRequestId: { type: string, nullable: true }
+        joinRequestStatus: { type: string, nullable: true }
+        isMuted: { type: boolean }
+        muteUntil: { type: string, nullable: true }
+        moderationStatus: { type: string }
+        isLive: { type: boolean }
+        chatEnabled: { type: boolean }
+        streamEnabled: { type: boolean }
+        announcementEnabled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     CatchupEvent:
       type: object
       description: |
@@ -3671,6 +3905,16 @@ components:
             description: "V1 alias for content.text. `content.text` is authoritative.",
           }
         clientMessageId: { type: string }
+        isEdited:
+          {
+            type: boolean,
+            description: "Always false for community:message:new. Present so clients use one uniform field to detect edit state without comparing editedAt.",
+          }
+        editedAt:
+          {
+            type: integer,
+            description: "Epoch ms of last edit. 0 for a new (never-edited) message.",
+          }
         serverTs: { type: integer, description: epoch ms. }
         sentAt: { type: integer, description: epoch ms (== serverTs). }
         systemMessageType:
@@ -3688,8 +3932,18 @@ components:
           nullable: true
           additionalProperties: true
           description: >-
-            Structured payload for system message rendering.
-            Shape varies by systemMessageType. Null/absent for normal messages.
+            Structured payload for system message rendering. Null/absent for
+            normal messages. All three types share `actorUserId` (the userId
+            who triggered the event) and `actorName` (their resolved display
+            name). Frontend renders "You" when `actorUserId === currentUserId`,
+            otherwise uses `actorName`. Shape by systemMessageType:
+            COMMUNITY_CREATED: { actorUserId, actorName, communityName }.
+            COMMUNITY_UPDATED: { actorUserId, actorName, changedFields[1] }
+              — exactly one item in changedFields; one message emitted per
+              changed field (avatar→photo, name→title, description, etc.).
+            MEMBER_ROLE_CHANGED: { actorUserId, actorName, targetUserId,
+              targetName, oldRole, newRole } — frontend derives "promoted" vs
+              "demoted" from role ranks (ADMIN>MODERATOR>MEMBER).
     CommunityMemberDTO:
       type: object
       additionalProperties: true
@@ -3727,6 +3981,10 @@ components:
             format: date-time,
             description: "ISO-8601 decision timestamp.",
           }
+        navigation:
+          allOf:
+            - $ref: "#/components/schemas/NotificationNavigation"
+          description: "Deep-link navigation included in the realtime status-flip event."
       required: [communityId, requestId, status]
     CommunityCatchupPayload:
       type: object
@@ -3850,9 +4108,15 @@ components:
         senderId: { type: string }
         message: { type: string, description: "Updated text content." }
         contentType: { $ref: "#/components/schemas/ContentType" }
+        isEdited:
+          {
+            type: boolean,
+            description: "Always true for this event — signals FE to show the 'edited' indicator without comparing old vs new content.",
+          }
         editedAt:
           { type: integer, description: "Epoch ms when the edit was applied." }
-      required: [messageId, communityId, roomId, senderId, message, editedAt]
+      required:
+        [messageId, communityId, roomId, senderId, message, isEdited, editedAt]
     CommunityMessageDeletePayload:
       type: object
       description: |
@@ -3976,6 +4240,30 @@ components:
       properties:
         count: { type: integer }
       required: [count]
+    NotificationNavigation:
+      type: object
+      description: "Deep-link routing object on community join-request notifications. Tells the client which screen to open."
+      properties:
+        screen:
+          type: string
+          enum: [COMMUNITY_REQUESTS, COMMUNITY_DETAILS, COMMUNITY_CHAT]
+          description: "COMMUNITY_REQUESTS=admin join-requests list; COMMUNITY_DETAILS=community info page; COMMUNITY_CHAT=community chat."
+        communityId:
+          type: string
+        communityName:
+          type: string
+        communityAvatarUrl:
+          type: string
+          nullable: true
+          description: "Resolved presigned URL; null if no avatar."
+        communityHandle:
+          type: string
+          nullable: true
+          description: "The community @handle unique slug."
+        requestId:
+          type: string
+          description: "Present only for join-request notification types."
+      required: [screen, communityId, communityName]
     NotificationItem:
       type: object
       description: |
@@ -3998,7 +4286,8 @@ components:
             `MESSAGE` · `friend.requested` · `friend.accepted` ·
             `community.join_requested` · `community.join_request_approved` ·
             `community.join_request_rejected` · `community.member_added` ·
-            `community.admin_transferred` · `community.member_role_changed` ·
+            `community.member_joined` · `community.admin_transferred` ·
+            `community.member_role_changed` ·
             `community.member_kicked` · `community.member_banned` ·
             `community.invite_sent` · `community.invite_accepted` ·
             `community.report_created` · `community.report_actioned` ·
@@ -4021,6 +4310,22 @@ components:
             senderId, senderName, senderAvatar, contentType, preview, sentAt }`.
             For `friend.*`: `{ friendshipId, requesterId | addresseeId }`.
             For `community.*`: `{ communityId, … }`.
+        navigation:
+          allOf:
+            - $ref: "#/components/schemas/NotificationNavigation"
+          description: "Present on community.join_requested, community.join_request_approved, and community.join_request_rejected. Absent on all other types."
+        actorSnapshot:
+          type: object
+          nullable: true
+          description: "Actor details for UI. community.join_requested: {userId, displayName, avatarUrl}. approved/rejected: {userId, displayName}. Absent on other types."
+          properties:
+            userId:
+              type: string
+            displayName:
+              type: string
+            avatarUrl:
+              type: string
+              nullable: true
       required: [type]
     NotificationsDeletePayload:
       type: object
@@ -4196,3 +4501,36 @@ components:
         deletedBy:
           { type: string, description: "userId of the admin who deleted it." }
       required: [communityId, deletedBy]
+    CommunityStatsUpdatedPayload:
+      type: object
+      description: "Server → client. Broadcast to community:<id> when active memberCount changes."
+      properties:
+        communityId: { type: string }
+        memberCount:
+          { type: integer, description: "Current active member count." }
+        updatedAt: { type: integer, description: "Epoch ms of the change." }
+      required: [communityId, memberCount, updatedAt]
+    CommunityMemberRemovedPayload:
+      type: object
+      description: "Server → client. Emitted on kick, ban, or voluntary leave."
+      properties:
+        communityId: { type: string }
+        userId: { type: string, description: "The removed member's userId." }
+        reason:
+          type: string
+          enum: [kicked, banned, left]
+        actorId:
+          type: string
+          nullable: true
+          description: "Who performed the action. Same as userId for voluntary leave."
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required: [communityId, userId, reason, updatedAt]
+    CommunityMemberUnbannedPayload:
+      type: object
+      description: "Server → client. Emitted when an admin lifts a member's ban."
+      properties:
+        communityId: { type: string }
+        userId: { type: string, description: "The unbanned member's userId." }
+        actorId: { type: string, description: "The admin who lifted the ban." }
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required: [communityId, userId, actorId, updatedAt]

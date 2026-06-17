@@ -1272,9 +1272,12 @@ export const communityPaths = {
   "/communities/{id}/join": {
     post: {
       tags: ["Communities"],
-      summary: "Join a public community",
+      summary: "Join a community",
       description:
-        "Self-join a PUBLIC community as a MEMBER. Idempotent: an already-ACTIVE member is returned unchanged (no write or audit). Previously-LEFT members are reactivated (joinedAt preserved, snapshot refreshed, role forced to MEMBER, audited `COMMUNITY_JOINED` with `{ reactivated: true }`). PRIVATE communities require an invite (use `POST /:id/members` from an admin/moderator). BANNED members cannot rejoin.",
+        "Self-join a community. For PUBLIC communities the caller becomes an ACTIVE member immediately (HTTP 201, `data.status: JOINED`). For PRIVATE communities a PENDING join request is created and admins/mods are notified (HTTP 201, `data.status: REQUEST_CREATED`). " +
+        "Calling again when already ACTIVE returns 200 with `data.status: ALREADY_MEMBER` (idempotent, no write). " +
+        "Previously-LEFT members of a PUBLIC community are reactivated (joinedAt preserved, snapshot refreshed, role forced to MEMBER, audited `COMMUNITY_JOINED` with `{ reactivated: true }`). " +
+        "BANNED members cannot rejoin (403). Suspended communities return 403.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -1287,8 +1290,9 @@ export const communityPaths = {
         },
       ],
       responses: {
-        "200": {
-          description: "Joined (or already a member)",
+        "201": {
+          description:
+            "Joined (PUBLIC) or join request created (PRIVATE). Discriminated by `data.status`.",
           content: {
             "application/json": {
               schema: {
@@ -1298,7 +1302,34 @@ export const communityPaths = {
                     type: "object",
                     properties: {
                       data: {
-                        $ref: "#/components/schemas/CommunityMemberData",
+                        oneOf: [
+                          {
+                            $ref: "#/components/schemas/CommunityJoinedResponse",
+                          },
+                          {
+                            $ref: "#/components/schemas/CommunityJoinRequestCreatedResponse",
+                          },
+                        ],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "200": {
+          description: "Already an active member (idempotent).",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityAlreadyMemberResponse",
                       },
                     },
                   },
@@ -1310,7 +1341,7 @@ export const communityPaths = {
         "401": unauthorized,
         "403": {
           description:
-            "Community is PRIVATE (invite required) or caller is BANNED from this community",
+            "User is banned from this community, or the community is suspended.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -1318,7 +1349,7 @@ export const communityPaths = {
           },
         },
         "404": {
-          description: "Community not found",
+          description: "Community not found.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
