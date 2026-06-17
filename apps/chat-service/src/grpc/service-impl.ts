@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
+import { publishUserSocketEvent } from "@aimess/redis";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
@@ -28,6 +29,8 @@ import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { AdminGroupService } from "../services/admin-group.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
@@ -51,6 +54,11 @@ import {
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
+import {
+  assertPrivateParticipant,
+  assertGroupMember,
+  assertCommunityMember,
+} from "../lib/access-guard.js";
 
 /**
  * Resolve attachment object-keys inside a message `content` blob to full,
@@ -76,6 +84,8 @@ export interface GrpcDeps {
   groupMemberService: GroupMemberService;
   groupRoomRepo: GroupRoomRepository;
   groupMemberRepo: GroupMemberRepository;
+  privateRoomRepo: PrivateRoomRepository;
+  roomMemberRepo: RoomMemberRepository;
   adminGroupService: AdminGroupService;
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
@@ -800,6 +810,22 @@ export function createMessagingImpl(
               ? deps.groupMessageService
               : deps.privateMessageService;
 
+          // Bind message↔room BEFORE the react: react() mutates/broadcasts by
+          // messageId ALONE, so a socket caller in room A could otherwise react
+          // to (and re-broadcast) a message from room B. assertMessageInRoom
+          // throws NotFound on mismatch (the catch below maps it to gRPC INTERNAL).
+          if (reactConversationType === "GROUP") {
+            await deps.groupMessageService.assertMessageInRoom(
+              req.conversationId,
+              req.messageId
+            );
+          } else {
+            await deps.privateMessageService.assertMessageInRoom(
+              req.conversationId,
+              req.messageId
+            );
+          }
+
           // §2.4 toggle: react() reads-modifies-writes the stored reactor map —
           // adds the reactor on first react, removes it on a duplicate react
           // (toggle-off) — and persists the canonical reactor-object shape. The
@@ -939,6 +965,10 @@ export function createMessagingImpl(
           if (conversationType === "GROUP") {
             message = await deps.groupMessageService.forwardMessage({
               sourceMessageId: req.messageId ?? "",
+              // gRPC carries only targetConversationId (no source-room field), so we
+              // pass null — but the service ALWAYS binds the caller to the source
+              // message's actual room, closing the cross-room read-IDOR on this path.
+              sourceRoomId: null,
               targetRoomId: req.targetConversationId ?? "",
               senderId: req.senderId ?? "",
               senderName: req.senderName ?? "",
@@ -948,6 +978,10 @@ export function createMessagingImpl(
           } else {
             message = await deps.privateMessageService.forwardMessage({
               sourceMessageId: req.messageId ?? "",
+              // gRPC carries only targetConversationId (no source-room field), so we
+              // pass null — but the service ALWAYS binds the caller to the source
+              // message's actual room, closing the cross-room read-IDOR on this path.
+              sourceRoomId: null,
               targetRoomId: req.targetConversationId ?? "",
               senderId: req.senderId ?? "",
               receiverId: req.receiverId ?? "",
@@ -1456,6 +1490,64 @@ export function createMessagingImpl(
         }
       })();
     },
+
+    // Authorize a media download against chat-resource membership. media-service
+    // calls this because an object key encodes the uploader, not the room the
+    // attachment belongs to. Routes the scope through the centralized access
+    // guards (which THROW on denial). A normal authz denial is NOT a gRPC error —
+    // it returns { allowed: false }; only the guard's throw distinguishes
+    // allowed vs. denied. Catch-all → allowed:false so a transient/internal
+    // failure can never accidentally grant access (fail-closed).
+    checkMediaAccess: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        const req = call.request as {
+          userId?: string;
+          scope?: string;
+          resourceId?: string;
+        };
+        const userId = req.userId ?? "";
+        const resourceId = req.resourceId ?? "";
+        const scope = String(req.scope ?? "").toUpperCase();
+
+        try {
+          switch (scope) {
+            case "PRIVATE_CHAT":
+              await assertPrivateParticipant(
+                deps.privateRoomRepo,
+                resourceId,
+                userId
+              );
+              break;
+            case "GROUP_CHAT":
+              await assertGroupMember(deps.groupMemberRepo, resourceId, userId);
+              break;
+            case "COMMUNITY_CHAT":
+              await assertCommunityMember(
+                deps.roomMemberRepo,
+                resourceId,
+                userId
+              );
+              break;
+            default:
+              callback(null, { allowed: false });
+              return;
+          }
+          callback(null, { allowed: true });
+        } catch (err) {
+          // Guards throw ForbiddenError/NotFoundError on a normal denial — that
+          // is the expected "no" answer, not an RPC failure. Log at debug so an
+          // unexpected internal error is still traceable without alarming on the
+          // routine denials. Either way the answer is fail-closed: allowed:false.
+          logger.debug(
+            `checkMediaAccess denied (scope=${scope}, user=${userId}, resource=${resourceId}): ${String(err)}`
+          );
+          callback(null, { allowed: false });
+        }
+      })();
+    },
   };
 }
 
@@ -1727,6 +1819,10 @@ export function createCommunityImpl(
                 m.createdAt instanceof Date
                   ? m.createdAt.getTime()
                   : Date.now(),
+              systemMessageType:
+                (m as Record<string, unknown>).systemMessageType ?? null,
+              systemMetadata:
+                (m as Record<string, unknown>).systemMetadata ?? null,
             })),
             nextCursor,
             hasMore,
@@ -1815,8 +1911,14 @@ export function createCommunityImpl(
             sinceTs: number; // epoch-ms; 0 or absent → use sinceId mode
           };
 
+          // sinceTs is an int64 (a string at runtime via proto-loader) — coerce
+          // to a number before constructing the Date, else new Date("<digits>")
+          // parses as a date string and yields an Invalid Date.
           const sinceTsMs = Number(req.sinceTs);
-          const sinceTs = sinceTsMs > 0 ? new Date(sinceTsMs) : undefined;
+          const sinceTs =
+            Number.isFinite(sinceTsMs) && sinceTsMs > 0
+              ? new Date(sinceTsMs)
+              : undefined;
 
           const result = await deps.communityMessageService.catchup({
             roomId: req.roomId,
@@ -1866,6 +1968,10 @@ export function createCommunityImpl(
                 reactions: groupStoredReactions(
                   m.reactions as Record<string, unknown> | null | undefined
                 ),
+                systemMessageType:
+                  (m as Record<string, unknown>).systemMessageType ?? null,
+                systemMetadata:
+                  (m as Record<string, unknown>).systemMetadata ?? null,
               };
             }),
             hasMore: result.hasMore,
@@ -1896,7 +2002,6 @@ export function createCommunityImpl(
           const result = await deps.communityMessageService.reactToMessage({
             messageId: req.messageId,
             userId: req.userId,
-            communityId: req.communityId,
             emoji: req.emoji,
           });
 
@@ -1913,12 +2018,12 @@ export function createCommunityImpl(
           }));
 
           await redis.publish(
-            `community:${req.communityId}`,
+            `community:${result.roomId}`,
             JSON.stringify({
               event: "community:message:reaction",
               data: {
                 messageId: result.messageId,
-                communityId: result.communityId,
+                communityId: result.roomId,
                 reactions: resolvedReactions,
               },
             })
@@ -1926,7 +2031,7 @@ export function createCommunityImpl(
 
           callback(null, {
             messageId: result.messageId,
-            communityId: result.communityId,
+            communityId: result.roomId,
             reactions: resolvedReactions.map((g) => ({
               emoji: g.emoji,
               count: g.count,
@@ -1971,12 +2076,12 @@ export function createCommunityImpl(
             content: { text: req.text },
           });
           await redis.publish(
-            `community:${req.communityId}`,
+            `community:${result.roomId}`,
             JSON.stringify({
               event: "community:message:edited",
               data: {
                 messageId: result.id,
-                communityId: req.communityId,
+                communityId: result.roomId,
                 roomId: result.roomId,
                 senderId: result.sentBy,
                 message: result.message ?? "",
@@ -1990,7 +2095,7 @@ export function createCommunityImpl(
           );
           callback(null, {
             messageId: result.id,
-            communityId: req.communityId,
+            communityId: result.roomId,
             roomId: result.roomId,
             editedAt:
               result.editedAt instanceof Date
@@ -2232,9 +2337,218 @@ export function createNotificationImpl(
             },
           });
 
+          // Real-time bridge. The gateway /notify namespace relays Redis
+          // `notify:<userId>` messages to the user's connected devices. Without
+          // this publish a freshly-created inbox row is invisible until the
+          // client reconnects or manually refetches — and because push.service
+          // suppresses FCM for users with an active socket, an ONLINE recipient
+          // would otherwise receive nothing at all. Best-effort: a relay error
+          // must never fail the inbox write (the row is the source of truth).
+          try {
+            const unreadCount = await deps.notificationRepo.getUnreadCount(
+              req.userId
+            );
+            const dto = {
+              notificationId: created.id,
+              userId: req.userId,
+              type: req.type,
+              title: req.title ?? "",
+              body: req.body ?? "",
+              referenceId: entityId,
+              isRead: false,
+              createdAt: created.createdAt.getTime(),
+            };
+            await publishUserSocketEvent(
+              redis,
+              req.userId,
+              "notification:new",
+              dto
+            );
+            await publishUserSocketEvent(
+              redis,
+              req.userId,
+              "notification:count_update",
+              { count: unreadCount }
+            );
+          } catch (err) {
+            logger.warn(
+              `notify realtime publish failed for ${req.userId}: ${String(err)}`
+            );
+          }
+
           callback(null, { id: created.id });
         } catch (err) {
           logger.error(`gRPC createNotification error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    getNotifications: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            cursor?: string;
+            limit?: number;
+          };
+          if (!req.userId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "userId is required",
+            });
+            return;
+          }
+
+          const limit = Math.min(Math.max(req.limit ?? 20, 1), 100);
+          const rows = await deps.notificationRepo.findByUserId(req.userId, {
+            limit,
+            cursor: req.cursor || null,
+          });
+          const unreadCount = await deps.notificationRepo.getUnreadCount(
+            req.userId
+          );
+
+          const notifications = rows.map((n) => {
+            const payload = (n.payload ?? {}) as {
+              title?: string;
+              body?: string;
+            };
+            const entity = (n.entity ?? {}) as { id?: string };
+            return {
+              notificationId: n.id,
+              userId: n.userId,
+              type: n.type,
+              title: payload.title ?? "",
+              body: payload.body ?? "",
+              referenceId: entity.id ?? "",
+              isRead: n.isRead,
+              createdAt: n.createdAt.getTime(),
+            };
+          });
+
+          // Cursor pagination: full page → assume there is a next page, hand
+          // back the oldest row's timestamp as the cursor (findByUserId pages
+          // on createdAt < cursor).
+          const hasMore = rows.length === limit;
+          const nextCursor = hasMore
+            ? rows[rows.length - 1].createdAt.toISOString()
+            : "";
+
+          callback(null, { notifications, nextCursor, hasMore, unreadCount });
+        } catch (err) {
+          logger.error(`gRPC getNotifications error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    markNotificationsRead: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            notificationIds?: string[];
+          };
+          if (!req.userId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "userId is required",
+            });
+            return;
+          }
+
+          const userId = req.userId;
+          const ids = req.notificationIds ?? [];
+          let updatedCount = 0;
+
+          if (ids.length === 0) {
+            // Empty list = mark ALL unread as read (count first so we can report
+            // how many rows flipped).
+            updatedCount = await deps.notificationRepo.getUnreadCount(userId);
+            await deps.notificationRepo.markAllRead(userId);
+          } else {
+            // markRead is owner-scoped (IDOR-safe): a non-owning id returns null
+            // and does not count toward updatedCount.
+            const results = await Promise.all(
+              ids.map((id) => deps.notificationRepo.markRead(id, userId))
+            );
+            updatedCount = results.filter((r) => r !== null).length;
+          }
+
+          const remainingUnread =
+            await deps.notificationRepo.getUnreadCount(userId);
+          callback(null, { updatedCount, remainingUnread });
+        } catch (err) {
+          logger.error(`gRPC markNotificationsRead error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    deleteNotification: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            notificationId?: string;
+          };
+          if (!req.userId || !req.notificationId) {
+            callback({
+              code: grpc.status.INVALID_ARGUMENT,
+              message: "userId and notificationId are required",
+            });
+            return;
+          }
+
+          const userId = req.userId;
+          // Owner-scoped soft-delete (IDOR-safe): a non-owning id mutates
+          // nothing and reports count 0. Idempotent — a re-delete also matches
+          // 0 rows (isDeleted:false filter).
+          const { count } = await deps.notificationRepo.deleteById(
+            req.notificationId,
+            userId
+          );
+          const deleted = count > 0;
+
+          const remainingUnread =
+            await deps.notificationRepo.getUnreadCount(userId);
+
+          // Real-time bridge: relay the delete to the user's OTHER connected
+          // devices so they drop the row too. The refreshed unread count is
+          // emitted once by the gateway's notifications:delete handler (symmetric
+          // with mark_read) — do NOT also publish count_update here or every
+          // device receives it twice. Only relay when a row actually changed.
+          // Best-effort: a relay error must never fail the delete.
+          if (deleted) {
+            try {
+              await publishUserSocketEvent(
+                redis,
+                userId,
+                "notification:deleted",
+                {
+                  notificationId: req.notificationId,
+                }
+              );
+            } catch (err) {
+              logger.warn(
+                `notify delete publish failed for ${userId}: ${String(err)}`
+              );
+            }
+          }
+
+          callback(null, { deleted, remainingUnread });
+        } catch (err) {
+          logger.error(`gRPC deleteNotification error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

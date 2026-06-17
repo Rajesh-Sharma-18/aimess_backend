@@ -249,6 +249,49 @@ export interface ChatMessageEventInput {
   systemData?: unknown;
 }
 
+export type DeleteConversationKind = ConversationKind | "COMMUNITY";
+
+export interface DeletePayloadInput {
+  conversationType: DeleteConversationKind;
+  messageId: string;
+  roomId: string;
+  scope: "forMe" | "forEveryone";
+  deletedBy: string;
+  sequenceNumber?: number;
+  deletedType?: string;
+}
+
+/**
+ * Build the canonical socket message:delete / community:message:deleted payload.
+ * REST delete returns this exact object so REST == socket byte-for-byte.
+ *   PRIVATE/GROUP: { messageId, conversationId, type, deletedBy, sequenceNumber }
+ *   COMMUNITY:     { messageId, communityId, roomId, deleteType, deletedBy }
+ */
+export function buildDeletePayload(
+  input: DeletePayloadInput
+): Record<string, unknown> {
+  if (input.conversationType === "COMMUNITY") {
+    return {
+      messageId: input.messageId,
+      communityId: input.roomId,
+      roomId: input.roomId,
+      deleteType: input.scope,
+      deletedBy: input.deletedBy,
+    };
+  }
+  const base: Record<string, unknown> = {
+    messageId: input.messageId,
+    conversationId: input.roomId,
+    type: input.scope,
+    deletedBy: input.deletedBy,
+    sequenceNumber: input.sequenceNumber ?? 0,
+  };
+  if (input.conversationType === "GROUP") {
+    base.deletedType = input.deletedType ?? "SELF_DELETE";
+  }
+  return base;
+}
+
 /**
  * Build the canonical `message:new` / `message:edited` payload. Field names match
  * the REST `ChatMessage` schema; legacy aliases preserved for V1 clients.

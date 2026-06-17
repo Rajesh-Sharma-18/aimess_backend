@@ -207,8 +207,14 @@ describe("DELETE /messages/:messageId", () => {
   it("POSITIVE: delete-for-me returns 200 and publishes a tombstone", async () => {
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: "msg_1",
+      roomId: ROOM,
       isDeleted: false,
       deletedFor: {},
+    });
+    // Room-bind guard: the message's room exists and the caller is a participant.
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
     });
     mocks.privateMessageRepo.deleteForMe.mockResolvedValue({
       id: "msg_1",
@@ -230,9 +236,16 @@ describe("DELETE /messages/:messageId", () => {
   it("SECURITY: forEveryone on someone else's message → 400 (own-only guard)", async () => {
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: "msg_1",
+      roomId: ROOM,
       isDeleted: false,
       senderId: "not-me",
       deletedFor: {},
+    });
+    // Caller IS a participant of the message's room, so the room-bind guard passes
+    // and the own-only sender check is the one that rejects with 400 (not a 404).
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "not-me"],
     });
 
     const res = await request(app)
@@ -272,6 +285,11 @@ describe("PATCH /messages/:messageId (edit)", () => {
       isDeleted: false,
       createdAt: new Date(now - 1000),
     });
+    // Room-bind guard: caller is a participant of the message's room.
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+    });
     mocks.privateMessageRepo.editMessage.mockResolvedValue({
       id: "msg_1",
       roomId: ROOM,
@@ -294,10 +312,17 @@ describe("PATCH /messages/:messageId (edit)", () => {
   it("SECURITY: 400 editing another user's message (own-only)", async () => {
     mocks.privateMessageRepo.findById.mockResolvedValue({
       id: "msg_1",
+      roomId: ROOM,
       senderId: "not-me",
       messageType: "TEXT",
       isDeleted: false,
       createdAt: new Date(),
+    });
+    // Caller IS a participant (room-bind passes), so the own-only sender check is
+    // what rejects with 400 — not the room-bind 404.
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "not-me"],
     });
 
     const res = await request(app)
@@ -478,6 +503,12 @@ describe("POST /rooms/:roomId/messages/:messageId/forward", () => {
       messageType: "TEXT",
       content: { text: "fwd" },
       createdAt: new Date(10),
+    });
+    // Source-room bind: caller is a participant of the SOURCE room (path :roomId)
+    // and the source message belongs to it.
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
     });
     mocks.privateMessageRepo.createForwardedMessage.mockResolvedValue({
       id: "fwd1",

@@ -326,16 +326,19 @@ model GeneralRoomMessage {
   deletedBy       Json     @default("[]")
   deletedForAll   Boolean  @default(false)
   reports         Json     @default("[]")
-  editedAt        DateTime?
-  editHistory     Json     @default("[]")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  editedAt           DateTime?
+  editHistory        Json     @default("[]")
+  systemMessageType  String?
+  systemMetadata     Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@index([roomId])
   @@index([roomId, sentBy])
   @@index([deletedForAll])
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
+  @@index([roomId, systemMessageType, createdAt(sort: Desc)])
   @@map("general_room_messages")
 }
 

@@ -374,6 +374,10 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The route carries no roomId. Derive the room from the message and authorize
+    // the caller as a participant of THAT room BEFORE any mutation — otherwise any
+    // authed user could delete-for-me a message in a DM they're not in (IDOR).
+    await this.assertCallerInMessageRoom(message, userId);
     // isDeleted=true means already deleted for everyone — can't delete for me again
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
@@ -390,6 +394,10 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room BEFORE the sender check: a user not in (or removed from)
+    // the room can't mutate even their own old message. NotFound so existence
+    // isn't leaked; keeps the room-bind uniform across all private writes.
+    await this.assertCallerInMessageRoom(message, userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== userId) {
@@ -409,6 +417,10 @@ export class PrivateMessageService {
   }): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room BEFORE the sender check: a user not in (or removed from)
+    // the room can't mutate even their own old message. NotFound so existence
+    // isn't leaked; keeps the room-bind uniform across all private writes.
+    await this.assertCallerInMessageRoom(message, params.userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -510,6 +522,33 @@ export class PrivateMessageService {
     await assertPrivateParticipant(this.roomRepo, roomId, userId);
   }
 
+  /**
+   * Bind a message to its room: throw CHAT_MESSAGE_NOT_FOUND unless `messageId`
+   * actually belongs to `roomId`. The `react()` primitive mutates a message by id
+   * ALONE, so a REST caller authorized for room A could otherwise pass a messageId
+   * from room B (a DM they're not in) and mutate/broadcast that foreign message.
+   * Querying by BOTH id + roomId (same `findMessageMeta` the pin path uses) closes
+   * that cross-room IDOR; call this AFTER the participant guard, BEFORE react().
+   */
+  async assertMessageInRoom(roomId: string, messageId: string): Promise<void> {
+    const msg = await this.messageRepo.findMessageMeta({ roomId, messageId });
+    if (!msg) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
+  /** Bind a loaded message to a room the caller participates in (cross-room IDOR
+   * guard for routes that carry no roomId). NotFound — never Forbidden — so a
+   * foreign message's existence isn't leaked. */
+  private async assertCallerInMessageRoom(
+    message: PrivateMessage,
+    userId: string
+  ): Promise<void> {
+    const room = await this.roomRepo.findByRoomId(message.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room?.participants?.includes(userId))
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
   async countMessages(roomId: string): Promise<number> {
     return this.messageRepo.countByRoom(roomId);
   }
@@ -520,6 +559,11 @@ export class PrivateMessageService {
 
   async forwardMessage(params: {
     sourceMessageId: string;
+    /** SOURCE room the message is being forwarded FROM (REST path param). When
+     * provided, it must MATCH the message's actual room (cross-check). Null on the
+     * gRPC path. Either way the caller must be a participant of the message's
+     * ACTUAL room — that bind is unconditional and closes the forward read-IDOR. */
+    sourceRoomId?: string | null;
     targetRoomId: string;
     senderId: string;
     receiverId: string;
@@ -546,6 +590,14 @@ export class PrivateMessageService {
     const source = await this.messageRepo.findById(params.sourceMessageId);
     if (!source || source.isDeleted)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    // If the caller asserted a source room (REST path param), it must match the message's room.
+    if (params.sourceRoomId != null && source.roomId !== params.sourceRoomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The caller MUST belong to the message's ACTUAL room — on BOTH transports. Forwarding
+    // READS source.content, so without this a socket caller (gRPC carries no sourceRoomId)
+    // could exfiltrate any message from a DM they're not in. Closes the cross-room read-IDOR.
+    await this.assertCallerInMessageRoom(source, params.senderId);
 
     const forwardData = {
       originalMessageId: source.id,

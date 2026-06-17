@@ -13,12 +13,31 @@ export function createMediaRoutes(): IRouter {
     authenticateAccessToken,
     mediaController.getUploadUrl
   );
+
+  // Called after the client PUT to MinIO. Runs magic-byte + AV scan; the file
+  // is only downloadable once this returns scanStatus: "CLEAN".
+  router.post(
+    "/confirm",
+    mediaRateLimiter,
+    authenticateAccessToken,
+    mediaController.confirmUpload
+  );
+
   router.post(
     "/download-url",
     mediaRateLimiter,
     authenticateAccessToken,
     mediaController.getDownloadUrl
   );
+
+  // Poll async AV scan status. GET /media/scan-status?objectKey=...&category=...
+  router.get(
+    "/scan-status",
+    mediaRateLimiter,
+    authenticateAccessToken,
+    mediaController.getScanStatus
+  );
+
   // Cancel an in-progress upload and delete the object from storage.
   // DELETE /uploads/:objectKey?category=CHAT_ATTACHMENT
   // objectKey must be URL-encoded if it contains slashes.

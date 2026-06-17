@@ -18,7 +18,10 @@ import type { GeneralRoomRepository } from "../repositories/general-room.reposit
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
-import type { GeneralRoomMessage } from "../generated/prisma/index.js";
+import type {
+  GeneralRoomMessage,
+  RoomMember,
+} from "../generated/prisma/index.js";
 import {
   buildReactionGroups,
   normalizeMessageType,
@@ -289,7 +292,7 @@ export class CommunityMessageService {
     const limit = Math.min(Math.max(params.limit || 100, 1), 100);
 
     // since_ts mode: updatedAt-based query that catches all mutation types.
-    if (params.sinceTs) {
+    if (params.sinceTs && !Number.isNaN(params.sinceTs.getTime())) {
       const { messages: tsMessages, hasMore } =
         await this.messageRepo.findUpdatedAtSince({
           roomId: params.roomId,
@@ -609,6 +612,9 @@ export class CommunityMessageService {
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
     }
 
+    if (Number.isNaN(params.fromTs.getTime())) {
+      throw new BadRequestError("CHAT_INVALID_SINCE_TS");
+    }
     const { messages, hasMore } = await this.messageRepo.findUpdatedAtSince({
       roomId: params.roomId,
       userId: params.userId,
@@ -686,6 +692,9 @@ export class CommunityMessageService {
         createdAt: createdMs,
         updatedAt: updatedMs,
         syncEventType,
+        systemMessageType:
+          (msg as Record<string, unknown>).systemMessageType ?? null,
+        systemMetadata: (msg as Record<string, unknown>).systemMetadata ?? null,
       };
     });
 
@@ -838,6 +847,24 @@ export class CommunityMessageService {
     return rows.map((m) => this.toWire(m, undefined, urlMap));
   }
 
+  /** Bind a loaded message to its OWN room (never a body-supplied communityId)
+   * and require the caller to be an ACTIVE member of that room. Returns the
+   * member so callers needing the role (deleteForAll) avoid a second query.
+   * NotFound — never Forbidden — so a foreign message's existence isn't leaked.
+   * (cross-room IDOR guard for routes that carry no roomId.) */
+  private async assertActiveMemberOfMessageRoom(
+    message: GeneralRoomMessage,
+    userId: string
+  ): Promise<RoomMember> {
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      userId
+    );
+    if (!member || member.status !== "active")
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    return member;
+  }
+
   async editMessage(params: {
     messageId: string;
     userId: string;
@@ -845,6 +872,11 @@ export class CommunityMessageService {
   }): Promise<GeneralRoomMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // the caller must be an ACTIVE member of the room the message lives in BEFORE
+    // any sender/type/window check. Mirrors reactToMessage/listMedia; NotFound so
+    // foreign-message existence isn't leaked. (cross-room IDOR)
+    await this.assertActiveMemberOfMessageRoom(message, params.userId);
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.sentBy !== params.userId)
@@ -865,11 +897,10 @@ export class CommunityMessageService {
   async reactToMessage(params: {
     messageId: string;
     userId: string;
-    communityId: string;
     emoji: string;
   }): Promise<{
     messageId: string;
-    communityId: string;
+    roomId: string;
     reactions: Array<{
       emoji: string;
       count: number;
@@ -880,6 +911,8 @@ export class CommunityMessageService {
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     // Guard: only active members may react.
     const member = await this.memberRepo.findByRoomAndUser(
@@ -899,7 +932,7 @@ export class CommunityMessageService {
     );
 
     await this.messageRepo.updateById(
-      params.communityId,
+      message.roomId,
       params.messageId,
       updatedReactions
     );
@@ -945,7 +978,7 @@ export class CommunityMessageService {
 
     return {
       messageId: params.messageId,
-      communityId: params.communityId,
+      roomId: message.roomId,
       reactions: reactionGroups,
     };
   }
@@ -956,6 +989,13 @@ export class CommunityMessageService {
   ): Promise<GeneralRoomMessage | null> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // only an ACTIVE member of the room the message lives in may hide it. Mirrors
+    // reactToMessage; NotFound so foreign-message existence isn't leaked.
+    await this.assertActiveMemberOfMessageRoom(message, userId);
+
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     await this.messageRepo.deleteForUser(messageId, userId);
     return this.messageRepo.findById(messageId);
@@ -968,14 +1008,18 @@ export class CommunityMessageService {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // the caller must be an ACTIVE member of the room the message lives in. NotFound
+    // so foreign-message existence isn't leaked. (cross-room IDOR)
+    const member = await this.assertActiveMemberOfMessageRoom(message, userId);
+
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
+
     // Sender can always delete their own message for everyone.
     // Others need admin or moderator role.
     if (message.sentBy !== userId) {
-      const member = await this.memberRepo.findByRoomAndUser(
-        message.roomId,
-        userId
-      );
-      if (!member || !["admin", "moderator"].includes(member.role)) {
+      if (!["admin", "moderator"].includes(member.role)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
     }
@@ -988,6 +1032,14 @@ export class CommunityMessageService {
     reporterId: string;
     reportReason: string;
   }): Promise<GeneralRoomMessage | null> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      params.reporterId
+    );
+    if (!member || member.status !== "active")
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     return this.messageRepo.addReport(params.messageId, {
       userReportId: params.reporterId,
       userReportReason: params.reportReason,
@@ -1015,6 +1067,8 @@ export class CommunityMessageService {
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
@@ -1061,6 +1115,10 @@ export class CommunityMessageService {
 
     if (!pinnedIds.includes(params.messageId))
       throw new NotFoundError("CHAT_PIN_NOT_FOUND");
+
+    const targetMsg = await this.messageRepo.findById(params.messageId);
+    if (targetMsg && normalizeMessageType(targetMsg.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     const newPinnedIds = pinnedIds.filter((id) => id !== params.messageId);
     await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);

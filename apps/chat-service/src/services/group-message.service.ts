@@ -13,6 +13,7 @@ import {
 } from "../constants/media-limits.js";
 import {
   normalizeMessageType,
+  buildCanonicalQuote,
   buildReactionGroups,
   reactionUserIdMap,
   toggleStoredReaction,
@@ -432,7 +433,11 @@ export class GroupMessageService {
     roomId: string
   ): Promise<GroupMessage | null> {
     const message = await this.messageRepo.findById(messageId);
-    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room: an active member of group A must not delete-for-me a
+    // message that lives in group B (cross-room IDOR). NotFound (not Forbidden)
+    // so foreign-message existence isn't leaked.
+    if (!message || message.roomId !== roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
@@ -449,7 +454,11 @@ export class GroupMessageService {
     roomId: string
   ): Promise<GroupMessage | null> {
     const message = await this.messageRepo.findById(messageId);
-    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room BEFORE any role check or broadcast: an admin/owner of
+    // group A must not delete a message that lives in group B (cross-room IDOR).
+    // NotFound (not Forbidden) so foreign-message existence isn't leaked.
+    if (!message || message.roomId !== roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
     const member = await this.memberRepo.findActiveByRoomAndUser(
       roomId,
@@ -480,6 +489,11 @@ export class GroupMessageService {
   }): Promise<GroupMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The edit route carries no roomId; derive the room from the message and
+    // authorize the caller as an ACTIVE member of THAT room before any sender/
+    // type/window check. A non-member (or someone not in the message's room)
+    // must not mutate it — NotFound so existence isn't leaked. (cross-room IDOR)
+    await this.assertActiveMemberOfMessageRoom(message, params.userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -521,8 +535,42 @@ export class GroupMessageService {
     await assertGroupMember(this.memberRepo, roomId, userId);
   }
 
+  /**
+   * Bind a message to its room: throw CHAT_MESSAGE_NOT_FOUND unless `messageId`
+   * actually belongs to `roomId`. The `react()` primitive mutates a message by id
+   * ALONE, so a REST caller who is an active member of group A could otherwise
+   * pass a messageId from group B (one they're not in) and mutate/broadcast that
+   * foreign message. Loading the row and asserting `roomId` matches closes that
+   * cross-room IDOR; call this AFTER the member guard, BEFORE react().
+   */
+  async assertMessageInRoom(roomId: string, messageId: string): Promise<void> {
+    const msg = await this.messageRepo.findById(messageId);
+    if (!msg || msg.roomId !== roomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
+  /** Bind a loaded message to its OWN room and require the caller to be an ACTIVE
+   * member of that room (cross-room IDOR guard for paths that derive the room from
+   * the message — edit, and the forward source-read). NotFound — never Forbidden —
+   * so a foreign message's existence isn't leaked. */
+  private async assertActiveMemberOfMessageRoom(
+    message: GroupMessage,
+    userId: string
+  ): Promise<void> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      message.roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
   async forwardMessage(params: {
     sourceMessageId: string;
+    /** SOURCE room the message is being forwarded FROM (REST path param). When
+     * provided, it must MATCH the message's actual room (cross-check). Null on the
+     * gRPC path. Either way the caller must be an active member of the message's
+     * ACTUAL room — that bind is unconditional and closes the forward read-IDOR. */
+    sourceRoomId?: string | null;
     targetRoomId: string;
     senderId: string;
     senderName: string;
@@ -555,6 +603,14 @@ export class GroupMessageService {
     const source = await this.messageRepo.findById(params.sourceMessageId);
     if (!source || source.isDeleted)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    // If the caller asserted a source room (REST path param), it must match the message's room.
+    if (params.sourceRoomId != null && source.roomId !== params.sourceRoomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The caller MUST belong to the message's ACTUAL room — on BOTH transports. Forwarding
+    // READS source.content, so without this a socket caller (gRPC carries no sourceRoomId)
+    // could exfiltrate any message from a group they're not in. Closes the cross-room read-IDOR.
+    await this.assertActiveMemberOfMessageRoom(source, params.senderId);
 
     const forwardData = {
       originalMessageId: source.id,
@@ -807,6 +863,13 @@ export class GroupMessageService {
         wire.reactions = resolvedReactions;
       }
 
+      wire.conversationType = "GROUP";
+      wire.quoteData = buildCanonicalQuote(wire.quoteData);
+      wire.clientTs = Number(
+        (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+      );
+      wire.serverTs =
+        message.createdAt instanceof Date ? message.createdAt.getTime() : 0;
       return wire;
     });
   }

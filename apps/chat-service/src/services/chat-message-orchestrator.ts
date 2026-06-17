@@ -553,11 +553,22 @@ export class ChatMessageOrchestrator {
    * with `emoji` and only toggling when the op would actually change state:
    *   - op:"add"    && not present → react() (toggles ON)
    *   - op:"remove" && present     → react() (toggles OFF)
-   *   - otherwise                  → NO-OP (no write, no broadcast)
+   *   - otherwise                  → NO-OP (no write, no re-read, no broadcast)
+   *
+   * On a true no-op the already-read `before` state is mapped to the SAME
+   * ReactionGroup[] and returned (avatars resolved for the response), but NOTHING
+   * is published — a duplicate tap returns 200 with the current reactions and
+   * fans nothing out, instead of spamming an unchanged set to every subscriber.
    *
    * Authorization lives HERE at the REST boundary (participant for PRIVATE, active
    * member for GROUP) — NOT inside the shared `react()` primitive, which stays
    * un-guarded so the socket/gRPC path (pre-authorized at join) is unchanged.
+   *
+   * Idempotency note: idempotent under normal SEQUENTIAL use; best-effort under
+   * concurrent races — `react()` is a non-transactional read-modify-write toggle,
+   * so two concurrent same-user same-emoji POSTs can both observe `!already` and
+   * double-toggle (net OFF). A true fix would be an atomic `$addToSet`/`$pull`
+   * (out of scope here).
    */
   async reactDirect(params: ReactDirectParams): Promise<ReactDirectResult> {
     const conversationType: "PRIVATE" | "GROUP" =
@@ -578,6 +589,47 @@ export class ChatMessageOrchestrator {
         ? this.groupMessageService
         : this.privateMessageService;
 
+    // Bind the message to the room BEFORE any reaction read/write: react() and
+    // getMessageReactions both address the row by id ALONE, so without this a
+    // caller authorized for `roomId` could pass a messageId from a room they're
+    // NOT in and mutate + broadcast that foreign message. Throws NotFound on
+    // miss/mismatch (closes the cross-room IDOR).
+    if (conversationType === "GROUP") {
+      await this.groupMessageService.assertMessageInRoom(
+        params.roomId,
+        params.messageId
+      );
+    } else {
+      await this.privateMessageService.assertMessageInRoom(
+        params.roomId,
+        params.messageId
+      );
+    }
+
+    // Map a getMessageReactions result → canonical ChatReactionGroup[] with
+    // reactor avatars resolved-on-read. Shared by the no-op return and the
+    // post-toggle broadcast/return so both surfaces emit the identical shape.
+    const toResolvedGroups = async (state: {
+      reactions: Record<
+        string,
+        { count: number; users: ReactionGroup["users"] }
+      >;
+    }): Promise<ReactionGroup[]> => {
+      const groups: ReactionGroup[] = Object.entries(state.reactions).map(
+        ([emoji, d]) => ({ emoji, count: d.count, users: d.users })
+      );
+      const avatarMap = await resolveMediaUrlMap(
+        groups.flatMap((g) => g.users.map((u) => u.avatar))
+      );
+      return groups.map((g) => ({
+        ...g,
+        users: g.users.map((u) => ({
+          ...u,
+          avatar: urlFromMap(avatarMap, u.avatar),
+        })),
+      }));
+    };
+
     // 1. Read current state to decide whether the toggle must fire (idempotency).
     const before = await service.getMessageReactions({
       messageId: params.messageId,
@@ -591,33 +643,25 @@ export class ChatMessageOrchestrator {
       ) ||
         false);
 
-    // 2. Toggle only when the op would actually change state; else NO-OP.
+    // 2. Decide whether the op would actually change state.
     const shouldToggle =
       (params.op === "add" && !already) || (params.op === "remove" && already);
-    if (shouldToggle) {
-      await service.react(params.messageId, params.userId, params.emoji);
+
+    // 3a. NO-OP (duplicate add / absent remove): return the already-read state,
+    //     avatars resolved for the response — but DO NOT re-read or publish.
+    if (!shouldToggle) {
+      return { reactions: await toResolvedGroups(before) };
     }
 
-    // 3. Re-read, map to ChatReactionGroup[], resolve reactor avatars on read,
-    //    and broadcast message:reaction exactly like the gRPC sendReaction handler.
+    // 3b. State-changing op: toggle, re-read, then broadcast message:reaction
+    //     exactly like the gRPC sendReaction handler.
+    await service.react(params.messageId, params.userId, params.emoji);
     const after = await service.getMessageReactions({
       messageId: params.messageId,
       roomId: params.roomId,
       requesterId: params.userId,
     });
-    const groups: ReactionGroup[] = Object.entries(after.reactions).map(
-      ([emoji, d]) => ({ emoji, count: d.count, users: d.users })
-    );
-    const avatarMap = await resolveMediaUrlMap(
-      groups.flatMap((g) => g.users.map((u) => u.avatar))
-    );
-    const resolvedGroups: ReactionGroup[] = groups.map((g) => ({
-      ...g,
-      users: g.users.map((u) => ({
-        ...u,
-        avatar: urlFromMap(avatarMap, u.avatar),
-      })),
-    }));
+    const resolvedGroups = await toResolvedGroups(after);
 
     await this.redis.publish(
       `conv:${params.roomId}`,

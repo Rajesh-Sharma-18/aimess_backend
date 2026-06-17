@@ -40,6 +40,14 @@ export interface MarkNotificationsReadResult {
   updatedCount: number;
   remainingUnread: number;
 }
+export interface DeleteNotificationParams {
+  userId: string;
+  notificationId: string;
+}
+export interface DeleteNotificationResult {
+  deleted: boolean;
+  remainingUnread: number;
+}
 
 export interface NotificationClient {
   getNotifications(
@@ -48,6 +56,9 @@ export interface NotificationClient {
   markNotificationsRead(
     p: MarkNotificationsReadParams
   ): Promise<MarkNotificationsReadResult>;
+  deleteNotification(
+    p: DeleteNotificationParams
+  ): Promise<DeleteNotificationResult>;
 }
 
 export function createNotificationClient(): NotificationClient {
@@ -96,9 +107,18 @@ export function createNotificationClient(): NotificationClient {
         notificationIds: p.notificationIds,
       })
   );
+  const deleteBreaker = makeBreaker(
+    "notification.deleteNotification",
+    (p: DeleteNotificationParams) =>
+      call<unknown, DeleteNotificationResult>("deleteNotification", {
+        userId: p.userId,
+        notificationId: p.notificationId,
+      })
+  );
 
   return {
     getNotifications: (p) => getNotifBreaker.fire(p),
     markNotificationsRead: (p) => markReadBreaker.fire(p),
+    deleteNotification: (p) => deleteBreaker.fire(p),
   };
 }

@@ -5,6 +5,7 @@ service NotificationService {
   rpc GetNotifications      (GetNotificationsRequest)      returns (GetNotificationsResponse);
   rpc MarkNotificationsRead (MarkNotificationsReadRequest) returns (MarkNotificationsReadResponse);
   rpc CreateNotification    (CreateNotificationRequest)    returns (CreateNotificationResponse);
+  rpc DeleteNotification    (DeleteNotificationRequest)    returns (DeleteNotificationResponse);
 }
 
 message CreateNotificationRequest {
@@ -48,5 +49,13 @@ message MarkNotificationsReadRequest {
 }
 message MarkNotificationsReadResponse {
   int32 updated_count    = 1;
+  int32 remaining_unread = 2;
+}
+message DeleteNotificationRequest {
+  string user_id         = 1;
+  string notification_id = 2;
+}
+message DeleteNotificationResponse {
+  bool  deleted          = 1;
   int32 remaining_unread = 2;
 }

@@ -15,6 +15,9 @@ const MarkReadSchema = z.object({
   // an unbounded id list.
   notificationIds: z.array(z.string().min(1)).max(500),
 });
+const DeleteSchema = z.object({
+  notificationId: z.string().min(1),
+});
 
 interface RedisSocketEvent {
   event: string;
@@ -128,6 +131,38 @@ export function registerNotifyNamespace(
           .catch((err: unknown) => {
             logger.warn(
               `/notify notifications:mark_read gRPC error: ${String(err)}`
+            );
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    socket.on(
+      "notifications:delete",
+      (payload: unknown, callback: (res: unknown) => void) => {
+        const r = DeleteSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        notificationClient
+          .deleteNotification({
+            userId,
+            notificationId: r.data.notificationId,
+          })
+          .then((result) => {
+            ackOk(callback, "SOCKET_NOTIFICATIONS_DELETED", locale, result);
+            // Push the recomputed unread count to ALL devices for this user so
+            // multi-device badges stay in sync after a delete (mirrors the
+            // mark_read fanout). The deleteNotification gRPC already recomputed
+            // remainingUnread, so reuse it instead of a second round-trip.
+            notify.to(`user:${userId}`).emit("notification:count_update", {
+              count: result.remainingUnread,
+            });
+          })
+          .catch((err: unknown) => {
+            logger.warn(
+              `/notify notifications:delete gRPC error: ${String(err)}`
             );
             ackError(callback, "SERVICE_ERROR", locale);
           });

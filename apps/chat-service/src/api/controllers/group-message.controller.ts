@@ -14,8 +14,8 @@ import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import {
   buildChatMessageEvent,
+  buildDeletePayload,
   groupStoredReactions,
-  toWireMessage,
 } from "../../lib/chat-message.serializer.js";
 import type { GroupMessageService } from "../../services/group-message.service.js";
 import type { GroupPinService } from "../../services/group-pin.service.js";
@@ -267,52 +267,45 @@ export class GroupMessageController {
       userId,
       content,
     });
+    // §9: build canonical ChatMessage ONCE — REST body == socket payload.
+    // Groups denormalize senderName/senderAvatar on the row.
+    const full = result as unknown as Record<string, unknown>;
+    const editedEvent = buildChatMessageEvent({
+      id: result.id,
+      clientMessageId: (full.clientMessageId as string) ?? "",
+      roomId: result.roomId,
+      conversationType: "GROUP",
+      senderId: (full.senderId as string) ?? "",
+      senderName: (full.senderName as string) ?? "",
+      senderAvatar: (full.senderAvatar as string) ?? "",
+      messageType: (full.messageType as string) ?? "TEXT",
+      content: result.content ?? null,
+      parentMessageId: (full.parentMessageId as string) || "",
+      quoteData: full.quoteData ?? null,
+      reactions: groupStoredReactions(full.reactions),
+      isDeleted: Boolean(full.isDeleted),
+      editedAt:
+        result.editedAt instanceof Date
+          ? result.editedAt.getTime()
+          : Date.now(),
+      clientTs: Number(
+        (full.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+      ),
+      serverTs:
+        result.createdAt instanceof Date
+          ? result.createdAt.getTime()
+          : Date.now(),
+      sequenceNumber: (full.sequenceNumber as number) ?? 0,
+    });
     if (result.roomId) {
-      // §9: emit the FULL canonical ChatMessage shape on message:edited (groups
-      // denormalize senderName/senderAvatar on the row).
-      const full = result as unknown as Record<string, unknown>;
       await this.redis.publish(
         `conv:${result.roomId}`,
-        JSON.stringify({
-          event: "message:edited",
-          data: buildChatMessageEvent({
-            id: result.id,
-            clientMessageId: (full.clientMessageId as string) ?? "",
-            roomId: result.roomId,
-            conversationType: "GROUP",
-            senderId: (full.senderId as string) ?? "",
-            senderName: (full.senderName as string) ?? "",
-            senderAvatar: (full.senderAvatar as string) ?? "",
-            messageType: (full.messageType as string) ?? "TEXT",
-            content: result.content ?? null,
-            parentMessageId: (full.parentMessageId as string) || "",
-            quoteData: full.quoteData ?? null,
-            reactions: groupStoredReactions(full.reactions),
-            isDeleted: Boolean(full.isDeleted),
-            editedAt:
-              result.editedAt instanceof Date
-                ? result.editedAt.getTime()
-                : Date.now(),
-            clientTs: Number(
-              (full.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
-            ),
-            serverTs:
-              result.createdAt instanceof Date
-                ? result.createdAt.getTime()
-                : Date.now(),
-            sequenceNumber: (full.sequenceNumber as number) ?? 0,
-          }),
-        })
+        JSON.stringify({ event: "message:edited", data: editedEvent })
       );
     }
     res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          toWireMessage(result),
-          t("CHAT_MESSAGE_EDITED", req.locale)
-        )
-      );
+      .json(new ApiResponse(editedEvent, t("CHAT_MESSAGE_EDITED", req.locale)));
   });
 
   deleteMessage = asyncHandler(async (req: Request, res: Response) => {
@@ -323,30 +316,26 @@ export class GroupMessageController {
       userId,
       roomId
     );
-    // §2.3: groups previously broadcast NOTHING on delete — other members only
-    // saw the tombstone after a refetch. Emit a self-describing message:delete so
-    // every member hides/tombstones the message live (mirrors private/community).
-    if (result?.roomId) {
+    // §2.3: canonical tombstone — REST body == socket payload byte-for-byte.
+    const tombstone = result
+      ? buildDeletePayload({
+          conversationType: "GROUP",
+          messageId: result.id,
+          roomId: result.roomId,
+          scope: "forEveryone",
+          deletedBy: userId,
+          sequenceNumber: result.sequenceNumber,
+          deletedType:
+            (result as { deletedType?: string }).deletedType ?? "SELF_DELETE",
+        })
+      : null;
+    if (result?.roomId && tombstone) {
       await this.redis.publish(
         `conv:${result.roomId}`,
-        JSON.stringify({
-          event: "message:delete",
-          data: {
-            messageId: result.id,
-            conversationId: result.roomId,
-            // SELF_DELETE / ADMIN_DELETE are both delete-for-everyone.
-            type: "forEveryone",
-            deletedType:
-              (result as { deletedType?: string }).deletedType ?? "SELF_DELETE",
-            deletedBy: userId,
-            sequenceNumber: result.sequenceNumber,
-          },
-        })
+        JSON.stringify({ event: "message:delete", data: tombstone })
       );
     }
-    res
-      .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result ? toWireMessage(result) : result));
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
   });
 
   getPins = asyncHandler(async (req: Request, res: Response) => {
@@ -462,38 +451,37 @@ export class GroupMessageController {
       };
     const result = await this.messageService.forwardMessage({
       sourceMessageId: messageId,
+      // :roomId path param is the SOURCE room — bind the source message to it so
+      // a caller can't forward (and thereby read) a message from a group they're not in.
+      sourceRoomId: req.params.roomId as string,
       targetRoomId,
       senderId: userId,
       senderName: senderName ?? "",
       senderAvatar: senderAvatar ?? "",
       clientMessageId: clientMessageId ?? null,
     });
-    {
-      // §1/§9: emit the canonical ChatMessage shape on the forward broadcast.
-      const full = result as unknown as Record<string, unknown>;
-      await this.redis.publish(
-        `conv:${targetRoomId}`,
-        JSON.stringify({
-          event: "message:new",
-          data: buildChatMessageEvent({
-            id: result.id,
-            clientMessageId: (full.clientMessageId as string) ?? "",
-            roomId: targetRoomId,
-            conversationType: "GROUP",
-            senderId: userId,
-            senderName: senderName ?? (full.senderName as string) ?? "",
-            senderAvatar: senderAvatar ?? (full.senderAvatar as string) ?? "",
-            senderRole: (full.senderRole as string) ?? "",
-            messageType: result.messageType,
-            content: result.content ?? null,
-            reactions: [],
-            isForwarded: true,
-            serverTs: result.createdAt?.getTime() ?? Date.now(),
-            sequenceNumber: (full.sequenceNumber as number) ?? 0,
-          }),
-        })
-      );
-    }
+    // §1/§9: build canonical ChatMessage ONCE — REST body == socket payload.
+    const full = result as unknown as Record<string, unknown>;
+    const forwardedEvent = buildChatMessageEvent({
+      id: result.id,
+      clientMessageId: (full.clientMessageId as string) ?? "",
+      roomId: targetRoomId,
+      conversationType: "GROUP",
+      senderId: userId,
+      senderName: senderName ?? (full.senderName as string) ?? "",
+      senderAvatar: senderAvatar ?? (full.senderAvatar as string) ?? "",
+      senderRole: (full.senderRole as string) ?? "",
+      messageType: result.messageType,
+      content: result.content ?? null,
+      reactions: [],
+      isForwarded: true,
+      serverTs: result.createdAt?.getTime() ?? Date.now(),
+      sequenceNumber: (full.sequenceNumber as number) ?? 0,
+    });
+    await this.redis.publish(
+      `conv:${targetRoomId}`,
+      JSON.stringify({ event: "message:new", data: forwardedEvent })
+    );
     // Fire-and-forget bump (incl. member fetch) — must never delay the HTTP response.
     publishConvUpdatedSafe({
       redis: this.redis,
@@ -512,10 +500,7 @@ export class GroupMessageController {
     res
       .status(HTTP_STATUS.CREATED)
       .json(
-        new ApiResponse(
-          toWireMessage(result),
-          t("CHAT_MESSAGE_FORWARDED", req.locale)
-        )
+        new ApiResponse(forwardedEvent, t("CHAT_MESSAGE_FORWARDED", req.locale))
       );
   });
 

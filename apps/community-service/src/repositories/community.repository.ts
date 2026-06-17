@@ -445,7 +445,7 @@ export const communityRepository = {
     });
   },
 
-  reactivateMemberWithSnapshot(
+  async reactivateMemberWithSnapshot(
     communityId: string,
     userId: string,
     snapshot: {
@@ -454,7 +454,7 @@ export const communityRepository = {
       snapshotAvatarKey: string | null;
     }
   ) {
-    return prisma.communityMember.update({
+    const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: {
         status: CommunityMemberStatus.ACTIVE,
@@ -475,6 +475,17 @@ export const communityRepository = {
         banReason: true,
       },
     });
+    // Re-add of a previously-LEFT member: mirror the reactivation into
+    // chat-service's RoomMember so they regain send/read in the general room.
+    // The other member-mutation methods (create/createMany/updateStatus/
+    // updateRole) all publish this; reactivation must too or the row drifts.
+    publishCommunityMemberSyncedForChatSafe({
+      communityId,
+      userId,
+      status: CommunityMemberStatus.ACTIVE,
+      role: CommunityMemberRole.MEMBER,
+    });
+    return row;
   },
 
   updateMemberSnapshotsByUserId(

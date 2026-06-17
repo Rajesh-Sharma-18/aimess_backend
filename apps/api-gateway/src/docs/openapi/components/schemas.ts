@@ -5720,6 +5720,10 @@ export const openApiSchemas = {
         description: "Always [] on a fresh send.",
         items: { type: "object" },
       },
+      isForwarded: {
+        type: "boolean",
+        description: "True when this message was forwarded from another room.",
+      },
       clientTs: {
         type: "integer",
         format: "int64",
@@ -5749,6 +5753,88 @@ export const openApiSchemas = {
       "serverTs",
       "sequenceNumber",
     ],
+  },
+  /**
+   * REST body for private/group DELETE — matches the socket `message:delete` payload byte-for-byte.
+   */
+  ChatDeleteTombstone: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      conversationId: {
+        type: "string",
+        description: "Alias of roomId; kept for V1 clients.",
+      },
+      type: {
+        type: "string",
+        enum: ["forMe", "forEveryone"],
+        description: "Delete scope.",
+      },
+      deletedBy: { type: "string", description: "userId of the deleter." },
+      sequenceNumber: {
+        type: "integer",
+        description: "Per-room sequence number of the deleted message.",
+      },
+      deletedType: {
+        type: "string",
+        description: "GROUP only — SELF_DELETE | ADMIN_DELETE.",
+      },
+    },
+    required: [
+      "messageId",
+      "conversationId",
+      "type",
+      "deletedBy",
+      "sequenceNumber",
+    ],
+  },
+  /**
+   * REST body for community DELETE — matches the socket `community:message:deleted` payload.
+   */
+  ChatCommunityDeleteTombstone: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      communityId: { type: "string" },
+      roomId: { type: "string" },
+      deleteType: {
+        type: "string",
+        enum: ["forMe", "forEveryone"],
+        description: "Delete scope.",
+      },
+      deletedBy: { type: "string" },
+    },
+    required: ["messageId", "communityId", "roomId", "deleteType", "deletedBy"],
+  },
+  /**
+   * REST body for community message EDIT — matches the socket `community:message:edited` payload.
+   */
+  ChatCommunityEditResponse: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      communityId: { type: "string" },
+      roomId: { type: "string" },
+      content: {
+        type: "object",
+        nullable: true,
+        description: "Updated message body.",
+      },
+      contentType: {
+        type: "string",
+        description: "UPPER-CASE message kind (TEXT, IMAGE, …).",
+      },
+      editedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when the message was last edited.",
+      },
+      sequenceNumber: {
+        type: "integer",
+        description: "Per-room sequence number.",
+      },
+    },
+    required: ["messageId", "communityId", "roomId"],
   },
   ChatDeletePrivateMessageRequest: {
     type: "object",

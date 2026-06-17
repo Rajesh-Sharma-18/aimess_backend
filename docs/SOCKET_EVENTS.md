@@ -173,6 +173,7 @@ below (Vietnamese resolved by the same key — see `SOCKET_MESSAGES` in
 | `/community` | `community:message:unpin`  | Message unpinned successfully                   |
 | `/notify`    | `notifications:fetch`      | Notifications fetched successfully              |
 | `/notify`    | `notifications:mark_read`  | Notifications marked as read                    |
+| `/notify`    | `notifications:delete`     | Notification deleted                            |
 
 Failure acks carry a one-sentence localized `message` per error code (e.g.
 `INVALID_PAYLOAD` → "The request data is invalid", `SERVICE_ERROR` →
@@ -185,11 +186,12 @@ high-frequency signaling events `typing:start`, `typing:stop`,
 `presence:heartbeat`, and `call:ice` are intentionally fire-and-forget (clients
 emit them continuously and never await a reply), so they return **no** `message`.
 
-> **Numeric fields in ack `data`:** values backed by gRPC `int64` (e.g.
-> `sentAt`) arrive in the **ack** as a **stringified** epoch-ms (the gRPC client
-> loads `longs` as strings). The same field in a **server→client broadcast**
-> (e.g. `community:message:new`) is a plain **number**. Coerce defensively with
-> `Number(sentAt)` on the ack path.
+> **Numeric fields in ack `data`:** values backed by gRPC `int64` (`sentAt`,
+> `editedAt`, `pinnedAt`, `sequenceNumber`) are plain epoch-ms / integer
+> **numbers** on the **ack** — the gateway coerces the gRPC `longs:String`
+> wire-strings before relaying, so they match the **server→client broadcast**
+> (e.g. `community:message:new`). Any existing `Number(sentAt)` coercion on the
+> client stays harmless.
 
 ```js
 chat.emit("message:send", payload, (res) => {
@@ -493,7 +495,7 @@ Redis channel verbatim. Contract events:
 | `community:message:pinned`   | `community:<id>`   | `{ messageId, communityId, roomId, pinnedIds[], pinnedCount, pinnedAt, pinnedBy }` (`pinnedIds` is the COMPLETE list — replace, don't merge)                                                                                                                    | a message was pinned                      |
 | `community:message:unpinned` | `community:<id>`   | `{ messageId, communityId, roomId, pinnedIds[], pinnedCount, unpinnedBy }` (`pinnedIds` is the COMPLETE remaining list)                                                                                                                                         | a message was unpinned                    |
 | `community:catchup:result`   | (direct to socket) | `{ roomId, events:[{ …, syncEventType:"new"\|"edited"\|"deleted"\|"reacted", reactions[] }], hasMore, lastId, nextTs }`                                                                                                                                         | reconnect gap-fill response, one per room |
-| `community:member:joined`    | `community:<id>`   | member DTO — **reserved; no V1 producer yet**                                                                                                                                                                                                                   | a member joins                            |
+| `community:member:joined`    | `community:<id>`   | `{ userId, username, displayName, avatarUrl\|null, role:"ADMIN"\|"MODERATOR"\|"MEMBER", joinedAt (epoch-ms number) }` — emitted by community-service on every path a member becomes ACTIVE (add_members, join-request approve/bulk-approve, invite-link redeem) | a member joins                            |
 | `typing:start`               | `community:<id>`   | **enriched**: `{ conversationId(==communityId), communityId, userId, userDetails: { userId, username, displayName, avatarUrl\|null }, timestamp (epoch-ms number), senderName }` (`userDetails` resolved server-side at connect; `userId` server-authoritative) | a member starts typing                    |
 | `typing:stop`                | `community:<id>`   | **enriched** (same shape as `typing:start`) — also emitted on the server's 6 s auto-expiry and the disconnect-flush                                                                                                                                             | a member stops typing                     |
 
@@ -512,19 +514,23 @@ Each connected user's `notify:<userId>` Redis channel is subscribed
 
 ### 6.1 Client → Server
 
-| Event                     | Ack | Payload                         | Notes                           |
-| ------------------------- | --- | ------------------------------- | ------------------------------- |
-| `notifications:fetch`     | yes | `{ cursor?, limit?≤100 }`       | cursor-paged feed               |
-| `notifications:mark_read` | yes | `{ notificationIds: string[] }` | mark read (empty array allowed) |
+| Event                     | Ack | Payload                         | Notes                                                                                                        |
+| ------------------------- | --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `notifications:fetch`     | yes | `{ cursor?, limit?≤100 }`       | cursor-paged feed                                                                                            |
+| `notifications:mark_read` | yes | `{ notificationIds: string[] }` | mark read (empty array allowed)                                                                              |
+| `notifications:delete`    | yes | `{ notificationId: string }`    | owner-scoped soft-delete; ack `SOCKET_NOTIFICATIONS_DELETED`; unowned id → `{ deleted:false }` (no mutation) |
 
 ### 6.2 Server → Client
 
-| Event                       | When                                                                                           | Payload                                                                                                                                                                                                                                                                     |
-| --------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `notification:count`        | once on connect                                                                                | `{ count }` — current unread total (aggregate only; no per-type breakdown in V1)                                                                                                                                                                                            |
-| `notification:count_update` | after `notifications:mark_read` (all devices) **or** when the service emits a new notification | `{ count }` — updated unread total; client should replace the badge count; emitted to `user:<userId>` so **all** connected devices stay in sync                                                                                                                             |
-| `notification:new`          | a new notification is created (forwarded verbatim)                                             | `NotificationItem` — `{ notificationId, type, title, body, referenceId, isRead, createdAt, data }`; `type` is the discriminator (handle unknown values defensively). `notificationId` (canonical) — `id` is a deprecated alias (read `notificationId ?? id`; removed in V2) |
-| _other forwarded events_    | published to `notify:<userId>`                                                                 | event name + payload forwarded verbatim                                                                                                                                                                                                                                     |
+| Event                           | When                                                                                                             | Payload                                                                                                                                                                                                                                                                                                   |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notification:count`            | once on connect                                                                                                  | `{ count }` — current unread total (aggregate only; no per-type breakdown in V1)                                                                                                                                                                                                                          |
+| `notification:count_update`     | after `notifications:mark_read` (all devices) **or** when the service emits a new notification                   | `{ count }` — updated unread total; client should replace the badge count; emitted to `user:<userId>` so **all** connected devices stay in sync                                                                                                                                                           |
+| `notification:new`              | a new notification is created (forwarded verbatim)                                                               | `NotificationItem` — `{ notificationId, type, title, body, referenceId, isRead, createdAt, data }`; `type` is the discriminator (handle unknown values defensively). `notificationId` (canonical) — `id` is a deprecated alias (read `notificationId ?? id`; removed in V2)                               |
+| `notification:deleted`          | a notification row is soft-deleted (via `notifications:delete`) — reaches the user's other devices               | `{ notificationId }` — drop this row from the list; a `notification:count_update` follows                                                                                                                                                                                                                 |
+| `community:join_request:update` | an ADMIN/MODERATOR approves or rejects the user's community join request                                         | `{ communityId, requestId, status:"APPROVED"\|"REJECTED", communityName, decidedAt (ISO-8601) }` — emitted to the requester's `notify:<userId>`; drives the FE state flip. An in-app `notification:new` (`community.join_request_approved` / `community.join_request_rejected`) is delivered alongside it |
+| `media:scan_result`             | a media upload hits a terminal scan failure (QUARANTINED/INFECTED/ERROR, or a synchronous confirm-upload reject) | `{ objectKey, status, reason, at }` (`at` = epoch ms) — emitted to the uploader's `notify:<uploaderId>`; treat any status as "upload blocked". Socket-only (no inbox row / offline FCM by design)                                                                                                         |
+| _other forwarded events_        | published to `notify:<userId>`                                                                                   | event name + payload forwarded verbatim                                                                                                                                                                                                                                                                   |
 
 ---
 
@@ -838,22 +844,22 @@ Clients should not assume any socket event leaks across a block.
 
 Intentionally **out of scope for V1** — build against their absence:
 
-| Area                                                       | V1 behavior                                                                                                                                                                                               |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Group / community calls                                    | **1-1 only** (`call:initiate` targets one `calleeId`)                                                                                                                                                     |
-| `call:cancel` / `call:missed` / server ring-timeout        | use `call:end { callId }` (callee sees `call:ended { durationSec:0 }`) for V1 cancel; auto-cancel after 60 s is the caller's responsibility in V1                                                         |
-| Group/community read receipts                              | **sent + read** only; no per-member delivery receipt (private-only)                                                                                                                                       |
-| Community multi-device `read_sync`                         | not emitted for community; use bulk mark-read + `community:updated` hints                                                                                                                                 |
-| Reaction moderation removal                                | reactions are self-toggle only; no admin "remove someone's reaction"                                                                                                                                      |
-| Server-proxied sticker/GIF search                          | client integrates Tenor/Giphy directly and sends `url`/`objectKey`; server stores the reference only                                                                                                      |
-| End-to-end encryption                                      | V1 is transport-encrypted (WSS) only; no E2E / secret-chat key exchange or rotation                                                                                                                       |
-| Scheduled messages                                         | no server-side send-later in V1                                                                                                                                                                           |
-| Draft sync                                                 | drafts are client-local; no cross-device draft channel in V1                                                                                                                                              |
-| Per-device token binding / server-pushed `session.expired` | auth is re-verified on every reconnect; token refresh is client-driven (reconnect with a fresh token); no `deviceId` binding or server-initiated expiry event in V1                                       |
-| Friend management socket events                            | friend request/accept/reject/remove are **REST-only** (`/api/v1/users/friends/*`); notifications arrive via `notification:new` on `/notify` with `type: "friend.requested"` / `"friend.accepted"` (§12.2) |
-| Community moderation socket events                         | kick/ban/unban/role_change are **REST-only** (`/api/v1/communities/:id/members/*`); affected users receive `notification:new` events (§12.3)                                                              |
-| Webhook / external integration                             | V1 has no webhook registration; external systems must poll REST APIs                                                                                                                                      |
-| `conv:created` / `conv:deleted` push                       | V1 does not emit socket events on REST conversation creation/deletion; clients should refetch the inbox list after any conversation management action (§12.4)                                             |
+| Area                                                       | V1 behavior                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Group / community calls                                    | **1-1 only** (`call:initiate` targets one `calleeId`)                                                                                                                                                                                                                                                                  |
+| `call:cancel` / `call:missed` / server ring-timeout        | use `call:end { callId }` (callee sees `call:ended { durationSec:0 }`) for V1 cancel; auto-cancel after 60 s is the caller's responsibility in V1                                                                                                                                                                      |
+| Group/community read receipts                              | **sent + read** only; no per-member delivery receipt (private-only)                                                                                                                                                                                                                                                    |
+| Community multi-device `read_sync`                         | not emitted for community; use bulk mark-read + `community:updated` hints                                                                                                                                                                                                                                              |
+| Reaction moderation removal                                | reactions are self-toggle only; no admin "remove someone's reaction"                                                                                                                                                                                                                                                   |
+| Server-proxied sticker/GIF search                          | client integrates Tenor/Giphy directly and sends `url`/`objectKey`; server stores the reference only                                                                                                                                                                                                                   |
+| End-to-end encryption                                      | V1 is transport-encrypted (WSS) only; no E2E / secret-chat key exchange or rotation                                                                                                                                                                                                                                    |
+| Scheduled messages                                         | no server-side send-later in V1                                                                                                                                                                                                                                                                                        |
+| Draft sync                                                 | drafts are client-local; no cross-device draft channel in V1                                                                                                                                                                                                                                                           |
+| Per-device token binding / server-pushed `session.expired` | auth is re-verified on every reconnect; token refresh is client-driven (reconnect with a fresh token); no `deviceId` binding or server-initiated expiry event in V1                                                                                                                                                    |
+| Friend management socket events                            | friend request/accept/reject/remove are **REST-only** (`/api/v1/users/friends/*`); notifications arrive via `notification:new` on `/notify` with `type: "friend.requested"` / `"friend.accepted"` (§12.2)                                                                                                              |
+| Community moderation socket events                         | kick/ban/unban/role_change are **REST-only** (`/api/v1/communities/:id/members/*`); affected users receive `notification:new` events (§12.3). **Join-request approve/reject is realtime**: requester gets `community:join_request:update` on `/notify`; approve also broadcasts `community:member:joined` to the room. |
+| Webhook / external integration                             | V1 has no webhook registration; external systems must poll REST APIs                                                                                                                                                                                                                                                   |
+| `conv:created` / `conv:deleted` push                       | V1 does not emit socket events on REST conversation creation/deletion; clients should refetch the inbox list after any conversation management action (§12.4)                                                                                                                                                          |
 
 ### 8.10 Media upload
 
@@ -970,6 +976,7 @@ emitter and listener:
 `community:catchup:result` · `community:member:joined` · `notification:new` ·
 `notification:count` · `notification:count_update` ·
 `stream:comment:new` · `stream:viewer_count` · `stream:react:new` · `stream:status`
+`notification:count` · `notification:count_update` · `community:join_request:update`
 
 ---
 
@@ -1053,6 +1060,19 @@ Affected members receive `notification:new` events on `/notify` with types:
 `community.member_kicked`, `community.member_banned`, `community.admin_transferred`,
 `community.member_role_changed`, `community.deleted`. Report outcomes are
 communicated via `community.report_actioned`.
+
+**Join-request decisions are realtime (no longer REST-only).** Approve / reject
+(including bulk) now fan out to the requester:
+
+- an in-app `notification:new` with type `community.join_request_approved` /
+  `community.join_request_rejected`, **and**
+- a `community:join_request:update` socket event on `/notify`
+  (`{ communityId, requestId, status, communityName, decidedAt }`) for the FE
+  state flip (pending → joined / rejected).
+
+On **approve**, the new member is also broadcast to the community room as
+`community:member:joined`, and admins/moderators receive a
+`community.member_added` in-app notification (member-joined awareness).
 
 ### 12.4 Conversation lifecycle — REST creation, no conv:created socket event (Gap #4)
 

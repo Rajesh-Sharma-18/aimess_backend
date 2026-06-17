@@ -13,6 +13,13 @@ import { env } from "../config/env.js";
 /** Max text length for any chat message body (send + edit). */
 export const CHAT_TEXT_MAX_CHARS = env.CHAT_TEXT_MAX_CHARS;
 
+/**
+ * Max length of a single reaction `emoji` token (REST add/remove + socket).
+ * Matches the socket reaction contract; shared by the private/group reaction
+ * body + param validators so the cap lives in one place.
+ */
+export const CHAT_EMOJI_MAX_CHARS = 32;
+
 /** Window during which a sender may still edit their own message. */
 export const CHAT_EDIT_WINDOW_MS = 15 * 60 * 1000;
 

@@ -39,7 +39,7 @@ jest.mock("@aimess/storage", () => {
       contentType: null,
       size: null,
       downloadUrl: "https://minio.test/presigned-get",
-      downloadUrlExpiresIn: 3600,
+      downloadUrlExpiresIn: null,
       uploadUrl: null,
       uploadUrlExpiresIn: null,
     })),
@@ -87,7 +87,7 @@ describe("POST /api/v1/media/upload-url", () => {
     expect(res.body.data.media.uploadUrl).toBe(
       "https://minio.test/presigned-put"
     );
-    expect(typeof res.body.data.media.downloadUrlExpiresIn).toBe("number");
+    expect(res.body.data.media.downloadUrlExpiresIn).toBeNull();
     expect(typeof res.body.data.maxBytes).toBe("number");
     expect(typeof res.body.data.uploadExpiresIn).toBe("number");
   });
@@ -180,7 +180,7 @@ describe("POST /api/v1/media/upload-url", () => {
     expect(res.body.data.objectKey).toMatch(/\.xlsx$/);
   });
 
-  it("200: CHAT_ATTACHMENT accepts text/csv with originalFileName", async () => {
+  it("200: CHAT_ATTACHMENT accepts text/csv", async () => {
     const res = await request(app)
       .post("/api/v1/media/upload-url")
       .set(auth())
@@ -188,7 +188,6 @@ describe("POST /api/v1/media/upload-url", () => {
         category: "CHAT_ATTACHMENT",
         contentType: "text/csv",
         contentLength: 2048,
-        originalFileName: "quarterly-report.csv",
       });
 
     expect(res.status).toBe(200);

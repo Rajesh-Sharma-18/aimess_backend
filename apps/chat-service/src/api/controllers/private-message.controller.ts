@@ -14,8 +14,8 @@ import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
 import {
   buildChatMessageEvent,
+  buildDeletePayload,
   groupStoredReactions,
-  toWireMessage,
 } from "../../lib/chat-message.serializer.js";
 import type { PrivateMessageService } from "../../services/private-message.service.js";
 import type { PrivatePinService } from "../../services/private-pin.service.js";
@@ -241,29 +241,22 @@ export class PrivateMessageController {
         ? await this.messageService.deleteForEveryone(messageId, userId)
         : await this.messageService.deleteForMe(messageId, userId);
 
-    // Emit real-time deletion event so all participants update immediately.
-    // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
+    // §2.3: canonical tombstone — REST body == socket payload byte-for-byte.
+    const tombstone = buildDeletePayload({
+      conversationType: "PRIVATE",
+      messageId: result.id,
+      roomId: result.roomId,
+      scope: type === "forEveryone" ? "forEveryone" : "forMe",
+      deletedBy: userId,
+      sequenceNumber: result.sequenceNumber,
+    });
     if (result.roomId) {
       await this.redis.publish(
         `conv:${result.roomId}`,
-        JSON.stringify({
-          event: "message:delete",
-          // §2.3: self-describing tombstone — conversationId + sequenceNumber so a
-          // client can route/locate the delete even if the room isn't loaded.
-          data: {
-            messageId: result.id,
-            conversationId: result.roomId,
-            type: type === "forEveryone" ? "forEveryone" : "forMe",
-            deletedBy: userId,
-            sequenceNumber: result.sequenceNumber,
-          },
-        })
+        JSON.stringify({ event: "message:delete", data: tombstone })
       );
     }
-
-    res
-      .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result ? toWireMessage(result) : result));
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
   });
 
   getPins = asyncHandler(async (req: Request, res: Response) => {
@@ -380,36 +373,34 @@ export class PrivateMessageController {
     };
     const result = await this.messageService.forwardMessage({
       sourceMessageId: messageId,
+      // :roomId path param is the SOURCE room — bind the source message to it so
+      // a caller can't forward (and thereby read) a message from a DM they're not in.
+      sourceRoomId: req.params.roomId as string,
       targetRoomId,
       senderId: userId,
       receiverId,
       clientMessageId: clientMessageId ?? null,
     });
-    {
-      // §1/§9: REST forward previously emitted a thin 5-field message:new;
-      // emit the canonical ChatMessage shape so it matches the socket forward.
-      const full = result as unknown as Record<string, unknown>;
-      await this.redis.publish(
-        `conv:${targetRoomId}`,
-        JSON.stringify({
-          event: "message:new",
-          data: buildChatMessageEvent({
-            id: result.id,
-            clientMessageId: (full.clientMessageId as string) ?? "",
-            roomId: targetRoomId,
-            conversationType: "PRIVATE",
-            senderId: userId,
-            receiverId,
-            messageType: result.messageType,
-            content: result.content ?? null,
-            reactions: [],
-            isForwarded: true,
-            serverTs: result.createdAt?.getTime() ?? Date.now(),
-            sequenceNumber: (full.sequenceNumber as number) ?? 0,
-          }),
-        })
-      );
-    }
+    // §1/§9: build canonical ChatMessage ONCE — REST body == socket payload.
+    const full = result as unknown as Record<string, unknown>;
+    const forwardedEvent = buildChatMessageEvent({
+      id: result.id,
+      clientMessageId: (full.clientMessageId as string) ?? "",
+      roomId: targetRoomId,
+      conversationType: "PRIVATE",
+      senderId: userId,
+      receiverId,
+      messageType: result.messageType,
+      content: result.content ?? null,
+      reactions: [],
+      isForwarded: true,
+      serverTs: result.createdAt?.getTime() ?? Date.now(),
+      sequenceNumber: (full.sequenceNumber as number) ?? 0,
+    });
+    await this.redis.publish(
+      `conv:${targetRoomId}`,
+      JSON.stringify({ event: "message:new", data: forwardedEvent })
+    );
     // Fire-and-forget bump — must never delay the HTTP response.
     publishConvUpdatedSafe({
       redis: this.redis,
@@ -427,10 +418,7 @@ export class PrivateMessageController {
     res
       .status(HTTP_STATUS.CREATED)
       .json(
-        new ApiResponse(
-          toWireMessage(result),
-          t("CHAT_MESSAGE_FORWARDED", req.locale)
-        )
+        new ApiResponse(forwardedEvent, t("CHAT_MESSAGE_FORWARDED", req.locale))
       );
   });
 
@@ -505,50 +493,43 @@ export class PrivateMessageController {
       userId,
       content,
     });
+    // §9: build canonical ChatMessage ONCE — REST body == socket payload.
+    const full = result as unknown as Record<string, unknown>;
+    const editedEvent = buildChatMessageEvent({
+      id: result.id,
+      clientMessageId: (full.clientMessageId as string) ?? "",
+      roomId: result.roomId,
+      conversationType: "PRIVATE",
+      senderId: (full.senderId as string) ?? "",
+      receiverId: (full.receiverId as string) ?? "",
+      messageType: (full.messageType as string) ?? "TEXT",
+      content: result.content ?? null,
+      parentMessageId: (full.parentMessageId as string) || "",
+      quoteData: full.quoteData ?? null,
+      reactions: groupStoredReactions(full.reactions),
+      isDeleted: Boolean(full.isDeleted),
+      editedAt:
+        result.editedAt instanceof Date
+          ? result.editedAt.getTime()
+          : Date.now(),
+      clientTs: Number(
+        (full.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+      ),
+      serverTs:
+        result.createdAt instanceof Date
+          ? result.createdAt.getTime()
+          : Date.now(),
+      sequenceNumber: (full.sequenceNumber as number) ?? 0,
+    });
     if (result.roomId) {
-      // §9: emit the FULL canonical ChatMessage shape on message:edited.
-      const full = result as unknown as Record<string, unknown>;
       await this.redis.publish(
         `conv:${result.roomId}`,
-        JSON.stringify({
-          event: "message:edited",
-          data: buildChatMessageEvent({
-            id: result.id,
-            clientMessageId: (full.clientMessageId as string) ?? "",
-            roomId: result.roomId,
-            conversationType: "PRIVATE",
-            senderId: (full.senderId as string) ?? "",
-            receiverId: (full.receiverId as string) ?? "",
-            messageType: (full.messageType as string) ?? "TEXT",
-            content: result.content ?? null,
-            parentMessageId: (full.parentMessageId as string) || "",
-            quoteData: full.quoteData ?? null,
-            reactions: groupStoredReactions(full.reactions),
-            isDeleted: Boolean(full.isDeleted),
-            editedAt:
-              result.editedAt instanceof Date
-                ? result.editedAt.getTime()
-                : Date.now(),
-            clientTs: Number(
-              (full.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
-            ),
-            serverTs:
-              result.createdAt instanceof Date
-                ? result.createdAt.getTime()
-                : Date.now(),
-            sequenceNumber: (full.sequenceNumber as number) ?? 0,
-          }),
-        })
+        JSON.stringify({ event: "message:edited", data: editedEvent })
       );
     }
     res
       .status(HTTP_STATUS.OK)
-      .json(
-        new ApiResponse(
-          toWireMessage(result),
-          t("CHAT_MESSAGE_EDITED", req.locale)
-        )
-      );
+      .json(new ApiResponse(editedEvent, t("CHAT_MESSAGE_EDITED", req.locale)));
   });
 
   reportMessage = asyncHandler(async (req: Request, res: Response) => {

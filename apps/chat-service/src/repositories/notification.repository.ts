@@ -78,11 +78,18 @@ export class NotificationRepository {
     });
   }
 
-  async deleteById(notificationId: string): Promise<void> {
-    await this.prisma.notification.update({
-      where: { id: notificationId },
+  async deleteById(
+    notificationId: string,
+    userId: string
+  ): Promise<{ count: number }> {
+    // Owner-scoped soft-delete (IDOR-safe, mirrors markRead): updateMany filters
+    // by id AND userId, so a non-owning id matches 0 rows and mutates nothing.
+    // isDeleted:false keeps re-deletes idempotent (a second call matches 0 rows).
+    const result = await this.prisma.notification.updateMany({
+      where: { id: notificationId, userId, isDeleted: false },
       data: { isDeleted: true, deletedAt: new Date() },
     });
+    return { count: result.count };
   }
 
   async findByEntityId(

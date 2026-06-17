@@ -15,7 +15,7 @@ jest.mock("@aimess/storage", () => {
       contentType: null,
       size: null,
       downloadUrl: "https://minio.test/presigned-get",
-      downloadUrlExpiresIn: 3600,
+      downloadUrlExpiresIn: null,
       uploadUrl: null,
       uploadUrlExpiresIn: null,
     })),
@@ -51,7 +51,7 @@ describe("POST /api/v1/media/download-url", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.downloadUrl).toBe("https://minio.test/presigned-get");
-    expect(typeof res.body.data.downloadUrlExpiresIn).toBe("number");
+    expect(res.body.data.downloadUrlExpiresIn).toBeNull();
     expect(res.body.data.media).toBeDefined();
   });
 

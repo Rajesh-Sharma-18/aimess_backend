@@ -248,7 +248,7 @@ const groupMessageEdit = {
       },
     },
     responses: {
-      ...successResponse("Message edited"),
+      ...successResponse("Message edited", "ChatWireMessage"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -284,7 +284,7 @@ const communityMessageEdit = {
       },
     },
     responses: {
-      ...successResponse("Message edited"),
+      ...successResponse("Message edited", "ChatCommunityEditResponse"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -484,7 +484,7 @@ const privateMessageDelete = {
       },
     },
     responses: {
-      ...successResponse("Message edited"),
+      ...successResponse("Message edited", "ChatWireMessage"),
       "400": badRequest,
       "401": unauthorized,
       "404": notFound,
@@ -521,7 +521,7 @@ const privateMessageDelete = {
       },
     ],
     responses: {
-      ...successResponse("Message deleted"),
+      ...successResponse("Message deleted", "ChatDeleteTombstone"),
       "400": badRequest,
       "401": unauthorized,
     },
@@ -828,7 +828,7 @@ const groupMessageDelete = {
       },
     },
     responses: {
-      ...successResponse("Message deleted"),
+      ...successResponse("Message deleted", "ChatDeleteTombstone"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -1516,7 +1516,7 @@ const communityMessageDelete = {
       },
     ],
     responses: {
-      ...successResponse("Message deleted"),
+      ...successResponse("Message deleted", "ChatCommunityDeleteTombstone"),
       "401": unauthorized,
       "403": forbidden,
     },
@@ -1750,7 +1750,7 @@ const privateMessageForward = {
       },
     },
     responses: {
-      ...successResponse("Message forwarded", undefined, "201"),
+      ...successResponse("Message forwarded", "ChatWireMessage", "201"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -1883,7 +1883,7 @@ const groupMessageForward = {
       },
     },
     responses: {
-      ...successResponse("Message forwarded", undefined, "201"),
+      ...successResponse("Message forwarded", "ChatWireMessage", "201"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
