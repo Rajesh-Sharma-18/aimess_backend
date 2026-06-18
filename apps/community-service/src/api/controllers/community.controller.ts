@@ -459,12 +459,24 @@ export const joinCommunity = asyncHandler(
 
     const result = await communityService.joinCommunity(id, req.auth.userId);
 
-    // `joinCommunity` now creates a join request for PUBLIC communities and
-    // returns the join-request DTO. Respond with CREATED.
+    // ALREADY_MEMBER → 200 (idempotent); JOINED / REQUEST_CREATED → 201.
+    if (result.status === "ALREADY_MEMBER") {
+      return res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("COMMUNITY_ALREADY_MEMBER", req.locale))
+        );
+    }
+
     return res
       .status(HTTP_STATUS.CREATED)
       .json(
-        new ApiResponse(result, t("COMMUNITY_JOIN_REQUEST_CREATED", req.locale))
+        new ApiResponse(
+          result,
+          result.status === "JOINED"
+            ? t("COMMUNITY_JOINED", req.locale)
+            : t("COMMUNITY_JOIN_REQUEST_CREATED", req.locale)
+        )
       );
   }
 );
@@ -644,6 +656,26 @@ export const cancelCommunityJoinRequest = asyncHandler(
       id,
       req.auth.userId,
       requestId
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_JOIN_REQUEST_CANCELLED", req.locale)
+        )
+      );
+  }
+);
+
+/** DELETE /:id/join-requests/mine — cancel the caller's own pending request
+ *  without needing the requestId in the URL. */
+export const cancelMyCommunityJoinRequest = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const result = await communityService.cancelMyJoinRequest(
+      id,
+      req.auth.userId
     );
     return res
       .status(HTTP_STATUS.OK)

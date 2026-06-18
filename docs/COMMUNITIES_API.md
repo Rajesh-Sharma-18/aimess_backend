@@ -207,6 +207,14 @@ interface CommunityData {
   cover: MediaObject;
   role: CommunityMemberRole | null; // caller's role, null if not a member
   isJoined: boolean;
+  /**
+   * Present when the caller has a PENDING join request for this community.
+   * null when the caller is already a member, never requested, or the request
+   * was approved/rejected/cancelled.
+   * Frontend: show "Requested" + cancel button when this is non-null.
+   */
+  joinRequestId: string | null;
+  joinRequestStatus: "PENDING" | null;
   isMuted: boolean;
   muteUntil: string | null; // ISO-8601, null if not/indefinitely muted
   streamEnabled: boolean;
@@ -610,7 +618,19 @@ Query: `page`, `limit`, `status?`. `200` → rows enriched with `community`.
 
 No body. `200` → `CommunityJoinRequestData`.
 
-#### `DELETE /:id/join-requests/:requestId` — Cancel (self)
+#### `DELETE /:id/join-requests/mine` — Cancel my own pending request
+
+No body. Cancels the authenticated caller's **PENDING** request for the given
+community. Returns `400 COMMUNITY_JOIN_REQUEST_NOT_PENDING` if the request was
+already approved or rejected.
+
+`200` → `CommunityJoinRequestData` (status: `"CANCELLED"`).
+
+> Use this instead of `/:requestId` when you only have the `communityId` (e.g.
+> from `GET /communities/:id`'s new `joinRequestId` field). The server resolves
+> the request from the caller's token — no `requestId` needed.
+
+#### `DELETE /:id/join-requests/:requestId` — Cancel by request ID (self)
 
 `200` → `CommunityJoinRequestData`.
 

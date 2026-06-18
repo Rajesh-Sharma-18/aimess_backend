@@ -75,7 +75,7 @@ export function buildCanonicalQuote(raw: unknown): CanonicalQuote | null {
 export interface ReactionGroup {
   emoji: string;
   count: number;
-  users: Array<{ userId: string; displayName: string; avatar: string }>;
+  users: Array<{ userId: string; displayName: string; avatarUrl: string }>;
 }
 
 /**
@@ -98,7 +98,7 @@ export function groupStoredReactions(raw: unknown): ReactionGroup[] {
           userId: (o.userId as string) ?? "",
           displayName:
             (o.userName as string) ?? (o.displayName as string) ?? "",
-          avatar: (o.avatar as string) ?? "",
+          avatarUrl: (o.avatar as string) ?? "",
         };
       }),
     });
@@ -109,21 +109,29 @@ export function groupStoredReactions(raw: unknown): ReactionGroup[] {
 /**
  * Build the canonical client-facing `reactionGroups[]` for a message ROW: group
  * the stored reactor map per emoji and resolve each reactor's avatar key via
- * `resolveAvatar`. This is the shape the FE reads off message rows (history,
- * message:new, catchup); the legacy `reactions` map is deprecated. Stored rows
- * carry empty userName/avatar (enriched only by getMessageReactions), so on a row
- * `users[]` is effectively `{ userId, displayName: "", avatar: "" }`.
+ * `resolveAvatar`. Pass `resolveUser` to enrich displayName and avatar from live
+ * user snapshots — stored rows carry empty userName/avatar so without it
+ * `users[].displayName` and `avatar` will be empty strings.
  */
 export function buildReactionGroups(
   raw: unknown,
-  resolveAvatar: (key: string) => string
+  resolveAvatar: (key: string) => string,
+  resolveUser?: (
+    userId: string
+  ) => { displayName: string; avatarUrl: string } | undefined
 ): ReactionGroup[] {
   return groupStoredReactions(raw).map((group) => ({
     ...group,
-    users: group.users.map((user) => ({
-      ...user,
-      avatar: resolveAvatar(user.avatar),
-    })),
+    users: group.users.map((user) => {
+      const snap = resolveUser?.(user.userId);
+      return {
+        userId: user.userId,
+        displayName: snap?.displayName || user.displayName,
+        // snap.avatarUrl is pre-resolved by the caller; fall back to resolving
+        // the stored raw key so existing rows without snapshot data still work.
+        avatarUrl: snap?.avatarUrl || resolveAvatar(user.avatarUrl),
+      };
+    }),
   }));
 }
 
@@ -322,6 +330,7 @@ export function buildChatMessageEvent(
     ...(input.isForwarded ? { isForwarded: true } : {}),
     isDeleted: input.isDeleted ?? false,
     deletedType: input.deletedType ?? "",
+    isEdited: (input.editedAt ?? 0) > 0,
     editedAt: input.editedAt ?? 0,
     clientTs: input.clientTs ?? 0,
     serverTs: input.serverTs,

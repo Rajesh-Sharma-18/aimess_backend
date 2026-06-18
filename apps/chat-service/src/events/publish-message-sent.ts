@@ -18,7 +18,9 @@ export const CHAT_MESSAGE_SENT_EVENT = "chat.message_sent";
 
 export interface MessageSentPayload {
   conversationId: string;
-  conversationType: "PRIVATE" | "GROUP";
+  conversationType: "PRIVATE" | "GROUP" | "COMMUNITY";
+  /** Present when conversationType === "COMMUNITY" */
+  communityId?: string;
   messageId: string;
   clientMessageId: string;
   senderId: string;

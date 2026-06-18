@@ -4,7 +4,7 @@
 > evidence over the working tree). Pair with the LLM `scenario-validator` agent for
 > discovery of actions missing from the registry. **Do not edit by hand.**
 >
-> Generated: 2026-06-16T09:34:36.921Z
+> Generated: 2026-06-17T10:07:15.707Z
 
 ## Summary
 

@@ -217,6 +217,7 @@ describe("publishCommunityUpdated", () => {
       roomId: "room-1",
       memberIds: ["sender", "m2", "m3"],
       senderId: "sender",
+      senderName: "Alice",
       lastMessageId: "cm-1",
       lastMessageAt: 1717000000999,
       preview: basePreview,
@@ -242,6 +243,7 @@ describe("publishCommunityUpdated", () => {
     assert.notEqual(senderMsg.data.roomId, senderMsg.data.communityId);
     assert.equal(senderMsg.data.lastMessageId, "cm-1");
     assert.equal(typeof senderMsg.data.lastMessageAt, "number");
+    assert.equal(senderMsg.data.senderName, "Alice");
     assert.equal(senderMsg.data.unread, false);
     assert.equal(memberMsg.data.unread, true);
   });
@@ -255,6 +257,7 @@ describe("publishCommunityUpdated", () => {
       roomId: "room-dup",
       memberIds: ["x", "x", "y"],
       senderId: "x",
+      senderName: "",
       lastMessageId: "m",
       lastMessageAt: 1,
       preview: basePreview,
@@ -278,6 +281,7 @@ describe("publishCommunityUpdated", () => {
         roomId: "room-empty",
         memberIds: [],
         senderId: "x",
+        senderName: "",
         lastMessageId: "m",
         lastMessageAt: 1,
         preview: basePreview,
@@ -300,6 +304,7 @@ describe("publishCommunityUpdated", () => {
           roomId: "room-fail",
           memberIds: ["x", "y"],
           senderId: "x",
+          senderName: "",
           lastMessageId: "m",
           lastMessageAt: 1,
           preview: basePreview,

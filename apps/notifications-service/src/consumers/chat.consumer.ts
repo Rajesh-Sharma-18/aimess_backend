@@ -19,7 +19,9 @@ const CHAT_MESSAGE_QUEUE = "chat.message.queue";
 
 interface MessageSentPayload {
   conversationId: string;
-  conversationType: "PRIVATE" | "GROUP";
+  conversationType: "PRIVATE" | "GROUP" | "COMMUNITY";
+  /** Present when conversationType === "COMMUNITY" */
+  communityId?: string;
   messageId: string;
   clientMessageId: string;
   senderId: string;
@@ -39,10 +41,12 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
 
   const title = data.senderName || "New message";
   const body = data.preview || "New message";
+  const category =
+    data.conversationType === "COMMUNITY" ? "communityEnabled" : "chatEnabled";
 
   await pushToUsers(recipients, (userId) => ({
     userId,
-    category: "chatEnabled",
+    category,
     type: "MESSAGE",
     title,
     body,
@@ -52,6 +56,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
       type: "MESSAGE",
       conversationId: data.conversationId,
       conversationType: data.conversationType,
+      ...(data.communityId ? { communityId: data.communityId } : {}),
       messageId: data.messageId,
       clientMessageId: data.clientMessageId ?? "",
       senderId: data.senderId,

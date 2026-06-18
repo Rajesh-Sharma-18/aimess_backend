@@ -21,3 +21,22 @@ export function publishUserSocketEvent(
 ): Promise<number> {
   return redis.publish(`notify:${userId}`, JSON.stringify({ event, data }));
 }
+
+/**
+ * Publish a server→client realtime event to a user's /chat namespace room.
+ *
+ * The api-gateway `/chat` namespace psubscribes `user:*` and relays the
+ * `{ event, data }` envelope to room `user:<userId>`. Use this for
+ * conversation and community list updates (e.g. community:updated,
+ * community:created) — NOT for push/bell notifications (use publishUserSocketEvent).
+ *
+ * Returns ioredis' publish result; callers may fire-and-forget with `.catch()`.
+ */
+export function publishChatUserEvent(
+  redis: Redis | Cluster,
+  userId: string,
+  event: string,
+  data: unknown
+): Promise<number> {
+  return redis.publish(`user:${userId}`, JSON.stringify({ event, data }));
+}

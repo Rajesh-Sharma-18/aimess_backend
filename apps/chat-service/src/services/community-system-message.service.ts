@@ -18,17 +18,18 @@ export interface PostCommunitySystemMessageParams {
 }
 
 /**
- * Posts SYSTEM messages for community lifecycle events ("X created the community",
- * "X updated the community", "X changed Y's role to Z").
+ * Posts SYSTEM messages for community lifecycle events.
  *
- * Each post: persists a `messageType: "SYSTEM"` GeneralRoomMessage with
- * `systemMessageType` + `systemMetadata` (clients localize from these) plus an
- * English `message` fallback for previews; bumps the room's `lastMessageAt` so
- * the community sorts in the unified inbox; and fans out over Redis
- * `community:<communityId>` as `community:message:new` (same canonical shape as
- * a real send). It does NOT increment unread counts — lifecycle chatter shouldn't
- * raise badges. The whole operation is best-effort: failures are logged, never
- * thrown, so a lifecycle action never fails because its system message did.
+ * Telegram-style rules:
+ * - COMMUNITY_CREATED  → one message ("John created the community")
+ * - COMMUNITY_UPDATED  → one message PER changed field ("John changed the community photo")
+ * - MEMBER_ROLE_CHANGED → one message ("John promoted Jane to Moderator")
+ *
+ * All metadata carries `actorUserId` so the frontend can compare against the
+ * logged-in user and render "You" vs the actor's display name — the backend
+ * never stores "You".
+ *
+ * Posts are best-effort: failures are logged, never thrown.
  */
 export class CommunitySystemMessageService {
   constructor(
@@ -40,6 +41,29 @@ export class CommunitySystemMessageService {
   ) {}
 
   async post(params: PostCommunitySystemMessageParams): Promise<void> {
+    // For COMMUNITY_UPDATED: emit one system message per changed field (Telegram-style).
+    // Each message carries changedFields with exactly one item so the frontend
+    // can produce a precise label ("changed the community photo", etc.).
+    if (params.systemMessageType === "COMMUNITY_UPDATED") {
+      const fields = Array.isArray(params.metadata.changedFields)
+        ? (params.metadata.changedFields as string[])
+        : [];
+      if (fields.length > 1) {
+        for (const field of fields) {
+          await this.postOne({
+            ...params,
+            metadata: { ...params.metadata, changedFields: [field] },
+          });
+        }
+        return;
+      }
+    }
+    await this.postOne(params);
+  }
+
+  private async postOne(
+    params: PostCommunitySystemMessageParams
+  ): Promise<void> {
     const { communityId, systemMessageType, metadata, triggeredByUserId } =
       params;
 
@@ -63,18 +87,14 @@ export class CommunitySystemMessageService {
       const actorAvatar =
         (snapshots.get(triggeredByUserId)?.avatar as string) ?? "";
 
-      // Fold resolved names into metadata so client can render without extra fetch.
+      // Build enriched metadata with resolved names. actorUserId is the single
+      // consistent key across all system message types so the frontend can always
+      // do `metadata.actorUserId === currentUserId` to decide "You" vs actorName.
       const enrichedMetadata: Record<string, unknown> = {
         ...metadata,
-        ...(systemMessageType === "COMMUNITY_CREATED"
-          ? { creatorName: actorName }
-          : {}),
-        ...(systemMessageType === "COMMUNITY_UPDATED"
-          ? { updaterName: actorName }
-          : {}),
-        ...(systemMessageType === "MEMBER_ROLE_CHANGED"
-          ? { actorName, ...(targetUserId ? { targetName } : {}) }
-          : {}),
+        actorUserId: triggeredByUserId,
+        actorName,
+        ...(targetUserId ? { targetName } : {}),
       };
 
       const fallbackText = buildFallbackText(
@@ -117,8 +137,9 @@ export class CommunitySystemMessageService {
           : Date.now();
       const actorAvatarUrl = await resolveMediaUrl(actorAvatar);
 
-      // Real-time fan-out (best-effort) — mirrors the orchestrator community
-      // wire shape (communityId + roomId, no conversationType) with SYSTEM extras.
+      // Real-time fan-out — mirrors the orchestrator community wire shape with
+      // SYSTEM extras. systemMetadata always carries actorUserId so clients can
+      // render "You" vs actor name without an additional fetch.
       this.redis
         .publish(
           `community:${communityId}`,
@@ -142,7 +163,6 @@ export class CommunitySystemMessageService {
               serverTs,
               sentAt: serverTs,
               sequenceNumber: seq,
-              // Community lifecycle system message extras.
               systemMessageType,
               systemMetadata: enrichedMetadata,
             },
@@ -169,7 +189,7 @@ export class CommunitySystemMessageService {
       });
     } catch (err) {
       logger.warn(
-        `CommunitySystemMessageService|post failed type=${systemMessageType} communityId=${communityId}: ${String(err)}`
+        `CommunitySystemMessageService|postOne failed type=${systemMessageType} communityId=${communityId}: ${String(err)}`
       );
     }
   }
@@ -185,6 +205,37 @@ export class CommunitySystemMessageService {
   }
 }
 
+/**
+ * Maps the stored `changedFields` token to a human-readable label used in the
+ * English fallback text (and as a hint to the frontend).
+ */
+const FIELD_LABEL: Record<string, string> = {
+  avatar: "community photo",
+  name: "community title",
+  description: "community description",
+  visibility: "community visibility",
+  handle: "community link",
+  category: "community category",
+  rules: "community rules",
+  banner: "community banner",
+};
+
+/**
+ * Returns a numeric rank for role comparison so we can say "promoted" vs
+ * "demoted" without hardcoding string comparisons.
+ */
+function roleRank(role: string): number {
+  if (role === "ADMIN") return 2;
+  if (role === "MODERATOR") return 1;
+  return 0; // MEMBER or unknown
+}
+
+/** "MODERATOR" → "Moderator" */
+function formatRole(role: string): string {
+  if (!role) return role;
+  return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
+}
+
 function buildFallbackText(
   type: CommunitySystemMessageType,
   metadata: Record<string, unknown>,
@@ -192,23 +243,33 @@ function buildFallbackText(
   targetName: string
 ): string {
   const actor = actorName || "Someone";
+
   switch (type) {
     case "COMMUNITY_CREATED":
       return `${actor} created the community`;
+
     case "COMMUNITY_UPDATED": {
       const fields = Array.isArray(metadata.changedFields)
-        ? (metadata.changedFields as string[]).join(", ")
-        : "";
-      return fields
-        ? `${actor} updated the community (${fields})`
-        : `${actor} updated the community`;
+        ? (metadata.changedFields as string[])
+        : [];
+      // changedFields always has one item here (multi-field callers loop via post()).
+      if (fields.length === 1) {
+        const label = FIELD_LABEL[fields[0]] ?? `community ${fields[0]}`;
+        return `${actor} changed the ${label}`;
+      }
+      return `${actor} updated the community`;
     }
+
     case "MEMBER_ROLE_CHANGED": {
       const target =
         (metadata.targetName as string) || targetName || "a member";
       const newRole = (metadata.newRole as string) || "";
-      return `${actor} changed ${target}'s role to ${newRole}`;
+      const oldRole = (metadata.oldRole as string) || "";
+      const verb =
+        roleRank(newRole) > roleRank(oldRole) ? "promoted" : "demoted";
+      return `${actor} ${verb} ${target} to ${formatRole(newRole)}`;
     }
+
     default:
       return `${actor} updated the community`;
   }

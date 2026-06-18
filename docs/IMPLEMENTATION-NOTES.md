@@ -1,9 +1,102 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-06-16**.
+> Update this whenever you ship or change a feature. Last reviewed: **2026-06-17**.
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up** + **calling + forwarding + reactions + WebRTC**), **backoffice-service** (admin auth RBAC + user management + **user-detail screen: user / joined-communities / other-members 3-API split** + community moderation + reports + livestream admin + dashboard).
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up**).
+> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up** + **real-time notification spine** + **calling + forwarding + reactions + WebRTC**), **backoffice-service** (admin auth RBAC + user management + **user-detail screen: user / joined-communities / other-members 3-API split** + community moderation + reports + livestream admin + dashboard).
+
+---
+
+## Real-time Notification Spine (shipped 2026-06-17)
+
+End-to-end inbox delivery with real-time socket notifications to all connected devices. **The platform-wide notification flow is now complete and working.**
+
+### What shipped
+
+| Component                    | Status | Evidence                                                                                                                                |
+| ---------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **S1: Real-time bridge**     | ✅     | `chat-service/src/grpc/service-impl.ts:2365-2397` publishes `notification:new` + `notification:count_update` to Redis `notify:<userId>` |
+| **S2: Read path**            | ✅     | `api-gateway/.env` + `.env.example` both set `NOTIFICATION_GRPC_URL=localhost:4004` (chat-service owns inbox reads)                     |
+| **S3: FCM for online users** | ✅     | `push.service.ts` suppression respected (online → inbox + socket only; offline → inbox + FCM)                                           |
+
+### How it works
+
+1. **Event triggers** — community member-added, friend request, chat mention, etc. publishes to RabbitMQ (e.g., `MEMBER_ADDED`)
+2. **Consumer** — notifications-service consumes event and calls chat-service's `CreateNotification` gRPC
+3. **Inbox write** — row persisted to chat-service's notification store (MongoDB)
+4. **Real-time publish** (S1) — same gRPC call publishes to Redis `notify:<userId>` with payload `{ notificationId, type, title, body, referenceId, navigation, actorSnapshot, ... }`
+5. **Gateway relay** — `/notify` Socket.IO namespace subscribes to `notify:<userId>` and emits `notification:new` + `notification:count_update` to connected clients
+6. **FCM push** (S3) — for offline users only (online suppressed to avoid duplicate delivery); uses the resolved `senderAvatar` URL
+7. **Badge/count** — socket event carries unread count; client updates UI
+
+### Key files
+
+- **S1 bridge:** `apps/chat-service/src/grpc/service-impl.ts` `createNotificationImpl`
+- **S2 read path:** `apps/api-gateway/.env` / `.env.example` (NOTIFICATION_GRPC_URL)
+- **Socket relay:** `apps/api-gateway/src/sockets/namespaces/notify.ns.ts`
+- **Consumer:** `apps/notifications-service/src/consumers/community.consumer.ts` + `community-consumer.test.ts`
+- **Push gating:** `apps/notifications-service/src/services/push.service.ts`
+- **Contracts:** `docs/SOCKET_EVENTS.md` §6 (notification events), `asyncapi.yaml` (async message definitions)
+
+### Verified
+
+- TypeScript: chat-service + notifications-service + gateway all clean
+- Lint: all services clean
+- Contract: socket `notification:new` + `notification:count_update` + `notification:remove` + `notification:mark_read` tested
+- Scenarios: scenario-validator all PASS; community-member-add fans out DB → event → consumer → socket → push → inbox → badge
+
+### Deferred
+
+- Per-device notification preferences (currently global settings apply)
+- Notification grouping (e.g., "5 friends added you" instead of 5 separate rows)
+- Notification expiration (cleanup old dismissed rows)
+
+---
+
+## Real-time Notification Spine (shipped 2026-06-17)
+
+End-to-end inbox delivery with real-time socket notifications to all connected devices. **The platform-wide notification flow is now complete and working.**
+
+### What shipped
+
+| Component                    | Status | Evidence                                                                                                                                |
+| ---------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **S1: Real-time bridge**     | ✅     | `chat-service/src/grpc/service-impl.ts:2365-2397` publishes `notification:new` + `notification:count_update` to Redis `notify:<userId>` |
+| **S2: Read path**            | ✅     | `api-gateway/.env` + `.env.example` both set `NOTIFICATION_GRPC_URL=localhost:4004` (chat-service owns inbox reads)                     |
+| **S3: FCM for online users** | ✅     | `push.service.ts` suppression respected (online → inbox + socket only; offline → inbox + FCM)                                           |
+
+### How it works
+
+1. **Event triggers** — community member-added, friend request, chat mention, etc. publishes to RabbitMQ (e.g., `MEMBER_ADDED`)
+2. **Consumer** — notifications-service consumes event and calls chat-service's `CreateNotification` gRPC
+3. **Inbox write** — row persisted to chat-service's notification store (MongoDB)
+4. **Real-time publish** (S1) — same gRPC call publishes to Redis `notify:<userId>` with payload `{ notificationId, type, title, body, referenceId, navigation, actorSnapshot, ... }`
+5. **Gateway relay** — `/notify` Socket.IO namespace subscribes to `notify:<userId>` and emits `notification:new` + `notification:count_update` to connected clients
+6. **FCM push** (S3) — for offline users only (online suppressed to avoid duplicate delivery); uses the resolved `senderAvatar` URL
+7. **Badge/count** — socket event carries unread count; client updates UI
+
+### Key files
+
+- **S1 bridge:** `apps/chat-service/src/grpc/service-impl.ts` `createNotificationImpl`
+- **S2 read path:** `apps/api-gateway/.env` / `.env.example` (NOTIFICATION_GRPC_URL)
+- **Socket relay:** `apps/api-gateway/src/sockets/namespaces/notify.ns.ts`
+- **Consumer:** `apps/notifications-service/src/consumers/community.consumer.ts` + `community-consumer.test.ts`
+- **Push gating:** `apps/notifications-service/src/services/push.service.ts`
+- **Contracts:** `docs/SOCKET_EVENTS.md` §6 (notification events), `apps/api-gateway/asyncapi/asyncapi.yaml` (async message definitions)
+
+### Verified
+
+- TypeScript: chat-service + notifications-service + gateway all clean
+- Lint: all services clean
+- Contract: socket `notification:new` + `notification:count_update` + `notification:remove` + `notification:mark_read` tested
+- Scenarios: scenario-validator all PASS; community-member-add fans out DB → event → consumer → socket → push → inbox → badge
+
+### Deferred
+
+- Per-device notification preferences (currently global settings apply)
+- Notification grouping (e.g., "5 friends added you" instead of 5 separate rows)
+- Notification expiration (cleanup old dismissed rows)
 
 ---
 

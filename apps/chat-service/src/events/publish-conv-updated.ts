@@ -108,6 +108,7 @@ interface PublishCommunityUpdatedParams {
   roomId: string;
   memberIds: string[];
   senderId: string;
+  senderName: string;
   lastMessageId: string;
   /** epoch ms */
   lastMessageAt: number;
@@ -134,6 +135,7 @@ export async function publishCommunityUpdated(
             lastMessage: p.preview,
             lastMessageAt: p.lastMessageAt,
             senderId: p.senderId,
+            senderName: p.senderName,
             unread: memberId !== p.senderId,
           },
         })
@@ -169,6 +171,7 @@ export function publishCommunityUpdatedSafe(
       roomId: p.roomId,
       memberIds,
       senderId: p.senderId,
+      senderName: p.senderName,
       lastMessageId: p.lastMessageId,
       lastMessageAt: p.lastMessageAt,
       preview: p.preview,

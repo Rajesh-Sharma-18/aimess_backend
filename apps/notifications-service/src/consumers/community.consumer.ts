@@ -12,6 +12,7 @@ import {
   type CommunityJoinRequestRejectedPayload,
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
+  type CommunityMemberJoinedPayload,
   type CommunityMemberKickedPayload,
   type CommunityMemberMutedPayload,
   type CommunityMemberRoleChangedPayload,
@@ -19,6 +20,7 @@ import {
   type CommunityMemberWarnedPayload,
   type CommunityReportActionedPayload,
   type CommunityReportCreatedPayload,
+  type NotificationNavigation,
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
@@ -58,14 +60,33 @@ async function handleCommunityEvent(
   switch (type) {
     case CommunityEvents.JOIN_REQUESTED: {
       const p = data as CommunityJoinRequestedPayload;
-      const recipients = p.moderatorRecipientIds;
-      await pushToUsers(recipients, (userId) => ({
+      const navigation: NotificationNavigation = {
+        screen: "COMMUNITY_REQUESTS",
+        communityId: p.communityId,
+        communityName: p.communityName,
+        communityAvatarUrl: p.communityAvatarUrl,
+        communityHandle: p.communityHandle,
+        requestId: p.requestId,
+      };
+      const actorSnapshot = {
+        userId: p.userId,
+        displayName: p.requesterDisplayName,
+        avatarUrl: p.requesterAvatarUrl,
+      };
+      await pushToUsers(p.moderatorRecipientIds, (userId) => ({
         userId,
         title: "New join request",
-        body: "Someone requested to join your community.",
+        body: `${p.requesterDisplayName} requested to join ${p.communityName}.`,
         ...base(type, p.communityId, p.userId, {
           requestId: p.requestId,
           requesterId: p.userId,
+          communityName: p.communityName,
+          communityHandle: p.communityHandle,
+          communityAvatarUrl: p.communityAvatarUrl ?? "",
+          requesterDisplayName: p.requesterDisplayName,
+          requesterAvatarUrl: p.requesterAvatarUrl ?? "",
+          navigation: JSON.stringify(navigation),
+          actorSnapshot: JSON.stringify(actorSnapshot),
         }),
       }));
       break;
@@ -73,13 +94,31 @@ async function handleCommunityEvent(
 
     case CommunityEvents.JOIN_REQUEST_APPROVED: {
       const p = data as CommunityJoinRequestApprovedPayload;
+      const navigation: NotificationNavigation = {
+        screen: "COMMUNITY_DETAILS",
+        communityId: p.communityId,
+        communityName: p.communityName,
+        communityAvatarUrl: p.communityAvatarUrl,
+        communityHandle: p.communityHandle,
+        requestId: p.requestId,
+      };
+      const actorSnapshot = {
+        userId: p.decidedBy.userId,
+        displayName: p.decidedBy.displayName,
+      };
       await pushToUser({
         userId: p.userId,
         title: "Join request approved",
-        body: `Your request to join ${p.communityName} was approved.`,
+        body: `Your request to join ${p.communityName} was approved by ${p.decidedBy.displayName}.`,
         ...base(type, p.communityId, p.decidedBy.userId, {
           requestId: p.requestId,
           status: "APPROVED",
+          communityName: p.communityName,
+          communityHandle: p.communityHandle,
+          communityAvatarUrl: p.communityAvatarUrl ?? "",
+          decidedByDisplayName: p.decidedBy.displayName,
+          navigation: JSON.stringify(navigation),
+          actorSnapshot: JSON.stringify(actorSnapshot),
         }),
       });
       await publishUserSocketEvent(
@@ -92,6 +131,7 @@ async function handleCommunityEvent(
           status: "APPROVED",
           communityName: p.communityName,
           decidedAt: p.decidedAt,
+          navigation,
         }
       ).catch((e) => logger.error(e));
       break;
@@ -99,6 +139,18 @@ async function handleCommunityEvent(
 
     case CommunityEvents.JOIN_REQUEST_REJECTED: {
       const p = data as CommunityJoinRequestRejectedPayload;
+      const navigation: NotificationNavigation = {
+        screen: "COMMUNITY_DETAILS",
+        communityId: p.communityId,
+        communityName: p.communityName,
+        communityAvatarUrl: p.communityAvatarUrl,
+        communityHandle: p.communityHandle,
+        requestId: p.requestId,
+      };
+      const actorSnapshot = {
+        userId: p.decidedBy.userId,
+        displayName: p.decidedBy.displayName,
+      };
       await pushToUser({
         userId: p.userId,
         title: "Join request declined",
@@ -106,6 +158,12 @@ async function handleCommunityEvent(
         ...base(type, p.communityId, p.decidedBy.userId, {
           requestId: p.requestId,
           status: "REJECTED",
+          communityName: p.communityName,
+          communityHandle: p.communityHandle,
+          communityAvatarUrl: p.communityAvatarUrl ?? "",
+          decidedByDisplayName: p.decidedBy.displayName,
+          navigation: JSON.stringify(navigation),
+          actorSnapshot: JSON.stringify(actorSnapshot),
         }),
       });
       await publishUserSocketEvent(
@@ -118,15 +176,48 @@ async function handleCommunityEvent(
           status: "REJECTED",
           communityName: p.communityName,
           decidedAt: p.decidedAt,
+          navigation,
         }
       ).catch((e) => logger.error(e));
       break;
     }
 
+    case CommunityEvents.MEMBER_JOINED: {
+      const p = data as CommunityMemberJoinedPayload;
+      const navigation: NotificationNavigation = {
+        screen: "COMMUNITY_DETAILS",
+        communityId: p.communityId,
+        communityName: p.communityName,
+        communityAvatarUrl: p.communityAvatarUrl,
+        communityHandle: p.communityHandle,
+      };
+      await pushToUser({
+        userId: p.userId,
+        title: "Joined a community",
+        body: `You have joined ${p.communityName}.`,
+        ...base(type, p.communityId, p.userId, {
+          communityName: p.communityName,
+          communityHandle: p.communityHandle,
+          communityAvatarUrl: p.communityAvatarUrl ?? "",
+          navigation: JSON.stringify(navigation),
+        }),
+      });
+      // Real-time UI flip: "Join" button → "Joined" without a page refresh.
+      await publishUserSocketEvent(redis, p.userId, "community:joined", {
+        communityId: p.communityId,
+        communityName: p.communityName,
+        communityHandle: p.communityHandle,
+        communityAvatarUrl: p.communityAvatarUrl,
+        reactivated: p.reactivated,
+      }).catch((e) => logger.error(e));
+      break;
+    }
+
     case CommunityEvents.MEMBER_ADDED: {
       const p = data as CommunityMemberAddedPayload;
-      // Welcome the joiner — UNLESS they will get the dedicated "approved" notification.
-      if (p.via !== "join_request_approved") {
+      // Welcome the joiner — UNLESS they will get the dedicated "approved" or
+      // "self_join" (MEMBER_JOINED) notification.
+      if (p.via !== "join_request_approved" && p.via !== "self_join") {
         await pushToUser({
           userId: p.targetUserId,
           title: "Welcome to the community",

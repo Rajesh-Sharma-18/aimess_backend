@@ -438,6 +438,7 @@ export class ChatMessageOrchestrator {
         fetchMembers: () =>
           this.communityMessageService.getActiveMemberIds(params.roomId),
         senderId: params.senderId,
+        senderName,
         lastMessageId: saved.id,
         lastMessageAt: sentAt,
         preview: {
@@ -612,20 +613,27 @@ export class ChatMessageOrchestrator {
     const toResolvedGroups = async (state: {
       reactions: Record<
         string,
-        { count: number; users: ReactionGroup["users"] }
+        {
+          count: number;
+          users: { userId: string; displayName: string; avatar: string }[];
+        }
       >;
     }): Promise<ReactionGroup[]> => {
-      const groups: ReactionGroup[] = Object.entries(state.reactions).map(
-        ([emoji, d]) => ({ emoji, count: d.count, users: d.users })
-      );
+      const groups = Object.entries(state.reactions).map(([emoji, d]) => ({
+        emoji,
+        count: d.count,
+        users: d.users,
+      }));
       const avatarMap = await resolveMediaUrlMap(
         groups.flatMap((g) => g.users.map((u) => u.avatar))
       );
       return groups.map((g) => ({
-        ...g,
+        emoji: g.emoji,
+        count: g.count,
         users: g.users.map((u) => ({
-          ...u,
-          avatar: urlFromMap(avatarMap, u.avatar),
+          userId: u.userId,
+          displayName: u.displayName,
+          avatarUrl: urlFromMap(avatarMap, u.avatar),
         })),
       }));
     };
