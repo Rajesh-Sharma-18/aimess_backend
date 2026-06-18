@@ -75,7 +75,7 @@ export function buildCanonicalQuote(raw: unknown): CanonicalQuote | null {
 export interface ReactionGroup {
   emoji: string;
   count: number;
-  users: Array<{ userId: string; displayName: string; avatar: string }>;
+  users: Array<{ userId: string; displayName: string; avatarUrl: string }>;
 }
 
 /**
@@ -98,11 +98,111 @@ export function groupStoredReactions(raw: unknown): ReactionGroup[] {
           userId: (o.userId as string) ?? "",
           displayName:
             (o.userName as string) ?? (o.displayName as string) ?? "",
-          avatar: (o.avatar as string) ?? "",
+          avatarUrl: (o.avatar as string) ?? "",
         };
       }),
     });
   }
+  return out;
+}
+
+/**
+ * Build the canonical client-facing `reactionGroups[]` for a message ROW: group
+ * the stored reactor map per emoji and resolve each reactor's avatar key via
+ * `resolveAvatar`. Pass `resolveUser` to enrich displayName and avatar from live
+ * user snapshots — stored rows carry empty userName/avatar so without it
+ * `users[].displayName` and `avatar` will be empty strings.
+ */
+export function buildReactionGroups(
+  raw: unknown,
+  resolveAvatar: (key: string) => string,
+  resolveUser?: (
+    userId: string
+  ) => { displayName: string; avatarUrl: string } | undefined
+): ReactionGroup[] {
+  return groupStoredReactions(raw).map((group) => ({
+    ...group,
+    users: group.users.map((user) => {
+      const snap = resolveUser?.(user.userId);
+      return {
+        userId: user.userId,
+        displayName: snap?.displayName || user.displayName,
+        // snap.avatarUrl is pre-resolved by the caller; fall back to resolving
+        // the stored raw key so existing rows without snapshot data still work.
+        avatarUrl: snap?.avatarUrl || resolveAvatar(user.avatarUrl),
+      };
+    }),
+  }));
+}
+
+/** Canonical stored reactor entry — what each reaction array element looks like at rest. */
+export interface StoredReactor {
+  userId: string;
+  userName: string;
+  avatar: string;
+  memberId: string;
+}
+
+/**
+ * Coerce one stored reaction entry into the canonical {@link StoredReactor} shape.
+ * Entries are objects `{ userId, userName, avatar, memberId }`; legacy rows may hold
+ * a bare userId string, so tolerate both.
+ */
+function normalizeReactor(entry: unknown): StoredReactor {
+  if (typeof entry === "string")
+    return { userId: entry, userName: "", avatar: "", memberId: "" };
+  const o = (entry ?? {}) as Record<string, unknown>;
+  return {
+    userId: (o.userId as string) ?? "",
+    userName: (o.userName as string) ?? "",
+    avatar: (o.avatar as string) ?? "",
+    memberId: (o.memberId as string) ?? "",
+  };
+}
+
+/**
+ * Reduce the stored reactions map to `{ emoji: userId[] }`. Stored entries are
+ * reactor OBJECTS, not bare ids — callers that need just the ids (counts, snapshot
+ * fan-out, selfReacted checks) must go through this rather than indexing the array
+ * elements as strings. Empty emoji buckets are dropped.
+ */
+export function reactionUserIdMap(raw: unknown): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [emoji, list] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(list)) continue;
+    const ids = list.map((e) => normalizeReactor(e).userId).filter(Boolean);
+    if (ids.length) out[emoji] = ids;
+  }
+  return out;
+}
+
+/**
+ * Toggle `userId`'s `emoji` reaction in the stored map and return a NEW map (the
+ * input is not mutated). Absent → append the canonical reactor object; present →
+ * remove it, pruning the emoji bucket when it empties. Carried-over entries are
+ * normalized to the canonical object shape, so the persisted result is always
+ * well-formed regardless of how legacy rows were written.
+ */
+export function toggleStoredReaction(
+  raw: unknown,
+  userId: string,
+  emoji: string
+): Record<string, StoredReactor[]> {
+  const out: Record<string, StoredReactor[]> = {};
+  if (raw && typeof raw === "object") {
+    for (const [e, list] of Object.entries(raw as Record<string, unknown>)) {
+      if (!Array.isArray(list) || list.length === 0) continue;
+      const entries = list.map(normalizeReactor).filter((r) => r.userId);
+      if (entries.length) out[e] = entries;
+    }
+  }
+  const bucket = out[emoji] ?? [];
+  const idx = bucket.findIndex((r) => r.userId === userId);
+  if (idx !== -1) bucket.splice(idx, 1);
+  else bucket.push({ userId, userName: "", avatar: "", memberId: "" });
+  if (bucket.length === 0) delete out[emoji];
+  else out[emoji] = bucket;
   return out;
 }
 
@@ -157,6 +257,49 @@ export interface ChatMessageEventInput {
   systemData?: unknown;
 }
 
+export type DeleteConversationKind = ConversationKind | "COMMUNITY";
+
+export interface DeletePayloadInput {
+  conversationType: DeleteConversationKind;
+  messageId: string;
+  roomId: string;
+  scope: "forMe" | "forEveryone";
+  deletedBy: string;
+  sequenceNumber?: number;
+  deletedType?: string;
+}
+
+/**
+ * Build the canonical socket message:delete / community:message:deleted payload.
+ * REST delete returns this exact object so REST == socket byte-for-byte.
+ *   PRIVATE/GROUP: { messageId, conversationId, type, deletedBy, sequenceNumber }
+ *   COMMUNITY:     { messageId, communityId, roomId, deleteType, deletedBy }
+ */
+export function buildDeletePayload(
+  input: DeletePayloadInput
+): Record<string, unknown> {
+  if (input.conversationType === "COMMUNITY") {
+    return {
+      messageId: input.messageId,
+      communityId: input.roomId,
+      roomId: input.roomId,
+      deleteType: input.scope,
+      deletedBy: input.deletedBy,
+    };
+  }
+  const base: Record<string, unknown> = {
+    messageId: input.messageId,
+    conversationId: input.roomId,
+    type: input.scope,
+    deletedBy: input.deletedBy,
+    sequenceNumber: input.sequenceNumber ?? 0,
+  };
+  if (input.conversationType === "GROUP") {
+    base.deletedType = input.deletedType ?? "SELF_DELETE";
+  }
+  return base;
+}
+
 /**
  * Build the canonical `message:new` / `message:edited` payload. Field names match
  * the REST `ChatMessage` schema; legacy aliases preserved for V1 clients.
@@ -187,6 +330,7 @@ export function buildChatMessageEvent(
     ...(input.isForwarded ? { isForwarded: true } : {}),
     isDeleted: input.isDeleted ?? false,
     deletedType: input.deletedType ?? "",
+    isEdited: (input.editedAt ?? 0) > 0,
     editedAt: input.editedAt ?? 0,
     clientTs: input.clientTs ?? 0,
     serverTs: input.serverTs,

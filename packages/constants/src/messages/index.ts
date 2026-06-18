@@ -3,6 +3,7 @@ import { AUTH_MESSAGES } from "./auth.messages.js";
 import { CHAT_MESSAGES } from "./chat.messages.js";
 import { COMMON_MESSAGES } from "./common.messages.js";
 import { COMMUNITY_MESSAGES } from "./community.messages.js";
+import { MEDIA_MESSAGES } from "./media.messages.js";
 import { SOCKET_MESSAGES } from "./socket.messages.js";
 import { UPLOAD_MESSAGES } from "./upload.messages.js";
 import { USER_MESSAGES } from "./user.messages.js";
@@ -25,6 +26,7 @@ export const MESSAGES = {
   ...CHAT_MESSAGES,
   ...SOCKET_MESSAGES,
   ...UPLOAD_MESSAGES,
+  ...MEDIA_MESSAGES,
   ...ADMIN_MESSAGES,
   ...COMMON_MESSAGES,
 } as const satisfies MessageCatalog;
@@ -39,6 +41,7 @@ export {
   COMMUNITY_MESSAGES,
   type CommunityMessageKey,
 } from "./community.messages.js";
+export { MEDIA_MESSAGES, type MediaMessageKey } from "./media.messages.js";
 export { SOCKET_MESSAGES, type SocketMessageKey } from "./socket.messages.js";
 export { UPLOAD_MESSAGES, type UploadMessageKey } from "./upload.messages.js";
 export { USER_MESSAGES, type UserMessageKey } from "./user.messages.js";

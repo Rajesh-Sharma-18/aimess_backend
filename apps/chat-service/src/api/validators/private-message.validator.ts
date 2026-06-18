@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CONTENT_TYPES } from "@aimess/constants";
 
 import {
   locationSchema,
@@ -7,6 +8,7 @@ import {
 } from "./attachment.validator.js";
 import {
   CHAT_TEXT_MAX_CHARS,
+  CHAT_EMOJI_MAX_CHARS,
   enforceMediaLimits,
 } from "../../constants/media-limits.js";
 
@@ -36,27 +38,49 @@ export const sendPrivateMessageSchema = z
       contact: contactSchema.optional(),
       sticker: stickerSchema.optional(),
     }),
-    messageType: z.enum([
-      "TEXT",
-      "IMAGE",
-      "DOCUMENT",
-      "VIDEO",
-      "VOICE",
-      "SYSTEM",
-      "LOCATION",
-      "CONTACT",
-      "STICKER",
-    ]),
+    // Single source of truth: @aimess/constants CONTENT_TYPES (UPPER-CASE).
+    // Previously hand-typed here and missing AUDIO/GIF — see media-limits.ts,
+    // which already enforces caps for both.
+    messageType: z.enum(CONTENT_TYPES),
     parentMessageId: z.string().nullish(),
   })
   .superRefine((val, ctx) => {
     enforceMediaLimits(val.messageType, val.content.files, ctx);
   });
 
-export const markReadSchema = z.object({
-  receiverId: z.string().min(4).max(150),
-  roomId: z.string().min(4).max(150),
-  lastMessageId: z.string().min(4).max(150),
+/**
+ * REST send body for `POST /private/rooms/:roomId/messages`. roomId comes from
+ * the path, so only the message fields live in the body. receiverId (the peer)
+ * is still required — the private friendship gate needs both ids. clientMessageId
+ * is optional (the orchestrator defaults it) but recommended for idempotency.
+ */
+export const sendPrivateMessageBodySchema = z
+  .object({
+    receiverId: z.string().min(5).max(100),
+    content: z.object({
+      text: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+      urls: z.array(z.string().url()).default([]),
+      files: z.array(messageFileSchema).default([]),
+      location: locationSchema.optional(),
+      contact: contactSchema.optional(),
+      sticker: stickerSchema.optional(),
+    }),
+    messageType: z.enum(CONTENT_TYPES),
+    parentMessageId: z.string().nullish(),
+    clientMessageId: z.string().min(1).max(100).nullish(),
+    clientTs: z.number().nonnegative().nullish(),
+  })
+  .superRefine((val, ctx) => {
+    enforceMediaLimits(val.messageType, val.content.files, ctx);
+  });
+
+/**
+ * REST body for `POST /private/rooms/:roomId/read` (mark-read up to a message).
+ * roomId comes from the path; the caller id from the access token — so the body
+ * carries only the read high-water mark.
+ */
+export const markReadBodySchema = z.object({
+  upToMessageId: z.string().min(1).max(150),
 });
 
 export const reactMessageSchema = z.object({
@@ -73,6 +97,25 @@ export const reactMessageSchema = z.object({
       })
     )
   ),
+});
+
+/**
+ * REST body for `POST /private/rooms/:roomId/messages/:messageId/reactions`
+ * (add a reaction — idempotent toggle-ON). roomId/messageId come from the path,
+ * the caller from the token, so only the emoji lives in the body. Emoji is capped
+ * 1–CHAT_EMOJI_MAX_CHARS chars to match the socket reaction contract.
+ */
+export const reactionBodySchema = z.object({
+  emoji: z.string().min(1).max(CHAT_EMOJI_MAX_CHARS),
+});
+
+/**
+ * URL-param validator for `DELETE …/reactions/:emoji` (remove a reaction —
+ * idempotent toggle-OFF). Express already URL-decodes the path param; this just
+ * enforces the same cap as the POST body.
+ */
+export const reactionParamSchema = z.object({
+  emoji: z.string().min(1).max(CHAT_EMOJI_MAX_CHARS),
 });
 
 export const pinMessageSchema = z.object({

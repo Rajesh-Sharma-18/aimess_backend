@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isCommunityContentType } from "@aimess/constants";
 
 import {
   locationSchema,
@@ -14,19 +15,17 @@ export const sendCommunityMessageSchema = z
   .object({
     roomId: z.string().min(5).max(50),
     message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
-    messageType: z.enum([
-      "text",
-      "image",
-      "video",
-      "voice",
-      "audio",
-      "document",
-      "gif",
-      "location",
-      "contact",
-      "sticker",
-      "custom",
-    ]),
+    // Single source of truth: derived from @aimess/constants CONTENT_TYPES. The
+    // community path uses the lower-case spelling (+ "custom"); accept
+    // case-insensitively and normalize to lower-case for storage parity with
+    // pre-existing docs.
+    messageType: z
+      .string()
+      .min(1)
+      .transform((v) => v.toLowerCase())
+      .refine(isCommunityContentType, {
+        message: "Unsupported community messageType",
+      }),
     parentMessageId: z.string().nullish(),
     clientMessageId: z.string().optional(),
     username: z.string().min(5).max(50),
@@ -54,6 +53,62 @@ export const sendCommunityMessageSchema = z
   .superRefine((val, ctx) => {
     enforceMediaLimits(val.messageType, val.media?.files, ctx);
   });
+
+/**
+ * REST send body for `POST /community/rooms/:roomId/messages`. roomId (the chat
+ * GeneralRoom id) comes from the path; communityId (the community-service
+ * Community.id, used for the broadcast + activity bump) is required in the body.
+ * messageType accepts the community lower-case spelling (+ "custom"). attachments
+ * mirror the gRPC handler's attachmentsJson (media.files / location / contact /
+ * sticker); the controller flattens them into the service attachments array.
+ */
+export const sendCommunityMessageBodySchema = z
+  .object({
+    communityId: z.string().min(1),
+    message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
+    messageType: z
+      .string()
+      .min(1)
+      .transform((v) => v.toLowerCase())
+      .refine(isCommunityContentType, {
+        message: "Unsupported community messageType",
+      }),
+    parentMessageId: z.string().nullish(),
+    clientMessageId: z.string().min(1).max(100).nullish(),
+    media: z
+      .object({
+        files: z.array(
+          z.object({
+            url: z.string().url().optional(),
+            objectKey: z.string().optional(),
+            key: z.string().optional(),
+            mime: z.string().default(""),
+            size: z.number().default(0),
+            name: z.string().default(""),
+            width: z.number().optional(),
+            height: z.number().optional(),
+            durationMs: z.number().nonnegative().optional(),
+          })
+        ),
+      })
+      .optional(),
+    location: locationSchema.optional(),
+    contact: contactSchema.optional(),
+    sticker: stickerSchema.optional(),
+  })
+  .superRefine((val, ctx) => {
+    enforceMediaLimits(val.messageType, val.media?.files, ctx);
+  });
+
+/**
+ * REST body for `POST /community/rooms/:roomId/read`. The body accepts
+ * `upToMessageId` for parity with private/group, but community read is COARSER:
+ * it advances the member's read pointer to "now" (no per-message high-water
+ * mark) and has no socket broadcast — see CommunityMessageController.markRead.
+ */
+export const markCommunityReadBodySchema = z.object({
+  upToMessageId: z.string().min(1).max(150),
+});
 
 export const editCommunityMessageSchema = z.object({
   // communityId is required so the edit broadcast reaches the right /community

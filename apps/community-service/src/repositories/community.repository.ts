@@ -445,7 +445,7 @@ export const communityRepository = {
     });
   },
 
-  reactivateMemberWithSnapshot(
+  async reactivateMemberWithSnapshot(
     communityId: string,
     userId: string,
     snapshot: {
@@ -454,7 +454,7 @@ export const communityRepository = {
       snapshotAvatarKey: string | null;
     }
   ) {
-    return prisma.communityMember.update({
+    const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: {
         status: CommunityMemberStatus.ACTIVE,
@@ -475,6 +475,17 @@ export const communityRepository = {
         banReason: true,
       },
     });
+    // Re-add of a previously-LEFT member: mirror the reactivation into
+    // chat-service's RoomMember so they regain send/read in the general room.
+    // The other member-mutation methods (create/createMany/updateStatus/
+    // updateRole) all publish this; reactivation must too or the row drifts.
+    publishCommunityMemberSyncedForChatSafe({
+      communityId,
+      userId,
+      status: CommunityMemberStatus.ACTIVE,
+      role: CommunityMemberRole.MEMBER,
+    });
+    return row;
   },
 
   updateMemberSnapshotsByUserId(
@@ -864,6 +875,7 @@ export const communityRepository = {
           lastActivityType: true,
           lastActivityPreview: true,
           lastActivityUsername: true,
+          moderationStatus: true,
           lastActivityUserId: true,
           category: { select: { id: true, name: true } },
         },
@@ -1586,6 +1598,23 @@ export const communityRepository = {
     });
   },
 
+  /** Single query returning the set of communityIds that the user has a PENDING join request for. */
+  async findPendingRequestedCommunityIds(
+    userId: string,
+    communityIds: string[]
+  ): Promise<Set<string>> {
+    if (communityIds.length === 0) return new Set();
+    const rows = await prisma.communityJoinRequest.findMany({
+      where: {
+        userId,
+        communityId: { in: communityIds },
+        status: CommunityJoinReqStatus.PENDING,
+      },
+      select: { communityId: true },
+    });
+    return new Set(rows.map((r) => r.communityId));
+  },
+
   updateJoinRequest(
     requestId: string,
     data: {
@@ -1598,6 +1627,24 @@ export const communityRepository = {
     return prisma.communityJoinRequest.update({
       where: { id: requestId },
       data,
+    });
+  },
+
+  findJoinRequestsByIds(requestIds: string[]) {
+    return prisma.communityJoinRequest.findMany({
+      where: { id: { in: requestIds } },
+    });
+  },
+
+  bulkUpdateJoinRequestStatus(
+    requestIds: string[],
+    status: CommunityJoinReqStatus,
+    decidedBy: string,
+    decidedAt: Date
+  ) {
+    return prisma.communityJoinRequest.updateMany({
+      where: { id: { in: requestIds } },
+      data: { status, decidedBy, decidedAt },
     });
   },
 

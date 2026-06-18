@@ -1,9 +1,233 @@
 # AIMess Backend — Implementation Notes & Review Record
 
 > Living record of what is implemented, key decisions, gotchas, and known gaps.
-> Update this whenever you ship or change a feature. Last reviewed: **2026-06-10**.
+> Update this whenever you ship or change a feature. Last reviewed: **2026-06-17**.
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up** + **calling + forwarding + reactions + WebRTC**), **backoffice-service** (admin auth RBAC + user management + **user-detail screen: user / joined-communities / other-members 3-API split** + community moderation + reports + livestream admin + dashboard).
 > Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph**), **community-service** (create + **member management & moderation** + **user snapshot denormalization**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up**).
+> Scope of this record: **auth-service**, **user-service** (incl. **friendship / social graph** + **internal friendship-check**), **community-service** (create + **member management & moderation** + **user snapshot denormalization** + **v1 lifecycle: self-join / transfer-admin / auto-handover / delete** + **gated communities: join-requests + invites** + **trust & safety: reports + friend validation** + **user preferences: mute + leave reason + invite links** + **12 RabbitMQ event publishers**), **chat-service** (private/group/community messaging + scalability hardening + **per-room sequence numbers & reconnect catch-up** + **real-time notification spine** + **calling + forwarding + reactions + WebRTC**), **backoffice-service** (admin auth RBAC + user management + **user-detail screen: user / joined-communities / other-members 3-API split** + community moderation + reports + livestream admin + dashboard).
+
+---
+
+## Real-time Notification Spine (shipped 2026-06-17)
+
+End-to-end inbox delivery with real-time socket notifications to all connected devices. **The platform-wide notification flow is now complete and working.**
+
+### What shipped
+
+| Component                    | Status | Evidence                                                                                                                                |
+| ---------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **S1: Real-time bridge**     | ✅     | `chat-service/src/grpc/service-impl.ts:2365-2397` publishes `notification:new` + `notification:count_update` to Redis `notify:<userId>` |
+| **S2: Read path**            | ✅     | `api-gateway/.env` + `.env.example` both set `NOTIFICATION_GRPC_URL=localhost:4004` (chat-service owns inbox reads)                     |
+| **S3: FCM for online users** | ✅     | `push.service.ts` suppression respected (online → inbox + socket only; offline → inbox + FCM)                                           |
+
+### How it works
+
+1. **Event triggers** — community member-added, friend request, chat mention, etc. publishes to RabbitMQ (e.g., `MEMBER_ADDED`)
+2. **Consumer** — notifications-service consumes event and calls chat-service's `CreateNotification` gRPC
+3. **Inbox write** — row persisted to chat-service's notification store (MongoDB)
+4. **Real-time publish** (S1) — same gRPC call publishes to Redis `notify:<userId>` with payload `{ notificationId, type, title, body, referenceId, navigation, actorSnapshot, ... }`
+5. **Gateway relay** — `/notify` Socket.IO namespace subscribes to `notify:<userId>` and emits `notification:new` + `notification:count_update` to connected clients
+6. **FCM push** (S3) — for offline users only (online suppressed to avoid duplicate delivery); uses the resolved `senderAvatar` URL
+7. **Badge/count** — socket event carries unread count; client updates UI
+
+### Key files
+
+- **S1 bridge:** `apps/chat-service/src/grpc/service-impl.ts` `createNotificationImpl`
+- **S2 read path:** `apps/api-gateway/.env` / `.env.example` (NOTIFICATION_GRPC_URL)
+- **Socket relay:** `apps/api-gateway/src/sockets/namespaces/notify.ns.ts`
+- **Consumer:** `apps/notifications-service/src/consumers/community.consumer.ts` + `community-consumer.test.ts`
+- **Push gating:** `apps/notifications-service/src/services/push.service.ts`
+- **Contracts:** `docs/SOCKET_EVENTS.md` §6 (notification events), `asyncapi.yaml` (async message definitions)
+
+### Verified
+
+- TypeScript: chat-service + notifications-service + gateway all clean
+- Lint: all services clean
+- Contract: socket `notification:new` + `notification:count_update` + `notification:remove` + `notification:mark_read` tested
+- Scenarios: scenario-validator all PASS; community-member-add fans out DB → event → consumer → socket → push → inbox → badge
+
+### Deferred
+
+- Per-device notification preferences (currently global settings apply)
+- Notification grouping (e.g., "5 friends added you" instead of 5 separate rows)
+- Notification expiration (cleanup old dismissed rows)
+
+---
+
+## Real-time Notification Spine (shipped 2026-06-17)
+
+End-to-end inbox delivery with real-time socket notifications to all connected devices. **The platform-wide notification flow is now complete and working.**
+
+### What shipped
+
+| Component                    | Status | Evidence                                                                                                                                |
+| ---------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **S1: Real-time bridge**     | ✅     | `chat-service/src/grpc/service-impl.ts:2365-2397` publishes `notification:new` + `notification:count_update` to Redis `notify:<userId>` |
+| **S2: Read path**            | ✅     | `api-gateway/.env` + `.env.example` both set `NOTIFICATION_GRPC_URL=localhost:4004` (chat-service owns inbox reads)                     |
+| **S3: FCM for online users** | ✅     | `push.service.ts` suppression respected (online → inbox + socket only; offline → inbox + FCM)                                           |
+
+### How it works
+
+1. **Event triggers** — community member-added, friend request, chat mention, etc. publishes to RabbitMQ (e.g., `MEMBER_ADDED`)
+2. **Consumer** — notifications-service consumes event and calls chat-service's `CreateNotification` gRPC
+3. **Inbox write** — row persisted to chat-service's notification store (MongoDB)
+4. **Real-time publish** (S1) — same gRPC call publishes to Redis `notify:<userId>` with payload `{ notificationId, type, title, body, referenceId, navigation, actorSnapshot, ... }`
+5. **Gateway relay** — `/notify` Socket.IO namespace subscribes to `notify:<userId>` and emits `notification:new` + `notification:count_update` to connected clients
+6. **FCM push** (S3) — for offline users only (online suppressed to avoid duplicate delivery); uses the resolved `senderAvatar` URL
+7. **Badge/count** — socket event carries unread count; client updates UI
+
+### Key files
+
+- **S1 bridge:** `apps/chat-service/src/grpc/service-impl.ts` `createNotificationImpl`
+- **S2 read path:** `apps/api-gateway/.env` / `.env.example` (NOTIFICATION_GRPC_URL)
+- **Socket relay:** `apps/api-gateway/src/sockets/namespaces/notify.ns.ts`
+- **Consumer:** `apps/notifications-service/src/consumers/community.consumer.ts` + `community-consumer.test.ts`
+- **Push gating:** `apps/notifications-service/src/services/push.service.ts`
+- **Contracts:** `docs/SOCKET_EVENTS.md` §6 (notification events), `apps/api-gateway/asyncapi/asyncapi.yaml` (async message definitions)
+
+### Verified
+
+- TypeScript: chat-service + notifications-service + gateway all clean
+- Lint: all services clean
+- Contract: socket `notification:new` + `notification:count_update` + `notification:remove` + `notification:mark_read` tested
+- Scenarios: scenario-validator all PASS; community-member-add fans out DB → event → consumer → socket → push → inbox → badge
+
+### Deferred
+
+- Per-device notification preferences (currently global settings apply)
+- Notification grouping (e.g., "5 friends added you" instead of 5 separate rows)
+- Notification expiration (cleanup old dismissed rows)
+
+---
+
+## Community System Messages (shipped 2026-06-16)
+
+Auto-generated **read-only, immutable lifecycle notifications** in the community chat timeline when structural events occur (create, update name/avatar/settings, member role change). Flow through the existing `community:message:new` socket event and REST message APIs — **no new transports**.
+
+### What shipped
+
+| Event                 | Trigger                                                                    | Payload                                                                                 | Files                                                     |
+| --------------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `COMMUNITY_CREATED`   | Community created                                                          | `systemMetadata: { communityName, creatorId, creatorName }`                             | `community.service.ts:create()`                           |
+| `COMMUNITY_UPDATED`   | Name/avatar/banner/description/visibility/category/handle/settings changed | `systemMetadata: { updaterId, updaterName, changedFields[], newName?, newVisibility? }` | `community.service.ts:update()` + changed-field detection |
+| `MEMBER_ROLE_CHANGED` | Member role transition (MEMBER ↔ MODERATOR, etc.)                          | `systemMetadata: { actorId, actorName, targetUserId, targetName, oldRole, newRole }`    | `community.service.ts:updateMemberRole()`                 |
+
+### Implementation notes
+
+- **RabbitMQ Event:** `community.system_message` routed to `community.chat.sync.queue` (durable, shared with room provisioning events). Published by community-service; consumed by chat-service `CommunityRoomSyncConsumer`.
+- **Service Layer:** New `CommunitySystemMessageService` in chat-service resolves user snapshots, allocates sequence numbers, persists `GeneralRoomMessage` with `messageType: "SYSTEM"`, publishes Redis `community:<communityId>` for real-time delivery, bumps community activity (`publishCommunityActivitySafe`).
+- **Guards:** `CHAT_SYSTEM_MESSAGE_IMMUTABLE` error thrown in 5 mutation paths (editMessage, deleteForMe, deleteForAll, reactToMessage, pinMessage, unpinMessage) — system messages cannot be edited, deleted, reacted to, replied to, forwarded, or pinned.
+- **Database:** Stored in `GeneralRoomMessage` with two new nullable fields: `systemMessageType` (enum: COMMUNITY_CREATED|COMMUNITY_UPDATED|MEMBER_ROLE_CHANGED) and `systemMetadata` (Json). New compound index `[roomId, systemMessageType, createdAt DESC]` for efficient type-filtered queries.
+- **Serialization:** System messages pass through existing serializers (`toWireMessage`, REST history/sync, gRPC catchup) unchanged — the new fields are additive. All three transports (REST, socket, gRPC) receive identical payload shape.
+- **Socket Contract:** Reuses `community:message:new` event (no new events). Message payload extended with `systemMessageType` + `systemMetadata` when `contentType: "SYSTEM"`. `reactions: []`, `parentMessageId: ""`, `quoteData: null`, `editedAt: null` always (immutable).
+- **Frontend Rendering:** Client maps `systemMessageType + systemMetadata` to localized text. English fallback (`content.text`) provided for accessibility but never displayed. Rendered as centered muted pill (no action buttons, no reactions, no reply thread).
+- **Backward Compatibility:** Non-breaking. Existing clients ignore the new fields (nullable). V1 aliases (`messageId`, `conversationId`, `sentAt`, `contentText`) preserved. System messages do not affect existing edit/delete/react contracts (guards return immutability errors).
+
+### Key files
+
+- **Enums:** `packages/constants/src/community/system-message.ts` (`CommunitySystemMessageType`)
+- **Types:** `packages/shared-types/src/chat.ts` (3 metadata interfaces + `SystemMessageMetadata` union, `MessageDto` extended)
+- **Publishers:** `apps/community-service/src/services/community.service.ts` (3 trigger call sites), `src/messaging/publish-community-chat.ts` (`publishCommunitySystemMessageForChatSafe`)
+- **Consumer:** `apps/chat-service/src/events/community-room-sync.consumer.ts` (handles `community.system_message` case)
+- **Service:** `apps/chat-service/src/services/community-system-message.service.ts` (new)
+- **Repository:** `apps/chat-service/src/repositories/general-room-message.repository.ts` (`createSystemMessage` method)
+- **Guards:** `apps/chat-service/src/services/community-message.service.ts` (5 mutation paths + `CHAT_SYSTEM_MESSAGE_IMMUTABLE`)
+- **Schema:** `apps/chat-service/prisma/schema.prisma` (`GeneralRoomMessage` + 2 fields + index)
+- **Docs:** `docs/COMMUNITY_SYSTEM_MESSAGES.md` (full spec), `asyncapi.yaml` (3 examples), `openapi/components/schemas.ts` (system message schema extension)
+
+### Verified
+
+- TypeScript: chat-service, community-service, constants, shared-types all clean
+- Lint: both services clean
+- Contract: socket `community:message:new` + REST history/sync + gRPC catchup all carry `systemMessageType` + `systemMetadata`
+- Guards: 5 mutation paths tested to return `CHAT_SYSTEM_MESSAGE_IMMUTABLE`
+- Async: fire-and-forget — system message creation failures do NOT block lifecycle action (logged, not thrown)
+
+### Deferred (Phase 2)
+
+- Bulk-member operations system message (add/remove multiple members in one PATCH)
+- Community settings per-key granularity (currently generic "settings" covers all changes)
+- Immutability enforcement at the gRPC layer (not just REST)
+
+---
+
+## Phase 1 — Chat contract unification: REST == Socket payload (shipped 2026-06-15)
+
+Single canonical serializer (`chat-service/src/lib/chat-message.serializer.ts`) is now the **only** output boundary for all chat write paths. The frontend maps one TypeScript interface across REST and Socket.IO with no transformation layer.
+
+### What shipped
+
+| Change                                                                                                                                                                                                   | Files                                             | Commit    |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | --------- |
+| `buildDeletePayload()` — canonical delete tombstone for both transports                                                                                                                                  | `chat-message.serializer.ts`                      | `17efdcb` |
+| Private/group/community **edit** REST body == `message:edited` socket payload                                                                                                                            | `{private,group,community}-message.controller.ts` | `17efdcb` |
+| Private/group/community **delete** REST body == `message:delete` socket payload                                                                                                                          | same                                              | `17efdcb` |
+| Private/group **forward** REST body == `message:new` socket payload                                                                                                                                      | same                                              | `17efdcb` |
+| Group history `enrichForWire` gains canonical `conversationType`, `quoteData`, `clientTs`, `serverTs`                                                                                                    | `group-message.service.ts`                        | `17efdcb` |
+| `@aimess/shared-types` chat DTO module (`packages/shared-types/src/chat.ts`)                                                                                                                             | `packages/shared-types/`                          | `17efdcb` |
+| OpenAPI: new `ChatDeleteTombstone`, `ChatCommunityDeleteTombstone`, `ChatCommunityEditResponse` schemas; `ChatWireMessage` gains `isForwarded`; edit/delete/forward endpoints reference specific schemas | `openapi/components/schemas.ts`, `chat.paths.ts`  | `2955efe` |
+
+### Wire shapes (non-breaking — V1 aliases kept)
+
+- **Edit (private/group)** — `buildChatMessageEvent()` output: flat sender fields, `content` object, canonical `quoteData`, epoch-ms `serverTs`/`editedAt`. V1 aliases (`messageId`/`conversationId`/`contentType`/`sentAt`) preserved.
+- **Delete tombstone (private/group)** — `{ messageId, conversationId, type, deletedBy, sequenceNumber, deletedType? }`. Identical to the `message:delete` socket broadcast.
+- **Delete tombstone (community)** — `{ messageId, communityId, roomId, deleteType, deletedBy }`. Identical to the `community:message:deleted` socket broadcast.
+- **Community edit** — thin payload `{ messageId, communityId, roomId, content, contentType, editedAt, sequenceNumber }`. Matches `community:message:edited` socket event. Full `buildChatMessageEvent` canonicalization deferred to Phase 3 (requires community socket V2 contract change).
+- **Forward (private/group)** — `buildChatMessageEvent()` output; identical shape to the `message:new` socket payload.
+
+### Key files
+
+- `apps/chat-service/src/lib/chat-message.serializer.ts` — `buildChatMessageEvent`, `buildDeletePayload`, `buildCanonicalQuote`
+- `apps/chat-service/src/api/controllers/{private,group,community}-message.controller.ts` — single hoisted event const used for both Redis publish and REST response (no divergence possible)
+- `apps/chat-service/src/services/group-message.service.ts` — `enrichForWire` now emits canonical fields
+- `packages/shared-types/src/chat.ts` — shared TS DTOs: `MessageDto`, `ReplyDto`, `DeletePayloadDto`, `CommunityEditResponseDto`, `MessageSyncDto`
+
+### Deferred
+
+- Conform serializer argument types to shared-types DTOs (type-only import; no runtime change) — Phase 2
+- Community edit full canonicalization via `buildChatMessageEvent` — Phase 3
+- Conformance tests: `buildDeletePayload` unit test + REST == socket integration test
+
+---
+
+## Media-URL standardization — resolve-on-read everywhere (shipped 2026-06-12)
+
+Every REST / gRPC / socket / FCM-push response now returns **fully-qualified presigned download URLs** for media; **no API leaks a raw MinIO object key**. Closes the 41 leaks in `docs/EVENT-MEDIA-AUDIT.md` §4. Run via the agent team (Pro Coders → DRY + Contract reviewers + Quality Tester).
+
+- **Rule:** resolve-on-read at each owner service's OUTPUT boundary; the stored snapshot/DB keeps the **raw key** (presigned URLs expire ~1h — never persist a resolved URL). Reuse `@aimess/storage` `toMediaObject` and chat-service `src/lib/media-resolve.ts` (`resolveMediaUrl` / `resolveMediaUrlMap` / `urlFromMap` / `applyUrlMapToFiles` / `resolveContentFiles` / `resolvePinsMedia`). The gateway forwards already-resolved URLs (no gateway-side resolver).
+- **media-service:** `POST /api/v1/media/upload-url` now also returns a ready `media.downloadUrl` (+ `downloadUrlExpiresIn`) for instant preview — additive, existing fields unchanged.
+- **chat-service:** all read paths (private/group/community history, inbox, conversation lists, reactions, pins, admin-group, invite-link preview) + **all realtime gRPC broadcasts** (`message:new`/`:edited`/`:reaction`, `community:message:new`/`:reaction`, community catchup, plus the group-history gRPC callback) + the **FCM-push publisher** (`publish-message-sent.ts`) resolve sender avatars + `content.files[]` + reaction-user avatars before emitting. New `group-message.service.enrichForWire`; shared `resolvePinsMedia`. `community-room-sync.consumer` persists the room logo as a raw key (never read out → no read-side fix needed).
+- **community-service:** the 3 admin gRPC handlers (`adminAvatarUrl`×2, `coverUrl`) resolve via the existing `memberAvatarService` / `communityImageService`.
+- **backoffice-service:** community/group admin read-model repos resolve avatars; added `MINIO_BUCKET_COMMUNITY` (+ `.env.example`) so the admin community-detail **cover** resolves.
+- **notifications-service:** unchanged — it forwards the now-resolved `senderAvatar` into the FCM data map (fixed at the chat-service publisher per single-boundary).
+- **api-gateway:** OpenAPI examples switched raw keys → full URLs; request-input key fields (`objectKey`, `avatarObjectKey`, media request bodies) correctly left as keys.
+- **Deferred (designed, not built):** a socket-driven upload control-plane (`media:upload:init/complete/success` + a `confirmUpload` HEAD). It removes **zero** required network steps (bytes still PUT direct to storage) and adds a second transport; revisit only for upload-progress / multi-device / async media processing. Bytes-over-socket rejected (HOL blocking, no resumability, gateway memory). The gateway already has a `media.client.ts` gRPC client + media-service `headObject`, so it's cheap to add later.
+- **Verified:** chat 246, community 218, media 13, backoffice 37 jest + 15 node:test; all touched services typecheck clean.
+
+---
+
+## Upload URL centralization — media-service migration (shipped 2026-06-12)
+
+Upload URL generation removed from user-service and community-service; responsibility moved to the new media-service.
+
+- `POST /api/v1/users/uploads/url` — removed from user-service, but kept as a **supported gateway alias** that forwards to media-service (see "Gateway alias" below). It is NOT marked deprecated. `POST /api/v1/media/upload-url` with `category: "USER_AVATAR"` is the equivalent direct call.
+- `POST /api/v1/communities/uploads/url` — **REMOVED** (no compat shim). Clients must use `POST /api/v1/media/upload-url` with `category: "COMMUNITY_AVATAR"` or `"COMMUNITY_COVER"`.
+
+**Files deleted:**
+
+- `apps/user-service/src/api/controllers/upload.controller.ts`
+- `apps/user-service/src/api/validators/upload.validator.ts`
+- `apps/user-service/src/api/routes/upload.routes.ts`
+- `apps/user-service/src/services/upload.service.ts`
+- `apps/user-service/src/config/uploads.ts`
+- `apps/community-service/src/api/controllers/upload.controller.ts`
+- `apps/community-service/src/api/validators/upload.validator.ts`
+- `apps/community-service/src/services/upload.service.ts`
+- `apps/community-service/src/config/uploads.ts`
+
+**`@aimess/storage` retained** in both services for `headObject` / `deleteObject` / `createPresignedViewUrl` — used by `avatar.service.ts` and `community-image.service.ts` to validate confirmed uploads and sign view URLs. `AVATAR_MAX_UPLOAD_BYTES` kept in user-service env (used by `avatar.service.ts`). `COMMUNITY_IMAGE_MAX_UPLOAD_BYTES` kept in community-service env (used by `community-image.service.ts`). `MINIO_PRESIGN_EXPIRES_IN` removed from both services (was only used by the deleted upload services).
+
+**Gateway alias for `/users/uploads/url` (2026-06-12):** `POST /api/v1/users/uploads/url` is a **supported** stable alias served at the **gateway** by `apps/api-gateway/src/routes/v1/legacy-uploads.routes.ts` (mounted before the generic `/users` proxy, only when `MEDIA_SERVICE_URL` is set). It renames the request field `type: "AVATAR"` → `category: "USER_AVATAR"` and forwards to media-service `POST /api/v1/media/upload-url` over HTTP; media-service performs JWT auth (deriving `ownerId` from the token) and returns the identical response, which is relayed verbatim. **No upload logic was re-added to user-service** — the alias is a pure path+field adapter that reuses the centralized media-service (no duplicated logic). The path is documented normally in Swagger (not deprecated). Tests: `apps/api-gateway/tests/uploads/legacy-uploads.test.ts` (4 cases). The community endpoint has no equivalent alias.
 
 ---
 
@@ -301,7 +525,7 @@ Shipped end-to-end through the multi-agent pipeline (PM → Pro Coder → DRY + 
 - **Schema (`prisma/schema.prisma`):** `lastSequence Int @default(0)` counter on `PrivateRoom` + `GroupRoom`; `sequenceNumber Int @default(0)` on `PrivateMessage` + `GroupMessage`, each with new `@@index([roomId, sequenceNumber])`. **Community (`GeneralRoomMessage`) deliberately DEFERRED** — different model/channel; follow-up if community catch-up is needed.
 - **Atomic allocation:** `allocateSequence(roomId)` on `private-room.repository.ts` + `group-room.repository.ts` does a single Prisma `update({ data: { lastSequence: { increment: 1 } }, select })` → Mongo `$inc`, **document-atomic, race-safe** (no read-modify-write). Concurrent sends to one room get distinct, contiguous, increasing values. **No `$transaction`** (standalone-Mongo rule holds).
 - **Ordering vs idempotency:** allocation happens **after** the `clientMessageId` idempotency pre-check and **immediately before** insert, in both `sendMessage` and `forwardMessage` (private + group). A retried `clientMessageId` returns the existing message with its **original** seq and never burns a new one. The group `sendMessage` P2002 race path discards the one allocated seq (an acceptable gap — the only way a gap occurs).
-- **Wire:** `sequenceNumber` now flows on `message:new` / `message:edited` (and the forward path) over both the Redis broadcast (as a JS number) and the gRPC ack. `proto-loader` uses `longs: String`, so int64 `sequence_number` arrives as a **string** at the gateway — the messaging client now `Number()`-coerces it on `sendMessage`/`editMessage`/`forwardMessage`/`getConversationMessages` results so the declared `number` type holds.
+- **Wire:** `sequenceNumber` now flows on `message:new` / `message:edited` (and the forward path) over both the Redis broadcast (as a JS number) and the gRPC ack. `proto-loader` uses `longs: String`, so int64 fields arrive as **strings** at the gateway — the gRPC clients `Number()`-coerce them so the declared `number` types hold. As of the **2026-06-15 timestamp sweep** this covers **both** `sequence_number` **and** the epoch-ms timestamps: messaging client coerces `sentAt`/`editedAt` on `sendMessage`/`editMessage`/`forwardMessage`/`getConversationMessages`; community client coerces `sentAt`/`editedAt`/`pinnedAt` on `sendCommunityMessage`/`getCommunityMessages`/`editCommunityMessage`/`pinCommunityMessage`; notification client coerces `createdAt` on `getNotifications` (the `notifications:fetch` ack — `unread_count` is int32, already a number); messaging client coerces call `initiatedAt`/`answeredAt`/`endedAt` on `getCallHistory` (`duration_sec` is int32). Net: ack `data` timestamps are plain numbers identical to the broadcasts — no client-side `Number()` needed (catchup paths were already coerced at the namespace handler). The notification FCM `data` map keeps `String(sentAt)` — FCM data values must be strings.
 
 **2. `chat:catchup` reconnect gap-fill**
 
@@ -419,7 +643,7 @@ The detail screen is now served by three independent, separately-cacheable endpo
 - **Rate limiting:** in-memory stores (per process). Move to a Redis store (`rate-limit-redis`) before horizontal scaling.
 - **Layering is clean** in both services: controllers thin, repositories own all Prisma, services hold logic, multi-write ops use `$transaction`. Keep it that way.
 - **Community authz primitive:** ALL community member-management/moderation goes through `assertCommunityRole(membership, minRole)` + the `COMMUNITY_ROLE_RANK` map (`community-service/src/lib/community-authz.ts`). Never re-implement role/status checks inline. Future moderator powers (join-request approve, etc.) MUST reuse this gate. Role hierarchy: ADMIN > MODERATOR > MEMBER; the admin role is immutable via the member endpoints (can't be demoted/kicked/banned, and the admin can't leave) until a separate ownership-transfer flow exists.
-- **Platform-admin authz (shipped 2026-06-12):** platform-wide admin actions are gated by a `role` claim (`USER`|`ADMIN`, mirrored from auth-service's `GlobalRole`) now carried on the **access JWT** — added to `@aimess/auth-jwt` (`signAccessToken`/`verifyAccessToken`, `req.auth.role`), stamped by auth-service at every token issue/refresh site (normalized via `lib/platform-role.ts` `toPlatformRole`), and defaulted to `USER` when absent so pre-existing tokens stay unprivileged. community-service's `requirePlatformAdmin` middleware (`src/middleware/require-platform-admin.ts`) reads `req.auth.role` and throws `ForbiddenError("PLATFORM_ADMIN_REQUIRED")` → 403. First consumers: the four `/communities/categories*` admin-category CRUD routes. This is the platform-level analogue of the community-scoped `assertCommunityRole` gate above — reuse `requirePlatformAdmin` (promote it to `@aimess/auth-jwt` when a second service needs it) rather than re-checking roles inline.
+- **Platform-admin authz (shipped 2026-06-12):** platform-wide admin actions are gated by a `role` claim (`USER`|`ADMIN`, mirrored from auth-service's `GlobalRole`) now carried on the **access JWT** — added to `@aimess/auth-jwt` (`signAccessToken`/`verifyAccessToken`, `req.auth.role`), stamped by auth-service at every token issue/refresh site (the Prisma `GlobalRole` normalized to `USER`/`ADMIN`), and defaulted to `USER` when absent so pre-existing tokens stay unprivileged. community-service's `requirePlatformAdmin` middleware (`src/middleware/require-platform-admin.ts`) reads `req.auth.role` and throws `ForbiddenError("PLATFORM_ADMIN_REQUIRED")` → 403. First consumers: the four `/communities/categories*` admin-category CRUD routes. This is the platform-level analogue of the community-scoped `assertCommunityRole` gate above — reuse `requirePlatformAdmin` (promote it to `@aimess/auth-jwt` when a second service needs it) rather than re-checking roles inline.
 - **`memberCount` is recomputed, not deltaed:** every community membership status change recomputes via `countActiveMembers` → `setMemberCount`. Robust against drift and safe without a transaction. Do NOT switch to blind ±1.
 - **`$transaction` is per-store:** Postgres services (auth, user) DO use `prisma.$transaction` for multi-row writes — e.g. friendship accept/unfriend bumping `friendsCount`. **community-service (standalone Mongo) does NOT** — Prisma interactive transactions fail there, so it uses sequential writes + recompute / compensating cleanup.
 - **Friendship = one row per pair, recycled:** re-sending after reject/cancel/unfriend updates the existing `Friendship` row (resets status + direction + clears timestamps) rather than inserting a new one; a mutual pending request auto-accepts. Friendship/discovery queries respect two-way blocks.
@@ -441,7 +665,7 @@ The detail screen is now served by three independent, separately-cacheable endpo
 - [x] **Circuit breakers (opossum) on user-service → auth-service gRPC** — `getAccountSummaryBreaker` in `apps/user-service/src/grpc/auth.client.ts`, timeout 5000 ms, logs open/halfOpen/close. Other outbound calls across the codebase still lack opossum.
 - [ ] **`resolve-auth-account` cache staleness:** the cache-first read serves a recent Redis copy even when auth-service is healthy, so connected-accounts/email can be stale up to the TTL right after a link/unlink or email change. Decide: invalidate on change (event from auth-service) vs live-first for the connected-accounts path vs accept the TTL window.
 - [ ] **`extractBearerToken`** (user-service `lib/`) is a generic helper that should live in `@aimess/utils`/`@aimess/auth-jwt` to avoid re-copying per service.
-- [ ] **Friendship events have NO consumer.** `friendship.queue` (`friend.requested/accepted/unfriended`) is published but unconsumed. notifications-service wiring is the natural next step.
+- [x] **Friendship events — two independent consumers.** (1) notifications-service consumes `friendship.queue` (`friend.requested/accepted/unfriended`, `{type,data}` on the default exchange) for friend-request push. (2) chat-service consumes `friendship.created`/`friendship.deleted` off the **`user.events` topic exchange** (queue `chat-service.friendship`, top-level `{type,userA,userB,status}`) to populate its local friendship read-model that gates private 1-1 rooms. user-service publishes BOTH paths (`apps/user-service/src/messaging/publish-friendship.ts`); constants live in `@aimess/shared-types` — `FriendshipEvents` (queue path) + `FriendshipReadModelEvents`/`USER_EVENTS_EXCHANGE` (topic path). **Fixed 2026-06-15:** the topic path was missing, so the chat read-model stayed empty and confirmed friends got 403 `CHAT_FRIENDSHIP_REQUIRED` opening a private room. Existing friendships created before the fix need a one-time backfill (`apps/user-service/scripts/backfill-chat-friendship-readmodel.ts`, republishes `friendship.created` for all ACCEPTED rows — idempotent).
 - [ ] **FCM push: capture works, delivery does not.** Tokens are stored on register/login/social, and the Firebase Admin SDK is wired + verified end-to-end. But `handleUserRegistered` in notifications-service is commented out and no other event has a push handler — the product fires zero pushes today. Also missing: token removal on logout, stale-token pruning on FCM 404s, per-device metadata.
 - [x] **Community member user snapshots** — shipped 2026-05-22 (see §0 subsection below).
 - [ ] **Friend-request privacy gate skipped (v1):** `PrivacySettings.whoCanSendFriendRequests` is not enforced on `POST /friends/requests`. Add before GA.
@@ -900,6 +1124,21 @@ Built the notifications-service from a stub into a working push/mail **transport
   - **user-service:** `avatar` on profile (`UserProfileData`), `FriendListItem`, `UserDiscoveryResult`; `media` (upload half) on the avatar upload-url response.
   - **community-service:** `avatar` + `cover` on `CommunityData`, `avatar` on list/discover/muted-member/embedded-user blocks, `snapshotAvatar` on `CommunityMemberData` (member snapshots read the shared avatars bucket — allowed cross-service read); `media` on the community avatar upload-url response. `cover` resolves from `community.coverUrl` (still persisted `null` today → correct all-null MediaObject, future-proof).
   - **chat-service:** `media` added to **both** `/chat/media/upload-url` (upload half) and `/chat/media/download-url` (download half). **Deliberately did NOT presign message `content.files[]` on read** — that would be N presigns per history page and break the existing on-demand `download-url` contract; per-message embedding is a **deferred follow-up**.
+
+#### Media upload security — Phase 3: async AV scan via Bull queue (shipped 2026-06-16)
+
+Phases 1–2 added upload hardening (magic-byte validation, ZIP-bomb/nested-archive inspection, ClamAV) behind a synchronous `POST /media/confirm`. **Phase 3 moves the antivirus scan off the HTTP request thread** so confirm no longer blocks for the 5–30 s a real ClamAV scan of a large file can take.
+
+- **`POST /media/confirm`** now runs only the **structural** checks (magic-byte + ZIP/OOXML) synchronously, marks the object `PENDING`, then:
+  - structural rejection (magic/ZIP/OOXML) → `INFECTED`, object deleted (terminal, still synchronous);
+  - structure clean **and `CLAMAV_ENABLED=true`** → enqueues a **Bull** job `{ bucket, objectKey, contentType }` and returns `scanStatus: "PENDING"`;
+  - structure clean **and `CLAMAV_ENABLED=false`** (dev/no-op scanner) → sets `CLEAN` inline (preserves the synchronous dev experience, no queue needed);
+  - enqueue failure (Bull/Redis down) → falls back to an **inline** scan so a file never gets stuck `PENDING`.
+- **In-process Bull worker** (`apps/media-service/src/lib/scanner.ts` — `startScanWorker`, booted in `server.ts` only when `CLAMAV_ENABLED`): runs ClamAV, writes `CLEAN`/`QUARANTINED` to Redis via `scanStatusStore`, deletes the object on a virus hit, and writes a terminal `ERROR` after Bull exhausts its retries (so pollers stop). `validateUpload` (`magic-validator.ts`) is now **structural-only** — AV logic lives in exactly one place (`runScanAndPersist`, shared by the worker and the inline fallback).
+- **New `GET /media/scan-status?objectKey=&category=`** (auth + rate-limit) lets clients poll until `CLEAN`. A missing Redis record returns `PENDING` (fail-closed — never a false-clean), which intentionally differs from the download gate's fail-open-on-null. Authz mirrors `/download-url`. **No gateway change** — the generic `media` segment proxy already forwards GET.
+- **`/download-url` gate unchanged** — it still blocks `PENDING`/`QUARANTINED`/`INFECTED`, so the async flow preserves the existing "can't download until scanned" guarantee.
+- **Bull = classic `bull@^4.16.5`** (not BullMQ; no `@types/bull` — v4 bundles types) with its **own** Redis connection (the shared `@aimess/redis` singleton's `maxRetriesPerRequest:1` is incompatible with Bull's blocking clients). New env: `BULL_REDIS_HOST/PORT` (default = `REDIS_HOST/PORT`), `MEDIA_SCAN_QUEUE_NAME/CONCURRENCY/JOB_ATTEMPTS/BACKOFF_MS` (job timeout reuses `CLAMAV_SCAN_TIMEOUT_MS`). `pnpm-workspace.yaml` `allowBuilds` pins `msgpackr-extract: false` (bull's optional native transitive dep; pure-JS fallback) — required for a clean pnpm 11 install.
+- **Built with the Agent Team** (PM → Pro Coder → DRY + Contract reviewers → Quality Tester). Tests: 4 new media-service suites (`confirm`, `confirm-scan-enabled`, `scan-status`, `run-scan-and-persist`); full suite **61/61 green**, typecheck + lint clean. **Deferred (pre-existing, surfaced by Contract review):** OpenAPI media error _examples_ document a `{error:{code}}` shape the service never emits (real shape `{success:false,message}`); `MEDIA_*`/`CHAT_MEDIA_FORBIDDEN` codes aren't in the `@aimess/constants` i18n catalog so their `message` degrades to the raw key. Also still deferred: gRPC confirm-handler rewire, admin scan-status visibility, HEIC transcode, CDN cutover.
 
 ---
 

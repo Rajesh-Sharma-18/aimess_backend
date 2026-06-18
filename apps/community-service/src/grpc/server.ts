@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { isAppError } from "@aimess/errors";
 
 import {
   CommunityMemberRole,
@@ -178,24 +179,37 @@ const communityImpl: grpc.UntypedServiceImplementation = {
           limit: coerceLimit(req.limit),
         });
 
+        // Resolve each admin's snapshot avatar key → presigned download URL
+        // (shared avatars bucket), mirroring adminListCommunityMembers. Raw keys
+        // must never leak to the wire.
+        const communities = await Promise.all(
+          rows.map(async (r) => {
+            const adminAvatarView = await memberAvatarService.resolveViewUrl(
+              r.adminAvatar
+            );
+            return {
+              communityId: r.id,
+              name: r.name,
+              handle: r.handle,
+              adminId: r.adminId,
+              adminName: r.adminName,
+              adminUsername: r.adminUsername,
+              adminAvatarUrl: adminAvatarView?.url ?? "",
+              type: String(r.type),
+              categoryId: r.categoryId,
+              categoryName: r.category?.name ?? "",
+              categorySlug: r.category?.slug ?? "",
+              status: moderationStatusToWire(r.moderationStatus),
+              memberCount: r.memberCount,
+              livestreamCount: 0, // STUB until stream-service is wired
+              createdAt:
+                r.createdAt instanceof Date ? r.createdAt.getTime() : 0,
+            };
+          })
+        );
+
         callback(null, {
-          communities: rows.map((r) => ({
-            communityId: r.id,
-            name: r.name,
-            handle: r.handle,
-            adminId: r.adminId,
-            adminName: r.adminName,
-            adminUsername: r.adminUsername,
-            adminAvatarUrl: r.adminAvatar,
-            type: String(r.type),
-            categoryId: r.categoryId,
-            categoryName: r.category?.name ?? "",
-            categorySlug: r.category?.slug ?? "",
-            status: moderationStatusToWire(r.moderationStatus),
-            memberCount: r.memberCount,
-            livestreamCount: 0, // STUB until stream-service is wired
-            createdAt: r.createdAt instanceof Date ? r.createdAt.getTime() : 0,
-          })),
+          communities,
           total,
         });
       } catch (err) {
@@ -260,6 +274,13 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         }
 
         const c = detail.community;
+        // Resolve raw stored keys → presigned download URLs (resolve-on-read):
+        // admin avatar from the shared avatars bucket (like the member list),
+        // cover from the private community bucket (like the non-admin paths).
+        const [adminAvatarView, coverView] = await Promise.all([
+          memberAvatarService.resolveViewUrl(detail.adminAvatar),
+          communityImageService.resolveViewUrlForClient(c.coverUrl),
+        ]);
         callback(null, {
           found: true,
           community: {
@@ -269,7 +290,7 @@ const communityImpl: grpc.UntypedServiceImplementation = {
             adminId: c.adminId,
             adminName: detail.adminName,
             adminUsername: detail.adminUsername,
-            adminAvatarUrl: detail.adminAvatar,
+            adminAvatarUrl: adminAvatarView?.url ?? "",
             type: String(c.type),
             categoryId: c.categoryId,
             categoryName: c.category?.name ?? "",
@@ -280,7 +301,7 @@ const communityImpl: grpc.UntypedServiceImplementation = {
             createdAt: c.createdAt instanceof Date ? c.createdAt.getTime() : 0,
           },
           description: c.description ?? "",
-          coverUrl: c.coverUrl ?? "",
+          coverUrl: coverView?.url ?? "",
           lastActivityAt:
             c.lastActivityAt instanceof Date ? c.lastActivityAt.getTime() : 0,
           membersTotal: detail.membersTotal,
@@ -505,6 +526,290 @@ const communityImpl: grpc.UntypedServiceImplementation = {
           code: grpc.status.INTERNAL,
           message: "adminSetModerationStatus failed",
         } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // ---- Member moderation (7 handlers called by gateway socket events) ----
+  // Business errors are returned in `errorCode` (not as gRPC exceptions) so
+  // the gateway can map them to appropriate ack error codes. Only infra
+  // failures throw gRPC INTERNAL.
+
+  kickMember: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        actorId?: string;
+        targetUserId?: string;
+        reason?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const actorId = (req.actorId ?? "").trim();
+      const targetUserId = (req.targetUserId ?? "").trim();
+      try {
+        await communityService.kickMember(
+          communityId,
+          actorId,
+          targetUserId,
+          req.reason || undefined
+        );
+        callback(null, { ok: true, communityId, targetUserId, errorCode: "" });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            communityId,
+            targetUserId,
+            errorCode: err.message,
+          });
+        } else {
+          logger.error("kickMember gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "kickMember failed",
+          } as grpc.ServiceError);
+        }
+      }
+    })();
+  },
+
+  banMember: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        actorId?: string;
+        targetUserId?: string;
+        reason?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const actorId = (req.actorId ?? "").trim();
+      const targetUserId = (req.targetUserId ?? "").trim();
+      try {
+        await communityService.banMember(
+          communityId,
+          actorId,
+          targetUserId,
+          req.reason || undefined
+        );
+        callback(null, { ok: true, communityId, targetUserId, errorCode: "" });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            communityId,
+            targetUserId,
+            errorCode: err.message,
+          });
+        } else {
+          logger.error("banMember gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "banMember failed",
+          } as grpc.ServiceError);
+        }
+      }
+    })();
+  },
+
+  unbanMember: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        actorId?: string;
+        targetUserId?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const actorId = (req.actorId ?? "").trim();
+      const targetUserId = (req.targetUserId ?? "").trim();
+      try {
+        await communityService.unbanMember(communityId, actorId, targetUserId);
+        callback(null, { ok: true, communityId, targetUserId, errorCode: "" });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            communityId,
+            targetUserId,
+            errorCode: err.message,
+          });
+        } else {
+          logger.error("unbanMember gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "unbanMember failed",
+          } as grpc.ServiceError);
+        }
+      }
+    })();
+  },
+
+  transferAdmin: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        actorId?: string;
+        newAdminId?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const actorId = (req.actorId ?? "").trim();
+      const newAdminId = (req.newAdminId ?? "").trim();
+      try {
+        await communityService.transferAdmin(communityId, actorId, newAdminId);
+        callback(null, {
+          ok: true,
+          communityId,
+          targetUserId: newAdminId,
+          errorCode: "",
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            communityId,
+            targetUserId: newAdminId,
+            errorCode: err.message,
+          });
+        } else {
+          logger.error("transferAdmin gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "transferAdmin failed",
+          } as grpc.ServiceError);
+        }
+      }
+    })();
+  },
+
+  changeMemberRole: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        actorId?: string;
+        targetUserId?: string;
+        newRole?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const actorId = (req.actorId ?? "").trim();
+      const targetUserId = (req.targetUserId ?? "").trim();
+      const role =
+        req.newRole === "MODERATOR"
+          ? CommunityMemberRole.MODERATOR
+          : CommunityMemberRole.MEMBER;
+      try {
+        await communityService.updateMemberRole(
+          communityId,
+          actorId,
+          targetUserId,
+          role
+        );
+        callback(null, { ok: true, communityId, targetUserId, errorCode: "" });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            communityId,
+            targetUserId,
+            errorCode: err.message,
+          });
+        } else {
+          logger.error("changeMemberRole gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "changeMemberRole failed",
+          } as grpc.ServiceError);
+        }
+      }
+    })();
+  },
+
+  createReport: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        reporterId?: string;
+        reason?: string;
+        targetMessageId?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const reporterId = (req.reporterId ?? "").trim();
+      const reason = (req.reason ?? "").trim();
+      // The proto carries targetMessageId (the message being reported).
+      // The current service model stores the target entity under targetUserId.
+      const targetUserId = (req.targetMessageId ?? "").trim() || undefined;
+      try {
+        const report = await communityService.createReport(
+          communityId,
+          reporterId,
+          { targetUserId, reason }
+        );
+        callback(null, { reportId: report.reportId, ok: true });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, { reportId: "", ok: false });
+        } else {
+          logger.error("createReport gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "createReport failed",
+          } as grpc.ServiceError);
+        }
+      }
+    })();
+  },
+
+  deleteCommunity: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        actorId?: string;
+        reason?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const actorId = (req.actorId ?? "").trim();
+      try {
+        await communityService.deleteCommunity(communityId, actorId);
+        callback(null, {
+          ok: true,
+          communityId,
+          targetUserId: actorId,
+          errorCode: "",
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            communityId,
+            targetUserId: "",
+            errorCode: err.message,
+          });
+        } else {
+          logger.error("deleteCommunity gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "deleteCommunity failed",
+          } as grpc.ServiceError);
+        }
       }
     })();
   },

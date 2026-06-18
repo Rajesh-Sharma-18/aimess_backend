@@ -173,6 +173,7 @@ below (Vietnamese resolved by the same key — see `SOCKET_MESSAGES` in
 | `/community` | `community:message:unpin`  | Message unpinned successfully                   |
 | `/notify`    | `notifications:fetch`      | Notifications fetched successfully              |
 | `/notify`    | `notifications:mark_read`  | Notifications marked as read                    |
+| `/notify`    | `notifications:delete`     | Notification deleted                            |
 
 Failure acks carry a one-sentence localized `message` per error code (e.g.
 `INVALID_PAYLOAD` → "The request data is invalid", `SERVICE_ERROR` →
@@ -185,11 +186,12 @@ high-frequency signaling events `typing:start`, `typing:stop`,
 `presence:heartbeat`, and `call:ice` are intentionally fire-and-forget (clients
 emit them continuously and never await a reply), so they return **no** `message`.
 
-> **Numeric fields in ack `data`:** values backed by gRPC `int64` (e.g.
-> `sentAt`) arrive in the **ack** as a **stringified** epoch-ms (the gRPC client
-> loads `longs` as strings). The same field in a **server→client broadcast**
-> (e.g. `community:message:new`) is a plain **number**. Coerce defensively with
-> `Number(sentAt)` on the ack path.
+> **Numeric fields in ack `data`:** values backed by gRPC `int64` (`sentAt`,
+> `editedAt`, `pinnedAt`, `sequenceNumber`) are plain epoch-ms / integer
+> **numbers** on the **ack** — the gateway coerces the gRPC `longs:String`
+> wire-strings before relaying, so they match the **server→client broadcast**
+> (e.g. `community:message:new`). Any existing `Number(sentAt)` coercion on the
+> client stays harmless.
 
 ```js
 chat.emit("message:send", payload, (res) => {
@@ -291,6 +293,8 @@ presence, and 1-1 WebRTC call signaling. Delegates to **chat-service** over gRPC
 
 Published by chat-service to a Redis channel; the gateway re-emits to the room.
 
+> **Timestamps:** every datetime emitted on a socket event (e.g. typing `timestamp`, `conv:archived.archivedAt`, `pinnedAt`, `editedAt`, `serverTs`/`clientTs`) is a **Unix epoch-milliseconds number**, never an ISO string.
+
 | Event                 | Room (channel)     | Payload                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Trigger                                                                                                                                      |
 | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `message:new`         | `conv:<id>`        | **§1/§9 canonical ChatMessage**: `{ id, clientMessageId, roomId, conversationType, senderId, senderName, senderAvatar, senderRole, receiverId, contentType, content{…}, parentMessageId, quoteData{…}, reactions[], isDeleted, deletedType, editedAt, clientTs, serverTs, sequenceNumber }` + V1 aliases `{ messageId, conversationId, contentText, contentJson, sentAt }` (`contentType` UPPER-CASE; +`isForwarded` on forward; group system events add `contentType:"SYSTEM"`, `systemEvent`, `systemData`) | a message is created/forwarded, or a group lifecycle system message is posted                                                                |
@@ -302,8 +306,8 @@ Published by chat-service to a Redis channel; the gateway re-emits to the room.
 | `message:delivered`   | `conv:<id>`        | `{ conversationId, recipientId, upToMessageId, messageIds[] }`                                                                                                                                                                                                                                                                                                                                                                                                                                                | delivery receipt (private)                                                                                                                   |
 | `message:reaction`    | `conv:<id>`        | **§2.4 grouped**: `{ messageId, conversationId, reactions: [{ emoji, count, users:[{ userId, displayName, avatar }] }] }` (`selfReacted` derived client-side). Group reactions route via `conversationType` on `message:react`.                                                                                                                                                                                                                                                                               | reaction added/removed (full current set)                                                                                                    |
 | `message:delete`      | `conv:<id>`        | **§2.3 self-describing**: `{ messageId, conversationId, type: "forEveryone"\|"forMe", deletedType, deletedBy, sequenceNumber }` — now also broadcast for **group** deletes                                                                                                                                                                                                                                                                                                                                    | message deleted (REST is the authoritative delete path; this is the broadcast)                                                               |
-| `typing:start`        | `conv:<id>`        | `{ userId, conversationId }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | a peer starts typing                                                                                                                         |
-| `typing:stop`         | `conv:<id>`        | `{ userId, conversationId }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | a peer stops typing                                                                                                                          |
+| `typing:start`        | `conv:<id>`        | **enriched**: `{ conversationId, userId, userDetails: { userId, username, displayName, avatarUrl\|null }, timestamp (epoch-ms number), senderName }` — `userDetails` resolved server-side at connect; `userId` server-authoritative; legacy `userId`/`senderName` kept (`senderName == displayName`)                                                                                                                                                                                                          | a peer starts typing                                                                                                                         |
+| `typing:stop`         | `conv:<id>`        | **enriched** (same shape as `typing:start`) — also emitted on the server's 6 s auto-expiry and the disconnect-flush                                                                                                                                                                                                                                                                                                                                                                                           | a peer stops typing (incl. auto-expiry / disconnect)                                                                                         |
 | `presence:status`     | `user:<id>`        | `{ userId, isOnline, lastActiveAt, lastSeen }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                | a watched peer's online status changes                                                                                                       |
 | `call:incoming`       | `user:<calleeId>`  | `{ callId, callerId, callType }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | someone calls you                                                                                                                            |
 | `call:answered`       | `call:<callId>`    | `{ callId }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | callee accepted                                                                                                                              |
@@ -312,6 +316,8 @@ Published by chat-service to a Redis channel; the gateway re-emits to the room.
 | `call:ice`            | `call:<callId>`    | `{ callId, candidate, from }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | peer ICE candidate                                                                                                                           |
 | `read_sync`           | `user:<readerId>`  | **§5.5**: `{ conversationId, readerId, read_to_seq, unreadCount, conversationType }`                                                                                                                                                                                                                                                                                                                                                                                                                          | the reader's **own** other devices clear unread together (multi-device HWM)                                                                  |
 | `pin:updated`         | `conv:<id>`        | **§2.5**: `{ roomId, conversationId, messageId, action: "pinned"\|"unpinned", pinnedBy\|unpinnedBy, pinnedAt, pinnedCount }`                                                                                                                                                                                                                                                                                                                                                                                  | a message was pinned/unpinned — update the pinned banner live                                                                                |
+| `conv:archived`       | `user:<id>`        | `{ roomId, type: "PRIVATE"\|"GROUP", archivedAt }` — `archivedAt` is an epoch-ms number                                                                                                                                                                                                                                                                                                                                                                                                                       | the authenticated user archived a private or group conversation via `PATCH /rooms/:roomId/archive` (or `/groups/:roomId/archive`)            |
+| `conv:unarchived`     | `user:<id>`        | `{ roomId, type: "PRIVATE"\|"GROUP" }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | the authenticated user unarchived a private or group conversation via `PATCH /rooms/:roomId/unarchive` (or `/groups/:roomId/unarchive`)      |
 
 > **Delete note:** message deletes are published to `conv:<roomId>` for
 > 1-1, **group**, and community rooms (group deletes were previously silent — now
@@ -460,34 +466,38 @@ gateway re-emits to the `community:<communityId>` room.
 
 ### 5.1 Client → Server
 
-| Event                      | Ack | Payload                                                                                                                                       | Notes                                                           |
-| -------------------------- | --- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `community:join`           | yes | `{ communityId, roomId }`                                                                                                                     | joins `community:<communityId>`                                 |
-| `community:leave`          | yes | `{ communityId }`                                                                                                                             | leaves `community:<communityId>`                                |
-| `community:message:send`   | yes | `{ communityId, roomId, clientMessageId, message≤4000, contentType, media?:{ files[]≤30 }, location?, contact?, sticker?, parentMessageId? }` | post a message (ack = `CommunityMessageSendResult`)             |
-| `community:messages:fetch` | yes | `{ roomId, cursor?: ISO8601-UTC (past only), limit?: 1–100 (default 30) }`                                                                    | cursor-paged history; invalid/future cursor → `INVALID_PAYLOAD` |
-| `community:message:react`  | yes | `{ messageId, communityId, emoji }`                                                                                                           | toggle a reaction (same emoji = remove)                         |
-| `community:catchup`        | yes | `{ rooms: [{ roomId, sinceId? \| sinceTs?, limit?≤200 }]≤20 }`                                                                                | reconnect gap-fill (see §8.1)                                   |
-| `community:message:edit`   | yes | `{ messageId, communityId, roomId, content:{ text } }`                                                                                        | edit own text message (edit window)                             |
-| `community:message:delete` | yes | `{ messageId, communityId, roomId, type:"forEveryone"\|"forMe" }`                                                                             | delete (forEveryone = sender/mod/admin)                         |
-| `community:message:pin`    | yes | `{ messageId, communityId, roomId }`                                                                                                          | pin (moderator / admin only)                                    |
-| `community:message:unpin`  | yes | `{ messageId, communityId, roomId }`                                                                                                          | unpin (moderator / admin only)                                  |
+| Event                      | Ack | Payload                                                                                                                                       | Notes                                                                            |
+| -------------------------- | --- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `community:join`           | yes | `{ communityId, roomId }`                                                                                                                     | joins `community:<communityId>`                                                  |
+| `community:leave`          | yes | `{ communityId }`                                                                                                                             | leaves `community:<communityId>`                                                 |
+| `community:message:send`   | yes | `{ communityId, roomId, clientMessageId, message≤4000, contentType, media?:{ files[]≤30 }, location?, contact?, sticker?, parentMessageId? }` | post a message (ack = `CommunityMessageSendResult`)                              |
+| `community:messages:fetch` | yes | `{ roomId, cursor?: ISO8601-UTC (past only), limit?: 1–100 (default 30) }`                                                                    | cursor-paged history; invalid/future cursor → `INVALID_PAYLOAD`                  |
+| `community:message:react`  | yes | `{ messageId, communityId, emoji }`                                                                                                           | toggle a reaction (same emoji = remove)                                          |
+| `community:catchup`        | yes | `{ rooms: [{ roomId, sinceId? \| sinceTs?, limit?≤200 }]≤20 }`                                                                                | reconnect gap-fill (see §8.1)                                                    |
+| `community:message:edit`   | yes | `{ messageId, communityId, roomId, content:{ text } }`                                                                                        | edit own text message (edit window)                                              |
+| `community:message:delete` | yes | `{ messageId, communityId, roomId, type:"forEveryone"\|"forMe" }`                                                                             | delete (forEveryone = sender/mod/admin)                                          |
+| `community:message:pin`    | yes | `{ messageId, communityId, roomId }`                                                                                                          | pin (moderator / admin only)                                                     |
+| `community:message:unpin`  | yes | `{ messageId, communityId, roomId }`                                                                                                          | unpin (moderator / admin only)                                                   |
+| `typing:start`             | no  | `{ communityId, roomId?, senderName? }`                                                                                                       | broadcast to `community:<communityId>` (fire-and-forget); 6 s server auto-expiry |
+| `typing:stop`              | no  | `{ communityId, roomId?, senderName? }`                                                                                                       | broadcast to `community:<communityId>` (fire-and-forget)                         |
 
 ### 5.2 Server → Client
 
 The namespace forwards **any** event published to the `community:<communityId>`
 Redis channel verbatim. Contract events:
 
-| Event                        | Room               | Payload                                                                                                                                                                                                                                        | Trigger                                   |
-| ---------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `community:message:new`      | `community:<id>`   | `{ messageId, communityId, roomId, senderId, senderName, senderAvatar, message, contentType, content{…}, parentMessageId, quoteData, reactions[], clientMessageId, serverTs, sentAt }` (`contentType` is UPPER-CASE, e.g. `"TEXT"`, `"IMAGE"`) | new community message                     |
-| `community:message:reaction` | `community:<id>`   | `{ messageId, communityId, reactions: [{ emoji, count, users: [{ userId, displayName, avatar }] }] }` (`selfReacted` derived client-side)                                                                                                      | reaction added/removed (full current set) |
-| `community:message:edited`   | `community:<id>`   | `{ messageId, communityId, roomId, senderId, message, contentType, editedAt }`                                                                                                                                                                 | a text message was edited                 |
-| `community:message:deleted`  | `community:<id>`   | `{ messageId, communityId, roomId, deleteType:"forEveryone", deletedBy }` (forEveryone only; `forMe` is not broadcast)                                                                                                                         | a message was deleted for everyone        |
-| `community:message:pinned`   | `community:<id>`   | `{ messageId, communityId, roomId, pinnedIds[], pinnedCount, pinnedAt, pinnedBy }` (`pinnedIds` is the COMPLETE list — replace, don't merge)                                                                                                   | a message was pinned                      |
-| `community:message:unpinned` | `community:<id>`   | `{ messageId, communityId, roomId, pinnedIds[], pinnedCount, unpinnedBy }` (`pinnedIds` is the COMPLETE remaining list)                                                                                                                        | a message was unpinned                    |
-| `community:catchup:result`   | (direct to socket) | `{ roomId, events:[{ …, syncEventType:"new"\|"edited"\|"deleted"\|"reacted", reactions[] }], hasMore, lastId, nextTs }`                                                                                                                        | reconnect gap-fill response, one per room |
-| `community:member:joined`    | `community:<id>`   | member DTO — **reserved; no V1 producer yet**                                                                                                                                                                                                  | a member joins                            |
+| Event                        | Room               | Payload                                                                                                                                                                                                                                                         | Trigger                                   |
+| ---------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `community:message:new`      | `community:<id>`   | `{ messageId, communityId, roomId, senderId, senderName, senderAvatar, message, contentType, content{…}, parentMessageId, quoteData, reactions[], clientMessageId, serverTs, sentAt }` (`contentType` is UPPER-CASE, e.g. `"TEXT"`, `"IMAGE"`)                  | new community message                     |
+| `community:message:reaction` | `community:<id>`   | `{ messageId, communityId, reactions: [{ emoji, count, users: [{ userId, displayName, avatar }] }] }` (`selfReacted` derived client-side)                                                                                                                       | reaction added/removed (full current set) |
+| `community:message:edited`   | `community:<id>`   | `{ messageId, communityId, roomId, senderId, message, contentType, editedAt }`                                                                                                                                                                                  | a text message was edited                 |
+| `community:message:deleted`  | `community:<id>`   | `{ messageId, communityId, roomId, deleteType:"forEveryone", deletedBy }` (forEveryone only; `forMe` is not broadcast)                                                                                                                                          | a message was deleted for everyone        |
+| `community:message:pinned`   | `community:<id>`   | `{ messageId, communityId, roomId, pinnedIds[], pinnedCount, pinnedAt, pinnedBy }` (`pinnedIds` is the COMPLETE list — replace, don't merge)                                                                                                                    | a message was pinned                      |
+| `community:message:unpinned` | `community:<id>`   | `{ messageId, communityId, roomId, pinnedIds[], pinnedCount, unpinnedBy }` (`pinnedIds` is the COMPLETE remaining list)                                                                                                                                         | a message was unpinned                    |
+| `community:catchup:result`   | (direct to socket) | `{ roomId, events:[{ …, syncEventType:"new"\|"edited"\|"deleted"\|"reacted", reactions[] }], hasMore, lastId, nextTs }`                                                                                                                                         | reconnect gap-fill response, one per room |
+| `community:member:joined`    | `community:<id>`   | `{ userId, username, displayName, avatarUrl\|null, role:"ADMIN"\|"MODERATOR"\|"MEMBER", joinedAt (epoch-ms number) }` — emitted by community-service on every path a member becomes ACTIVE (add_members, join-request approve/bulk-approve, invite-link redeem) | a member joins                            |
+| `typing:start`               | `community:<id>`   | **enriched**: `{ conversationId(==communityId), communityId, userId, userDetails: { userId, username, displayName, avatarUrl\|null }, timestamp (epoch-ms number), senderName }` (`userDetails` resolved server-side at connect; `userId` server-authoritative) | a member starts typing                    |
+| `typing:stop`                | `community:<id>`   | **enriched** (same shape as `typing:start`) — also emitted on the server's 6 s auto-expiry and the disconnect-flush                                                                                                                                             | a member stops typing                     |
 
 > Community message **deletes** are emitted as `message:delete` on the
 > `conv:<roomId>` channel (see §4.2), not on the community channel.
@@ -504,19 +514,23 @@ Each connected user's `notify:<userId>` Redis channel is subscribed
 
 ### 6.1 Client → Server
 
-| Event                     | Ack | Payload                         | Notes                           |
-| ------------------------- | --- | ------------------------------- | ------------------------------- |
-| `notifications:fetch`     | yes | `{ cursor?, limit?≤100 }`       | cursor-paged feed               |
-| `notifications:mark_read` | yes | `{ notificationIds: string[] }` | mark read (empty array allowed) |
+| Event                     | Ack | Payload                         | Notes                                                                                                        |
+| ------------------------- | --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `notifications:fetch`     | yes | `{ cursor?, limit?≤100 }`       | cursor-paged feed                                                                                            |
+| `notifications:mark_read` | yes | `{ notificationIds: string[] }` | mark read (empty array allowed)                                                                              |
+| `notifications:delete`    | yes | `{ notificationId: string }`    | owner-scoped soft-delete; ack `SOCKET_NOTIFICATIONS_DELETED`; unowned id → `{ deleted:false }` (no mutation) |
 
 ### 6.2 Server → Client
 
-| Event                       | When                                                                                           | Payload                                                                                                                                                                                                                                                                     |
-| --------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `notification:count`        | once on connect                                                                                | `{ count }` — current unread total (aggregate only; no per-type breakdown in V1)                                                                                                                                                                                            |
-| `notification:count_update` | after `notifications:mark_read` (all devices) **or** when the service emits a new notification | `{ count }` — updated unread total; client should replace the badge count; emitted to `user:<userId>` so **all** connected devices stay in sync                                                                                                                             |
-| `notification:new`          | a new notification is created (forwarded verbatim)                                             | `NotificationItem` — `{ notificationId, type, title, body, referenceId, isRead, createdAt, data }`; `type` is the discriminator (handle unknown values defensively). `notificationId` (canonical) — `id` is a deprecated alias (read `notificationId ?? id`; removed in V2) |
-| _other forwarded events_    | published to `notify:<userId>`                                                                 | event name + payload forwarded verbatim                                                                                                                                                                                                                                     |
+| Event                           | When                                                                                                             | Payload                                                                                                                                                                                                                                                                                                   |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notification:count`            | once on connect                                                                                                  | `{ count }` — current unread total (aggregate only; no per-type breakdown in V1)                                                                                                                                                                                                                          |
+| `notification:count_update`     | after `notifications:mark_read` (all devices) **or** when the service emits a new notification                   | `{ count }` — updated unread total; client should replace the badge count; emitted to `user:<userId>` so **all** connected devices stay in sync                                                                                                                                                           |
+| `notification:new`              | a new notification is created (forwarded verbatim)                                                               | `NotificationItem` — `{ notificationId, type, title, body, referenceId, isRead, createdAt, data }`; `type` is the discriminator (handle unknown values defensively). `notificationId` (canonical) — `id` is a deprecated alias (read `notificationId ?? id`; removed in V2)                               |
+| `notification:deleted`          | a notification row is soft-deleted (via `notifications:delete`) — reaches the user's other devices               | `{ notificationId }` — drop this row from the list; a `notification:count_update` follows                                                                                                                                                                                                                 |
+| `community:join_request:update` | an ADMIN/MODERATOR approves or rejects the user's community join request                                         | `{ communityId, requestId, status:"APPROVED"\|"REJECTED", communityName, decidedAt (ISO-8601) }` — emitted to the requester's `notify:<userId>`; drives the FE state flip. An in-app `notification:new` (`community.join_request_approved` / `community.join_request_rejected`) is delivered alongside it |
+| `media:scan_result`             | a media upload hits a terminal scan failure (QUARANTINED/INFECTED/ERROR, or a synchronous confirm-upload reject) | `{ objectKey, status, reason, at }` (`at` = epoch ms) — emitted to the uploader's `notify:<uploaderId>`; treat any status as "upload blocked". Socket-only (no inbox row / offline FCM by design)                                                                                                         |
+| _other forwarded events_        | published to `notify:<userId>`                                                                                   | event name + payload forwarded verbatim                                                                                                                                                                                                                                                                   |
 
 ---
 
@@ -544,11 +558,21 @@ Idempotency: `clientMessageId` dedupes retries — re-sending the same id does
 
 ```
 A: emit typing:start { conversationId }  → broadcast "typing:start" to conv:<id>
+                                           { conversationId, userId, userDetails, timestamp, senderName }
 …A stops…
-A: emit typing:stop  { conversationId }  → broadcast "typing:stop"  to conv:<id>
+A: emit typing:stop  { conversationId }  → broadcast "typing:stop"  to conv:<id> (same enriched shape)
 ```
 
-Fire-and-forget; no persistence, no ack.
+Fire-and-forget; no persistence, no ack. `userDetails` (`username`, `displayName`,
+`avatarUrl|null`) is resolved once at connect (gRPC `BulkGetUserSnapshots` + media
+presign) and reused for every broadcast — no per-event profile fetch. `userId` is
+the authenticated socket user (never client-trusted). The receiver renders
+"`displayName` is typing…" directly from `userDetails`. The same enriched shape is
+emitted on the server's 6 s auto-expiry stop and the disconnect-flush stop.
+
+The `/community` namespace has an identical typing indicator (room
+`community:<communityId>`; emit `typing:start`/`typing:stop` with `{ communityId }`);
+the broadcast carries both `communityId` and `conversationId` (== communityId).
 
 ### 7.3 Reactions
 
@@ -723,9 +747,11 @@ Offline-first clients queue sends locally and flush on reconnect:
 
 ### 8.6 Typing indicator expiry
 
-`typing:start` / `typing:stop` are **fire-and-forget** (no ack, silently dropped on bad payload). Both fire-and-forget directions:
+`typing:start` / `typing:stop` are **fire-and-forget** (no ack, silently dropped on bad payload). Both fire-and-forget directions.
 
-**Server-side auto-expiry (Gap #7 — now implemented).** The gateway keeps a per-socket, per-conversation timer. On `typing:start` it (re)starts a **6 s countdown**; if `typing:stop` is never received (network drop, app crash, battery kill), the timer fires and broadcasts `typing:stop` automatically. On socket `disconnect` all pending timers are flushed and `typing:stop` is broadcast for every active conversation. This means a zombie "typing…" indicator self-heals within 6 s even without a client-side fix.
+**Enriched broadcast (all directions).** Every `typing:start`/`typing:stop` broadcast — including the server-driven auto-expiry stop and the disconnect-flush stop — carries the full sender identity: `{ conversationId, userId, userDetails: { userId, username, displayName, avatarUrl\|null }, timestamp (ISO-8601), senderName }`. `userDetails` is resolved **once** per namespace connection (gRPC `BulkGetUserSnapshots` + media avatar presign) and reused for every event — never fetched per typing event; `userId` is always the authenticated socket user. On `/community` the broadcast additionally carries `communityId` (and `conversationId == communityId`).
+
+**Server-side auto-expiry (Gap #7 — now implemented).** The gateway keeps a per-socket, per-conversation timer. On `typing:start` it (re)starts a **6 s countdown**; if `typing:stop` is never received (network drop, app crash, battery kill), the timer fires and broadcasts `typing:stop` automatically (with the same enriched `userDetails`/`timestamp`). On socket `disconnect` all pending timers are flushed and `typing:stop` is broadcast for every active conversation. The same per-socket 6 s expiry + disconnect flush exists on `/community` (room `community:<communityId>`). This means a zombie "typing…" indicator self-heals within 6 s even without a client-side fix.
 
 **Client-side rule (still required).** The receiving client MUST also expire its own "typing…" indicator after **~6 s** with no fresh `typing:start` — for forward-compatibility and offline-first UX. The sender SHOULD re-emit `typing:start` every **~3 s** while still typing (cap: ≤ 1 per 3 s per conversation — §8.2). Send `typing:stop` promptly when:
 
@@ -755,22 +781,22 @@ Clients should not assume any socket event leaks across a block.
 
 Intentionally **out of scope for V1** — build against their absence:
 
-| Area                                                       | V1 behavior                                                                                                                                                                                             |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Group / community calls                                    | **1-1 only** (`call:initiate` targets one `calleeId`)                                                                                                                                                   |
-| `call:cancel` / `call:missed` / server ring-timeout        | use `call:end { callId }` (callee sees `call:ended { durationSec:0 }`) for V1 cancel; auto-cancel after 60 s is the caller's responsibility in V1                                                       |
-| Group/community read receipts                              | **sent + read** only; no per-member delivery receipt (private-only)                                                                                                                                     |
-| Community multi-device `read_sync`                         | not emitted for community; use bulk mark-read + `community:updated` hints                                                                                                                               |
-| Reaction moderation removal                                | reactions are self-toggle only; no admin "remove someone's reaction"                                                                                                                                    |
-| Server-proxied sticker/GIF search                          | client integrates Tenor/Giphy directly and sends `url`/`objectKey`; server stores the reference only                                                                                                    |
-| End-to-end encryption                                      | V1 is transport-encrypted (WSS) only; no E2E / secret-chat key exchange or rotation                                                                                                                     |
-| Scheduled messages                                         | no server-side send-later in V1                                                                                                                                                                         |
-| Draft sync                                                 | drafts are client-local; no cross-device draft channel in V1                                                                                                                                            |
-| Per-device token binding / server-pushed `session.expired` | auth is re-verified on every reconnect; token refresh is client-driven (reconnect with a fresh token); no `deviceId` binding or server-initiated expiry event in V1                                     |
-| Friend management socket events                            | friend request/accept/reject/remove are **REST-only** (`/api/v1/friendships/*`); notifications arrive via `notification:new` on `/notify` with `type: "friend.requested"` / `"friend.accepted"` (§12.2) |
-| Community moderation socket events                         | kick/ban/unban/role_change are **REST-only** (`/api/v1/communities/:id/members/*`); affected users receive `notification:new` events (§12.3)                                                            |
-| Webhook / external integration                             | V1 has no webhook registration; external systems must poll REST APIs                                                                                                                                    |
-| `conv:created` / `conv:deleted` push                       | V1 does not emit socket events on REST conversation creation/deletion; clients should refetch the inbox list after any conversation management action (§12.4)                                           |
+| Area                                                       | V1 behavior                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Group / community calls                                    | **1-1 only** (`call:initiate` targets one `calleeId`)                                                                                                                                                                                                                                                                  |
+| `call:cancel` / `call:missed` / server ring-timeout        | use `call:end { callId }` (callee sees `call:ended { durationSec:0 }`) for V1 cancel; auto-cancel after 60 s is the caller's responsibility in V1                                                                                                                                                                      |
+| Group/community read receipts                              | **sent + read** only; no per-member delivery receipt (private-only)                                                                                                                                                                                                                                                    |
+| Community multi-device `read_sync`                         | not emitted for community; use bulk mark-read + `community:updated` hints                                                                                                                                                                                                                                              |
+| Reaction moderation removal                                | reactions are self-toggle only; no admin "remove someone's reaction"                                                                                                                                                                                                                                                   |
+| Server-proxied sticker/GIF search                          | client integrates Tenor/Giphy directly and sends `url`/`objectKey`; server stores the reference only                                                                                                                                                                                                                   |
+| End-to-end encryption                                      | V1 is transport-encrypted (WSS) only; no E2E / secret-chat key exchange or rotation                                                                                                                                                                                                                                    |
+| Scheduled messages                                         | no server-side send-later in V1                                                                                                                                                                                                                                                                                        |
+| Draft sync                                                 | drafts are client-local; no cross-device draft channel in V1                                                                                                                                                                                                                                                           |
+| Per-device token binding / server-pushed `session.expired` | auth is re-verified on every reconnect; token refresh is client-driven (reconnect with a fresh token); no `deviceId` binding or server-initiated expiry event in V1                                                                                                                                                    |
+| Friend management socket events                            | friend request/accept/reject/remove are **REST-only** (`/api/v1/users/friends/*`); notifications arrive via `notification:new` on `/notify` with `type: "friend.requested"` / `"friend.accepted"` (§12.2)                                                                                                              |
+| Community moderation socket events                         | kick/ban/unban/role_change are **REST-only** (`/api/v1/communities/:id/members/*`); affected users receive `notification:new` events (§12.3). **Join-request approve/reject is realtime**: requester gets `community:join_request:update` on `/notify`; approve also broadcasts `community:member:joined` to the room. |
+| Webhook / external integration                             | V1 has no webhook registration; external systems must poll REST APIs                                                                                                                                                                                                                                                   |
+| `conv:created` / `conv:deleted` push                       | V1 does not emit socket events on REST conversation creation/deletion; clients should refetch the inbox list after any conversation management action (§12.4)                                                                                                                                                          |
 
 ### 8.10 Media upload
 
@@ -869,7 +895,8 @@ emitter and listener:
 `community:join` · `community:leave` · `community:message:send` ·
 `community:messages:fetch` · `community:message:react` · `community:catchup` ·
 `community:message:edit` · `community:message:delete` · `community:message:pin` ·
-`community:message:unpin` · `notifications:fetch` · `notifications:mark_read`
+`community:message:unpin` · `typing:start` (`/community`) · `typing:stop` (`/community`) ·
+`notifications:fetch` · `notifications:mark_read`
 
 **Server → Client:** `message:new` · `message:edited` · `conv:updated` ·
 `community:updated` · `chat:catchup:result` · `message:read` ·
@@ -878,8 +905,9 @@ emitter and listener:
 `call:incoming` · `call:answered` · `call:declined` · `call:ended` · `call:ice` ·
 `community:message:new` · `community:message:reaction` · `community:message:edited` ·
 `community:message:deleted` · `community:message:pinned` · `community:message:unpinned` ·
-`community:catchup:result` · `community:member:joined` · `notification:new` ·
-`notification:count` · `notification:count_update`
+`community:catchup:result` · `community:member:joined` · `typing:start` (`/community`) ·
+`typing:stop` (`/community`) · `notification:new` ·
+`notification:count` · `notification:count_update` · `community:join_request:update`
 
 ---
 
@@ -925,10 +953,13 @@ proper i18n.
 Friend management (request, accept, reject, remove) is **REST-only**:
 
 ```
-POST   /api/v1/friendships/request   { friendId }
-POST   /api/v1/friendships/accept    { friendId }
-POST   /api/v1/friendships/reject    { friendId }
-DELETE /api/v1/friendships/:friendId
+GET    /api/v1/users/friends/requests              list pending requests
+POST   /api/v1/users/friends/requests              send a friend request  { addresseeId }
+POST   /api/v1/users/friends/requests/:id/accept   accept an incoming request
+POST   /api/v1/users/friends/requests/:id/reject   reject an incoming request
+DELETE /api/v1/users/friends/requests/:id          cancel an outgoing request
+DELETE /api/v1/users/friends/:userId               unfriend
+POST   /api/v1/users/friends/auto-connect          auto-create ACCEPTED friendships with all eligible users (idempotent)
 ```
 
 The socket layer's role is **receive-only**: when a friend action occurs, the
@@ -960,6 +991,19 @@ Affected members receive `notification:new` events on `/notify` with types:
 `community.member_kicked`, `community.member_banned`, `community.admin_transferred`,
 `community.member_role_changed`, `community.deleted`. Report outcomes are
 communicated via `community.report_actioned`.
+
+**Join-request decisions are realtime (no longer REST-only).** Approve / reject
+(including bulk) now fan out to the requester:
+
+- an in-app `notification:new` with type `community.join_request_approved` /
+  `community.join_request_rejected`, **and**
+- a `community:join_request:update` socket event on `/notify`
+  (`{ communityId, requestId, status, communityName, decidedAt }`) for the FE
+  state flip (pending → joined / rejected).
+
+On **approve**, the new member is also broadcast to the community room as
+`community:member:joined`, and admins/moderators receive a
+`community.member_added` in-app notification (member-joined awareness).
 
 ### 12.4 Conversation lifecycle — REST creation, no conv:created socket event (Gap #4)
 
@@ -1064,30 +1108,30 @@ Pin/unpin:          last operation wins; concurrent pin from two admins results 
 
 Maps the common Telegram-style mobile scenarios to our events/sections.
 
-| #   | Scenario                  | Our events / mechanism                                       | Where          |
-| --- | ------------------------- | ------------------------------------------------------------ | -------------- |
-| 1   | Login                     | handshake JWT (`auth.token` / Bearer)                        | §1             |
-| 2   | Send to online recipient  | `message:send` → ack → `message:new`                         | §4.1/§4.2/§7.1 |
-| 3   | Send to offline recipient | push fallback (notifications-service FCM/APNs)               | §8.4           |
-| 4   | Receive message           | `message:new` (canonical ChatMessage)                        | §4.2           |
-| 5   | Delivery receipt          | `message:delivered` (private-only)                           | §4.2/§8.9      |
-| 6   | Read receipt              | `message:read`                                               | §4.2           |
-| 7   | Typing indicator          | `typing:start`/`typing:stop` (receiver ~6 s expiry)          | §4.2/§8.6      |
-| 8   | Presence                  | `presence:subscribe`/`heartbeat` → `presence:status`         | §4.2/§7.4      |
-| 9   | Network disconnect        | `connectionStateRecovery` (2 min) + `chat:catchup`           | §8.1           |
-| 10  | App killed & reopened     | Tier-2 re-join + catch-up + client offline queue             | §8.1/§8.5      |
-| 11  | Group message             | `message:send`/`message:new` (`conversationType:GROUP`)      | §4.2           |
-| 12  | Group member join/leave   | `message:new` `contentType:SYSTEM` (mgmt via REST)           | §4.2           |
-| 13  | Media                     | presigned upload → `objectKey` in `files[]`                  | §8.10          |
-| 14  | Edit / delete             | `message:edit`→`message:edited`; `message:delete`            | §4.2/§8.7      |
-| 15  | Search                    | REST (not socket)                                            | out of scope   |
-| 16  | History pagination        | `messages:fetch` (cursor) + `chat:catchup`                   | §4.3           |
-| 17  | Rate limiting             | server-enforced → `RATE_LIMITED` ack                         | §8.2           |
-| 18  | Token expiry/refresh      | re-auth on reconnect; client refreshes token                 | §8.1           |
-| 19  | Multi-device sync         | `read_sync` + `pin:updated` (community `read_sync` deferred) | §4.2/§8.9      |
-| 20  | Call signaling (VoIP)     | `call:*` (1-1; group calls deferred)                         | §7.5/§8.9      |
-| 21  | Reactions                 | `message:react` → `message:reaction`                         | §4.2/§7.3      |
-| 22  | Replies / threading       | `parentMessageId` + `quoteData`                              | §4.1/§4.2      |
-| 23  | Forwarded messages        | `message:forward` → `message:new` (`isForwarded`)            | §4.2           |
-| 24  | Scheduled messages        | deferred to V2                                               | §8.9           |
-| 25  | Draft sync                | deferred to V2                                               | §8.9           |
+| #   | Scenario                  | Our events / mechanism                                                                                          | Where          |
+| --- | ------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------- |
+| 1   | Login                     | handshake JWT (`auth.token` / Bearer)                                                                           | §1             |
+| 2   | Send to online recipient  | `message:send` → ack → `message:new`                                                                            | §4.1/§4.2/§7.1 |
+| 3   | Send to offline recipient | push fallback (notifications-service FCM/APNs)                                                                  | §8.4           |
+| 4   | Receive message           | `message:new` (canonical ChatMessage)                                                                           | §4.2           |
+| 5   | Delivery receipt          | `message:delivered` (private-only)                                                                              | §4.2/§8.9      |
+| 6   | Read receipt              | `message:read`                                                                                                  | §4.2           |
+| 7   | Typing indicator          | `typing:start`/`typing:stop` (enriched `userDetails`+`timestamp`; `/chat` + `/community`; receiver ~6 s expiry) | §4.2/§7.2/§8.6 |
+| 8   | Presence                  | `presence:subscribe`/`heartbeat` → `presence:status`                                                            | §4.2/§7.4      |
+| 9   | Network disconnect        | `connectionStateRecovery` (2 min) + `chat:catchup`                                                              | §8.1           |
+| 10  | App killed & reopened     | Tier-2 re-join + catch-up + client offline queue                                                                | §8.1/§8.5      |
+| 11  | Group message             | `message:send`/`message:new` (`conversationType:GROUP`)                                                         | §4.2           |
+| 12  | Group member join/leave   | `message:new` `contentType:SYSTEM` (mgmt via REST)                                                              | §4.2           |
+| 13  | Media                     | presigned upload → `objectKey` in `files[]`                                                                     | §8.10          |
+| 14  | Edit / delete             | `message:edit`→`message:edited`; `message:delete`                                                               | §4.2/§8.7      |
+| 15  | Search                    | REST (not socket)                                                                                               | out of scope   |
+| 16  | History pagination        | `messages:fetch` (cursor) + `chat:catchup`                                                                      | §4.3           |
+| 17  | Rate limiting             | server-enforced → `RATE_LIMITED` ack                                                                            | §8.2           |
+| 18  | Token expiry/refresh      | re-auth on reconnect; client refreshes token                                                                    | §8.1           |
+| 19  | Multi-device sync         | `read_sync` + `pin:updated` (community `read_sync` deferred)                                                    | §4.2/§8.9      |
+| 20  | Call signaling (VoIP)     | `call:*` (1-1; group calls deferred)                                                                            | §7.5/§8.9      |
+| 21  | Reactions                 | `message:react` → `message:reaction`                                                                            | §4.2/§7.3      |
+| 22  | Replies / threading       | `parentMessageId` + `quoteData`                                                                                 | §4.1/§4.2      |
+| 23  | Forwarded messages        | `message:forward` → `message:new` (`isForwarded`)                                                               | §4.2           |
+| 24  | Scheduled messages        | deferred to V2                                                                                                  | §8.9           |
+| 25  | Draft sync                | deferred to V2                                                                                                  | §8.9           |

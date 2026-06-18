@@ -11,7 +11,6 @@
     "backfill:seq": "tsx scripts/backfill-sequence-numbers.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
-    "postinstall": "prisma generate",
     "lint": "eslint .",
     "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs"
   },

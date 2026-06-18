@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 
 import { SystemEvent } from "../types/enums.js";
 import { assertGroupMember } from "../lib/access-guard.js";
+import { resolveMediaUrl } from "../lib/media-resolve.js";
 
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -95,7 +96,7 @@ export class GroupInviteLinkService {
       token: link.token,
       groupId: room.roomId,
       groupName: room.name,
-      groupAvatar: room.avatar,
+      groupAvatar: await resolveMediaUrl(room.avatar),
       description: room.description,
       memberCount: room.memberCount,
       memberLimit: room.memberLimit,

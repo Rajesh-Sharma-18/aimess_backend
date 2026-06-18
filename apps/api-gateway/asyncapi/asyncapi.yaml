@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 
 info:
   title: AIMess Real-time API (Socket.IO)
-  version: 1.0.0
+  version: 2.0.0
   description: |
     Real-time contract between AIMess mobile/web clients and the backend.
 
@@ -11,6 +11,12 @@ info:
     microservice over gRPC, and fans events back out via the Redis adapter.
     Backend services never hold sockets — they `publish` to a Redis channel and
     the gateway re-emits to the matching room.
+
+    **Notification spine (2026-06-17):** Real-time inbox delivery is now complete.
+    When any business action triggers (community member-added, friend request, chat mention),
+    chat-service's `createNotification` gRPC writes the inbox row AND publishes to
+    Redis `notify:<userId>`. The gateway relays the event in real time; offline users
+    receive FCM push (suppressed for online users to avoid duplication).
 
     **Perspective.** This document is written from the **client** application's
     point of view: `action: send` = the client emits to the server;
@@ -77,6 +83,12 @@ info:
     - call field `type` → **`callType`** (`call:initiate`, `call:incoming`);
     - notification event `notification:forwarded` → **`notification:new`**.
 
+    **Major feature: Notification Spine (2026-06-17).** The real-time inbox delivery
+    pipeline is now **complete and working end-to-end**: DB write → RabbitMQ event →
+    consumer → chat-service gRPC → Redis publish → gateway relay → socket → client.
+    Every business action (community member-added, friend request, chat mention) now
+    delivers notifications in real time to all connected devices + FCM to offline users.
+
     Source of truth: `apps/api-gateway/src/sockets/` and `docs/SOCKET_EVENTS.md`.
   contact:
     name: AIMess Backend
@@ -101,10 +113,10 @@ servers:
     security:
       - $ref: "#/components/securitySchemes/accessToken"
   production:
-    host: api.aimess.example
+    host: aimess.api.vasundharasolutions.com
     protocol: wss
     pathname: /socket.io/
-    description: Production gateway (replace host with the real origin).
+    description: Production gateway.
     security:
       - $ref: "#/components/securitySchemes/accessToken"
 
@@ -150,6 +162,7 @@ channels:
       messageEdited: { $ref: "#/components/messages/MessageEdited" }
       convUpdated: { $ref: "#/components/messages/ConvUpdated" }
       communityUpdated: { $ref: "#/components/messages/CommunityUpdated" }
+      communityCreated: { $ref: "#/components/messages/CommunityCreated" }
       chatCatchupResult: { $ref: "#/components/messages/ChatCatchupResult" }
       messageReadReceipt: { $ref: "#/components/messages/MessageReadReceipt" }
       messageDeliveredReceipt:
@@ -167,6 +180,18 @@ channels:
       callDeclined: { $ref: "#/components/messages/CallDeclined" }
       callEnded: { $ref: "#/components/messages/CallEnded" }
       callIceRecv: { $ref: "#/components/messages/CallIceRecv" }
+      # friend management (client -> server)
+      friendRequest: { $ref: "#/components/messages/FriendRequest" }
+      friendAccept: { $ref: "#/components/messages/FriendAccept" }
+      friendReject: { $ref: "#/components/messages/FriendReject" }
+      friendRemove: { $ref: "#/components/messages/FriendRemove" }
+      friendCancelRequest: { $ref: "#/components/messages/FriendCancelRequest" }
+      authRefresh: { $ref: "#/components/messages/AuthRefresh" }
+      # friend + session (server -> client)
+      friendRequested: { $ref: "#/components/messages/FriendRequested" }
+      friendAccepted: { $ref: "#/components/messages/FriendAccepted" }
+      friendRemoved: { $ref: "#/components/messages/FriendRemoved" }
+      sessionExpired: { $ref: "#/components/messages/SessionExpired" }
 
   # ----------------------------------------------------------- /community
   community:
@@ -210,25 +235,61 @@ channels:
         { $ref: "#/components/messages/CommunityMessageUnpin" }
       communityMessageUnpinned:
         { $ref: "#/components/messages/CommunityMessageUnpinned" }
+      # moderation (client -> server)
+      communityMemberKick: { $ref: "#/components/messages/CommunityMemberKick" }
+      communityMemberBan: { $ref: "#/components/messages/CommunityMemberBan" }
+      communityMemberUnban:
+        { $ref: "#/components/messages/CommunityMemberUnban" }
+      communityAdminTransfer:
+        { $ref: "#/components/messages/CommunityAdminTransfer" }
+      communityMemberRoleChange:
+        { $ref: "#/components/messages/CommunityMemberRoleChange" }
+      communityReportCreate:
+        { $ref: "#/components/messages/CommunityReportCreate" }
+      communityDelete: { $ref: "#/components/messages/CommunityDelete" }
+      # moderation (server -> client)
+      communityDeleted: { $ref: "#/components/messages/CommunityDeleted" }
+      # membership real-time (server -> client)
+      communityStatsUpdated:
+        { $ref: "#/components/messages/CommunityStatsUpdated" }
+      communityMemberRemoved:
+        { $ref: "#/components/messages/CommunityMemberRemoved" }
+      communityMemberUnbanned:
+        { $ref: "#/components/messages/CommunityMemberUnbanned" }
 
   # -------------------------------------------------------------- /notify
   notify:
     address: /notify
     title: /notify namespace
     description: |
-      In-app notification feed + unread badge. Delegates to notifications-service.
-      Each connected user's `notify:<userId>` Redis channel is subscribed
-      (ref-counted) and re-emitted to `user:<userId>`.
+      Real-time in-app notification feed + unread badge count.
+
+      **Real-time bridge (S1):** chat-service's createNotification gRPC (called by notifications-service consumers)
+      publishes `notification:new` + `notification:count_update` to Redis channel `notify:<userId>`.
+
+      **Inbox read (S2):** notifications are fetched + marked-read from chat-service (`:4004`),
+      the same store that CreateNotification writes to. notifications-service (`:4006`) is FCM-only.
+
+      **Push gating (S3):** for online users (active socket), FCM is suppressed — real-time
+      socket delivery is sufficient. Offline users receive FCM push + inbox row on reconnect.
+
+      The gateway subscribes each logged-in user to their `notify:<userId>` Redis channel and
+      fans events to socket namespaces `/notify` (client connected to gateway).
     x-socketio-namespace: /notify
     messages:
       notificationsFetch: { $ref: "#/components/messages/NotificationsFetch" }
       notificationsMarkRead:
         { $ref: "#/components/messages/NotificationsMarkRead" }
+      notificationsDelete: { $ref: "#/components/messages/NotificationsDelete" }
       notificationCount: { $ref: "#/components/messages/NotificationCount" }
       notificationCountUpdate:
         { $ref: "#/components/messages/NotificationCountUpdate" }
       notificationForwarded:
         { $ref: "#/components/messages/NotificationForwarded" }
+      notificationDeleted: { $ref: "#/components/messages/NotificationDeleted" }
+      mediaScanResult: { $ref: "#/components/messages/MediaScanResult" }
+      communityJoinRequestUpdate:
+        { $ref: "#/components/messages/CommunityJoinRequestUpdate" }
 
 operations:
   # =================================================== /chat client -> server
@@ -290,7 +351,10 @@ operations:
       Ack `data` on success is `{}`. Side-effect — broadcasts `message:reaction` to all room members
       with the full updated grouped reactions list.
 
-      > **Rate limit:** ≤ 10 per minute per conversation. Exceeding this returns `RATE_LIMITED` (retryable — back off before retrying).
+      > **Rate limit:** ≤ 10 per minute per conversation, enforced downstream in chat-service.
+      > In V1 the gateway has no dedicated rate-limit ack, so a tripped limit currently surfaces
+      > as `SERVICE_ERROR` (retryable). Back off ~30 s before retrying. (`RATE_LIMITED` is reserved
+      > for a future gateway limiter — see the AckEnvelope `error` enum.)
     messages: [{ $ref: "#/channels/chat/messages/messageReact" }]
     reply:
       channel: { $ref: "#/channels/chat" }
@@ -482,6 +546,11 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "community:updated — community list bump-to-top (delivered on /chat)"
     messages: [{ $ref: "#/channels/chat/messages/communityUpdated" }]
+  chat.onCommunityCreated:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "community:created — new community inserted into creator's list (delivered on /chat to user:<creatorId>)"
+    messages: [{ $ref: "#/channels/chat/messages/communityCreated" }]
   chat.onCatchupResult:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -558,6 +627,99 @@ operations:
     summary: "call:ice — peer ICE candidate"
     messages: [{ $ref: "#/channels/chat/messages/callIceRecv" }]
 
+  # =============================================== /chat friend management
+  chat.friendRequest:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend.request — send a friend request"
+    description: |
+      Gateway forwards to user-service (`POST /friends/requests`) then publishes
+      `friend.requested` to the addressee's `user:<id>` channel. Ack `data` is
+      `{ requestId }`. Returns `CONFLICT` if a request already exists.
+    messages: [{ $ref: "#/channels/chat/messages/friendRequest" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.friendAccept:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend.accept — accept a received friend request"
+    description: |
+      Forwards to user-service then publishes `friend.accepted` to the original
+      requester's `user:<id>` channel. Ack `data` is empty. `NOT_FOUND` if the
+      request id is unknown.
+    messages: [{ $ref: "#/channels/chat/messages/friendAccept" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.friendReject:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend.reject — reject a received friend request"
+    description: "Forwards to user-service. Ack `data` is empty. `NOT_FOUND` if the request id is unknown. No realtime event is published to the requester."
+    messages: [{ $ref: "#/channels/chat/messages/friendReject" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.friendRemove:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend.remove — remove an existing friend"
+    description: |
+      Forwards to user-service (`DELETE /friends/<id>`) then publishes
+      `friend.removed` to the removed user's `user:<id>` channel. Ack `data` is
+      empty. `NOT_FOUND` if no friendship exists.
+    messages: [{ $ref: "#/channels/chat/messages/friendRemove" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.friendCancelRequest:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend.cancel_request — cancel an outgoing friend request"
+    description: "Forwards to user-service (`DELETE /friends/requests/<id>`). Ack `data` is empty. `NOT_FOUND` if the request id is unknown."
+    messages: [{ $ref: "#/channels/chat/messages/friendCancelRequest" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.authRefresh:
+    action: send
+    channel: { $ref: "#/channels/chat" }
+    summary: "auth:refresh — refresh the access token without a transport reconnect"
+    description: |
+      Send the refresh token to obtain a new access token in-band; resets the
+      `session:expired` warning + grace timers. Ack `data` is
+      `{ accessToken, expiresIn }`. `SERVICE_ERROR` if the refresh token is
+      invalid/expired (re-authenticate via REST and reconnect).
+    messages: [{ $ref: "#/channels/chat/messages/authRefresh" }]
+    reply:
+      channel: { $ref: "#/channels/chat" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  chat.onFriendRequested:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend.requested — someone sent you a friend request"
+    messages: [{ $ref: "#/channels/chat/messages/friendRequested" }]
+  chat.onFriendAccepted:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend.accepted — your friend request was accepted"
+    messages: [{ $ref: "#/channels/chat/messages/friendAccepted" }]
+  chat.onFriendRemoved:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "friend.removed — someone removed you as a friend"
+    messages: [{ $ref: "#/channels/chat/messages/friendRemoved" }]
+  chat.onSessionExpired:
+    action: receive
+    channel: { $ref: "#/channels/chat" }
+    summary: "session:expired — access token is about to expire (refresh or reconnect)"
+    description: |
+      Emitted ~5 min before the handshake token expires. The client should call
+      `auth:refresh` (or re-authenticate over REST and reconnect) within the
+      `gracePeriod` (60 s) — after that the server force-disconnects the socket.
+    messages: [{ $ref: "#/channels/chat/messages/sessionExpired" }]
+
   # ============================================== /community client -> server
   community.join:
     action: send
@@ -626,7 +788,7 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community:catchup — reconnect gap-fill; fetch missed messages per room since a known cursor"
     description: |
-      Client emits on reconnect with up to 20 rooms and their last known cursor.
+      Client emits on reconnect with up to 10 rooms and their last known cursor.
       Two cursor modes (mutually exclusive per room; `sinceTs` takes precedence):
 
       **sinceId mode** — pass `sinceId` (last known message ObjectId). Returns new messages in
@@ -668,7 +830,9 @@ operations:
       Side-effect — broadcasts `community:message:reaction` to all members of `community:<communityId>`.
       Sending the same emoji again removes the reaction (toggle).
 
-      > **Rate limit:** ≤ 10 per minute per community room. Exceeding this returns `RATE_LIMITED` (retryable — back off before retrying).
+      > **Rate limit:** ≤ 10 per minute per community room, enforced downstream in chat-service.
+      > In V1 a tripped limit surfaces as `SERVICE_ERROR` (retryable; back off ~30 s) — the gateway
+      > has no dedicated `RATE_LIMITED` ack yet (reserved for a future limiter).
     messages: [{ $ref: "#/channels/community/messages/communityMessageReact" }]
     reply:
       channel: { $ref: "#/channels/community" }
@@ -772,6 +936,98 @@ operations:
     messages:
       [{ $ref: "#/channels/community/messages/communityMessageUnpinned" }]
 
+  # =================================================== /community moderation
+  community.memberKick:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community.member.kick — remove a member (moderator / admin only)"
+    description: |
+      Role-authorized server-side; the actor is the authenticated socket user.
+      Ack `data` is the gRPC result. `FORBIDDEN` when the actor lacks permission.
+    messages: [{ $ref: "#/channels/community/messages/communityMemberKick" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.memberBan:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community.member.ban — ban a member (moderator / admin only)"
+    description: "Role-authorized server-side. Ack `data` is the gRPC result. `FORBIDDEN` when not permitted."
+    messages: [{ $ref: "#/channels/community/messages/communityMemberBan" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.memberUnban:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community.member.unban — lift a member ban (moderator / admin only)"
+    description: "Role-authorized server-side. Ack `data` is the gRPC result. `FORBIDDEN` when not permitted."
+    messages: [{ $ref: "#/channels/community/messages/communityMemberUnban" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.adminTransfer:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community.admin.transfer — transfer ownership to another member (admin only)"
+    description: "Admin-only. Ack `data` is the gRPC result. `FORBIDDEN` when the actor is not the admin."
+    messages: [{ $ref: "#/channels/community/messages/communityAdminTransfer" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.memberRoleChange:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community.member.role_change — promote/demote a member (admin only)"
+    description: "Sets a member's role to MODERATOR or MEMBER. Ack `data` is the gRPC result. `FORBIDDEN` when not permitted."
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMemberRoleChange" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.reportCreate:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community.report.create — file a report against a community or message"
+    description: "Any member may report. Ack `data` is the gRPC result. `SERVICE_ERROR` on a downstream failure."
+    messages: [{ $ref: "#/channels/community/messages/communityReportCreate" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.delete:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community.delete — delete a community (admin only)"
+    description: |
+      Admin-only. On success the gateway broadcasts `community.deleted` to all
+      members of `community:<id>` BEFORE acking. Ack `data` is the gRPC result.
+      `FORBIDDEN` when the actor is not the admin.
+    messages: [{ $ref: "#/channels/community/messages/communityDelete" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.onDeleted:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community.deleted — the community was deleted (broadcast to all members)"
+    messages: [{ $ref: "#/channels/community/messages/communityDeleted" }]
+  community.onStatsUpdated:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:stats:updated — memberCount changed (join, leave, kick, or ban)"
+    messages: [{ $ref: "#/channels/community/messages/communityStatsUpdated" }]
+  community.onMemberRemoved:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:member:removed — member left, was kicked, or was banned"
+    messages: [{ $ref: "#/channels/community/messages/communityMemberRemoved" }]
+  community.onMemberUnbanned:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:member:unbanned — admin lifted a member's ban"
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMemberUnbanned" }]
+
   # ================================================= /notify client -> server
   notify.fetch:
     action: send
@@ -808,6 +1064,25 @@ operations:
     reply:
       channel: { $ref: "#/channels/notify" }
       messages: [{ $ref: "#/components/messages/Ack" }]
+  notify.delete:
+    action: send
+    channel: { $ref: "#/channels/notify" }
+    summary: "notifications:delete — owner-scoped soft-delete"
+    description: |
+      Soft-deletes a single notification the caller owns.
+      Ack `data` on success:
+      ```json
+      { "deleted": true, "remainingUnread": 4 }
+      ```
+      An unowned / unknown id is a no-op: `{ "deleted": false }` with the unread
+      count unchanged. On success the gateway also pushes a
+      `notification:count_update` to `user:<userId>` (all devices), and the
+      notifications-service relays a `notification:deleted` to the user's OTHER
+      sockets so they drop the row too.
+    messages: [{ $ref: "#/channels/notify/messages/notificationsDelete" }]
+    reply:
+      channel: { $ref: "#/channels/notify" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
 
   # ================================================= /notify server -> client
   notify.onCount:
@@ -836,6 +1111,38 @@ operations:
     channel: { $ref: "#/channels/notify" }
     summary: "notification:new — in-app notification (+ any event forwarded verbatim from notify:<userId>)"
     messages: [{ $ref: "#/channels/notify/messages/notificationForwarded" }]
+  notify.onDeleted:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "notification:deleted — a row was soft-deleted on another device"
+    description: |
+      Forwarded verbatim from `notify:<userId>` when a notification is
+      soft-deleted (via `notifications:delete`) so the user's OTHER connected
+      devices drop the row too. A `notification:count_update` follows with the
+      refreshed unread total.
+    messages: [{ $ref: "#/channels/notify/messages/notificationDeleted" }]
+  notify.onScanResult:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "media:scan_result — terminal media-scan verdict for the uploader"
+    description: |
+      Emitted to the uploader's `notify:<uploaderId>` channel when a media upload
+      hits a terminal scan failure (QUARANTINED / INFECTED / ERROR, or a
+      synchronous confirm-upload reject). Socket-only by design — no inbox row and
+      no offline FCM. Treat any `status` as "upload blocked".
+    messages: [{ $ref: "#/channels/notify/messages/mediaScanResult" }]
+  notify.onJoinRequestUpdate:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "community:join_request:update — requester's join request was approved/rejected"
+    description: |
+      Forwarded verbatim from `notify:<userId>` when an ADMIN/MODERATOR approves
+      or rejects the user's community join request. Drives the FE state flip
+      (pending → joined / rejected). An in-app `notification:new`
+      (`community.join_request_approved` / `community.join_request_rejected`) is
+      delivered alongside it.
+    messages:
+      [{ $ref: "#/channels/notify/messages/communityJoinRequestUpdate" }]
 
 components:
   securitySchemes:
@@ -891,11 +1198,12 @@ components:
             retryable: true
             message: "Something went wrong, please try again"
         - name: Failure — rate limited (back off, then retry)
+          # NOTE: the live ackError() helper emits only { success, error, retryable,
+          # message } — no retryAfter. Back off a fixed window (30 s default).
           payload:
             success: false
             error: RATE_LIMITED
             retryable: true
-            retryAfter: 1749465261234
             message: "You are doing that too fast, please slow down"
         - name: Failure — not allowed (not a member / blocked / role)
           payload:
@@ -1076,15 +1384,19 @@ components:
         pending timers are flushed and typing:stop is broadcast for every
         active conversation. The RECEIVER should also auto-clear after ~6 s
         without a fresh typing:start (belt-and-suspenders).
-      payload: { $ref: "#/components/schemas/ConversationRef" }
+      payload: { $ref: "#/components/schemas/TypingRequestPayload" }
       examples:
         - name: Start typing indicator
           payload:
             conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+        - name: Start typing with sender name (avoids a profile fetch on the peer)
+          payload:
+            conversationId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderName: "Alice"
     TypingStopRequest:
       name: "typing:stop"
       title: "typing:stop (request)"
-      payload: { $ref: "#/components/schemas/ConversationRef" }
+      payload: { $ref: "#/components/schemas/TypingRequestPayload" }
       examples:
         - name: Stop typing indicator
           payload:
@@ -1350,7 +1662,48 @@ components:
               text: "New announcement! 📢"
             lastMessageAt: 1749465500000
             senderId: "user_admin_001"
+            senderName: "Alice"
             unread: true
+    CommunityCreated:
+      name: "community:created"
+      title: "community:created (on /chat)"
+      summary: >
+        Delivered on /chat to room user:<creatorId> immediately after a community
+        is successfully created. Payload is the full CommunityData object — identical
+        to the POST /communities 201 response body.data. Frontend: prepend this item
+        to the joined-communities list; no extra API call or page reload is needed.
+        The creator's role is always ADMIN and isJoined is always true.
+      payload: { $ref: "#/components/schemas/CommunityCreatedPayload" }
+      examples:
+        - name: New public community created by the caller
+          payload:
+            id: "6843e1a2b5c3d4e5f6a7b8c9"
+            name: "Tech Enthusiasts"
+            handle: "tech-enthusiasts"
+            description: "A community for tech lovers"
+            type: PUBLIC
+            category:
+              id: "6843e1a2b5c3d4e5f6a7b8c0"
+              name: "Technology"
+            creatorId: "user_creator_001"
+            adminId: "user_creator_001"
+            memberCount: 1
+            memberLimit: 10000
+            avatarUrl: null
+            avatarUrlExpiresIn: null
+            role: ADMIN
+            isJoined: true
+            joinRequestId: null
+            joinRequestStatus: null
+            isMuted: false
+            muteUntil: null
+            moderationStatus: ACTIVE
+            isLive: false
+            chatEnabled: true
+            streamEnabled: true
+            announcementEnabled: true
+            createdAt: "2026-06-17T10:15:30.000Z"
+            updatedAt: "2026-06-17T10:15:30.000Z"
     ChatCatchupResult:
       name: "chat:catchup:result"
       title: "chat:catchup:result"
@@ -1597,6 +1950,104 @@ components:
               sdpMid: "0"
               sdpMLineIndex: 0
 
+    # -------- /chat friend management + session (client -> server) --------
+    FriendRequest:
+      name: "friend.request"
+      title: "friend.request"
+      summary: "Send a friend request. Ack data is { requestId }."
+      payload: { $ref: "#/components/schemas/FriendRequestPayload" }
+      examples:
+        - name: Send a friend request
+          payload:
+            addresseeId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+    FriendAccept:
+      name: "friend.accept"
+      title: "friend.accept"
+      payload: { $ref: "#/components/schemas/FriendRequestIdRef" }
+      examples:
+        - name: Accept a received request
+          payload:
+            requestId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+    FriendReject:
+      name: "friend.reject"
+      title: "friend.reject"
+      payload: { $ref: "#/components/schemas/FriendRequestIdRef" }
+      examples:
+        - name: Reject a received request
+          payload:
+            requestId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+    FriendRemove:
+      name: "friend.remove"
+      title: "friend.remove"
+      payload: { $ref: "#/components/schemas/FriendTargetRef" }
+      examples:
+        - name: Remove an existing friend
+          payload:
+            targetUserId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+    FriendCancelRequest:
+      name: "friend.cancel_request"
+      title: "friend.cancel_request"
+      payload: { $ref: "#/components/schemas/FriendRequestIdRef" }
+      examples:
+        - name: Cancel an outgoing request
+          payload:
+            requestId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+    AuthRefresh:
+      name: "auth:refresh"
+      title: "auth:refresh"
+      summary: "Refresh the access token in-band. Ack data is { accessToken, expiresIn }."
+      payload: { $ref: "#/components/schemas/AuthRefreshPayload" }
+      examples:
+        - name: Refresh with a valid refresh token
+          payload:
+            refreshToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyX2FiYzEyMyJ9.s1gNaTuRe"
+
+    # -------- /chat friend + session (server -> client) --------
+    FriendRequested:
+      name: "friend.requested"
+      title: "friend.requested"
+      summary: "Pushed to the addressee's user:<id> room when a request is sent."
+      payload: { $ref: "#/components/schemas/FriendRequestedPayload" }
+      examples:
+        - name: You received a friend request
+          payload:
+            requestId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+            requesterId: "user_abc123"
+            addresseeId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+    FriendAccepted:
+      name: "friend.accepted"
+      title: "friend.accepted"
+      summary: "Pushed to the original requester's user:<id> room when accepted."
+      payload: { $ref: "#/components/schemas/FriendAcceptedPayload" }
+      examples:
+        - name: Your friend request was accepted
+          payload:
+            requestId: "5f8d2a1b-9c3e-4f7a-8b6d-1e4c7a2f9b3d"
+            acceptedBy: "user_def456"
+            requesterId: "user_abc123"
+    FriendRemoved:
+      name: "friend.removed"
+      title: "friend.removed"
+      summary: "Pushed to the removed user's user:<id> room."
+      payload: { $ref: "#/components/schemas/FriendRemovedPayload" }
+      examples:
+        - name: Someone removed you as a friend
+          payload:
+            removedBy: "user_abc123"
+            userId: "9f3a7b2c-1d4e-4a6b-8c2d-3e5f7a9b1c2d"
+    SessionExpired:
+      name: "session:expired"
+      title: "session:expired"
+      summary: "Access-token expiry warning with a grace period."
+      payload: { $ref: "#/components/schemas/SessionExpiredPayload" }
+      examples:
+        - name: Token expiring — refresh within the grace period
+          payload:
+            reason: TOKEN_EXPIRED
+            expiresAt: 1749465900000
+            reconnect: true
+            gracePeriod: 60
+
     # -------- /community --------
     CommunityJoin:
       name: "community:join"
@@ -1746,6 +2197,8 @@ components:
             message: "Good morning everyone! 👋"
             clientMessageId: "550e8400-e29b-41d4-a716-446655440010"
             reactions: []
+            isEdited: false
+            editedAt: 0
             serverTs: 1749465231234
             sentAt: 1749465231234
         - name: Image gallery broadcast
@@ -1796,6 +2249,82 @@ components:
             reactions: []
             serverTs: 1749465233000
             sentAt: 1749465233000
+        - name: community_system_created
+          summary: Community lifecycle system message — community created
+          payload:
+            id: "684abc123def456789012345"
+            messageId: "684abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_xyz"
+            senderName: "Jane Doe"
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Jane Doe created the community"
+              files: []
+            message: "Jane Doe created the community"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000000000
+            sentAt: 1750000000000
+            systemMessageType: COMMUNITY_CREATED
+            systemMetadata:
+              communityName: Tech Enthusiasts
+              actorUserId: user_xyz
+              actorName: Jane Doe
+        - name: community_system_updated
+          summary: Community lifecycle system message — community updated (one message per changed field)
+          payload:
+            id: "684abc123def456789012346"
+            messageId: "684abc123def456789012346"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_xyz"
+            senderName: "Jane Doe"
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Jane Doe changed the community photo"
+              files: []
+            message: "Jane Doe changed the community photo"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000100000
+            sentAt: 1750000100000
+            systemMessageType: COMMUNITY_UPDATED
+            systemMetadata:
+              actorUserId: user_xyz
+              actorName: Jane Doe
+              changedFields:
+                - avatar
+        - name: community_system_role_changed
+          summary: Community lifecycle system message — member role changed
+          payload:
+            id: "684abc123def456789012347"
+            messageId: "684abc123def456789012347"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_xyz"
+            senderName: "Jane Doe"
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Jane Doe promoted Bob Smith to Moderator"
+              files: []
+            message: "Jane Doe promoted Bob Smith to Moderator"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000200000
+            sentAt: 1750000200000
+            systemMessageType: MEMBER_ROLE_CHANGED
+            systemMetadata:
+              actorUserId: user_xyz
+              actorName: Jane Doe
+              targetUserId: user_abc
+              targetName: Bob Smith
+              oldRole: MEMBER
+              newRole: MODERATOR
     CommunityMemberJoined:
       name: "community:member:joined"
       title: "community:member:joined"
@@ -1809,6 +2338,82 @@ components:
             avatarUrl: ""
             role: MEMBER
             joinedAt: 1749465800000
+    CommunityStatsUpdated:
+      name: "community:stats:updated"
+      title: "community:stats:updated"
+      summary: "Broadcast to community:<id> whenever the active memberCount changes."
+      payload: { $ref: "#/components/schemas/CommunityStatsUpdatedPayload" }
+      examples:
+        - name: Member count updated after a join
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            memberCount: 142
+            updatedAt: 1749465800000
+    CommunityMemberRemoved:
+      name: "community:member:removed"
+      title: "community:member:removed"
+      summary: "Broadcast to community:<id> when a member leaves, is kicked, or is banned."
+      payload: { $ref: "#/components/schemas/CommunityMemberRemovedPayload" }
+      examples:
+        - name: Member kicked
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            reason: kicked
+            actorId: "user_admin001"
+            updatedAt: 1749465800000
+        - name: Member left voluntarily
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            reason: left
+            actorId: "user_def456"
+            updatedAt: 1749465800000
+    CommunityMemberUnbanned:
+      name: "community:member:unbanned"
+      title: "community:member:unbanned"
+      summary: "Broadcast to community:<id> when an admin lifts a member's ban."
+      payload: { $ref: "#/components/schemas/CommunityMemberUnbannedPayload" }
+      examples:
+        - name: Member unbanned
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            actorId: "user_admin001"
+            updatedAt: 1749465800000
+    CommunityJoinRequestUpdate:
+      name: "community:join_request:update"
+      title: "community:join_request:update"
+      payload: { $ref: "#/components/schemas/CommunityJoinRequestUpdateDTO" }
+      examples:
+        - name: Join request approved
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+            status: APPROVED
+            communityName: "Photography Club"
+            decidedAt: "2026-06-16T11:00:00.000Z"
+            navigation:
+              screen: COMMUNITY_DETAILS
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              communityName: "Photography Club"
+              communityAvatarUrl: null
+              communityHandle: "photography-club"
+              requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+        - name: Join request rejected
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+            status: REJECTED
+            communityName: "Photography Club"
+            decidedAt: "2026-06-16T11:00:00.000Z"
+            navigation:
+              screen: COMMUNITY_DETAILS
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              communityName: "Photography Club"
+              communityAvatarUrl: null
+              communityHandle: "photography-club"
+              requestId: "6843e1a2b5c3d4e5f6a7b8d0"
     CommunityCatchup:
       name: "community:catchup"
       title: "community:catchup"
@@ -1989,6 +2594,7 @@ components:
             senderId: "user_abc123"
             message: "Good morning — updated message! 👋"
             contentType: TEXT
+            isEdited: true
             editedAt: 1749465999000
     CommunityMessageDelete:
       name: "community:message:delete"
@@ -2073,6 +2679,103 @@ components:
             pinnedCount: 0
             unpinnedBy: "user_mod001"
 
+    # -------- /community moderation --------
+    CommunityMemberKick:
+      name: "community.member.kick"
+      title: "community.member.kick"
+      summary: "Remove a member from the community (moderator / admin only)."
+      payload: { $ref: "#/components/schemas/CommunityModerateMemberPayload" }
+      examples:
+        - name: Kick a member with a reason
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            targetUserId: "user_def456"
+            reason: "Repeated spam in the general room"
+    CommunityMemberBan:
+      name: "community.member.ban"
+      title: "community.member.ban"
+      summary: "Ban a member from the community (moderator / admin only)."
+      payload: { $ref: "#/components/schemas/CommunityModerateMemberPayload" }
+      examples:
+        - name: Ban a member
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            targetUserId: "user_def456"
+            reason: "Harassment"
+    CommunityMemberUnban:
+      name: "community.member.unban"
+      title: "community.member.unban"
+      summary: "Lift a member's ban (moderator / admin only)."
+      payload: { $ref: "#/components/schemas/CommunityMemberRef" }
+      examples:
+        - name: Unban a member
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            targetUserId: "user_def456"
+    CommunityAdminTransfer:
+      name: "community.admin.transfer"
+      title: "community.admin.transfer"
+      summary: "Transfer community ownership to another member (admin only)."
+      payload: { $ref: "#/components/schemas/CommunityAdminTransferPayload" }
+      examples:
+        - name: Transfer ownership
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            newAdminId: "user_def456"
+    CommunityMemberRoleChange:
+      name: "community.member.role_change"
+      title: "community.member.role_change"
+      summary: "Promote or demote a member (admin only). newRole ∈ {MODERATOR, MEMBER}."
+      payload: { $ref: "#/components/schemas/CommunityRoleChangePayload" }
+      examples:
+        - name: Promote to moderator
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            targetUserId: "user_def456"
+            newRole: MODERATOR
+        - name: Demote to member
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            targetUserId: "user_def456"
+            newRole: MEMBER
+    CommunityReportCreate:
+      name: "community.report.create"
+      title: "community.report.create"
+      summary: "File a report against a community or a specific message."
+      payload: { $ref: "#/components/schemas/CommunityReportPayload" }
+      examples:
+        - name: Report a message
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            reason: "Off-topic advertising"
+            targetMessageId: "683abc123def456789012345"
+        - name: Report the whole community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            reason: "Coordinated harassment"
+    CommunityDelete:
+      name: "community.delete"
+      title: "community.delete"
+      summary: "Delete a community (admin only). Broadcasts community.deleted before acking."
+      payload: { $ref: "#/components/schemas/CommunityDeletePayload" }
+      examples:
+        - name: Delete a community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            reason: "Community no longer active"
+
+    # -------- /community moderation (server -> client) --------
+    CommunityDeleted:
+      name: "community.deleted"
+      title: "community.deleted"
+      summary: "Broadcast to all members of community:<id> when it is deleted."
+      payload: { $ref: "#/components/schemas/CommunityDeletedPayload" }
+      examples:
+        - name: The community was deleted
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            deletedBy: "user_admin_001"
+
     # -------- /notify --------
     NotificationsFetch:
       name: "notifications:fetch"
@@ -2099,6 +2802,15 @@ components:
         - name: Mark all as read
           payload:
             notificationIds: []
+    NotificationsDelete:
+      name: "notifications:delete"
+      title: "notifications:delete"
+      summary: "Owner-scoped soft-delete of a single notification."
+      payload: { $ref: "#/components/schemas/NotificationsDeletePayload" }
+      examples:
+        - name: Delete one notification
+          payload:
+            notificationId: "683abc100def000000000099"
     NotificationCount:
       name: "notification:count"
       title: "notification:count"
@@ -2186,6 +2898,97 @@ components:
             createdAt: 1749465400000
             data:
               communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+        - name: Community join request (to moderators)
+          summary: Admin/mod receives a new join request notification
+          payload:
+            notificationId: "684abc100def000000000031"
+            type: "community.join_requested"
+            title: "New join request"
+            body: "Alice Smith requested to join Tech Enthusiasts."
+            referenceId: "684abc100def000000000001"
+            isRead: false
+            createdAt: 1749465231234
+            navigation:
+              screen: COMMUNITY_REQUESTS
+              communityId: "684abc100def000000000001"
+              communityName: "Tech Enthusiasts"
+              communityAvatarUrl: "https://minio.example.com/community/avatar/uid/abc.jpg"
+              communityHandle: "tech-enthusiasts"
+              requestId: "684abc100def000000000022"
+            actorSnapshot:
+              userId: "684abc100def000000000099"
+              displayName: "Alice Smith"
+              avatarUrl: "https://minio.example.com/avatars/uid/abc.jpg"
+        - name: Community join request approved (to requester)
+          summary: Requester receives approval notification
+          payload:
+            notificationId: "684abc100def000000000032"
+            type: "community.join_request_approved"
+            title: "Join request approved"
+            body: "Your request to join Tech Enthusiasts was approved by Bob Jones."
+            referenceId: "684abc100def000000000001"
+            isRead: false
+            createdAt: 1749465299999
+            navigation:
+              screen: COMMUNITY_DETAILS
+              communityId: "684abc100def000000000001"
+              communityName: "Tech Enthusiasts"
+              communityAvatarUrl: "https://minio.example.com/community/avatar/uid/abc.jpg"
+              communityHandle: "tech-enthusiasts"
+              requestId: "684abc100def000000000022"
+            actorSnapshot:
+              userId: "684abc100def000000000010"
+              displayName: "Bob Jones"
+        - name: Community self-joined (to member)
+          summary: Member receives confirmation after joining a public community
+          payload:
+            notificationId: "684abc200def000000000041"
+            type: "community.member_joined"
+            title: "Joined a community"
+            body: "You have joined Photography Club."
+            referenceId: "6843e1a2b5c3d4e5f6a7b8c9"
+            isRead: false
+            createdAt: 1749465500000
+            navigation:
+              screen: COMMUNITY_DETAILS
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              communityName: "Photography Club"
+              communityAvatarUrl: null
+              communityHandle: "photography-club"
+    NotificationDeleted:
+      name: "notification:deleted"
+      title: "notification:deleted"
+      summary: |
+        A notification row was soft-deleted (via `notifications:delete`) and is
+        relayed verbatim to the user's OTHER connected devices so they drop the
+        row. A `notification:count_update` follows with the refreshed unread total.
+      payload: { $ref: "#/components/schemas/NotificationDeletedPayload" }
+      examples:
+        - name: Row deleted on another device
+          payload:
+            notificationId: "683abc100def000000000099"
+    MediaScanResult:
+      name: "media:scan_result"
+      title: "media:scan_result"
+      summary: |
+        Terminal media-scan verdict pushed to the uploader's `notify:<uploaderId>`
+        channel when an upload fails scanning (QUARANTINED / INFECTED / ERROR) or
+        is rejected on synchronous confirm-upload. Socket-only — no inbox row and
+        no offline FCM. Treat any `status` as "upload blocked".
+      payload: { $ref: "#/components/schemas/MediaScanResultPayload" }
+      examples:
+        - name: Infected upload quarantined
+          payload:
+            objectKey: "group-chat-uploads/7c9e6679-7425-40de-944b-e07fc1f90ae7/6843e1a2b5c3d4e5f6a7b8c9.png"
+            status: QUARANTINED
+            reason: "Win.Test.EICAR_HDB-1"
+            at: 1749465231234
+        - name: Scan errored (no detail)
+          payload:
+            objectKey: "community-chat-uploads/7c9e6679-7425-40de-944b-e07fc1f90ae7/6843e1a2b5c3d4e5f6a7b8c9.pdf"
+            status: ERROR
+            reason: ""
+            at: 1749465240000
 
   schemas:
     # -------- generic --------
@@ -2244,10 +3047,11 @@ components:
         retryAfter:
           type: integer
           description: |
-            Optional. Present on failure when `error` is `RATE_LIMITED`. Epoch-ms
-            timestamp after which the client may safely retry. If absent, use
-            **30 s** as the default back-off window. Clients MUST NOT retry before
-            this time. Not present for any other error code.
+            **Reserved — NOT emitted in V1.** The live `ackError()` helper
+            (`sockets/ack.ts`) returns only `{ success, error, retryable, message }`
+            and never sets `retryAfter`. The field is reserved for a future
+            server-side rate limiter. Until then, on `RATE_LIMITED` always back off
+            a fixed **30 s** window. Do not wait on this field — it will be absent.
       required: [success, message]
     MessageSendResult:
       type: object
@@ -2426,7 +3230,9 @@ components:
             type: integer,
             description: "§5.1: client compose time (epoch ms), display-only.",
           }
-      required: [conversationId, clientMessageId, contentType]
+      # clientMessageId is OPTIONAL in the validator (chat.ns.ts:59 — omit to let
+      # the server auto-generate one); it is the idempotency key, not mandatory.
+      required: [conversationId, contentType]
     ReadUpTo:
       type: object
       properties:
@@ -2765,7 +3571,54 @@ components:
         lastMessage: { $ref: "#/components/schemas/ListBumpLastMessage" }
         lastMessageAt: { type: integer, description: epoch ms. }
         senderId: { type: string }
+        senderName:
+          {
+            type: string,
+            description: "Display name of the sender — render as 'Alice: Hello' in the community list row.",
+          }
         unread: { type: boolean }
+    CommunityCreatedPayload:
+      type: object
+      description: >
+        Full CommunityData for the newly created community. Shape is identical to
+        POST /communities 201 response body.data. Delivered on /chat to
+        user:<creatorId> so the frontend can prepend the item to the
+        joined-communities list without an extra API call or page reload.
+      properties:
+        id: { type: string }
+        name: { type: string }
+        handle: { type: string }
+        description: { type: string, nullable: true }
+        type: { type: string, enum: [PUBLIC, PRIVATE] }
+        category:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+        creatorId: { type: string }
+        adminId: { type: string }
+        memberCount: { type: integer }
+        memberLimit: { type: integer }
+        avatarUrl: { type: string, nullable: true }
+        avatarUrlExpiresIn: { type: integer, nullable: true }
+        role:
+          {
+            type: string,
+            enum: [ADMIN],
+            description: "Always ADMIN for the creator.",
+          }
+        isJoined: { type: boolean, description: "Always true." }
+        joinRequestId: { type: string, nullable: true }
+        joinRequestStatus: { type: string, nullable: true }
+        isMuted: { type: boolean }
+        muteUntil: { type: string, nullable: true }
+        moderationStatus: { type: string }
+        isLive: { type: boolean }
+        chatEnabled: { type: boolean }
+        streamEnabled: { type: boolean }
+        announcementEnabled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     CatchupEvent:
       type: object
       description: |
@@ -2907,6 +3760,23 @@ components:
       properties:
         userId: { type: string }
         conversationId: { type: string }
+        senderName:
+          type: string
+          description: |
+            §2.8: present only when the sender supplied it on the request
+            (`typing:start`/`typing:stop`). Lets recipients render "Alice is
+            typing…" without a profile fetch. Absent when the sender omitted it.
+    TypingRequestPayload:
+      type: object
+      description: |
+        Fire-and-forget typing signal (client → server). The validator
+        (`TypingSchema`, chat.ns.ts:25) accepts an OPTIONAL `senderName` (≤100)
+        in addition to `conversationId`; supply it so the broadcast can show the
+        name without a lookup.
+      properties:
+        conversationId: { type: string, minLength: 1 }
+        senderName: { type: string, maxLength: 100 }
+      required: [conversationId]
     PresenceStatusPayload:
       type: object
       properties:
@@ -2950,8 +3820,10 @@ components:
       type: object
       properties:
         communityId: { type: string }
-        roomId: { type: string }
-      required: [communityId, roomId]
+        roomId:
+          type: string
+          description: "Optional in the validator (community.ns.ts:17) — defaults to the community's general room when omitted."
+      required: [communityId]
     CommunityMessageSendPayload:
       type: object
       properties:
@@ -2992,7 +3864,9 @@ components:
           type: string
           maxLength: 200
           description: "Optional. messageId of the message being replied to. Omit for top-level messages."
-      required: [communityId, roomId, contentType]
+      # roomId is OPTIONAL in the validator (community.ns.ts:35) — the gateway
+      # falls back to roomId = communityId (the general room) when omitted.
+      required: [communityId, contentType]
     CommunityMessagesFetchPayload:
       type: object
       properties:
@@ -3053,29 +3927,95 @@ components:
             description: "V1 alias for content.text. `content.text` is authoritative.",
           }
         clientMessageId: { type: string }
+        isEdited:
+          {
+            type: boolean,
+            description: "Always false for community:message:new. Present so clients use one uniform field to detect edit state without comparing editedAt.",
+          }
+        editedAt:
+          {
+            type: integer,
+            description: "Epoch ms of last edit. 0 for a new (never-edited) message.",
+          }
         serverTs: { type: integer, description: epoch ms. }
         sentAt: { type: integer, description: epoch ms (== serverTs). }
+        systemMessageType:
+          type: string
+          nullable: true
+          enum:
+            - COMMUNITY_CREATED
+            - COMMUNITY_UPDATED
+            - MEMBER_ROLE_CHANGED
+          description: >-
+            Present when contentType is SYSTEM. Identifies the lifecycle event.
+            Null/absent for normal messages.
+        systemMetadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            Structured payload for system message rendering. Null/absent for
+            normal messages. All three types share `actorUserId` (the userId
+            who triggered the event) and `actorName` (their resolved display
+            name). Frontend renders "You" when `actorUserId === currentUserId`,
+            otherwise uses `actorName`. Shape by systemMessageType:
+            COMMUNITY_CREATED: { actorUserId, actorName, communityName }.
+            COMMUNITY_UPDATED: { actorUserId, actorName, changedFields[1] }
+              — exactly one item in changedFields; one message emitted per
+              changed field (avatar→photo, name→title, description, etc.).
+            MEMBER_ROLE_CHANGED: { actorUserId, actorName, targetUserId,
+              targetName, oldRole, newRole } — frontend derives "promoted" vs
+              "demoted" from role ranks (ADMIN>MODERATOR>MEMBER).
     CommunityMemberDTO:
       type: object
       additionalProperties: true
       description: |
-        Member snapshot for `community:member:joined`. NOTE: in V1 NO backend
-        service publishes this event yet — the schema is reserved; the gateway
-        will forward it verbatim once a producer exists.
+        Member snapshot for `community:member:joined`. Produced by
+        community-service (`notifyMemberJoined`) on every path that turns a
+        member ACTIVE (add_members, join-request approve / bulk-approve,
+        invite-link redeem); published to Redis `community:<communityId>` and
+        forwarded verbatim by the gateway to room `community:<communityId>`.
       properties:
         userId: { type: string }
         username: { type: string }
         displayName: { type: string }
-        avatarUrl: { type: string }
+        avatarUrl: { type: string, nullable: true }
         role: { type: string, enum: [ADMIN, MODERATOR, MEMBER] }
         joinedAt: { type: integer, description: "epoch ms." }
       required: [userId]
+    CommunityJoinRequestUpdateDTO:
+      type: object
+      description: |
+        Server → client (`/notify`, room `user:<userId>`). Real-time UI-state
+        flip for the requester when an ADMIN/MODERATOR approves or rejects their
+        community join request. Published by notifications-service to
+        `notify:<userId>` and forwarded verbatim by the gateway. An in-app
+        `notification:new` (type `community.join_request_approved` /
+        `community.join_request_rejected`) is delivered alongside it.
+      properties:
+        communityId: { type: string }
+        requestId: { type: string }
+        status: { type: string, enum: [APPROVED, REJECTED] }
+        communityName: { type: string }
+        decidedAt:
+          {
+            type: string,
+            format: date-time,
+            description: "ISO-8601 decision timestamp.",
+          }
+        navigation:
+          allOf:
+            - $ref: "#/components/schemas/NotificationNavigation"
+          description: "Deep-link navigation included in the realtime status-flip event."
+      required: [communityId, requestId, status]
     CommunityCatchupPayload:
       type: object
       properties:
         rooms:
           type: array
-          maxItems: 20
+          # Validator cap: CommunityCatchupSchema .max(10) (community.ns.ts:108).
+          # Batch reconnect requests if you are in more than 10 communities.
+          maxItems: 10
           items:
             type: object
             properties:
@@ -3086,7 +4026,8 @@ components:
               sinceTs:
                 type: integer
                 description: "Epoch-ms alternative cursor. When > 0 the server switches to an updatedAt-based query that surfaces edits, reaction changes, and tombstones in addition to new messages. Use after returning from background. Mutually exclusive with sinceId."
-              limit: { type: integer, maximum: 200 }
+              # Validator cap: CommunityCatchupRoomSchema .max(100) (community.ns.ts:96).
+              limit: { type: integer, maximum: 100 }
             required: [roomId]
       required: [rooms]
     CommunityCatchupEventDto:
@@ -3173,7 +4114,8 @@ components:
           properties:
             text: { type: string, minLength: 1, maxLength: 4000 }
           required: [text]
-      required: [messageId, communityId, roomId, content]
+      # roomId is OPTIONAL in the validator (community.ns.ts:114).
+      required: [messageId, communityId, content]
     CommunityMessageEditedPayload:
       type: object
       description: |
@@ -3188,9 +4130,15 @@ components:
         senderId: { type: string }
         message: { type: string, description: "Updated text content." }
         contentType: { $ref: "#/components/schemas/ContentType" }
+        isEdited:
+          {
+            type: boolean,
+            description: "Always true for this event — signals FE to show the 'edited' indicator without comparing old vs new content.",
+          }
         editedAt:
           { type: integer, description: "Epoch ms when the edit was applied." }
-      required: [messageId, communityId, roomId, senderId, message, editedAt]
+      required:
+        [messageId, communityId, roomId, senderId, message, isEdited, editedAt]
     CommunityMessageDeletePayload:
       type: object
       description: |
@@ -3204,7 +4152,8 @@ components:
         type:
           type: string
           enum: [forEveryone, forMe]
-      required: [messageId, communityId, roomId, type]
+      # roomId is OPTIONAL in the validator (community.ns.ts:121).
+      required: [messageId, communityId, type]
     CommunityMessageDeletedPayload:
       type: object
       description: |
@@ -3229,7 +4178,8 @@ components:
         messageId: { type: string }
         communityId: { type: string }
         roomId: { type: string }
-      required: [messageId, communityId, roomId]
+      # roomId is OPTIONAL in the validator (community.ns.ts:128).
+      required: [messageId, communityId]
     CommunityMessagePinnedPayload:
       type: object
       description: |
@@ -3267,7 +4217,8 @@ components:
         messageId: { type: string }
         communityId: { type: string }
         roomId: { type: string }
-      required: [messageId, communityId, roomId]
+      # roomId is OPTIONAL in the validator (community.ns.ts:134).
+      required: [messageId, communityId]
     CommunityMessageUnpinnedPayload:
       type: object
       description: |
@@ -3311,6 +4262,30 @@ components:
       properties:
         count: { type: integer }
       required: [count]
+    NotificationNavigation:
+      type: object
+      description: "Deep-link routing object on community join-request notifications. Tells the client which screen to open."
+      properties:
+        screen:
+          type: string
+          enum: [COMMUNITY_REQUESTS, COMMUNITY_DETAILS, COMMUNITY_CHAT]
+          description: "COMMUNITY_REQUESTS=admin join-requests list; COMMUNITY_DETAILS=community info page; COMMUNITY_CHAT=community chat."
+        communityId:
+          type: string
+        communityName:
+          type: string
+        communityAvatarUrl:
+          type: string
+          nullable: true
+          description: "Resolved presigned URL; null if no avatar."
+        communityHandle:
+          type: string
+          nullable: true
+          description: "The community @handle unique slug."
+        requestId:
+          type: string
+          description: "Present only for join-request notification types."
+      required: [screen, communityId, communityName]
     NotificationItem:
       type: object
       description: |
@@ -3331,8 +4306,10 @@ components:
           description: |
             Discriminator. Known in-app values:
             `MESSAGE` · `friend.requested` · `friend.accepted` ·
-            `community.join_requested` · `community.member_added` ·
-            `community.admin_transferred` · `community.member_role_changed` ·
+            `community.join_requested` · `community.join_request_approved` ·
+            `community.join_request_rejected` · `community.member_added` ·
+            `community.member_joined` · `community.admin_transferred` ·
+            `community.member_role_changed` ·
             `community.member_kicked` · `community.member_banned` ·
             `community.invite_sent` · `community.invite_accepted` ·
             `community.report_created` · `community.report_actioned` ·
@@ -3355,4 +4332,227 @@ components:
             senderId, senderName, senderAvatar, contentType, preview, sentAt }`.
             For `friend.*`: `{ friendshipId, requesterId | addresseeId }`.
             For `community.*`: `{ communityId, … }`.
+        navigation:
+          allOf:
+            - $ref: "#/components/schemas/NotificationNavigation"
+          description: "Present on community.join_requested, community.join_request_approved, and community.join_request_rejected. Absent on all other types."
+        actorSnapshot:
+          type: object
+          nullable: true
+          description: "Actor details for UI. community.join_requested: {userId, displayName, avatarUrl}. approved/rejected: {userId, displayName}. Absent on other types."
+          properties:
+            userId:
+              type: string
+            displayName:
+              type: string
+            avatarUrl:
+              type: string
+              nullable: true
       required: [type]
+    NotificationsDeletePayload:
+      type: object
+      description: "Client → server. Soft-deletes a single notification the caller owns."
+      properties:
+        notificationId: { type: string }
+      required: [notificationId]
+    NotificationDeletedPayload:
+      type: object
+      description: |
+        Server → client. The id of a notification soft-deleted on another device;
+        drop this row from the list (a `notification:count_update` follows).
+      properties:
+        notificationId: { type: string }
+      required: [notificationId]
+    MediaScanResultPayload:
+      type: object
+      description: |
+        Server → client. Terminal media-scan verdict for an upload, delivered to
+        the uploader only (their `notify:<uploaderId>` channel). Any `status` here
+        means the upload is blocked.
+      properties:
+        objectKey:
+          {
+            type: string,
+            description: "the upload's storage key (`{prefix}/{ownerId}/{fileId}.ext`).",
+          }
+        status:
+          type: string
+          enum: [INFECTED, QUARANTINED, ERROR]
+          description: "terminal scan verdict — all values are upload-blocking."
+        reason:
+          {
+            type: string,
+            description: "engine-specific detail (signature name on INFECTED, message on ERROR); may be an empty string.",
+          }
+        at:
+          {
+            type: integer,
+            description: "epoch ms when the verdict was published.",
+          }
+      required: [objectKey, status, reason, at]
+
+    # -------- /chat friend management + session payloads --------
+    FriendRequestPayload:
+      type: object
+      description: "Client → server. The addressee is a user UUID; sender is derived from the socket."
+      properties:
+        addresseeId: { type: string, format: uuid }
+      required: [addresseeId]
+    FriendRequestIdRef:
+      type: object
+      description: "Reference to a pending friend request by id (accept / reject / cancel)."
+      properties:
+        requestId: { type: string, format: uuid }
+      required: [requestId]
+    FriendTargetRef:
+      type: object
+      description: "Reference to a user to unfriend."
+      properties:
+        targetUserId: { type: string, format: uuid }
+      required: [targetUserId]
+    AuthRefreshPayload:
+      type: object
+      description: "Client → server. The refresh token issued at login; the gateway exchanges it for a fresh access token."
+      properties:
+        refreshToken: { type: string, minLength: 1 }
+      required: [refreshToken]
+    FriendRequestedPayload:
+      type: object
+      description: "Server → client. Pushed to the addressee when a request is sent."
+      properties:
+        requestId: { type: string }
+        requesterId: { type: string }
+        addresseeId: { type: string }
+      required: [requestId, requesterId, addresseeId]
+    FriendAcceptedPayload:
+      type: object
+      description: "Server → client. Pushed to the original requester when the request is accepted."
+      properties:
+        requestId: { type: string }
+        acceptedBy: { type: string, description: "userId of the accepter." }
+        requesterId: { type: string }
+      required: [requestId, acceptedBy, requesterId]
+    FriendRemovedPayload:
+      type: object
+      description: "Server → client. Pushed to the user who was removed."
+      properties:
+        removedBy:
+          {
+            type: string,
+            description: "userId of the actor who removed the friendship.",
+          }
+        userId:
+          {
+            type: string,
+            description: "userId of the removed user (the recipient).",
+          }
+      required: [removedBy, userId]
+    SessionExpiredPayload:
+      type: object
+      description: |
+        Server → client. Emitted ~5 min before the handshake access token
+        expires. Call `auth:refresh` (or re-authenticate over REST and reconnect)
+        within `gracePeriod` seconds or the server force-disconnects.
+      properties:
+        reason: { type: string, enum: [TOKEN_EXPIRED] }
+        expiresAt:
+          { type: integer, description: "epoch ms when the token expires." }
+        reconnect:
+          {
+            type: boolean,
+            description: "always true — the client should refresh or reconnect.",
+          }
+        gracePeriod:
+          {
+            type: integer,
+            description: "seconds before force-disconnect (60).",
+          }
+      required: [reason, expiresAt, reconnect, gracePeriod]
+
+    # -------- /community moderation payloads --------
+    CommunityMemberRef:
+      type: object
+      description: "Client → server. Target a member by id within a community."
+      properties:
+        communityId: { type: string, minLength: 1 }
+        targetUserId: { type: string, minLength: 1 }
+      required: [communityId, targetUserId]
+    CommunityModerateMemberPayload:
+      type: object
+      description: "Client → server. Kick or ban a member, with an optional reason (≤500)."
+      properties:
+        communityId: { type: string, minLength: 1 }
+        targetUserId: { type: string, minLength: 1 }
+        reason: { type: string, maxLength: 500 }
+      required: [communityId, targetUserId]
+    CommunityAdminTransferPayload:
+      type: object
+      description: "Client → server. Transfer ownership to another member (admin only)."
+      properties:
+        communityId: { type: string, minLength: 1 }
+        newAdminId: { type: string, minLength: 1 }
+      required: [communityId, newAdminId]
+    CommunityRoleChangePayload:
+      type: object
+      description: "Client → server. Set a member's role (admin only)."
+      properties:
+        communityId: { type: string, minLength: 1 }
+        targetUserId: { type: string, minLength: 1 }
+        newRole: { type: string, enum: [MODERATOR, MEMBER] }
+      required: [communityId, targetUserId, newRole]
+    CommunityReportPayload:
+      type: object
+      description: "Client → server. File a report. Omit targetMessageId to report the community itself."
+      properties:
+        communityId: { type: string, minLength: 1 }
+        reason: { type: string, minLength: 1, maxLength: 1000 }
+        targetMessageId: { type: string }
+      required: [communityId, reason]
+    CommunityDeletePayload:
+      type: object
+      description: "Client → server. Delete a community (admin only)."
+      properties:
+        communityId: { type: string, minLength: 1 }
+        reason: { type: string, maxLength: 500 }
+      required: [communityId]
+    CommunityDeletedPayload:
+      type: object
+      description: "Server → client. Broadcast to community:<id> when the community is deleted."
+      properties:
+        communityId: { type: string }
+        deletedBy:
+          { type: string, description: "userId of the admin who deleted it." }
+      required: [communityId, deletedBy]
+    CommunityStatsUpdatedPayload:
+      type: object
+      description: "Server → client. Broadcast to community:<id> when active memberCount changes."
+      properties:
+        communityId: { type: string }
+        memberCount:
+          { type: integer, description: "Current active member count." }
+        updatedAt: { type: integer, description: "Epoch ms of the change." }
+      required: [communityId, memberCount, updatedAt]
+    CommunityMemberRemovedPayload:
+      type: object
+      description: "Server → client. Emitted on kick, ban, or voluntary leave."
+      properties:
+        communityId: { type: string }
+        userId: { type: string, description: "The removed member's userId." }
+        reason:
+          type: string
+          enum: [kicked, banned, left]
+        actorId:
+          type: string
+          nullable: true
+          description: "Who performed the action. Same as userId for voluntary leave."
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required: [communityId, userId, reason, updatedAt]
+    CommunityMemberUnbannedPayload:
+      type: object
+      description: "Server → client. Emitted when an admin lifts a member's ban."
+      properties:
+        communityId: { type: string }
+        userId: { type: string, description: "The unbanned member's userId." }
+        actorId: { type: string, description: "The admin who lifted the ban." }
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required: [communityId, userId, actorId, updatedAt]

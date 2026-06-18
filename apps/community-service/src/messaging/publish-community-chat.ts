@@ -144,3 +144,25 @@ export function publishCommunityInviteLinkSharedForChatSafe(
     "community.invite_link_shared (chat-sync)"
   );
 }
+
+export interface CommunitySystemMessageForChat {
+  communityId: string;
+  systemMessageType: string;
+  metadata: Record<string, unknown>;
+  triggeredByUserId: string;
+  eventAt: string;
+}
+
+/**
+ * Tells chat-service to post a lifecycle system message in the community's
+ * general room. Fire-and-forget.
+ */
+export function publishCommunitySystemMessageForChatSafe(
+  data: CommunitySystemMessageForChat
+): void {
+  publishSafe(
+    "community.system_message",
+    data,
+    "community.system_message (chat-sync)"
+  );
+}

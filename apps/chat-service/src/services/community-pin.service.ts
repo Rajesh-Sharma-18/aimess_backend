@@ -1,6 +1,7 @@
 import { BadRequestError, ForbiddenError, NotFoundError } from "@aimess/errors";
 
 import { env } from "../config/env.js";
+import { resolvePinsMedia } from "../lib/media-resolve.js";
 import type { CommunityMessagePinRepository } from "../repositories/community-message-pin.repository.js";
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
@@ -90,7 +91,10 @@ export class CommunityPinService {
     roomId: string,
     params: { limit: number; cursor?: string | null }
   ): Promise<CommunityMessagePin[]> {
-    return this.pinRepo.findPinsByRoom(roomId, params);
+    const pins = await this.pinRepo.findPinsByRoom(roomId, params);
+    // Resolve the pinned snapshot's sender avatar + attachment keys on read so
+    // the pinned-banner FE never receives a raw object key (URLs not persisted).
+    return resolvePinsMedia(pins);
   }
 
   async countPins(roomId: string): Promise<number> {

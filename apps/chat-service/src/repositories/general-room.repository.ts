@@ -7,6 +7,21 @@ export class GeneralRoomRepository {
     return this.prisma.generalRoom.findUnique({ where: { id: roomId } });
   }
 
+  /**
+   * Atomically allocate the next per-room monotonic sequence number. Mirrors
+   * PrivateRoomRepository/GroupRoomRepository.allocateSequence, but keys on the
+   * GeneralRoom primary id (roomId === community/general-room id). Sequences are
+   * monotonic, not gapless — a rare idempotent-race retry may burn one number.
+   */
+  async allocateSequence(roomId: string): Promise<number> {
+    const r = await this.prisma.generalRoom.update({
+      where: { id: roomId },
+      data: { lastSequence: { increment: 1 } },
+      select: { lastSequence: true },
+    });
+    return r.lastSequence;
+  }
+
   /** Bulk fetch rooms by id (community-chat summaries enrichment). */
   async findManyByIds(ids: string[]): Promise<GeneralRoom[]> {
     if (!ids.length) return [];

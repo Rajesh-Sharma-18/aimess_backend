@@ -3,8 +3,9 @@ import type { Request } from "express";
 
 import { env } from "../config/env.js";
 
-/** Liveness/readiness and docs should not consume the global API budget. */
+/** Liveness/readiness, docs, and all traffic in development skip the global limiter. */
 function skipRateLimit(req: Request): boolean {
+  if (env.NODE_ENV === "development") return true;
   const path = req.path ?? "";
   return (
     path.startsWith("/health") ||
@@ -19,10 +20,11 @@ function skipRateLimit(req: Request): boolean {
  * Limits:
  * - One counter per Node process — not shared across replicas (use Redis store for that).
  * - Client IP: direct socket IP when `TRUST_PROXY_HOPS=0`; uses `X-Forwarded-For` when hops ≥ 1.
+ * - Skipped entirely in development (NODE_ENV=development).
  */
 export const rateLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 100,
+  windowMs: env.GLOBAL_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
+  max: env.GLOBAL_RATE_LIMIT_MAX,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   skip: skipRateLimit,

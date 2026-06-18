@@ -15,9 +15,9 @@ event is) · [`SOCKET_FRONTEND_GUIDE.md`](SOCKET_FRONTEND_GUIDE.md) (architectur
 > - **Ack response** = the object delivered to your `cb` (the envelope below). Only
 >   **acked** events have one.
 > - **Broadcast** = what arrives in `socket.on(event, payload => …)`.
-> - Values are illustrative. **Numbers in an ack `data` are stringified epoch-ms**
->   (gRPC int64 → string) — coerce with `Number()`. The same field in a **broadcast**
->   is a real number.
+> - Values are illustrative. Numeric fields (`sentAt`, `editedAt`, `pinnedAt`,
+>   `sequenceNumber`) are real **numbers** in both ack `data` and broadcasts — the
+>   gateway coerces the gRPC `int64` wire-strings before relaying.
 
 ### The ack envelope (every acked event)
 
@@ -84,15 +84,15 @@ event is) · [`SOCKET_FRONTEND_GUIDE.md`](SOCKET_FRONTEND_GUIDE.md) (architectur
   "repliedToId": null
 }
 
-// ← ack response — MessageSendResult (numbers are STRINGIFIED here)
+// ← ack response — MessageSendResult (sentAt + sequenceNumber are numbers)
 {
   "success": true,
   "message": "Message sent successfully",
   "data": {
     "messageId": "msg_66a0f1e2d3c4b5a6",
     "conversationId": "conv_64f1a2b3c4d5e6f7",
-    "sequenceNumber": "1487",          // coerce: Number(data.sequenceNumber)
-    "sentAt": "1749633123456",         // coerce: Number(data.sentAt)
+    "sequenceNumber": 1487,
+    "sentAt": 1749633123456,
     "alreadySent": false               // true if this clientMessageId was already processed (idempotent replay)
   }
 }
@@ -328,12 +328,62 @@ event is) · [`SOCKET_FRONTEND_GUIDE.md`](SOCKET_FRONTEND_GUIDE.md) (architectur
 
 ### `typing:start` / `typing:stop` (fire-and-forget — no ack)
 
+The inbound payload is unchanged (`senderName` optional). Every broadcast now
+carries server-authoritative `userDetails` + `timestamp`; the legacy top-level
+`userId`/`senderName` are kept for back-compat (`senderName` always equals
+`userDetails.displayName`). `userId` is the authenticated socket user — never
+client-trusted. The same enriched shape is emitted on the 6 s auto-expiry stop
+and the disconnect-flush stop.
+
+> **All socket timestamps are epoch-ms numbers** (not ISO strings). `timestamp`
+> below — and `conv:archived.archivedAt` — are Unix epoch milliseconds.
+
 ```jsonc
 // → emit
-{ "conversationId": "conv_64f1a2b3c4d5e6f7" }
+{ "conversationId": "conv_64f1a2b3c4d5e6f7" } // senderName optional (legacy)
 
 // ← broadcast to conv:<id>
-{ "userId": "usr_a1b2c3", "conversationId": "conv_64f1a2b3c4d5e6f7" }
+{
+  "conversationId": "conv_64f1a2b3c4d5e6f7",
+  "userId": "usr_a1b2c3",
+  "userDetails": {
+    "userId": "usr_a1b2c3",
+    "username": "alice",
+    "displayName": "Alice",
+    "avatarUrl": "https://cdn.aimess.com/avatars/alice.jpg" // null when no avatar
+  },
+  "timestamp": 1749981610000, // epoch ms (number, not ISO)
+  "senderName": "Alice"
+}
+```
+
+---
+
+## 5b. `/community` — typing
+
+### `typing:start` / `typing:stop` (fire-and-forget — no ack)
+
+Mirrors `/chat`, broadcast to the `community:<communityId>` room. Server holds a
+6 s per-socket auto-expiry and flushes a stop on disconnect.
+
+```jsonc
+// → emit
+{ "communityId": "comm_64f1a2b3c4d5e6f7" } // roomId?, senderName? optional
+
+// ← broadcast to community:<communityId>
+{
+  "conversationId": "comm_64f1a2b3c4d5e6f7", // == communityId
+  "communityId": "comm_64f1a2b3c4d5e6f7",
+  "userId": "usr_a1b2c3",
+  "userDetails": {
+    "userId": "usr_a1b2c3",
+    "username": "alice",
+    "displayName": "Alice",
+    "avatarUrl": "https://cdn.aimess.com/avatars/alice.jpg" // null when no avatar
+  },
+  "timestamp": 1749981610000, // epoch ms (number, not ISO)
+  "senderName": "Alice"
+}
 ```
 
 ---
@@ -520,11 +570,11 @@ event is) · [`SOCKET_FRONTEND_GUIDE.md`](SOCKET_FRONTEND_GUIDE.md) (architectur
   "receiverId": "usr_z9"
 }
 
-// ← ack — MessageSendResult (stringified numbers)
+// ← ack — MessageSendResult (sentAt + sequenceNumber are numbers)
 {
   "success": true,
   "message": "Message forwarded successfully",
-  "data": { "messageId": "msg_88c2...", "conversationId": "conv_other_555", "sequenceNumber": "42", "sentAt": "1749633600000", "alreadySent": false }
+  "data": { "messageId": "msg_88c2...", "conversationId": "conv_other_555", "sequenceNumber": 42, "sentAt": 1749633600000, "alreadySent": false }
 }
 // target room receives a message:new with "isForwarded": true
 ```
@@ -685,8 +735,8 @@ event is) · [`SOCKET_FRONTEND_GUIDE.md`](SOCKET_FRONTEND_GUIDE.md) (architectur
     "communityId": "comm_12345",
     "roomId": "comm_room_678",
     "clientMessageId": "aaa11122-bbb3-cccc-ddd4-eeeeffff5555",
-    "sentAt": "1749633900000",      // stringified on ack
-    "serverTs": "1749633900000"
+    "sentAt": 1749633900000,
+    "serverTs": 1749633900000
   }
 }
 ```
@@ -975,8 +1025,8 @@ export interface ChatMessage {
 export interface MessageSendResult {
   messageId: string;
   conversationId: string;
-  sequenceNumber: string; // stringified on ack — Number(it)
-  sentAt: string; // stringified on ack — Number(it)
+  sequenceNumber: number;
+  sentAt: number; // epoch ms
   alreadySent: boolean;
 }
 

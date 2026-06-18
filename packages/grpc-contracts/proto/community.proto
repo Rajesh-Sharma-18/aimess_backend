@@ -4,6 +4,11 @@ package community;
 service CommunityService {
   rpc SendCommunityMessage (SendCommunityMessageRequest) returns (SendCommunityMessageResponse);
   rpc GetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
+  // Synchronous, idempotent provisioning of a community's chat room (GeneralRoom,
+  // id === communityId). community-service calls this during community creation so
+  // a member's first message can never race ahead of the async community.created
+  // event (which remains as a backstop). Safe to call repeatedly.
+  rpc EnsureCommunityRoom (EnsureCommunityRoomRequest) returns (EnsureCommunityRoomResponse);
   // Reconciliation: chat-service pulls communities (+ members) on boot to
   // provision any missing community chat rooms / sync RoomMember rows.
   rpc ListCommunities (ListCommunitiesRequest) returns (ListCommunitiesResponse);
@@ -40,6 +45,15 @@ service CommunityService {
   rpc DeleteCommunityMessage (DeleteCommunityMessageRequest) returns (DeleteCommunityMessageResponse);
   rpc PinCommunityMessage    (PinCommunityMessageRequest)    returns (PinCommunityMessageResponse);
   rpc UnpinCommunityMessage  (UnpinCommunityMessageRequest)  returns (UnpinCommunityMessageResponse);
+
+  // ---- Member moderation (actor must be admin or moderator) ----
+  rpc KickMember        (KickMemberRequest)        returns (ModerationActionResponse);
+  rpc BanMember         (BanMemberRequest)         returns (ModerationActionResponse);
+  rpc UnbanMember       (UnbanMemberRequest)        returns (ModerationActionResponse);
+  rpc TransferAdmin     (TransferAdminRequest)      returns (ModerationActionResponse);
+  rpc ChangeMemberRole  (ChangeMemberRoleRequest)   returns (ModerationActionResponse);
+  rpc CreateReport      (CreateReportRequest)       returns (CreateReportResponse);
+  rpc DeleteCommunity   (DeleteCommunityRequest)    returns (ModerationActionResponse);
 }
 
 // ---- Bulk mark-as-read ----
@@ -69,6 +83,18 @@ message CommunityChatSummary {
 }
 message GetCommunityChatSummariesResponse {
   repeated CommunityChatSummary summaries = 1;
+}
+
+// ---- Synchronous chat-room provisioning (community creation) ----
+message EnsureCommunityRoomRequest {
+  string communityId = 1;
+  string name        = 2;
+  string ownerId     = 3;
+  string avatarUrl   = 4;
+}
+message EnsureCommunityRoomResponse {
+  bool   ok          = 1;
+  string communityId = 2;
 }
 
 // ---- Backoffice Community Management ----
@@ -401,6 +427,67 @@ message PinCommunityMessageResponse {
   string pinned_ids   = 4;  // JSON string of string[]
   int32  pinned_count = 5;
   int64  pinned_at    = 6;
+}
+
+// ---- Moderation ----
+// Generic result for kick / ban / unban / transfer-admin / role-change / delete.
+// error_code is "" on success; "NOT_FOUND" | "FORBIDDEN" | "ALREADY_BANNED" | etc.
+message ModerationActionResponse {
+  bool   ok             = 1;
+  string community_id   = 2;
+  string target_user_id = 3;
+  string error_code     = 4;
+}
+
+message KickMemberRequest {
+  string community_id    = 1;
+  string actor_id        = 2; // performing the action (must be admin/mod)
+  string target_user_id  = 3;
+  string reason          = 4; // "" if not provided
+}
+
+message BanMemberRequest {
+  string community_id    = 1;
+  string actor_id        = 2;
+  string target_user_id  = 3;
+  string reason          = 4;
+}
+
+message UnbanMemberRequest {
+  string community_id    = 1;
+  string actor_id        = 2;
+  string target_user_id  = 3;
+}
+
+message TransferAdminRequest {
+  string community_id  = 1;
+  string actor_id      = 2; // current admin
+  string new_admin_id  = 3;
+}
+
+message ChangeMemberRoleRequest {
+  string community_id    = 1;
+  string actor_id        = 2;
+  string target_user_id  = 3;
+  string new_role        = 4; // "MODERATOR" | "MEMBER"
+}
+
+message CreateReportRequest {
+  string community_id       = 1;
+  string reporter_id        = 2;
+  string reason             = 3;
+  string target_message_id  = 4; // "" if reporting the community itself
+}
+
+message CreateReportResponse {
+  string report_id = 1;
+  bool   ok        = 2;
+}
+
+message DeleteCommunityRequest {
+  string community_id = 1;
+  string actor_id     = 2; // must be admin
+  string reason       = 3; // "" if not provided
 }
 
 // ---- Unpin ----

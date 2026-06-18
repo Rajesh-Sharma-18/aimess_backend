@@ -1,3 +1,5 @@
+import { toWireMessage } from "../lib/chat-message.serializer.js";
+
 import type { PrivateMessageService } from "./private-message.service.js";
 import type { GroupMessageService } from "./group-message.service.js";
 
@@ -100,7 +102,12 @@ export class SyncService {
   } {
     return {
       authorized: r.authorized,
-      events: r.events,
+      // REST sync is client-facing: normalize each event to the canonical wire
+      // shape (strip messageType, add contentType). catchup() still returns raw
+      // entities for the gRPC catchupRoom handler, which reads messageType.
+      events: r.events.map((e) =>
+        toWireMessage(e as { messageType?: string | null })
+      ),
       next_seq: r.lastSeq,
       has_more: r.hasMore,
       conversationType,

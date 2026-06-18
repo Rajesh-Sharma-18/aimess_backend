@@ -8,9 +8,17 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
-import { toMediaObject } from "@aimess/storage";
-import type { MediaObject } from "@aimess/shared-types";
+import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
+import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
+import type {
+  CommunityMemberAddedPayload,
+  CommunityMemberRemovedPayload,
+  CommunityMemberUnbannedPayload,
+  CommunityStatsUpdatedPayload,
+  MediaObject,
+} from "@aimess/shared-types";
 
+import { redis } from "../config/redis.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { communityRepository } from "../repositories/community.repository.js";
 import { communityCache } from "../lib/community-cache.js";
@@ -54,6 +62,7 @@ import type {
   CommunityCategoryData,
   CommunityData,
   CommunityDiscoverItem,
+  CommunityJoinResult,
   CommunityLastActivity,
   CommunityInviteData,
   CommunityInviteLinkData,
@@ -89,9 +98,12 @@ import {
   publishCommunityDeletedSafe,
   publishCommunityInviteAcceptedSafe,
   publishCommunityInviteSentSafe,
+  publishCommunityJoinRequestApprovedSafe,
   publishCommunityJoinRequestedSafe,
+  publishCommunityJoinRequestRejectedSafe,
   publishCommunityMemberAddedSafe,
   publishCommunityMemberBannedSafe,
+  publishCommunityMemberJoinedSafe,
   publishCommunityMemberKickedSafe,
   publishCommunityMemberLeftSafe,
   publishCommunityMemberMutedSafe,
@@ -106,6 +118,7 @@ import {
   publishCommunityDeletedForChatSafe,
   publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
+  publishCommunitySystemMessageForChatSafe,
 } from "../messaging/publish-community-chat.js";
 import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
 
@@ -153,8 +166,8 @@ function assertCommunityNotSuspended(community: {
   }
 }
 
-const COMMUNITY_IMAGE_PREFIXES = ["community/avatar", "community/cover"];
-const AVATAR_PREFIXES = ["avatars"];
+const COMMUNITY_IMAGE_PREFIXES = MEDIA_PREFIXES.community;
+const AVATAR_PREFIXES = MEDIA_PREFIXES.userAvatars;
 
 /**
  * Build the additive nested {@link MediaObject} for a community image (avatar or
@@ -242,7 +255,8 @@ function buildLastActivity(community: {
 async function toCommunityData(
   community: CommunityWithCategory,
   myRole: CommunityMemberRole | null,
-  muteRow: MuteRowFragment
+  muteRow: MuteRowFragment,
+  joinRequest: { id: string; status: CommunityJoinReqStatus } | null = null
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -269,6 +283,14 @@ async function toCommunityData(
     cover,
     role: myRole,
     isJoined: myRole !== null,
+    joinRequestId:
+      joinRequest?.status === CommunityJoinReqStatus.PENDING
+        ? joinRequest.id
+        : null,
+    joinRequestStatus:
+      joinRequest?.status === CommunityJoinReqStatus.PENDING
+        ? CommunityJoinReqStatus.PENDING
+        : null,
     ...muteFields(muteRow),
     moderationStatus: community.moderationStatus,
     // Phase 1 stub — wire to stream-service gRPC in Phase 2.
@@ -337,10 +359,12 @@ async function toDiscoverItem(
     lastActivityType?: string | null;
     lastActivityPreview?: string | null;
     lastActivityUsername?: string | null;
+    moderationStatus: CommunityModerationStatus;
     category: { id: string; name: string };
   },
   muteRow: MuteRowFragment,
-  isJoined: boolean
+  isJoined: boolean,
+  hasRequested: boolean
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -360,9 +384,11 @@ async function toDiscoverItem(
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
     isJoined,
+    hasRequested,
     ...muteFields(muteRow),
     // Phase 1 stub — wire to stream-service gRPC in Phase 2.
     isLive: false,
+    moderationStatus: community.moderationStatus,
     createdAt: community.createdAt.getTime(),
     lastActivity: buildLastActivity(community),
   };
@@ -753,11 +779,17 @@ export const communityService = {
       membership && membership.status === CommunityMemberStatus.ACTIVE
         ? membership.role
         : null;
-    const muteRow = await communityRepository.findMuteByUserAndCommunity(
-      callerId,
-      id
-    );
-    return toCommunityData(community, myRole, muteRow);
+
+    // Fetch mute row and (for non-members only) any existing join request in
+    // parallel. Members can't have a pending join request, so skip that query.
+    const [muteRow, joinRequest] = await Promise.all([
+      communityRepository.findMuteByUserAndCommunity(callerId, id),
+      myRole === null
+        ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
+        : Promise.resolve(null),
+    ]);
+
+    return toCommunityData(community, myRole, muteRow, joinRequest);
   },
 
   async create(
@@ -872,15 +904,61 @@ export const communityService = {
 
     // Provision the community's chat room in chat-service (GeneralRoom id ===
     // community.id) so community chat works and drives lastActivityAt ordering.
+    // Synchronous first: guarantees the room exists before this returns, so a
+    // member's first message can't race ahead of room creation. The async event
+    // below stays as a backstop for the rare case chat-service is briefly
+    // unavailable (provisionForCommunity is an idempotent upsert).
+    try {
+      await getChatClient().ensureCommunityRoom({
+        communityId: community.id,
+        name: community.name,
+        ownerId: creatorId,
+        avatarUrl: community.avatarUrl ?? null,
+      });
+    } catch (err) {
+      logger.warn(
+        `ensureCommunityRoom failed for community ${community.id}; relying on async community.created backstop: ${String(err)}`
+      );
+    }
     publishCommunityCreatedForChatSafe({
       communityId: community.id,
       name: community.name,
       avatarUrl: community.avatarUrl ?? null,
       ownerId: creatorId,
     });
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "COMMUNITY_CREATED",
+      metadata: {
+        communityName: community.name,
+        actorUserId: creatorId,
+        actorName: "",
+      },
+      triggeredByUserId: creatorId,
+      eventAt: new Date().toISOString(),
+    });
 
     // A brand-new community has no mute row for the creator.
-    return toCommunityData(community, CommunityMemberRole.ADMIN, null);
+    const communityData = await toCommunityData(
+      community,
+      CommunityMemberRole.ADMIN,
+      null
+    );
+
+    // Notify the creator via /chat socket so their community list updates
+    // immediately without a page reload or extra API call.
+    void publishChatUserEvent(
+      redis,
+      creatorId,
+      "community:created",
+      communityData
+    ).catch((err: unknown) => {
+      logger.warn(
+        `community:created socket publish failed for ${community.id}: ${String(err)}`
+      );
+    });
+
+    return communityData;
   },
 
   /** Best-effort rollback of a community whose member writes failed. */
@@ -995,6 +1073,36 @@ export const communityService = {
             );
     }
 
+    // Detect which fields will actually change for the system message.
+    const changedFields: string[] = [];
+    if (
+      input.name !== undefined &&
+      normalizeName(input.name) !== community.name
+    ) {
+      changedFields.push("name");
+    }
+    if (
+      input.description !== undefined &&
+      input.description !== community.description
+    ) {
+      changedFields.push("description");
+    }
+    if (input.avatarObjectKey !== undefined) {
+      changedFields.push("avatar");
+    }
+    if (input.type !== undefined && input.type !== community.type) {
+      changedFields.push("visibility");
+    }
+    if (input.categoryId !== undefined) {
+      changedFields.push("category");
+    }
+    if (
+      input.handle !== undefined &&
+      normalizeHandle(input.handle) !== community.handle
+    ) {
+      changedFields.push("handle");
+    }
+
     let updated: CommunityWithCategory;
     try {
       updated = await communityRepository.updateCommunity(communityId, data);
@@ -1012,6 +1120,22 @@ export const communityService = {
     if (nextHandle && nextHandle !== previousHandle) {
       await communityCache.invalidateHandleAvailability(previousHandle);
       await communityCache.invalidateHandleAvailability(nextHandle);
+    }
+
+    if (changedFields.length > 0) {
+      publishCommunitySystemMessageForChatSafe({
+        communityId,
+        systemMessageType: "COMMUNITY_UPDATED",
+        metadata: {
+          actorUserId: callerId,
+          actorName: "",
+          changedFields,
+          ...(input.name !== undefined ? { newName: nextName } : {}),
+          ...(input.type !== undefined ? { newVisibility: input.type } : {}),
+        },
+        triggeredByUserId: callerId,
+        eventAt: new Date().toISOString(),
+      });
     }
 
     if (input.memberIds !== undefined) {
@@ -1090,6 +1214,7 @@ export const communityService = {
           ...muteFields(muteMap.get(row.id) ?? null),
           // Phase 1 stub — wire to stream-service gRPC in Phase 2.
           isLive: false,
+          moderationStatus: row.moderationStatus,
         };
       })
     );
@@ -1165,13 +1290,16 @@ export const communityService = {
       limit: params.limit,
     });
 
-    // Discovered communities are ones the caller isn't an active member of, so
-    // a mute row is unusual (only a stale row from a community they left) — but
-    // resolve it for parity. One batched query.
-    const muteByCommunityId = await loadMuteMap(
-      userId,
-      rows.map((row) => row.id)
-    );
+    const communityIds = rows.map((row) => row.id);
+
+    // Batch-load mute rows and pending join requests in parallel — one query each.
+    const [muteByCommunityId, pendingRequestSet] = await Promise.all([
+      loadMuteMap(userId, communityIds),
+      communityRepository.findPendingRequestedCommunityIds(
+        userId,
+        communityIds
+      ),
+    ]);
 
     // Build a fast lookup for membership: used by the mine-search alias
     // (includeJoined=true). Public discover always has isJoined=false.
@@ -1184,7 +1312,8 @@ export const communityService = {
         toDiscoverItem(
           row,
           muteByCommunityId.get(row.id) ?? null,
-          memberSet.has(row.id)
+          memberSet.has(row.id),
+          pendingRequestSet.has(row.id)
         )
       )
     );
@@ -1315,6 +1444,20 @@ export const communityService = {
       targetUserId,
       oldRole: target.role,
       newRole: role,
+    });
+    publishCommunitySystemMessageForChatSafe({
+      communityId,
+      systemMessageType: "MEMBER_ROLE_CHANGED",
+      metadata: {
+        actorUserId: callerId,
+        actorName: "",
+        targetUserId,
+        targetName: "",
+        oldRole: target.role as string,
+        newRole: role as string,
+      },
+      triggeredByUserId: callerId,
+      eventAt: new Date().toISOString(),
     });
 
     return toMemberData(updated);
@@ -1449,6 +1592,38 @@ export const communityService = {
       reason: reason ?? null,
     });
 
+    try {
+      const now = Date.now();
+      await Promise.all([
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:member:removed",
+          {
+            communityId,
+            userId: targetUserId,
+            reason: "kicked",
+            actorId: callerId,
+            updatedAt: now,
+          } satisfies CommunityMemberRemovedPayload
+        ),
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:stats:updated",
+          {
+            communityId,
+            memberCount: count,
+            updatedAt: now,
+          } satisfies CommunityStatsUpdatedPayload
+        ),
+      ]);
+    } catch (err) {
+      logger.warn(
+        `community realtime broadcast failed kick community=${communityId}: ${String(err)}`
+      );
+    }
+
     return toMemberData(updated);
   },
 
@@ -1547,7 +1722,130 @@ export const communityService = {
       reason: reason ?? null,
     });
 
+    try {
+      const now = Date.now();
+      await Promise.all([
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:member:removed",
+          {
+            communityId,
+            userId: targetUserId,
+            reason: "banned",
+            actorId: callerId,
+            updatedAt: now,
+          } satisfies CommunityMemberRemovedPayload
+        ),
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:stats:updated",
+          {
+            communityId,
+            memberCount: count,
+            updatedAt: now,
+          } satisfies CommunityStatsUpdatedPayload
+        ),
+      ]);
+    } catch (err) {
+      logger.warn(
+        `community realtime broadcast failed ban community=${communityId}: ${String(err)}`
+      );
+    }
+
     return toMemberData(updated);
+  },
+
+  /**
+   * Internal helper (not part of the public API surface — `communityService` is
+   * an object literal, so this is a plain method, not a class `private`). Call it
+   * from every path that turns a member ACTIVE so the side-effects stay DRY:
+   *   1. emit the enriched `community.member_added` domain event (adds
+   *      requestId + communityName + moderatorRecipientIds so the notifications
+   *      consumer can welcome the joiner AND inform admins/mods), and
+   *   2. broadcast a `community:member:joined` roster event into the community
+   *      room (best-effort; never throws into the request path).
+   */
+  async notifyMemberJoined(args: {
+    community: { id: string; name: string };
+    member: {
+      userId: string;
+      role: CommunityMemberRole;
+      joinedAt: Date;
+      snapshotUsername: string;
+      snapshotDisplayName: string;
+      snapshotAvatarKey: string | null;
+    };
+    memberCount: number;
+    actorId: string;
+    via: CommunityMemberAddedPayload["via"];
+    requestId?: string;
+    /**
+     * Optional pre-resolved ADMIN/MODERATOR roster. Bulk callers (addMembers,
+     * bulkApproveJoinRequests) hoist it once and pass it in to avoid an N+1 of
+     * identical roster reads — one per member. Single-member callers omit it and
+     * fall back to the lazy internal resolution below.
+     */
+    moderatorRecipientIds?: string[];
+  }): Promise<void> {
+    const { community, member, memberCount, actorId, via, requestId } = args;
+
+    const moderatorRecipientIds =
+      args.moderatorRecipientIds ??
+      (await communityRepository.findActiveMemberIdsByRoles(community.id, [
+        CommunityMemberRole.ADMIN,
+        CommunityMemberRole.MODERATOR,
+      ]));
+
+    publishCommunityMemberAddedSafe({
+      communityId: community.id,
+      eventAt: new Date().toISOString(),
+      actorId,
+      targetUserId: member.userId,
+      via,
+      requestId,
+      communityName: community.name,
+      moderatorRecipientIds,
+    });
+
+    // Roster broadcast — client-facing socket DTO (joinedAt is epoch ms here,
+    // matching the reserved AsyncAPI CommunityMemberDTO). Reuse the avatar
+    // key→URL resolver the REST member list uses; never hand-roll presigning.
+    try {
+      const avatarView = await memberAvatarService.resolveViewUrl(
+        member.snapshotAvatarKey
+      );
+      const memberDto = {
+        userId: member.userId,
+        username: member.snapshotUsername,
+        displayName: member.snapshotDisplayName,
+        avatarUrl: avatarView?.url ?? null,
+        role: member.role,
+        joinedAt: member.joinedAt.getTime(),
+      };
+      await publishCommunityRoomEvent(
+        redis,
+        community.id,
+        "community:member:joined",
+        memberDto
+      );
+      await publishCommunityRoomEvent(
+        redis,
+        community.id,
+        "community:stats:updated",
+        {
+          communityId: community.id,
+          memberCount,
+          updatedAt: Date.now(),
+        } satisfies CommunityStatsUpdatedPayload
+      );
+    } catch (error) {
+      logger.warn(
+        `community:member:joined broadcast failed for community=${community.id} user=${member.userId}`
+      );
+      logger.warn(error);
+    }
   },
 
   async addMembers(
@@ -1696,28 +1994,58 @@ export const communityService = {
       );
 
       let created: CommunityMemberData[] = [];
+      // Raw created rows (with real joinedAt/role) kept for the per-member
+      // join notification below.
+      let createdRows: Awaited<
+        ReturnType<typeof communityRepository.findMembersByUserIds>
+      > = [];
       if (toCreate.length > 0) {
-        const rows = await communityRepository.findMembersByUserIds(
+        createdRows = await communityRepository.findMembersByUserIds(
           communityId,
           toCreate
         );
-        created = await Promise.all(rows.map(toMemberData));
+        created = await Promise.all(createdRows.map(toMemberData));
       }
 
       added = [...reactivated, ...created];
 
-      // Emit MEMBER_ADDED once per added user (skipped[] are NOT emitted).
-      const eventAt = new Date().toISOString();
-      for (const userId of [
-        ...toReactivate.map((m) => m.userId),
-        ...toCreate,
-      ]) {
-        publishCommunityMemberAddedSafe({
-          communityId,
-          eventAt,
+      // Resolve the ADMIN/MODERATOR roster ONCE for the whole batch and pass it
+      // into every notifyMemberJoined call below — the roster is identical for
+      // each added member, so hoisting it kills the per-member N+1 roster read.
+      const moderatorRecipientIds =
+        await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]);
+
+      // Notify once per added user (skipped[] are NOT emitted): enriched
+      // member_added (moderator awareness) + community room roster broadcast.
+      for (const m of toReactivate) {
+        const snap = snapshotMap.get(m.userId)!;
+        await this.notifyMemberJoined({
+          community,
+          member: {
+            userId: m.userId,
+            role: CommunityMemberRole.MEMBER,
+            joinedAt: m.joinedAt,
+            snapshotUsername: snap.username,
+            snapshotDisplayName: snap.displayName,
+            snapshotAvatarKey: snap.avatarObjectKey,
+          },
+          memberCount: count,
           actorId: callerId,
-          targetUserId: userId,
           via: "add_members",
+          moderatorRecipientIds,
+        });
+      }
+      for (const row of createdRows) {
+        await this.notifyMemberJoined({
+          community,
+          member: row,
+          memberCount: count,
+          actorId: callerId,
+          via: "add_members",
+          moderatorRecipientIds,
         });
       }
     }
@@ -1791,6 +2119,45 @@ export const communityService = {
       targetUserId: callerId,
       metadata: leaveMeta,
     });
+
+    publishCommunityMemberLeftSafe({
+      communityId,
+      actorId: callerId,
+      reason: leaveReason,
+      eventAt: new Date().toISOString(),
+    });
+
+    try {
+      const now = Date.now();
+      await Promise.all([
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:member:removed",
+          {
+            communityId,
+            userId: callerId,
+            reason: "left",
+            actorId: callerId,
+            updatedAt: now,
+          } satisfies CommunityMemberRemovedPayload
+        ),
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:stats:updated",
+          {
+            communityId,
+            memberCount: count,
+            updatedAt: now,
+          } satisfies CommunityStatsUpdatedPayload
+        ),
+      ]);
+    } catch (err) {
+      logger.warn(
+        `community realtime broadcast failed leave community=${communityId}: ${String(err)}`
+      );
+    }
 
     return toMemberData(updated);
   },
@@ -1905,6 +2272,38 @@ export const communityService = {
         eventAt,
       });
 
+      try {
+        const now = Date.now();
+        await Promise.all([
+          publishCommunityRoomEvent(
+            redis,
+            communityId,
+            "community:member:removed",
+            {
+              communityId,
+              userId: callerId,
+              reason: "left",
+              actorId: callerId,
+              updatedAt: now,
+            } satisfies CommunityMemberRemovedPayload
+          ),
+          publishCommunityRoomEvent(
+            redis,
+            communityId,
+            "community:stats:updated",
+            {
+              communityId,
+              memberCount: count,
+              updatedAt: now,
+            } satisfies CommunityStatsUpdatedPayload
+          ),
+        ]);
+      } catch (err) {
+        logger.warn(
+          `community realtime broadcast failed bulk-leave community=${communityId}: ${String(err)}`
+        );
+      }
+
       results.push({ communityId, status: "LEFT" });
       leftCount++;
     }
@@ -1967,6 +2366,26 @@ export const communityService = {
       action: "MEMBER_UNBANNED",
       targetUserId,
     });
+
+    // Unban: BANNED→LEFT. Count is unchanged (BANNED was already excluded from
+    // ACTIVE). Emit only the membership-state event, not stats.
+    try {
+      await publishCommunityRoomEvent(
+        redis,
+        communityId,
+        "community:member:unbanned",
+        {
+          communityId,
+          userId: targetUserId,
+          actorId: callerId,
+          updatedAt: Date.now(),
+        } satisfies CommunityMemberUnbannedPayload
+      );
+    } catch (err) {
+      logger.warn(
+        `community:member:unbanned broadcast failed community=${communityId}: ${String(err)}`
+      );
+    }
 
     return toMemberData(updated);
   },
@@ -2037,11 +2456,11 @@ export const communityService = {
 
     return {
       userId: view.userId,
-      username: view.username,
-      displayName: view.displayName,
-      avatarUrl: view.avatarUrl,
-      avatarUrlExpiresIn: view.avatarUrlExpiresIn,
-      avatar: view.avatar,
+      snapshotUsername: view.username,
+      snapshotDisplayName: view.displayName,
+      snapshotAvatarUrl: view.avatarUrl,
+      snapshotAvatarUrlExpiresIn: view.avatarUrlExpiresIn,
+      snapshotAvatar: view.avatar,
       mutedBy: row.mutedBy,
       reason: row.reason,
       mutedAt: row.createdAt.toISOString(),
@@ -2140,11 +2559,11 @@ export const communityService = {
         );
         items.push({
           userId: row.userId,
-          username: member?.snapshotUsername ?? "",
-          displayName: member?.snapshotDisplayName ?? "",
-          avatarUrl: avatarView?.url ?? null,
-          avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-          avatar,
+          snapshotUsername: member?.snapshotUsername ?? "",
+          snapshotDisplayName: member?.snapshotDisplayName ?? "",
+          snapshotAvatarUrl: avatarView?.url ?? null,
+          snapshotAvatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+          snapshotAvatar: avatar,
           mutedBy: row.mutedBy,
           reason: row.reason,
           mutedAt: row.createdAt.toISOString(),
@@ -2319,7 +2738,8 @@ export const communityService = {
           const base = await toDiscoverItem(
             community,
             muteMap.get(community.id) ?? null,
-            isJoined
+            isJoined,
+            false
           );
           return { ...base, likedAt: likedAtByCommunityId.get(community.id)! };
         })
@@ -2331,24 +2751,166 @@ export const communityService = {
   async joinCommunity(
     communityId: string,
     callerId: string
-  ): Promise<CommunityJoinRequestData> {
+  ): Promise<CommunityJoinResult> {
+    // STEP 1: Load community (findById already excludes soft-deleted rows).
     const community = await communityRepository.findById(communityId);
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
+
+    // STEP 2: Guard suspended.
     assertCommunityNotSuspended(community);
 
-    // For PUBLIC communities, create a join request (PENDING) rather than
-    // immediately adding the member. PRIVATE communities still require an
-    // explicit invite/add by an admin.
-    if (community.type !== CommunityType.PUBLIC) {
-      throw new ForbiddenError("COMMUNITY_JOIN_REQUIRES_INVITE");
+    // STEP 3: Load existing membership row (any status).
+    const existingMember = await communityRepository.findMemberByUserId(
+      communityId,
+      callerId
+    );
+
+    // STEP 4: Banned → immediate rejection.
+    if (existingMember?.status === CommunityMemberStatus.BANNED) {
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
     }
 
-    // Reuse the createJoinRequest pipeline (which handles mutual-want
-    // auto-accept if a 1:1 invite exists). Pass `null` as the optional
-    // message since this endpoint is the simple "Join" action.
-    return this.createJoinRequest(communityId, callerId, null);
+    // -------------------------------------------------------------------------
+    // PUBLIC BRANCH — instant ACTIVE membership
+    // -------------------------------------------------------------------------
+    if (community.type === CommunityType.PUBLIC) {
+      // STEP 5a: Already an active member → idempotent 200.
+      if (existingMember?.status === CommunityMemberStatus.ACTIVE) {
+        return {
+          status: "ALREADY_MEMBER",
+          membershipStatus: "ACTIVE",
+          member: await toMemberData(existingMember),
+        };
+      }
+
+      // STEP 5b: Fetch user snapshot via gRPC (same pattern as addMembers /
+      // approveJoinRequest). Falls back to empty strings on service failure.
+      const snapshotMap = await fetchUserSnapshots([callerId]);
+      const snap = snapshotMap.get(callerId);
+      const snapshotData = {
+        snapshotUsername: snap?.username ?? "",
+        snapshotDisplayName: snap?.displayName ?? "",
+        snapshotAvatarKey: snap?.avatarObjectKey ?? null,
+      };
+
+      // STEP 5c: Reactivate LEFT row or create a fresh ACTIVE row.
+      let newRow;
+      const reactivated = existingMember?.status === CommunityMemberStatus.LEFT;
+      if (reactivated) {
+        newRow = await communityRepository.reactivateMemberWithSnapshot(
+          communityId,
+          callerId,
+          snapshotData
+        );
+      } else {
+        newRow = await communityRepository.createMember({
+          communityId,
+          userId: callerId,
+          role: CommunityMemberRole.MEMBER,
+          status: CommunityMemberStatus.ACTIVE,
+          ...snapshotData,
+        });
+      }
+
+      // STEP 5d: Refresh member count.
+      const count = await communityRepository.countActiveMembers(communityId);
+      await communityRepository.setMemberCount(communityId, count);
+
+      // STEP 5e: Best-effort last-activity update.
+      void communityRepository
+        .updateLastActivity(
+          communityId,
+          new Date(),
+          "join",
+          `${newRow.snapshotUsername} joined the community`,
+          newRow.snapshotUsername,
+          callerId
+        )
+        .catch((err) =>
+          logger.warn(
+            `updateLastActivity failed for community=${communityId}: ${String(err)}`
+          )
+        );
+
+      // STEP 5f: Emit community:member:joined + community:stats:updated socket
+      // events + publish community.member_added (for mod notification).
+      // Fire-and-forget: the member row is already committed — do not fail the
+      // HTTP request if the roster lookup or socket publish fails.
+      void this.notifyMemberJoined({
+        community,
+        member: newRow,
+        memberCount: count,
+        actorId: callerId,
+        via: "self_join",
+      }).catch((err) =>
+        logger.warn(
+          `notifyMemberJoined failed for community=${communityId}: ${String(err)}`
+        )
+      );
+
+      // STEP 5g: Publish community.member_joined (self-join dedicated event).
+      const communityAvatarMedia = await buildCommunityImageMedia(
+        community.avatarUrl
+      );
+      publishCommunityMemberJoinedSafe({
+        communityId,
+        userId: callerId,
+        communityName: community.name,
+        communityHandle: community.handle,
+        communityAvatarUrl: communityAvatarMedia.downloadUrl,
+        reactivated,
+        eventAt: new Date().toISOString(),
+      });
+
+      // STEP 5h: Audit.
+      await this.recordAudit({
+        communityId,
+        actorId: callerId,
+        action: "COMMUNITY_JOINED",
+        targetUserId: callerId,
+        metadata: { reactivated },
+      });
+
+      logger.info(
+        `Community self-join (PUBLIC): community=${communityId} user=${callerId} reactivated=${reactivated}`
+      );
+
+      // STEP 5i: Return.
+      return {
+        status: "JOINED",
+        membershipStatus: "ACTIVE",
+        member: await toMemberData(newRow),
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // PRIVATE BRANCH — create PENDING join request
+    // -------------------------------------------------------------------------
+
+    // STEP 6a: Already an active member → idempotent 200. This must stay here
+    // (createJoinRequest throws ConflictError on an ACTIVE member); short-
+    // circuiting first preserves the idempotent self-join contract.
+    if (existingMember?.status === CommunityMemberStatus.ACTIVE) {
+      return {
+        status: "ALREADY_MEMBER",
+        membershipStatus: "ACTIVE",
+        member: await toMemberData(existingMember),
+      };
+    }
+
+    // STEP 6b: Delegate to createJoinRequest — the single source of truth for
+    // the create / recycle / idempotent-PENDING logic plus moderator
+    // notification. Its NotFound / suspended / BANNED / ACTIVE guards are all
+    // pre-empted above (STEPs 1, 2, 4 and 6a), so they can never fire first.
+    const request = await this.createJoinRequest(communityId, callerId, null);
+
+    return {
+      status: "REQUEST_CREATED",
+      membershipStatus: "PENDING",
+      request,
+    };
   },
 
   async transferAdmin(
@@ -2582,13 +3144,26 @@ export const communityService = {
           CommunityMemberRole.ADMIN,
           CommunityMemberRole.MODERATOR,
         ]);
+      const [requesterSnaps, communityAvatarMedia] = await Promise.all([
+        fetchUserSnapshots([callerId]),
+        buildCommunityImageMedia(community.avatarUrl),
+      ]);
+      const requesterSnap = requesterSnaps.get(callerId);
+      const requesterAvatarMedia = await buildAvatarMedia(
+        requesterSnap?.avatarObjectKey ?? null
+      );
       publishCommunityJoinRequestedSafe({
         communityId,
+        communityName: community.name,
+        communityHandle: community.handle,
+        communityAvatarUrl: communityAvatarMedia.downloadUrl,
         eventAt: new Date().toISOString(),
         userId: callerId,
         requestId: row.id,
         message,
         moderatorRecipientIds,
+        requesterDisplayName: requesterSnap?.displayName ?? "Unknown",
+        requesterAvatarUrl: requesterAvatarMedia.downloadUrl,
       });
     }
 
@@ -2815,18 +3390,46 @@ export const communityService = {
       `Community join-request approved: community=${communityId} request=${requestId} approver=${callerId} target=${request.userId}`
     );
 
-    publishCommunityMemberAddedSafe({
-      communityId,
-      eventAt: new Date().toISOString(),
-      actorId: callerId,
-      targetUserId: request.userId,
-      via: "join_request_approved",
-    });
-
     const row = await communityRepository.findMemberByUserId(
       communityId,
       request.userId
     );
+
+    // Enriched member_added (moderator awareness) + roster broadcast.
+    await this.notifyMemberJoined({
+      community,
+      member: row!,
+      memberCount: count,
+      actorId: callerId,
+      via: "join_request_approved",
+      requestId: request.id,
+    });
+
+    // Dedicated approved event → notifies the requester (in-app/push) and drives
+    // the realtime join-request UI-state update.
+    const [callerSnapsApprove, communityAvatarMediaApprove] = await Promise.all(
+      [
+        fetchUserSnapshots([callerId]),
+        buildCommunityImageMedia(community.avatarUrl),
+      ]
+    );
+    const callerSnapApprove = callerSnapsApprove.get(callerId);
+    publishCommunityJoinRequestApprovedSafe({
+      communityId: community.id,
+      communityName: community.name,
+      communityHandle: community.handle,
+      communityAvatarUrl: communityAvatarMediaApprove.downloadUrl,
+      eventAt: new Date().toISOString(),
+      requestId: request.id,
+      userId: request.userId,
+      decidedBy: {
+        userId: callerId,
+        username: callerSnapApprove?.username ?? null,
+        displayName: callerSnapApprove?.displayName ?? "Unknown",
+      },
+      decidedAt: new Date().toISOString(),
+    });
+
     return {
       request: toJoinRequestData(updatedRequest),
       member: await toMemberData(row!),
@@ -2871,7 +3474,273 @@ export const communityService = {
       metadata: { requestId },
     });
 
+    // Dedicated rejected event → notifies the requester (in-app/push) and drives
+    // the realtime join-request UI-state update.
+    const [callerSnapsReject, communityAvatarMediaReject] = await Promise.all([
+      fetchUserSnapshots([callerId]),
+      buildCommunityImageMedia(community.avatarUrl),
+    ]);
+    const callerSnapReject = callerSnapsReject.get(callerId);
+    publishCommunityJoinRequestRejectedSafe({
+      communityId: community.id,
+      communityName: community.name,
+      communityHandle: community.handle,
+      communityAvatarUrl: communityAvatarMediaReject.downloadUrl,
+      eventAt: new Date().toISOString(),
+      requestId: request.id,
+      userId: request.userId,
+      decidedBy: {
+        userId: callerId,
+        username: callerSnapReject?.username ?? null,
+        displayName: callerSnapReject?.displayName ?? "Unknown",
+      },
+      decidedAt: new Date().toISOString(),
+    });
+
     return toJoinRequestData(updated);
+  },
+
+  async bulkApproveJoinRequests(
+    communityId: string,
+    callerId: string,
+    requestIds: string[]
+  ): Promise<{ approved: string[]; skipped: string[] }> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
+    assertCommunityNotSuspended(community);
+
+    const rows = await communityRepository.findJoinRequestsByIds(requestIds);
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+
+    const pending = requestIds.filter((id) => {
+      const r = rowMap.get(id);
+      return (
+        r &&
+        r.communityId === communityId &&
+        r.status === CommunityJoinReqStatus.PENDING
+      );
+    });
+    const skipped = requestIds.filter((id) => !pending.includes(id));
+
+    if (pending.length === 0) return { approved: [], skipped };
+
+    const targetUserIds = pending.map((id) => rowMap.get(id)!.userId);
+    const [existingMembers, snapshotMap] = await Promise.all([
+      communityRepository.findMembersByUserIds(communityId, targetUserIds),
+      fetchUserSnapshots(targetUserIds),
+    ]);
+    const memberMap = new Map(existingMembers.map((m) => [m.userId, m]));
+
+    const approved: string[] = [];
+    const bannedSkipped: string[] = [];
+    const decidedAt = new Date();
+
+    for (const requestId of pending) {
+      const request = rowMap.get(requestId)!;
+      const existing = memberMap.get(request.userId);
+
+      if (existing?.status === CommunityMemberStatus.BANNED) {
+        bannedSkipped.push(requestId);
+        continue;
+      }
+
+      const snap = snapshotMap.get(request.userId);
+      const snapshotData = {
+        snapshotUsername: snap?.username ?? "",
+        snapshotDisplayName: snap?.displayName ?? "",
+        snapshotAvatarKey: snap?.avatarObjectKey ?? null,
+      };
+
+      if (existing?.status === CommunityMemberStatus.LEFT) {
+        await communityRepository.reactivateMemberWithSnapshot(
+          communityId,
+          request.userId,
+          snapshotData
+        );
+      } else if (
+        !existing ||
+        existing.status !== CommunityMemberStatus.ACTIVE
+      ) {
+        await communityRepository.createMember({
+          communityId,
+          userId: request.userId,
+          role: CommunityMemberRole.MEMBER,
+          status: CommunityMemberStatus.ACTIVE,
+          ...snapshotData,
+        });
+      }
+
+      approved.push(requestId);
+    }
+
+    if (approved.length > 0) {
+      await communityRepository.bulkUpdateJoinRequestStatus(
+        approved,
+        CommunityJoinReqStatus.APPROVED,
+        callerId,
+        decidedAt
+      );
+
+      const count = await communityRepository.countActiveMembers(communityId);
+      await communityRepository.setMemberCount(communityId, count);
+
+      // Re-read the now-ACTIVE member rows in one batch (real joinedAt/role) so
+      // the per-member join notification carries the roster DTO without an N+1
+      // member-row read; the ADMIN/MODERATOR recipient roster is likewise hoisted
+      // ONCE here (identical for every approved member) instead of being resolved
+      // per member inside notifyMemberJoined.
+      const approvedUserIds = approved.map((id) => rowMap.get(id)!.userId);
+      const joinedRows = await communityRepository.findMembersByUserIds(
+        communityId,
+        approvedUserIds
+      );
+      const joinedRowMap = new Map(joinedRows.map((m) => [m.userId, m]));
+
+      const moderatorRecipientIds =
+        await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]);
+
+      const [callerSnapsBulk, communityAvatarMediaBulk] = await Promise.all([
+        fetchUserSnapshots([callerId]),
+        buildCommunityImageMedia(community.avatarUrl),
+      ]);
+      const callerSnapBulk = callerSnapsBulk.get(callerId);
+
+      for (const requestId of approved) {
+        const request = rowMap.get(requestId)!;
+        void this.recordAudit({
+          communityId,
+          actorId: callerId,
+          action: "JOIN_REQUEST_APPROVED",
+          targetUserId: request.userId,
+          metadata: { requestId, bulk: true },
+        });
+
+        // Enriched member_added (moderator awareness) + roster broadcast.
+        const joinedRow = joinedRowMap.get(request.userId);
+        if (joinedRow) {
+          await this.notifyMemberJoined({
+            community,
+            member: joinedRow,
+            memberCount: count,
+            actorId: callerId,
+            via: "join_request_approved",
+            requestId,
+            moderatorRecipientIds,
+          });
+        }
+
+        // Dedicated approved event for the requester (in-app/push + realtime UI).
+        publishCommunityJoinRequestApprovedSafe({
+          communityId: community.id,
+          communityName: community.name,
+          communityHandle: community.handle,
+          communityAvatarUrl: communityAvatarMediaBulk.downloadUrl,
+          eventAt: new Date().toISOString(),
+          requestId,
+          userId: request.userId,
+          decidedBy: {
+            userId: callerId,
+            username: callerSnapBulk?.username ?? null,
+            displayName: callerSnapBulk?.displayName ?? "Unknown",
+          },
+          decidedAt: decidedAt.toISOString(),
+        });
+      }
+
+      logger.info(
+        `Bulk approve join-requests: community=${communityId} approver=${callerId} approved=${approved.length} skipped=${skipped.length + bannedSkipped.length}`
+      );
+    }
+
+    return { approved, skipped: [...skipped, ...bannedSkipped] };
+  },
+
+  async bulkRejectJoinRequests(
+    communityId: string,
+    callerId: string,
+    requestIds: string[]
+  ): Promise<{ rejected: string[]; skipped: string[] }> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const rows = await communityRepository.findJoinRequestsByIds(requestIds);
+    const rowMap = new Map(rows.map((r) => [r.id, r]));
+
+    const pending = requestIds.filter((id) => {
+      const r = rowMap.get(id);
+      return (
+        r &&
+        r.communityId === communityId &&
+        r.status === CommunityJoinReqStatus.PENDING
+      );
+    });
+    const skipped = requestIds.filter((id) => !pending.includes(id));
+
+    if (pending.length > 0) {
+      const decidedAt = new Date();
+      await communityRepository.bulkUpdateJoinRequestStatus(
+        pending,
+        CommunityJoinReqStatus.REJECTED,
+        callerId,
+        decidedAt
+      );
+
+      const [callerSnapsBulkReject, communityAvatarMediaBulkReject] =
+        await Promise.all([
+          fetchUserSnapshots([callerId]),
+          buildCommunityImageMedia(community.avatarUrl),
+        ]);
+      const callerSnapBulkReject = callerSnapsBulkReject.get(callerId);
+
+      for (const requestId of pending) {
+        const request = rowMap.get(requestId)!;
+        void this.recordAudit({
+          communityId,
+          actorId: callerId,
+          action: "JOIN_REQUEST_REJECTED",
+          targetUserId: request.userId,
+          metadata: { requestId, bulk: true },
+        });
+
+        // Dedicated rejected event for the requester (in-app/push + realtime UI).
+        publishCommunityJoinRequestRejectedSafe({
+          communityId: community.id,
+          communityName: community.name,
+          communityHandle: community.handle,
+          communityAvatarUrl: communityAvatarMediaBulkReject.downloadUrl,
+          eventAt: new Date().toISOString(),
+          requestId,
+          userId: request.userId,
+          decidedBy: {
+            userId: callerId,
+            username: callerSnapBulkReject?.username ?? null,
+            displayName: callerSnapBulkReject?.displayName ?? "Unknown",
+          },
+          decidedAt: decidedAt.toISOString(),
+        });
+      }
+
+      logger.info(
+        `Bulk reject join-requests: community=${communityId} rejector=${callerId} rejected=${pending.length} skipped=${skipped.length}`
+      );
+    }
+
+    return { rejected: pending, skipped };
   },
 
   async cancelJoinRequest(
@@ -2896,6 +3765,41 @@ export const communityService = {
     }
 
     const updated = await communityRepository.updateJoinRequest(requestId, {
+      status: CommunityJoinReqStatus.CANCELLED,
+      decidedBy: callerId,
+      decidedAt: new Date(),
+    });
+
+    return toJoinRequestData(updated);
+  },
+
+  /**
+   * Cancel the authenticated user's own pending join request for a community
+   * without needing the requestId — looks up by (communityId, callerId).
+   * Convenience alternative to cancelJoinRequest for clients that only have
+   * communityId in scope (e.g. detail screen, no stored requestId).
+   */
+  async cancelMyJoinRequest(
+    communityId: string,
+    callerId: string
+  ): Promise<CommunityJoinRequestData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const request = await communityRepository.findJoinRequestByCommunityAndUser(
+      communityId,
+      callerId
+    );
+    if (!request) {
+      throw new NotFoundError("COMMUNITY_JOIN_REQUEST_NOT_FOUND");
+    }
+    if (request.status !== CommunityJoinReqStatus.PENDING) {
+      throw new BadRequestError("COMMUNITY_JOIN_REQUEST_NOT_PENDING");
+    }
+
+    const updated = await communityRepository.updateJoinRequest(request.id, {
       status: CommunityJoinReqStatus.CANCELLED,
       decidedBy: callerId,
       decidedAt: new Date(),
@@ -4313,6 +5217,18 @@ export const communityService = {
             `updateLastActivity failed for community=${community.id}: ${String(err)}`
           )
         );
+
+      // Self-join via invite link: enriched member_added (moderator awareness) +
+      // roster broadcast. actor === target, so the notifications consumer still
+      // welcomes the joiner (the welcome is skipped only for join_request_approved).
+      await this.notifyMemberJoined({
+        community,
+        member,
+        memberCount: count,
+        actorId: member.userId,
+        via: "invite_link_redeem",
+        requestId: undefined,
+      });
 
       return {
         link: toInviteLinkData(updatedLink!),

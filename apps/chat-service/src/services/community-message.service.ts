@@ -18,14 +18,26 @@ import type { GeneralRoomRepository } from "../repositories/general-room.reposit
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
-import type { GeneralRoomMessage } from "../generated/prisma/index.js";
+import type {
+  GeneralRoomMessage,
+  RoomMember,
+} from "../generated/prisma/index.js";
 import {
-  groupStoredReactions,
   normalizeMessageType,
+  toggleStoredReaction,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
 import { assertCommunityMember } from "../lib/access-guard.js";
+import { isDuplicateKeyError } from "../lib/db-errors.js";
+import { markIdempotentReplay } from "../lib/idempotency.js";
+import {
+  resolveMediaUrlMap,
+  urlFromMap,
+  applyUrlMapToFiles,
+  fileMediaKey,
+  type MediaFileLike,
+} from "../lib/media-resolve.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -42,9 +54,9 @@ type MemberReadStatus = {
 type CommunityMessageWire = Omit<GeneralRoomMessage, "messageType"> & {
   contentType: string;
   /** Members whose read cursor is at or past this message's createdAt. */
-  readBy: Array<{ userId: string; readAt: string }>;
+  readBy: Array<{ userId: string; readAt: number }>;
   /** Members who were active in the room when this message was sent. */
-  deliveredTo: Array<{ userId: string; deliveredAt: string }>;
+  deliveredTo: Array<{ userId: string; deliveredAt: number }>;
 };
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
@@ -78,6 +90,27 @@ export class CommunityMessageService {
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService
   ) {}
+
+  /**
+   * Idempotently provision (or re-activate) a community's chat room
+   * (GeneralRoom, id === communityId). Invoked synchronously by community-service
+   * at creation time via gRPC so a member's first send can't race ahead of the
+   * async `community.created` event (which remains a backstop). Delegates to the
+   * same repository upsert the event consumer and boot reconciler use, so all
+   * three provisioning paths produce identical rows.
+   */
+  async provisionRoom(params: {
+    communityId: string;
+    name: string;
+    owner?: string | null;
+    logo?: string | null;
+  }): Promise<void> {
+    await this.roomRepo.provisionForCommunity(params.communityId, {
+      name: params.name,
+      owner: params.owner ?? null,
+      logo: params.logo ?? null,
+    });
+  }
 
   async sendMessage(params: {
     roomId: string;
@@ -114,7 +147,7 @@ export class CommunityMessageService {
       const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
       if (cachedId) {
         const cached = await this.messageRepo.findById(cachedId);
-        if (cached) return cached;
+        if (cached) return markIdempotentReplay(cached);
       }
       const existing = await this.messageRepo.findOne({
         roomId: params.roomId,
@@ -125,9 +158,15 @@ export class CommunityMessageService {
         this.cacheRepo
           .setMessageIdempotency(idemKey, existing.id)
           .catch(() => {});
-        return existing;
+        return markIdempotentReplay(existing);
       }
     }
+
+    // Allocate a per-room monotonic sequence number (parity with private/group
+    // rooms) so community sync/pagination can use gap-safe keyset cursors. Runs
+    // after the idempotency pre-check so replays don't burn numbers; a rare
+    // concurrent-race P2002 below may leave a one-number gap (acceptable).
+    const sequenceNumber = await this.roomRepo.allocateSequence(params.roomId);
 
     const entity: Record<string, unknown> = {
       roomId: params.roomId,
@@ -135,9 +174,14 @@ export class CommunityMessageService {
       senderName: params.senderName,
       senderAvatar: params.senderAvatar,
       message: params.message || "",
-      messageType: params.messageType || "text",
+      // §1 single casing: store the canonical UPPER-CASE type (matches the
+      // private/group services, which both persist via normalizeMessageType).
+      // The gRPC send handler already upper-cases contentType, so this is a
+      // no-op for live sends but guarantees UPPER for any other caller.
+      messageType: normalizeMessageType(params.messageType),
       parentMessageId: params.parentMessageId || null,
       clientMessageId: params.clientMessageId || null,
+      sequenceNumber,
     };
 
     if (params.attachments?.length) {
@@ -163,15 +207,16 @@ export class CommunityMessageService {
         entity as Parameters<typeof this.messageRepo.save>[0]
       );
     } catch (err) {
-      // P2002 = unique constraint violation from the sparse idempotency index
-      const pe = err as { code?: string };
-      if (pe?.code === "P2002" && params.clientMessageId) {
+      // Concurrent send with the same clientMessageId lost the unique-index
+      // insert (E11000/P2002 from the sparse idempotency index) — re-read and
+      // return the winner so both collapse to one message.
+      if (isDuplicateKeyError(err) && params.clientMessageId) {
         const dup = await this.messageRepo.findOne({
           roomId: params.roomId,
           sentBy: params.sentBy,
           clientMessageId: params.clientMessageId,
         });
-        if (dup) return dup;
+        if (dup) return markIdempotentReplay(dup);
       }
       throw err;
     }
@@ -242,10 +287,11 @@ export class CommunityMessageService {
       };
     }
 
-    const limit = Math.min(Math.max(params.limit || 100, 1), 200);
+    // P2 §13: max 100 events per room per catchup to prevent oversized payloads.
+    const limit = Math.min(Math.max(params.limit || 100, 1), 100);
 
     // since_ts mode: updatedAt-based query that catches all mutation types.
-    if (params.sinceTs) {
+    if (params.sinceTs && !Number.isNaN(params.sinceTs.getTime())) {
       const { messages: tsMessages, hasMore } =
         await this.messageRepo.findUpdatedAtSince({
           roomId: params.roomId,
@@ -378,11 +424,103 @@ export class CommunityMessageService {
    * …) is preserved unchanged. Applied at the RETURN site of REST read paths
    * only — internal logic continues to read the raw rows.
    */
+  /**
+   * Collect every stored media key on a page of community rows (sender avatars +
+   * attachment object keys) and resolve them ONCE to full download URLs. Pass
+   * the returned map to {@link toWire} so each row serializes synchronously and
+   * the FE never receives a raw object key.
+   */
+  private resolveRowsMedia(
+    rows: GeneralRoomMessage[]
+  ): Promise<Map<string, string>> {
+    const keys: string[] = [];
+    for (const m of rows) {
+      if (m.senderAvatar) keys.push(m.senderAvatar);
+      const attachments = m.attachments;
+      if (Array.isArray(attachments)) {
+        for (const attachment of attachments) {
+          const key = fileMediaKey(attachment as MediaFileLike);
+          if (key) keys.push(key);
+        }
+      }
+    }
+    return resolveMediaUrlMap(keys);
+  }
+
+  /** Extract every unique reactor userId from a batch of message rows. */
+  private collectReactionUserIds(rows: GeneralRoomMessage[]): string[] {
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const reactions = row.reactions as Record<string, unknown> | null;
+      if (!reactions || typeof reactions !== "object") continue;
+      for (const list of Object.values(reactions)) {
+        if (!Array.isArray(list)) continue;
+        for (const entry of list) {
+          const uid =
+            typeof entry === "string"
+              ? entry
+              : (entry as Record<string, unknown>)?.userId;
+          if (typeof uid === "string" && uid) ids.add(uid);
+        }
+      }
+    }
+    return [...ids];
+  }
+
   private toWire(
     m: GeneralRoomMessage,
-    members?: MemberReadStatus[]
+    members?: MemberReadStatus[],
+    urlMap?: Map<string, string>,
+    resolveReactionUser?: (
+      userId: string
+    ) => { displayName: string; avatarUrl: string } | undefined
   ): CommunityMessageWire {
-    const wire = toWireMessage(m);
+    const wire = toWireMessage(m) as Record<string, unknown>;
+
+    // Resolve raw object keys → full download URLs on read (never persisted, so
+    // CDN/presign rotation keeps working). Internal logic still reads raw rows.
+    if (urlMap) {
+      if (typeof wire.senderAvatar === "string") {
+        wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);
+      }
+      if (Array.isArray(wire.attachments)) {
+        wire.attachments = applyUrlMapToFiles(
+          wire.attachments as MediaFileLike[],
+          urlMap
+        );
+      }
+    }
+
+    // Rename avatar → avatarUrl and resolve S3 object-keys to full presigned
+    // download URLs inside the stored reactions map. No new field is added.
+    if (wire.reactions && typeof wire.reactions === "object") {
+      const raw = wire.reactions as Record<string, unknown>;
+      const out: Record<string, unknown[]> = {};
+      for (const [emoji, list] of Object.entries(raw)) {
+        if (!Array.isArray(list)) continue;
+        out[emoji] = list.map((r) => {
+          const reactor = (r ?? {}) as Record<string, unknown>;
+          const { avatar, ...rest } = reactor;
+          const snap = resolveReactionUser?.(reactor.userId as string);
+          return {
+            ...rest,
+            avatarUrl:
+              snap?.avatarUrl ||
+              (urlMap ? urlFromMap(urlMap, (avatar as string) || "") : "") ||
+              "",
+          };
+        });
+      }
+      wire.reactions = out;
+    }
+
+    // Normalize editedAt → epoch ms and derive isEdited so all list/timeline
+    // surfaces are consistent with the edit socket event and sync API.
+    const editedMs =
+      m.editedAt instanceof Date ? m.editedAt.getTime() : (m.editedAt ?? null);
+    wire.isEdited = editedMs !== null && editedMs > 0;
+    wire.editedAt = editedMs;
+
     const msgTs = m.createdAt;
 
     const readBy = members
@@ -403,7 +541,7 @@ export class CommunityMessageService {
           }))
       : [];
 
-    return { ...wire, readBy, deliveredTo };
+    return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
   }
 
   async getMessages(params: {
@@ -424,7 +562,8 @@ export class CommunityMessageService {
       ),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
-    return rows.map((m) => this.toWire(m, members));
+    const urlMap = await this.resolveRowsMedia(rows);
+    return rows.map((m) => this.toWire(m, members, urlMap));
   }
 
   /**
@@ -456,12 +595,52 @@ export class CommunityMessageService {
 
     const hasMore = rows.length > params.limit;
     const pageRows = rows.slice(0, params.limit);
-    const last = pageRows[pageRows.length - 1];
+
+    // For "before" direction the DB fetches newest-first so LIMIT correctly
+    // selects the closest-to-cursor window. The boundary for the next page is
+    // the oldest item in that window (pageRows tail). Reverse before returning
+    // so every response surface is oldest→newest (ascending chronological order).
+    const boundary = pageRows[pageRows.length - 1];
     const nextCursor =
-      hasMore && last ? String(last.createdAt.getTime()) : null;
+      hasMore && boundary ? String(boundary.createdAt.getTime()) : null;
+
+    const orderedItems =
+      params.direction === "before" ? [...pageRows].reverse() : pageRows;
+
+    // Fetch reactor snapshots first so we can collect their avatar object-keys
+    // and resolve them to full presigned download URLs in the same batch as the
+    // rest of the message media.
+    const snapsMap = await this.userSnapshotService.getUserSnapshotsMap(
+      this.collectReactionUserIds(orderedItems),
+      this.cacheRepo
+    );
+    const snapAvatarKeys = [...snapsMap.values()]
+      .map((s) => (s.avatar as string) || "")
+      .filter(Boolean);
+
+    const [msgUrlMap, snapAvatarUrlMap] = await Promise.all([
+      this.resolveRowsMedia(orderedItems),
+      resolveMediaUrlMap(snapAvatarKeys),
+    ]);
+    // Merge so toWire can resolve any avatar object-key (snap or legacy stored)
+    // with a single urlMap lookup, with no separate map needed in the caller.
+    const urlMap = new Map([...msgUrlMap, ...snapAvatarUrlMap]);
+
+    const resolveReactionUser = (userId: string) => {
+      const snap = snapsMap.get(userId);
+      return snap
+        ? {
+            displayName: (snap.displayName as string) || "",
+            avatarUrl:
+              urlFromMap(snapAvatarUrlMap, (snap.avatar as string) || "") || "",
+          }
+        : undefined;
+    };
 
     return {
-      items: pageRows.map((m) => this.toWire(m, members)),
+      items: orderedItems.map((m) =>
+        this.toWire(m, members, urlMap, resolveReactionUser)
+      ),
       hasMore,
       nextCursor,
     };
@@ -498,9 +677,14 @@ export class CommunityMessageService {
       reactions: Array<{
         emoji: string;
         count: number;
-        users: Array<{ userId: string; displayName: string; avatar: string }>;
+        users: Array<{
+          userId: string;
+          displayName: string;
+          avatarUrl: string;
+        }>;
       }>;
       deletedForAll: boolean;
+      isEdited: boolean;
       editedAt: number | null;
       createdAt: number;
       updatedAt: number;
@@ -518,6 +702,9 @@ export class CommunityMessageService {
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
     }
 
+    if (Number.isNaN(params.fromTs.getTime())) {
+      throw new BadRequestError("CHAT_INVALID_SINCE_TS");
+    }
     const { messages, hasMore } = await this.messageRepo.findUpdatedAtSince({
       roomId: params.roomId,
       userId: params.userId,
@@ -528,6 +715,31 @@ export class CommunityMessageService {
     const last = messages[messages.length - 1];
     const nextCursor =
       hasMore && last ? String(last.updatedAt.getTime()) : null;
+
+    // Resolve sender avatars, attachment keys, and reaction-user avatars on read
+    // so the incremental-sync payload never carries a raw object key.
+    const mediaKeys: string[] = [];
+    for (const msg of messages) {
+      if (msg.senderAvatar) mediaKeys.push(msg.senderAvatar);
+      if (Array.isArray(msg.attachments)) {
+        for (const attachment of msg.attachments) {
+          const key = fileMediaKey(attachment as MediaFileLike);
+          if (key) mediaKeys.push(key);
+        }
+      }
+    }
+    const syncSnapsMap = await this.userSnapshotService.getUserSnapshotsMap(
+      this.collectReactionUserIds(messages),
+      this.cacheRepo
+    );
+    const syncSnapAvatarKeys = [...syncSnapsMap.values()]
+      .map((s) => (s.avatar as string) || "")
+      .filter(Boolean);
+
+    const [urlMap, syncAvatarUrlMap] = await Promise.all([
+      resolveMediaUrlMap(mediaKeys),
+      resolveMediaUrlMap(syncSnapAvatarKeys),
+    ]);
 
     const items = messages.map((msg) => {
       const createdMs = msg.createdAt.getTime();
@@ -549,21 +761,58 @@ export class CommunityMessageService {
         syncEventType = "new";
       }
 
+      // Transform stored reactions: rename avatar → avatarUrl, resolve S3 keys.
+      const rawReactions = msg.reactions as Record<string, unknown> | null;
+      const transformedReactions: Record<string, unknown[]> = {};
+      if (rawReactions && typeof rawReactions === "object") {
+        for (const [emoji, list] of Object.entries(rawReactions)) {
+          if (!Array.isArray(list)) continue;
+          transformedReactions[emoji] = list.map((r) => {
+            const reactor = (r ?? {}) as Record<string, unknown>;
+            const { avatar, ...rest } = reactor;
+            const snap = syncSnapsMap.get(reactor.userId as string);
+            return {
+              ...rest,
+              avatarUrl: snap
+                ? urlFromMap(syncAvatarUrlMap, (snap.avatar as string) || "") ||
+                  ""
+                : urlFromMap(urlMap, (avatar as string) || "") || "",
+            };
+          });
+        }
+      }
+
       return {
         id: msg.id,
         roomId: msg.roomId,
         sentBy: msg.sentBy,
         senderName: msg.senderName ?? null,
-        senderAvatar: msg.senderAvatar ?? null,
+        senderAvatar: urlFromMap(urlMap, msg.senderAvatar) || null,
         message: msg.message ?? null,
         contentType: normalizeMessageType(msg.messageType),
-        attachments: msg.attachments,
-        reactions: groupStoredReactions(msg.reactions),
+        attachments: Array.isArray(msg.attachments)
+          ? applyUrlMapToFiles(msg.attachments as MediaFileLike[], urlMap)
+          : msg.attachments,
+        reactions: Object.entries(transformedReactions).map(
+          ([emoji, users]) => ({
+            emoji,
+            count: users.length,
+            users: users as Array<{
+              userId: string;
+              displayName: string;
+              avatarUrl: string;
+            }>,
+          })
+        ),
         deletedForAll: msg.deletedForAll,
+        isEdited: editedMs !== null,
         editedAt: editedMs,
         createdAt: createdMs,
         updatedAt: updatedMs,
         syncEventType,
+        systemMessageType:
+          (msg as Record<string, unknown>).systemMessageType ?? null,
+        systemMetadata: (msg as Record<string, unknown>).systemMetadata ?? null,
       };
     });
 
@@ -594,7 +843,8 @@ export class CommunityMessageService {
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
-    return { items: rows.map((m) => this.toWire(m, members)) };
+    const urlMap = await this.resolveRowsMedia(rows);
+    return { items: rows.map((m) => this.toWire(m, members, urlMap)) };
   }
 
   /**
@@ -657,7 +907,11 @@ export class CommunityMessageService {
         });
     }
 
-    return { messages: messages.map((m) => this.toWire(m)), total };
+    const urlMap = await this.resolveRowsMedia(messages);
+    return {
+      messages: messages.map((m) => this.toWire(m, undefined, urlMap)),
+      total,
+    };
   }
 
   async searchMessages(params: {
@@ -673,7 +927,8 @@ export class CommunityMessageService {
       params.limit,
       params.userId
     );
-    return rows.map((m) => this.toWire(m));
+    const urlMap = await this.resolveRowsMedia(rows);
+    return rows.map((m) => this.toWire(m, undefined, urlMap));
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -706,7 +961,26 @@ export class CommunityMessageService {
       cursor: params.cursor,
       limit: params.limit,
     });
-    return rows.map((m) => this.toWire(m));
+    const urlMap = await this.resolveRowsMedia(rows);
+    return rows.map((m) => this.toWire(m, undefined, urlMap));
+  }
+
+  /** Bind a loaded message to its OWN room (never a body-supplied communityId)
+   * and require the caller to be an ACTIVE member of that room. Returns the
+   * member so callers needing the role (deleteForAll) avoid a second query.
+   * NotFound — never Forbidden — so a foreign message's existence isn't leaked.
+   * (cross-room IDOR guard for routes that carry no roomId.) */
+  private async assertActiveMemberOfMessageRoom(
+    message: GeneralRoomMessage,
+    userId: string
+  ): Promise<RoomMember> {
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      userId
+    );
+    if (!member || member.status !== "active")
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    return member;
   }
 
   async editMessage(params: {
@@ -716,11 +990,20 @@ export class CommunityMessageService {
   }): Promise<GeneralRoomMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // the caller must be an ACTIVE member of the room the message lives in BEFORE
+    // any sender/type/window check. Mirrors reactToMessage/listMedia; NotFound so
+    // foreign-message existence isn't leaked. (cross-room IDOR)
+    await this.assertActiveMemberOfMessageRoom(message, params.userId);
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.sentBy !== params.userId)
       throw new BadRequestError("CHAT_EDIT_OWN_MESSAGES_ONLY");
-    if (message.messageType !== "text")
+    // Community messages are persisted with the canonical UPPER-CASE type
+    // ("TEXT"), so the guard must compare against UPPER — comparing to the old
+    // lower-case "text" rejected every edit (→ SERVICE_ERROR). normalizeMessageType
+    // also tolerates any legacy lower-case rows. Mirrors private/group (!== "TEXT").
+    if (normalizeMessageType(message.messageType) !== "TEXT")
       throw new BadRequestError("CHAT_EDIT_TEXT_ONLY");
     if ((params.content?.text?.length ?? 0) > CHAT_TEXT_MAX_CHARS)
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
@@ -732,21 +1015,22 @@ export class CommunityMessageService {
   async reactToMessage(params: {
     messageId: string;
     userId: string;
-    communityId: string;
     emoji: string;
   }): Promise<{
     messageId: string;
-    communityId: string;
+    roomId: string;
     reactions: Array<{
       emoji: string;
       count: number;
-      users: Array<{ userId: string; displayName: string; avatar: string }>;
+      users: Array<{ userId: string; displayName: string; avatarUrl: string }>;
     }>;
   }> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     // Guard: only active members may react.
     const member = await this.memberRepo.findByRoomAndUser(
@@ -757,60 +1041,16 @@ export class CommunityMessageService {
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
     }
 
-    // NOTE: non-atomic read-modify-write; acceptable at current scale
-    const updatedReactions = (
-      message.reactions
-        ? {
-            ...(message.reactions as Record<
-              string,
-              Array<{
-                userId: string;
-                userName: string;
-                avatar: string;
-                memberId: string;
-              }>
-            >),
-          }
-        : {}
-    ) as Record<
-      string,
-      Array<{
-        userId: string;
-        userName: string;
-        avatar: string;
-        memberId: string;
-      }>
-    >;
-
-    if (!updatedReactions[params.emoji]) {
-      updatedReactions[params.emoji] = [];
-    }
-
-    const existingIndex = updatedReactions[params.emoji]!.findIndex(
-      (entry) => entry.userId === params.userId
+    // Toggle the reactor in/out of the emoji bucket (shared with private/group);
+    // non-atomic read-modify-write, acceptable at current scale.
+    const updatedReactions = toggleStoredReaction(
+      message.reactions,
+      params.userId,
+      params.emoji
     );
 
-    if (existingIndex !== -1) {
-      updatedReactions[params.emoji]!.splice(existingIndex, 1);
-      if (updatedReactions[params.emoji]!.length === 0) {
-        delete updatedReactions[params.emoji];
-      }
-    } else {
-      updatedReactions[params.emoji]!.push({
-        userId: params.userId,
-        userName: "",
-        avatar: "",
-        memberId: "",
-      });
-    }
-
-    await this.messageRepo.updateById(
-      params.communityId,
-      params.messageId,
-      updatedReactions
-    );
-
-    // Collect all unique userIds across all reaction arrays
+    // Fetch snapshots BEFORE persisting so the stored document carries real
+    // userName / avatar / memberId (fixes the raw `reactions` field on read).
     const allUserIds = [
       ...new Set(
         Object.values(updatedReactions)
@@ -828,24 +1068,50 @@ export class CommunityMessageService {
           )
         : new Map<string, Record<string, unknown>>();
 
-    const reactionGroups = Object.entries(updatedReactions)
-      .filter(([, users]) => users.length > 0) // skip defensively if empty
+    // Enrich stored reactor objects with live profile data.
+    const enrichedReactions: Record<string, (typeof updatedReactions)[string]> =
+      {};
+    for (const [emoji, reactors] of Object.entries(updatedReactions)) {
+      enrichedReactions[emoji] = reactors.map((r) => {
+        const snap = snaps.get(r.userId);
+        return {
+          userId: r.userId,
+          userName: (snap?.displayName as string) || r.userName || "",
+          avatar: (snap?.avatar as string) || r.avatar || "",
+          memberId: (snap?.memberId as string) || r.memberId || "",
+        };
+      });
+    }
+
+    await this.messageRepo.updateById(
+      message.roomId,
+      params.messageId,
+      enrichedReactions
+    );
+
+    // Resolve the stored avatar object-keys to full presigned download URLs so
+    // both the REST response and the socket broadcast carry real URLs.
+    const allAvatarKeys = Object.values(enrichedReactions)
+      .flat()
+      .map((r) => r.avatar)
+      .filter(Boolean);
+    const avatarUrlMap = await resolveMediaUrlMap(allAvatarKeys);
+
+    const reactionGroups = Object.entries(enrichedReactions)
+      .filter(([, users]) => users.length > 0)
       .map(([emoji, users]) => ({
         emoji,
         count: users.length,
-        users: users.map((u) => {
-          const snap = snaps.get(u.userId);
-          return {
-            userId: u.userId,
-            displayName: (snap?.displayName as string) || u.userName || "",
-            avatar: (snap?.avatar as string) || u.avatar || "",
-          };
-        }),
+        users: users.map((u) => ({
+          userId: u.userId,
+          displayName: u.userName,
+          avatarUrl: urlFromMap(avatarUrlMap, u.avatar) || "",
+        })),
       }));
 
     return {
       messageId: params.messageId,
-      communityId: params.communityId,
+      roomId: message.roomId,
       reactions: reactionGroups,
     };
   }
@@ -856,6 +1122,13 @@ export class CommunityMessageService {
   ): Promise<GeneralRoomMessage | null> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // only an ACTIVE member of the room the message lives in may hide it. Mirrors
+    // reactToMessage; NotFound so foreign-message existence isn't leaked.
+    await this.assertActiveMemberOfMessageRoom(message, userId);
+
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     await this.messageRepo.deleteForUser(messageId, userId);
     return this.messageRepo.findById(messageId);
@@ -868,14 +1141,18 @@ export class CommunityMessageService {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
+    // Authorize against the message's OWN room (never a body-supplied communityId):
+    // the caller must be an ACTIVE member of the room the message lives in. NotFound
+    // so foreign-message existence isn't leaked. (cross-room IDOR)
+    const member = await this.assertActiveMemberOfMessageRoom(message, userId);
+
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
+
     // Sender can always delete their own message for everyone.
     // Others need admin or moderator role.
     if (message.sentBy !== userId) {
-      const member = await this.memberRepo.findByRoomAndUser(
-        message.roomId,
-        userId
-      );
-      if (!member || !["admin", "moderator"].includes(member.role)) {
+      if (!["admin", "moderator"].includes(member.role)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
     }
@@ -888,6 +1165,14 @@ export class CommunityMessageService {
     reporterId: string;
     reportReason: string;
   }): Promise<GeneralRoomMessage | null> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      params.reporterId
+    );
+    if (!member || member.status !== "active")
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     return this.messageRepo.addReport(params.messageId, {
       userReportId: params.reporterId,
       userReportReason: params.reportReason,
@@ -915,6 +1200,8 @@ export class CommunityMessageService {
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+    if (normalizeMessageType(message.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
@@ -961,6 +1248,10 @@ export class CommunityMessageService {
 
     if (!pinnedIds.includes(params.messageId))
       throw new NotFoundError("CHAT_PIN_NOT_FOUND");
+
+    const targetMsg = await this.messageRepo.findById(params.messageId);
+    if (targetMsg && normalizeMessageType(targetMsg.messageType) === "SYSTEM")
+      throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     const newPinnedIds = pinnedIds.filter((id) => id !== params.messageId);
     await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);

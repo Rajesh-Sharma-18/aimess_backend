@@ -11,12 +11,15 @@ export const CommunityEvents = {
   ADMIN_TRANSFERRED: "community.admin_transferred",
   DELETED: "community.deleted",
   JOIN_REQUESTED: "community.join_requested",
+  JOIN_REQUEST_APPROVED: "community.join_request_approved",
+  JOIN_REQUEST_REJECTED: "community.join_request_rejected",
   INVITE_SENT: "community.invite_sent",
   INVITE_ACCEPTED: "community.invite_accepted",
   INVITE_LINK_SHARED: "community.invite_link_shared",
   REPORT_CREATED: "community.report_created",
   REPORT_ACTIONED: "community.report_actioned",
   MEMBER_LEFT: "community.member_left",
+  MEMBER_JOINED: "community.member_joined",
 } as const;
 
 export type CommunityEventType =
@@ -38,7 +41,14 @@ export type CommunityMemberAddedPayload = CommunityEventBase & {
     | "join_request_approved"
     | "join_request_auto_accept"
     | "invite_auto_approve"
-    | "invite_link_redeem";
+    | "invite_link_redeem"
+    | "self_join";
+  /** The join request this add fulfilled, when via join_request_approved. */
+  requestId?: string;
+  /** Community display name (for notification copy). */
+  communityName?: string;
+  /** Admins + moderators to inform that a member joined (consumer excludes the actor + the joiner). */
+  moderatorRecipientIds?: string[];
 };
 
 export type CommunityMemberKickedPayload = CommunityEventBase & {
@@ -85,6 +95,21 @@ export type CommunityJoinedPayload = CommunityEventBase & {
   reactivated: boolean;
 };
 
+/**
+ * Published when a user self-joins a PUBLIC community and is immediately
+ * made ACTIVE (no approval required). Distinct from `community.member_added`
+ * (admin-driven) and from the legacy `community.joined` no-op.
+ */
+export type CommunityMemberJoinedPayload = CommunityEventBase & {
+  /** The user who self-joined. */
+  userId: string;
+  communityName: string;
+  communityHandle: string;
+  communityAvatarUrl: string | null;
+  /** True when a previously-LEFT member is reactivated. */
+  reactivated: boolean;
+};
+
 export type CommunityAdminTransferredPayload = CommunityEventBase & {
   /** Outgoing admin. */
   actorId: string;
@@ -100,6 +125,16 @@ export type CommunityDeletedPayload = CommunityEventBase & {
   memberIds: string[];
 };
 
+/** Deep-link navigation object embedded in community notification payloads. */
+export interface NotificationNavigation {
+  screen: "COMMUNITY_REQUESTS" | "COMMUNITY_DETAILS" | "COMMUNITY_CHAT";
+  communityId: string;
+  communityName: string;
+  communityAvatarUrl: string | null;
+  communityHandle: string | null;
+  requestId?: string;
+}
+
 export type CommunityJoinRequestedPayload = CommunityEventBase & {
   /** Requester. */
   userId: string;
@@ -107,6 +142,35 @@ export type CommunityJoinRequestedPayload = CommunityEventBase & {
   message: string | null;
   /** Admins + moderators that can action this request — notify each. */
   moderatorRecipientIds: string[];
+  communityName: string;
+  communityHandle: string;
+  communityAvatarUrl: string | null;
+  requesterDisplayName: string;
+  requesterAvatarUrl: string | null;
+};
+
+export type CommunityJoinRequestApprovedPayload = CommunityEventBase & {
+  communityName: string;
+  communityHandle: string;
+  communityAvatarUrl: string | null;
+  requestId: string;
+  /** The requesting user (recipient of the notification). */
+  userId: string;
+  decidedBy: { userId: string; username: string | null; displayName: string };
+  /** ISO-8601. */
+  decidedAt: string;
+};
+
+export type CommunityJoinRequestRejectedPayload = CommunityEventBase & {
+  communityName: string;
+  communityHandle: string;
+  communityAvatarUrl: string | null;
+  requestId: string;
+  /** The requesting user (recipient of the notification). */
+  userId: string;
+  decidedBy: { userId: string; username: string | null; displayName: string };
+  /** ISO-8601. */
+  decidedAt: string;
 };
 
 export type CommunityInviteSentPayload = CommunityEventBase & {

@@ -44,6 +44,7 @@ import { CommunityPinService } from "./services/community-pin.service.js";
 import { NotificationService } from "./services/notification.service.js";
 import { CommunityRoomService } from "./services/community-room.service.js";
 import { CommunityMessageService } from "./services/community-message.service.js";
+import { ChatMessageOrchestrator } from "./services/chat-message-orchestrator.js";
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
 import { AdminGroupService } from "./services/admin-group.service.js";
 import { CallService } from "./services/call.service.js";
@@ -62,7 +63,6 @@ import { GroupInviteLinkController } from "./api/controllers/group-invite-link.c
 import { NotificationController } from "./api/controllers/notification.controller.js";
 import { CommunityController } from "./api/controllers/community.controller.js";
 import { CommunityMessageController } from "./api/controllers/community-message.controller.js";
-import { MediaController } from "./api/controllers/media.controller.js";
 import { CallController } from "./api/controllers/call.controller.js";
 import { PresenceController } from "./api/controllers/presence.controller.js";
 
@@ -303,7 +303,8 @@ const startServer = async () => {
       privateRoomRepo,
       cacheRepo,
       userSnapshotService,
-      userServiceClient
+      userServiceClient,
+      redis
     );
     const privateMessageService = new PrivateMessageService(
       privateMessageRepo,
@@ -337,7 +338,8 @@ const startServer = async () => {
       groupRoomRepo,
       groupMemberRepo,
       groupInviteLinkRepo,
-      groupSystemMessageService
+      groupSystemMessageService,
+      redis
     );
     const groupMessageService = new GroupMessageService(
       groupMessageRepo,
@@ -396,6 +398,19 @@ const startServer = async () => {
       groupMessageService
     );
 
+    // Single owner of message SEND + post-write effects (broadcast, inbox bump,
+    // FCM push) for private/group/community — shared by the REST send endpoints
+    // (and, in a later slice, the gRPC handlers).
+    const chatMessageOrchestrator = new ChatMessageOrchestrator(
+      privateMessageService,
+      groupMessageService,
+      groupMemberService,
+      communityMessageService,
+      userSnapshotService,
+      cacheRepo,
+      redis
+    );
+
     // Start gRPC server with real service delegates
     startGrpcServer(env.CHAT_GRPC_PORT, {
       privateMessageService,
@@ -403,6 +418,8 @@ const startServer = async () => {
       groupMemberService,
       groupRoomRepo,
       groupMemberRepo,
+      privateRoomRepo,
+      roomMemberRepo,
       adminGroupService,
       cacheRepo,
       userSnapshotService,
@@ -421,13 +438,15 @@ const startServer = async () => {
       privateMessageCtrl: new PrivateMessageController(
         privateMessageService,
         privatePinService,
-        redis
+        redis,
+        chatMessageOrchestrator
       ),
       groupRoomCtrl: new GroupRoomController(groupRoomService),
       groupMessageCtrl: new GroupMessageController(
         groupMessageService,
         groupPinService,
-        redis
+        redis,
+        chatMessageOrchestrator
       ),
       groupMemberCtrl: new GroupMemberController(groupMemberService),
       groupInviteLinkCtrl: new GroupInviteLinkController(
@@ -439,9 +458,9 @@ const startServer = async () => {
       communityMessageCtrl: new CommunityMessageController(
         communityMessageService,
         communityPinService,
-        redis
+        redis,
+        chatMessageOrchestrator
       ),
-      mediaCtrl: new MediaController(),
       callCtrl: new CallController(callService),
       presenceCtrl: new PresenceController(presenceService),
     };
@@ -480,7 +499,7 @@ const startServer = async () => {
           `Chat service listening on port ${String(env.CHAT_SERVICE_PORT)}`
         );
         logger.info(
-          "HTTP routes: /api/chat/inbox, /api/chat/private, /api/chat/groups, /api/chat/group-members, /api/chat/invite-links, /api/chat/notifications, /api/chat/community, /api/chat/media"
+          "HTTP routes: /api/chat/inbox, /api/chat/private, /api/chat/groups, /api/chat/group-members, /api/chat/invite-links, /api/chat/notifications, /api/chat/community"
         );
       });
     };

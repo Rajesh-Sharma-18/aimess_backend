@@ -6,8 +6,8 @@ connection or through the gateway as a message payload** — they go straight to
 object storage (MinIO / S3-compatible) via a short-lived **presigned URL**, and
 the message then carries only the resulting `objectKey`.
 
-> Source of truth: `apps/chat-service/src/api/controllers/media.controller.ts`,
-> `apps/chat-service/src/config/uploads.ts`, and `@aimess/storage`. If code and
+> Source of truth: `apps/media-service/src/api/controllers/media.controller.ts`,
+> `apps/media-service/src/config/uploads.ts`, and `@aimess/storage`. If code and
 > this doc disagree, code wins — update this doc in the same PR.
 
 ---
@@ -70,6 +70,8 @@ Response (`200`):
       "uploadUrl": "https://minio…",
       "uploadUrlExpiresIn": 300, // seconds (MINIO_PRESIGN_EXPIRES_IN)
       "uploadHeaders": { "Content-Type": "image/jpeg" },
+      "downloadUrl": "https://minio…/chat-uploads/…?X-Amz-Signature=…", // ready-to-render presigned GET
+      "downloadUrlExpiresIn": 3600, // seconds (MINIO_VIEW_EXPIRES_IN)
     },
   },
 }
@@ -78,8 +80,13 @@ Response (`200`):
 - `objectKey` is **server-generated** and scoped to the authenticated user
   (`chat-uploads/<userId>/<uuid>.<ext>`). Clients never choose the key — this is
   what lets the send path verify the file belongs to the sender.
-- The URL is valid for `uploadUrlExpiresIn` seconds (default **5 minutes**).
+- The upload URL is valid for `uploadUrlExpiresIn` seconds (default **5 minutes**).
   Re-request if it expires before the PUT completes.
+- `media.downloadUrl` is a **ready-to-render** presigned GET for the just-minted
+  object — use it for an instant preview right after the PUT (it resolves once the
+  bytes land). It is presigned and expires (`downloadUrlExpiresIn`, ~1h): treat it
+  as **display-only, never persist it**. The durable thing you store/send is the
+  `objectKey` — the server re-signs a fresh URL on every read (§5).
 
 > **Other resources use their owning service** (same pattern, different route &
 > bucket): user **avatars** → user-service `POST /api/v1/users/upload/url`;
@@ -108,6 +115,24 @@ Content-Type: image/jpeg
 | Video    | `video/mp4` · `video/quicktime`                                                |
 | Audio    | `audio/mpeg` · `audio/ogg` · `audio/wav`                                       |
 | Document | `application/pdf` · `application/msword` · `…wordprocessingml.document` (docx) |
+
+> **2026-06-15 (Phase 1 — Telegram-parity formats).** The allowed MIME set above
+> was widened: **video** adds `video/x-matroska` (mkv) · `video/webm` ·
+> `video/x-msvideo` (avi) · `video/x-m4v`; **audio** adds `audio/mp4` /
+> `audio/x-m4a` (m4a) · `audio/aac` · `audio/flac`; **documents** add
+> `application/vnd.ms-excel` (xls) · `…spreadsheetml.sheet` (xlsx) ·
+> `application/vnd.ms-powerpoint` (ppt) · `…presentationml.presentation` (pptx) ·
+> `text/plain` · `text/csv` · `application/json` · `application/xml` / `text/xml`.
+> Not accepted yet: HEIC/HEIF and archives/source-code. The upload-url request
+> now takes an optional **`originalFileName`** (sanitized server-side; its
+> extension must match the declared `contentType` or the request is rejected
+> `415`). **Per-MIME upload caps:** images 25 MB, GIFs 30 MB; video/audio/
+> documents fall back to the category ceiling (`CHAT_*_MAX_BYTES`, 100 MB). On the
+> **download-url** endpoint, non-media objects (documents/data) are returned with
+> `Content-Disposition: attachment` (forced download); images/video/audio stay
+> inline. Message-kind `contentType` is now the single `@aimess/constants`
+> `CONTENT_TYPES` source of truth — the private/group send paths accept `AUDIO`
+> and `GIF` (previously community-only).
 
 **Size limits** are enforced when the message is **sent** (per-type, in the
 send validators / service guard — e.g. image vs. video vs. document caps from
@@ -175,7 +200,17 @@ renders the same instant preview.
 
 ## 5. Downloading / rendering
 
-To turn a stored `objectKey` back into a fetchable URL:
+**You usually do not need a separate call.** Every read path resolves media for
+you, server-side: chat / group / community **history**, the **`message:new` /
+`message:edited`** socket pushes, conversation & inbox **lists**, **reactions**,
+**pins**, and all **avatars / covers** come back with a fully-qualified, presigned
+`url` / `senderAvatar` / `downloadUrl` — **never a raw object key**. Render those
+directly. Because presigned URLs expire (~1h), the server re-signs a fresh one on
+**every** read — so never persist a resolved URL; keep the `objectKey` (or just
+re-fetch the list/message) and use whatever URL the latest read returned.
+
+The standalone endpoint below is a **fallback** for the rare case where you hold a
+bare `objectKey` with no surrounding response:
 
 `POST /api/chat/media/download-url` (authenticated; **120 requests / minute /
 user**):
@@ -194,7 +229,28 @@ locally keyed by `objectKey`, not the signed URL.
 
 ---
 
-## 6. Rules of thumb
+## 6. Cancelling an upload
+
+If the user aborts the flow before (or after) the PUT completes, delete the orphaned object so storage does not accumulate stale files.
+
+```http
+DELETE /api/v1/media/uploads/:objectKey?category=CHAT_ATTACHMENT
+Authorization: Bearer <accessToken>
+```
+
+`objectKey` must be **URL-encoded** if it contains slashes
+(e.g. `chat-uploads%2F<userId>%2F<uuid>.jpg`).
+
+Rules:
+
+- The caller must own the object (`objectKey` must be prefixed with the authenticated user's ID under the category's key prefix). Returns `403 MEDIA_CANCEL_FORBIDDEN` otherwise.
+- Returns `200` on success and also when the object no longer exists (safe to call multiple times).
+- Rate-limited at the same cap as upload-url requests.
+- Category must match the one used when the presigned URL was requested.
+
+---
+
+## 7. Rules of thumb
 
 - **Never** put file bytes in a socket frame, a message field, or the database —
   only the `objectKey`.

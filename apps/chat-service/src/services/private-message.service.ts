@@ -15,9 +15,21 @@ import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js"
 import {
   normalizeMessageType,
   buildCanonicalQuote,
-  groupStoredReactions,
+  buildReactionGroups,
+  reactionUserIdMap,
+  toggleStoredReaction,
+  toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import { isDuplicateKeyError } from "../lib/db-errors.js";
+import { markIdempotentReplay } from "../lib/idempotency.js";
+import {
+  resolveMediaUrlMap,
+  urlFromMap,
+  applyUrlMapToFiles,
+  fileMediaKey,
+  type MediaFileLike,
+} from "../lib/media-resolve.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -76,7 +88,7 @@ export class PrivateMessageService {
         params.senderId,
         params.clientMessageId
       );
-      if (existing) return existing;
+      if (existing) return markIdempotentReplay(existing);
     }
 
     const entity: Record<string, unknown> = {
@@ -124,12 +136,33 @@ export class PrivateMessageService {
 
     // Allocate the per-room monotonic sequence AFTER the idempotency pre-check,
     // immediately before insert, so a retried clientMessageId never burns a seq.
+    // On the duplicate-key path below the allocated seq is discarded (an
+    // acceptable per-room gap — we do not retry allocation).
     const seq = await this.roomRepo.allocateSequence(params.roomId);
     entity.sequenceNumber = seq;
 
-    const message = await this.messageRepo.createMessage(
-      entity as Parameters<PrivateMessageRepository["createMessage"]>[0]
-    );
+    let message: PrivateMessage;
+    try {
+      message = await this.messageRepo.createMessage(
+        entity as Parameters<PrivateMessageRepository["createMessage"]>[0]
+      );
+    } catch (err) {
+      // Concurrent send with the same clientMessageId: the pre-send dedup check
+      // above raced with a sibling request, both saw "not found", and both
+      // reached the insert. The partial-unique idempotency index
+      // (roomId, senderId, clientMessageId) rejects the loser with E11000/P2002.
+      // Re-read and return the winner so all concurrent sends collapse to one
+      // message instead of surfacing a 500 / SERVICE_ERROR.
+      if (params.clientMessageId && isDuplicateKeyError(err)) {
+        const dup = await this.messageRepo.findByClientMessageId(
+          params.roomId,
+          params.senderId,
+          params.clientMessageId
+        );
+        if (dup) return markIdempotentReplay(dup);
+      }
+      throw err;
+    }
 
     // Update room with last message
     this.roomRepo
@@ -341,6 +374,10 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The route carries no roomId. Derive the room from the message and authorize
+    // the caller as a participant of THAT room BEFORE any mutation — otherwise any
+    // authed user could delete-for-me a message in a DM they're not in (IDOR).
+    await this.assertCallerInMessageRoom(message, userId);
     // isDeleted=true means already deleted for everyone — can't delete for me again
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
@@ -357,6 +394,10 @@ export class PrivateMessageService {
   ): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room BEFORE the sender check: a user not in (or removed from)
+    // the room can't mutate even their own old message. NotFound so existence
+    // isn't leaked; keeps the room-bind uniform across all private writes.
+    await this.assertCallerInMessageRoom(message, userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== userId) {
@@ -376,6 +417,10 @@ export class PrivateMessageService {
   }): Promise<PrivateMessage> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // Bind message↔room BEFORE the sender check: a user not in (or removed from)
+    // the room can't mutate even their own old message. NotFound so existence
+    // isn't leaked; keeps the room-bind uniform across all private writes.
+    await this.assertCallerInMessageRoom(message, params.userId);
     if (message.isDeleted)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.senderId !== params.userId)
@@ -449,11 +494,59 @@ export class PrivateMessageService {
     }
   }
 
+  /**
+   * Toggle a single user's emoji reaction on a private message. Reads the stored
+   * reactor map, flips `userId`'s membership in the `emoji` bucket (add on first
+   * react, remove on a duplicate react = toggle-off), and persists the canonical
+   * `{ emoji: [{ userId, userName, avatar, memberId }] }` shape. Other emojis are
+   * preserved.
+   */
   async react(
     messageId: string,
-    reactions: Record<string, unknown[]>
+    userId: string,
+    emoji: string
   ): Promise<PrivateMessage | null> {
-    return this.messageRepo.addReactions(messageId, reactions);
+    const raw = await this.messageRepo.getReactions(messageId);
+    if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    const updated = toggleStoredReaction(raw, userId, emoji);
+    return this.messageRepo.addReactions(messageId, updated);
+  }
+
+  /**
+   * Authorize a REST react/remove-reaction: the caller MUST be a participant of
+   * the private room. The shared `react()` primitive deliberately does NOT guard
+   * (the socket/gRPC path is pre-authorized by room membership at join), so the
+   * REST boundary enforces participation here — the same rule the read paths use.
+   */
+  async assertParticipant(roomId: string, userId: string): Promise<void> {
+    await assertPrivateParticipant(this.roomRepo, roomId, userId);
+  }
+
+  /**
+   * Bind a message to its room: throw CHAT_MESSAGE_NOT_FOUND unless `messageId`
+   * actually belongs to `roomId`. The `react()` primitive mutates a message by id
+   * ALONE, so a REST caller authorized for room A could otherwise pass a messageId
+   * from room B (a DM they're not in) and mutate/broadcast that foreign message.
+   * Querying by BOTH id + roomId (same `findMessageMeta` the pin path uses) closes
+   * that cross-room IDOR; call this AFTER the participant guard, BEFORE react().
+   */
+  async assertMessageInRoom(roomId: string, messageId: string): Promise<void> {
+    const msg = await this.messageRepo.findMessageMeta({ roomId, messageId });
+    if (!msg) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+  }
+
+  /** Bind a loaded message to a room the caller participates in (cross-room IDOR
+   * guard for routes that carry no roomId). NotFound — never Forbidden — so a
+   * foreign message's existence isn't leaked. */
+  private async assertCallerInMessageRoom(
+    message: PrivateMessage,
+    userId: string
+  ): Promise<void> {
+    const room = await this.roomRepo.findByRoomId(message.roomId, {
+      projection: { roomId: 1, participants: 1 },
+    });
+    if (!room?.participants?.includes(userId))
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -466,6 +559,11 @@ export class PrivateMessageService {
 
   async forwardMessage(params: {
     sourceMessageId: string;
+    /** SOURCE room the message is being forwarded FROM (REST path param). When
+     * provided, it must MATCH the message's actual room (cross-check). Null on the
+     * gRPC path. Either way the caller must be a participant of the message's
+     * ACTUAL room — that bind is unconditional and closes the forward read-IDOR. */
+    sourceRoomId?: string | null;
     targetRoomId: string;
     senderId: string;
     receiverId: string;
@@ -485,13 +583,21 @@ export class PrivateMessageService {
         params.senderId,
         params.clientMessageId
       );
-      if (existing) return existing;
+      if (existing) return markIdempotentReplay(existing);
     }
 
     // fetch source message
     const source = await this.messageRepo.findById(params.sourceMessageId);
     if (!source || source.isDeleted)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    // If the caller asserted a source room (REST path param), it must match the message's room.
+    if (params.sourceRoomId != null && source.roomId !== params.sourceRoomId)
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    // The caller MUST belong to the message's ACTUAL room — on BOTH transports. Forwarding
+    // READS source.content, so without this a socket caller (gRPC carries no sourceRoomId)
+    // could exfiltrate any message from a DM they're not in. Closes the cross-room read-IDOR.
+    await this.assertCallerInMessageRoom(source, params.senderId);
 
     const forwardData = {
       originalMessageId: source.id,
@@ -503,16 +609,32 @@ export class PrivateMessageService {
 
     const seq = await this.roomRepo.allocateSequence(params.targetRoomId);
 
-    const message = await this.messageRepo.createForwardedMessage({
-      roomId: params.targetRoomId,
-      senderId: params.senderId,
-      receiverId: params.receiverId,
-      content: source.content as object,
-      messageType: source.messageType,
-      forwardData,
-      clientMessageId: params.clientMessageId ?? null,
-      sequenceNumber: seq,
-    });
+    let message: PrivateMessage;
+    try {
+      message = await this.messageRepo.createForwardedMessage({
+        roomId: params.targetRoomId,
+        senderId: params.senderId,
+        receiverId: params.receiverId,
+        content: source.content as object,
+        messageType: source.messageType,
+        forwardData,
+        clientMessageId: params.clientMessageId ?? null,
+        sequenceNumber: seq,
+      });
+    } catch (err) {
+      // Same idempotency race as sendMessage: a concurrent forward with the
+      // same clientMessageId loses the unique-index insert (E11000/P2002) —
+      // re-read and return the winner instead of erroring.
+      if (params.clientMessageId && isDuplicateKeyError(err)) {
+        const dup = await this.messageRepo.findByClientMessageId(
+          params.targetRoomId,
+          params.senderId,
+          params.clientMessageId
+        );
+        if (dup) return markIdempotentReplay(dup);
+      }
+      throw err;
+    }
 
     this.roomRepo
       .updateRoomOnNewMessage({
@@ -554,7 +676,9 @@ export class PrivateMessageService {
     const raw = await this.messageRepo.getReactions(params.messageId);
     if (raw === null) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
-    const reactions = (raw ?? {}) as Record<string, string[]>;
+    // Stored entries are reactor OBJECTS; reduce to { emoji: userId[] } so the
+    // grouped result carries the plain id string in users[].userId (not the object).
+    const reactions = reactionUserIdMap(raw);
     const allUserIds = [...new Set(Object.values(reactions).flat())];
 
     const snapshots =
@@ -627,7 +751,15 @@ export class PrivateMessageService {
       p.limit
     );
     const hasMore = rows.length > p.limit;
-    const events = hasMore ? rows.slice(0, p.limit) : rows;
+    const rawEvents = hasMore ? rows.slice(0, p.limit) : rows;
+
+    // Exclude messages the requesting user hid with "delete for me".
+    // deletedFor shape: { [userId]: ISO-timestamp }
+    const events = rawEvents.filter((m) => {
+      const deletedFor = (m.deletedFor ?? {}) as Record<string, unknown>;
+      return !(p.userId in deletedFor);
+    });
+
     const lastSeq = events.length
       ? events[events.length - 1]!.sequenceNumber
       : p.sinceSeq;
@@ -643,38 +775,92 @@ export class PrivateMessageService {
         messages.map((m) => m.senderId).filter((s): s is string => Boolean(s))
       ),
     ];
-    if (!senderIds.length) {
-      return messages.map((m) => m as unknown as Record<string, unknown>);
-    }
 
-    const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
-      senderIds,
-      this.cacheRepo
-    );
+    const snapshots = senderIds.length
+      ? await this.userSnapshotService.getUserSnapshotsMap(
+          senderIds,
+          this.cacheRepo
+        )
+      : new Map<string, Record<string, unknown>>();
+
+    // Resolve every stored media key on this page ONCE (sender + reaction-user
+    // avatars + attachment object keys) into full download URLs. Resolve on
+    // READ — persisted snapshots keep the stable raw object key; the
+    // presigned/CDN URL is (re)derived here so the FE never receives a key.
+    const mediaKeys: string[] = [];
+    for (const snap of snapshots.values()) {
+      const avatar = (snap as Record<string, unknown>).avatar;
+      if (typeof avatar === "string" && avatar) mediaKeys.push(avatar);
+    }
+    for (const message of messages) {
+      const files = (message.content as Record<string, unknown> | null)?.files;
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          const key = fileMediaKey(file as MediaFileLike);
+          if (key) mediaKeys.push(key);
+        }
+      }
+      const reactions = message.reactions as Record<string, unknown> | null;
+      if (reactions) {
+        for (const reactors of Object.values(reactions)) {
+          if (!Array.isArray(reactors)) continue;
+          for (const reactor of reactors) {
+            const avatar = (reactor as Record<string, unknown>)?.avatar;
+            if (typeof avatar === "string" && avatar) mediaKeys.push(avatar);
+          }
+        }
+      }
+    }
+    const urlMap = await resolveMediaUrlMap(mediaKeys);
 
     return messages.map((message) => {
       const snapshot = (snapshots.get(message.senderId || "") || {}) as Record<
         string,
         unknown
       >;
-      const row = message as unknown as Record<string, unknown>;
+      // §1: canonical wire shape — drops the internal `messageType` column and
+      // exposes UPPER-CASE `contentType`, identical to the socket message:new
+      // and the REST edit/forward responses (single client mapper).
+      const wire = toWireMessage(
+        message as { messageType?: string | null }
+      ) as unknown as Record<string, unknown>;
       const displayName = (snapshot.displayName as string) || "";
-      const avatar = (snapshot.avatar as string) || "";
+      const avatar = urlFromMap(urlMap, (snapshot.avatar as string) || "");
+
+      // Stamp resolved download URLs onto attachment files (content.files[]).
+      const content = wire.content as Record<string, unknown> | null;
+      const resolvedContent =
+        content && Array.isArray(content.files)
+          ? {
+              ...content,
+              files: applyUrlMapToFiles(
+                content.files as MediaFileLike[],
+                urlMap
+              ),
+            }
+          : content;
+
+      // Canonical client-facing reaction shape (FE reads `reactionGroups[]`; the
+      // legacy `reactions` map carried by `...wire` is deprecated).
+      const reactionGroups = buildReactionGroups(wire.reactions, (key) =>
+        urlFromMap(urlMap, key)
+      );
+
       return {
-        ...row,
+        ...wire,
+        content: resolvedContent,
         senderDisplayName: displayName,
         senderAvatar: avatar,
         senderMemberId: (snapshot.memberId as string) || "",
         isDeletedUser: snapshot.isDeletedUser === true,
-        // §1: additive canonical aliases so REST history can be read with the
-        // SAME mapper as the socket message:new (legacy fields kept untouched).
+        // additive canonical aliases so REST history reads with the SAME mapper
+        // as the socket message:new (legacy fields kept untouched).
         senderName: displayName,
         conversationType: "PRIVATE",
-        messageType: normalizeMessageType(message.messageType),
-        quoteData: buildCanonicalQuote(row.quoteData),
-        reactionGroups: groupStoredReactions(row.reactions),
+        quoteData: buildCanonicalQuote(wire.quoteData),
+        reactionGroups,
         clientTs: Number(
-          (row.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
+          (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),
         serverTs:
           message.createdAt instanceof Date ? message.createdAt.getTime() : 0,

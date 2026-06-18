@@ -78,6 +78,34 @@ export const SOCKET_MESSAGES = {
     en: "Presence subscription list fetched successfully",
   },
 
+  // ── /chat — friends ─────────────────────────────────────────────────────
+  SOCKET_FRIEND_REQUEST_SENT: {
+    vi: "Đã gửi lời mời kết bạn",
+    en: "Friend request sent",
+  },
+  SOCKET_FRIEND_REQUEST_ACCEPTED: {
+    vi: "Đã chấp nhận lời mời kết bạn",
+    en: "Friend request accepted",
+  },
+  SOCKET_FRIEND_REQUEST_REJECTED: {
+    vi: "Đã từ chối lời mời kết bạn",
+    en: "Friend request rejected",
+  },
+  SOCKET_FRIEND_REMOVED: {
+    vi: "Đã hủy kết bạn",
+    en: "Friend removed successfully",
+  },
+  SOCKET_FRIEND_REQUEST_CANCELLED: {
+    vi: "Đã hủy lời mời kết bạn",
+    en: "Friend request cancelled",
+  },
+
+  // ── /chat — auth ────────────────────────────────────────────────────────
+  SOCKET_AUTH_REFRESHED: {
+    vi: "Làm mới token thành công",
+    en: "Token refreshed successfully",
+  },
+
   // ── /chat — calls ───────────────────────────────────────────────────────
   SOCKET_CALL_INITIATED: {
     vi: "Đã bắt đầu cuộc gọi",
@@ -138,6 +166,36 @@ export const SOCKET_MESSAGES = {
     en: "Message unpinned successfully",
   },
 
+  // ── /community — moderation ─────────────────────────────────────────────
+  SOCKET_COMMUNITY_MEMBER_KICKED: {
+    vi: "Thành viên đã bị đuổi khỏi cộng đồng",
+    en: "Member kicked from the community",
+  },
+  SOCKET_COMMUNITY_MEMBER_BANNED: {
+    vi: "Thành viên đã bị cấm",
+    en: "Member banned from the community",
+  },
+  SOCKET_COMMUNITY_MEMBER_UNBANNED: {
+    vi: "Thành viên đã được bỏ lệnh cấm",
+    en: "Member unbanned successfully",
+  },
+  SOCKET_COMMUNITY_ADMIN_TRANSFERRED: {
+    vi: "Quyền quản trị đã được chuyển",
+    en: "Admin rights transferred successfully",
+  },
+  SOCKET_COMMUNITY_ROLE_CHANGED: {
+    vi: "Vai trò thành viên đã được thay đổi",
+    en: "Member role changed successfully",
+  },
+  SOCKET_COMMUNITY_REPORT_CREATED: {
+    vi: "Báo cáo đã được gửi",
+    en: "Report submitted successfully",
+  },
+  SOCKET_COMMUNITY_DELETED: {
+    vi: "Cộng đồng đã bị xóa",
+    en: "Community deleted successfully",
+  },
+
   // ── /notify ─────────────────────────────────────────────────────────────
   SOCKET_NOTIFICATIONS_FETCHED: {
     vi: "Lấy thông báo thành công",
@@ -146,6 +204,10 @@ export const SOCKET_MESSAGES = {
   SOCKET_NOTIFICATIONS_MARKED_READ: {
     vi: "Đã đánh dấu thông báo là đã đọc",
     en: "Notifications marked as read",
+  },
+  SOCKET_NOTIFICATIONS_DELETED: {
+    vi: "Đã xóa thông báo",
+    en: "Notification deleted",
   },
 
   // ── Error acks — one default sentence per AckErrorCode ───────────────────

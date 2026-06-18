@@ -35,6 +35,92 @@ export const openApiSchemas = {
       "uploadUrl",
       "uploadUrlExpiresIn",
     ],
+    example: {
+      fileId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      objectKey: "uploads/users/abc123/a1b2c3d4.webp",
+      fileName: "profile-photo.jpg",
+      contentType: "image/webp",
+      size: 204800,
+      downloadUrl:
+        "https://storage.example.com/uploads/users/abc123/a1b2c3d4.webp?X-Amz-Expires=3600&...",
+      downloadUrlExpiresIn: 3600,
+      uploadUrl: null,
+      uploadUrlExpiresIn: null,
+    },
+  },
+
+  MediaUploadUrlResponse: {
+    type: "object",
+    required: [
+      "uploadUrl",
+      "objectKey",
+      "uploadExpiresIn",
+      "maxBytes",
+      "headers",
+      "media",
+    ],
+    properties: {
+      uploadUrl: {
+        type: "string",
+        example:
+          "https://storage.example.com/avatars/user123/abc.webp?X-Amz-Expires=900&...",
+      },
+      objectKey: { type: "string", example: "avatars/user123/a1b2c3d4.webp" },
+      uploadExpiresIn: {
+        type: "integer",
+        example: 900,
+        description: "Presigned URL lifetime in seconds.",
+      },
+      maxBytes: {
+        type: "integer",
+        example: 5242880,
+        description: "Maximum file size in bytes for this category.",
+      },
+      headers: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Headers the client must include on the PUT to uploadUrl.",
+        example: { "Content-Type": "image/jpeg" },
+      },
+      media: { $ref: "#/components/schemas/MediaObject" },
+    },
+    example: {
+      uploadUrl:
+        "https://storage.example.com/avatars/user123/a1b2c3d4.webp?X-Amz-Expires=900&X-Amz-Signature=...",
+      objectKey: "avatars/user123/a1b2c3d4.webp",
+      uploadExpiresIn: 900,
+      maxBytes: 5242880,
+      media: {
+        fileId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        objectKey: "avatars/user123/a1b2c3d4.webp",
+        fileName: null,
+        contentType: "image/jpeg",
+        size: null,
+        downloadUrl: null,
+        downloadUrlExpiresIn: null,
+        uploadUrl: "https://storage.example.com/...",
+        uploadUrlExpiresIn: 900,
+        uploadHeaders: { "Content-Type": "image/jpeg" },
+      },
+    },
+  },
+
+  MediaDownloadUrlResponse: {
+    type: "object",
+    required: ["downloadUrl", "downloadUrlExpiresIn", "media"],
+    properties: {
+      downloadUrl: {
+        type: "string",
+        example:
+          "https://storage.example.com/avatars/user123/abc.webp?X-Amz-Expires=3600&...",
+      },
+      downloadUrlExpiresIn: {
+        type: "integer",
+        example: 3600,
+        description: "Presigned URL lifetime in seconds.",
+      },
+      media: { $ref: "#/components/schemas/MediaObject" },
+    },
   },
 
   // ===========================================================================
@@ -1267,7 +1353,9 @@ export const openApiSchemas = {
       avatarUrl: {
         type: "string",
         nullable: true,
-        example: "avatars/u_9f3a.webp",
+        description:
+          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). The client renders it directly — never construct it from a key or call a separate download endpoint.",
+        example: "https://cdn.aimess.app/avatars/u_9f3a.webp",
       },
     },
     required: ["userId", "username"],
@@ -1282,7 +1370,9 @@ export const openApiSchemas = {
       avatarUrl: {
         type: "string",
         nullable: true,
-        example: "group-avatars/grp_9a.webp",
+        description:
+          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). The client renders it directly — never construct it from a key or call a separate download endpoint.",
+        example: "https://cdn.aimess.app/group-avatars/grp_9a.webp",
       },
       description: { type: "string", example: "Sprint coordination room" },
       memberCount: { type: "integer", example: 1250 },
@@ -1309,7 +1399,9 @@ export const openApiSchemas = {
       avatarUrl: {
         type: "string",
         nullable: true,
-        example: "avatars/u_9f3a.webp",
+        description:
+          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). The client renders it directly — never construct it from a key or call a separate download endpoint.",
+        example: "https://cdn.aimess.app/avatars/u_9f3a.webp",
       },
       role: {
         type: "string",
@@ -2584,7 +2676,7 @@ export const openApiSchemas = {
         type: "string",
         nullable: true,
         description:
-          "MinIO object key after uploading via presigned URL (e.g. avatars/{userId}/{uuid}.jpg). Send null to remove avatar.",
+          "Object key returned by POST /api/v1/media/upload-url (category USER_AVATAR), after you PUT the file to the presigned uploadUrl (e.g. avatars/{userId}/{uuid}.jpg). Send null to remove the avatar.",
         example: "avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.jpg",
       },
     },
@@ -2640,13 +2732,17 @@ export const openApiSchemas = {
     },
     required: ["username", "available"],
   },
+  // Request/response for `POST /api/v1/users/uploads/url`, a stable alias that
+  // the gateway forwards to the centralized media-service
+  // `POST /api/v1/media/upload-url` (category USER_AVATAR).
   UserUploadUrlRequest: {
     type: "object",
     properties: {
       type: {
         type: "string",
         enum: ["AVATAR"],
-        description: "Upload type registered in the user-service.",
+        description:
+          "Upload type. Only AVATAR is accepted; forwarded as media category USER_AVATAR.",
       },
       contentType: {
         type: "string",
@@ -2664,6 +2760,8 @@ export const openApiSchemas = {
   },
   UploadUrlResponseData: {
     type: "object",
+    description:
+      "Presigned upload result. Identical to the data returned by POST /api/v1/media/upload-url.",
     properties: {
       uploadUrl: { type: "string", format: "uri" },
       objectKey: { type: "string" },
@@ -2692,6 +2790,7 @@ export const openApiSchemas = {
       "uploadExpiresIn",
       "maxBytes",
       "headers",
+      "media",
     ],
   },
   ConnectedProviderInfo: {
@@ -2758,6 +2857,13 @@ export const openApiSchemas = {
       firstName: { type: "string" },
       lastName: { type: "string" },
       bio: { type: "string", nullable: true },
+      account: {
+        type: "string",
+        nullable: true,
+        description:
+          "Primary auth/login account (the handle used to sign in) resolved from auth-service. Null when auth-service is unavailable and no cached value exists.",
+        example: "john_doe",
+      },
       email: {
         type: "string",
         format: "email",
@@ -2825,6 +2931,7 @@ export const openApiSchemas = {
       "firstName",
       "lastName",
       "bio",
+      "account",
       "email",
       "isGoogleLogin",
       "isAppleLogin",
@@ -2835,6 +2942,7 @@ export const openApiSchemas = {
       "gender",
       "avatarUrl",
       "avatarUrlExpiresIn",
+      "avatar",
       "updatedAt",
     ],
   },
@@ -2861,10 +2969,32 @@ export const openApiSchemas = {
   PrivacyScope: {
     type: "string",
     enum: ["EVERYONE", "FRIENDS_OF_FRIENDS", "FRIENDS", "NO_ONE"],
+    description:
+      "Broadest privacy visibility union used by response payloads. Individual settings accept a per-field SUBSET on update — see FindMeScope / FriendRequestScope / OnlineStatusScope.",
   },
   CallPrivacyScope: {
     type: "string",
     enum: ["FRIENDS", "SELECTED_FRIENDS", "NO_ONE"],
+    description:
+      "Who may call you. `SELECTED_FRIENDS` activates the `callAllowedFriendIds` allow-list.",
+  },
+  FindMeScope: {
+    type: "string",
+    enum: ["EVERYONE", "FRIENDS_OF_FRIENDS", "NO_ONE"],
+    description:
+      "Accepted values for `whoCanFindMe` on update. `FRIENDS` is NOT valid here and is rejected with 400.",
+  },
+  FriendRequestScope: {
+    type: "string",
+    enum: ["EVERYONE", "FRIENDS_OF_FRIENDS", "NO_ONE"],
+    description:
+      "Accepted values for `whoCanSendFriendRequests` on update. `FRIENDS` is NOT valid here and is rejected with 400.",
+  },
+  OnlineStatusScope: {
+    type: "string",
+    enum: ["EVERYONE", "FRIENDS", "NO_ONE"],
+    description:
+      "Accepted values for `whoCanSeeOnlineStatus` on update. `FRIENDS_OF_FRIENDS` is NOT valid here and is rejected with 400.",
   },
   AutoDeleteTimer: {
     type: "string",
@@ -3002,16 +3132,23 @@ export const openApiSchemas = {
   },
   UpdateUserPrivacySettingsRequest: {
     type: "object",
+    description:
+      "Partial update of the privacy group. Each field accepts a per-field SUBSET of PrivacyScope (see refs). Unknown keys are rejected (400), and the group must contain at least one field when present.",
+    additionalProperties: false,
     properties: {
-      whoCanFindMe: { $ref: "#/components/schemas/PrivacyScope" },
-      whoCanSendFriendRequests: { $ref: "#/components/schemas/PrivacyScope" },
-      whoCanSeeOnlineStatus: { $ref: "#/components/schemas/PrivacyScope" },
+      whoCanFindMe: { $ref: "#/components/schemas/FindMeScope" },
+      whoCanSendFriendRequests: {
+        $ref: "#/components/schemas/FriendRequestScope",
+      },
+      whoCanSeeOnlineStatus: { $ref: "#/components/schemas/OnlineStatusScope" },
       whoCanViewProfile: { $ref: "#/components/schemas/PrivacyScope" },
       whoCanCallMe: { $ref: "#/components/schemas/CallPrivacyScope" },
       callAllowedFriendIds: {
         type: "array",
         items: { type: "string", format: "uuid" },
         maxItems: 500,
+        description:
+          "User IDs allowed to call you when `whoCanCallMe` is `SELECTED_FRIENDS`. Must not contain your own id (400). Duplicates are de-duplicated server-side.",
       },
     },
   },
@@ -3250,6 +3387,7 @@ export const openApiSchemas = {
       "firstName",
       "lastName",
       "avatarUrl",
+      "avatar",
       "section",
     ],
   },
@@ -3266,8 +3404,258 @@ export const openApiSchemas = {
         nullable: true,
         description: "userId cursor for the next page; null when no more.",
       },
+      totalCount: {
+        type: "integer",
+        example: 128,
+        description:
+          "Total number of accepted friends for the caller (across all pages, ignoring the `search` filter). 0 when you have no friends.",
+      },
     },
-    required: ["friends", "nextCursor"],
+    required: ["friends", "nextCursor", "totalCount"],
+  },
+
+  // ===========================================================================
+  // user-service · friend requests (friendship)
+  // ===========================================================================
+  FriendshipStatus: {
+    type: "string",
+    enum: ["PENDING", "ACCEPTED", "REJECTED", "CANCELLED", "UNFRIENDED"],
+    description:
+      "Lifecycle state of a friendship row. PENDING = request awaiting the addressee's decision; ACCEPTED = active friends; REJECTED = addressee declined; CANCELLED = requester withdrew; UNFRIENDED = a former friend removed the other. A single row is recycled when a request is re-sent after REJECTED/CANCELLED/UNFRIENDED.",
+  },
+  SendFriendRequestRequest: {
+    type: "object",
+    description: "Send a friend request to another user.",
+    additionalProperties: false,
+    properties: {
+      addresseeId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "userId of the person to befriend. Must differ from your own id (400). If they already sent YOU a pending request, this call auto-accepts it (status ACCEPTED).",
+        example: "550e8400-e29b-41d4-a716-446655440000",
+      },
+    },
+    required: ["addresseeId"],
+  },
+  Friendship: {
+    type: "object",
+    description:
+      "A friendship row as returned by the friend-request endpoints. Timestamp fields are epoch milliseconds (numbers), per the platform response serializer; nullable timestamps are null until that transition occurs.",
+    properties: {
+      id: {
+        type: "string",
+        format: "uuid",
+        description: "Friendship id — pass this to accept/reject/cancel.",
+      },
+      requesterId: {
+        type: "string",
+        format: "uuid",
+        description: "userId that initiated the (current) request direction.",
+      },
+      addresseeId: {
+        type: "string",
+        format: "uuid",
+        description: "userId on the receiving end of the (current) request.",
+      },
+      status: { $ref: "#/components/schemas/FriendshipStatus" },
+      acceptedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms when accepted; null unless status is ACCEPTED.",
+        example: 1749686400000,
+      },
+      rejectedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms when rejected; null unless status is REJECTED.",
+      },
+      cancelledAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description:
+          "Epoch ms when cancelled; null unless status is CANCELLED.",
+      },
+      unfriendedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description:
+          "Epoch ms when unfriended; null unless status is UNFRIENDED.",
+      },
+      unfriendedBy: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description:
+          "userId that performed the unfriend; null unless status is UNFRIENDED.",
+      },
+      createdAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when the (current) request was created.",
+        example: 1749686400000,
+      },
+      updatedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms of the last state change.",
+        example: 1749686400000,
+      },
+    },
+    required: [
+      "id",
+      "requesterId",
+      "addresseeId",
+      "status",
+      "acceptedAt",
+      "rejectedAt",
+      "cancelledAt",
+      "unfriendedAt",
+      "unfriendedBy",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  FriendRequestUser: {
+    type: "object",
+    description: "The other party in a pending friend request.",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        nullable: true,
+        description: "Presigned GET URL (private MinIO); null if no avatar.",
+      },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
+    },
+    required: [
+      "userId",
+      "username",
+      "firstName",
+      "lastName",
+      "avatarUrl",
+      "avatar",
+    ],
+  },
+  FriendRequestItem: {
+    type: "object",
+    properties: {
+      friendshipId: {
+        type: "string",
+        format: "uuid",
+        description: "Pass to POST accept/reject or DELETE cancel.",
+      },
+      direction: {
+        type: "string",
+        enum: ["INCOMING", "OUTGOING"],
+        description:
+          "INCOMING = the other user sent it to you; OUTGOING = you sent it to them.",
+      },
+      user: { $ref: "#/components/schemas/FriendRequestUser" },
+      createdAt: {
+        type: "string",
+        format: "date-time",
+        description: "ISO-8601 timestamp of when the request was created.",
+      },
+    },
+    required: ["friendshipId", "direction", "user", "createdAt"],
+  },
+  FriendRequestsListResponseData: {
+    type: "object",
+    properties: {
+      requests: {
+        type: "array",
+        items: { $ref: "#/components/schemas/FriendRequestItem" },
+      },
+      total: {
+        type: "integer",
+        example: 3,
+        description:
+          "Total pending requests for the caller in the requested direction. May exceed the returned page size; can also exceed `requests.length` on a page when a peer profile has been deleted.",
+      },
+    },
+    required: ["requests", "total"],
+  },
+
+  // ===========================================================================
+  // user-service · friendship record
+  // ===========================================================================
+  FriendshipRecord: {
+    type: "object",
+    description:
+      "A friendship row returned by send / accept / reject / cancel operations. `status` reflects the new state after the operation.",
+    properties: {
+      id: { type: "string", format: "uuid", description: "Friendship ID." },
+      requesterId: {
+        type: "string",
+        format: "uuid",
+        description: "User who sent the friend request.",
+      },
+      addresseeId: {
+        type: "string",
+        format: "uuid",
+        description: "User who received the friend request.",
+      },
+      status: {
+        type: "string",
+        enum: ["PENDING", "ACCEPTED", "REJECTED", "CANCELLED", "UNFRIENDED"],
+        description: "Current friendship status.",
+      },
+      acceptedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "When the request was accepted; null otherwise.",
+      },
+      rejectedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "When the request was rejected; null otherwise.",
+      },
+      cancelledAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the request was cancelled by the sender; null otherwise.",
+      },
+      unfriendedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "When the friendship was dissolved; null otherwise.",
+      },
+      unfriendedBy: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description: "userId of who initiated the unfriend; null otherwise.",
+      },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+    required: [
+      "id",
+      "requesterId",
+      "addresseeId",
+      "status",
+      "acceptedAt",
+      "rejectedAt",
+      "cancelledAt",
+      "unfriendedAt",
+      "unfriendedBy",
+      "createdAt",
+      "updatedAt",
+    ],
   },
 
   // ===========================================================================
@@ -3316,6 +3704,7 @@ export const openApiSchemas = {
       "bio",
       "avatarUrl",
       "avatarUrlExpiresIn",
+      "avatar",
       "isOnline",
     ],
   },
@@ -3398,6 +3787,23 @@ export const openApiSchemas = {
       streamEnabled: { type: "boolean" },
       chatEnabled: { type: "boolean" },
       announcementEnabled: { type: "boolean" },
+      isJoined: {
+        type: "boolean",
+        description:
+          "True when the caller is an active member of this community.",
+      },
+      moderationStatus: {
+        type: "string",
+        enum: ["ACTIVE", "SUSPENDED"],
+        description:
+          "ACTIVE = open; SUSPENDED = closed by a platform admin (clients show a read-only banner).",
+      },
+      isLive: {
+        type: "boolean",
+        description:
+          "True when the community has an active livestream. Phase 1 stub — always false until stream-service ships.",
+      },
+      lastActivity: { $ref: "#/components/schemas/CommunityLastActivity" },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
@@ -3422,6 +3828,10 @@ export const openApiSchemas = {
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",
+      "isJoined",
+      "moderationStatus",
+      "isLive",
+      "lastActivity",
       "createdAt",
       "updatedAt",
     ],
@@ -3444,7 +3854,8 @@ export const openApiSchemas = {
       description: { type: "string", maxLength: 500 },
       avatarObjectKey: {
         type: "string",
-        description: "Object key from /communities/uploads/url.",
+        description:
+          "Object key returned by POST /api/v1/media/upload-url (category COMMUNITY_AVATAR).",
       },
       memberIds: {
         type: "array",
@@ -3677,6 +4088,17 @@ export const openApiSchemas = {
       streamEnabled: { type: "boolean" },
       chatEnabled: { type: "boolean" },
       announcementEnabled: { type: "boolean" },
+      moderationStatus: {
+        type: "string",
+        enum: ["ACTIVE", "SUSPENDED"],
+        description:
+          "ACTIVE = open; SUSPENDED = closed by admin — clients should render the community as read-only.",
+      },
+      isLive: {
+        type: "boolean",
+        description:
+          "True when the community has an active livestream right now. Phase 1 stub — always false until stream-service ships.",
+      },
       lastActivityAt: {
         type: "integer",
         format: "int64",
@@ -3695,12 +4117,6 @@ export const openApiSchemas = {
           "Typed summary of the latest community activity (message, reaction, join, etc.). " +
           "Always present; type='created' when no chat activity has occurred.",
       },
-      lastMessageActivity: {
-        nullable: true,
-        allOf: [{ $ref: "#/components/schemas/CommunityLastMessageActivity" }],
-        description:
-          "Latest community-chat message preview (member-only); null when there are no messages or chat-service is unavailable.",
-      },
     },
     required: [
       "id",
@@ -3718,10 +4134,11 @@ export const openApiSchemas = {
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",
+      "moderationStatus",
+      "isLive",
       "lastActivityAt",
       "lastActivity",
       "unreadMessageCount",
-      "lastMessageActivity",
     ],
   },
   PaginationMeta: {
@@ -3804,16 +4221,21 @@ export const openApiSchemas = {
         description:
           "Unread community-chat messages for the caller. Only present via GET /communities/mine search mode (member-only); absent on the public /communities/discover alias.",
       },
-      lastMessageActivity: {
+      lastActivity: {
         nullable: true,
-        allOf: [{ $ref: "#/components/schemas/CommunityLastMessageActivity" }],
+        allOf: [{ $ref: "#/components/schemas/CommunityLastActivity" }],
         description:
-          "Latest community-chat message preview (member-only). Only present via GET /communities/mine search mode; absent on the public /communities/discover alias.",
+          "Typed summary of the latest community activity. Only present via GET /communities/mine search mode (member-only); absent on the public /communities/discover alias.",
       },
       isJoined: {
         type: "boolean",
         description:
           "True when the caller is an active member of this community. Varies in /communities/mine search mode; always false on the deprecated public /communities/discover alias.",
+      },
+      hasRequested: {
+        type: "boolean",
+        description:
+          "True when the caller has a PENDING join request for this community. Always false for communities the caller has already joined.",
       },
       isMuted: {
         type: "boolean",
@@ -3830,6 +4252,16 @@ export const openApiSchemas = {
       streamEnabled: { type: "boolean" },
       chatEnabled: { type: "boolean" },
       announcementEnabled: { type: "boolean" },
+      moderationStatus: {
+        type: "string",
+        description:
+          "ACTIVE = open; SUSPENDED = closed by admin — clients should render the community as read-only.",
+      },
+      isLive: {
+        type: "boolean",
+        description:
+          "True when the community has an active livestream right now. Phase 1 stub — always false until stream-service ships.",
+      },
     },
     required: [
       "id",
@@ -3843,11 +4275,14 @@ export const openApiSchemas = {
       "avatarUrl",
       "avatarUrlExpiresIn",
       "isJoined",
+      "hasRequested",
       "isMuted",
       "muteUntil",
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",
+      "moderationStatus",
+      "isLive",
       "createdAt",
     ],
   },
@@ -3867,7 +4302,7 @@ export const openApiSchemas = {
   // them). Same shape as CommunityDiscoverItem but both fields are required.
   MyCommunitiesSearchItem: {
     allOf: [{ $ref: "#/components/schemas/CommunityDiscoverItem" }],
-    required: ["unreadMessageCount", "lastMessageActivity"],
+    required: ["unreadMessageCount", "lastActivity"],
   },
   MyCommunitiesSearchResponseData: {
     type: "object",
@@ -4095,6 +4530,9 @@ export const openApiSchemas = {
           "MEMBER_KICKED",
           "MEMBER_BANNED",
           "MEMBER_UNBANNED",
+          "MEMBER_MUTED",
+          "MEMBER_UNMUTED",
+          "MEMBER_WARNED",
           "ADMIN_TRANSFERRED",
           "COMMUNITY_JOINED",
           "COMMUNITY_DELETED",
@@ -4106,10 +4544,13 @@ export const openApiSchemas = {
           "COMMUNITY_REPORT_REVIEWED",
           "COMMUNITY_REPORT_ACTIONED",
           "COMMUNITY_REPORT_DISMISSED",
+          "COMMUNITY_REPORT_DELETED",
           "MEMBER_LEFT",
           "INVITE_LINK_CREATED",
           "INVITE_LINK_REVOKED",
           "INVITE_LINK_REDEEMED",
+          "ADMIN_SUSPEND_COMMUNITY",
+          "ADMIN_REOPEN_COMMUNITY",
         ],
       },
       targetUserId: {
@@ -4191,6 +4632,61 @@ export const openApiSchemas = {
       "updatedAt",
     ],
   },
+  // --- Join endpoint discriminated response shapes -------------------------
+  CommunityJoinedResponse: {
+    type: "object",
+    description:
+      "Returned with HTTP 201 when a user self-joins a PUBLIC community (or reactivates a LEFT membership).",
+    required: ["status", "membershipStatus", "member"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["JOINED"],
+        description: "Discriminator — always JOINED for this shape.",
+      },
+      membershipStatus: {
+        type: "string",
+        enum: ["ACTIVE"],
+      },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+  },
+  CommunityAlreadyMemberResponse: {
+    type: "object",
+    description:
+      "Returned with HTTP 200 when the caller is already an ACTIVE member (idempotent re-join).",
+    required: ["status", "membershipStatus", "member"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["ALREADY_MEMBER"],
+        description: "Discriminator — always ALREADY_MEMBER for this shape.",
+      },
+      membershipStatus: {
+        type: "string",
+        enum: ["ACTIVE"],
+      },
+      member: { $ref: "#/components/schemas/CommunityMemberData" },
+    },
+  },
+  CommunityJoinRequestCreatedResponse: {
+    type: "object",
+    description:
+      "Returned with HTTP 201 when a user requests to join a PRIVATE community. Admins/mods are notified.",
+    required: ["status", "membershipStatus", "request"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["REQUEST_CREATED"],
+        description: "Discriminator — always REQUEST_CREATED for this shape.",
+      },
+      membershipStatus: {
+        type: "string",
+        enum: ["PENDING"],
+      },
+      request: { $ref: "#/components/schemas/JoinRequestData" },
+    },
+  },
   JoinRequestUserSummary: {
     type: "object",
     properties: {
@@ -4269,6 +4765,44 @@ export const openApiSchemas = {
       member: { $ref: "#/components/schemas/CommunityMemberData" },
     },
     required: ["request", "member"],
+  },
+  BulkApproveJoinRequestsResult: {
+    type: "object",
+    description:
+      "Result of a bulk-approve. `approved` = request IDs that were PENDING and successfully approved; `skipped` = IDs that were not found, belong to a different community, are not PENDING, or whose requester is banned.",
+    properties: {
+      approved: {
+        type: "array",
+        items: { type: "string" },
+        description: "Request IDs that were approved.",
+      },
+      skipped: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Request IDs that were skipped (non-pending, not found, or banned requester).",
+      },
+    },
+    required: ["approved", "skipped"],
+  },
+  BulkRejectJoinRequestsResult: {
+    type: "object",
+    description:
+      "Result of a bulk-reject. `rejected` = request IDs that were PENDING and rejected; `skipped` = IDs that were not found, belong to a different community, or are not PENDING.",
+    properties: {
+      rejected: {
+        type: "array",
+        items: { type: "string" },
+        description: "Request IDs that were rejected.",
+      },
+      skipped: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Request IDs that were skipped (non-pending or not found).",
+      },
+    },
+    required: ["rejected", "skipped"],
   },
   JoinRequestPage: {
     type: "object",
@@ -4535,10 +5069,13 @@ export const openApiSchemas = {
       reason: {
         type: "string",
         enum: [
-          "UNINTERESTED",
-          "TOO_NOISY",
-          "INAPPROPRIATE_CONTENT",
+          "TOO_MANY_NOTIFICATIONS",
+          "NOT_RELEVANT",
+          "COMMUNITY_INACTIVE",
+          "TOO_MANY_MESSAGES",
           "PRIVACY_CONCERN",
+          "JOINED_BY_MISTAKE",
+          "TAKING_A_BREAK",
           "OTHER",
         ],
         description: "Leave reason. When OTHER, reasonText is required.",
@@ -4736,11 +5273,11 @@ export const openApiSchemas = {
     description: "A single moderation-muted member row.",
     properties: {
       userId: { type: "string", format: "uuid" },
-      username: { type: "string" },
-      displayName: { type: "string" },
-      avatarUrl: { type: "string", nullable: true },
-      avatarUrlExpiresIn: { type: "integer", nullable: true },
-      avatar: { $ref: "#/components/schemas/MediaObject" },
+      snapshotUsername: { type: "string" },
+      snapshotDisplayName: { type: "string" },
+      snapshotAvatarUrl: { type: "string", nullable: true },
+      snapshotAvatarUrlExpiresIn: { type: "integer", nullable: true },
+      snapshotAvatar: { $ref: "#/components/schemas/MediaObject" },
       mutedBy: {
         type: "string",
         format: "uuid",
@@ -4757,10 +5294,10 @@ export const openApiSchemas = {
     },
     required: [
       "userId",
-      "username",
-      "displayName",
-      "avatarUrl",
-      "avatarUrlExpiresIn",
+      "snapshotUsername",
+      "snapshotDisplayName",
+      "snapshotAvatarUrl",
+      "snapshotAvatarUrlExpiresIn",
       "mutedBy",
       "reason",
       "mutedAt",
@@ -4852,6 +5389,11 @@ export const openApiSchemas = {
       streamEnabled: { type: "boolean" },
       chatEnabled: { type: "boolean" },
       announcementEnabled: { type: "boolean" },
+      isMuted: {
+        type: "boolean",
+        description:
+          "Derived: true when stream, chat AND announcement are all disabled (false when no mute row exists).",
+      },
       createdAt: { type: "string", format: "date-time", nullable: true },
       updatedAt: { type: "string", format: "date-time", nullable: true },
     },
@@ -4861,6 +5403,7 @@ export const openApiSchemas = {
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",
+      "isMuted",
       "createdAt",
       "updatedAt",
     ],
@@ -4949,7 +5492,7 @@ export const openApiSchemas = {
     properties: {
       link: { $ref: "#/components/schemas/CommunityInviteLinkData" },
       member: { $ref: "#/components/schemas/CommunityMemberData" },
-      request: { $ref: "#/components/schemas/CommunityJoinRequestData" },
+      request: { $ref: "#/components/schemas/JoinRequestData" },
     },
     required: ["link"],
   },
@@ -4968,11 +5511,16 @@ export const openApiSchemas = {
         type: "array",
         items: { type: "string" },
       },
-      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      lastMessageAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms.",
+      },
       lastMessage: { type: "object", nullable: true },
       pinnedCount: { type: "integer" },
-      createdAt: { type: "string", format: "date-time" },
-      updatedAt: { type: "string", format: "date-time" },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
+      updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
     required: ["id", "roomId", "participants", "createdAt", "updatedAt"],
   },
@@ -4988,7 +5536,12 @@ export const openApiSchemas = {
     properties: {
       type: { type: "string", enum: ["PRIVATE", "GROUP"] },
       roomId: { type: "string" },
-      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      lastMessageAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms.",
+      },
       lastMessageId: { type: "string", nullable: true },
       lastMessage: {
         type: "object",
@@ -5134,13 +5687,213 @@ export const openApiSchemas = {
         description:
           "Per-room monotonic sequence number assigned at send time. Use for ordering and for the `chat:catchup` reconnect gap-fill (`sinceSeq`).",
       },
-      createdAt: { type: "string", format: "date-time" },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
     required: ["id", "roomId", "contentType", "createdAt"],
   },
   ChatMessageList: {
     type: "array",
     items: { $ref: "#/components/schemas/ChatMessage" },
+  },
+  /**
+   * Canonical wire message returned by the REST private/group SEND endpoints
+   * (and broadcast byte-identically as the Socket.IO `message:new`). This is the
+   * `buildChatMessageEvent` output — NOT the `ChatMessage` read shape: it carries
+   * server-authoritative `serverTs`/`sentAt` epoch-ms (there is **no** `createdAt`
+   * here), the resolved `senderAvatar` URL, and `reactions` as an empty array on a
+   * fresh send. The send handler wraps this in `allOf:[ChatWireMessage, {idempotent}]`.
+   */
+  ChatWireMessage: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      clientMessageId: {
+        type: "string",
+        description: "Echo of the idempotency key (empty string if none).",
+      },
+      roomId: { type: "string" },
+      conversationType: { type: "string", enum: ["PRIVATE", "GROUP"] },
+      senderId: { type: "string" },
+      senderName: { type: "string" },
+      senderAvatar: {
+        type: "string",
+        description:
+          "Fully-qualified presigned GET URL (resolved on read), or empty string.",
+      },
+      senderRole: {
+        type: "string",
+        description:
+          "Group role (OWNER/ADMIN/MEMBER) for GROUP; empty otherwise.",
+      },
+      receiverId: {
+        type: "string",
+        description: "Peer user ID for PRIVATE; empty string for GROUP.",
+      },
+      content: {
+        type: "object",
+        description:
+          "Message body. `content.files[].url` is a resolved presigned download URL (raw object keys are never returned).",
+        properties: {
+          text: { type: "string", maxLength: 4000 },
+          urls: { type: "array", items: { type: "string" } },
+          files: { type: "array", items: { type: "object" } },
+          location: { $ref: "#/components/schemas/ChatLocationAttachment" },
+          contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+          sticker: { $ref: "#/components/schemas/ChatSticker" },
+        },
+        nullable: true,
+      },
+      contentType: {
+        type: "string",
+        enum: [
+          "TEXT",
+          "IMAGE",
+          "VIDEO",
+          "AUDIO",
+          "VOICE",
+          "DOCUMENT",
+          "GIF",
+          "STICKER",
+          "LOCATION",
+          "CONTACT",
+          "SYSTEM",
+        ],
+        description: "Canonical UPPER-CASE message kind.",
+      },
+      parentMessageId: {
+        type: "string",
+        description: "Replied-to message id, or empty string.",
+      },
+      quoteData: {
+        type: "object",
+        nullable: true,
+        description:
+          "Canonical reply snapshot { messageId, senderId, senderName, messageType, preview, isDeleted }, or null.",
+      },
+      reactions: {
+        type: "array",
+        description: "Always [] on a fresh send.",
+        items: { type: "object" },
+      },
+      isForwarded: {
+        type: "boolean",
+        description: "True when this message was forwarded from another room.",
+      },
+      clientTs: {
+        type: "integer",
+        format: "int64",
+        description: "Client compose time (epoch ms); 0 if unknown.",
+      },
+      serverTs: {
+        type: "integer",
+        format: "int64",
+        description: "Server-authoritative send time (epoch ms).",
+      },
+      sentAt: {
+        type: "integer",
+        format: "int64",
+        description: "Alias of serverTs (epoch ms).",
+      },
+      sequenceNumber: {
+        type: "integer",
+        description: "Per-room monotonic sequence number.",
+      },
+    },
+    required: [
+      "id",
+      "roomId",
+      "conversationType",
+      "senderId",
+      "contentType",
+      "serverTs",
+      "sequenceNumber",
+    ],
+  },
+  /**
+   * REST body for private/group DELETE — matches the socket `message:delete` payload byte-for-byte.
+   */
+  ChatDeleteTombstone: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      conversationId: {
+        type: "string",
+        description: "Alias of roomId; kept for V1 clients.",
+      },
+      type: {
+        type: "string",
+        enum: ["forMe", "forEveryone"],
+        description: "Delete scope.",
+      },
+      deletedBy: { type: "string", description: "userId of the deleter." },
+      sequenceNumber: {
+        type: "integer",
+        description: "Per-room sequence number of the deleted message.",
+      },
+      deletedType: {
+        type: "string",
+        description: "GROUP only — SELF_DELETE | ADMIN_DELETE.",
+      },
+    },
+    required: [
+      "messageId",
+      "conversationId",
+      "type",
+      "deletedBy",
+      "sequenceNumber",
+    ],
+  },
+  /**
+   * REST body for community DELETE — matches the socket `community:message:deleted` payload.
+   */
+  ChatCommunityDeleteTombstone: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      communityId: { type: "string" },
+      roomId: { type: "string" },
+      deleteType: {
+        type: "string",
+        enum: ["forMe", "forEveryone"],
+        description: "Delete scope.",
+      },
+      deletedBy: { type: "string" },
+    },
+    required: ["messageId", "communityId", "roomId", "deleteType", "deletedBy"],
+  },
+  /**
+   * REST body for community message EDIT — matches the socket `community:message:edited` payload.
+   */
+  ChatCommunityEditResponse: {
+    type: "object",
+    properties: {
+      messageId: { type: "string" },
+      communityId: { type: "string" },
+      roomId: { type: "string" },
+      content: {
+        type: "object",
+        nullable: true,
+        description: "Updated message body.",
+      },
+      contentType: {
+        type: "string",
+        description: "UPPER-CASE message kind (TEXT, IMAGE, …).",
+      },
+      isEdited: {
+        type: "boolean",
+        description: "Always true on an edit response.",
+      },
+      editedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when the message was last edited.",
+      },
+      sequenceNumber: {
+        type: "integer",
+        description: "Per-room sequence number.",
+      },
+    },
+    required: ["messageId", "communityId", "roomId", "isEdited", "editedAt"],
   },
   ChatDeletePrivateMessageRequest: {
     type: "object",
@@ -5157,11 +5910,15 @@ export const openApiSchemas = {
       roomId: { type: "string" },
       messageId: { type: "string" },
       pinnedBy: { type: "string" },
-      pinnedAt: { type: "string", format: "date-time" },
+      pinnedAt: { type: "integer", format: "int64", description: "Epoch ms." },
       senderId: { type: "string" },
       senderDisplayName: { type: "string" },
       contentPinned: { type: "object" },
-      messageCreatedAt: { type: "string", format: "date-time" },
+      messageCreatedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms.",
+      },
     },
     required: ["id", "roomId", "messageId", "pinnedBy", "pinnedAt"],
   },
@@ -5185,15 +5942,20 @@ export const openApiSchemas = {
       memberLimit: { type: "integer" },
       memberCount: { type: "integer" },
       settings: { type: "object" },
-      lastMessageAt: { type: "string", format: "date-time", nullable: true },
+      lastMessageAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms.",
+      },
       pinnedCount: { type: "integer" },
       isJoined: {
         type: "boolean",
         description:
           "True when the logged-in caller is an active member of this group. Present on the read surfaces — GET /groups/my-groups (always true) and GET /groups/{roomId} (varies: false for a non-member). Omitted on mutation responses (create/update/disband).",
       },
-      createdAt: { type: "string", format: "date-time" },
-      updatedAt: { type: "string", format: "date-time" },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
+      updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
     required: ["id", "roomId", "name", "createdBy", "status", "createdAt"],
   },
@@ -5240,7 +6002,7 @@ export const openApiSchemas = {
         description:
           "ACTIVE = current member; KICKED = removed by admin/owner; LEFT = voluntarily left; BANNED = banned by admin.",
       },
-      joinedAt: { type: "string", format: "date-time" },
+      joinedAt: { type: "integer", format: "int64", description: "Epoch ms." },
       unreadCount: { type: "integer" },
     },
     required: ["id", "roomId", "userId", "role", "status", "joinedAt"],
@@ -5296,11 +6058,16 @@ export const openApiSchemas = {
       token: { type: "string" },
       createdBy: { type: "string" },
       status: { type: "string", enum: ["ACTIVE", "REVOKED", "EXPIRED"] },
-      expiresAt: { type: "string", format: "date-time", nullable: true },
+      expiresAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms.",
+      },
       maxUses: { type: "integer", nullable: true },
       usedCount: { type: "integer" },
       shareName: { type: "string" },
-      createdAt: { type: "string", format: "date-time" },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
     required: ["id", "roomId", "token", "createdBy", "status", "createdAt"],
   },
@@ -5356,19 +6123,99 @@ export const openApiSchemas = {
   },
 
   // --- Notifications ---
+  NotificationNavigation: {
+    type: "object",
+    description:
+      "Deep-link routing object on community join-request notifications. Tells the client which screen to navigate to.",
+    properties: {
+      screen: {
+        type: "string",
+        enum: ["COMMUNITY_REQUESTS", "COMMUNITY_DETAILS", "COMMUNITY_CHAT"],
+        description:
+          "COMMUNITY_REQUESTS: admin/mod join-requests list. COMMUNITY_DETAILS: community info page. COMMUNITY_CHAT: community general chat.",
+      },
+      communityId: { type: "string" },
+      communityName: { type: "string" },
+      communityAvatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Resolved presigned URL. Null if the community has no avatar.",
+      },
+      communityHandle: {
+        type: "string",
+        nullable: true,
+        description: "The community @handle unique slug.",
+      },
+      requestId: {
+        type: "string",
+        description: "Present only for join-request notification types.",
+      },
+    },
+    required: ["screen", "communityId", "communityName"],
+  },
   ChatNotification: {
     type: "object",
     properties: {
       id: { type: "string" },
       userId: { type: "string" },
       actorId: { type: "string" },
-      type: { type: "string" },
+      type: {
+        type: "string",
+        description:
+          "Notification type. Known community values: community.join_requested, " +
+          "community.join_request_approved, community.join_request_rejected, " +
+          "community.member_added, community.invite_accepted.",
+      },
       entity: { type: "object" },
-      actorSnapshot: { type: "object" },
-      payload: { type: "object" },
+      actorSnapshot: {
+        type: "object",
+        nullable: true,
+        description:
+          "Actor details for notification UI. " +
+          "community.join_requested: { userId, displayName, avatarUrl }. " +
+          "approved/rejected: { userId, displayName }. Absent on other types.",
+        properties: {
+          userId: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: { type: "string", nullable: true },
+        },
+      },
+      payload: {
+        type: "object",
+        description:
+          "Structured notification data. payload.data contains type-specific string fields. " +
+          "For community join-request types, payload.data.navigation is a JSON string — " +
+          "parse it to get a NotificationNavigation object.",
+        properties: {
+          title: { type: "string" },
+          body: { type: "string" },
+          data: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description:
+              "String map of type-specific fields. Community join-request keys: " +
+              "communityId, communityName, communityHandle, communityAvatarUrl, " +
+              "requestId, requesterDisplayName, requesterAvatarUrl, " +
+              "decidedByDisplayName, status (APPROVED|REJECTED), " +
+              "navigation (JSON-stringified NotificationNavigation), actorSnapshot (JSON string).",
+          },
+        },
+      },
+      navigation: {
+        $ref: "#/components/schemas/NotificationNavigation",
+        description:
+          "Parsed navigation object. Present in notifications:fetch socket ack and " +
+          "notification:new socket event. On REST GET /chat/notifications, parse from payload.data.navigation instead.",
+      },
       isRead: { type: "boolean" },
-      readAt: { type: "string", format: "date-time", nullable: true },
-      createdAt: { type: "string", format: "date-time" },
+      readAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms.",
+      },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
     required: ["id", "userId", "actorId", "type", "isRead", "createdAt"],
   },
@@ -5406,8 +6253,13 @@ export const openApiSchemas = {
       isLive: { type: "boolean" },
       tags: { type: "array", items: { type: "string" } },
       status: { type: "string" },
-      lastMessageAt: { type: "string", format: "date-time", nullable: true },
-      createdAt: { type: "string", format: "date-time" },
+      lastMessageAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms.",
+      },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
     required: ["id", "name", "status", "createdAt"],
   },
@@ -5422,7 +6274,12 @@ export const openApiSchemas = {
       roomId: { type: "string" },
       sentBy: { type: "string" },
       senderName: { type: "string", nullable: true },
-      senderAvatar: { type: "string", nullable: true },
+      senderAvatar: {
+        type: "string",
+        nullable: true,
+        description:
+          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). Render it directly — do not build it from a key or call a separate download endpoint.",
+      },
       message: { type: "string", nullable: true },
       reactions: { type: "object" },
       parentMessageId: { type: "string", nullable: true },
@@ -5438,13 +6295,18 @@ export const openApiSchemas = {
         items: { type: "object" },
       },
       deletedForAll: { type: "boolean" },
-      editedAt: {
-        type: "string",
-        format: "date-time",
-        nullable: true,
-        description: "Non-null when the message has been edited.",
+      isEdited: {
+        type: "boolean",
+        description: "true when the message has been edited at least once.",
       },
-      createdAt: { type: "string", format: "date-time" },
+      editedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description:
+          "Epoch ms. Non-null when the message has been edited; 0 otherwise.",
+      },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
       updatedAt: {
         type: "integer",
         description:
@@ -5493,11 +6355,103 @@ export const openApiSchemas = {
         },
       },
     },
-    required: ["id", "roomId", "sentBy", "createdAt"],
+    required: ["id", "roomId", "sentBy", "createdAt", "isEdited"],
   },
   ChatCommunityMessageList: {
     type: "array",
     items: { $ref: "#/components/schemas/ChatCommunityMessage" },
+  },
+  /**
+   * Canonical wire message returned by the REST community SEND endpoint (and
+   * broadcast byte-identically as the Socket.IO `community:message:new`). This is
+   * the orchestrator `sendCommunity` payload — NOT the `ChatCommunityMessage` read
+   * shape: it uses `senderId` (not `sentBy`), structured `content` (not flat
+   * `attachments[]`), `serverTs`/`sentAt` epoch-ms (no `createdAt`), and carries
+   * `reactions` as an empty array on a fresh send. The send handler wraps this in
+   * `allOf:[ChatCommunityWireMessage, {idempotent}]`.
+   */
+  ChatCommunityWireMessage: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      messageId: { type: "string", description: "Alias of id." },
+      communityId: {
+        type: "string",
+        description: "community-service Community.id (broadcast channel key).",
+      },
+      roomId: { type: "string", description: "chat-service GeneralRoom.id." },
+      senderId: { type: "string" },
+      senderName: { type: "string" },
+      senderAvatar: {
+        type: "string",
+        description:
+          "Fully-qualified presigned GET URL (resolved on read), or empty string.",
+      },
+      parentMessageId: {
+        type: "string",
+        description: "Replied-to message id, or empty string.",
+      },
+      quoteData: {
+        type: "object",
+        nullable: true,
+        description: "Canonical reply snapshot, or null.",
+      },
+      content: {
+        type: "object",
+        description:
+          "Structured body. `content.files[]` carry resolved presigned download URLs.",
+        properties: {
+          text: { type: "string" },
+          files: { type: "array", items: { type: "object" } },
+          location: { $ref: "#/components/schemas/ChatLocationAttachment" },
+          contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+          sticker: { $ref: "#/components/schemas/ChatSticker" },
+        },
+        required: ["text", "files"],
+      },
+      reactions: {
+        type: "array",
+        description: "Always [] on a fresh send.",
+        items: { type: "object" },
+      },
+      message: {
+        type: "string",
+        description: "Plain-text body (mirrors content.text).",
+      },
+      contentType: {
+        type: "string",
+        description: "Canonical UPPER-CASE message kind.",
+      },
+      clientMessageId: {
+        type: "string",
+        description: "Echo of the idempotency key (empty string if none).",
+      },
+      serverTs: {
+        type: "integer",
+        format: "int64",
+        description: "Server-authoritative send time (epoch ms).",
+      },
+      sentAt: {
+        type: "integer",
+        format: "int64",
+        description: "Alias of serverTs (epoch ms).",
+      },
+      sequenceNumber: {
+        type: "integer",
+        description: "Per-room monotonic sequence number.",
+      },
+    },
+    required: [
+      "id",
+      "messageId",
+      "communityId",
+      "roomId",
+      "senderId",
+      "content",
+      "contentType",
+      "serverTs",
+      "sequenceNumber",
+    ],
   },
   /** Scroll / history mode — before_ts (default). Includes top-level hasMore + nextCursor shortcuts. */
   ChatCommunityMessagePage: {
@@ -5667,70 +6621,6 @@ export const openApiSchemas = {
     required: ["packId", "stickerId"],
   },
 
-  // --- Media upload/download ---
-  ChatDownloadUrlRequest: {
-    type: "object",
-    properties: {
-      objectKey: {
-        type: "string",
-        minLength: 1,
-        maxLength: 500,
-        description:
-          "Object key returned by /chat/media/upload-url (must start with chat-uploads/).",
-        example: "chat-uploads/<userId>/<uuid>.mp3",
-      },
-    },
-    required: ["objectKey"],
-  },
-  ChatDownloadUrlData: {
-    type: "object",
-    properties: {
-      objectKey: { type: "string" },
-      downloadUrl: {
-        type: "string",
-        format: "uri",
-        description:
-          "Short-lived presigned GET URL for playing/downloading the object.",
-      },
-      media: { $ref: "#/components/schemas/MediaObject" },
-    },
-    required: ["objectKey", "downloadUrl"],
-  },
-  ChatUploadUrlRequest: {
-    type: "object",
-    properties: {
-      filename: { type: "string", minLength: 1, maxLength: 255 },
-      contentType: {
-        type: "string",
-        enum: [
-          "image/jpeg",
-          "image/png",
-          "image/webp",
-          "image/gif",
-          "video/mp4",
-          "video/quicktime",
-          "audio/mpeg",
-          "audio/ogg",
-          "audio/wav",
-          "application/pdf",
-          "application/msword",
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ],
-      },
-    },
-    required: ["filename", "contentType"],
-  },
-  ChatUploadUrlData: {
-    type: "object",
-    properties: {
-      objectKey: { type: "string", example: "chat-uploads/user123/abc.jpg" },
-      uploadUrl: { type: "string", format: "uri" },
-      contentType: { type: "string", example: "image/jpeg" },
-      media: { $ref: "#/components/schemas/MediaObject" },
-    },
-    required: ["objectKey", "uploadUrl", "contentType"],
-  },
-
   // --- Calls ---
   ChatCall: {
     type: "object",
@@ -5752,13 +6642,27 @@ export const openApiSchemas = {
         ],
       },
       privateRoomId: { type: "string", nullable: true },
-      initiatedAt: { type: "string", format: "date-time" },
-      answeredAt: { type: "string", format: "date-time", nullable: true },
-      endedAt: { type: "string", format: "date-time", nullable: true },
+      initiatedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms.",
+      },
+      answeredAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms.",
+      },
+      endedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch ms.",
+      },
       durationSec: { type: "integer", nullable: true },
       endedBy: { type: "string", format: "uuid", nullable: true },
-      createdAt: { type: "string", format: "date-time" },
-      updatedAt: { type: "string", format: "date-time" },
+      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
+      updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
     required: [
       "id",
@@ -5834,14 +6738,89 @@ export const openApiSchemas = {
   },
   ChatMessageReactions: {
     type: "object",
+    description:
+      "Reactions on a single message, keyed by emoji. Returned by GET .../messages/{messageId}/reactions for private and group messages. The emoji is the object key; there is no top-level `messageId` and no array form.",
     properties: {
-      messageId: { type: "string" },
       reactions: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ChatReactionGroup" },
+        type: "object",
+        description: "Map of emoji → reaction summary (emoji is the key).",
+        additionalProperties: {
+          type: "object",
+          properties: {
+            count: { type: "integer" },
+            selfReacted: {
+              type: "boolean",
+              description:
+                "True if the requesting user reacted with this emoji.",
+            },
+            users: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  userId: { type: "string" },
+                  displayName: { type: "string" },
+                  avatar: { type: "string" },
+                },
+                required: ["userId", "displayName", "avatar"],
+              },
+            },
+          },
+          required: ["count", "selfReacted", "users"],
+        },
       },
     },
-    required: ["messageId", "reactions"],
+    required: ["reactions"],
+  },
+  /** Body for POST .../messages/{messageId}/reactions (add a reaction). */
+  ChatReactRequest: {
+    type: "object",
+    required: ["emoji"],
+    properties: {
+      emoji: {
+        type: "string",
+        minLength: 1,
+        maxLength: 32,
+        example: "👍",
+        description: "Unicode emoji to add as the caller's reaction.",
+      },
+    },
+  },
+  /**
+   * Grouped emoji reaction in the POST/DELETE reaction response. Unlike
+   * ChatReactionGroup (used by the GET reactions read), this omits `selfReacted`
+   * — the add/remove response mirrors the `message:reaction` broadcast, which is
+   * per-conversation (not per-viewer); a client derives selfReacted from
+   * users[].userId === myUserId.
+   */
+  ChatReactGroup: {
+    type: "object",
+    properties: {
+      emoji: { type: "string", example: "👍" },
+      count: { type: "integer", description: "Number of users who reacted." },
+      users: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatReactionUser" },
+      },
+    },
+    required: ["emoji", "count", "users"],
+  },
+  /**
+   * Response for POST/DELETE .../messages/{messageId}/reactions[/{emoji}].
+   * Carries the full grouped reaction state after the op — the same `reactions`
+   * array the server broadcasts on the `message:reaction` Socket.IO event.
+   */
+  ChatReactResponse: {
+    type: "object",
+    properties: {
+      reactions: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatReactGroup" },
+        description:
+          "Full grouped reaction state for the message after the op.",
+      },
+    },
+    required: ["reactions"],
   },
   ChatEditMessageRequest: {
     type: "object",
@@ -5974,5 +6953,140 @@ export const openApiSchemas = {
       },
     },
     required: ["pinnedIds", "pinnedCount"],
+  },
+
+  // ===========================================================================
+  // chat-service · community-chat pins (raw persisted rows → epoch-ms dates)
+  // ===========================================================================
+  CommunityMessagePin: {
+    type: "object",
+    description:
+      "A pinned community-chat message (raw persisted row). Date fields are epoch milliseconds (Date→number via the ApiResponse serializer).",
+    properties: {
+      id: { type: "string", description: "Pin id (Mongo ObjectId, 24-hex)." },
+      roomId: { type: "string" },
+      messageId: { type: "string", description: "Pinned message ObjectId." },
+      pinnedBy: {
+        type: "string",
+        format: "uuid",
+        description: "User ID who pinned the message.",
+      },
+      pinnedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when the message was pinned.",
+      },
+      messageCreatedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when the original message was created.",
+      },
+      senderId: { type: "string", format: "uuid" },
+      senderDisplayName: { type: "string" },
+      senderAvatar: {
+        type: "string",
+        nullable: true,
+        description:
+          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). Render it directly — do not build it from a key or call a separate download endpoint.",
+      },
+      contentPinned: {
+        type: "object",
+        description: "Snapshot of the pinned message content.",
+        properties: {
+          text: { type: "string" },
+          urls: { type: "array", items: { type: "string" } },
+          files: { type: "array", items: { type: "object" } },
+        },
+      },
+    },
+    required: [
+      "id",
+      "roomId",
+      "messageId",
+      "pinnedBy",
+      "pinnedAt",
+      "messageCreatedAt",
+      "senderId",
+      "senderDisplayName",
+      "contentPinned",
+    ],
+  },
+  CommunityMessagePinWithCount: {
+    type: "object",
+    description:
+      "Result of pinning a community-chat message: the created pin plus the room's new pinned count.",
+    properties: {
+      pin: { $ref: "#/components/schemas/CommunityMessagePin" },
+      pinnedCount: {
+        type: "integer",
+        description: "Total pinned messages in the room after this pin.",
+      },
+    },
+    required: ["pin", "pinnedCount"],
+  },
+  CommunityMessageUnpinResult: {
+    type: "object",
+    description: "Result of unpinning a community-chat message.",
+    properties: {
+      pinnedCount: {
+        type: "integer",
+        description: "Total pinned messages in the room after the unpin.",
+      },
+    },
+    required: ["pinnedCount"],
+  },
+  CommunityMessagePinList: {
+    type: "object",
+    description:
+      "Cursor-paginated pinned messages for a community room. `items[].pinnedAt` is epoch ms (number), but `nextCursor` is the ISO-8601 pinnedAt of the last item (string).",
+    properties: {
+      items: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityMessagePin" },
+      },
+      nextCursor: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "ISO-8601 pinnedAt cursor for the next page; null at end.",
+      },
+      hasMore: { type: "boolean" },
+    },
+    required: ["items", "nextCursor", "hasMore"],
+  },
+
+  // ===========================================================================
+  // backoffice-service · moderation (related reports)
+  // ===========================================================================
+  AdminModerationRelatedReport: {
+    type: "object",
+    description:
+      "A report related to another (same reported user or target). Item shape for GET /admin/v1/reports/{reportId}/related (Phase 1 — mock data behind the real contract).",
+    properties: {
+      reportId: { type: "string" },
+      reportType: {
+        type: "string",
+        enum: [
+          "SPAM",
+          "HARASSMENT",
+          "HATE_SPEECH",
+          "NUDITY",
+          "VIOLENCE",
+          "SELF_HARM",
+          "IMPERSONATION",
+          "MISINFORMATION",
+          "ILLEGAL_CONTENT",
+          "CSAM",
+          "TERRORISM",
+          "OTHER",
+        ],
+      },
+      status: {
+        type: "string",
+        enum: ["PENDING", "UNDER_REVIEW", "RESOLVED", "DISMISSED", "ESCALATED"],
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    required: ["reportId", "reportType", "status", "createdAt"],
   },
 } as const;

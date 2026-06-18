@@ -40,6 +40,14 @@ export interface MarkNotificationsReadResult {
   updatedCount: number;
   remainingUnread: number;
 }
+export interface DeleteNotificationParams {
+  userId: string;
+  notificationId: string;
+}
+export interface DeleteNotificationResult {
+  deleted: boolean;
+  remainingUnread: number;
+}
 
 export interface NotificationClient {
   getNotifications(
@@ -48,6 +56,9 @@ export interface NotificationClient {
   markNotificationsRead(
     p: MarkNotificationsReadParams
   ): Promise<MarkNotificationsReadResult>;
+  deleteNotification(
+    p: DeleteNotificationParams
+  ): Promise<DeleteNotificationResult>;
 }
 
 export function createNotificationClient(): NotificationClient {
@@ -77,7 +88,16 @@ export function createNotificationClient(): NotificationClient {
         userId: p.userId,
         cursor: p.cursor ?? "",
         limit: p.limit ?? 20,
-      })
+        // int64 created_at arrives as a string (proto-loader longs:String);
+        // coerce each notification's epoch-ms timestamp so the
+        // notifications:fetch ack matches the notification:new broadcast.
+      }).then((r) => ({
+        ...r,
+        notifications: r.notifications.map((n) => ({
+          ...n,
+          createdAt: Number(n.createdAt),
+        })),
+      }))
   );
   const markReadBreaker = makeBreaker(
     "notification.markNotificationsRead",
@@ -87,9 +107,18 @@ export function createNotificationClient(): NotificationClient {
         notificationIds: p.notificationIds,
       })
   );
+  const deleteBreaker = makeBreaker(
+    "notification.deleteNotification",
+    (p: DeleteNotificationParams) =>
+      call<unknown, DeleteNotificationResult>("deleteNotification", {
+        userId: p.userId,
+        notificationId: p.notificationId,
+      })
+  );
 
   return {
     getNotifications: (p) => getNotifBreaker.fire(p),
     markNotificationsRead: (p) => markReadBreaker.fire(p),
+    deleteNotification: (p) => deleteBreaker.fire(p),
   };
 }

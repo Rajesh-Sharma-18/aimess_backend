@@ -103,6 +103,9 @@ const envSchema = z.object({
   MINIO_ACCESS_KEY: z.string().min(1),
   MINIO_SECRET_KEY: z.string().min(1),
   MINIO_BUCKET_AVATARS: z.string().min(1).default("aimess-avatars"),
+  // Community avatar/cover bucket (community-service owns the keys). Backoffice
+  // only signs view URLs for it; the strategy resolves any bucket by name.
+  MINIO_BUCKET_COMMUNITY: z.string().min(1).default("aimess-community"),
   MINIO_REGION: z.string().default("us-east-1"),
   /** Presigned GET lifetime for avatar display URLs (seconds). */
   MINIO_AVATAR_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),

@@ -8,9 +8,12 @@ import {
   type CommunityInviteAcceptedPayload,
   type CommunityInviteSentPayload,
   type CommunityJoinedPayload,
+  type CommunityJoinRequestApprovedPayload,
   type CommunityJoinRequestedPayload,
+  type CommunityJoinRequestRejectedPayload,
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
+  type CommunityMemberJoinedPayload,
   type CommunityMemberKickedPayload,
   type CommunityMemberLeftPayload,
   type CommunityMemberMutedPayload,
@@ -132,6 +135,26 @@ export function publishCommunityJoinRequestedSafe(
   publishSafe(CommunityEvents.JOIN_REQUESTED, data, "community.join_requested");
 }
 
+export function publishCommunityJoinRequestApprovedSafe(
+  data: CommunityJoinRequestApprovedPayload
+): void {
+  publishSafe(
+    CommunityEvents.JOIN_REQUEST_APPROVED,
+    data,
+    "community.join_request_approved"
+  );
+}
+
+export function publishCommunityJoinRequestRejectedSafe(
+  data: CommunityJoinRequestRejectedPayload
+): void {
+  publishSafe(
+    CommunityEvents.JOIN_REQUEST_REJECTED,
+    data,
+    "community.join_request_rejected"
+  );
+}
+
 export function publishCommunityInviteSentSafe(
   data: CommunityInviteSentPayload
 ): void {
@@ -162,4 +185,10 @@ export function publishCommunityReportActionedSafe(
     data,
     "community.report_actioned"
   );
+}
+
+export function publishCommunityMemberJoinedSafe(
+  data: CommunityMemberJoinedPayload
+): void {
+  publishSafe(CommunityEvents.MEMBER_JOINED, data, "community.member_joined");
 }

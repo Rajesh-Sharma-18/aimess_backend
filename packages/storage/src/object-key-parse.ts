@@ -1,5 +1,5 @@
 export interface ParseObjectKeyOptions {
-  prefixes: string[];
+  prefixes: readonly string[];
   bucket: string;
 }
 

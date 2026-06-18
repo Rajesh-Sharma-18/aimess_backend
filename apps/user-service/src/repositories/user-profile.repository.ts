@@ -7,6 +7,9 @@ import { normalizeUsername } from "../lib/username.util.js";
 
 const PLACEHOLDER_DATE_OF_BIRTH = new Date("2000-01-01");
 
+/** Maximum users returned by findAllActiveExcept — prevents full-table scans on large deployments. */
+const AUTO_CONNECT_USER_LIMIT = 10_000;
+
 const DISCOVERY_SELECT = {
   userId: true,
   username: true,
@@ -240,6 +243,23 @@ export const userProfileRepository = {
         lastName: true,
         createdAt: true,
       },
+    });
+  },
+
+  /**
+   * Returns up to AUTO_CONNECT_USER_LIMIT active (non-deleted) profiles, excluding
+   * the caller. The cap prevents a full-table scan from loading millions of rows into
+   * memory on large deployments.
+   */
+  findAllActiveExcept(callerId: string): Promise<{ userId: string }[]> {
+    return prisma.userProfile.findMany({
+      where: {
+        userId: { not: callerId },
+        status: ProfileStatus.ACTIVE,
+        deletedAt: null,
+      },
+      select: { userId: true },
+      take: AUTO_CONNECT_USER_LIMIT,
     });
   },
 };

@@ -1,0 +1,87 @@
+{
+  "$comment": "Rule engine config for the AIMess Scenario Validation Framework. A ruleset declares which side-effects a CLASS of business action MUST and SHOULD fan out. Per-action overrides live in registry.json (an effect may be explicitly waived with a written reason). See docs/SCENARIO_VALIDATION_FRAMEWORK.md.",
+  "effectOrder": [
+    "db",
+    "event",
+    "consumer",
+    "socket",
+    "push",
+    "inapp",
+    "badge",
+    "delivery",
+    "sessionInvalidation",
+    "analytics",
+    "audit",
+    "search",
+    "cache"
+  ],
+  "effectLabels": {
+    "db": "Database update",
+    "event": "Domain event",
+    "consumer": "Event consumer",
+    "socket": "Socket event",
+    "push": "Push notification (FCM)",
+    "inapp": "In-app notification",
+    "badge": "Unread counter update",
+    "delivery": "Delivery tracking",
+    "sessionInvalidation": "Session invalidation",
+    "analytics": "Analytics event",
+    "audit": "Audit log",
+    "search": "Search index update",
+    "cache": "Cache update"
+  },
+  "riskWeights": { "HIGH": 100, "MEDIUM": 40, "LOW": 10 },
+  "ciGate": {
+    "$comment": "Build fails if any action ends FAILED at a risk >= failAtRisk.",
+    "failAtRisk": "HIGH"
+  },
+  "rulesets": {
+    "member_mutation": {
+      "description": "A user is added/removed/role-changed in a community or group. The affected user MUST be notified.",
+      "required": ["db", "event", "consumer", "push", "inapp", "badge"],
+      "recommended": ["socket", "audit"],
+      "riskOnMissingRequired": "HIGH",
+      "riskOnMissingRecommended": "MEDIUM"
+    },
+    "privileged_action": {
+      "description": "An admin/moderator mutates a user account (ban/suspend/delete). MUST be audited, the user notified, and live sessions invalidated.",
+      "required": ["db", "event", "consumer", "audit", "sessionInvalidation"],
+      "recommended": ["push", "inapp"],
+      "riskOnMissingRequired": "HIGH",
+      "riskOnMissingRecommended": "MEDIUM"
+    },
+    "message_send": {
+      "description": "A chat/community message is sent. MUST persist and broadcast in real time; SHOULD wake offline recipients.",
+      "required": ["db", "socket"],
+      "recommended": ["push", "badge", "delivery"],
+      "riskOnMissingRequired": "HIGH",
+      "riskOnMissingRecommended": "MEDIUM"
+    },
+    "social_request": {
+      "description": "A friend/social request is sent or accepted. The counterparty MUST be notified.",
+      "required": ["db", "event", "consumer", "push", "inapp", "badge"],
+      "recommended": [],
+      "riskOnMissingRequired": "HIGH"
+    },
+    "lifecycle_self": {
+      "description": "A self-initiated lifecycle action (create/join). The actor already knows; cross-service wiring still required.",
+      "required": ["db", "event"],
+      "recommended": ["consumer", "audit"],
+      "riskOnMissingRequired": "MEDIUM",
+      "riskOnMissingRecommended": "LOW"
+    },
+    "media_lifecycle": {
+      "description": "A media upload completes / is rejected by scan. The uploader SHOULD learn the outcome out-of-band.",
+      "required": ["db"],
+      "recommended": ["socket", "push", "inapp", "audit"],
+      "riskOnMissingRequired": "MEDIUM",
+      "riskOnMissingRecommended": "MEDIUM"
+    },
+    "notification_lifecycle": {
+      "description": "A notification is created/read/deleted. The change MUST reach the user's devices and update the badge.",
+      "required": ["db", "socket", "badge"],
+      "recommended": [],
+      "riskOnMissingRequired": "MEDIUM"
+    }
+  }
+}

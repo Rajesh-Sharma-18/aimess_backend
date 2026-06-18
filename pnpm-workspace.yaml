@@ -10,8 +10,10 @@ allowBuilds:
   "@scarf/scarf": false
   bcrypt: false
   esbuild: true
+  msgpackr-extract: false
   prisma: false
   protobufjs: false
+  unrs-resolver: true
 packages:
   - apps/*
   - packages/*

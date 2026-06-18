@@ -1,47 +1,60 @@
 # WebSocket — Typing Indicators & Presence
 
 Typing (`typing:start`/`typing:stop`) are fire-and-forget broadcasts emitted by
-the gateway directly to `conv:<id>` (no gRPC, no persistence). Presence is
-heartbeat + subscribe model: `presence:connect` runs on `/chat` connect,
-`presence:heartbeat` keeps a user online, `presence:subscribe`/`unsubscribe`
-joins/leaves other users' `user:<peerId>` rooms to receive `presence:status`.
+the gateway directly to `conv:<id>` (`/chat`) and `community:<communityId>`
+(`/community`) — no gRPC at emit time, no persistence. Each broadcast is
+**enriched** with server-authoritative sender identity:
+`{ conversationId, userId, userDetails:{ userId, username, displayName, avatarUrl|null }, timestamp, senderName }`
+(community broadcasts also carry `communityId`; `timestamp` is a Unix **epoch-ms
+number**, not an ISO string). `userDetails` is resolved **once
+per namespace connection** at handshake (gRPC `UserService.BulkGetUserSnapshots` +
+media avatar presign) and cached on `socket.data.userDetails` — never per typing
+event. `userId` is always `socket.data.userId` (never client-trusted);
+`senderName == userDetails.displayName`. The same enriched shape is emitted on the
+server's 6 s auto-expiry stop and the disconnect-flush stop. Presence is heartbeat
+
+- subscribe model: `presence:connect` runs on `/chat` connect,
+  `presence:heartbeat` keeps a user online, `presence:subscribe`/`unsubscribe`
+  joins/leaves other users' `user:<peerId>` rooms to receive `presence:status`.
 
 **Source:** `apps/api-gateway/src/sockets/namespaces/chat.ns.ts`,
-`docs/SOCKET_EVENTS.md` §4, §7.2, §7.4.
+`apps/api-gateway/src/sockets/namespaces/community.ns.ts`,
+`apps/api-gateway/src/sockets/user-details.ts`,
+`docs/SOCKET_EVENTS.md` §4, §5, §7.2, §7.4, §8.6.
 
 ---
 
 ### TC-WS-070 — typing:start broadcasts to conv room
 
-| Field                     | Value                                                                                                                                    |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| **Feature/Module**        | WebSocket / Typing                                                                                                                       |
-| **API/Event Name**        | `client→server: typing:start`                                                                                                            |
-| **Test Scenario**         | Happy path — A starts typing; peers in the room are notified                                                                             |
-| **Category**              | Happy Path                                                                                                                               |
-| **Priority**              | Medium                                                                                                                                   |
-| **Preconditions**         | A and B both in `conv:<id>`                                                                                                              |
-| **Request Payload**       | `{ conversationId }`                                                                                                                     |
-| **Expected Response**     | No ack (fire-and-forget)                                                                                                                 |
-| **Expected DB Changes**   | None                                                                                                                                     |
-| **Expected Socket/Event** | Gateway emits `typing:start { userId:A, conversationId }` to `conv:<id>` (including A — emitted to the whole room, not excluding sender) |
-| **Notes**                 | Emitted directly by the gateway via `chat.to(...)`, not through Redis/chat-service. `userId` is the authed user, not from payload.       |
+| Field                     | Value                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Typing                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **API/Event Name**        | `client→server: typing:start`                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Test Scenario**         | Happy path — A starts typing; peers in the room are notified                                                                                                                                                                                                                                                                                                                                                            |
+| **Category**              | Happy Path                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Priority**              | Medium                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Preconditions**         | A and B both in `conv:<id>`                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Request Payload**       | `{ conversationId }` (optional `senderName`, legacy)                                                                                                                                                                                                                                                                                                                                                                    |
+| **Expected Response**     | No ack (fire-and-forget)                                                                                                                                                                                                                                                                                                                                                                                                |
+| **Expected DB Changes**   | None                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Expected Socket/Event** | Gateway emits enriched `typing:start { conversationId, userId:A, userDetails:{ userId:A, username, displayName, avatarUrl\|null }, timestamp:<epoch-ms number>, senderName }` to `conv:<id>` (including A — whole room, not excluding sender). Assert `userId === A` (server-authoritative, ignores any client-sent userId), `senderName === userDetails.displayName`, `typeof timestamp === "number"` (Unix epoch ms). |
+| **Notes**                 | Emitted directly by the gateway via `chat.to(...)`, not through Redis/chat-service. `userDetails` comes from `socket.data.userDetails` (resolved once at connect), not fetched per event. `userId` is the authed user, not from payload.                                                                                                                                                                                |
 
 ### TC-WS-071 — typing:stop broadcasts to conv room
 
-| Field                     | Value                                                     |
-| ------------------------- | --------------------------------------------------------- |
-| **Feature/Module**        | WebSocket / Typing                                        |
-| **API/Event Name**        | `client→server: typing:stop`                              |
-| **Test Scenario**         | Happy path — A stops typing                               |
-| **Category**              | Happy Path                                                |
-| **Priority**              | Low                                                       |
-| **Preconditions**         | A in `conv:<id>`                                          |
-| **Request Payload**       | `{ conversationId }`                                      |
-| **Expected Response**     | No ack                                                    |
-| **Expected DB Changes**   | None                                                      |
-| **Expected Socket/Event** | `typing:stop { userId:A, conversationId }` to `conv:<id>` |
-| **Notes**                 | Client should also auto-stop after a timeout.             |
+| Field                     | Value                                                                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Typing                                                                                                                     |
+| **API/Event Name**        | `client→server: typing:stop`                                                                                                           |
+| **Test Scenario**         | Happy path — A stops typing                                                                                                            |
+| **Category**              | Happy Path                                                                                                                             |
+| **Priority**              | Low                                                                                                                                    |
+| **Preconditions**         | A in `conv:<id>`                                                                                                                       |
+| **Request Payload**       | `{ conversationId }` (optional `senderName`, legacy)                                                                                   |
+| **Expected Response**     | No ack                                                                                                                                 |
+| **Expected Socket/Event** | Enriched `typing:stop { conversationId, userId:A, userDetails, timestamp, senderName }` to `conv:<id>` — same shape as `typing:start`. |
+| **Expected DB Changes**   | None                                                                                                                                   |
+| **Notes**                 | Client should also auto-stop after a timeout. `userDetails` from the cached `socket.data.userDetails`.                                 |
 
 ### TC-WS-072 — typing:start malformed payload silently dropped
 
@@ -234,3 +247,131 @@ joins/leaves other users' `user:<peerId>` rooms to receive `presence:status`.
 | **Expected DB Changes**   | Phone device removed; user still online via web device                                                                                                                                 |
 | **Expected Socket/Event** | No premature `presence:status { isOnline:false }` while another device remains                                                                                                         |
 | **Notes**                 | Distinct `deviceId` per session is required for correct multi-device presence. If two sessions share a `sessionId` (and socket.id differs), the model still keys on `sessionId` first. |
+
+### TC-WS-084 — Typing auto-expiry stop carries userDetails
+
+| Field                     | Value                                                                                                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Typing                                                                                                                                                                                                                    |
+| **API/Event Name**        | `server→client: typing:stop` (6 s auto-expiry)                                                                                                                                                                                        |
+| **Test Scenario**         | Reliability — A emits `typing:start` then never sends `typing:stop` (crash/drop); server auto-broadcasts stop after 6 s                                                                                                               |
+| **Category**              | Reliability                                                                                                                                                                                                                           |
+| **Priority**              | Medium                                                                                                                                                                                                                                |
+| **Preconditions**         | A and B in `conv:<id>`; A's `socket.data.userDetails` resolved                                                                                                                                                                        |
+| **Request Payload**       | `{ conversationId }` on `typing:start` only                                                                                                                                                                                           |
+| **Expected Response**     | No ack                                                                                                                                                                                                                                |
+| **Expected DB Changes**   | None                                                                                                                                                                                                                                  |
+| **Expected Socket/Event** | After ~6 s with no fresh `typing:start`, B receives enriched `typing:stop { conversationId, userId:A, userDetails, timestamp, senderName }` — the **same** enriched shape as a manual stop (NOT a thin `{ userId, conversationId }`). |
+| **Notes**                 | Driven by the per-socket `typingTimers` 6 s `setTimeout`; the timeout callback uses `typingPayload(conversationId)`. Re-emitting `typing:start` resets the window.                                                                    |
+
+### TC-WS-085 — Typing disconnect-flush stop carries userDetails
+
+| Field                     | Value                                                                                                                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Typing                                                                                                                                                                                |
+| **API/Event Name**        | `disconnect` side effect → `typing:stop` flush                                                                                                                                                    |
+| **Test Scenario**         | Reliability — A is typing (active timer) in one or more convs, then the socket disconnects; server flushes a stop per active conv                                                                 |
+| **Category**              | Reliability                                                                                                                                                                                       |
+| **Priority**              | Medium                                                                                                                                                                                            |
+| **Preconditions**         | A typing in `conv:<id1>` (and optionally `conv:<id2>`); A and B both in those rooms                                                                                                               |
+| **Request Payload**       | n/a (disconnect)                                                                                                                                                                                  |
+| **Expected Response**     | n/a                                                                                                                                                                                               |
+| **Expected DB Changes**   | None                                                                                                                                                                                              |
+| **Expected Socket/Event** | On `disconnect`, for every conversation with a pending timer, B receives enriched `typing:stop { conversationId, userId:A, userDetails, timestamp, senderName }`; `typingTimers` is then cleared. |
+| **Notes**                 | The disconnect handler loops `typingTimers` and emits `typingPayload(conversationId)` per entry — no stuck "typing…" after the socket closes.                                                     |
+
+### TC-WS-086 — Degraded fallback when user-service breaker is open
+
+| Field                     | Value                                                                                                                                                                                                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Typing                                                                                                                                                                                                                                                  |
+| **API/Event Name**        | `client→server: typing:start` (identity resolution degraded)                                                                                                                                                                                                        |
+| **Test Scenario**         | Resilience — `UserService.BulkGetUserSnapshots` breaker is open (or user-service down) at connect; typing must still broadcast with a safe degraded identity                                                                                                        |
+| **Category**              | Resilience / Negative                                                                                                                                                                                                                                               |
+| **Priority**              | High                                                                                                                                                                                                                                                                |
+| **Preconditions**         | A connects while user gRPC is unavailable (`resolveSocketUserDetails` returns the degraded shape); A and B in `conv:<id>`                                                                                                                                           |
+| **Request Payload**       | `{ conversationId }`                                                                                                                                                                                                                                                |
+| **Expected Response**     | No ack                                                                                                                                                                                                                                                              |
+| **Expected DB Changes**   | None                                                                                                                                                                                                                                                                |
+| **Expected Socket/Event** | B receives `typing:start { conversationId, userId:A, userDetails:{ userId:A, username:"", displayName:"", avatarUrl:null }, timestamp, senderName:"" }`. The socket is **NOT** disconnected; no error is thrown; the breaker `.catch(() => null)` degrades cleanly. |
+| **Notes**                 | `resolveSocketUserDetails` never throws and never blocks the socket (fire-and-forget at connect with a safe default already set). Same degraded behaviour when the snapshot is missing or the avatar presign fails (avatarUrl stays null).                          |
+
+### TC-WS-087 — /community typing:start broadcasts to community room
+
+| Field                     | Value                                                                                                                                                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Community Typing                                                                                                                                                                                                                            |
+| **API/Event Name**        | `client→server: typing:start` (`/community`)                                                                                                                                                                                                            |
+| **Test Scenario**         | Happy path — A starts typing in a community; members in the room are notified                                                                                                                                                                           |
+| **Category**              | Happy Path                                                                                                                                                                                                                                              |
+| **Preconditions**         | A and B both in `community:<communityId>`; A's `socket.data.userDetails` resolved                                                                                                                                                                       |
+| **Priority**              | Medium                                                                                                                                                                                                                                                  |
+| **Request Payload**       | `{ communityId }` (optional `roomId`, `senderName`)                                                                                                                                                                                                     |
+| **Expected Response**     | No ack (fire-and-forget)                                                                                                                                                                                                                                |
+| **Expected DB Changes**   | None                                                                                                                                                                                                                                                    |
+| **Expected Socket/Event** | Gateway emits enriched `typing:start { conversationId:(==communityId), communityId, userId:A, userDetails, timestamp, senderName }` to `community:<communityId>`. Assert both `conversationId` and `communityId` equal the communityId; `userId === A`. |
+| **Notes**                 | Mirrors `/chat` typing; emitted via `community.to('community:'+communityId)`. Validated by `CommunityTypingSchema` (`communityId` required). `userId` server-authoritative.                                                                             |
+
+### TC-WS-088 — /community typing:stop broadcasts to community room
+
+| Field                     | Value                                                                                                                                              |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Community Typing                                                                                                                       |
+| **API/Event Name**        | `client→server: typing:stop` (`/community`)                                                                                                        |
+| **Test Scenario**         | Happy path — A stops typing in a community                                                                                                         |
+| **Category**              | Happy Path                                                                                                                                         |
+| **Priority**              | Low                                                                                                                                                |
+| **Preconditions**         | A in `community:<communityId>`                                                                                                                     |
+| **Request Payload**       | `{ communityId }` (optional `roomId`, `senderName`)                                                                                                |
+| **Expected Response**     | No ack                                                                                                                                             |
+| **Expected DB Changes**   | None                                                                                                                                               |
+| **Expected Socket/Event** | Enriched `typing:stop { conversationId:(==communityId), communityId, userId:A, userDetails, timestamp, senderName }` to `community:<communityId>`. |
+| **Notes**                 | `clearTyping(communityId)` cancels any pending auto-expiry timer for that community.                                                               |
+
+### TC-WS-089 — /community typing malformed payload silently dropped
+
+| Field                     | Value                                                                               |
+| ------------------------- | ----------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Community Typing                                                        |
+| **API/Event Name**        | `client→server: typing:start` (`/community`)                                        |
+| **Test Scenario**         | Input validation — missing `communityId`                                            |
+| **Category**              | Input Validation                                                                    |
+| **Priority**              | Low                                                                                 |
+| **Preconditions**         | Connected `/community`                                                              |
+| **Request Payload**       | `{}` (or `{ roomId }` with no `communityId`)                                        |
+| **Expected Response**     | Nothing (no ack)                                                                    |
+| **Expected DB Changes**   | None                                                                                |
+| **Expected Socket/Event** | No broadcast                                                                        |
+| **Notes**                 | `CommunityTypingSchema` requires `communityId.min(1)`; `safeParse` fail → `return`. |
+
+### TC-WS-090 — /community typing auto-expiry stop carries userDetails
+
+| Field                     | Value                                                                                                                                                                               |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Community Typing                                                                                                                                                        |
+| **API/Event Name**        | `server→client: typing:stop` (`/community`, 6 s auto-expiry)                                                                                                                        |
+| **Test Scenario**         | Reliability — A emits community `typing:start`, never sends stop; server auto-broadcasts stop after 6 s                                                                             |
+| **Category**              | Reliability                                                                                                                                                                         |
+| **Priority**              | Medium                                                                                                                                                                              |
+| **Preconditions**         | A and B in `community:<communityId>`                                                                                                                                                |
+| **Request Payload**       | `{ communityId }` on `typing:start` only                                                                                                                                            |
+| **Expected Response**     | No ack                                                                                                                                                                              |
+| **Expected DB Changes**   | None                                                                                                                                                                                |
+| **Expected Socket/Event** | After ~6 s, B receives enriched `typing:stop { conversationId, communityId, userId:A, userDetails, timestamp, senderName }` — same shape as a manual stop.                          |
+| **Notes**                 | Per-socket community `typingTimers` 6 s `setTimeout`, callback uses `communityTypingPayload(communityId)`. Disconnect also flushes a stop per active community (mirrors TC-WS-085). |
+
+### TC-WS-091 — /community typing degraded fallback (user-service breaker open)
+
+| Field                     | Value                                                                                                                                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Community Typing                                                                                                                                                                             |
+| **API/Event Name**        | `client→server: typing:start` (`/community`)                                                                                                                                                             |
+| **Test Scenario**         | Resilience — user gRPC unavailable at `/community` connect; typing still broadcasts a safe degraded identity                                                                                             |
+| **Category**              | Resilience / Negative                                                                                                                                                                                    |
+| **Priority**              | High                                                                                                                                                                                                     |
+| **Preconditions**         | A connects to `/community` while user gRPC is down; A and B in `community:<communityId>`                                                                                                                 |
+| **Request Payload**       | `{ communityId }`                                                                                                                                                                                        |
+| **Expected Response**     | No ack                                                                                                                                                                                                   |
+| **Expected DB Changes**   | None                                                                                                                                                                                                     |
+| **Expected Socket/Event** | B receives `typing:start { conversationId, communityId, userId:A, userDetails:{ userId:A, username:"", displayName:"", avatarUrl:null }, timestamp, senderName:"" }`. Socket NOT disconnected; no throw. |
+| **Notes**                 | Same `resolveSocketUserDetails` degraded path as TC-WS-086, on the `/community` namespace.                                                                                                               |

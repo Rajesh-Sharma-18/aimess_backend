@@ -1,8 +1,10 @@
 import type { Socket } from "socket.io";
+import jwt from "jsonwebtoken";
 import { verifyAccessToken, extractBearerToken } from "@aimess/auth-jwt";
 import { logger } from "@aimess/logger";
 import { resolveLocale, type SupportedLocale } from "@aimess/constants";
 import { env } from "../config/env.js";
+import type { SocketUserDetails } from "./user-details.js";
 
 declare module "socket.io" {
   interface SocketData {
@@ -10,6 +12,12 @@ declare module "socket.io" {
     sessionId: string;
     /** Resolved once at handshake from `x-lang` / `Accept-Language`; drives ack copy. */
     locale: SupportedLocale;
+    /** Epoch-ms when the handshake access token expires (0 = unknown). Used for session:expired warnings. */
+    tokenExpiresAt: number;
+    /** Raw JWT access token — kept so socket handlers can make authenticated internal HTTP calls on behalf of the user. Updated when auth:refresh succeeds. */
+    accessToken: string;
+    /** Resolved once per namespace connection; reused for every typing broadcast. */
+    userDetails: SocketUserDetails;
   }
 }
 
@@ -37,6 +45,12 @@ export function gatewaySocketAuthMiddleware(
     const verified = verifyAccessToken(token, env.JWT_ACCESS_SECRET);
     socket.data.userId = verified.userId;
     socket.data.sessionId = verified.sessionId;
+    socket.data.accessToken = token;
+
+    // Decode (not verify — already verified above) to extract expiry for session:expired warnings.
+    const decoded = jwt.decode(token) as { exp?: number } | null;
+    socket.data.tokenExpiresAt = decoded?.exp ? decoded.exp * 1000 : 0;
+
     next();
   } catch (err) {
     logger.warn(

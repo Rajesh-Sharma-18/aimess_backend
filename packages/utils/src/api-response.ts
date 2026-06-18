@@ -1,5 +1,7 @@
+import { toEpochMs } from "./datetime.js";
+
 function serializeDates(value: unknown): unknown {
-  if (value instanceof Date) return value.getTime();
+  if (value instanceof Date) return toEpochMs(value);
   if (Array.isArray(value)) return value.map(serializeDates);
   if (value !== null && typeof value === "object") {
     const result: Record<string, unknown> = {};

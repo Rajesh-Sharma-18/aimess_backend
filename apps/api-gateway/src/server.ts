@@ -6,15 +6,17 @@ import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import { setupSockets } from "./sockets/index.js";
 import { createMessagingClient } from "./grpc/clients/messaging.client.js";
+import { createMediaClient } from "./grpc/clients/media.client.js";
 
 async function start() {
   try {
     const messagingClient = createMessagingClient();
-    const app = createApp(messagingClient);
+    const mediaClient = createMediaClient();
+    const app = createApp(messagingClient, mediaClient);
     const httpServer = createServer(app);
 
     // Attach Socket.IO (Redis adapter init + namespace registration)
-    await setupSockets(httpServer, messagingClient);
+    await setupSockets(httpServer, messagingClient, mediaClient);
 
     // Bounded EADDRINUSE retry: under `tsx watch`, a packages/* rebuild restarts
     // every service at once and the new instance can try to bind before the old

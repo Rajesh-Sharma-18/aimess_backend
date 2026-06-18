@@ -6,6 +6,8 @@
  *   GET   /api/chat/groups/:roomId
  *   PATCH /api/chat/groups/:roomId         (update; Zod body)
  *   POST  /api/chat/groups/:roomId/disband
+ *   PATCH /api/chat/groups/:roomId/archive
+ *   PATCH /api/chat/groups/:roomId/unarchive
  */
 import request from "supertest";
 
@@ -129,6 +131,30 @@ describe("GET /api/chat/groups/my-groups", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.data).toEqual([]);
   });
+
+  // Resolve-on-read: the stored group logo object key must surface as a full
+  // download URL (mediaUrlStrategy mock → https://media.test/<bucket>/<key>).
+  it("MEDIA: resolves the group logo object key to a download URL", async () => {
+    mocks.groupMemberRepo.getActiveRoomIds.mockResolvedValue(["grp_1"]);
+    mocks.groupRoomRepo.getUserGroups.mockResolvedValue([
+      {
+        roomId: "grp_1",
+        name: "Devs",
+        avatar: "group-avatars/grp_1/logo.png",
+        lastMessageAt: new Date(1),
+      },
+    ]);
+    mocks.groupRoomRepo.countUserGroups.mockResolvedValue(1);
+
+    const res = await request(app)
+      .get("/api/chat/groups/my-groups")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data[0].avatar).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_1/logo.png"
+    );
+  });
 });
 
 describe("GET /api/chat/groups/:roomId", () => {
@@ -173,6 +199,25 @@ describe("GET /api/chat/groups/:roomId", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
+  });
+
+  // Resolve-on-read on the single room-detail boundary.
+  it("MEDIA: resolves the room logo object key on the detail read", async () => {
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: "grp_1",
+      name: "Devs",
+      avatar: "group-avatars/grp_1/logo.png",
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get("/api/chat/groups/grp_1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.avatar).toBe(
+      "https://media.test/aimess-avatars/group-avatars/grp_1/logo.png"
+    );
   });
 });
 
@@ -268,6 +313,112 @@ describe("POST /api/chat/groups/:roomId/disband", () => {
   it("SECURITY: 401 with a forged token", async () => {
     const res = await request(app)
       .post("/api/chat/groups/grp_1/disband")
+      .set(bearer(makeForgedAccessToken()));
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("PATCH /api/chat/groups/:roomId/archive + /unarchive", () => {
+  it("POSITIVE: archives the group for an active member", async () => {
+    // Authorization is membership-based (any active member may archive); the
+    // group-room model checks findActiveByRoomAndUser, NOT participants[].
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: "grp_1",
+      userId: TEST_USER_ID,
+      role: "MEMBER",
+    });
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: "grp_1",
+      name: "Devs",
+    });
+    mocks.groupRoomRepo.setArchived.mockResolvedValue({
+      roomId: "grp_1",
+      name: "Devs",
+      archivedBy: {
+        [TEST_USER_ID]: { archivedAt: "2030-01-01T00:00:00.000Z" },
+      },
+    });
+
+    const res = await request(app)
+      .patch("/api/chat/groups/grp_1/archive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(mocks.groupRoomRepo.setArchived).toHaveBeenCalledWith(
+      "grp_1",
+      TEST_USER_ID
+    );
+    // Emits conv:archived to the caller's own user channel, tagged type GROUP.
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining("conv:archived")
+    );
+    expect(mocks.redis.publish.mock.calls[0][1]).toContain('"type":"GROUP"');
+  });
+
+  it("POSITIVE: unarchive returns 200 and clears the caller's archive flag", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: "grp_1",
+      userId: TEST_USER_ID,
+      role: "MEMBER",
+    });
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue({
+      roomId: "grp_1",
+      name: "Devs",
+    });
+    mocks.groupRoomRepo.setUnarchived.mockResolvedValue({
+      roomId: "grp_1",
+      name: "Devs",
+    });
+
+    const res = await request(app)
+      .patch("/api/chat/groups/grp_1/unarchive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupRoomRepo.setUnarchived).toHaveBeenCalledWith(
+      "grp_1",
+      TEST_USER_ID
+    );
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `user:${TEST_USER_ID}`,
+      expect.stringContaining("conv:unarchived")
+    );
+  });
+
+  it("SECURITY: 404 archiving a group the caller is not an active member of", async () => {
+    // Membership is checked first; a non-member never reaches setArchived.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .patch("/api/chat/groups/grp_1/archive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(404);
+    expect(mocks.groupRoomRepo.setArchived).not.toHaveBeenCalled();
+  });
+
+  it("NEGATIVE: 404 archiving a group that does not exist", async () => {
+    // Member row exists, but the room itself is gone → CHAT_GROUP_NOT_FOUND.
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: "grp_1",
+      userId: TEST_USER_ID,
+      role: "OWNER",
+    });
+    mocks.groupRoomRepo.findActiveByRoomId.mockResolvedValue(null);
+
+    const res = await request(app)
+      .patch("/api/chat/groups/grp_1/archive")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(404);
+    expect(mocks.groupRoomRepo.setArchived).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: 401 with a forged token on archive", async () => {
+    const res = await request(app)
+      .patch("/api/chat/groups/grp_1/archive")
       .set(bearer(makeForgedAccessToken()));
     expect(res.status).toBe(401);
   });

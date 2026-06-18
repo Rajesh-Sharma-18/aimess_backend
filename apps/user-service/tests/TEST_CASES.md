@@ -297,6 +297,12 @@ against the executed Jest integration suite.
 
 ## 15. POST /api/v1/users/uploads/url
 
+> ℹ️ **NOTE (2026-06-12).** This endpoint is now a supported gateway alias that forwards to
+> media-service `POST /api/v1/media/upload-url` (`category: "USER_AVATAR"`, was `type: "AVATAR"`).
+> The old user-service `upload.test.ts` was deleted; the alias is covered by
+> `apps/api-gateway/tests/uploads/legacy-uploads.test.ts` and the canonical endpoint by
+> `apps/media-service/tests/media/upload.test.ts`. Original notes retained for reference.
+
 - **Description:** Create a presigned avatar upload URL (private bucket).
 - **Validator:** `uploadUrlSchema` (`type` enum `AVATAR`; `contentType` non-empty; positive int `contentLength`).
 - **Controller/Service:** `upload.controller.ts:10` → `uploadService.createUploadUrl`.

@@ -29,9 +29,39 @@ export class GeneralRoomMessageRepository {
         messageType: (data.messageType as string) ?? "text",
         attachments: (data.attachments as object) ?? [],
         clientMessageId: (data.clientMessageId as string) ?? null,
+        sequenceNumber: (data.sequenceNumber as number) ?? 0,
         deletedBy: (data.deletedBy as object) ?? [],
         deletedForAll: (data.deletedForAll as boolean) ?? false,
         reports: (data.reports as object) ?? [],
+      },
+    });
+  }
+
+  async createSystemMessage(params: {
+    roomId: string;
+    systemMessageType: string;
+    metadata: Record<string, unknown>;
+    triggeredByUserId: string;
+    triggeredByName: string;
+    sequenceNumber: number;
+    fallbackText: string;
+  }): Promise<GeneralRoomMessage> {
+    return this.prisma.generalRoomMessage.create({
+      data: {
+        roomId: params.roomId,
+        sentBy: params.triggeredByUserId,
+        senderName: params.triggeredByName,
+        senderAvatar: null,
+        message: params.fallbackText,
+        messageType: "SYSTEM",
+        systemMessageType: params.systemMessageType,
+        systemMetadata: params.metadata as Prisma.InputJsonValue,
+        reactions: {},
+        attachments: [],
+        deletedBy: [],
+        deletedForAll: false,
+        reports: [],
+        sequenceNumber: params.sequenceNumber,
       },
     });
   }

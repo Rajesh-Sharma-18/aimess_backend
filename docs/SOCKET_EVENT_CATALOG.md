@@ -40,6 +40,7 @@ Companion docs:
 | Chat list bump-to-top    | `/chat`      | —                                                | `conv:updated`, `community:updated`                        |
 | 1-1 calls (WebRTC)       | `/chat`      | `call:initiate/answer/decline/end/ice`           | `call:incoming/answered/declined/ended/ice`                |
 | Community chat           | `/community` | `community:message:send`, `community:join`, …    | `community:message:new`, `community:message:reaction`, …   |
+| Community typing         | `/community` | `typing:start`, `typing:stop`                    | `typing:start`, `typing:stop`                              |
 | Notifications & badge    | `/notify`    | `notifications:fetch`, `notifications:mark_read` | `notification:new`, `notification:count`, `…:count_update` |
 
 ---
@@ -97,7 +98,8 @@ chat.on("connect_error", (e) => {
 Branch on `success` / `error` / `retryable` — **never** on `message` (it's a
 localized display string). Error codes: `INVALID_PAYLOAD` (false), `SERVICE_ERROR`
 (true), `RATE_LIMITED` (true), `FORBIDDEN` (false), `NOT_FOUND` (false), `CONFLICT`
-(false). Handle all six. Coerce ack numeric fields (e.g. `sentAt`) with `Number()`.
+(false). Handle all six. Ack numeric fields (e.g. `sentAt`) are plain **numbers** —
+same as broadcasts (the gateway coerces the gRPC int64 wire-strings).
 
 ---
 
@@ -282,12 +284,40 @@ chat.on("chat:catchup:result", (p) => {
 - **Description:** Fire-and-forget (no ack — validate client-side). Throttle
   `typing:start` to ≤ 1 per 3 s per conversation. The receiver must also self-expire
   its "typing…" after ~6 s (the server auto-expires after 6 s too).
-- **Payload (both ways):** `{ conversationId }` emit / `{ userId, conversationId }` listen
+- **Payload emit:** `{ conversationId }` (`senderName?` optional, legacy)
+- **Payload listen:** `{ conversationId, userId, userDetails, timestamp, senderName }`
+  — `userDetails = { userId, username, displayName, avatarUrl|null }` is resolved
+  server-side at connect; `userId` is server-authoritative; `senderName` ==
+  `displayName`; `timestamp` is an **epoch-ms number** (all socket timestamps,
+  incl. `conv:archived.archivedAt`, are epoch ms — never ISO). Same shape on
+  auto-expiry and disconnect-flush stops.
 
 ```ts
 chat.emit("typing:start", { conversationId }); // throttled
-chat.on("typing:start", (p) => showTyping(p.conversationId, p.userId));
+chat.on("typing:start", (p) =>
+  showTyping(
+    p.conversationId,
+    p.userDetails.displayName,
+    p.userDetails.avatarUrl
+  )
+);
 chat.on("typing:stop", (p) => hideTyping(p.conversationId, p.userId));
+```
+
+### 3.10b `/community` `typing:start` / `typing:stop` — community typing
+
+- **Feature:** Community typing · **Direction:** → emit 🔕 **and** ← listen (on `/community`)
+- **Description:** Mirrors `/chat`; broadcast to `community:<communityId>`. Same 6 s
+  server auto-expiry + disconnect flush.
+- **Payload emit:** `{ communityId }` (`roomId?`, `senderName?` optional)
+- **Payload listen:** `{ conversationId(==communityId), communityId, userId, userDetails, timestamp, senderName }`
+
+```ts
+community.emit("typing:start", { communityId }); // throttled
+community.on("typing:start", (p) =>
+  showTyping(p.communityId, p.userDetails.displayName)
+);
+community.on("typing:stop", (p) => hideTyping(p.communityId, p.userId));
 ```
 
 ### 3.11 `presence:subscribe` / `unsubscribe` / `unsubscribe_all` / `list`
@@ -759,7 +789,7 @@ the resulting `notification:new` (and refetch where noted).
    (conv room). Handle out-of-order.
 3. **One mapper** for `message:new` / `message:edited` / forwards (shared canonical
    shape).
-4. **Coerce ack numerics** (`Number(sentAt)`); broadcasts already send numbers.
+4. **Ack numerics are numbers** (`sentAt`, `sequenceNumber`, …) — gateway coerces the gRPC int64 wire-strings; matches broadcasts.
 5. **`contentType` is UPPER-CASE** everywhere; calls use `callType`.
 6. **Idempotency** via `clientMessageId` on every send; replay-safe.
 7. **Full-set replaces** — reactions and `pinnedIds` always send the complete set;

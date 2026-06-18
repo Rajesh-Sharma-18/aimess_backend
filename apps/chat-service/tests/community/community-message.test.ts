@@ -56,6 +56,114 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     expect(res.body.data.data[0].contentType).toBe("TEXT");
   });
 
+  it("POSITIVE: messages are returned in ascending (oldest→newest) order", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    // Repository returns newest-first (DESC) as the DB would for a before-direction
+    // keyset page. The service must reverse this before responding.
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue([
+      {
+        id: "m3",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "newest",
+        messageType: "text",
+        createdAt: new Date(3000),
+        deletedBy: [],
+      },
+      {
+        id: "m2",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "middle",
+        messageType: "text",
+        createdAt: new Date(2000),
+        deletedBy: [],
+      },
+      {
+        id: "m1",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "oldest",
+        messageType: "text",
+        createdAt: new Date(1000),
+        deletedBy: [],
+      },
+    ]);
+    mocks.generalRoomMessageRepo.countByRoom.mockResolvedValue(3);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const items = res.body.data.data as Array<{ id: string }>;
+    expect(items).toHaveLength(3);
+    // Ascending: oldest (m1) first, newest (m3) last.
+    expect(items[0].id).toBe("m1");
+    expect(items[1].id).toBe("m2");
+    expect(items[2].id).toBe("m3");
+  });
+
+  it("POSITIVE: nextCursor points to the oldest item (pagination boundary for next older page)", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    // Simulate limit=2 with hasMore: repository over-fetches limit+1=3 rows DESC.
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue([
+      {
+        id: "m3",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "newest",
+        messageType: "text",
+        createdAt: new Date(3000),
+        deletedBy: [],
+      },
+      {
+        id: "m2",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "second",
+        messageType: "text",
+        createdAt: new Date(2000),
+        deletedBy: [],
+      },
+      // Third row triggers hasMore — service slices it off before responding.
+      {
+        id: "m1",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "older",
+        messageType: "text",
+        createdAt: new Date(1000),
+        deletedBy: [],
+      },
+    ]);
+    mocks.generalRoomMessageRepo.countByRoom.mockResolvedValue(10);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages?limit=2`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const body = res.body.data as {
+      data: Array<{ id: string }>;
+      hasMore: boolean;
+      nextCursor: string;
+    };
+    // Page returns [m2, m3] in ASC order (m1 was the over-fetched hasMore sentinel).
+    expect(body.data).toHaveLength(2);
+    expect(body.data[0].id).toBe("m2");
+    expect(body.data[1].id).toBe("m3");
+    expect(body.hasMore).toBe(true);
+    // nextCursor = m2.createdAt (oldest in page) — send as before_ts to load older msgs.
+    expect(body.nextCursor).toBe("2000");
+  });
+
   // AUDIT H2 — the before_ts/latest history list must be gated on membership.
   it("SECURITY: IDOR — 403 reading history (latest/before_ts) as a non-member", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
@@ -97,6 +205,38 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.data[0].syncEventType).toBe("new");
+    expect(res.body.data.data[0].isEdited).toBe(false);
+  });
+
+  it("POSITIVE: after_ts sync sets isEdited:true for messages with editedAt set", async () => {
+    const editedTs = 2000;
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findUpdatedAtSince.mockResolvedValue({
+      messages: [
+        {
+          id: "m2",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "hi edited",
+          messageType: "text",
+          deletedForAll: false,
+          createdAt: new Date(1000),
+          updatedAt: new Date(editedTs),
+          editedAt: new Date(editedTs),
+        },
+      ],
+      hasMore: false,
+    });
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages?after_ts=500`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data[0].isEdited).toBe(true);
+    expect(res.body.data.data[0].editedAt).toBe(editedTs);
   });
 
   it("SECURITY: 403 incremental-sync for a non-member", async () => {
@@ -300,6 +440,11 @@ describe("DELETE /messages/:messageId", () => {
         messageType: "text",
         deletedForAll: true,
       });
+    // Room-bind guard: caller is an active member of the message's room.
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "member",
+      status: "active",
+    });
     mocks.generalRoomMessageRepo.deleteForAll.mockResolvedValue({
       id: "m1",
       roomId: ROOM,
@@ -358,6 +503,11 @@ describe("PATCH /messages/:messageId (edit)", () => {
       deletedForAll: false,
       createdAt: new Date(now - 1000),
     });
+    // Room-bind guard: caller is an active member of the message's room.
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "member",
+      status: "active",
+    });
     mocks.generalRoomMessageRepo.editMessage.mockResolvedValue({
       id: "m1",
       roomId: ROOM,
@@ -365,6 +515,7 @@ describe("PATCH /messages/:messageId (edit)", () => {
       messageType: "text",
       message: "edited",
       createdAt: new Date(now - 1000),
+      editedAt: new Date(now),
     });
 
     const res = await request(app)
@@ -373,19 +524,39 @@ describe("PATCH /messages/:messageId (edit)", () => {
       .send({ communityId: "comm-1", content: { text: "edited" } });
 
     expect(res.status).toBe(200);
-    expect(mocks.redis.publish).toHaveBeenCalledWith(
-      "community:comm-1",
-      expect.stringContaining("community:message:edited")
+    expect(res.body.data.isEdited).toBe(true);
+    expect(res.body.data.editedAt).toBeGreaterThan(0);
+    // After the cross-channel fix: broadcast goes to the message's OWN room
+    // (result.roomId), NOT the body-supplied communityId ("comm-1").
+    const publishCall = mocks.redis.publish.mock.calls.find(
+      ([, payload]: [string, string]) => {
+        try {
+          return JSON.parse(payload).event === "community:message:edited";
+        } catch {
+          return false;
+        }
+      }
     );
+    expect(publishCall).toBeDefined();
+    const broadcastPayload = JSON.parse(publishCall[1]);
+    expect(broadcastPayload.data.isEdited).toBe(true);
+    expect(broadcastPayload.data.editedAt).toBeGreaterThan(0);
   });
 
   it("SECURITY: 400 editing another user's message", async () => {
     mocks.generalRoomMessageRepo.findById.mockResolvedValue({
       id: "m1",
+      roomId: ROOM,
       sentBy: "not-me",
       messageType: "text",
       deletedForAll: false,
       createdAt: new Date(),
+    });
+    // Member guard passes (caller is active in the message's room), so the
+    // own-only sender check is what rejects with 400 — not the room-bind 404.
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "member",
+      status: "active",
     });
 
     const res = await request(app)

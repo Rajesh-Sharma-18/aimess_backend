@@ -27,3 +27,19 @@ export function assertObjectKeyOwnedBy(
     objectKey.startsWith(`${prefix}/${ownerId}/`) && !objectKey.includes("..")
   );
 }
+
+/**
+ * Extract the owner id from an object key shaped `{prefix}/{ownerId}/{fileId}.{ext}`
+ * — i.e. the 2nd path segment. Returns null when the key is malformed, empty, or
+ * contains a `..` traversal segment so callers never act on a spoofed owner.
+ */
+export function extractOwnerIdFromObjectKey(objectKey: string): string | null {
+  if (!objectKey || objectKey.includes("..")) {
+    return null;
+  }
+  const ownerId = objectKey.split("/")[1];
+  if (!ownerId) {
+    return null;
+  }
+  return ownerId;
+}

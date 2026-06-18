@@ -5,6 +5,13 @@ import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
+import type { UserClient } from "../../grpc/clients/user.client.js";
+import type { MediaClient } from "../../grpc/clients/media.client.js";
+import {
+  resolveSocketUserDetails,
+  buildTypingBroadcast,
+} from "../user-details.js";
+import { env } from "../../config/env.js";
 
 // §3: bound free-text + array fields so a naive or abusive client cannot exceed
 // the 1 MB socket frame, blow up storage, or fan an oversized payload out to a
@@ -124,6 +131,27 @@ const CatchupSchema = z.object({
     .max(50),
 });
 
+const AuthRefreshSchema = z.object({
+  refreshToken: z.string().min(1),
+});
+
+// ── Friend management schemas ─────────────────────────────────────────────────
+const FriendRequestSchema = z.object({
+  addresseeId: z.string().uuid(),
+});
+const FriendAcceptSchema = z.object({
+  requestId: z.string().uuid(),
+});
+const FriendRejectSchema = z.object({
+  requestId: z.string().uuid(),
+});
+const FriendRemoveSchema = z.object({
+  targetUserId: z.string().uuid(),
+});
+const FriendCancelRequestSchema = z.object({
+  requestId: z.string().uuid(),
+});
+
 // ─── Redis pub/sub message shape published by messaging-service ──────────────
 interface RedisSocketEvent {
   event: string;
@@ -134,7 +162,9 @@ export function registerChatNamespace(
   io: SocketIOServer,
   messagingClient: MessagingClient,
   redisSub: Redis,
-  redisPub: Redis
+  redisPub: Redis,
+  userClient: UserClient,
+  mediaClient: MediaClient
 ): void {
   const chat: Namespace = io.of("/chat");
   chat.use(gatewaySocketAuthMiddleware);
@@ -231,6 +261,29 @@ export function registerChatNamespace(
     const deviceId = socket.data.sessionId ?? socket.id;
     void socket.join(`user:${userId}`);
     logger.debug(`/chat connected userId=${userId}`);
+
+    // Resolve sender identity ONCE per connection (gRPC snapshot + avatar
+    // presign) so every typing broadcast can carry userDetails without a
+    // per-event fetch. Fire-and-forget: a safe default is set immediately and
+    // the resolved value overwrites it when ready, keeping connect latency zero.
+    socket.data.userDetails = {
+      userId,
+      username: "",
+      displayName: "",
+      avatarUrl: null,
+    };
+    void resolveSocketUserDetails(userClient, mediaClient, userId).then(
+      (ud) => {
+        socket.data.userDetails = ud;
+      }
+    );
+
+    // Presence key for FCM routing: notifications-service checks this before
+    // pushing to avoid sending FCM to a user who is actively connected.
+    // TTL = 300 s; refreshed on every presence:heartbeat so the key stays alive
+    // as long as the socket is open. On clean disconnect the key is deleted
+    // immediately; the TTL handles unclean disconnects (TCP drops etc.).
+    void redisPub.set(`user:online:${userId}`, "1", "EX", 300);
 
     // Mark the user online in chat-service presence (best-effort).
     if (userId) {
@@ -507,6 +560,8 @@ export function registerChatNamespace(
       const appState =
         (payload as { appState?: string } | undefined)?.appState ??
         "FOREGROUND";
+      // Refresh the FCM-routing online key on every heartbeat.
+      void redisPub.set(`user:online:${userId}`, "1", "EX", 300);
       messagingClient
         .presenceHeartbeat({ userId, deviceId, appState })
         .catch((err: unknown) =>
@@ -576,6 +631,98 @@ export function registerChatNamespace(
       }
     );
 
+    // Task #2: session:expired warning + auth:refresh socket event.
+    // Emit a warning 5 min before the handshake token expires; force-disconnect
+    // after a 60 s grace period unless the client refreshes in time.
+    let sessionWarnTimer: ReturnType<typeof setTimeout> | null = null;
+    let sessionExpireTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearSessionTimers = (): void => {
+      if (sessionWarnTimer !== null) {
+        clearTimeout(sessionWarnTimer);
+        sessionWarnTimer = null;
+      }
+      if (sessionExpireTimer !== null) {
+        clearTimeout(sessionExpireTimer);
+        sessionExpireTimer = null;
+      }
+    };
+
+    const scheduleSessionTimers = (expiresAt: number): void => {
+      clearSessionTimers();
+      const warnMs = Math.max(0, expiresAt - Date.now() - 5 * 60 * 1000);
+      sessionWarnTimer = setTimeout(() => {
+        sessionWarnTimer = null;
+        socket.emit("session:expired", {
+          reason: "TOKEN_EXPIRED",
+          expiresAt,
+          reconnect: true,
+          gracePeriod: 60,
+        });
+        sessionExpireTimer = setTimeout(() => {
+          sessionExpireTimer = null;
+          logger.debug(
+            `/chat session grace elapsed, disconnecting userId=${userId}`
+          );
+          socket.disconnect(true);
+        }, 60_000);
+      }, warnMs);
+    };
+
+    if (socket.data.tokenExpiresAt > 0) {
+      scheduleSessionTimers(socket.data.tokenExpiresAt);
+    }
+
+    // Client sends its refresh token via socket to obtain a new access token
+    // without a full transport reconnect. Resets both session expiry timers.
+    socket.on(
+      "auth:refresh",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = AuthRefreshSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        fetch(`${env.AUTH_SERVICE_URL}/api/auth/token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refreshToken: r.data.refreshToken }),
+          signal: controller.signal,
+        })
+          .then(async (res) => {
+            clearTimeout(timeoutId);
+            if (!res.ok) {
+              ackError(callback, "SERVICE_ERROR", locale);
+              return;
+            }
+            const body = (await res.json()) as {
+              data?: { accessToken?: string; accessTokenExpiresIn?: number };
+            };
+            const token = body.data?.accessToken;
+            if (!token) {
+              ackError(callback, "SERVICE_ERROR", locale);
+              return;
+            }
+            const expiresIn = body.data?.accessTokenExpiresIn ?? 900;
+            const newExpiresAt = Date.now() + expiresIn * 1000;
+            socket.data.tokenExpiresAt = newExpiresAt;
+            socket.data.accessToken = token;
+            scheduleSessionTimers(newExpiresAt);
+            ackOk(callback, "SOCKET_AUTH_REFRESHED", locale, {
+              accessToken: token,
+              expiresIn,
+            });
+          })
+          .catch((err: unknown) => {
+            clearTimeout(timeoutId);
+            logger.warn(`/chat auth:refresh error: ${String(err)}`);
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
     // Gap #7: per-socket typing-expiry timers.
     // Fire-and-forget (no ack). Server holds a 6 s countdown per
     // conversationId; if typing:stop is never received (e.g. app crash,
@@ -591,6 +738,18 @@ export function registerChatNamespace(
       }
     };
 
+    // Build the enriched typing broadcast body from the per-connection identity
+    // resolved at handshake (socket.data.userDetails). userId is always the
+    // authenticated socket user; legacy top-level userId/senderName are kept.
+    const typingPayload = (conversationId: string, senderName?: string) =>
+      buildTypingBroadcast(
+        userId,
+        socket.data.userDetails,
+        conversationId,
+        Date.now(),
+        { senderName }
+      );
+
     socket.on("typing:start", (payload: unknown) => {
       const r = TypingSchema.safeParse(payload);
       if (!r.success) return;
@@ -599,13 +758,9 @@ export function registerChatNamespace(
       // Reset the expiry window each time the client refreshes typing:start.
       clearTyping(conversationId);
 
-      chat.to(`conv:${conversationId}`).emit("typing:start", {
-        userId,
-        conversationId,
-        // V2 §2.8: include sender name when supplied so recipients don't need a
-        // profile fetch to render "Alice is typing…"
-        ...(senderName ? { senderName } : {}),
-      });
+      chat
+        .to(`conv:${conversationId}`)
+        .emit("typing:start", typingPayload(conversationId, senderName));
 
       typingTimers.set(
         conversationId,
@@ -613,7 +768,7 @@ export function registerChatNamespace(
           typingTimers.delete(conversationId);
           chat
             .to(`conv:${conversationId}`)
-            .emit("typing:stop", { userId, conversationId });
+            .emit("typing:stop", typingPayload(conversationId));
         }, 6000)
       );
     });
@@ -624,11 +779,9 @@ export function registerChatNamespace(
       const { conversationId, senderName } = r.data;
 
       clearTyping(conversationId);
-      chat.to(`conv:${conversationId}`).emit("typing:stop", {
-        userId,
-        conversationId,
-        ...(senderName ? { senderName } : {}),
-      });
+      chat
+        .to(`conv:${conversationId}`)
+        .emit("typing:stop", typingPayload(conversationId, senderName));
     });
 
     // Feature 1: Forward message
@@ -791,8 +944,207 @@ export function registerChatNamespace(
       );
     });
 
+    // ── Friend management ────────────────────────────────────────────────────
+    // Gateway calls user-service REST endpoints on behalf of the authenticated
+    // user (forwarding their JWT), then publishes real-time notifications to
+    // the target's user:* Redis channel for immediate socket fan-out.
+
+    const userSvcBase = env.USER_SERVICE_URL
+      ? `${env.USER_SERVICE_URL}/api/v1/users/friends`
+      : null;
+
+    const callUserSvc = async (
+      method: string,
+      path: string,
+      body?: object
+    ): Promise<{ ok: boolean; status: number; data: unknown }> => {
+      if (!userSvcBase) return { ok: false, status: 503, data: null };
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      try {
+        const res = await fetch(`${userSvcBase}${path}`, {
+          method,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${socket.data.accessToken}`,
+          },
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        const json = (await res.json().catch(() => null)) as { data?: unknown };
+        return { ok: res.ok, status: res.status, data: json?.data ?? null };
+      } catch {
+        clearTimeout(timeoutId);
+        return { ok: false, status: 500, data: null };
+      }
+    };
+
+    socket.on(
+      "friend.request",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = FriendRequestSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        void (async () => {
+          const result = await callUserSvc("POST", "/requests", {
+            addresseeId: r.data.addresseeId,
+          });
+          if (!result.ok) {
+            ackError(
+              callback,
+              result.status === 409 ? "CONFLICT" : "SERVICE_ERROR",
+              locale
+            );
+            return;
+          }
+          const reqData = result.data as { id?: string } | null;
+          void redisPub.publish(
+            `user:${r.data.addresseeId}`,
+            JSON.stringify({
+              event: "friend.requested",
+              data: {
+                requestId: reqData?.id ?? "",
+                requesterId: userId,
+                addresseeId: r.data.addresseeId,
+              },
+            })
+          );
+          ackOk(callback, "SOCKET_FRIEND_REQUEST_SENT", locale, {
+            requestId: reqData?.id,
+          });
+        })();
+      }
+    );
+
+    socket.on(
+      "friend.accept",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = FriendAcceptSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        void (async () => {
+          const result = await callUserSvc(
+            "POST",
+            `/requests/${r.data.requestId}/accept`
+          );
+          if (!result.ok) {
+            ackError(
+              callback,
+              result.status === 404 ? "NOT_FOUND" : "SERVICE_ERROR",
+              locale
+            );
+            return;
+          }
+          const reqData = result.data as { requesterId?: string } | null;
+          if (reqData?.requesterId) {
+            void redisPub.publish(
+              `user:${reqData.requesterId}`,
+              JSON.stringify({
+                event: "friend.accepted",
+                data: {
+                  requestId: r.data.requestId,
+                  acceptedBy: userId,
+                  requesterId: reqData.requesterId,
+                },
+              })
+            );
+          }
+          ackOk(callback, "SOCKET_FRIEND_REQUEST_ACCEPTED", locale);
+        })();
+      }
+    );
+
+    socket.on(
+      "friend.reject",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = FriendRejectSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        void (async () => {
+          const result = await callUserSvc(
+            "POST",
+            `/requests/${r.data.requestId}/reject`
+          );
+          if (!result.ok) {
+            ackError(
+              callback,
+              result.status === 404 ? "NOT_FOUND" : "SERVICE_ERROR",
+              locale
+            );
+            return;
+          }
+          ackOk(callback, "SOCKET_FRIEND_REQUEST_REJECTED", locale);
+        })();
+      }
+    );
+
+    socket.on(
+      "friend.remove",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = FriendRemoveSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        void (async () => {
+          const result = await callUserSvc("DELETE", `/${r.data.targetUserId}`);
+          if (!result.ok) {
+            ackError(
+              callback,
+              result.status === 404 ? "NOT_FOUND" : "SERVICE_ERROR",
+              locale
+            );
+            return;
+          }
+          void redisPub.publish(
+            `user:${r.data.targetUserId}`,
+            JSON.stringify({
+              event: "friend.removed",
+              data: { removedBy: userId, userId: r.data.targetUserId },
+            })
+          );
+          ackOk(callback, "SOCKET_FRIEND_REMOVED", locale);
+        })();
+      }
+    );
+
+    socket.on(
+      "friend.cancel_request",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = FriendCancelRequestSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        void (async () => {
+          const result = await callUserSvc(
+            "DELETE",
+            `/requests/${r.data.requestId}`
+          );
+          if (!result.ok) {
+            ackError(
+              callback,
+              result.status === 404 ? "NOT_FOUND" : "SERVICE_ERROR",
+              locale
+            );
+            return;
+          }
+          ackOk(callback, "SOCKET_FRIEND_REQUEST_CANCELLED", locale);
+        })();
+      }
+    );
+
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/chat disconnected userId=${userId} reason=${reason}`);
+
+      clearSessionTimers();
 
       // Flush all pending typing-expiry timers and broadcast stop so peers are
       // never stuck with a "typing…" indicator after the socket closes.
@@ -800,11 +1152,12 @@ export function registerChatNamespace(
         clearTimeout(timer);
         chat
           .to(`conv:${conversationId}`)
-          .emit("typing:stop", { userId, conversationId });
+          .emit("typing:stop", typingPayload(conversationId));
       }
       typingTimers.clear();
 
       if (userId) {
+        void redisPub.del(`user:online:${userId}`);
         messagingClient
           .presenceDisconnect({ userId, deviceId })
           .catch((err: unknown) =>

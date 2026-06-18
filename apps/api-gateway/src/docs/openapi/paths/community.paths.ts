@@ -31,7 +31,7 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Create a community",
       description:
-        "Creator becomes ADMIN (memberCount starts at 1). `handle` is the unique @-slug (lowercase). Optional `memberIds` (UUIDs) are added as ACTIVE members. Upload an avatar via /communities/uploads/url first, then pass the returned object key as `avatarObjectKey`.",
+        "Creator becomes ADMIN (memberCount starts at 1). `handle` is the unique @-slug (lowercase). Optional `memberIds` (UUIDs) are added as ACTIVE members. Upload an avatar via `POST /api/v1/media/upload-url` (category: `COMMUNITY_AVATAR`) first, then pass the returned object key as `avatarObjectKey`.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -424,6 +424,7 @@ export const communityPaths = {
             },
           },
         },
+        "400": validationError,
         "401": unauthorized,
       },
     },
@@ -464,6 +465,7 @@ export const communityPaths = {
             },
           },
         },
+        "400": validationError,
         "401": unauthorized,
       },
     },
@@ -721,57 +723,6 @@ export const communityPaths = {
                   },
                 ],
               },
-            },
-          },
-        },
-        "401": unauthorized,
-      },
-    },
-  },
-  "/communities/uploads/url": {
-    post: {
-      tags: ["Communities"],
-      summary: "Get presigned URL to upload a community file",
-      description:
-        "Generic upload endpoint. Pass `type` (e.g. `COMMUNITY_AVATAR`), `contentType`, and `contentLength` (bytes). Returns a short-lived PUT URL (private bucket). PUT the file to `uploadUrl` with the `Content-Type` header only, then pass the returned `objectKey` as `avatarObjectKey` when creating/updating the community.",
-      security: [{ bearerAuth: [] }],
-      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": {
-            schema: {
-              $ref: "#/components/schemas/CommunityUploadUrlRequest",
-            },
-          },
-        },
-      },
-      responses: {
-        "200": {
-          description: "Presigned upload URL",
-          content: {
-            "application/json": {
-              schema: {
-                allOf: [
-                  { $ref: "#/components/schemas/ApiSuccessResponse" },
-                  {
-                    type: "object",
-                    properties: {
-                      data: {
-                        $ref: "#/components/schemas/UploadUrlResponseData",
-                      },
-                    },
-                  },
-                ],
-              },
-            },
-          },
-        },
-        "400": {
-          description: "Validation failed or file too large",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
             },
           },
         },
@@ -1321,9 +1272,12 @@ export const communityPaths = {
   "/communities/{id}/join": {
     post: {
       tags: ["Communities"],
-      summary: "Join a public community",
+      summary: "Join a community",
       description:
-        "Self-join a PUBLIC community as a MEMBER. Idempotent: an already-ACTIVE member is returned unchanged (no write or audit). Previously-LEFT members are reactivated (joinedAt preserved, snapshot refreshed, role forced to MEMBER, audited `COMMUNITY_JOINED` with `{ reactivated: true }`). PRIVATE communities require an invite (use `POST /:id/members` from an admin/moderator). BANNED members cannot rejoin.",
+        "Self-join a community. For PUBLIC communities the caller becomes an ACTIVE member immediately (HTTP 201, `data.status: JOINED`). For PRIVATE communities a PENDING join request is created and admins/mods are notified (HTTP 201, `data.status: REQUEST_CREATED`). " +
+        "Calling again when already ACTIVE returns 200 with `data.status: ALREADY_MEMBER` (idempotent, no write). " +
+        "Previously-LEFT members of a PUBLIC community are reactivated (joinedAt preserved, snapshot refreshed, role forced to MEMBER, audited `COMMUNITY_JOINED` with `{ reactivated: true }`). " +
+        "BANNED members cannot rejoin (403). Suspended communities return 403.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -1336,8 +1290,9 @@ export const communityPaths = {
         },
       ],
       responses: {
-        "200": {
-          description: "Joined (or already a member)",
+        "201": {
+          description:
+            "Joined (PUBLIC) or join request created (PRIVATE). Discriminated by `data.status`.",
           content: {
             "application/json": {
               schema: {
@@ -1347,7 +1302,34 @@ export const communityPaths = {
                     type: "object",
                     properties: {
                       data: {
-                        $ref: "#/components/schemas/CommunityMemberData",
+                        oneOf: [
+                          {
+                            $ref: "#/components/schemas/CommunityJoinedResponse",
+                          },
+                          {
+                            $ref: "#/components/schemas/CommunityJoinRequestCreatedResponse",
+                          },
+                        ],
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "200": {
+          description: "Already an active member (idempotent).",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityAlreadyMemberResponse",
                       },
                     },
                   },
@@ -1359,7 +1341,7 @@ export const communityPaths = {
         "401": unauthorized,
         "403": {
           description:
-            "Community is PRIVATE (invite required) or caller is BANNED from this community",
+            "User is banned from this community, or the community is suspended.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -1367,7 +1349,7 @@ export const communityPaths = {
           },
         },
         "404": {
-          description: "Community not found",
+          description: "Community not found.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -2764,6 +2746,165 @@ export const communityPaths = {
         },
         "404": {
           description: "Community or join request not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/join-requests/bulk-approve": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk approve join requests",
+      description:
+        "Moderator or admin only. Accepts up to 50 request IDs. Non-PENDING, not-found, and banned-requester IDs are silently skipped and returned in `skipped`. Idempotent per request — already-ACTIVE members are not re-created.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                requestIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  minItems: 1,
+                  maxItems: 50,
+                  description:
+                    "Join request IDs to approve (duplicates deduplicated).",
+                },
+              },
+              required: ["requestIds"],
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Bulk approve result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/BulkApproveJoinRequestsResult",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Caller is not a moderator/admin, or community is SUSPENDED",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/join-requests/bulk-reject": {
+    post: {
+      tags: ["Communities"],
+      summary: "Bulk reject join requests",
+      description:
+        "Moderator or admin only. Accepts up to 50 request IDs. Non-PENDING and not-found IDs are silently skipped and returned in `skipped`.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                requestIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  minItems: 1,
+                  maxItems: 50,
+                  description:
+                    "Join request IDs to reject (duplicates deduplicated).",
+                },
+              },
+              required: ["requestIds"],
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Bulk reject result",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/BulkRejectJoinRequestsResult",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Caller is not a moderator or admin of the community",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },

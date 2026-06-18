@@ -4,15 +4,15 @@ Scope: `user-service` REST API, excluding friends/friendship (owned by another a
 
 Source of truth: `apps/user-service/src/api/{routes,controllers,validators}`, `apps/user-service/src/services/*`, `apps/user-service/src/repositories/*`, `apps/user-service/src/config/uploads.ts`, `packages/storage/src/*`.
 
-| File               | Endpoint(s)                                                                      | Cases | ID range          |
-| ------------------ | -------------------------------------------------------------------------------- | ----- | ----------------- |
-| `profile.md`       | `GET /api/v1/users/profiles/me`, `PATCH /api/v1/users/profiles/me`               | 28    | TC-USER-001 … 028 |
-| `username.md`      | `POST /api/v1/users/usernames/generate`, `POST /api/v1/users/usernames/validate` | 13    | TC-USER-029 … 041 |
-| `settings.md`      | `GET /api/v1/users/settings/me`, `PATCH /api/v1/users/settings/me`               | 20    | TC-USER-042 … 061 |
-| `account.md`       | `GET /api/v1/users/accounts/me`                                                  | 5     | TC-USER-062 … 066 |
-| `avatar-upload.md` | `POST /api/v1/users/uploads/url`                                                 | 11    | TC-USER-067 … 077 |
-| `user-search.md`   | `GET /api/v1/users/` (search/discovery)                                          | 16    | TC-USER-078 … 093 |
-| `internal.md`      | `GET /api/internal/bulk-snapshot`, `GET /api/internal/friendship-check`          | 10    | TC-USER-094 … 103 |
+| File               | Endpoint(s)                                                                        | Cases | ID range          |
+| ------------------ | ---------------------------------------------------------------------------------- | ----- | ----------------- |
+| `profile.md`       | `GET /api/v1/users/profiles/me`, `PATCH /api/v1/users/profiles/me`                 | 28    | TC-USER-001 … 028 |
+| `username.md`      | `POST /api/v1/users/usernames/generate`, `POST /api/v1/users/usernames/validate`   | 13    | TC-USER-029 … 041 |
+| `settings.md`      | `GET /api/v1/users/settings/me`, `PATCH /api/v1/users/settings/me`                 | 20    | TC-USER-042 … 061 |
+| `account.md`       | `GET /api/v1/users/accounts/me`                                                    | 5     | TC-USER-062 … 066 |
+| `avatar-upload.md` | `POST /api/v1/users/uploads/url` (gateway alias → `POST /api/v1/media/upload-url`) | 11    | TC-USER-067 … 077 |
+| `user-search.md`   | `GET /api/v1/users/` (search/discovery)                                            | 16    | TC-USER-078 … 093 |
+| `internal.md`      | `GET /api/internal/bulk-snapshot`, `GET /api/internal/friendship-check`            | 10    | TC-USER-094 … 103 |
 
 **Total endpoints covered:** 11 (across 7 endpoint families).
 **Total test cases:** 103.

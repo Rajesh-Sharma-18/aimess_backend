@@ -12,6 +12,7 @@ import { createAdminRouter } from "./routes/admin.routes.js";
 import { createApiRouter } from "./routes/api.routes.js";
 import { healthRouter } from "./routes/health.routes.js";
 import type { MessagingClient } from "./grpc/clients/messaging.client.js";
+import type { MediaClient } from "./grpc/clients/media.client.js";
 
 const allowedOrigins = getCorsAllowedOrigins();
 // const allowedHeaders = getCorsAllowedHeaders();
@@ -40,8 +41,12 @@ const corsOptions = {
   methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
 } satisfies CorsOptions;
 
-export function createApp(messagingClient: MessagingClient): Express {
+export function createApp(
+  messagingClient: MessagingClient,
+  mediaClient: MediaClient
+): Express {
   const app = express();
+  app.locals.mediaClient = mediaClient;
 
   app.disable("x-powered-by");
 

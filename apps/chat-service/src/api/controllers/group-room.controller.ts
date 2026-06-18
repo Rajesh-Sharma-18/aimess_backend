@@ -64,4 +64,22 @@ export class GroupRoomController {
       : t("CHAT_NO_GROUPS_FOUND", req.locale);
     res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
   });
+
+  archiveRoom = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const result = await this.service.archiveRoom(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_ROOM_ARCHIVED", req.locale)));
+  });
+
+  unarchiveRoom = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const result = await this.service.unarchiveRoom(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_ROOM_UNARCHIVED", req.locale)));
+  });
 }

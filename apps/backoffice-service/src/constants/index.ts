@@ -73,19 +73,3 @@ export const AUDIT_ACTIONS = {
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
-
-/**
- * Cross-service event type strings / routing keys published by backoffice when
- * an admin changes a user's account state. auth-service is the eventual
- * consumer (it owns AuthUser status). A shared `@aimess/shared-types` admin
- * events constant does not exist yet, so the keys live here locally — do NOT
- * broadly edit shared packages for this.
- */
-export const ADMIN_USER_EVENTS = {
-  USER_BANNED: "admin.user_banned",
-  USER_UNBANNED: "admin.user_unbanned",
-  USER_SUSPENDED: "admin.user_suspended",
-} as const;
-
-export type AdminUserEvent =
-  (typeof ADMIN_USER_EVENTS)[keyof typeof ADMIN_USER_EVENTS];

@@ -27,3 +27,4 @@ Thumbs.db
 # Claude Code — local only (skills under .claude/skills/ are committed)
 .claude/worktrees/
 /graphify-out
+/testing-suite

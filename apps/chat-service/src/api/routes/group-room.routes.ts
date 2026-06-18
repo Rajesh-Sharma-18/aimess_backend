@@ -34,6 +34,8 @@ export function createGroupRoomRoutes(ctrl: GroupRoomController): Router {
     ctrl.update
   );
   router.post("/:roomId/disband", authenticate, ctrl.disband);
+  router.patch("/:roomId/archive", authenticate, ctrl.archiveRoom);
+  router.patch("/:roomId/unarchive", authenticate, ctrl.unarchiveRoom);
 
   return router;
 }

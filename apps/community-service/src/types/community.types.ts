@@ -45,6 +45,14 @@ export type CommunityData = {
   role: CommunityMemberRole | null;
   /** True when the caller is an active member of this community. */
   isJoined: boolean;
+  /**
+   * Present when the caller has a PENDING join request for this community.
+   * Null if the caller is already a member, never requested, or their request
+   * was approved/rejected/cancelled. Frontend shows "Requested" + cancel
+   * button when this is non-null.
+   */
+  joinRequestId: string | null;
+  joinRequestStatus: CommunityJoinReqStatus | null;
   /** True if the caller has a mute row for this community (any state). */
   isMuted: boolean;
   /** ISO-8601; null when not muted or muted indefinitely. */
@@ -204,6 +212,8 @@ export type CommunityListItem = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
+  /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
+  moderationStatus: CommunityModerationStatus;
 };
 
 /**
@@ -245,6 +255,8 @@ export type CommunityDiscoverItem = {
   lastActivity?: CommunityLastActivity;
   /** True when the caller is an active member of this community. */
   isJoined: boolean;
+  /** True when the caller has a PENDING join request for this community. */
+  hasRequested: boolean;
   isMuted: boolean;
   muteUntil: string | null;
   streamEnabled: boolean;
@@ -252,6 +264,8 @@ export type CommunityDiscoverItem = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
+  /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
+  moderationStatus: CommunityModerationStatus;
 };
 
 /** A single community member row returned by the member-listing endpoint. */
@@ -279,12 +293,12 @@ export type CommunityMemberData = {
 /** A single moderation-muted member row. Returned by mute / list-muted. */
 export type CommunityMutedMemberData = {
   userId: string;
-  username: string;
-  displayName: string;
-  avatarUrl: string | null;
-  avatarUrlExpiresIn: number | null;
-  /** Nested media object for the avatar (additive; mirrors avatarUrl). */
-  avatar: MediaObject;
+  snapshotUsername: string;
+  snapshotDisplayName: string;
+  snapshotAvatarUrl: string | null;
+  snapshotAvatarUrlExpiresIn: number | null;
+  /** Nested media object for the avatar (additive; mirrors snapshotAvatarUrl). */
+  snapshotAvatar: MediaObject;
   /** AuthUser.id of the moderator/admin who muted the member. */
   mutedBy: string;
   reason: string | null;
@@ -399,6 +413,29 @@ export type CommunityJoinRequestData = {
   createdAt: string;
   updatedAt: string;
 };
+
+/**
+ * Discriminated union returned by `communityService.joinCommunity()`.
+ * - JOINED: PUBLIC community — user is now ACTIVE.
+ * - ALREADY_MEMBER: caller was already ACTIVE in any community type.
+ * - REQUEST_CREATED: PRIVATE community — PENDING join request created/recycled.
+ */
+export type CommunityJoinResult =
+  | {
+      status: "JOINED";
+      membershipStatus: "ACTIVE";
+      member: CommunityMemberData;
+    }
+  | {
+      status: "ALREADY_MEMBER";
+      membershipStatus: "ACTIVE";
+      member: CommunityMemberData;
+    }
+  | {
+      status: "REQUEST_CREATED";
+      membershipStatus: "PENDING";
+      request: CommunityJoinRequestData;
+    };
 
 /** Join-request row enriched with requester snapshot — for mod-facing list. */
 export type CommunityJoinRequestWithUserData = CommunityJoinRequestData & {

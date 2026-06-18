@@ -42,6 +42,11 @@ jest.mock("../../src/config/redis.js", () => {
     get: jest.fn(async () => null),
     del: jest.fn(async () => 0),
     zrange: jest.fn(async () => []),
+    // Realtime fan-out seam: the gRPC handlers `redis.publish(channel, json)` to
+    // push message:new / message:edited / reaction / community:* broadcasts. A
+    // jest.fn lets a test read back the published JSON (cleared between tests via
+    // the preset's clearMocks).
+    publish: jest.fn(async () => 0),
     on: jest.fn(),
     quit: jest.fn(async () => undefined),
   };
@@ -59,7 +64,15 @@ jest.mock("../../src/config/redis.js", () => {
 jest.mock("../../src/config/storage.js", () => ({
   storageClient: {},
   presignClient: {},
-  mediaUrlStrategy: {},
+  // Deterministic view-URL strategy so read paths resolve object keys to a
+  // stable, assertable URL (mirrors prod presign/CDN behavior) instead of a
+  // raw object key. Keep in sync with src/lib/media-resolve.ts.
+  mediaUrlStrategy: {
+    resolveDownloadUrl: async (bucket: string, objectKey: string) => ({
+      url: `https://media.test/${bucket}/${objectKey}`,
+      expiresIn: 3600,
+    }),
+  },
 }));
 
 // --- gRPC peer access (pulls @grpc/grpc-js + proto loaders). The health debug

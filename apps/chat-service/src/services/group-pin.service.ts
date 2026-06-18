@@ -1,6 +1,7 @@
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 
 import { env } from "../config/env.js";
+import { resolvePinsMedia } from "../lib/media-resolve.js";
 import type { GroupMessagePinRepository } from "../repositories/group-message-pin.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -95,7 +96,10 @@ export class GroupPinService {
     roomId: string,
     params: { limit: number; cursor?: string | null }
   ): Promise<GroupMessagePin[]> {
-    return this.pinRepo.findPinsByRoom(roomId, params);
+    const pins = await this.pinRepo.findPinsByRoom(roomId, params);
+    // Resolve the pinned snapshot's sender avatar + attachment keys on read so
+    // the pinned-banner FE never receives a raw object key (URLs not persisted).
+    return resolvePinsMedia(pins);
   }
 
   async countPins(roomId: string): Promise<number> {

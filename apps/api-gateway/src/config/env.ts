@@ -22,6 +22,8 @@ const envSchema = z.object({
   CHAT_SERVICE_URL: z.string().url().optional(),
   /** Notification service REST URL — used by /api/v1/devices for FCM/APNs token registration. */
   NOTIFICATION_SERVICE_URL: z.string().url().optional(),
+  MEDIA_SERVICE_URL: z.string().url().optional(),
+  MEDIA_GRPC_URL: z.string().min(1).default("0.0.0.0:4009"),
   AUTH_GRPC_URL: z.string().optional(),
   USER_GRPC_URL: z.string().optional(),
   /** gRPC URLs for socket-facing services (required — sockets cannot operate without them). */
@@ -58,6 +60,12 @@ const envSchema = z.object({
   /** Comma-separated Swagger server URLs (e.g. localhost + LAN IP). */
   SWAGGER_SERVER_URLS: z.string().optional(),
 
+  GLOBAL_RATE_LIMIT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1),
+  GLOBAL_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   SENSITIVE_AUTH_RATE_LIMIT_WINDOW_MINUTES: z.coerce
     .number()
     .int()

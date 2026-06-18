@@ -6,6 +6,18 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["serve", "-p", "5500", "Test_UI"],
       "port": 5500
+    },
+    {
+      "name": "socket-tester-dashboard",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "-C",
+        "testing-suite",
+        "--filter",
+        "@aimess-tester/dashboard",
+        "dev"
+      ],
+      "port": 5173
     }
   ]
 }

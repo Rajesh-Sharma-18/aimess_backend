@@ -321,4 +321,40 @@ export class PrivateRoomRepository {
       data: { mutedBy: mutedBy as unknown as Prisma.InputJsonValue },
     });
   }
+
+  async setArchived(
+    roomId: string,
+    userId: string
+  ): Promise<PrivateRoom | null> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return null;
+
+    const archivedBy = (existing.archivedBy ?? {}) as Record<string, unknown>;
+    archivedBy[userId] = { archivedAt: new Date().toISOString() };
+
+    return this.prisma.privateRoom.update({
+      where: { roomId },
+      data: { archivedBy: archivedBy as unknown as Prisma.InputJsonValue },
+    });
+  }
+
+  async setUnarchived(
+    roomId: string,
+    userId: string
+  ): Promise<PrivateRoom | null> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId },
+    });
+    if (!existing) return null;
+
+    const archivedBy = (existing.archivedBy ?? {}) as Record<string, unknown>;
+    delete archivedBy[userId];
+
+    return this.prisma.privateRoom.update({
+      where: { roomId },
+      data: { archivedBy: archivedBy as unknown as Prisma.InputJsonValue },
+    });
+  }
 }

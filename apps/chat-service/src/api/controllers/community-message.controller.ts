@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import type { Redis, Cluster } from "ioredis";
 
 import { logger } from "@aimess/logger";
+import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
@@ -13,17 +14,95 @@ import {
 } from "../../lib/pagination.js";
 import {
   normalizeMessageType,
-  toWireMessage,
+  buildDeletePayload,
 } from "../../lib/chat-message.serializer.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
+import type { ChatMessageOrchestrator } from "../../services/chat-message-orchestrator.js";
 
 export class CommunityMessageController {
   constructor(
     private readonly service: CommunityMessageService,
     private readonly pinService: CommunityPinService,
-    private readonly redis: Redis | Cluster
+    private readonly redis: Redis | Cluster,
+    private readonly orchestrator: ChatMessageOrchestrator
   ) {}
+
+  /**
+   * POST /community/rooms/:roomId/messages — send a community message. Delegates
+   * to the ChatMessageOrchestrator (send + community:message:new broadcast +
+   * community-activity + community:updated bump). Active-membership and
+   * suspended-room guards + idempotency live in the service. roomId (chat
+   * GeneralRoom id) comes from the path; communityId (used for the broadcast) is
+   * in the body. Returns the canonical wire message; 201 on a fresh insert, 200
+   * on an idempotent replay (`idempotent: true`) — matching the private/group
+   * send contract.
+   */
+  sendMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const body = req.body as {
+      communityId: string;
+      message: string;
+      messageType: string;
+      parentMessageId?: string | null;
+      clientMessageId?: string | null;
+      media?: { files: Array<Record<string, unknown>> };
+      location?: Record<string, unknown>;
+      contact?: Record<string, unknown>;
+      sticker?: Record<string, unknown>;
+    };
+
+    // Flatten the structured body into the service attachments array, mirroring
+    // the gRPC handler's priority: structured files > location > contact >
+    // sticker. The orchestrator re-splits location/contact/sticker for the
+    // broadcast shape via their `type` discriminator.
+    let attachments: Array<Record<string, unknown>> | undefined;
+    if (body.media?.files?.length) {
+      attachments = body.media.files;
+    } else if (body.location) {
+      attachments = [{ type: "location", ...body.location }];
+    } else if (body.contact) {
+      attachments = [{ type: "contact", ...body.contact }];
+    } else if (body.sticker) {
+      attachments = [{ type: "sticker", ...body.sticker }];
+    }
+
+    const result = await this.orchestrator.sendCommunity({
+      communityId: body.communityId,
+      roomId,
+      senderId: userId,
+      message: body.message,
+      messageType: body.messageType,
+      parentMessageId: body.parentMessageId ?? null,
+      clientMessageId: body.clientMessageId ?? null,
+      attachments,
+    });
+
+    res
+      .status(result.alreadySent ? HTTP_STATUS.OK : HTTP_STATUS.CREATED)
+      .json(
+        new ApiResponse(
+          { ...result.message, idempotent: result.alreadySent },
+          t("CHAT_MESSAGE_SENT", req.locale)
+        )
+      );
+  });
+
+  /**
+   * POST /community/rooms/:roomId/read — mark this community room read.
+   * Community read is COARSER than private/group: it advances the member's read
+   * pointer to "now" (read-to-now) rather than to a specific message, and has NO
+   * socket broadcast today — so this stays thin and calls bulkMarkRead directly
+   * instead of routing through the orchestrator. The body's `upToMessageId` is
+   * accepted (request parity) but not used for a per-message high-water mark.
+   */
+  markRead = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    await this.service.bulkMarkRead(userId, [roomId]);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
+  });
 
   getMessages = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
@@ -68,6 +147,9 @@ export class CommunityMessageController {
     // Returns every message (new, edited, reacted, deleted tombstone) whose
     // updatedAt >= after_ts. Feed the returned nextCursor as the next after_ts.
     if (afterTs != null) {
+      if (!Number.isFinite(afterTs) || afterTs < 0) {
+        throw new BadRequestError("CHAT_INVALID_SINCE_TS");
+      }
       const result = await this.service.getMessagesSince({
         roomId,
         userId,
@@ -174,7 +256,7 @@ export class CommunityMessageController {
   editMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { communityId, content } = req.body as {
+    const { content } = req.body as {
       communityId: string;
       content: { text: string };
     };
@@ -183,43 +265,40 @@ export class CommunityMessageController {
       userId,
       content,
     });
-    // Broadcast on the /community channel: clients join community:<communityId>
-    // rooms and the gateway only psubscribes "community:*", so the edit must
-    // mirror the send path (community:<communityId> / community:message:new).
+    // Broadcast on the message's OWN room (GeneralRoom.id === communityId, so
+    // result.roomId is the correct channel for all legitimate messages). Using
+    // the body-supplied communityId here would let a member of community A fan
+    // the event onto community B's channel (cross-channel info disclosure).
+    // §1: community edit uses thin payload (not buildChatMessageEvent) until Phase 3.
+    // REST body == socket payload so the client uses one shape for both.
+    const editedPayload = {
+      messageId: result.id,
+      communityId: result.roomId,
+      roomId: result.roomId,
+      senderId: result.sentBy,
+      message: result.message ?? "",
+      contentType: normalizeMessageType(result.messageType),
+      isEdited: true,
+      editedAt:
+        result.editedAt instanceof Date
+          ? result.editedAt.getTime()
+          : Date.now(),
+    };
     await this.redis.publish(
-      `community:${communityId}`,
-      JSON.stringify({
-        event: "community:message:edited",
-        data: {
-          messageId: result.id,
-          communityId,
-          roomId: result.roomId,
-          senderId: result.sentBy,
-          message: result.message ?? "",
-          // §1: unified UPPER casing — single client-facing field `contentType`
-          // in UPPER, matching community:message:new (not the raw lower value).
-          contentType: normalizeMessageType(result.messageType),
-          editedAt:
-            result.editedAt instanceof Date
-              ? result.editedAt.getTime()
-              : Date.now(),
-        },
-      })
+      `community:${result.roomId}`,
+      JSON.stringify({ event: "community:message:edited", data: editedPayload })
     );
     res
       .status(HTTP_STATUS.OK)
       .json(
-        new ApiResponse(
-          toWireMessage(result),
-          t("CHAT_MESSAGE_EDITED", req.locale)
-        )
+        new ApiResponse(editedPayload, t("CHAT_MESSAGE_EDITED", req.locale))
       );
   });
 
   reactToMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const messageId = req.params.messageId as string;
-    const { communityId, emoji } = req.body as {
+    const { emoji } = req.body as {
       communityId: string;
       emoji: string;
     };
@@ -227,18 +306,17 @@ export class CommunityMessageController {
     const result = await this.service.reactToMessage({
       messageId,
       userId,
-      communityId,
       emoji,
     });
 
     this.redis
       .publish(
-        `community:${communityId}`,
+        `community:${result.roomId}`,
         JSON.stringify({
           event: "community:message:reaction",
           data: {
             messageId: result.messageId,
-            communityId: result.communityId,
+            communityId: result.roomId,
             reactions: result.reactions,
           },
         })
@@ -264,27 +342,27 @@ export class CommunityMessageController {
         ? await this.service.deleteForAll(messageId, userId)
         : await this.service.deleteForMe(messageId, userId);
 
+    if (!result) {
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    }
+
     // Emit real-time deletion event to the community room.
     // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
+    // §2.3: canonical tombstone — REST body == socket payload byte-for-byte.
+    const tombstone = buildDeletePayload({
+      conversationType: "COMMUNITY",
+      messageId: result.id,
+      roomId: result.roomId,
+      scope: type === "forEveryone" ? "forEveryone" : "forMe",
+      deletedBy: userId,
+    });
     if (result?.roomId) {
       await this.redis.publish(
         `community:${result.roomId}`,
-        JSON.stringify({
-          event: "community:message:deleted",
-          data: {
-            messageId: result.id,
-            communityId: result.roomId,
-            roomId: result.roomId,
-            deleteType: type === "forEveryone" ? "forEveryone" : "forMe",
-            deletedBy: userId,
-          },
-        })
+        JSON.stringify({ event: "community:message:deleted", data: tombstone })
       );
     }
-
-    res
-      .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result ? toWireMessage(result) : result));
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
   });
 
   /**
@@ -304,6 +382,10 @@ export class CommunityMessageController {
     const roomId = req.params.roomId as string;
     const sinceTs = Number(req.query.since_ts);
     const limit = Number(req.query.limit) || 50;
+
+    if (!Number.isFinite(sinceTs) || sinceTs < 0) {
+      throw new BadRequestError("CHAT_INVALID_SINCE_TS");
+    }
 
     const result = await this.service.getMessagesSince({
       roomId,

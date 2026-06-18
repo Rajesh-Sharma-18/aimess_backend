@@ -17,6 +17,8 @@ import {
   pinCommunityMessageSchema,
   unpinCommunityMessageSchema,
   unpinCommunityMessageQuerySchema,
+  sendCommunityMessageBodySchema,
+  markCommunityReadBodySchema,
 } from "../validators/community.validator.js";
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
@@ -68,6 +70,22 @@ export function createCommunityRoutes(
     authenticate,
     validateQuery(messageSearchQuerySchema),
     messageCtrl.searchMessages
+  );
+  // Send a message into a community room (REST send → orchestrator)
+  router.post(
+    "/rooms/:roomId/messages",
+    authenticate,
+    messageLimit,
+    validateBody(sendCommunityMessageBodySchema),
+    messageCtrl.sendMessage
+  );
+  // Mark this community room read (coarse read-to-now; no socket broadcast)
+  router.post(
+    "/rooms/:roomId/read",
+    authenticate,
+    messageLimit,
+    validateBody(markCommunityReadBodySchema),
+    messageCtrl.markRead
   );
   router.get(
     "/rooms/:roomId/messages",

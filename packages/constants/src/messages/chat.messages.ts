@@ -107,6 +107,10 @@ export const CHAT_MESSAGES = {
   },
 
   // --- Mutation success ---
+  CHAT_MESSAGE_SENT: {
+    vi: "Đã gửi tin nhắn",
+    en: "Message sent",
+  },
   CHAT_MESSAGE_FORWARDED: {
     vi: "Đã chuyển tiếp tin nhắn",
     en: "Message forwarded",
@@ -134,6 +138,14 @@ export const CHAT_MESSAGES = {
   CHAT_ROOM_UNMUTED: {
     vi: "Đã bật thông báo cuộc trò chuyện",
     en: "Conversation unmuted",
+  },
+  CHAT_ROOM_ARCHIVED: {
+    vi: "Đã lưu trữ cuộc trò chuyện",
+    en: "Conversation archived",
+  },
+  CHAT_ROOM_UNARCHIVED: {
+    vi: "Đã bỏ lưu trữ cuộc trò chuyện",
+    en: "Conversation unarchived",
   },
   CHAT_REACTIONS_FETCHED: {
     vi: "Lấy danh sách cảm xúc thành công",

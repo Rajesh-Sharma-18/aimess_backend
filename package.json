@@ -12,6 +12,7 @@
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "validate:scenarios": "node tools/scenario-validator/validate.mjs",
     "test:all": "node node_modules/jest/bin/jest.js",
     "test:ci": "node node_modules/jest/bin/jest.js --ci --runInBand",
     "test:coverage": "node node_modules/jest/bin/jest.js --coverage",
@@ -33,14 +34,21 @@
     "db:generate": "pnpm -r --parallel db:generate",
     "db:migrate:dev:auth": "pnpm --filter @aimess/auth-service db:migrate",
     "db:migrate:dev:user": "pnpm --filter @aimess/user-service db:migrate",
+    "db:migrate:dev:backoffice": "pnpm --filter @aimess/backoffice-service db:migrate",
     "db:push:community": "pnpm --filter @aimess/community-service db:push",
+    "db:push:chat": "pnpm --filter @aimess/chat-service db:push",
+    "db:push:notifications": "pnpm --filter @aimess/notifications-service db:push",
     "db:seed:community": "pnpm --filter @aimess/community-service db:seed",
+    "db:seed:backoffice": "pnpm --filter @aimess/backoffice-service db:seed",
     "db:seed": "pnpm db:seed:community",
     "db:setup:community": "pnpm --filter @aimess/community-service db:push && pnpm --filter @aimess/community-service db:seed",
     "db:setup:backoffice": "pnpm --filter @aimess/backoffice-service db:migrate:deploy && pnpm --filter @aimess/backoffice-service db:seed",
     "db:studio:auth": "pnpm --filter @aimess/auth-service exec prisma studio",
     "db:studio:user": "pnpm --filter @aimess/user-service exec prisma studio",
     "db:studio:community": "pnpm --filter @aimess/community-service exec prisma studio",
+    "db:studio:chat": "pnpm --filter @aimess/chat-service exec prisma studio",
+    "db:studio:notifications": "pnpm --filter @aimess/notifications-service exec prisma studio",
+    "db:studio:backoffice": "pnpm --filter @aimess/backoffice-service exec prisma studio",
     "docker:up": "docker compose --env-file .env up -d",
     "docker:down": "docker compose --env-file .env down",
     "docker:build": "docker compose --env-file .env build",
@@ -75,5 +83,8 @@
     "turbo": "^2.9.9",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.59.2"
+  },
+  "dependencies": {
+    "pg": "^8.20.0"
   }
 }

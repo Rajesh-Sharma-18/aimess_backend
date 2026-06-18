@@ -9,7 +9,6 @@ import { createGroupMemberRoutes } from "./group-member.routes.js";
 import { createGroupInviteLinkRoutes } from "./group-invite-link.routes.js";
 import { createNotificationRoutes } from "./notification.routes.js";
 import { createCommunityRoutes } from "./community.routes.js";
-import { createMediaRoutes } from "./media.routes.js";
 import { createCallRoutes } from "./call.routes.js";
 import { healthRoutes } from "./health.routes.js";
 
@@ -24,7 +23,6 @@ import type { GroupInviteLinkController } from "../controllers/group-invite-link
 import type { NotificationController } from "../controllers/notification.controller.js";
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
-import type { MediaController } from "../controllers/media.controller.js";
 import type { CallController } from "../controllers/call.controller.js";
 import type { PresenceController } from "../controllers/presence.controller.js";
 
@@ -40,7 +38,6 @@ export interface Controllers {
   notificationCtrl: NotificationController;
   communityCtrl: CommunityController;
   communityMessageCtrl: CommunityMessageController;
-  mediaCtrl: MediaController;
   callCtrl: CallController;
   presenceCtrl: PresenceController;
 }
@@ -89,7 +86,6 @@ export function createRoutes(controllers: Controllers): Router {
       controllers.communityMessageCtrl
     )
   );
-  router.use(`${basePath}/media`, createMediaRoutes(controllers.mediaCtrl));
   router.use(`${basePath}/calls`, createCallRoutes(controllers.callCtrl));
 
   return router;

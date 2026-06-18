@@ -11,6 +11,8 @@ export default [
       "**/generated/**",
       "**/asyncapi/output/**",
       "**/prisma.config.ts",
+      // CJS config files use require/module which are unavailable in ESM lint context
+      "**/*.cjs",
     ],
   },
   js.configs.recommended,

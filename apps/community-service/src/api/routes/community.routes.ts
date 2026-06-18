@@ -10,11 +10,14 @@ import {
   adminUpdateCategory,
   approveCommunityJoinRequest,
   banCommunityMember,
+  bulkApproveCommunityJoinRequests,
   bulkLeaveCommunities,
   bulkMarkReadCommunities,
   bulkMuteCommunities,
+  bulkRejectCommunityJoinRequests,
   bulkSendCommunityInviteLink,
   cancelCommunityJoinRequest,
+  cancelMyCommunityJoinRequest,
   checkHandleAvailable,
   checkNameAvailable,
   clearMuteSetting,
@@ -65,7 +68,6 @@ import {
   warnCommunityMember,
   withdrawCommunityReport,
 } from "../controllers/community.controller.js";
-import { createUploadUrl } from "../controllers/upload.controller.js";
 import { validateBody } from "../middleware/validate-body.js";
 import { validateParams } from "../middleware/validate-params.js";
 import { validateQuery } from "../middleware/validate-query.js";
@@ -74,9 +76,11 @@ import { requirePlatformAdmin } from "../../middleware/require-platform-admin.js
 import {
   addMembersSchema,
   adminCategoriesQuerySchema,
+  bulkApproveJoinRequestsSchema,
   bulkLeaveSchema,
   bulkMarkReadSchema,
   bulkMuteSchema,
+  bulkRejectJoinRequestsSchema,
   bulkSendInviteLinkSchema,
   auditLogsQuerySchema,
   categoryIdParamSchema,
@@ -119,7 +123,6 @@ import {
   warningsQuerySchema,
   warnMemberSchema,
 } from "../validators/community.validator.js";
-import { uploadUrlSchema } from "../validators/upload.validator.js";
 
 export const communityRoutes: IRouter = Router();
 
@@ -190,12 +193,6 @@ communityRoutes.get(
   "/discover",
   validateQuery(discoverQuerySchema),
   discoverCommunities
-);
-
-communityRoutes.post(
-  "/uploads/url",
-  validateBody(uploadUrlSchema),
-  createUploadUrl
 );
 
 // Static "/mine" + "/invites/:inviteId/..." routes must be registered before
@@ -427,6 +424,27 @@ communityRoutes.post(
   "/:id/join-requests/:requestId/reject",
   validateParams(joinRequestIdParamsSchema),
   rejectCommunityJoinRequest
+);
+
+communityRoutes.post(
+  "/:id/join-requests/bulk-approve",
+  validateParams(communityIdParamsSchema),
+  validateBody(bulkApproveJoinRequestsSchema),
+  bulkApproveCommunityJoinRequests
+);
+
+communityRoutes.post(
+  "/:id/join-requests/bulk-reject",
+  validateParams(communityIdParamsSchema),
+  validateBody(bulkRejectJoinRequestsSchema),
+  bulkRejectCommunityJoinRequests
+);
+
+// Must be registered before /:requestId so Express doesn't eat "mine" as a param.
+communityRoutes.delete(
+  "/:id/join-requests/mine",
+  validateParams(communityIdParamsSchema),
+  cancelMyCommunityJoinRequest
 );
 
 communityRoutes.delete(

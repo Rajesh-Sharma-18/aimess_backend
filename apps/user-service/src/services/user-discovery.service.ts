@@ -1,4 +1,4 @@
-import { toMediaObject } from "@aimess/storage";
+import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 
 import { avatarService } from "./avatar.service.js";
@@ -46,7 +46,7 @@ async function resolveAvatarMedia(
   return toMediaObject({
     bucket: env.MINIO_BUCKET_AVATARS,
     stored: avatarUrl,
-    prefixes: ["avatars"],
+    prefixes: MEDIA_PREFIXES.userAvatars,
     strategy: mediaUrlStrategy,
   });
 }
@@ -208,7 +208,8 @@ export const userDiscoveryService = {
     const blockedUserIds = new Set<string>();
 
     for (const b of allBlocks) {
-      blockedUserIds.add(b.blockerId);
+      const otherId = b.blockerId === viewerId ? b.blockedId : b.blockerId;
+      blockedUserIds.add(otherId);
     }
 
     const excludeIds = [viewerId, ...Array.from(blockedUserIds)];

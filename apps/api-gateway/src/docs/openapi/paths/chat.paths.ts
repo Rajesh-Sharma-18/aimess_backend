@@ -248,7 +248,7 @@ const groupMessageEdit = {
       },
     },
     responses: {
-      ...successResponse("Message edited"),
+      ...successResponse("Message edited", "ChatWireMessage"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -284,7 +284,7 @@ const communityMessageEdit = {
       },
     },
     responses: {
-      ...successResponse("Message edited"),
+      ...successResponse("Message edited", "ChatCommunityEditResponse"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -484,10 +484,19 @@ const privateMessageDelete = {
       },
     },
     responses: {
-      ...successResponse("Message edited"),
+      ...successResponse("Message edited", "ChatWireMessage"),
       "400": badRequest,
       "401": unauthorized,
       "404": notFound,
+      "410": {
+        description:
+          "Edit window expired (CHAT_EDIT_WINDOW_EXPIRED) — edits are allowed only within 15 minutes of sending.",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
     },
   },
   delete: {
@@ -512,7 +521,7 @@ const privateMessageDelete = {
       },
     ],
     responses: {
-      ...successResponse("Message deleted"),
+      ...successResponse("Message deleted", "ChatDeleteTombstone"),
       "400": badRequest,
       "401": unauthorized,
     },
@@ -819,7 +828,7 @@ const groupMessageDelete = {
       },
     },
     responses: {
-      ...successResponse("Message deleted"),
+      ...successResponse("Message deleted", "ChatDeleteTombstone"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -871,6 +880,15 @@ const groupMemberAdd = {
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
+      "409": {
+        description:
+          "User is already an active member of the group (CHAT_ALREADY_MEMBER).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
     },
   },
 };
@@ -1082,10 +1100,19 @@ const inviteLinksByRoom = {
 // =============================================================================
 // Notifications
 // =============================================================================
+// Real-time notification spine (shipped 2026-06-17):
+// When a business action occurs (community member-added, friend request, chat mention, etc.),
+// notifications-service consumes the RabbitMQ event and calls chat-service's createNotification gRPC.
+// The gRPC writes the inbox row AND publishes to Redis notify:<userId>.
+// The gateway's /notify Socket.IO namespace relays the event to connected clients in real time.
+// Offline users receive FCM push; online users skip push (real-time socket is sufficient).
+// See docs/IMPLEMENTATION-NOTES.md "Real-time Notification Spine" for full flow.
 const notifications = {
   get: {
     tags: ["Chat — Notifications"],
     summary: "List notifications",
+    description:
+      "Fetch the user's in-app notification inbox. Real-time updates arrive via Socket.IO /notify namespace; use this endpoint for initial load and pagination.",
     security: [{ bearerAuth: [] }],
     parameters: [cursorParam(), limitParam(20)],
     responses: {
@@ -1215,6 +1242,35 @@ const communityLeave = {
   },
 };
 
+// Community send 201/200 response body: the canonical community wire message
+// (ChatCommunityWireMessage) plus an `idempotent` flag. Shared by both the fresh
+// (201) and idempotent-replay (200) responses.
+const communitySendResponseSchema = {
+  allOf: [
+    { $ref: "#/components/schemas/ApiSuccessResponse" },
+    {
+      type: "object" as const,
+      properties: {
+        data: {
+          allOf: [
+            { $ref: "#/components/schemas/ChatCommunityWireMessage" },
+            {
+              type: "object" as const,
+              properties: {
+                idempotent: {
+                  type: "boolean" as const,
+                  description:
+                    "True when this send collapsed onto a pre-existing message (replay).",
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+  ],
+};
+
 const communityMessages = {
   get: {
     tags: ["Chat — Community"],
@@ -1298,6 +1354,97 @@ const communityMessages = {
       "404": notFound,
     },
   },
+  post: {
+    tags: ["Chat — Community"],
+    summary: "Send a community message",
+    description:
+      "Sends a message into the community room. `roomId` (the chat room id) comes from the path; `communityId` (used for the broadcast + activity bump) is required in the body. The server broadcasts `community:message:new` to the `community:<communityId>` Socket.IO room, denormalizes community activity (orders GET /communities/mine), and bumps the room for every member. Requires active membership; the room must not be suspended. Idempotent via `clientMessageId` (a replay answers 200 with `idempotent: true`), matching the private/group send contract.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["communityId", "messageType"],
+            properties: {
+              communityId: {
+                type: "string" as const,
+                description:
+                  "The community-service Community.id (used for the broadcast + activity bump).",
+              },
+              message: {
+                type: "string" as const,
+                maxLength: 4000,
+                description: "Plain-text body (max 4000 chars).",
+              },
+              messageType: {
+                type: "string" as const,
+                description:
+                  "Community message kind (accepted case-insensitively; lower-case spelling + 'custom'). Normalized to UPPER-CASE on the wire.",
+              },
+              parentMessageId: {
+                type: "string" as const,
+                nullable: true,
+                description: "ID of the message being replied to.",
+              },
+              clientMessageId: {
+                type: "string" as const,
+                description: "Idempotency key.",
+              },
+              media: {
+                type: "object" as const,
+                description: "Structured media attachments.",
+                properties: {
+                  files: {
+                    type: "array" as const,
+                    items: { type: "object" as const },
+                  },
+                },
+              },
+              location: {
+                $ref: "#/components/schemas/ChatLocationAttachment",
+              },
+              contact: { $ref: "#/components/schemas/ChatContactAttachment" },
+              sticker: { $ref: "#/components/schemas/ChatSticker" },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "201": {
+        description:
+          "Message sent (fresh insert). The data payload is the canonical community wire message (byte-identical to the Socket.IO `community:message:new`) plus an `idempotent` flag.",
+        content: {
+          "application/json": {
+            schema: communitySendResponseSchema,
+          },
+        },
+      },
+      "200": {
+        description:
+          "Idempotent replay — `clientMessageId` matched an existing message; the original is returned with `idempotent: true`.",
+        content: {
+          "application/json": {
+            schema: communitySendResponseSchema,
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
 };
 
 const communityRoomSync = {
@@ -1378,7 +1525,7 @@ const communityMessageDelete = {
       },
     ],
     responses: {
-      ...successResponse("Message deleted"),
+      ...successResponse("Message deleted", "ChatCommunityDeleteTombstone"),
       "401": unauthorized,
       "403": forbidden,
     },
@@ -1572,55 +1719,6 @@ const communitySearch2 = searchPath(
 );
 
 // =============================================================================
-// Media uploads
-// =============================================================================
-const mediaDownloadUrl = {
-  post: {
-    tags: ["Chat — Media"],
-    summary: "Get presigned download URL",
-    description:
-      "Returns a short-lived presigned GET URL for playing/downloading an uploaded object (e.g. voice notes). Object key must start with chat-uploads/.",
-    security: [{ bearerAuth: [] }],
-    requestBody: {
-      required: true,
-      content: {
-        "application/json": {
-          schema: { $ref: "#/components/schemas/ChatDownloadUrlRequest" },
-        },
-      },
-    },
-    responses: {
-      ...successResponse("Download URL", "ChatDownloadUrlData"),
-      "400": badRequest,
-      "401": unauthorized,
-    },
-  },
-};
-
-const mediaUploadUrl = {
-  post: {
-    tags: ["Chat — Media"],
-    summary: "Get presigned upload URL",
-    description:
-      "Returns a presigned URL for uploading a file to object storage. Supports images, video, audio, and documents.",
-    security: [{ bearerAuth: [] }],
-    requestBody: {
-      required: true,
-      content: {
-        "application/json": {
-          schema: { $ref: "#/components/schemas/ChatUploadUrlRequest" },
-        },
-      },
-    },
-    responses: {
-      ...successResponse("Upload URL", "ChatUploadUrlData"),
-      "400": badRequest,
-      "401": unauthorized,
-    },
-  },
-};
-
-// =============================================================================
 // Private — forward & reactions
 // =============================================================================
 const privateMessageForward = {
@@ -1661,7 +1759,7 @@ const privateMessageForward = {
       },
     },
     responses: {
-      ...successResponse("Message forwarded", undefined, "201"),
+      ...successResponse("Message forwarded", "ChatWireMessage", "201"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -1694,6 +1792,59 @@ const privateMessageReactions = {
     responses: {
       ...successResponse("Reactions", "ChatMessageReactions"),
       "401": unauthorized,
+      "404": notFound,
+    },
+  },
+  post: {
+    tags: ["Chat — Private"],
+    summary: "Add a reaction to a private message",
+    description:
+      "Adds the caller's `emoji` reaction. **Idempotent**: re-adding an emoji the caller already reacted with is a no-op (no duplicate). The caller must be a participant of the room. " +
+      "On success the server broadcasts a `message:reaction` Socket.IO event on `conv:<roomId>` carrying the same `reactions` array as the REST response. To remove a reaction, use `DELETE .../reactions/{emoji}`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdPathParam, messageIdPathParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatReactRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Reaction added", "ChatReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const privateMessageRemoveReaction = {
+  delete: {
+    tags: ["Chat — Private"],
+    summary: "Remove a reaction from a private message",
+    description:
+      "Removes the caller's `emoji` reaction. **Idempotent**: removing an emoji the caller has not reacted with is a no-op. The caller must be a participant of the room. " +
+      "On success the server broadcasts a `message:reaction` Socket.IO event on `conv:<roomId>` carrying the same `reactions` array as the REST response.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      roomIdPathParam,
+      messageIdPathParam,
+      {
+        name: "emoji",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const, minLength: 1, maxLength: 32 },
+        description: "URL-encoded Unicode emoji to remove.",
+      },
+    ],
+    responses: {
+      ...successResponse("Reaction removed", "ChatReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
       "404": notFound,
     },
   },
@@ -1741,7 +1892,7 @@ const groupMessageForward = {
       },
     },
     responses: {
-      ...successResponse("Message forwarded", undefined, "201"),
+      ...successResponse("Message forwarded", "ChatWireMessage", "201"),
       "400": badRequest,
       "401": unauthorized,
       "403": forbidden,
@@ -1774,6 +1925,59 @@ const groupMessageReactions = {
     responses: {
       ...successResponse("Reactions", "ChatMessageReactions"),
       "401": unauthorized,
+      "404": notFound,
+    },
+  },
+  post: {
+    tags: ["Chat — Groups"],
+    summary: "Add a reaction to a group message",
+    description:
+      "Adds the caller's `emoji` reaction. **Idempotent**: re-adding an emoji the caller already reacted with is a no-op (no duplicate). The caller must be an active member of the group. " +
+      "On success the server broadcasts a `message:reaction` Socket.IO event on `conv:<roomId>` carrying the same `reactions` array as the REST response. To remove a reaction, use `DELETE .../reactions/{emoji}`.",
+    security: [{ bearerAuth: [] }],
+    parameters: [roomIdPathParam, messageIdPathParam],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/ChatReactRequest" },
+        },
+      },
+    },
+    responses: {
+      ...successResponse("Reaction added", "ChatReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+const groupMessageRemoveReaction = {
+  delete: {
+    tags: ["Chat — Groups"],
+    summary: "Remove a reaction from a group message",
+    description:
+      "Removes the caller's `emoji` reaction. **Idempotent**: removing an emoji the caller has not reacted with is a no-op. The caller must be an active member of the group. " +
+      "On success the server broadcasts a `message:reaction` Socket.IO event on `conv:<roomId>` carrying the same `reactions` array as the REST response.",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      roomIdPathParam,
+      messageIdPathParam,
+      {
+        name: "emoji",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const, minLength: 1, maxLength: 32 },
+        description: "URL-encoded Unicode emoji to remove.",
+      },
+    ],
+    responses: {
+      ...successResponse("Reaction removed", "ChatReactResponse"),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
       "404": notFound,
     },
   },
@@ -1813,6 +2017,15 @@ const callById = {
     responses: {
       ...successResponse("Call details", "ChatCall"),
       "401": unauthorized,
+      "403": {
+        description:
+          "You were not a participant in this call (CALL_NOT_PARTICIPANT).",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+          },
+        },
+      },
       "404": notFound,
     },
   },
@@ -1990,10 +2203,14 @@ export const chatPaths = {
     privateMessageForward,
   "/chat/private/rooms/{roomId}/messages/{messageId}/reactions":
     privateMessageReactions,
+  "/chat/private/rooms/{roomId}/messages/{messageId}/reactions/{emoji}":
+    privateMessageRemoveReaction,
 
   // Groups — forward & reactions
   "/chat/groups/{roomId}/messages/{messageId}/forward": groupMessageForward,
   "/chat/groups/{roomId}/messages/{messageId}/reactions": groupMessageReactions,
+  "/chat/groups/{roomId}/messages/{messageId}/reactions/{emoji}":
+    groupMessageRemoveReaction,
 
   // Calls
   "/chat/calls": callHistory,
@@ -2001,10 +2218,6 @@ export const chatPaths = {
 
   // WebRTC
   "/webrtc/rtc-config": rtcConfig,
-
-  // Media
-  "/chat/media/upload-url": mediaUploadUrl,
-  "/chat/media/download-url": mediaDownloadUrl,
 
   // TODO(notifications): The notifications-service exposes device-token
   // registration endpoints — `POST /v1/devices` and `DELETE /v1/devices/:token`

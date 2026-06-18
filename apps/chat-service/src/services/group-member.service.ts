@@ -7,6 +7,7 @@ import {
 
 import { SystemEvent } from "../types/enums.js";
 import { assertGroupMember } from "../lib/access-guard.js";
+import { publishGroupMemberAddedSafe } from "../events/publish-group-member-added.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
@@ -96,6 +97,19 @@ export class GroupMemberService {
       systemEvent,
       systemData: { targetUserId: params.userId },
     });
+
+    // Out-of-room push/inbox for the added member (additive to the in-room SYSTEM
+    // message above). Skip invite-link self-joins (systemEvent MEMBER_JOINED) —
+    // the user initiated the join and already knows, mirroring community JOINED.
+    if (systemEvent === SystemEvent.MEMBER_ADDED) {
+      publishGroupMemberAddedSafe({
+        roomId: params.roomId,
+        groupName: room.name,
+        addedUserId: params.userId,
+        actorId: opts?.actorId ?? params.invitedBy ?? params.userId,
+        eventAt: new Date().toISOString(),
+      });
+    }
 
     return member;
   }

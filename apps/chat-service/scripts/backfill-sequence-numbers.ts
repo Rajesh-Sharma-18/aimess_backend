@@ -90,9 +90,48 @@ async function backfillGroupRooms(): Promise<void> {
   }
 }
 
+async function backfillGeneralRooms(): Promise<void> {
+  // General rooms back community chat. They key on the primary `id` (roomId ===
+  // community/general-room id) rather than a separate `roomId` field.
+  const rooms = await prisma.generalRoom.findMany({ select: { id: true } });
+  logger.info(`Backfill(general): ${String(rooms.length)} room(s)`);
+
+  for (const { id: roomId } of rooms) {
+    const messages = await prisma.generalRoomMessage.findMany({
+      where: { roomId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { id: true, sequenceNumber: true },
+    });
+
+    if (messages.length === 0) continue;
+
+    if (messages.every((m) => m.sequenceNumber > 0)) {
+      logger.info(`Backfill(general): room ${roomId} already sequenced, skip`);
+      continue;
+    }
+
+    let seq = 0;
+    for (const m of messages) {
+      seq += 1;
+      await prisma.generalRoomMessage.update({
+        where: { id: m.id },
+        data: { sequenceNumber: seq },
+      });
+    }
+    await prisma.generalRoom.update({
+      where: { id: roomId },
+      data: { lastSequence: seq },
+    });
+    logger.info(
+      `Backfill(general): room ${roomId} -> ${String(seq)} message(s)`
+    );
+  }
+}
+
 async function main(): Promise<void> {
   await backfillPrivateRooms();
   await backfillGroupRooms();
+  await backfillGeneralRooms();
   await prisma.$disconnect();
   logger.info("Backfill(sequence-numbers): done");
 }

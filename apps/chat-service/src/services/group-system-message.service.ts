@@ -3,6 +3,7 @@ import type { Redis, Cluster } from "ioredis";
 
 import { SystemEvent } from "../types/enums.js";
 import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
+import { resolveMediaUrl } from "../lib/media-resolve.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
@@ -111,6 +112,9 @@ export class GroupSystemMessageService {
         message.createdAt instanceof Date
           ? message.createdAt.getTime()
           : Date.now();
+      // Resolve the actor avatar key → download URL on the SERIALIZE-OUT
+      // boundary only; the persisted senderAvatar above keeps the raw key.
+      const actorAvatarUrl = await resolveMediaUrl(actorAvatar);
       this.redis
         .publish(
           `conv:${roomId}`,
@@ -122,7 +126,7 @@ export class GroupSystemMessageService {
               conversationType: "GROUP",
               senderId: actorId ?? "",
               senderName: actorName,
-              senderAvatar: actorAvatar,
+              senderAvatar: actorAvatarUrl,
               messageType: "SYSTEM",
               content: message.content ?? { text, urls: [], files: [] },
               reactions: [],

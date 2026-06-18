@@ -39,6 +39,7 @@ model PrivateRoom {
   blockedBy                 Json     @default("[]")
   deletedFor                Json     @default("{}")
   mutedBy                   Json     @default("{}")
+  archivedBy                Json     @default("{}")
   pinnedCount               Int      @default(0)
   lastPinnedAt              DateTime?
   lastSequence              Int      @default(0)
@@ -135,6 +136,7 @@ model GroupRoom {
   pinnedCount        Int       @default(0)
   lastPinnedAt       DateTime?
   lastSequence       Int       @default(0)
+  archivedBy         Json      @default("{}")
   disbandedAt        DateTime?
   disbandedBy        String?
   createdAt          DateTime  @default(now())
@@ -294,6 +296,7 @@ model GeneralRoom {
   listPinedMessage Json      @default("[]")
   pinnedCount      Int       @default(0)
   lastPinnedAt     DateTime?
+  lastSequence     Int       @default(0)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -318,18 +321,23 @@ model GeneralRoomMessage {
   messageType     String   @default("text")
   attachments     Json     @default("[]")
   clientMessageId String?
+  sequenceNumber  Int      @default(0)
   deletedBy       Json     @default("[]")
   deletedForAll   Boolean  @default(false)
   reports         Json     @default("[]")
-  editedAt        DateTime?
-  editHistory     Json     @default("[]")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  editedAt           DateTime?
+  editHistory        Json     @default("[]")
+  systemMessageType  String?
+  systemMetadata     Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@index([roomId])
   @@index([roomId, sentBy])
   @@index([deletedForAll])
   @@index([roomId, messageType, createdAt(sort: Desc)])
+  @@index([roomId, sequenceNumber])
+  @@index([roomId, systemMessageType, createdAt(sort: Desc)])
   @@map("general_room_messages")
 }
 

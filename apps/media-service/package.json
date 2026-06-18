@@ -1,0 +1,53 @@
+{
+  "name": "@aimess/media-service",
+  "version": "1.0.0",
+  "description": "Stateless presigned URL service for media uploads and downloads.",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch --include ./src --clear-screen=false src/server.ts",
+    "start": "node dist/server.js",
+    "build": "prisma generate && tsc",
+    "typecheck": "prisma generate && tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "lint": "eslint .",
+    "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@aimess/auth-jwt": "workspace:*",
+    "@aimess/constants": "workspace:*",
+    "@aimess/errors": "workspace:*",
+    "@aimess/grpc-utils": "workspace:*",
+    "@aimess/logger": "workspace:*",
+    "@aimess/redis": "workspace:*",
+    "@aimess/shared-types": "workspace:*",
+    "@aimess/storage": "workspace:*",
+    "@aimess/utils": "workspace:*",
+    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/proto-loader": "^0.8.1",
+    "@prisma/client": "^6.9.0",
+    "bull": "^4.16.5",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.2",
+    "@types/supertest": "^6.0.2",
+    "jest": "^29.7.0",
+    "prisma": "^6.9.0",
+    "supertest": "^7.1.0",
+    "ts-jest": "^29.4.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
