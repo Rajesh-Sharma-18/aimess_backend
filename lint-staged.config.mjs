@@ -13,10 +13,16 @@ function chunk(files) {
   return batches;
 }
 
-/** @param {string} script @param {string[]} files */
+/**
+ * Type-aware ESLint (`parserOptions.project`) loads a full TS program per
+ * tsconfig project a batch touches; a wide cross-service commit can exhaust
+ * Node's default heap and crash with "Last few GCs". Raise the old-space cap.
+ *
+ * @param {string} script @param {string[]} files
+ */
 function nodeTask(script, files) {
   const quoted = files.map((file) => JSON.stringify(file)).join(" ");
-  return `node ${script} ${quoted}`;
+  return `node --max-old-space-size=8192 ${script} ${quoted}`;
 }
 
 /** @type {import('lint-staged').Configuration} */
