@@ -28,3 +28,6 @@ Thumbs.db
 .claude/worktrees/
 /graphify-out
 /testing-suite
+.vscode
+.claude
+.serena
