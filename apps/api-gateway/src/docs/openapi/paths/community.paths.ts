@@ -1842,6 +1842,181 @@ export const communityPaths = {
       },
     },
   },
+  "/communities/{id}/banned-members": {
+    get: {
+      tags: ["Communities"],
+      summary: "List banned members",
+      description:
+        "Moderator or admin only. Returns the community's **currently-banned** members (status === BANNED). Lifted bans are not included here — the full ban history is in the moderation audit log (GET /communities/{id}/audit-logs). Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. Supports free-text `search` (matches displayName / username / userId) and `sortBy` + `sortOrder` (default: bannedAt desc = newest first).",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+          description: "1-based page number.",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string", maxLength: 100 },
+          description:
+            "Case-insensitive search across displayName, username, and userId.",
+        },
+        {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["bannedAt", "displayName", "username"],
+            default: "bannedAt",
+          },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["asc", "desc"],
+            default: "desc",
+          },
+          description:
+            "With sortBy=bannedAt: desc = newest first, asc = oldest first.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Banned members",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityBannedMembersResponseData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description:
+            "Not a community moderator/admin (caller lacks MODERATOR rank)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/banned-members/{userId}/unban": {
+    post: {
+      tags: ["Communities"],
+      summary: "Unban a member (banned-members section)",
+      description:
+        "Admin only. Dedicated unban action for the banned-members section — functionally identical to DELETE /communities/{id}/members/{userId}/ban. Lifts a ban (BANNED → LEFT; not auto-re-added), records a MEMBER_UNBANNED audit entry, emits the `community:member:unbanned` socket event, and notifies the unbanned user. Fails if the member is not currently banned.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+        {
+          name: "userId",
+          in: "path",
+          required: true,
+          description: "User ID of the target member.",
+          schema: { type: "string", format: "uuid" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Member unbanned",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/CommunityMemberData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Validation failed, or the member is not banned",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Not a community admin",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community or target member not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/communities/{id}/members/{userId}/mute": {
     post: {
       tags: ["Communities"],
@@ -4139,12 +4314,92 @@ export const communityPaths = {
   },
 
   // --- Invite links --------------------------------------------------------
+
+  "/communities/invite-links/{code}": {
+    get: {
+      tags: ["Communities"],
+      summary: "Preview a community via its invite link",
+      description:
+        "Returns limited community information for display before the user decides to join. " +
+        "Requires authentication. `isJoined` is true when the caller is already an ACTIVE member. " +
+        "Banned callers receive 403.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "code",
+          in: "path",
+          required: true,
+          description: "Alphanumeric invite code from the invite link URL.",
+          schema: { type: "string", pattern: "^[A-Za-z0-9_-]{4,64}$" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Community preview",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/InviteLinkPreviewData",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": {
+          description: "Missing or invalid Bearer token",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "403": {
+          description: "Caller is banned from this community",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Invite link not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "410": {
+          description:
+            "Invite link has been revoked, has expired, or has reached its usage limit",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+
   "/communities/{id}/invite-links": {
     post: {
       tags: ["Communities"],
       summary: "Create a shareable invite link",
       description:
-        "MODERATOR/ADMIN only. `maxUses` null/omitted → unlimited; `expiresInMinutes` null/omitted → never expires.",
+        "MODERATOR/ADMIN only. `maxUses` null/omitted → unlimited; `expiresInMinutes` null/omitted → never expires. " +
+        "For **PRIVATE** communities, `autoApprove` defaults to `true` (link grants direct membership). " +
+        "Set `autoApprove: false` explicitly if moderator approval is still required after invite.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

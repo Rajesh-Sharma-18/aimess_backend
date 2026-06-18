@@ -96,6 +96,25 @@ export const adminLoginRateLimiter = rateLimit({
 });
 
 /**
+ * Per-IP limiter for the public invite-link preview endpoint
+ * (GET /communities/invite-links/:code). No auth required → enumeration risk.
+ * 30 requests per 15 min caps casual scanning while allowing legitimate use.
+ */
+export const inviteLinkPreviewRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: {
+    trustProxy: env.TRUST_PROXY_HOPS > 0,
+  },
+  message: {
+    success: false,
+    message: "Too many invite link lookups, please try again later.",
+  },
+});
+
+/**
  * Lenient per-IP limiter for forgot-password OTP endpoints.
  * Tighter than the global limit but looser than sensitiveAuthRateLimiter
  * since users legitimately retry during password-reset flows.

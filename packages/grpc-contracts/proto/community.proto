@@ -38,6 +38,16 @@ service CommunityService {
   // message id. Used on reconnect to fill the gap without re-fetching history.
   rpc CommunityCatchup (CommunityCatchupRequest) returns (CommunityCatchupResponse);
 
+  // Lightweight membership oracle for the gateway socket layer: lets the
+  // /community namespace reject a BANNED (or non-member) user at community:join
+  // before they enter the broadcast room. Read-only, single-row lookup.
+  rpc CheckCommunityMembership (CheckCommunityMembershipRequest) returns (CheckCommunityMembershipResponse);
+
+  // Moderation-mute oracle for notifications-service: lets the notification
+  // eligibility gate suppress community-action notifications from a member who
+  // has been muted by a moderator. Read-only, single-row lookup; never throws.
+  rpc CheckCommunityMute (CheckCommunityMuteRequest) returns (CheckCommunityMuteResponse);
+
   // Toggle reaction on a community message (add if absent, remove if present).
   rpc ReactToCommunityMessage (ReactToCommunityMessageRequest) returns (ReactToCommunityMessageResponse);
 
@@ -54,6 +64,18 @@ service CommunityService {
   rpc ChangeMemberRole  (ChangeMemberRoleRequest)   returns (ModerationActionResponse);
   rpc CreateReport      (CreateReportRequest)       returns (CreateReportResponse);
   rpc DeleteCommunity   (DeleteCommunityRequest)    returns (ModerationActionResponse);
+
+  // ---- Per-message read receipt (fine-grained, single room) ----
+  rpc MarkCommunityMessageRead (MarkCommunityMessageReadRequest) returns (MarkCommunityMessageReadResponse);
+
+  // ---- Full reaction user list for a message ----
+  rpc GetCommunityMessageReactions (GetCommunityMessageReactionsRequest) returns (GetCommunityMessageReactionsResponse);
+
+  // ---- Forward a community message to another community room ----
+  rpc ForwardCommunityMessage (ForwardCommunityMessageRequest) returns (ForwardCommunityMessageResponse);
+
+  // ---- Delivery receipt (client emits on receiving message:new) ----
+  rpc MarkCommunityMessageDelivered (MarkCommunityMessageDeliveredRequest) returns (MarkCommunityMessageDeliveredResponse);
 }
 
 // ---- Bulk mark-as-read ----
@@ -360,6 +382,27 @@ message CommunityCatchupResponse {
   int64  next_ts                             = 6;
 }
 
+// ---- Membership check (gateway socket ban gate) ----
+message CheckCommunityMembershipRequest {
+  string community_id = 1;
+  string user_id      = 2;
+}
+message CheckCommunityMembershipResponse {
+  // True only when the user has an ACTIVE membership row.
+  bool   is_member = 1;
+  // True when the user has a BANNED membership row (mutually exclusive with
+  // is_member). Lets the gateway distinguish "banned" from "not a member".
+  bool   is_banned = 2;
+  // Raw membership status: ACTIVE | BANNED | LEFT | PENDING | "" (no row).
+  string status    = 3;
+  // ACTIVE member's role (ADMIN|MODERATOR|MEMBER); empty when not a member.
+  string role      = 4;
+}
+
+// ---- Moderation-mute check (notifications eligibility gate) ----
+message CheckCommunityMuteRequest  { string community_id = 1; string user_id = 2; }
+message CheckCommunityMuteResponse { bool is_muted = 1; int64 muted_until = 2; } // epoch ms; 0 = indefinite or not muted
+
 // ---- Community message reaction (toggle: add if absent, remove if present) ----
 message ReactToCommunityMessageRequest {
   string message_id   = 1;
@@ -488,6 +531,59 @@ message DeleteCommunityRequest {
   string community_id = 1;
   string actor_id     = 2; // must be admin
   string reason       = 3; // "" if not provided
+}
+
+// ---- Mark community message read (per-message, fine-grained) ----
+message MarkCommunityMessageReadRequest {
+  string community_id      = 1;
+  string room_id           = 2;
+  string reader_id         = 3;
+  string up_to_message_id  = 4;
+}
+message MarkCommunityMessageReadResponse {
+  bool   ok           = 1;
+  string community_id = 2;
+  int64  read_at      = 3; // epoch ms
+}
+
+// ---- Get full reaction user list for a message ----
+message GetCommunityMessageReactionsRequest {
+  string message_id    = 1;
+  string community_id  = 2;
+  string requester_id  = 3;
+}
+message GetCommunityMessageReactionsResponse {
+  string message_id   = 1;
+  string community_id = 2;
+  repeated CommunityReactionGroupDto reactions = 3;
+}
+
+// ---- Forward a community message ----
+message ForwardCommunityMessageRequest {
+  string source_message_id   = 1;
+  string source_community_id = 2;
+  string target_community_id = 3;
+  string target_room_id      = 4;
+  string sender_id           = 5;
+  string client_message_id   = 6;
+}
+message ForwardCommunityMessageResponse {
+  string message_id = 1;
+  string room_id    = 2;
+  int64  sent_at    = 3; // epoch ms
+}
+
+// ---- Delivery receipt ----
+message MarkCommunityMessageDeliveredRequest {
+  string community_id      = 1;
+  string room_id           = 2;
+  string recipient_id      = 3;
+  string up_to_message_id  = 4;
+}
+message MarkCommunityMessageDeliveredResponse {
+  bool   ok           = 1;
+  string community_id = 2;
+  int64  delivered_at = 3; // epoch ms
 }
 
 // ---- Unpin ----

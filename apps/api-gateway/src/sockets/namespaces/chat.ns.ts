@@ -12,6 +12,7 @@ import {
   buildTypingBroadcast,
 } from "../user-details.js";
 import { env } from "../../config/env.js";
+import { createSessionTimers } from "../session-timers.js";
 
 // §3: bound free-text + array fields so a naive or abusive client cannot exceed
 // the 1 MB socket frame, blow up storage, or fan an oversized payload out to a
@@ -129,10 +130,6 @@ const CatchupSchema = z.object({
     )
     .min(1)
     .max(50),
-});
-
-const AuthRefreshSchema = z.object({
-  refreshToken: z.string().min(1),
 });
 
 // ── Friend management schemas ─────────────────────────────────────────────────
@@ -631,97 +628,18 @@ export function registerChatNamespace(
       }
     );
 
-    // Task #2: session:expired warning + auth:refresh socket event.
-    // Emit a warning 5 min before the handshake token expires; force-disconnect
-    // after a 60 s grace period unless the client refreshes in time.
-    let sessionWarnTimer: ReturnType<typeof setTimeout> | null = null;
-    let sessionExpireTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const clearSessionTimers = (): void => {
-      if (sessionWarnTimer !== null) {
-        clearTimeout(sessionWarnTimer);
-        sessionWarnTimer = null;
-      }
-      if (sessionExpireTimer !== null) {
-        clearTimeout(sessionExpireTimer);
-        sessionExpireTimer = null;
-      }
-    };
-
-    const scheduleSessionTimers = (expiresAt: number): void => {
-      clearSessionTimers();
-      const warnMs = Math.max(0, expiresAt - Date.now() - 5 * 60 * 1000);
-      sessionWarnTimer = setTimeout(() => {
-        sessionWarnTimer = null;
-        socket.emit("session:expired", {
-          reason: "TOKEN_EXPIRED",
-          expiresAt,
-          reconnect: true,
-          gracePeriod: 60,
-        });
-        sessionExpireTimer = setTimeout(() => {
-          sessionExpireTimer = null;
-          logger.debug(
-            `/chat session grace elapsed, disconnecting userId=${userId}`
-          );
-          socket.disconnect(true);
-        }, 60_000);
-      }, warnMs);
-    };
+    // session:expired warning + auth:refresh — shared helper handles the 5-min
+    // warn timer, 60-s grace disconnect, and token-refresh event registration.
+    const {
+      clearSessionTimers,
+      scheduleSessionTimers,
+      registerAuthRefreshHandler,
+    } = createSessionTimers(socket, locale, "/chat", env.AUTH_SERVICE_URL);
 
     if (socket.data.tokenExpiresAt > 0) {
       scheduleSessionTimers(socket.data.tokenExpiresAt);
     }
-
-    // Client sends its refresh token via socket to obtain a new access token
-    // without a full transport reconnect. Resets both session expiry timers.
-    socket.on(
-      "auth:refresh",
-      (payload: unknown, callback?: (res: unknown) => void) => {
-        const r = AuthRefreshSchema.safeParse(payload);
-        if (!r.success) {
-          ackError(callback, "INVALID_PAYLOAD", locale);
-          return;
-        }
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
-        fetch(`${env.AUTH_SERVICE_URL}/api/auth/token`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refreshToken: r.data.refreshToken }),
-          signal: controller.signal,
-        })
-          .then(async (res) => {
-            clearTimeout(timeoutId);
-            if (!res.ok) {
-              ackError(callback, "SERVICE_ERROR", locale);
-              return;
-            }
-            const body = (await res.json()) as {
-              data?: { accessToken?: string; accessTokenExpiresIn?: number };
-            };
-            const token = body.data?.accessToken;
-            if (!token) {
-              ackError(callback, "SERVICE_ERROR", locale);
-              return;
-            }
-            const expiresIn = body.data?.accessTokenExpiresIn ?? 900;
-            const newExpiresAt = Date.now() + expiresIn * 1000;
-            socket.data.tokenExpiresAt = newExpiresAt;
-            socket.data.accessToken = token;
-            scheduleSessionTimers(newExpiresAt);
-            ackOk(callback, "SOCKET_AUTH_REFRESHED", locale, {
-              accessToken: token,
-              expiresIn,
-            });
-          })
-          .catch((err: unknown) => {
-            clearTimeout(timeoutId);
-            logger.warn(`/chat auth:refresh error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
-          });
-      }
-    );
+    registerAuthRefreshHandler();
 
     // Gap #7: per-socket typing-expiry timers.
     // Fire-and-forget (no ack). Server holds a 6 s countdown per

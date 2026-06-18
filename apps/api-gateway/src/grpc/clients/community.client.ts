@@ -257,7 +257,75 @@ export interface UnpinCommunityMessageResult {
   pinnedCount: number;
 }
 
+// ---- Mark message read ----
+export interface MarkCommunityMessageReadParams {
+  communityId: string;
+  roomId: string;
+  readerId: string;
+  upToMessageId: string;
+}
+export interface MarkCommunityMessageReadResult {
+  ok: boolean;
+  communityId: string;
+  readAt: number;
+}
+
+// ---- Get message reactions ----
+export interface GetCommunityMessageReactionsParams {
+  messageId: string;
+  communityId: string;
+  requesterId: string;
+}
+export interface GetCommunityMessageReactionsResult {
+  messageId: string;
+  communityId: string;
+  reactions: CommunityReactionGroupDto[];
+}
+
+// ---- Forward message ----
+export interface ForwardCommunityMessageParams {
+  sourceMessageId: string;
+  sourceCommunityId: string;
+  targetCommunityId: string;
+  targetRoomId: string;
+  senderId: string;
+  clientMessageId: string;
+}
+export interface ForwardCommunityMessageResult {
+  messageId: string;
+  roomId: string;
+  sentAt: number;
+}
+
+// ---- Delivery receipt ----
+export interface MarkCommunityMessageDeliveredParams {
+  communityId: string;
+  roomId: string;
+  recipientId: string;
+  upToMessageId: string;
+}
+export interface MarkCommunityMessageDeliveredResult {
+  ok: boolean;
+  communityId: string;
+  deliveredAt: number;
+}
+
+// ---- Membership check (socket ban gate) ----
+export interface CheckCommunityMembershipParams {
+  communityId: string;
+  userId: string;
+}
+export interface CheckCommunityMembershipResult {
+  isMember: boolean;
+  isBanned: boolean;
+  status: string;
+  role: string;
+}
+
 export interface CommunityClient {
+  checkCommunityMembership(
+    p: CheckCommunityMembershipParams
+  ): Promise<CheckCommunityMembershipResult>;
   sendCommunityMessage(
     p: SendCommunityMessageParams
   ): Promise<SendCommunityMessageResult>;
@@ -282,6 +350,19 @@ export interface CommunityClient {
   unpinCommunityMessage(
     p: UnpinCommunityMessageParams
   ): Promise<UnpinCommunityMessageResult>;
+
+  markCommunityMessageRead(
+    p: MarkCommunityMessageReadParams
+  ): Promise<MarkCommunityMessageReadResult>;
+  getCommunityMessageReactions(
+    p: GetCommunityMessageReactionsParams
+  ): Promise<GetCommunityMessageReactionsResult>;
+  forwardCommunityMessage(
+    p: ForwardCommunityMessageParams
+  ): Promise<ForwardCommunityMessageResult>;
+  markCommunityMessageDelivered(
+    p: MarkCommunityMessageDeliveredParams
+  ): Promise<MarkCommunityMessageDeliveredResult>;
 
   // Moderation
   kickMember(p: KickMemberParams): Promise<ModerationActionResult>;
@@ -480,7 +561,77 @@ export function createCommunityClient(): CommunityClient {
       })
   );
 
+  const markReadBreaker = makeBreaker(
+    "community.markCommunityMessageRead",
+    (p: MarkCommunityMessageReadParams) =>
+      call<unknown, MarkCommunityMessageReadResult>(
+        "markCommunityMessageRead",
+        {
+          communityId: p.communityId,
+          roomId: p.roomId,
+          readerId: p.readerId,
+          upToMessageId: p.upToMessageId,
+        }
+      ).then((r) => ({ ...r, readAt: Number(r.readAt) }))
+  );
+
+  const getReactionsBreaker = makeBreaker(
+    "community.getCommunityMessageReactions",
+    (p: GetCommunityMessageReactionsParams) =>
+      call<unknown, GetCommunityMessageReactionsResult>(
+        "getCommunityMessageReactions",
+        {
+          messageId: p.messageId,
+          communityId: p.communityId,
+          requesterId: p.requesterId,
+        }
+      )
+  );
+
+  const forwardMsgBreaker = makeBreaker(
+    "community.forwardCommunityMessage",
+    (p: ForwardCommunityMessageParams) =>
+      call<unknown, ForwardCommunityMessageResult>("forwardCommunityMessage", {
+        sourceMessageId: p.sourceMessageId,
+        sourceCommunityId: p.sourceCommunityId,
+        targetCommunityId: p.targetCommunityId,
+        targetRoomId: p.targetRoomId,
+        senderId: p.senderId,
+        clientMessageId: p.clientMessageId,
+      }).then((r) => ({ ...r, sentAt: Number(r.sentAt) }))
+  );
+
+  const checkMembershipBreaker = makeBreaker(
+    "community.checkCommunityMembership",
+    (p: CheckCommunityMembershipParams) =>
+      call<unknown, CheckCommunityMembershipResult>(
+        "checkCommunityMembership",
+        {
+          communityId: p.communityId,
+          userId: p.userId,
+        }
+      )
+  );
+
+  const markDeliveredBreaker = makeBreaker(
+    "community.markCommunityMessageDelivered",
+    (p: MarkCommunityMessageDeliveredParams) =>
+      call<unknown, MarkCommunityMessageDeliveredResult>(
+        "markCommunityMessageDelivered",
+        {
+          communityId: p.communityId,
+          roomId: p.roomId,
+          recipientId: p.recipientId,
+          upToMessageId: p.upToMessageId,
+        }
+      ).then((r) => ({ ...r, deliveredAt: Number(r.deliveredAt) }))
+  );
+
   return {
+    checkCommunityMembership: (p) => checkMembershipBreaker.fire(p),
+    markCommunityMessageRead: (p) => markReadBreaker.fire(p),
+    getCommunityMessageReactions: (p) => getReactionsBreaker.fire(p),
+    forwardCommunityMessage: (p) => forwardMsgBreaker.fire(p),
     sendCommunityMessage: (p) => sendMsgBreaker.fire(p),
     getCommunityMessages: (p) => getMsgsBreaker.fire(p),
     communityCatchup: (p) => catchupBreaker.fire(p),
@@ -496,5 +647,6 @@ export function createCommunityClient(): CommunityClient {
     changeMemberRole: (p) => changeRoleBreaker.fire(p),
     createReport: (p) => createReportBreaker.fire(p),
     deleteCommunity: (p) => deleteCommunityBreaker.fire(p),
+    markCommunityMessageDelivered: (p) => markDeliveredBreaker.fire(p),
   };
 }

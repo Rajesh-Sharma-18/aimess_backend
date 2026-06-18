@@ -9,6 +9,7 @@ import {
   type CommunityInviteSentPayload,
   type CommunityJoinedPayload,
   type CommunityJoinRequestApprovedPayload,
+  type CommunityJoinRequestCancelledPayload,
   type CommunityJoinRequestedPayload,
   type CommunityJoinRequestRejectedPayload,
   type CommunityMemberAddedPayload,
@@ -17,6 +18,7 @@ import {
   type CommunityMemberKickedPayload,
   type CommunityMemberLeftPayload,
   type CommunityMemberMutedPayload,
+  type CommunityMemberUnbannedNotifyPayload,
   type CommunityMemberUnmutedPayload,
   type CommunityMemberWarnedPayload,
   type CommunityMemberRoleChangedPayload,
@@ -73,6 +75,16 @@ export function publishCommunityMemberBannedSafe(
   data: CommunityMemberBannedPayload
 ): void {
   publishSafe(CommunityEvents.MEMBER_BANNED, data, "community.member_banned");
+}
+
+export function publishCommunityMemberUnbannedSafe(
+  data: CommunityMemberUnbannedNotifyPayload
+): void {
+  publishSafe(
+    CommunityEvents.MEMBER_UNBANNED,
+    data,
+    "community.member_unbanned"
+  );
 }
 
 export function publishCommunityMemberMutedSafe(
@@ -152,6 +164,16 @@ export function publishCommunityJoinRequestRejectedSafe(
     CommunityEvents.JOIN_REQUEST_REJECTED,
     data,
     "community.join_request_rejected"
+  );
+}
+
+export function publishCommunityJoinRequestCancelledSafe(
+  data: CommunityJoinRequestCancelledPayload
+): void {
+  publishSafe(
+    CommunityEvents.JOIN_REQUEST_CANCELLED,
+    data,
+    "community.join_request_cancelled"
   );
 }
 

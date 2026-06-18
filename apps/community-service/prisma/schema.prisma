@@ -119,6 +119,10 @@ model CommunityMember {
   // Backs the admin member list's username sort (orderBy snapshotUsername within a
   // community); the exclusion + role/search filter is covered by [communityId, status].
   @@index([communityId, status, snapshotUsername])
+  // Banned-members list: default sort is bannedAt within [communityId, status=BANNED];
+  // the displayName index backs the alphabetical displayName sort option.
+  @@index([communityId, status, bannedAt])
+  @@index([communityId, status, snapshotDisplayName])
   @@map("community_members")
 }
 

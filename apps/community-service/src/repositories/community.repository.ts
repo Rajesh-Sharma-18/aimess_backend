@@ -502,6 +502,17 @@ export const communityRepository = {
     });
   },
 
+  /** Find all ACTIVE communities a user is a member of, with their role. */
+  async findUserMemberships(userId: string) {
+    return prisma.communityMember.findMany({
+      where: { userId, status: CommunityMemberStatus.ACTIVE },
+      select: {
+        communityId: true,
+        role: true,
+      },
+    });
+  },
+
   /** Single-document role update keyed by the (communityId, userId) unique. */
   async updateMemberRole(
     communityId: string,
@@ -612,6 +623,71 @@ export const communityRepository = {
       prisma.communityMember.findMany({
         where,
         orderBy: { id: "asc" },
+        skip: (params.page - 1) * params.limit,
+        take: params.limit,
+        select: {
+          id: true,
+          userId: true,
+          role: true,
+          status: true,
+          joinedAt: true,
+          snapshotUsername: true,
+          snapshotDisplayName: true,
+          snapshotAvatarKey: true,
+          bannedAt: true,
+          bannedBy: true,
+          banReason: true,
+        },
+      }),
+      prisma.communityMember.count({ where }),
+    ]);
+
+    return { rows, total };
+  },
+
+  /**
+   * Currently-banned members of a community (status === BANNED only), with
+   * optional free-text search and sort. Search matches displayName / username /
+   * userId case-insensitively. Index-supported by [communityId, status] (+
+   * [communityId, status, bannedAt] / [communityId, status, snapshotDisplayName]
+   * for the sort). Returns the page rows plus the total matching count.
+   *
+   * Lifted bans are not BANNED anymore (unban sets status → LEFT) so they never
+   * appear here — the historical record lives in the moderation audit log.
+   */
+  async listBannedMembers(params: {
+    communityId: string;
+    search?: string;
+    sortBy: "bannedAt" | "displayName" | "username";
+    sortOrder: "asc" | "desc";
+    page: number;
+    limit: number;
+  }) {
+    const where: Prisma.CommunityMemberWhereInput = {
+      communityId: params.communityId,
+      status: CommunityMemberStatus.BANNED,
+    };
+
+    if (params.search) {
+      const term = params.search.trim();
+      where.OR = [
+        { snapshotDisplayName: { contains: term, mode: "insensitive" } },
+        { snapshotUsername: { contains: term, mode: "insensitive" } },
+        { userId: { contains: term, mode: "insensitive" } },
+      ];
+    }
+
+    const orderBy: Prisma.CommunityMemberOrderByWithRelationInput =
+      params.sortBy === "displayName"
+        ? { snapshotDisplayName: params.sortOrder }
+        : params.sortBy === "username"
+          ? { snapshotUsername: params.sortOrder }
+          : { bannedAt: params.sortOrder };
+
+    const [rows, total] = await Promise.all([
+      prisma.communityMember.findMany({
+        where,
+        orderBy,
         skip: (params.page - 1) * params.limit,
         take: params.limit,
         select: {
@@ -2025,6 +2101,21 @@ export const communityRepository = {
     return prisma.communityMemberMute.findUnique({
       where: { communityId_userId: { communityId, userId } },
     });
+  },
+
+  /**
+   * Like `findMemberMute` but returns the row ONLY when the mute is still
+   * effective (lazy expiration: `mutedUntil` null OR in the future) — matching
+   * the expiry semantics of `listMutedMembers` (`mutedUntil IS NULL OR > now`).
+   * Returns null for an expired mute (or no row). Indefinite mute is stored as
+   * an explicit `null` (NOT an unset field), so a plain equality check is right.
+   */
+  async findActiveMemberMute(communityId: string, userId: string) {
+    const row = await this.findMemberMute(communityId, userId);
+    if (!row) return null;
+    const now = new Date();
+    if (row.mutedUntil === null || row.mutedUntil > now) return row;
+    return null;
   },
 
   /** Idempotent re-mute: updates mutedBy/reason/mutedUntil on conflict. */

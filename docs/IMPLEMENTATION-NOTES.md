@@ -1598,3 +1598,87 @@ New endpoint allowing a caller to leave up to 50 communities in a single authent
 #### Verification (2026-06-11)
 
 - `tsc --noEmit` on `community-service` — **0 errors**
+
+---
+
+### Private Community Invitation & Discovery System (2026-06-18)
+
+#### What was shipped
+
+Discord/Telegram-style invite links for **PRIVATE** communities. Previously, invite links were restricted to PUBLIC communities only (`COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC` guard). The guard was removed and the full invite-link flow now works for both PUBLIC and PRIVATE communities. A new read-only **preview endpoint** lets authenticated users see community details before deciding to join.
+
+#### Files changed
+
+| File                                                                          | Change                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/community-service/src/services/community.service.ts`                    | Removed PUBLIC-only guard from `createInviteLink` + `redeemInviteLink`; added `autoApprove` smart default (true for PRIVATE, false for PUBLIC); added `lookupInviteLink` method; extracted `assertInviteLinkActive` helper; upgraded `generateInviteCode` from `randomBytes(6)` → `randomBytes(16)` (128-bit entropy) |
+| `apps/community-service/src/types/community.types.ts`                         | Added `InviteLinkPreviewData` type; added `appDeepLink: string` to `CommunityInviteLinkData`; narrowed `communityType` to `CommunityType` enum                                                                                                                                                                        |
+| `apps/community-service/src/api/controllers/community.controller.ts`          | Added `lookupCommunityInviteLink` handler                                                                                                                                                                                                                                                                             |
+| `apps/community-service/src/api/routes/community.routes.ts`                   | Registered `GET /invite-links/:code` inside `communityRoutes` (before `/:id` wildcard); removed redundant `inviteLinkPublicRoutes` separate router                                                                                                                                                                    |
+| `apps/community-service/src/middleware/optional-authenticate-access-token.ts` | New file — created during optional-auth phase, retained for future optional-auth routes                                                                                                                                                                                                                               |
+| `packages/constants/src/messages/community.messages.ts`                       | Added `COMMUNITY_INVITE_LINK_PREVIEW_FETCHED` (EN + VI)                                                                                                                                                                                                                                                               |
+| `apps/api-gateway/src/middleware/rate-limit.ts`                               | Added `inviteLinkPreviewRateLimiter` (30 req / 15 min per IP)                                                                                                                                                                                                                                                         |
+| `apps/api-gateway/src/routes/v1/index.ts`                                     | Registered `inviteLinkPreviewRateLimiter` on `/communities/invite-links` before the service proxy                                                                                                                                                                                                                     |
+| `apps/api-gateway/src/docs/openapi/paths/community.paths.ts`                  | Added `GET /communities/invite-links/{code}` path (200/401/403/404/410); updated `POST /{id}/invite-links` description to document `autoApprove` default for PRIVATE                                                                                                                                                  |
+| `apps/api-gateway/src/docs/openapi/components/schemas.ts`                     | Added `InviteLinkPreviewData` schema; added `appDeepLink` to `CommunityInviteLinkData`                                                                                                                                                                                                                                |
+| `apps/community-service/tests/invite-links/invite-links.test.ts`              | Added 12 new test cases (30 total)                                                                                                                                                                                                                                                                                    |
+
+#### New endpoint
+
+`GET /api/v1/communities/invite-links/:code` — **requires authentication**.
+
+Returns `InviteLinkPreviewData`:
+
+```
+communityId, communityName, description, avatarUrl, bannerUrl,
+memberCount, communityType, isJoined, invitationCode,
+inviteUrl, appDeepLink, expiresAt (epoch ms | null), creatorId
+```
+
+Validates: link exists, not revoked, not expired, not exhausted. Banned callers → 403.
+
+#### Join flow decisions
+
+| `autoApprove` value          | Community type | Result on redeem                             |
+| ---------------------------- | -------------- | -------------------------------------------- |
+| `true` (default for PRIVATE) | PRIVATE        | Caller becomes ACTIVE member immediately     |
+| `false` (explicit)           | PRIVATE        | Join request created — requires mod approval |
+| `false` (default for PUBLIC) | PUBLIC         | Join request created                         |
+| `true` (explicit)            | PUBLIC         | Caller becomes ACTIVE member immediately     |
+
+`autoApprove` defaults to `true` for PRIVATE communities (Discord/Telegram model — the link issuer is granting access). Set `autoApprove: false` explicitly to keep the approval gate.
+
+#### Frontend flow
+
+```
+https://aimess.com/invite/CODE  or  aimess://invite/CODE (mobile deep link)
+  ↓
+GET /api/v1/communities/invite-links/:code   (preview — auth required)
+  ↓
+Community Home Screen rendered (name, avatar, banner, member count)
+  ↓
+User clicks Join
+  ↓
+POST /api/v1/communities/invite-links/:code/redeem   (auth required)
+  ↓
+autoApprove:true → ACTIVE member  |  autoApprove:false → join request
+```
+
+#### Security decisions
+
+- **Code entropy**: `randomBytes(16)` → 128 bits (22 base64url chars). Previous 6-byte (48-bit) codes were susceptible to enumeration against the public endpoint.
+- **Rate limiting**: `inviteLinkPreviewRateLimiter` (30/15 min per IP) at the gateway, registered before the service proxy.
+- **communityId in response body**: Intentional — frontend needs it for navigation. Not exposed in URLs (invite code only).
+- **Banned users**: 403 with no community data in the error body.
+- **Suspended communities**: Previewable (read-only path). Redeem is blocked by `assertCommunityNotSuspended`.
+- **Private communities remain non-searchable**: Only discovery mechanism is an invite link.
+
+#### `appDeepLink` field
+
+All `CommunityInviteLinkData` responses now include `appDeepLink: "aimess://invite/${code}"` for mobile universal-link handling, in addition to the existing `url` field (web URL).
+
+#### Verification (2026-06-18)
+
+- `tsc --noEmit` on `community-service` — **0 errors**
+- `tsc --noEmit` on `api-gateway` — **0 errors**
+- `tests/invite-links/invite-links.test.ts` — **30/30 passing**

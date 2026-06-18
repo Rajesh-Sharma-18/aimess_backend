@@ -429,6 +429,27 @@ export const mutedMembersQuerySchema = z.object({
 });
 export type MutedMembersQuery = z.infer<typeof mutedMembersQuerySchema>;
 
+/**
+ * Banned-members list query: page/limit pagination, optional free-text search
+ * (matched against displayName / username / userId), and sort controls.
+ * `sortBy=bannedAt` + `sortOrder=desc` = "Newest first" (the default);
+ * `sortOrder=asc` = "Oldest first". displayName/username sort the roster
+ * alphabetically.
+ */
+export const bannedMembersQuerySchema = z.object({
+  page: pageSchema,
+  limit: limitSchema,
+  search: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100, "Search must be at most 100 characters")
+    .optional(),
+  sortBy: z.enum(["bannedAt", "displayName", "username"]).default("bannedAt"),
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+});
+export type BannedMembersQuery = z.infer<typeof bannedMembersQuerySchema>;
+
 /** Warn a member: a required note. */
 export const warnMemberSchema = z.object({
   note: z

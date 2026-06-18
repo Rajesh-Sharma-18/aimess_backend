@@ -308,6 +308,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Lấy danh sách thành viên bị tắt tiếng thành công",
     en: "Muted members fetched successfully",
   },
+  COMMUNITY_BANNED_MEMBERS_FETCHED: {
+    vi: "Lấy danh sách thành viên bị cấm thành công",
+    en: "Banned members fetched successfully",
+  },
   COMMUNITY_MEMBER_WARNED: {
     vi: "Đã cảnh cáo thành viên",
     en: "Member warned",
@@ -389,6 +393,10 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_INVITE_LINK_INACTIVE: {
     vi: "Liên kết mời này không còn hoạt động",
     en: "Invite link is no longer active",
+  },
+  COMMUNITY_INVITE_LINK_PREVIEW_FETCHED: {
+    vi: "Đã lấy thông tin cộng đồng qua liên kết mời",
+    en: "Community details fetched",
   },
   COMMUNITY_LIKED: {
     vi: "Đã thêm cộng đồng vào yêu thích",

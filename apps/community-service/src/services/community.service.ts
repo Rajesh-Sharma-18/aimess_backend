@@ -24,6 +24,7 @@ import { communityRepository } from "../repositories/community.repository.js";
 import { communityCache } from "../lib/community-cache.js";
 import {
   assertCommunityRole,
+  assertNotBanned,
   COMMUNITY_ROLE_RANK,
 } from "../lib/community-authz.js";
 import {
@@ -71,6 +72,7 @@ import type {
   CommunityJoinRequestData,
   CommunityJoinRequestWithUserData,
   CommunityListItem,
+  CommunityBannedMemberData,
   CommunityMemberData,
   CommunityMemberWarningData,
   CommunityMutedMemberData,
@@ -78,6 +80,7 @@ import type {
   CommunityNotificationPreferenceData,
   CommunityReportData,
   CommunityReportWithUsersData,
+  InviteLinkPreviewData,
   MyInviteData,
   MyJoinRequestData,
   MyReportData,
@@ -99,6 +102,7 @@ import {
   publishCommunityInviteAcceptedSafe,
   publishCommunityInviteSentSafe,
   publishCommunityJoinRequestApprovedSafe,
+  publishCommunityJoinRequestCancelledSafe,
   publishCommunityJoinRequestedSafe,
   publishCommunityJoinRequestRejectedSafe,
   publishCommunityMemberAddedSafe,
@@ -107,6 +111,7 @@ import {
   publishCommunityMemberKickedSafe,
   publishCommunityMemberLeftSafe,
   publishCommunityMemberMutedSafe,
+  publishCommunityMemberUnbannedSafe,
   publishCommunityMemberUnmutedSafe,
   publishCommunityMemberWarnedSafe,
   publishCommunityMemberRoleChangedSafe,
@@ -525,9 +530,25 @@ async function buildUserSnapshotView(
 }
 
 function generateInviteCode(): string {
-  // ~8 URL-safe chars; collision rate is negligible at expected volumes and the
-  // create flow retries on P2002 up to 3 times.
-  return randomBytes(6).toString("base64url");
+  // 16 bytes = 128 bits of entropy → ~22 URL-safe base64url chars.
+  // Sufficient against brute-force on the public preview endpoint.
+  // create flow retries on P2002 up to 3 times to handle the (negligible) collision risk.
+  return randomBytes(16).toString("base64url");
+}
+
+/** Validates that an invite link is currently usable (not revoked, expired, or exhausted). */
+function assertInviteLinkActive(link: {
+  revokedAt: Date | null;
+  expiresAt: Date | null;
+  maxUses: number | null;
+  usedCount: number;
+}): void {
+  if (link.revokedAt)
+    throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
+  if (link.expiresAt && link.expiresAt.getTime() <= Date.now())
+    throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
+  if (link.maxUses !== null && link.usedCount >= link.maxUses)
+    throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
 }
 
 function buildInviteUrl(code: string): string {
@@ -546,6 +567,7 @@ function toInviteLinkData(row: CommunityInviteLink): CommunityInviteLinkData {
     linkId: row.id,
     code: row.code,
     url: buildInviteUrl(row.code),
+    appDeepLink: `aimess://invite/${row.code}`,
     communityId: row.communityId,
     createdBy: row.createdBy,
     maxUses: row.maxUses,
@@ -773,8 +795,11 @@ export const communityService = {
     }
 
     const membership = await communityRepository.findMembership(id, callerId);
-    // Only an ACTIVE membership confers a role; BANNED/LEFT members are treated
-    // as non-members (myRole = null).
+    // A BANNED user is denied the community-details view entirely (403), even
+    // for PUBLIC communities — banned means no access, not "view as stranger".
+    assertNotBanned(membership);
+    // Only an ACTIVE membership confers a role; LEFT members are treated as
+    // non-members (myRole = null).
     const myRole =
       membership && membership.status === CommunityMemberStatus.ACTIVE
         ? membership.role
@@ -2367,6 +2392,15 @@ export const communityService = {
       targetUserId,
     });
 
+    // Cross-service event → notifications-service pushes/in-apps the unbanned
+    // user ("Ban lifted"). Mirrors the MEMBER_BANNED publish on ban.
+    publishCommunityMemberUnbannedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+    });
+
     // Unban: BANNED→LEFT. Count is unchanged (BANNED was already excluded from
     // ACTIVE). Emit only the membership-state event, not stats.
     try {
@@ -2568,6 +2602,94 @@ export const communityService = {
           reason: row.reason,
           mutedAt: row.createdAt.toISOString(),
           mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+        });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Banned-members list (dedicated moderation view — MODERATOR+)
+  // ---------------------------------------------------------------------------
+  /**
+   * Currently-banned members of a community, with search + sort. Visible to
+   * MODERATOR+ (admins have full access; moderators may view per RBAC). Members
+   * have no access. Only status === BANNED rows are returned — lifted bans are
+   * available through the moderation audit trail, not here.
+   */
+  async listBannedMembers(
+    communityId: string,
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      search?: string;
+      sortBy: "bannedAt" | "displayName" | "username";
+      sortOrder: "asc" | "desc";
+    }
+  ): Promise<PaginatedResponse<CommunityBannedMemberData>> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const { rows, total } = await communityRepository.listBannedMembers({
+      communityId,
+      search: params.search,
+      sortBy: params.sortBy,
+      sortOrder: params.sortOrder,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: CommunityBannedMemberData[] = [];
+    if (rows.length > 0) {
+      // Resolve banner display names from their own (still-present) member
+      // snapshots in one batched read — no N+1 per banned row.
+      const bannerIds = [
+        ...new Set(
+          rows.map((r) => r.bannedBy).filter((id): id is string => Boolean(id))
+        ),
+      ];
+      const bannerMap = new Map<string, string>();
+      if (bannerIds.length > 0) {
+        const banners = await communityRepository.findMembersByUserIds(
+          communityId,
+          bannerIds
+        );
+        for (const b of banners) {
+          bannerMap.set(b.userId, b.snapshotDisplayName);
+        }
+      }
+
+      for (const row of rows) {
+        const avatarView = await memberAvatarService.resolveViewUrl(
+          row.snapshotAvatarKey
+        );
+        const avatar = await buildAvatarMedia(row.snapshotAvatarKey);
+        items.push({
+          userId: row.userId,
+          username: row.snapshotUsername,
+          displayName: row.snapshotDisplayName,
+          avatarUrl: avatarView?.url ?? null,
+          avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+          avatar,
+          bannedAt: row.bannedAt ? row.bannedAt.getTime() : null,
+          bannedBy: row.bannedBy
+            ? {
+                userId: row.bannedBy,
+                displayName: bannerMap.get(row.bannedBy) ?? null,
+              }
+            : null,
+          banReason: row.banReason,
+          banType: "PERMANENT",
         });
       }
     }
@@ -3770,6 +3892,20 @@ export const communityService = {
       decidedAt: new Date(),
     });
 
+    const communityAvatarMediaCancel = await buildCommunityImageMedia(
+      community.avatarUrl
+    );
+    publishCommunityJoinRequestCancelledSafe({
+      communityId: community.id,
+      communityName: community.name,
+      communityHandle: community.handle,
+      communityAvatarUrl: communityAvatarMediaCancel.downloadUrl,
+      requestId,
+      userId: callerId,
+      cancelledAt: new Date().toISOString(),
+      eventAt: new Date().toISOString(),
+    });
+
     return toJoinRequestData(updated);
   },
 
@@ -3803,6 +3939,20 @@ export const communityService = {
       status: CommunityJoinReqStatus.CANCELLED,
       decidedBy: callerId,
       decidedAt: new Date(),
+    });
+
+    const communityAvatarMediaCancelMine = await buildCommunityImageMedia(
+      community.avatarUrl
+    );
+    publishCommunityJoinRequestCancelledSafe({
+      communityId: community.id,
+      communityName: community.name,
+      communityHandle: community.handle,
+      communityAvatarUrl: communityAvatarMediaCancelMine.downloadUrl,
+      requestId: request.id,
+      userId: callerId,
+      cancelledAt: new Date().toISOString(),
+      eventAt: new Date().toISOString(),
     });
 
     return toJoinRequestData(updated);
@@ -4880,16 +5030,16 @@ export const communityService = {
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
     assertCommunityNotSuspended(community);
 
-    // Invite links are only supported for PUBLIC communities per policy.
-    if (community.type !== CommunityType.PUBLIC) {
-      throw new ForbiddenError("COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC");
-    }
-
     const expiresAt = input.expiresInMinutes
       ? new Date(Date.now() + input.expiresInMinutes * 60_000)
       : null;
     const maxUses = input.maxUses ?? null;
-    const autoApprove = input.autoApprove ?? false;
+    const autoApprove =
+      input.autoApprove !== undefined
+        ? input.autoApprove
+        : community.type === CommunityType.PRIVATE
+          ? true
+          : false;
 
     // Retry up to 3 times on code collision (P2002 unique violation on `code`).
     let row: Awaited<
@@ -5120,24 +5270,11 @@ export const communityService = {
   }> {
     const link = await communityRepository.findInviteLinkByCode(code);
     if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
-    if (link.revokedAt) {
-      throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
-    }
-    if (link.expiresAt && link.expiresAt.getTime() <= Date.now()) {
-      throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
-    }
-    if (link.maxUses !== null && link.usedCount >= link.maxUses) {
-      throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
-    }
+    assertInviteLinkActive(link);
 
     const community = await communityRepository.findById(link.communityId);
     if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
     assertCommunityNotSuspended(community);
-
-    // Invite links allowed only for PUBLIC communities.
-    if (community.type !== CommunityType.PUBLIC) {
-      throw new ForbiddenError("COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC");
-    }
 
     const existing = await communityRepository.findMemberByUserId(
       community.id,
@@ -5246,6 +5383,58 @@ export const communityService = {
     return {
       link: toInviteLinkData(updatedLink!),
       request: joinResult,
+    };
+  },
+
+  /**
+   * Public (optional-auth) lookup: returns a community preview for the invite
+   * link landing screen. Validates link validity, resolves avatar/banner URLs,
+   * and (when a caller is identified) reports whether they are already a member
+   * and rejects banned callers with 403.
+   */
+  async lookupInviteLink(
+    code: string,
+    callerId: string
+  ): Promise<InviteLinkPreviewData> {
+    const link = await communityRepository.findInviteLinkByCode(code);
+    if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+    assertInviteLinkActive(link);
+
+    const community = await communityRepository.findById(link.communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    // Preview is intentionally read-only: assertCommunityNotSuspended is NOT called here.
+    // Suspended communities remain previewable; they cannot be joined (redeem guards it).
+
+    const membership = await communityRepository.findMemberByUserId(
+      community.id,
+      callerId
+    );
+    if (membership?.status === CommunityMemberStatus.BANNED) {
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+    const isJoined = membership?.status === CommunityMemberStatus.ACTIVE;
+
+    const avatarView = await communityImageService.resolveViewUrlForClient(
+      community.avatarUrl
+    );
+    const coverView = await communityImageService.resolveViewUrlForClient(
+      community.coverUrl
+    );
+
+    return {
+      communityId: community.id,
+      communityName: community.name,
+      description: community.description ?? null,
+      avatarUrl: avatarView?.url ?? null,
+      bannerUrl: coverView?.url ?? null,
+      memberCount: community.memberCount,
+      communityType: community.type,
+      isJoined,
+      invitationCode: code,
+      inviteUrl: buildInviteUrl(code),
+      appDeepLink: `aimess://invite/${code}`,
+      expiresAt: link.expiresAt ? link.expiresAt.getTime() : null,
+      creatorId: link.createdBy,
     };
   },
 };

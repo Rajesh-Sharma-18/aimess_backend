@@ -9,11 +9,11 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import {
-  publishMessageSentSafe,
+  convertMessageToPreview,
   buildPushPreview,
-  buildMessagePreview,
-} from "../events/publish-message-sent.js";
+} from "./message-preview.service.js";
 import {
   buildChatMessageEvent,
   buildCanonicalQuote,
@@ -274,7 +274,7 @@ export class ChatMessageOrchestrator {
         lastMessageAt: serverTs,
         preview: {
           contentType: normalizeMessageType(msg.messageType),
-          text: buildMessagePreview(msg.messageType, msg.content),
+          text: convertMessageToPreview(msg.messageType, msg.content),
         },
       };
       if (conversationType === "GROUP") {
@@ -415,7 +415,6 @@ export class ChatMessageOrchestrator {
       // Denormalize activity to community-service (orders GET /communities/mine).
       // Keyed by communityId (Community.id), NOT roomId (GeneralRoom.id).
       if (params.communityId) {
-        const messageText = saved.message ?? "";
         publishCommunityActivitySafe({
           communityId: params.communityId,
           lastMessageAt:
@@ -425,8 +424,15 @@ export class ChatMessageOrchestrator {
           lastMessageId: saved.id,
           senderUserId: params.senderId,
           senderUsername: senderName,
-          messagePreview:
-            messageText.length > 80 ? messageText.slice(0, 80) : messageText,
+          // Centralized preview — identical to the sibling community:updated
+          // socket preview below, so non-text messages (media/sticker/voice/
+          // document/location/contact) never persist a blank preview.
+          messagePreview: convertMessageToPreview(saved.messageType, {
+            text: saved.message ?? "",
+            files,
+            ...(location ? { location } : {}),
+            ...(contact ? { contact } : {}),
+          }),
         });
       }
 
@@ -443,7 +449,7 @@ export class ChatMessageOrchestrator {
         lastMessageAt: sentAt,
         preview: {
           contentType: normalizeMessageType(saved.messageType),
-          text: buildMessagePreview(saved.messageType, {
+          text: convertMessageToPreview(saved.messageType, {
             text: saved.message ?? "",
             files,
             ...(location ? { location } : {}),

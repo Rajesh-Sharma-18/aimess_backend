@@ -165,6 +165,22 @@ export const SOCKET_MESSAGES = {
     vi: "Đã bỏ ghim tin nhắn",
     en: "Message unpinned successfully",
   },
+  SOCKET_COMMUNITY_MESSAGE_READ: {
+    vi: "Đã đánh dấu tin nhắn cộng đồng là đã đọc",
+    en: "Messages marked as read",
+  },
+  SOCKET_COMMUNITY_REACTIONS_FETCHED: {
+    vi: "Lấy danh sách cảm xúc cộng đồng thành công",
+    en: "Reactions fetched successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_FORWARDED: {
+    vi: "Đã chuyển tiếp tin nhắn cộng đồng",
+    en: "Message forwarded successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_DELIVERED: {
+    vi: "Đã đánh dấu tin nhắn cộng đồng là đã gửi",
+    en: "Message delivery receipt recorded",
+  },
 
   // ── /community — moderation ─────────────────────────────────────────────
   SOCKET_COMMUNITY_MEMBER_KICKED: {

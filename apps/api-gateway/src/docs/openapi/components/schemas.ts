@@ -5315,6 +5315,65 @@ export const openApiSchemas = {
     },
     required: ["pagination", "data"],
   },
+  CommunityBannedMemberData: {
+    type: "object",
+    description:
+      "A single currently-banned member row (status === BANNED). Lifted bans never appear here — see the moderation audit log for history.",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
+      bannedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch milliseconds when the ban was applied.",
+      },
+      bannedBy: {
+        type: "object",
+        nullable: true,
+        description:
+          "The moderator/admin who applied the ban; displayName is null if they have left the community.",
+        properties: {
+          userId: { type: "string", format: "uuid" },
+          displayName: { type: "string", nullable: true },
+        },
+        required: ["userId", "displayName"],
+      },
+      banReason: { type: "string", nullable: true },
+      banType: {
+        type: "string",
+        enum: ["PERMANENT"],
+        description:
+          "Ban duration class. All community bans are indefinite today.",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "bannedAt",
+      "bannedBy",
+      "banReason",
+      "banType",
+    ],
+  },
+  CommunityBannedMembersResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityBannedMemberData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
   SetMemberMuteRequest: {
     type: "object",
     description:
@@ -5430,6 +5489,10 @@ export const openApiSchemas = {
         description:
           "Built from INVITE_LINK_BASE_URL when set, else just the code.",
       },
+      appDeepLink: {
+        type: "string",
+        description: "Mobile deep-link: aimess://invite/<code>",
+      },
       communityId: { type: "string" },
       createdBy: { type: "string", format: "uuid" },
       maxUses: { type: "integer", nullable: true },
@@ -5451,6 +5514,7 @@ export const openApiSchemas = {
       "linkId",
       "code",
       "url",
+      "appDeepLink",
       "communityId",
       "createdBy",
       "maxUses",
@@ -5460,6 +5524,39 @@ export const openApiSchemas = {
       "revokedAt",
       "createdAt",
       "isActive",
+    ],
+  },
+  InviteLinkPreviewData: {
+    type: "object",
+    properties: {
+      communityId: { type: "string" },
+      communityName: { type: "string" },
+      description: { type: "string", nullable: true },
+      avatarUrl: { type: "string", nullable: true },
+      bannerUrl: { type: "string", nullable: true },
+      memberCount: { type: "integer" },
+      communityType: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      isJoined: { type: "boolean" },
+      invitationCode: { type: "string" },
+      inviteUrl: { type: "string" },
+      appDeepLink: { type: "string" },
+      expiresAt: { type: "integer", nullable: true },
+      creatorId: { type: "string" },
+    },
+    required: [
+      "communityId",
+      "communityName",
+      "description",
+      "avatarUrl",
+      "bannerUrl",
+      "memberCount",
+      "communityType",
+      "isJoined",
+      "invitationCode",
+      "inviteUrl",
+      "appDeepLink",
+      "expiresAt",
+      "creatorId",
     ],
   },
   CreateInviteLinkRequest: {
