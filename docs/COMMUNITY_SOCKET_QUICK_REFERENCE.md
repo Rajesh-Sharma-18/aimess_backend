@@ -3,8 +3,8 @@
 ## Namespaces & Connections
 
 ```
-/chat       → Community list bumps, presence, 1-1 & group messages
-/community  → Community messages, typing, reactions
+/chat       → Presence, 1-1 & group messages (conv:updated list bumps)
+/community  → Community messages, typing, reactions, community list bumps
 /notify     → Notifications, unread badge
 ```
 
@@ -62,14 +62,14 @@ All members in community receive it
 ### 2️⃣ UPDATE COMMUNITY LIST ORDER (BUMP TO TOP)
 
 **Socket Event:** `community:updated` (Server → Client)  
-**Namespace:** `/chat` (NOT `/community`)  
+**Namespace:** `/community` (NOT `/chat`)  
 **Room:** `user:<userId>`
 
 ```typescript
-// Listen on /chat namespace!
-const chatSocket = io(`${API_BASE}/chat`, { auth: { token } });
+// Listen on /community namespace!
+const communitySocket = io(`${API_BASE}/community`, { auth: { token } });
 
-chatSocket.on("community:updated", (update) => {
+communitySocket.on("community:updated", (update) => {
   console.log(update);
   // {
   //   communityId: "comm_abc",
@@ -198,7 +198,7 @@ communitySocket.on("community:message:new", (msg) => {
 });
 
 // 4. LISTEN FOR LIST BUMPS (Requirement #2)
-chatSocket.on("community:updated", (update) => {
+communitySocket.on("community:updated", (update) => {
   const idx = communities.findIndex((c) => c.id === update.communityId);
   if (idx !== -1) {
     const [comm] = communities.splice(idx, 1);
@@ -261,7 +261,7 @@ function onMessageVisible(messageId, communityId) {
 | `community:message:send`    | Client → Server | —                | `/community` | Send a message      |
 | `community:message:new`     | Server → Client | `community:<id>` | `/community` | New message arrives |
 | `community:message:read`    | Client → Server | —                | `/community` | Mark message read   |
-| `community:updated`         | Server → Client | `user:<id>`      | `/chat`      | Bump list to top    |
+| `community:updated`         | Server → Client | `user:<id>`      | `/community` | Bump list to top    |
 | `notification:count_update` | Server → Client | `user:<id>`      | `/notify`    | Badge updated       |
 | `notification:new`          | Server → Client | `user:<id>`      | `/notify`    | New notification    |
 | `typing:start` / `:stop`    | Bidirectional   | `community:<id>` | `/community` | Typing indicator    |
@@ -344,7 +344,7 @@ communitySocket.emit("community:message:send", payload, (ack) => {
 - [ ] Setup 3 socket namespaces (/chat, /community, /notify)
 - [ ] Join community on enter (emit `community:join`)
 - [ ] Listen for `community:message:new` → append + increment badge
-- [ ] Listen for `community:updated` (on /chat) → splice to top
+- [ ] Listen for `community:updated` (on /community) → splice to top
 - [ ] Listen for `notification:count_update` → update badge
 - [ ] Implement Intersection Observer for message visibility
 - [ ] Emit `community:message:read` when message visible

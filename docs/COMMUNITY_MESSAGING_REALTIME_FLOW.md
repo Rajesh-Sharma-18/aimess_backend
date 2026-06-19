@@ -77,15 +77,15 @@
 | `community:message:edited`   | `community:<id>` | `{ messageId, message, editedAt }`                                                                           | Message edited                              |
 | `community:message:deleted`  | `community:<id>` | `{ messageId, deleteType:"forEveryone" }`                                                                    | Message deleted                             |
 
-### 1.3 Special: Community List Bump Event (on `/chat` namespace)
+### 1.3 Special: Community List Bump Event (on `/community` namespace)
 
-**Delivered on `/chat`** (not `/community`), to all community members:
+**Delivered on `/community`**, to all community members:
 
 | Event               | Room            | Payload                                                                                                                    | Trigger  |
 | ------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
 | `community:updated` | `user:<userId>` | `{ communityId, roomId, lastMessageId, lastMessage: { contentType, text }, lastMessageAt (epoch ms), senderId, unread:true | false }` | Every new community message → splices community to top of list, updates preview + unread badge |
 
-**Client rule:** Listen on `/chat` namespace for `community:updated` to reorder the community list in real-time without a full page refresh.
+**Client rule:** Listen on `/community` namespace for `community:updated` to reorder the community list in real-time without a full page refresh.
 
 ---
 
@@ -145,7 +145,7 @@ USER (Frontend)
     │     → payload: full CommunityMessageWire        │
     │                                                 │
     │ (b) community:updated                           │
-    │     → room: user:<userId>  (on /chat namespace) │
+    │     → room: user:<userId>  (on /community namespace) │
     │     → payload: { communityId, lastMessage{…},   │
     │                  unread:true, lastMessageAt }   │
     └─────────────────────────────────────────────────┘
@@ -194,7 +194,7 @@ USER (Frontend)
           │    → Auto-mark as read?      │
           │                              │
           │ 2. community:updated         │
-          │    (on /chat namespace)      │
+          │    (on /community namespace) │
           │    → Bump in community list  │
           │    → Update preview          │
           └──────────────────────────────┘
@@ -206,7 +206,7 @@ USER (Frontend)
 
 ### 3.1 Event: `community:updated`
 
-**Delivered on:** `/chat` namespace  
+**Delivered on:** `/community` namespace  
 **Room:** `user:<userId>`  
 **Trigger:** Every new community message  
 **Payload:**
@@ -229,14 +229,14 @@ USER (Frontend)
 ### 3.2 Frontend Implementation
 
 ```typescript
-// SETUP: Connect to /chat namespace (where list updates arrive)
-const chatSocket = io(`${API_BASE}/chat`, {
+// SETUP: Connect to /community namespace (where list updates arrive)
+const communitySocket = io(`${API_BASE}/community`, {
   auth: { token: accessToken },
   transports: ["websocket"],
 });
 
 // Listen for community list updates
-chatSocket.on("community:updated", (payload) => {
+communitySocket.on("community:updated", (payload) => {
   const { communityId, lastMessage, lastMessageAt, unread } = payload;
 
   // 1. Find community in local state by communityId
@@ -538,8 +538,7 @@ T=0:06
 
 ### Setup Phase
 
-- [ ] Connect to `/chat` namespace (for `community:updated`)
-- [ ] Connect to `/community` namespace (for `community:message:new`)
+- [ ] Connect to `/community` namespace (for `community:message:new` and `community:updated`)
 - [ ] Connect to `/notify` namespace (for `notification:new` / `notification:count_update`)
 - [ ] Implement reconnection with exponential backoff
 
@@ -553,7 +552,7 @@ T=0:06
 
 ### List Update
 
-- [ ] Listen on `/chat` namespace for `community:updated`
+- [ ] Listen on `/community` namespace for `community:updated`
 - [ ] Splice community from current position to index 0
 - [ ] Update `lastMessage.text` preview
 - [ ] Update `lastMessageAt` timestamp
@@ -644,7 +643,7 @@ communitySocket.on("community:message:new", (msg) => {
 });
 
 // List bumps to top
-chatSocket.on("community:updated", (update) => {
+communitySocket.on("community:updated", (update) => {
   console.log("Community bumped:", update.communityId);
   // Reorder your community list
 });
@@ -788,7 +787,7 @@ export interface NotificationCountUpdate {
 | Issue                          | Cause                                                  | Fix                                                           |
 | ------------------------------ | ------------------------------------------------------ | ------------------------------------------------------------- |
 | Messages not appearing in chat | Socket not joined to `community:<id>` room             | Call `community:join` before sending                          |
-| List not bumping to top        | Listening on `/community` namespace instead of `/chat` | Listen on `/chat` for `community:updated`                     |
+| List not bumping to top        | Listening on `/chat` namespace instead of `/community` | Listen on `/community` for `community:updated`                |
 | Badge not updating             | Not listening to `/notify` namespace                   | Add `notifySocket.on("notification:count_update")`            |
 | Notifications stuck as unread  | Not emitting `community:message:read`                  | Implement Intersection Observer + emit on scroll              |
 | Duplicate messages             | Not deduping on `clientMessageId`                      | Store sent `clientMessageId`s in local state, skip duplicates |
@@ -1760,7 +1759,7 @@ if (response.ok) {
 
 ✅ **Socket Events:** `/chat` + `/community` + `/notify` namespaces  
 ✅ **Message Delivery:** `community:message:new` → appends to chat  
-✅ **List Reorder:** `community:updated` (on `/chat`) → splice to top, no reload  
+✅ **List Reorder:** `community:updated` (on `/community`) → splice to top, no reload  
 ✅ **Notifications:** Auto-cleared when user reads message via `community:message:read`  
 ✅ **Badge Updates:** `notification:count_update` syncs across all devices  
 ✅ **REST APIs:** 17 endpoints (send, fetch, edit, delete, react, pin, search)  

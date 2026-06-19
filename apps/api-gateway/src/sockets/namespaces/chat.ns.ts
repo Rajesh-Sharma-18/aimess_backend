@@ -181,6 +181,14 @@ export function registerChatNamespace(
       try {
         const parsed = JSON.parse(message) as RedisSocketEvent;
 
+        // Community list-bump / read-sync events (community:updated,
+        // community:read_sync, …) ride the shared user:<id> channel but belong to
+        // the /community namespace only. Skip them here so they are NOT duplicated
+        // onto /chat — the mirror filter in community.ns.ts forwards exactly these
+        // (event name starts with "community:") from user:*. /chat keeps delivering
+        // conv:updated for the private/group inbox bump.
+        if (parsed.event.startsWith("community:")) return;
+
         // V2 §2.3 fix: inject conversationId into message:delete so clients can
         // route the tombstone even if the conversation isn't currently loaded.
         // The channel is always "conv:<conversationId>", so we parse it here.

@@ -3,7 +3,7 @@
 Module prefix: **`TC-COMM-NNN`** (IDs 001–139, unique & sequential). Covers the COMMUNITIES module across **two services**:
 
 - **community-service** (MongoDB / Prisma) — owns communities, members/roles, join-requests, invites, invite-links, reports, mute settings, notification preferences, audit logs, categories, uploads. Base path `/api/v1/communities`. All endpoints require an access token.
-- **chat-service** — owns the single community **chat room** (`GeneralRoom`, id === community.id) and its messages. Real-time via the gateway **`/community`** namespace; list-bump via **`/chat`** (`community:updated`).
+- **chat-service** — owns the single community **chat room** (`GeneralRoom`, id === community.id) and its messages. Real-time via the gateway **`/community`** namespace; list-bump via **`/community`** (`community:updated`).
 
 ## Files
 
@@ -34,7 +34,7 @@ Module prefix: **`TC-COMM-NNN`** (IDs 001–139, unique & sequential). Covers th
 - `community:message:edited` (published by REST edit handler to `community:<id>`)
 - `community:member:joined` (server→client)
 - `message:delete` (community message deletes go to `conv:<roomId>`, NOT the community channel)
-- `community:updated` (list-bump, delivered on **`/chat`**, not `/community`)
+- `community:updated` (list-bump, delivered on **`/community`**, not `/chat`)
 
 RabbitMQ domain events (community-service → notifications/chat consumers, not socket): `community.created.for-chat`, `community.deleted(.for-chat)`, `community.member.added/kicked/banned/muted/unmuted/warned`, `community.member.role.changed`, `community.admin.transferred`, `community.join.requested`, `community.invite.sent/accepted`, `community.report.created/actioned`.
 

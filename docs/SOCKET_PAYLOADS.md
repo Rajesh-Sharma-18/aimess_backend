@@ -616,10 +616,10 @@ Mirrors `/chat`, broadcast to the `community:<communityId>` room. Server holds a
 }
 ```
 
-### `community:updated` (broadcast — delivered on the `/chat` socket!)
+### `community:updated` (broadcast — delivered on the `/community` socket!)
 
 ```jsonc
-// ← listen — room user:<id>, on the /chat namespace
+// ← listen — room user:<id>, on the /community namespace
 {
   "communityId": "comm_12345",
   "roomId": "comm_room_678",
@@ -863,7 +863,7 @@ Mirrors `/chat`, broadcast to the `community:<communityId>` room. Server holds a
 
 > Community message **deletes** are also emitted as `message:delete` on the
 > `conv:<roomId>` channel (see §8). Community **list bumps** arrive as
-> `community:updated` on the **`/chat`** socket (see §9).
+> `community:updated` on the **`/community`** socket (see §9).
 
 ---
 

@@ -24,24 +24,25 @@ Companion docs:
 
 ## 0. Snapshot — features at a glance
 
-| Feature                  | Namespace    | You emit                                         | You listen for                                             |
-| ------------------------ | ------------ | ------------------------------------------------ | ---------------------------------------------------------- |
-| Join / leave a chat      | `/chat`      | `conv:join`, `conv:leave`                        | —                                                          |
-| Send / receive messages  | `/chat`      | `message:send`                                   | `message:new`                                              |
-| History pagination       | `/chat`      | `messages:fetch`                                 | (ack data)                                                 |
-| Reconnect gap-fill       | `/chat`      | `chat:catchup`                                   | `chat:catchup:result`                                      |
-| Read receipts            | `/chat`      | `message:read`                                   | `message:read`, `read_sync`                                |
-| Delivery receipts (1-1)  | `/chat`      | `message:delivered`                              | `message:delivered`                                        |
-| Typing indicator         | `/chat`      | `typing:start`, `typing:stop`                    | `typing:start`, `typing:stop`                              |
-| Presence / online status | `/chat`      | `presence:subscribe/unsubscribe/heartbeat/list`  | `presence:status`                                          |
-| Reactions                | `/chat`      | `message:react`, `message:reactions:get`         | `message:reaction`                                         |
-| Edit / delete / forward  | `/chat`      | `message:edit`, `message:forward`                | `message:edited`, `message:delete`                         |
-| Pinned messages          | `/chat`      | (REST)                                           | `pin:updated`                                              |
-| Chat list bump-to-top    | `/chat`      | —                                                | `conv:updated`, `community:updated`                        |
-| 1-1 calls (WebRTC)       | `/chat`      | `call:initiate/answer/decline/end/ice`           | `call:incoming/answered/declined/ended/ice`                |
-| Community chat           | `/community` | `community:message:send`, `community:join`, …    | `community:message:new`, `community:message:reaction`, …   |
-| Community typing         | `/community` | `typing:start`, `typing:stop`                    | `typing:start`, `typing:stop`                              |
-| Notifications & badge    | `/notify`    | `notifications:fetch`, `notifications:mark_read` | `notification:new`, `notification:count`, `…:count_update` |
+| Feature                    | Namespace    | You emit                                         | You listen for                                             |
+| -------------------------- | ------------ | ------------------------------------------------ | ---------------------------------------------------------- |
+| Join / leave a chat        | `/chat`      | `conv:join`, `conv:leave`                        | —                                                          |
+| Send / receive messages    | `/chat`      | `message:send`                                   | `message:new`                                              |
+| History pagination         | `/chat`      | `messages:fetch`                                 | (ack data)                                                 |
+| Reconnect gap-fill         | `/chat`      | `chat:catchup`                                   | `chat:catchup:result`                                      |
+| Read receipts              | `/chat`      | `message:read`                                   | `message:read`, `read_sync`                                |
+| Delivery receipts (1-1)    | `/chat`      | `message:delivered`                              | `message:delivered`                                        |
+| Typing indicator           | `/chat`      | `typing:start`, `typing:stop`                    | `typing:start`, `typing:stop`                              |
+| Presence / online status   | `/chat`      | `presence:subscribe/unsubscribe/heartbeat/list`  | `presence:status`                                          |
+| Reactions                  | `/chat`      | `message:react`, `message:reactions:get`         | `message:reaction`                                         |
+| Edit / delete / forward    | `/chat`      | `message:edit`, `message:forward`                | `message:edited`, `message:delete`                         |
+| Pinned messages            | `/chat`      | (REST)                                           | `pin:updated`                                              |
+| Chat list bump-to-top      | `/chat`      | —                                                | `conv:updated`                                             |
+| Community list bump-to-top | `/community` | —                                                | `community:updated`                                        |
+| 1-1 calls (WebRTC)         | `/chat`      | `call:initiate/answer/decline/end/ice`           | `call:incoming/answered/declined/ended/ice`                |
+| Community chat             | `/community` | `community:message:send`, `community:join`, …    | `community:message:new`, `community:message:reaction`, …   |
+| Community typing           | `/community` | `typing:start`, `typing:stop`                    | `typing:start`, `typing:stop`                              |
+| Notifications & badge      | `/notify`    | `notifications:fetch`, `notifications:mark_read` | `notification:new`, `notification:count`, `…:count_update` |
 
 ---
 
@@ -479,16 +480,15 @@ chat.on("conv:updated", (p) =>
 );
 ```
 
-### 3.20 `community:updated` — community list bump (on `/chat`!)
+### 3.20 `community:updated` — community list bump (on `/community`!)
 
 - **Feature:** Chat list / inbox · **Direction:** ← listen · **Room:** `user:<id>`
 - **Description:** Same as `conv:updated` but for communities. **Delivered on the
-  `/chat` namespace** (not `/community`) because the unified inbox uses the chat
-  socket — listen there.
+  `/community` namespace** (not `/chat`) — listen on the community socket.
 - **Payload:** `{ communityId, roomId, lastMessageId, lastMessage:{ contentType, text }, lastMessageAt, senderId, unread }`
 
 ```ts
-chat.on("community:updated", (p) =>
+community.on("community:updated", (p) =>
   spliceInboxToTop({
     key: p.communityId,
     preview: p.lastMessage.text,
@@ -572,7 +572,7 @@ chat.on("call:ended", (p) => teardownCall(p.callId, p.durationSec));
 
 Many-member chat. Uses **ISO-8601 cursors** and `id`/`ts` catch-up (not
 `sequenceNumber`). Deletes broadcast on `conv:<roomId>`; list bumps arrive on
-`/chat` as `community:updated`.
+`/community` as `community:updated`.
 
 ### 5.1 `community:join` / `community:leave`
 
