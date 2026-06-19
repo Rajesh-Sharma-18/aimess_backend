@@ -45,6 +45,8 @@ export class GeneralRoomMessageRepository {
     triggeredByName: string;
     sequenceNumber: number;
     fallbackText: string;
+    /** When set, the message is PERSONAL: only this user sees it in history. */
+    visibleToUserId?: string | null;
   }): Promise<GeneralRoomMessage> {
     return this.prisma.generalRoomMessage.create({
       data: {
@@ -56,6 +58,7 @@ export class GeneralRoomMessageRepository {
         messageType: "SYSTEM",
         systemMessageType: params.systemMessageType,
         systemMetadata: params.metadata as Prisma.InputJsonValue,
+        visibleToUserId: params.visibleToUserId ?? null,
         reactions: {},
         attachments: [],
         deletedBy: [],
@@ -93,12 +96,15 @@ export class GeneralRoomMessageRepository {
     userId: string
   ): Promise<GeneralRoomMessage[]> {
     // Prisma MongoDB doesn't support $nin on JSON arrays directly.
-    // Fetch and filter in memory for deletedBy.
+    // Fetch and filter in memory for deletedBy + personal visibility.
     const messages = await this.prisma.generalRoomMessage.findMany({
       where: {
         roomId,
         createdAt: { lt: new Date(beforeTimestamp) },
         deletedForAll: false,
+        // PERSONAL message visibility: a message is visible if it has no target
+        // (visibleToUserId == null) OR its target is the requesting user.
+        OR: [{ visibleToUserId: null }, { visibleToUserId: userId }],
       },
       orderBy: { createdAt: "desc" },
       take: limit + 10,
@@ -135,6 +141,8 @@ export class GeneralRoomMessageRepository {
           params.direction === "before"
             ? { lte: params.ts }
             : { gte: params.ts },
+        // PERSONAL message visibility (see findByRoomIdWithTime).
+        OR: [{ visibleToUserId: null }, { visibleToUserId: params.userId }],
       },
       orderBy: {
         createdAt: params.direction === "before" ? "desc" : "asc",
@@ -167,6 +175,7 @@ export class GeneralRoomMessageRepository {
           roomId: params.roomId,
           deletedForAll: false,
           createdAt: { lte: params.anchorDate },
+          OR: [{ visibleToUserId: null }, { visibleToUserId: params.userId }],
         },
         orderBy: { createdAt: "desc" },
         take: half + 1,
@@ -177,6 +186,7 @@ export class GeneralRoomMessageRepository {
           roomId: params.roomId,
           deletedForAll: false,
           createdAt: { gt: params.anchorDate },
+          OR: [{ visibleToUserId: null }, { visibleToUserId: params.userId }],
         },
         orderBy: { createdAt: "asc" },
         take: half,
@@ -209,6 +219,9 @@ export class GeneralRoomMessageRepository {
       deletedForAll: false,
       createdAt: { $lt: { $date: new Date(params.beforeMs).toISOString() } },
       deletedBy: { $ne: params.userId },
+      // PERSONAL message visibility: keep messages with no target OR targeted at
+      // this user. Stored as null when absent, so $in must include null.
+      visibleToUserId: { $in: [null, params.userId] },
     };
   }
 
@@ -327,6 +340,8 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             deletedBy: { $ne: params.userId },
             sentBy: { $ne: params.userId },
+            // PERSONAL messages targeted at another user never count as unread here.
+            visibleToUserId: { $in: [null, params.userId] },
           },
         },
         {
@@ -368,6 +383,9 @@ export class GeneralRoomMessageRepository {
         roomId,
         deletedForAll: false,
         message: { contains: query, mode: "insensitive" },
+        // PERSONAL message visibility — a user's own join message can match, but
+        // never another user's personal message.
+        OR: [{ visibleToUserId: null }, { visibleToUserId: userId }],
       },
       orderBy: { createdAt: "desc" },
       take: limit + 10,
@@ -495,6 +513,9 @@ export class GeneralRoomMessageRepository {
         ...(params.cursor
           ? { createdAt: { lt: new Date(params.cursor) } }
           : {}),
+        // PERSONAL message visibility (system join messages are non-media, so this
+        // is defensive — keeps the rule uniform across every read path).
+        OR: [{ visibleToUserId: null }, { visibleToUserId: params.userId }],
       },
       orderBy: { createdAt: "desc" },
       take: params.limit + 10,
@@ -529,6 +550,8 @@ export class GeneralRoomMessageRepository {
     const matchStage: Record<string, unknown> = {
       roomId: { $oid: params.roomId },
       deletedBy: { $ne: params.userId },
+      // PERSONAL message visibility — never surface another user's personal message.
+      visibleToUserId: { $in: [null, params.userId] },
     };
     if (params.sinceId) {
       matchStage["_id"] = { $gt: { $oid: params.sinceId } };
@@ -588,6 +611,8 @@ export class GeneralRoomMessageRepository {
         updatedAt: { gte: params.fromTs },
         // deletedForAll intentionally NOT filtered — tombstones must be
         // included so the client can reconcile deletes missed while offline.
+        // PERSONAL message visibility — never surface another user's personal message.
+        OR: [{ visibleToUserId: null }, { visibleToUserId: params.userId }],
       },
       orderBy: { updatedAt: "asc" },
       take: params.limit + 1,

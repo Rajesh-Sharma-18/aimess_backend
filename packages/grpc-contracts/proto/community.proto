@@ -302,13 +302,16 @@ message GetCommunityMessagesResponse {
   bool                         has_more   = 3;
 }
 message CommunityMessageDto {
-  string message_id   = 1;
-  string room_id      = 2;
-  string sender_id    = 3;
-  string message      = 4;
-  string content_type = 5;
-  string media_key    = 6;
-  int64  sent_at      = 7;
+  string message_id          = 1;
+  string room_id             = 2;
+  string sender_id           = 3;
+  string message             = 4;
+  string content_type        = 5;
+  string media_key           = 6;
+  int64  sent_at             = 7;
+  string system_message_type = 8;  // e.g. COMMUNITY_JOINED (empty for normal messages)
+  string system_metadata     = 9;  // JSON string of the system metadata map
+  bool   is_personal         = 10; // true = user-scoped SYSTEM message ("You joined")
 }
 
 // ---- Reconciliation (ListCommunities) ----
@@ -329,6 +332,7 @@ message ReconcileCommunityDto {
   string avatar_url = 4;
   bool   deleted    = 5; // deletedAt is set (soft-deleted)
   repeated ReconcileMemberDto members = 6;
+  string community_type = 7; // PUBLIC | PRIVATE — drives non-member read access
 }
 message ListCommunitiesResponse {
   repeated ReconcileCommunityDto communities = 1;

@@ -68,6 +68,9 @@ jest.mock("../../src/messaging/publish-community-chat.js", () => ({
   publishCommunityMemberSyncedForChatSafe: jest.fn(),
   publishCommunityStatusChangedForChatSafe: jest.fn(),
   publishCommunityInviteLinkSharedForChatSafe: jest.fn(),
+  publishCommunitySystemMessageForChatSafe: jest.fn(),
+  publishCommunityVisibilityChangedForChatSafe: jest.fn(),
+  publishCommunityDeletedForChatSafe: jest.fn(),
 }));
 jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityMemberAddedSafe: jest.fn(),

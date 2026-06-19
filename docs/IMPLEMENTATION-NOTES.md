@@ -100,6 +100,26 @@ End-to-end inbox delivery with real-time socket notifications to all connected d
 
 ---
 
+## Personal Join System Message + PUBLIC Community History (shipped 2026-06-18)
+
+Telegram-style behaviour for community joins and history visibility. Two changes:
+
+1. **`COMMUNITY_JOINED` personal system message.** When a user joins a community (PUBLIC self-join, invite-link redeem with autoApprove, or PRIVATE join-request approval), a SYSTEM message "You joined this community" is created and delivered **only to the joining user**. It is NOT broadcast to the community room and is NOT visible to other members/moderators/admins — in real time or in history.
+   - New enum value `COMMUNITY_JOINED` + `CommunitySystemMessageVisibility` (`PERSONAL` | `COMMUNITY`) in `packages/constants/src/community/system-message.ts`.
+   - `publishCommunitySystemMessageForChatSafe` gained `visibilityType` + `visibleToUserId`; the 3 join paths in `community.service.ts` (`joinCommunity`, `redeemInviteLink`, `approveJoinRequest`) emit `PERSONAL` / `COMMUNITY_JOINED`.
+   - `CommunitySystemMessageService` publishes PERSONAL messages to `user:<id>` (not `community:<id>`), skips the room last-message bump + community-activity event, and persists `visibleToUserId`.
+   - **Persistence + filtering:** `GeneralRoomMessage` gained a nullable `visibleToUserId` (+ index). **Every** community read path filters `visibleToUserId ∈ {null, requester}` — `findByRoomIdWithTime`, `findByRoomIdTimeline`, `findAroundDate`, `conversationMatch` (raw), `findSinceId` (raw), `findUpdatedAtSince`, `searchByText`, `listMedia`, and `countUnreadBulk` — so a personal message can never leak to another member via history, sync, search, jump-to, or unread counts. The wire shape exposes a clean `isPersonal` boolean and drops the raw `visibleToUserId`.
+
+2. **PUBLIC community history is readable by non-members.** `assertCommunityReadAccess` (new, in `chat-service/src/lib/access-guard.ts`) replaces the strict `assertCommunityMember` on **all 5 read paths** (`getMessages`/timeline, `getMessagesSince`, `getMessagesAround` (jump-to), `searchMessages`). Rule: ACTIVE member → allow; banned → 403; otherwise allow only if the community is **PUBLIC**. PRIVATE communities still require membership (non-members → `403 CHAT_NOT_A_MEMBER`). The room is only loaded for non-members (members short-circuit).
+   - **Community type source = `GeneralRoom.communityType`** (chat-service's own DB, nullable, **fail-closed to PRIVATE** when null/unsynced). Persistent — **no TTL, no cross-service call on the read hot path** (this replaced an earlier Redis-`community:type:<id>`-with-24h-TTL design that had a recurring cold-cache hole: existing PUBLIC communities returned 403 until a chat-service restart and again after the TTL expired). Synced 3 ways: `community.created` event (carries `communityType` → `provisionForCommunity`), `community.visibility_changed` event (new; emitted by `updateCommunity` on PUBLIC↔PRIVATE change → `roomRepo.setCommunityType`), and the boot reconciler (proto `ReconcileCommunityDto.community_type` added → provisions new rooms with the type AND backfills `setCommunityType` on existing rooms). The boot reconciler is what backfills pre-existing communities after deploy.
+   - Write paths (`sendMessage`) are unchanged — still members-only.
+
+**gRPC/contract:** `CommunityMessageDto` proto gained `system_message_type`, `system_metadata` (JSON string), `is_personal`; chat-service handler + gateway client forward them. AsyncAPI (`community_system_joined` example + `isPersonal` + `COMMUNITY_JOINED` enum) and OpenAPI (`ChatCommunityMessage` system fields + PUBLIC-access note on the history path) updated.
+
+**Tests:** `apps/chat-service/tests/community/community-read-access.test.ts` (guard PUBLIC/PRIVATE/banned/fail-closed + getMessages access + PERSONAL targeting). `join-community.test.ts` asserts the PERSONAL `COMMUNITY_JOINED` emission. 89 chat-service + 134 community-service community/join/invite tests green.
+
+**⚠️ Deploy note:** chat-service Prisma client must be regenerated (`prisma generate`) for the new `visibleToUserId` field — Windows dev hit EPERM (running watcher locks the engine DLL); the TS types regenerated but the engine DLL did not. Restart the watcher / run a clean generate before deploy.
+
 ## Community System Messages (shipped 2026-06-16)
 
 Auto-generated **read-only, immutable lifecycle notifications** in the community chat timeline when structural events occur (create, update name/avatar/settings, member role change). Flow through the existing `community:message:new` socket event and REST message APIs — **no new transports**.

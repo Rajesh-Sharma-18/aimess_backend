@@ -6383,7 +6383,31 @@ export const openApiSchemas = {
       contentType: {
         type: "string",
         description:
-          "Community message kind (UPPER-CASE on the wire): TEXT, IMAGE, VOICE, CUSTOM, LOCATION, CONTACT, STICKER.",
+          "Community message kind (UPPER-CASE on the wire): TEXT, IMAGE, VOICE, CUSTOM, LOCATION, CONTACT, STICKER, SYSTEM.",
+      },
+      systemMessageType: {
+        type: "string",
+        nullable: true,
+        enum: [
+          "COMMUNITY_CREATED",
+          "COMMUNITY_UPDATED",
+          "MEMBER_ROLE_CHANGED",
+          "COMMUNITY_JOINED",
+        ],
+        description:
+          "Present when contentType is SYSTEM. Identifies the lifecycle event; null for normal messages.",
+      },
+      systemMetadata: {
+        type: "object",
+        nullable: true,
+        additionalProperties: true,
+        description:
+          "Structured payload for SYSTEM message rendering. Carries actorUserId + actorName so the client renders 'You' vs the actor name. Null for normal messages.",
+      },
+      isPersonal: {
+        type: "boolean",
+        description:
+          "True for user-scoped SYSTEM messages (e.g. COMMUNITY_JOINED 'You joined this community'). PERSONAL messages are only ever returned to the target user — other members never see them in history. Absent/false for normal and community-wide system messages.",
       },
       attachments: {
         type: "array",

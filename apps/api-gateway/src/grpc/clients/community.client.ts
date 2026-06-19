@@ -79,6 +79,12 @@ export interface CommunityMessageDto {
   contentType: string;
   mediaKey: string;
   sentAt: number;
+  /** e.g. "COMMUNITY_JOINED" — empty string for normal messages. */
+  systemMessageType?: string;
+  /** JSON string of the system metadata map — empty string when absent. */
+  systemMetadata?: string;
+  /** true = user-scoped SYSTEM message ("You joined this community"). */
+  isPersonal?: boolean;
 }
 
 export interface ReactCommunityMessageParams {

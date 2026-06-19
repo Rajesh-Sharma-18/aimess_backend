@@ -2468,6 +2468,34 @@ components:
               actorName: Jane Doe
               targetUserId: user_abc
               targetName: Bob Smith
+        - name: community_system_joined
+          summary: >-
+            PERSONAL system message — the joining user joined the community.
+            Published ONLY to the joiner's `user:<id>` channel (never the
+            community room); isPersonal=true. Other members, moderators, and
+            admins never receive or see it.
+          payload:
+            id: "684abc123def456789012348"
+            messageId: "684abc123def456789012348"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: "user_joiner"
+            senderName: "Bob Smith"
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "You joined this community"
+              files: []
+            message: "You joined this community"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000300000
+            sentAt: 1750000300000
+            systemMessageType: COMMUNITY_JOINED
+            isPersonal: true
+            systemMetadata:
+              actorUserId: user_joiner
+              actorName: Bob Smith
               oldRole: MEMBER
               newRole: MODERATOR
     CommunityMemberJoined:
@@ -4225,9 +4253,19 @@ components:
           nullable: true
           enum:
             - COMMUNITY_CREATED
+            - COMMUNITY_JOINED
             - COMMUNITY_UPDATED
             - MEMBER_ROLE_CHANGED
           description: >-
+        isPersonal:
+          type: boolean
+          description: >-
+            True for user-scoped (PERSONAL) SYSTEM messages — visible ONLY to the
+            target user, never broadcast to the community room and never returned
+            to other members in history. COMMUNITY_JOINED ("You joined this
+            community") is PERSONAL: it is published to the joiner's `user:<id>`
+            channel only. All other system types are COMMUNITY-visible
+            (isPersonal=false / absent).
             Present when contentType is SYSTEM. Identifies the lifecycle event.
             Null/absent for normal messages.
         systemMetadata:
@@ -4236,7 +4274,7 @@ components:
           additionalProperties: true
           description: >-
             Structured payload for system message rendering. Null/absent for
-            normal messages. All three types share `actorUserId` (the userId
+            normal messages. All types share `actorUserId` (the userId
             who triggered the event) and `actorName` (their resolved display
             name). Frontend renders "You" when `actorUserId === currentUserId`,
             otherwise uses `actorName`. Shape by systemMessageType:
@@ -4245,6 +4283,9 @@ components:
               — exactly one item in changedFields; one message emitted per
               changed field (avatar→photo, name→title, description, etc.).
             MEMBER_ROLE_CHANGED: { actorUserId, actorName, targetUserId,
+            COMMUNITY_JOINED: { actorUserId, actorName } — PERSONAL; the joining
+              user (== actorUserId == currentUserId) sees "You joined this
+              community". Not delivered to anyone else.
               targetName, oldRole, newRole } — frontend derives "promoted" vs
               "demoted" from role ranks (ADMIN>MODERATOR>MEMBER).
     CommunityMemberDTO:

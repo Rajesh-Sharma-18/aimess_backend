@@ -116,6 +116,7 @@ import {
   publishCommunityMemberJoinedSafe,
   publishCommunityJoinRequestedSafe,
 } from "../../src/messaging/publish-community.js";
+import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
 
 // ---------------------------------------------------------------------------
 // Typed aliases
@@ -126,6 +127,7 @@ const pubMemberAdded = publishCommunityMemberAddedSafe as jest.Mock;
 const pubMemberJoined = publishCommunityMemberJoinedSafe as jest.Mock;
 const pubJoinRequested = publishCommunityJoinRequestedSafe as jest.Mock;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
+const pubSystemMessage = publishCommunitySystemMessageForChatSafe as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -246,6 +248,19 @@ describe("joinCommunity — PUBLIC community", () => {
     const [, roomCommunityId, , dto] = joinedCall!;
     expect(roomCommunityId).toBe(CID);
     expect(dto).toMatchObject({ userId: CALLER, role: "MEMBER" });
+  });
+
+  it("1.1 fresh join — emits a PERSONAL COMMUNITY_JOINED system message to the joiner only", async () => {
+    await communityService.joinCommunity(CID, CALLER);
+
+    expect(pubSystemMessage).toHaveBeenCalledTimes(1);
+    expect(pubSystemMessage.mock.calls[0][0]).toMatchObject({
+      communityId: CID,
+      systemMessageType: "COMMUNITY_JOINED",
+      triggeredByUserId: CALLER,
+      visibilityType: "PERSONAL",
+      visibleToUserId: CALLER,
+    });
   });
 
   it("1.2 reactivation (LEFT → ACTIVE) — calls reactivateMemberWithSnapshot", async () => {

@@ -93,6 +93,7 @@ const communityImpl: grpc.UntypedServiceImplementation = {
             adminId: c.adminId,
             avatarUrl: c.avatarUrl ?? "",
             deleted: c.deletedAt != null,
+            communityType: String(c.type),
             members: c.members.map((m) => ({
               userId: m.userId,
               status: String(m.status),

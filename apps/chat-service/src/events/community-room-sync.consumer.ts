@@ -84,6 +84,8 @@ interface CommunityRoomSyncEvent {
     name?: string;
     avatarUrl?: string | null;
     ownerId?: string | null;
+    // community.created + community.visibility_changed — community visibility
+    communityType?: "PUBLIC" | "PRIVATE";
     // member.synced
     userId?: string;
     status?: string;
@@ -100,6 +102,8 @@ interface CommunityRoomSyncEvent {
     systemMessageType?: string;
     metadata?: Record<string, unknown>;
     triggeredByUserId?: string;
+    visibilityType?: "PERSONAL" | "COMMUNITY";
+    visibleToUserId?: string;
   };
 }
 
@@ -147,10 +151,14 @@ export class CommunityRoomSyncConsumer {
 
       switch (event.type) {
         case "community.created":
+          // Persist the community visibility on the room so read paths
+          // (getMessages/timeline/around/search/sync) can let non-members browse
+          // PUBLIC history. Stored on the GeneralRoom — authoritative, no TTL.
           await this.roomRepo.provisionForCommunity(communityId, {
             name: event.data.name ?? "",
             owner: event.data.ownerId ?? null,
             logo: event.data.avatarUrl ?? null,
+            communityType: event.data.communityType ?? null,
           });
           logger.debug(`Provisioned chat room for community ${communityId}`);
           break;
@@ -173,6 +181,24 @@ export class CommunityRoomSyncConsumer {
           } else {
             logger.warn(
               `community.status.changed: unknown communityStatus="${String(communityStatus)}" for community ${communityId}`
+            );
+          }
+          break;
+        }
+
+        case "community.visibility_changed": {
+          const communityType = event.data.communityType;
+          if (communityType === "PUBLIC" || communityType === "PRIVATE") {
+            // Persist the new visibility on the room so the read-access guard
+            // reflects the policy immediately (PUBLIC→PRIVATE stops leaking
+            // history to non-members, and vice-versa).
+            await this.roomRepo.setCommunityType(communityId, communityType);
+            logger.debug(
+              `community.visibility_changed: set type=${communityType} for ${communityId}`
+            );
+          } else {
+            logger.warn(
+              `community.visibility_changed: invalid communityType="${String(communityType)}" for ${communityId}`
             );
           }
           break;
@@ -220,7 +246,13 @@ export class CommunityRoomSyncConsumer {
         }
 
         case "community.system_message": {
-          const { systemMessageType, metadata, triggeredByUserId } = event.data;
+          const {
+            systemMessageType,
+            metadata,
+            triggeredByUserId,
+            visibilityType,
+            visibleToUserId,
+          } = event.data;
           if (!systemMessageType || !triggeredByUserId) {
             logger.warn(
               "community.system_message: missing systemMessageType or triggeredByUserId — skipping"
@@ -243,9 +275,13 @@ export class CommunityRoomSyncConsumer {
             systemMessageType: systemMessageType as CommunitySystemMessageType,
             metadata: (metadata ?? {}) as Record<string, unknown>,
             triggeredByUserId,
+            visibilityType: (visibilityType ?? "COMMUNITY") as
+              | "PERSONAL"
+              | "COMMUNITY",
+            visibleToUserId,
           });
           logger.debug(
-            `community.system_message: posted type=${systemMessageType} communityId=${communityId}`
+            `community.system_message: posted type=${systemMessageType} communityId=${communityId} visibility=${visibilityType ?? "COMMUNITY"}`
           );
           break;
         }

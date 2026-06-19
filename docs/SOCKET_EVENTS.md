@@ -529,6 +529,29 @@ Redis channel verbatim. Contract events:
 
 > Community message **reactions** are emitted as `community:message:reaction` on the `community:<communityId>` channel. `POST /messages/:id/react` is the mutation path; this is the real-time broadcast. `selfReacted` is omitted from the broadcast — each client derives it from `reactions[].users[].userId === myUserId`. The full current reaction set is always sent (not a delta). No admin reaction removal in V1 (self-toggle only).
 
+> **System messages & the personal "You joined" message.** Community lifecycle
+> events are delivered as `community:message:new` with `contentType: "SYSTEM"`,
+> a `systemMessageType` (`COMMUNITY_CREATED` · `COMMUNITY_UPDATED` ·
+> `MEMBER_ROLE_CHANGED` · `COMMUNITY_JOINED`), and a `systemMetadata` object
+> carrying `actorUserId`/`actorName` (render "You" when
+> `actorUserId === currentUserId`).
+>
+> `COMMUNITY_JOINED` ("You joined this community") is a **PERSONAL** system
+> message: it carries `isPersonal: true` and is published ONLY to the joining
+> user's `user:<id>` channel — **never** the `community:<id>` room. Other
+> members, moderators, and admins never receive it in real time, and it is
+> filtered out of their message history (it's persisted with an internal
+> `visibleToUserId` and only ever returned to that user). Emitted on every join
+> path: PUBLIC self-join, invite-link redeem (autoApprove), and PRIVATE
+> join-request approval.
+
+> **PUBLIC community history is readable by non-members (Telegram-style).** The
+> community message history REST endpoint (`GET /chat/communities/.../rooms/:id`)
+> does NOT require membership for **PUBLIC** communities — guests can browse,
+> scroll, and search history before joining. **PRIVATE** communities still
+> require ACTIVE membership (non-members and banned users get
+> `403 CHAT_NOT_A_MEMBER`). The socket history fetch enforces the same rule.
+
 ---
 
 ## 6. `/notify` namespace

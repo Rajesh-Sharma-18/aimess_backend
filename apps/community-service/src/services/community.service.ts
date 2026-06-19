@@ -124,6 +124,7 @@ import {
   publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
+  publishCommunityVisibilityChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
 import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
 
@@ -949,6 +950,7 @@ export const communityService = {
       communityId: community.id,
       name: community.name,
       avatarUrl: community.avatarUrl ?? null,
+      communityType: community.type,
       ownerId: creatorId,
     });
     publishCommunitySystemMessageForChatSafe({
@@ -1160,6 +1162,15 @@ export const communityService = {
         },
         triggeredByUserId: callerId,
         eventAt: new Date().toISOString(),
+      });
+    }
+    // Visibility changed (PUBLIC↔PRIVATE): re-sync the cached community type in
+    // chat-service so the read-access guard immediately reflects the new policy
+    // (a now-PRIVATE community stops leaking history to non-members, and vice versa).
+    if (changedFields.includes("visibility") && input.type !== undefined) {
+      publishCommunityVisibilityChangedForChatSafe({
+        communityId,
+        communityType: input.type,
       });
     }
 
@@ -2995,6 +3006,17 @@ export const communityService = {
         metadata: { reactivated },
       });
 
+      // STEP 5h2: Emit personal system message "You joined this community" to the joined user only.
+      publishCommunitySystemMessageForChatSafe({
+        communityId,
+        systemMessageType: "COMMUNITY_JOINED",
+        metadata: {},
+        triggeredByUserId: callerId,
+        eventAt: new Date().toISOString(),
+        visibilityType: "PERSONAL",
+        visibleToUserId: callerId,
+      });
+
       logger.info(
         `Community self-join (PUBLIC): community=${communityId} user=${callerId} reactivated=${reactivated}`
       );
@@ -3550,6 +3572,17 @@ export const communityService = {
         displayName: callerSnapApprove?.displayName ?? "Unknown",
       },
       decidedAt: new Date().toISOString(),
+    });
+
+    // Emit personal system message "You joined this community" to the approved user only.
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "COMMUNITY_JOINED",
+      metadata: {},
+      triggeredByUserId: request.userId,
+      eventAt: new Date().toISOString(),
+      visibilityType: "PERSONAL",
+      visibleToUserId: request.userId,
     });
 
     return {
@@ -5365,6 +5398,17 @@ export const communityService = {
         actorId: member.userId,
         via: "invite_link_redeem",
         requestId: undefined,
+      });
+
+      // Emit personal system message "You joined this community" to the joined user only.
+      publishCommunitySystemMessageForChatSafe({
+        communityId: community.id,
+        systemMessageType: "COMMUNITY_JOINED",
+        metadata: {},
+        triggeredByUserId: callerId,
+        eventAt: new Date().toISOString(),
+        visibilityType: "PERSONAL",
+        visibleToUserId: callerId,
       });
 
       return {

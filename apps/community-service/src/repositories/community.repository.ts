@@ -829,6 +829,7 @@ export const communityRepository = {
         adminId: true,
         avatarUrl: true,
         deletedAt: true,
+        type: true,
         members: {
           select: {
             userId: true,

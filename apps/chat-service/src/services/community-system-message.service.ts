@@ -1,7 +1,10 @@
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
-import { type CommunitySystemMessageType } from "@aimess/constants";
+import {
+  type CommunitySystemMessageType,
+  type CommunitySystemMessageVisibility,
+} from "@aimess/constants";
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
@@ -15,6 +18,17 @@ export interface PostCommunitySystemMessageParams {
   systemMessageType: CommunitySystemMessageType;
   metadata: Record<string, unknown>;
   triggeredByUserId: string;
+  /**
+   * Visibility scope: PERSONAL messages (e.g., "You joined") are only visible
+   * to a specific user; COMMUNITY messages are visible to all members.
+   * Defaults to COMMUNITY for backwards compatibility.
+   */
+  visibilityType?: CommunitySystemMessageVisibility;
+  /**
+   * For PERSONAL messages, the userId who should see this message.
+   * Required when visibilityType === "PERSONAL".
+   */
+  visibleToUserId?: string;
 }
 
 /**
@@ -64,8 +78,14 @@ export class CommunitySystemMessageService {
   private async postOne(
     params: PostCommunitySystemMessageParams
   ): Promise<void> {
-    const { communityId, systemMessageType, metadata, triggeredByUserId } =
-      params;
+    const {
+      communityId,
+      systemMessageType,
+      metadata,
+      triggeredByUserId,
+      visibilityType = "COMMUNITY",
+      visibleToUserId,
+    } = params;
 
     try {
       const targetUserId =
@@ -113,23 +133,30 @@ export class CommunitySystemMessageService {
         triggeredByName: actorName,
         sequenceNumber: seq,
         fallbackText,
+        // PERSONAL messages are persisted with the target user so history reads
+        // only return them to that user (the join "You joined" message).
+        visibleToUserId:
+          visibilityType === "PERSONAL" ? (visibleToUserId ?? null) : null,
       });
 
       // Bump inbox ordering (no unread increment — system messages don't badge).
-      this.roomRepo
-        .addLastestMessageToRoom(communityId, {
-          _id: message.id,
-          sentBy: message.sentBy,
-          senderName: message.senderName ?? "",
-          message: message.message ?? "",
-          messageType: message.messageType,
-          createdAt: message.createdAt,
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            `CommunitySystemMessageService|addLastestMessageToRoom failed: ${String(err)}`
-          );
-        });
+      // Skip for PERSONAL messages since they're not visible to all members.
+      if (visibilityType === "COMMUNITY") {
+        this.roomRepo
+          .addLastestMessageToRoom(communityId, {
+            _id: message.id,
+            sentBy: message.sentBy,
+            senderName: message.senderName ?? "",
+            message: message.message ?? "",
+            messageType: message.messageType,
+            createdAt: message.createdAt,
+          })
+          .catch((err: unknown) => {
+            logger.warn(
+              `CommunitySystemMessageService|addLastestMessageToRoom failed: ${String(err)}`
+            );
+          });
+      }
 
       const serverTs =
         message.createdAt instanceof Date
@@ -140,9 +167,17 @@ export class CommunitySystemMessageService {
       // Real-time fan-out — mirrors the orchestrator community wire shape with
       // SYSTEM extras. systemMetadata always carries actorUserId so clients can
       // render "You" vs actor name without an additional fetch.
+      //
+      // For PERSONAL messages (e.g., "You joined"), emit to the user's personal
+      // channel instead of the room so only they see it.
+      const redisChannel =
+        visibilityType === "PERSONAL" && visibleToUserId
+          ? `user:${visibleToUserId}`
+          : `community:${communityId}`;
+
       this.redis
         .publish(
-          `community:${communityId}`,
+          redisChannel,
           JSON.stringify({
             event: "community:message:new",
             data: {
@@ -170,23 +205,27 @@ export class CommunitySystemMessageService {
         )
         .catch((err: unknown) => {
           logger.warn(
-            `CommunitySystemMessageService|redis.publish failed communityId=${communityId}: ${String(err)}`
+            `CommunitySystemMessageService|redis.publish failed channel=${redisChannel}: ${String(err)}`
           );
         });
 
-      publishCommunityActivitySafe({
-        communityId,
-        lastMessageAt:
-          message.createdAt instanceof Date
-            ? message.createdAt.toISOString()
-            : new Date(serverTs).toISOString(),
-        lastMessageId: message.id,
-        senderUserId: triggeredByUserId,
-        senderUsername: actorName,
-        messagePreview:
-          fallbackText.length > 80 ? fallbackText.slice(0, 80) : fallbackText,
-        type: "system",
-      });
+      // Only publish activity for COMMUNITY messages (visible to all).
+      // PERSONAL messages don't affect the community's last activity.
+      if (visibilityType === "COMMUNITY") {
+        publishCommunityActivitySafe({
+          communityId,
+          lastMessageAt:
+            message.createdAt instanceof Date
+              ? message.createdAt.toISOString()
+              : new Date(serverTs).toISOString(),
+          lastMessageId: message.id,
+          senderUserId: triggeredByUserId,
+          senderUsername: actorName,
+          messagePreview:
+            fallbackText.length > 80 ? fallbackText.slice(0, 80) : fallbackText,
+          type: "system",
+        });
+      }
     } catch (err) {
       logger.warn(
         `CommunitySystemMessageService|postOne failed type=${systemMessageType} communityId=${communityId}: ${String(err)}`
@@ -269,6 +308,9 @@ function buildFallbackText(
         roleRank(newRole) > roleRank(oldRole) ? "promoted" : "demoted";
       return `${actor} ${verb} ${target} to ${formatRole(newRole)}`;
     }
+
+    case "COMMUNITY_JOINED":
+      return "You joined this community";
 
     default:
       return `${actor} updated the community`;

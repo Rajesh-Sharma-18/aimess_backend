@@ -29,7 +29,10 @@ import {
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
-import { assertCommunityMember } from "../lib/access-guard.js";
+import {
+  assertCommunityMember,
+  assertCommunityReadAccess,
+} from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
@@ -52,12 +55,17 @@ type MemberReadStatus = {
   joinedAt: Date;
 };
 
-type CommunityMessageWire = Omit<GeneralRoomMessage, "messageType"> & {
+type CommunityMessageWire = Omit<
+  GeneralRoomMessage,
+  "messageType" | "visibleToUserId"
+> & {
   contentType: string;
   /** Members whose read cursor is at or past this message's createdAt. */
   readBy: Array<{ userId: string; readAt: number }>;
   /** Members who were active in the room when this message was sent. */
   deliveredTo: Array<{ userId: string; deliveredAt: number }>;
+  /** True for user-scoped SYSTEM messages (e.g. "You joined this community"). */
+  isPersonal?: boolean;
 };
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
@@ -551,6 +559,15 @@ export class CommunityMessageService {
           }))
       : [];
 
+    // Surface a clean `isPersonal` flag for the client (e.g. "You joined this
+    // community") and DROP the raw `visibleToUserId` targeting column from the
+    // wire — it is an internal access-control field, not a client contract.
+    const isPersonal = Boolean(
+      (wire as Record<string, unknown>).visibleToUserId
+    );
+    delete (wire as Record<string, unknown>).visibleToUserId;
+    wire.isPersonal = isPersonal;
+
     return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
   }
 
@@ -560,7 +577,15 @@ export class CommunityMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
-    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
+    // For community messages, allow reads if:
+    // 1. User is an active member, OR
+    // 2. The community is PUBLIC (non-members can read history)
+    await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const beforeTimestamp = params.cursor || new Date().toISOString();
     const [rows, members] = await Promise.all([
       this.messageRepo.findByRoomIdWithTime(
@@ -591,7 +616,15 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
+    // For community messages, allow reads if:
+    // 1. User is an active member, OR
+    // 2. The community is PUBLIC (non-members can read history)
+    await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const [rows, members] = await Promise.all([
       this.messageRepo.findByRoomIdTimeline({
         roomId: params.roomId,
@@ -703,14 +736,17 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    // Enforce active membership — banned/left members cannot read.
-    const member = await this.memberRepo.findByRoomAndUser(
+    // For community messages, allow reads if:
+    // 1. User is an active member, OR
+    // 2. The community is PUBLIC (non-members can read history)
+    // Note: sync path is typically members-only (offline-first mobile), but we enforce
+    // the same rules for consistency.
+    await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
       params.roomId,
       params.userId
     );
-    if (!member || member.status !== "active") {
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    }
 
     if (Number.isNaN(params.fromTs.getTime())) {
       throw new BadRequestError("CHAT_INVALID_SINCE_TS");
@@ -839,7 +875,12 @@ export class CommunityMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: CommunityMessageWire[] }> {
-    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
+    await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
       return { items: [] };
@@ -930,7 +971,12 @@ export class CommunityMessageService {
     query: string;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
-    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
+    await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const rows = await this.messageRepo.searchByText(
       params.roomId,
       params.query,

@@ -1848,9 +1848,14 @@ export function createCommunityImpl(
                   ? m.createdAt.getTime()
                   : Date.now(),
               systemMessageType:
-                (m as Record<string, unknown>).systemMessageType ?? null,
-              systemMetadata:
-                (m as Record<string, unknown>).systemMetadata ?? null,
+                ((m as Record<string, unknown>).systemMessageType as string) ??
+                "",
+              // Proto field is a string — serialize the metadata map to JSON.
+              systemMetadata: (() => {
+                const meta = (m as Record<string, unknown>).systemMetadata;
+                return meta ? JSON.stringify(meta) : "";
+              })(),
+              isPersonal: Boolean((m as Record<string, unknown>).isPersonal),
             })),
             nextCursor,
             hasMore,
