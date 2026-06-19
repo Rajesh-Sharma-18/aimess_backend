@@ -161,8 +161,6 @@ channels:
       messageNew: { $ref: "#/components/messages/MessageNew" }
       messageEdited: { $ref: "#/components/messages/MessageEdited" }
       convUpdated: { $ref: "#/components/messages/ConvUpdated" }
-      communityUpdated: { $ref: "#/components/messages/CommunityUpdated" }
-      communityCreated: { $ref: "#/components/messages/CommunityCreated" }
       chatCatchupResult: { $ref: "#/components/messages/ChatCatchupResult" }
       messageReadReceipt: { $ref: "#/components/messages/MessageReadReceipt" }
       messageDeliveredReceipt:
@@ -271,6 +269,9 @@ channels:
       communityMessageReadBroadcast:
         { $ref: "#/components/messages/CommunityMessageReadBroadcast" }
       communityReadSync: { $ref: "#/components/messages/CommunityReadSync" }
+      # community-list events (delivered to user:<id> on /community)
+      communityUpdated: { $ref: "#/components/messages/CommunityUpdated" }
+      communityCreated: { $ref: "#/components/messages/CommunityCreated" }
       communitySessionExpired:
         { $ref: "#/components/messages/CommunitySessionExpired" }
       communityMessageDeliveredBroadcast:
@@ -560,16 +561,6 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "conv:updated — chat list bump-to-top (to user:<id>)"
     messages: [{ $ref: "#/channels/chat/messages/convUpdated" }]
-  chat.onCommunityUpdated:
-    action: receive
-    channel: { $ref: "#/channels/chat" }
-    summary: "community:updated — community list bump-to-top (delivered on /chat)"
-    messages: [{ $ref: "#/channels/chat/messages/communityUpdated" }]
-  chat.onCommunityCreated:
-    action: receive
-    channel: { $ref: "#/channels/chat" }
-    summary: "community:created — new community inserted into creator's list (delivered on /chat to user:<creatorId>)"
-    messages: [{ $ref: "#/channels/chat/messages/communityCreated" }]
   chat.onCatchupResult:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -1162,6 +1153,24 @@ operations:
       unread counts for the community. Mirrors the `/chat` `read_sync` event for
       cross-device consistency.
     messages: [{ $ref: "#/channels/community/messages/communityReadSync" }]
+  community.onCommunityUpdated:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:updated — community list bump-to-top (delivered to user:<id> on /community)"
+    description: |
+      Sent to each active member's `user:<id>` room on the /community namespace on
+      every new community message, so a client on the community LIST can splice that
+      community to the top and update its preview + unread without refetching.
+      (Mirror of the /chat `conv:updated` bump for private/group inboxes.)
+    messages: [{ $ref: "#/channels/community/messages/communityUpdated" }]
+  community.onCommunityCreated:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:created — new community inserted into creator's list (delivered to user:<creatorId> on /community)"
+    description: |
+      Sent to the creator's `user:<creatorId>` room on the /community namespace when
+      they create a community, so it appears in their community list immediately.
+    messages: [{ $ref: "#/channels/community/messages/communityCreated" }]
   community.onSessionExpired:
     action: receive
     channel: { $ref: "#/channels/community" }
@@ -1794,7 +1803,7 @@ components:
             unread: false
     CommunityUpdated:
       name: "community:updated"
-      title: "community:updated (on /chat)"
+      title: "community:updated (on /community)"
       payload: { $ref: "#/components/schemas/CommunityUpdatedPayload" }
       examples:
         - name: Community bumped to top with new message
@@ -1811,9 +1820,9 @@ components:
             unread: true
     CommunityCreated:
       name: "community:created"
-      title: "community:created (on /chat)"
+      title: "community:created (on /community)"
       summary: >
-        Delivered on /chat to room user:<creatorId> immediately after a community
+        Delivered on /community to room user:<creatorId> immediately after a community
         is successfully created. Payload is the full CommunityData object — identical
         to the POST /communities 201 response body.data. Frontend: prepend this item
         to the joined-communities list; no extra API call or page reload is needed.
