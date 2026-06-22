@@ -4,6 +4,7 @@ import { publishCommunityRoomEvent } from "@aimess/redis";
 
 import {
   UserEvents,
+  type CommunityMemberUpdatedPayload,
   type UserProfileUpdatedPayload,
 } from "@aimess/shared-types";
 
@@ -99,13 +100,18 @@ export async function startUserProfileUpdatedConsumer(): Promise<void> {
                 membership.communityId,
                 "community:member:updated",
                 {
+                  communityId: membership.communityId,
                   userId,
                   username,
                   displayName,
                   avatarUrl,
                   role: membership.role,
-                  updatedAt: parsed.data.updatedAt,
-                }
+                  // Wire contract is epoch-ms; the source event carries an ISO
+                  // string. Convert (fall back to now on an unparseable value).
+                  updatedAt: Number.isNaN(Date.parse(parsed.data.updatedAt))
+                    ? Date.now()
+                    : Date.parse(parsed.data.updatedAt),
+                } satisfies CommunityMemberUpdatedPayload
               );
             }
           } catch (error) {

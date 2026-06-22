@@ -8,12 +8,16 @@ import {
   NotFoundError,
 } from "@aimess/errors";
 import { logger } from "@aimess/logger";
+import { isHiddenSystemMessage } from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
   CommunityMemberAddedPayload,
   CommunityMemberRemovedPayload,
   CommunityMemberUnbannedPayload,
+  CommunityMemberUpdatedPayload,
+  CommunityMetaDto,
+  CommunityMetaUpdatedPayload,
   CommunityStatsUpdatedPayload,
   MediaObject,
 } from "@aimess/shared-types";
@@ -448,6 +452,114 @@ export function detectCommunityChangedFields(
     changed.push("handle");
   }
   return changed;
+}
+
+/**
+ * Map the changed-field strings from {@link detectCommunityChangedFields}
+ * ("name" | "description" | "avatar" | "visibility" | "category" | "handle") to
+ * the boolean `changes` shape of `community:meta:updated`. Single source of
+ * truth — the same array that picks the system-message subtype drives the socket
+ * event, so the two can never disagree. Exported for unit coverage.
+ */
+export function changedFieldsToMetaChanges(
+  changedFields: string[]
+): CommunityMetaUpdatedPayload["changes"] {
+  const changes: CommunityMetaUpdatedPayload["changes"] = {};
+  for (const field of changedFields) {
+    switch (field) {
+      case "name":
+        changes.name = true;
+        break;
+      case "description":
+        changes.description = true;
+        break;
+      case "avatar":
+        changes.avatar = true;
+        break;
+      case "visibility":
+        changes.visibility = true;
+        break;
+      case "category":
+        changes.category = true;
+        break;
+      case "handle":
+        changes.handle = true;
+        break;
+      default:
+        break;
+    }
+  }
+  return changes;
+}
+
+/**
+ * Build the canonical post-update metadata snapshot carried by
+ * `community:meta:updated`. Resolves the avatar through the same
+ * key→presigned-URL resolver the REST detail response uses — never hand-roll a
+ * URL and never emit a raw object key.
+ */
+async function toCommunityMetaDto(
+  community: CommunityWithCategory
+): Promise<CommunityMetaDto> {
+  const avatarView = await communityImageService.resolveViewUrlForClient(
+    community.avatarUrl
+  );
+  return {
+    communityId: community.id,
+    name: community.name,
+    handle: community.handle,
+    description: community.description,
+    avatar: avatarView?.url ?? null,
+    type: community.type as "PUBLIC" | "PRIVATE",
+    categoryId: community.category.id,
+    categoryName: community.category.name,
+    memberCount: community.memberCount,
+    updatedAt:
+      community.updatedAt instanceof Date
+        ? community.updatedAt.getTime()
+        : Date.now(),
+  };
+}
+
+/**
+ * Fan out `community:meta:updated` after a metadata change. Delivered to:
+ *   1. the `community:<id>` room — detail/header/chat viewers update live;
+ *   2. every ACTIVE member's `user:<id>` channel — list rows update name/avatar
+ *      even when the member isn't currently viewing the community.
+ * Fire-and-forget: a socket-publish failure must never fail the write itself
+ * (the REST response + recovery reads remain the source of truth).
+ */
+async function broadcastCommunityMetaUpdated(
+  community: CommunityWithCategory,
+  changedFields: string[]
+): Promise<void> {
+  if (changedFields.length === 0) return;
+  try {
+    const payload: CommunityMetaUpdatedPayload = {
+      communityId: community.id,
+      changes: changedFieldsToMetaChanges(changedFields),
+      community: await toCommunityMetaDto(community),
+      updatedAt: Date.now(),
+    };
+    await publishCommunityRoomEvent(
+      redis,
+      community.id,
+      "community:meta:updated",
+      payload
+    );
+    const memberIds = await communityRepository.findActiveMemberIds(
+      community.id
+    );
+    await Promise.allSettled(
+      memberIds.map((memberId) =>
+        publishChatUserEvent(redis, memberId, "community:meta:updated", payload)
+      )
+    );
+  } catch (error) {
+    logger.warn(
+      `community:meta:updated broadcast failed for community=${community.id}: ${String(error)}`
+    );
+  }
 }
 
 async function toCommunityData(
@@ -1390,6 +1502,13 @@ export const communityService = {
       });
     }
 
+    // Real-time metadata sync: push the new name/avatar/description/category/
+    // visibility to the detail/header (community:<id> room) AND to every member's
+    // list row (user:<id>) so no client needs to refetch or reload. Distinct from
+    // the system-message-driven `community:updated` list bump above, which only
+    // reorders + previews. Fire-and-forget — never blocks the response.
+    void broadcastCommunityMetaUpdated(updated, changedFields);
+
     if (input.memberIds !== undefined) {
       const desiredSet = new Set(input.memberIds);
       const currentIds =
@@ -1765,6 +1884,24 @@ export const communityService = {
       visibleToUserId: targetUserId,
     });
 
+    // Real-time roster sync: flip the member's role badge on the Members page +
+    // chat header for everyone in the room, without a refetch. Fire-and-forget.
+    void publishCommunityRoomEvent(
+      redis,
+      communityId,
+      "community:member:updated",
+      {
+        communityId,
+        userId: targetUserId,
+        role,
+        updatedAt: Date.now(),
+      } satisfies CommunityMemberUpdatedPayload
+    ).catch((err: unknown) => {
+      logger.warn(
+        `community:member:updated broadcast failed (role change) community=${communityId} user=${targetUserId}: ${String(err)}`
+      );
+    });
+
     return toMemberData(updated);
   },
 
@@ -2090,6 +2227,12 @@ export const communityService = {
     targetUserId?: string;
     extra?: Record<string, unknown>;
   }): void {
+    // Telegram silent-kick parity: never post moderation removal/ban lines to the
+    // chat timeline (they pile up across remove→rejoin cycles and the victim sees
+    // "You were removed" repeatedly). The domain event, roster socket, and
+    // notifications still fire from their own call sites — only the chat SYSTEM
+    // message is dropped. chat-service also hides any rows persisted before this.
+    if (isHiddenSystemMessage(args.systemMessageType)) return;
     publishCommunitySystemMessageForChatSafe({
       communityId: args.communityId,
       systemMessageType: args.systemMessageType,
@@ -2229,8 +2372,9 @@ export const communityService = {
     );
 
     const skipped: AddMembersResult["skipped"] = [];
-    // Reactivated members keep their existing row (incl. joinedAt) in hand, so
-    // we can build their DTO without a re-read after the bulk update.
+    // Reactivated members keep their existing row in hand; the fresh joinedAt is
+    // taken from the reactivation write below (it advances to now), so the DTO is
+    // built without a re-read while still reporting the latest join time.
     const toReactivate: { userId: string; joinedAt: Date }[] = [];
     const toCreate: string[] = [];
 
@@ -2268,10 +2412,14 @@ export const communityService = {
       const snapshotIds = [...toReactivate.map((m) => m.userId), ...toCreate];
       const snapshotMap = await fetchUserSnapshots(snapshotIds);
 
+      // Reactivation advances joinedAt to NOW (fresh membership). Capture the
+      // persisted value so the response DTO + roster socket report the LATEST
+      // join time, not the stale pre-leave one (they must match the member list).
+      const reactivatedJoinedAt = new Map<string, Date>();
       if (toReactivate.length > 0) {
         for (const m of toReactivate) {
           const snap = snapshotMap.get(m.userId)!;
-          await communityRepository.reactivateMemberWithSnapshot(
+          const row = await communityRepository.reactivateMemberWithSnapshot(
             communityId,
             m.userId,
             {
@@ -2280,6 +2428,7 @@ export const communityService = {
               snapshotAvatarKey: snap.avatarObjectKey,
             }
           );
+          reactivatedJoinedAt.set(m.userId, row.joinedAt);
         }
       }
 
@@ -2308,7 +2457,9 @@ export const communityService = {
             userId: m.userId,
             role: CommunityMemberRole.MEMBER,
             status: CommunityMemberStatus.ACTIVE,
-            joinedAt: m.joinedAt,
+            // Fresh join time from the reactivation write (fallback to the old
+            // value only if the map somehow missed it).
+            joinedAt: reactivatedJoinedAt.get(m.userId) ?? m.joinedAt,
             snapshotUsername: snap.username,
             snapshotDisplayName: snap.displayName,
             snapshotAvatarKey: snap.avatarObjectKey,
@@ -3426,6 +3577,41 @@ export const communityService = {
       actorId: callerId,
       targetUserId,
       reason: "explicit_transfer",
+    });
+
+    // Real-time roster sync: the hand-off flips TWO members — incoming admin and
+    // outgoing admin (now a plain member). Emit one community:member:updated per
+    // affected member so the Members page + chat header update live, no refetch.
+    const adminTransferredAt = Date.now();
+    void publishCommunityRoomEvent(
+      redis,
+      communityId,
+      "community:member:updated",
+      {
+        communityId,
+        userId: targetUserId,
+        role: CommunityMemberRole.ADMIN,
+        updatedAt: adminTransferredAt,
+      } satisfies CommunityMemberUpdatedPayload
+    ).catch((err: unknown) => {
+      logger.warn(
+        `community:member:updated broadcast failed (admin transfer, new admin) community=${communityId} user=${targetUserId}: ${String(err)}`
+      );
+    });
+    void publishCommunityRoomEvent(
+      redis,
+      communityId,
+      "community:member:updated",
+      {
+        communityId,
+        userId: callerId,
+        role: CommunityMemberRole.MEMBER,
+        updatedAt: adminTransferredAt,
+      } satisfies CommunityMemberUpdatedPayload
+    ).catch((err: unknown) => {
+      logger.warn(
+        `community:member:updated broadcast failed (admin transfer, prev admin) community=${communityId} user=${callerId}: ${String(err)}`
+      );
     });
 
     const refreshed = await communityRepository.findById(communityId);
