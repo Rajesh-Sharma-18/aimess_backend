@@ -11,6 +11,7 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { personalizeGroupSystemMessageForViewer } from "@aimess/constants";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -791,7 +792,8 @@ export class GroupMessageService {
    * receives a raw key (URLs are derived at read time, never persisted).
    */
   async enrichForWire(
-    messages: GroupMessage[]
+    messages: GroupMessage[],
+    viewerUserId?: string
   ): Promise<Array<Record<string, unknown>>> {
     const mediaKeys: string[] = [];
     for (const message of messages) {
@@ -870,6 +872,29 @@ export class GroupMessageService {
       );
       wire.serverTs =
         message.createdAt instanceof Date ? message.createdAt.getTime() : 0;
+
+      if (
+        viewerUserId &&
+        String(wire.contentType).toUpperCase() === "SYSTEM" &&
+        message.systemEvent
+      ) {
+        const systemData = (message.systemData ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const content = wire.content as Record<string, unknown> | null;
+        const thirdPersonText = String(content?.text ?? "");
+        const personalized = personalizeGroupSystemMessageForViewer(
+          message.systemEvent,
+          systemData,
+          thirdPersonText,
+          viewerUserId
+        );
+        if (personalized !== thirdPersonText && content) {
+          wire.content = { ...content, text: personalized };
+        }
+      }
+
       return wire;
     });
   }

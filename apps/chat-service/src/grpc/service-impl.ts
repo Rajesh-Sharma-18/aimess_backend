@@ -1899,6 +1899,14 @@ export function createCommunityImpl(
                     dateTime: s.lastMessage.dateTime,
                   }
                 : undefined,
+              // Viewer-private join line ("You joined the community"); sender-less.
+              personalLastMessage: s.personalLastMessage
+                ? {
+                    username: "",
+                    message: s.personalLastMessage.message,
+                    dateTime: s.personalLastMessage.dateTime,
+                  }
+                : undefined,
             })),
           });
         } catch (err) {

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
+import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
@@ -200,6 +201,35 @@ export function registerChatNamespace(
           };
           chat.to(channel).emit(parsed.event, enriched);
           return;
+        }
+
+        if (parsed.event === "message:new" && pattern === "conv:*") {
+          const contentType = String(
+            (parsed.data as { contentType?: string; messageType?: string })
+              .contentType ??
+              (parsed.data as { messageType?: string }).messageType ??
+              ""
+          ).toUpperCase();
+          if (contentType === "SYSTEM") {
+            void (async () => {
+              try {
+                const sockets = await chat.in(channel).fetchSockets();
+                for (const socket of sockets) {
+                  const viewerUserId = String(socket.data.userId ?? "");
+                  socket.emit(
+                    parsed.event,
+                    personalizeGroupSocketMessage(parsed.data, viewerUserId)
+                  );
+                }
+              } catch (emitErr) {
+                logger.warn(
+                  `/chat personalized SYSTEM emit failed on ${channel}: ${String(emitErr)}`
+                );
+                chat.to(channel).emit(parsed.event, parsed.data);
+              }
+            })();
+            return;
+          }
         }
 
         chat.to(channel).emit(parsed.event, parsed.data);

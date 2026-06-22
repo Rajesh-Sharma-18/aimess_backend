@@ -54,6 +54,52 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     const where = prisma.generalRoomMessage.findMany.mock.calls[0][0].where;
     expect(where.OR).toBeUndefined();
   });
+
+  it("findLatestPersonalByRooms scopes the $match to the caller and decodes extended-JSON", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([
+      {
+        _id: { $oid: ROOM_ID },
+        message: "You joined the community",
+        createdAt: { $date: "2026-06-20T10:05:00.000Z" },
+      },
+    ]);
+    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const map = await repo.findLatestPersonalByRooms({
+      userId: USER_ID,
+      roomIds: [ROOM_ID],
+    });
+
+    // Keyed by room hex, with a real Date decoded from `{ $date }`.
+    const entry = map.get(ROOM_ID);
+    expect(entry?.message).toBe("You joined the community");
+    expect(entry?.createdAt.toISOString()).toBe("2026-06-20T10:05:00.000Z");
+
+    // The aggregation must restrict to the CALLER's own personal rows — never
+    // another user's (the whole point of PERSONAL visibility).
+    const pipeline = aggregateRaw.mock.calls[0][0].pipeline;
+    const match = pipeline.find(
+      (s: Record<string, unknown>) => "$match" in s
+    ).$match;
+    expect(match.visibleToUserId).toBe(USER_ID);
+    expect(match.roomId).toEqual({ $in: [{ $oid: ROOM_ID }] });
+    expect(match.deletedForAll).toBe(false);
+  });
+
+  it("findLatestPersonalByRooms short-circuits with no rooms (no query)", async () => {
+    const aggregateRaw = jest.fn();
+    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const map = await repo.findLatestPersonalByRooms({
+      userId: USER_ID,
+      roomIds: [],
+    });
+
+    expect(map.size).toBe(0);
+    expect(aggregateRaw).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -277,8 +323,8 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
     expect(data.senderAvatar).toBe("");
     expect(data.systemMessageType).toBe("MEMBER_JOINED");
     expect(data.isPersonal).toBe(false);
-    // MEMBER_JOINED bumps the community list.
-    expect(roomRepo.addLastestMessageToRoom).toHaveBeenCalled();
+    // Join lines must not reorder the community list for other members.
+    expect(roomRepo.addLastestMessageToRoom).not.toHaveBeenCalled();
   });
 
   it("renders deterministic Telegram-style template text per subtype", async () => {
@@ -297,6 +343,7 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
         "Bob is now an admin",
       ],
       ["COMMUNITY_JOINED", {}, "You joined the community"],
+      ["JOIN_REQUEST_APPROVED", {}, "Your request to join was approved"],
       ["JOIN_REQUEST_REJECTED", {}, "Your request to join was declined"],
     ];
 

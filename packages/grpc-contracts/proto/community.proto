@@ -102,6 +102,13 @@ message CommunityChatSummary {
   int32  unreadMessageCount = 2;
   bool   hasLastMessage     = 3; // false => lastMessageActivity is null
   CommunityChatLastMessage lastMessage = 4;
+  // Viewer-private SYSTEM line (e.g. "You joined the community"): the latest
+  // message visible ONLY to the requesting user (GeneralRoomMessage.visibleToUserId
+  // == userId). community-service overlays this onto the per-viewer
+  // /communities/mine lastActivity when it is newer than the community-wide
+  // activity, so the joiner sees "You joined the community" while everyone else
+  // keeps the community-wide message. Absent when the viewer has no personal line.
+  CommunityChatLastMessage personalLastMessage = 5;
 }
 message GetCommunityChatSummariesResponse {
   repeated CommunityChatSummary summaries = 1;

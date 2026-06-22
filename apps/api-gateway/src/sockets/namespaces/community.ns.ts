@@ -13,6 +13,7 @@ import {
 } from "../user-details.js";
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
+import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -242,7 +243,12 @@ export function registerCommunityNamespace(
         try {
           const parsed = JSON.parse(message) as RedisSocketEvent;
           if ((parsed.event as string).startsWith("community:")) {
-            community.to(channel).emit(parsed.event, parsed.data);
+            const viewerUserId = channel.slice("user:".length);
+            const payload =
+              parsed.event === "community:message:new"
+                ? personalizeCommunitySocketMessage(parsed.data, viewerUserId)
+                : parsed.data;
+            community.to(channel).emit(parsed.event, payload);
           }
         } catch (err) {
           logger.warn(
@@ -254,7 +260,27 @@ export function registerCommunityNamespace(
       if (pattern !== "community:*") return;
       try {
         const parsed = JSON.parse(message) as RedisSocketEvent;
-        community.to(channel).emit(parsed.event, parsed.data);
+        if (parsed.event === "community:message:new") {
+          void (async () => {
+            try {
+              const sockets = await community.in(channel).fetchSockets();
+              for (const socket of sockets) {
+                const viewerUserId = String(socket.data.userId ?? "");
+                socket.emit(
+                  parsed.event,
+                  personalizeCommunitySocketMessage(parsed.data, viewerUserId)
+                );
+              }
+            } catch (emitErr) {
+              logger.warn(
+                `/community personalized emit failed on ${channel}: ${String(emitErr)}`
+              );
+              community.to(channel).emit(parsed.event, parsed.data);
+            }
+          })();
+        } else {
+          community.to(channel).emit(parsed.event, parsed.data);
+        }
 
         // Evict-on-removal: when a member is removed (banned/kicked/left), force
         // their live sockets out of the broadcast room in real time so a BANNED

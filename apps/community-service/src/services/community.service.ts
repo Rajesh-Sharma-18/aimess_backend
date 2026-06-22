@@ -254,8 +254,8 @@ const SELF_JOIN_ACTIVITY_PREVIEW = "You joined the community";
  * lines (a role change or a join) are ABOUT one member: chat-service stores the
  * subject in `lastActivityUserId` and a first-person `lastActivitySelfPreview`
  * ("You are now a moderator" / "You joined the community"). The viewer who IS
- * the subject sees that "You …" line; everyone else sees the third-person
- * `lastActivityPreview`. Returns null only when there is no stored preview.
+ * the subject sees that "You …" line; everyone else must NOT see a join line
+ * (returns null). Returns null only when there is no stored preview.
  *
  * Exported for unit coverage (community-self-preview.test.ts).
  */
@@ -273,6 +273,11 @@ export function selectListPreview(
   }
   if (row.lastActivityType === "join" && row.lastActivityUserId === viewerId) {
     return SELF_JOIN_ACTIVITY_PREVIEW;
+  }
+  // Join is private to the joiner — admins and other members must not see
+  // "<name> joined the community" in GET /communities/mine (legacy rows too).
+  if (row.lastActivityType === "join" && row.lastActivityUserId !== viewerId) {
+    return null;
   }
   return row.lastActivityPreview ?? null;
 }
@@ -316,6 +321,36 @@ export function buildLastActivity(community: {
       (systemType === "created" ? "Community created successfully" : ""),
     dateTime,
   };
+}
+
+/**
+ * Per-viewer PERSONAL overlay for the community-list lastActivity. The caller's
+ * own private line ("You joined the community") replaces the community-wide
+ * lastActivity when it is strictly newer. Because `personal` is ALWAYS the
+ * caller's own line (chat-service scopes it by `visibleToUserId === userId`),
+ * this can never surface one member's join to another: admins / moderators /
+ * other members receive no `personal` line and keep the community-wide activity.
+ *
+ * Returns the community-wide base unchanged when there is no newer personal line.
+ * Exported for unit coverage (community-self-preview.test.ts).
+ */
+export function applyPersonalLastActivityOverlay(
+  base: { lastActivity: CommunityLastActivity; lastActivityAt: number },
+  personal: { message: string; dateTime: number } | null | undefined
+): { lastActivity: CommunityLastActivity; lastActivityAt: number } {
+  if (personal && personal.message && personal.dateTime > base.lastActivityAt) {
+    return {
+      lastActivity: {
+        type: "system",
+        userId: null,
+        username: null,
+        preview: personal.message,
+        dateTime: personal.dateTime,
+      },
+      lastActivityAt: personal.dateTime,
+    };
+  }
+  return base;
 }
 
 /**
@@ -768,9 +803,13 @@ function toAuditLogData(log: {
   };
 }
 
-/** Resolved chat enrichment for one community: unread count. */
+/** Resolved chat enrichment for one community: unread count + the viewer's
+ *  own personal line (e.g. "You joined the community"), if any. */
 type ChatEnrichment = {
   unreadMessageCount: number;
+  /** The caller's latest personal SYSTEM line — overlaid onto lastActivity for
+   *  the joiner only. Absent when the caller has no personal line. */
+  personalLastMessage?: { message: string; dateTime: number };
 };
 
 /**
@@ -794,6 +833,12 @@ async function fetchChatEnrichment(
   for (const s of summaries) {
     map.set(s.communityId, {
       unreadMessageCount: s.unreadMessageCount ?? 0,
+      personalLastMessage: s.personalLastMessage
+        ? {
+            message: s.personalLastMessage.message,
+            dateTime: s.personalLastMessage.dateTime,
+          }
+        : undefined,
     });
   }
   return map;
@@ -1414,6 +1459,33 @@ export const communityService = {
         );
         const avatar = await buildCommunityImageMedia(row.avatarUrl);
         const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
+
+        // Per-viewer PERSONAL overlay: the joiner sees their own "You joined the
+        // community" line as lastActivity when it is newer than the community-wide
+        // activity; everyone else keeps the community-wide message. The stored
+        // lastActivityAt (used for the pagination cursor below) is left untouched —
+        // only this viewer's displayed ordering reflects the personal timestamp.
+        const { lastActivity, lastActivityAt } =
+          applyPersonalLastActivityOverlay(
+            {
+              lastActivityAt: row.lastActivityAt.getTime(),
+              lastActivity: buildLastActivity({
+                ...row,
+                // Prefer the live member-snapshot name; fall back to the stored
+                // value when the sender has since left every community.
+                lastActivityUsername:
+                  (row.lastActivityUserId
+                    ? senderNameMap.get(row.lastActivityUserId)
+                    : null) ?? row.lastActivityUsername,
+                // Self-referential SYSTEM line (role change / join): the viewer who
+                // IS the subject sees the first-person "You …" preview; everyone
+                // else keeps the third-person text.
+                lastActivityPreview: selectListPreview(row, userId),
+              }),
+            },
+            chat.personalLastMessage
+          );
+
         return {
           id: row.id,
           name: row.name,
@@ -1426,21 +1498,9 @@ export const communityService = {
           avatar,
           role: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
           isJoined: true,
-          lastActivityAt: row.lastActivityAt.getTime(),
+          lastActivityAt,
           unreadMessageCount: chat.unreadMessageCount,
-          lastActivity: buildLastActivity({
-            ...row,
-            // Prefer the live member-snapshot name; fall back to the stored value
-            // when the sender has since left every community.
-            lastActivityUsername:
-              (row.lastActivityUserId
-                ? senderNameMap.get(row.lastActivityUserId)
-                : null) ?? row.lastActivityUsername,
-            // Self-referential SYSTEM line (role change / join): the viewer who IS
-            // the subject sees the first-person "You …" preview; everyone else
-            // keeps the third-person text.
-            lastActivityPreview: selectListPreview(row, userId),
-          }),
+          lastActivity,
           ...muteFields(muteMap.get(row.id) ?? null),
           // Phase 1 stub — wire to stream-service gRPC in Phase 2.
           isLive: false,
@@ -2240,29 +2300,6 @@ export const communityService = {
 
       const count = await communityRepository.countActiveMembers(communityId);
       await communityRepository.setMemberCount(communityId, count);
-
-      const allAdded = [...toReactivate.map((m) => m.userId), ...toCreate];
-      const lastAddedSnap =
-        allAdded.length > 0
-          ? snapshotMap.get(allAdded[allAdded.length - 1])
-          : undefined;
-      if (lastAddedSnap) {
-        void communityRepository
-          .updateLastActivity(
-            communityId,
-            new Date(),
-            "join",
-            `${lastAddedSnap.username} joined the community`,
-            lastAddedSnap.username,
-            allAdded[allAdded.length - 1] ?? null,
-            SELF_JOIN_ACTIVITY_PREVIEW
-          )
-          .catch((err) =>
-            logger.warn(
-              `updateLastActivity failed for community=${communityId}: ${String(err)}`
-            )
-          );
-      }
 
       const reactivated: CommunityMemberData[] = await Promise.all(
         toReactivate.map((m) => {
@@ -3230,23 +3267,6 @@ export const communityService = {
       const count = await communityRepository.countActiveMembers(communityId);
       await communityRepository.setMemberCount(communityId, count);
 
-      // STEP 5e: Best-effort last-activity update.
-      void communityRepository
-        .updateLastActivity(
-          communityId,
-          new Date(),
-          "join",
-          `${newRow.snapshotUsername} joined the community`,
-          newRow.snapshotUsername,
-          callerId,
-          SELF_JOIN_ACTIVITY_PREVIEW
-        )
-        .catch((err) =>
-          logger.warn(
-            `updateLastActivity failed for community=${communityId}: ${String(err)}`
-          )
-        );
-
       // STEP 5f: Emit community:member:joined + community:stats:updated socket
       // events + publish community.member_added (for mod notification).
       // Fire-and-forget: the member row is already committed — do not fail the
@@ -3777,22 +3797,6 @@ export const communityService = {
 
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
-
-    void communityRepository
-      .updateLastActivity(
-        communityId,
-        new Date(),
-        "join",
-        `${snap.username} joined the community`,
-        snap.username,
-        request.userId,
-        SELF_JOIN_ACTIVITY_PREVIEW
-      )
-      .catch((err) =>
-        logger.warn(
-          `updateLastActivity failed for community=${communityId}: ${String(err)}`
-        )
-      );
 
     const updatedRequest = await communityRepository.updateJoinRequest(
       requestId,
@@ -4542,22 +4546,6 @@ export const communityService = {
       invite.communityId
     );
     await communityRepository.setMemberCount(invite.communityId, count);
-
-    void communityRepository
-      .updateLastActivity(
-        invite.communityId,
-        new Date(),
-        "join",
-        `${snap.username} joined the community`,
-        snap.username,
-        callerId,
-        SELF_JOIN_ACTIVITY_PREVIEW
-      )
-      .catch((err) =>
-        logger.warn(
-          `updateLastActivity failed for community=${invite.communityId}: ${String(err)}`
-        )
-      );
 
     const updatedInvite = await communityRepository.updateInvite(inviteId, {
       status: CommunityInviteStatus.ACCEPTED,
@@ -5665,22 +5653,6 @@ export const communityService = {
       }
       const count = await communityRepository.countActiveMembers(community.id);
       await communityRepository.setMemberCount(community.id, count);
-
-      void communityRepository
-        .updateLastActivity(
-          community.id,
-          new Date(),
-          "join",
-          `${snap.username} joined the community`,
-          snap.username,
-          callerId,
-          SELF_JOIN_ACTIVITY_PREVIEW
-        )
-        .catch((err) =>
-          logger.warn(
-            `updateLastActivity failed for community=${community.id}: ${String(err)}`
-          )
-        );
 
       // Self-join via invite link: enriched member_added (moderator awareness) +
       // roster broadcast. actor === target, so the notifications consumer still

@@ -17,10 +17,27 @@ import {
  * `$in: [null, userId]` instead, which matches missing fields natively.
  */
 function isVisibleToUser(
-  msg: { visibleToUserId?: string | null },
+  msg: {
+    visibleToUserId?: string | null;
+    systemMessageType?: string | null;
+    systemMetadata?: unknown;
+    sentBy?: string | null;
+  },
   userId: string
 ): boolean {
-  return !msg.visibleToUserId || msg.visibleToUserId === userId;
+  if (msg.visibleToUserId && msg.visibleToUserId !== userId) {
+    return false;
+  }
+  // Legacy community-wide MEMBER_JOINED rows: only the joiner may read them.
+  if (msg.systemMessageType === "MEMBER_JOINED") {
+    const meta = (msg.systemMetadata ?? {}) as Record<string, unknown>;
+    const subject =
+      typeof meta.targetUserId === "string"
+        ? meta.targetUserId
+        : (msg.sentBy ?? "");
+    return subject === userId;
+  }
+  return true;
 }
 
 export class GeneralRoomMessageRepository {
@@ -394,6 +411,64 @@ export class GeneralRoomMessageRepository {
       if (hex) counts[hex] = row.total;
     }
     return counts;
+  }
+
+  /**
+   * Latest PERSONAL system line per room for one viewer — the newest message
+   * targeted ONLY at this user (`visibleToUserId === userId`), e.g. "You joined
+   * the community". Returns a Map keyed by room hex id. Used by getChatSummaries
+   * so /communities/mine can show the joiner their own join line as lastActivity
+   * while everyone else keeps the community-wide message. One aggregateRaw query
+   * for all requested rooms (no N+1). `roomId` is an ObjectId column, matched via
+   * `{ $oid }`; the grouped `_id` returns as `{ $oid: "<hex>" }`.
+   */
+  async findLatestPersonalByRooms(params: {
+    userId: string;
+    roomIds: string[];
+  }): Promise<Map<string, { message: string; createdAt: Date }>> {
+    if (!params.roomIds.length) return new Map();
+    const oids = params.roomIds.map((id) => ({ $oid: id }));
+
+    const result = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $in: oids },
+            deletedForAll: false,
+            // Only rows targeted at THIS viewer (community rows have null and are
+            // excluded — they're already covered by room.lastMessage).
+            visibleToUserId: params.userId,
+            deletedBy: { $ne: params.userId },
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        {
+          $group: {
+            _id: "$roomId",
+            message: { $first: "$message" },
+            createdAt: { $first: "$createdAt" },
+          },
+        },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{
+      _id: { $oid?: string } | string;
+      message?: string | null;
+      createdAt?: { $date?: string | number } | string | number | null;
+    }>;
+
+    const map = new Map<string, { message: string; createdAt: Date }>();
+    for (const row of result) {
+      const hex = typeof row._id === "string" ? row._id : row._id?.$oid;
+      if (!hex) continue;
+      const rawDate = row.createdAt;
+      const iso =
+        rawDate && typeof rawDate === "object" && "$date" in rawDate
+          ? rawDate.$date
+          : (rawDate as string | number | undefined);
+      const createdAt = iso != null ? new Date(iso) : new Date(0);
+      map.set(hex, { message: row.message ?? "", createdAt });
+    }
+    return map;
   }
 
   async searchByText(

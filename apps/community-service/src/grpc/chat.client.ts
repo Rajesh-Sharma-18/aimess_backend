@@ -26,6 +26,12 @@ export interface CommunityChatSummary {
   /** false => lastMessageActivity must be rendered as null. */
   hasLastMessage: boolean;
   lastMessage?: CommunityChatLastMessage;
+  /**
+   * The viewer's latest PERSONAL line (e.g. "You joined the community"), visible
+   * only to this user. Overlaid onto /communities/mine lastActivity for the
+   * joiner when newer than the community-wide activity. Sender-less (username "").
+   */
+  personalLastMessage?: CommunityChatLastMessage;
 }
 
 export interface ChatClient {
@@ -133,6 +139,16 @@ export function createChatClient(): ChatClient {
                   username: s.lastMessage.username ?? "",
                   message: s.lastMessage.message ?? "",
                   dateTime: Number(s.lastMessage.dateTime ?? 0),
+                }
+              : undefined,
+          // proto-loader null-fills sub-messages; a real personal line always
+          // carries a non-empty message, so treat empty/zero as absent.
+          personalLastMessage:
+            s.personalLastMessage && s.personalLastMessage.message
+              ? {
+                  username: "",
+                  message: s.personalLastMessage.message,
+                  dateTime: Number(s.personalLastMessage.dateTime ?? 0),
                 }
               : undefined,
         }));
