@@ -135,7 +135,7 @@ export type CommunityLastActivity =
   | {
       // SYSTEM / lifecycle — standalone text, NEVER prefixed (username === null).
       type: "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
-      userId: string | null;
+      userId: null;
       username: null;
       preview: string;
       dateTime: number;

@@ -430,7 +430,7 @@ function buildFallbackText(
       return `${actor} created an invite link`;
 
     case "COMMUNITY_JOINED":
-      return "You joined this community";
+      return "You joined the community";
     case "JOIN_REQUEST_APPROVED":
       return "Your request to join was approved";
     case "JOIN_REQUEST_REJECTED":
@@ -446,7 +446,7 @@ function buildFallbackText(
  * line. Most lifecycle lines read identically to everyone, but a few are ABOUT a
  * specific member — a role change ("Jim is now a moderator") or a join ("Jim
  * joined the community"). For those, the community list should show that one
- * member the first-person form ("You are now a moderator" / "You joined this
+ * member the first-person form ("You are now a moderator" / "You joined the
  * community") while everyone else sees the third-person line.
  *
  * Returns the `subjectUserId` (whom the line is about) and the `selfPreview`

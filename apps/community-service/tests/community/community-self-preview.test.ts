@@ -39,13 +39,25 @@ describe("selectListPreview", () => {
     expect(selectListPreview(row, OTHER)).toBe("Jim is now a moderator");
   });
 
-  it("works for the join line too (subject sees 'You joined this community')", () => {
+  it("works for the join line too (subject sees 'You joined the community')", () => {
     const row = {
+      lastActivityType: "join",
       lastActivityPreview: "Jim joined the community",
-      lastActivitySelfPreview: "You joined this community",
+      lastActivitySelfPreview: "You joined the community",
       lastActivityUserId: SUBJECT,
     };
-    expect(selectListPreview(row, SUBJECT)).toBe("You joined this community");
+    expect(selectListPreview(row, SUBJECT)).toBe("You joined the community");
+    expect(selectListPreview(row, OTHER)).toBe("Jim joined the community");
+  });
+
+  it("backfills old join rows that do not have a stored self preview", () => {
+    const row = {
+      lastActivityType: "join",
+      lastActivityPreview: "Jim joined the community",
+      lastActivitySelfPreview: null,
+      lastActivityUserId: SUBJECT,
+    };
+    expect(selectListPreview(row, SUBJECT)).toBe("You joined the community");
     expect(selectListPreview(row, OTHER)).toBe("Jim joined the community");
   });
 

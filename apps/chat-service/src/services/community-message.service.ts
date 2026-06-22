@@ -65,7 +65,7 @@ type CommunityMessageWire = Omit<
   readBy: Array<{ userId: string; readAt: number }>;
   /** Members who were active in the room when this message was sent. */
   deliveredTo: Array<{ userId: string; deliveredAt: number }>;
-  /** True for user-scoped SYSTEM messages (e.g. "You joined this community"). */
+  /** True for user-scoped SYSTEM messages (e.g. "You joined the community"). */
   isPersonal?: boolean;
 };
 

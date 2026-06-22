@@ -4,7 +4,7 @@
  * Covers two requirements:
  *  1. PUBLIC communities let non-members read message history; PRIVATE communities
  *     block non-members (and banned users in either case) with CHAT_NOT_A_MEMBER.
- *  2. The "You joined this community" SYSTEM message is PERSONAL: persisted with a
+ *  2. The "You joined the community" SYSTEM message is PERSONAL: persisted with a
  *     `visibleToUserId`, published to `user:<id>` (not the community room), and never
  *     surfaced to other members.
  */
@@ -192,7 +192,7 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
       id: "m".repeat(24),
       sentBy: USER_ID,
       senderName: "Bob",
-      message: "You joined this community",
+      message: "You joined the community",
       messageType: "SYSTEM",
       createdAt: new Date(),
     };
@@ -296,7 +296,7 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
         { targetUserId: OTHER_ID, newRole: "ADMIN", oldRole: "MEMBER" },
         "Bob is now an admin",
       ],
-      ["COMMUNITY_JOINED", {}, "You joined this community"],
+      ["COMMUNITY_JOINED", {}, "You joined the community"],
       ["JOIN_REQUEST_REJECTED", {}, "Your request to join was declined"],
     ];
 
@@ -331,14 +331,12 @@ describe("Community pin/unpin → system messages", () => {
         createPin: jest.fn().mockResolvedValue({ id: "p" }),
       } as never,
       {
-        findById: jest
-          .fn()
-          .mockResolvedValue({
-            id: MSG_ID,
-            roomId: ROOM_ID,
-            message: "hi",
-            createdAt: new Date(),
-          }),
+        findById: jest.fn().mockResolvedValue({
+          id: MSG_ID,
+          roomId: ROOM_ID,
+          message: "hi",
+          createdAt: new Date(),
+        }),
       } as never,
       {
         incPinnedCount: jest.fn().mockResolvedValue({ pinnedCount: 1 }),
@@ -390,14 +388,12 @@ describe("Community pin/unpin → system messages", () => {
     const post = jest.fn().mockResolvedValue(undefined);
     const svc = new CommunityMessageService(
       {
-        findById: jest
-          .fn()
-          .mockResolvedValue({
-            id: MSG_ID,
-            roomId: ROOM_ID,
-            messageType: "TEXT",
-            deletedForAll: false,
-          }),
+        findById: jest.fn().mockResolvedValue({
+          id: MSG_ID,
+          roomId: ROOM_ID,
+          messageType: "TEXT",
+          deletedForAll: false,
+        }),
       } as never,
       {
         findRoomById: jest

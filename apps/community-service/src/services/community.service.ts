@@ -237,6 +237,8 @@ const SENDERLESS_ACTIVITY_TYPES = new Set([
   "unpinned",
 ]);
 
+const SELF_JOIN_ACTIVITY_PREVIEW = "You joined the community";
+
 /**
  * The single `buildLastActivityPreview()`-style helper for the community list:
  * maps the denormalized `lastActivity*` columns to the {@link CommunityLastActivity}
@@ -251,7 +253,7 @@ const SENDERLESS_ACTIVITY_TYPES = new Set([
  * Personalize the community-list preview for one viewer. Self-referential SYSTEM
  * lines (a role change or a join) are ABOUT one member: chat-service stores the
  * subject in `lastActivityUserId` and a first-person `lastActivitySelfPreview`
- * ("You are now a moderator" / "You joined this community"). The viewer who IS
+ * ("You are now a moderator" / "You joined the community"). The viewer who IS
  * the subject sees that "You …" line; everyone else sees the third-person
  * `lastActivityPreview`. Returns null only when there is no stored preview.
  *
@@ -259,6 +261,7 @@ const SENDERLESS_ACTIVITY_TYPES = new Set([
  */
 export function selectListPreview(
   row: {
+    lastActivityType?: string | null;
     lastActivityPreview?: string | null;
     lastActivitySelfPreview?: string | null;
     lastActivityUserId?: string | null;
@@ -267,6 +270,9 @@ export function selectListPreview(
 ): string | null {
   if (row.lastActivitySelfPreview && row.lastActivityUserId === viewerId) {
     return row.lastActivitySelfPreview;
+  }
+  if (row.lastActivityType === "join" && row.lastActivityUserId === viewerId) {
+    return SELF_JOIN_ACTIVITY_PREVIEW;
   }
   return row.lastActivityPreview ?? null;
 }
@@ -303,7 +309,7 @@ export function buildLastActivity(community: {
       : community.lastActivityAt.getTime();
   return {
     type: systemType,
-    userId: community.lastActivityUserId ?? null,
+    userId: null,
     username: null,
     preview:
       community.lastActivityPreview ??
@@ -516,12 +522,15 @@ async function toDiscoverItem(
     lastActivityType?: string | null;
     lastActivityPreview?: string | null;
     lastActivityUsername?: string | null;
+    lastActivityUserId?: string | null;
+    lastActivitySelfPreview?: string | null;
     moderationStatus: CommunityModerationStatus;
     category: { id: string; name: string };
   },
   muteRow: MuteRowFragment,
   isJoined: boolean,
-  hasRequested: boolean
+  hasRequested: boolean,
+  viewerId?: string
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -547,7 +556,12 @@ async function toDiscoverItem(
     isLive: false,
     moderationStatus: community.moderationStatus,
     createdAt: community.createdAt.getTime(),
-    lastActivity: buildLastActivity(community),
+    lastActivity: buildLastActivity({
+      ...community,
+      lastActivityPreview: viewerId
+        ? selectListPreview(community, viewerId)
+        : community.lastActivityPreview,
+    }),
   };
 }
 
@@ -1529,7 +1543,8 @@ export const communityService = {
           row,
           muteByCommunityId.get(row.id) ?? null,
           memberSet.has(row.id),
-          pendingRequestSet.has(row.id)
+          pendingRequestSet.has(row.id),
+          userId
         )
       )
     );
@@ -2239,7 +2254,8 @@ export const communityService = {
             "join",
             `${lastAddedSnap.username} joined the community`,
             lastAddedSnap.username,
-            allAdded[allAdded.length - 1] ?? null
+            allAdded[allAdded.length - 1] ?? null,
+            SELF_JOIN_ACTIVITY_PREVIEW
           )
           .catch((err) =>
             logger.warn(
@@ -3134,7 +3150,8 @@ export const communityService = {
             community,
             muteMap.get(community.id) ?? null,
             isJoined,
-            false
+            false,
+            callerId
           );
           return { ...base, likedAt: likedAtByCommunityId.get(community.id)! };
         })
@@ -3221,7 +3238,8 @@ export const communityService = {
           "join",
           `${newRow.snapshotUsername} joined the community`,
           newRow.snapshotUsername,
-          callerId
+          callerId,
+          SELF_JOIN_ACTIVITY_PREVIEW
         )
         .catch((err) =>
           logger.warn(
@@ -3268,7 +3286,7 @@ export const communityService = {
         metadata: { reactivated },
       });
 
-      // STEP 5h2: Personal "You joined this community" to the joiner only.
+      // STEP 5h2: Personal "You joined the community" to the joiner only.
       // No community-wide join announcement — only the joiner sees it.
       publishCommunitySystemMessageForChatSafe({
         communityId,
@@ -3767,7 +3785,8 @@ export const communityService = {
         "join",
         `${snap.username} joined the community`,
         snap.username,
-        request.userId
+        request.userId,
+        SELF_JOIN_ACTIVITY_PREVIEW
       )
       .catch((err) =>
         logger.warn(
@@ -4531,7 +4550,8 @@ export const communityService = {
         "join",
         `${snap.username} joined the community`,
         snap.username,
-        callerId
+        callerId,
+        SELF_JOIN_ACTIVITY_PREVIEW
       )
       .catch((err) =>
         logger.warn(
@@ -5653,7 +5673,8 @@ export const communityService = {
           "join",
           `${snap.username} joined the community`,
           snap.username,
-          callerId
+          callerId,
+          SELF_JOIN_ACTIVITY_PREVIEW
         )
         .catch((err) =>
           logger.warn(
@@ -5673,7 +5694,7 @@ export const communityService = {
         requestId: undefined,
       });
 
-      // PERSONAL "You joined this community" to the joiner only.
+      // PERSONAL "You joined the community" to the joiner only.
       // No community-wide join announcement — only the joiner sees it.
       publishCommunitySystemMessageForChatSafe({
         communityId: community.id,

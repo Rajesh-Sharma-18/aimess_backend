@@ -9,7 +9,7 @@
  *     bump (via publishCommunityUpdatedSafe) so the live list reorders and shows
  *     the standalone system line — byte-identical to the room — WITHOUT a manual
  *     refetch. The bump fires ONLY when a memberRepo is wired (production) and is
- *     SUPPRESSED for PERSONAL lines (e.g. "You joined this community").
+ *     SUPPRESSED for PERSONAL lines (e.g. "You joined the community").
  *
  *  2. DETERMINISTIC ROLE-CHANGE TEXT (Issue #1). One stored row, identical for
  *     every viewer; the 6 role transitions render the exact Telegram phrasing.

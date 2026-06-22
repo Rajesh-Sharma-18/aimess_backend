@@ -67,6 +67,7 @@ describe("buildLastActivity — SYSTEM activities are NEVER sender-prefixed", ()
 
       // The core guarantee: NO sender prefix is possible because username is null,
       // even though the stored actor column held "Rajesh".
+      expect(result.userId).toBeNull();
       expect(result.username).toBeNull();
       expect(result.preview).toBe(preview);
       // The preview itself must not contain a "<name>: " prefix.
@@ -103,6 +104,7 @@ describe("buildLastActivity — SYSTEM activities are NEVER sender-prefixed", ()
       row({ lastActivityType: "totally-unknown", lastActivityPreview: null })
     );
     expect(result.type).toBe("created");
+    expect(result.userId).toBeNull();
     expect(result.username).toBeNull();
     expect(result.preview).toBe("Community created successfully");
   });
@@ -112,6 +114,7 @@ describe("buildLastActivity — SYSTEM activities are NEVER sender-prefixed", ()
       row({ lastActivityType: null, lastActivityPreview: null })
     );
     expect(result.type).toBe("created");
+    expect(result.userId).toBeNull();
     expect(result.username).toBeNull();
   });
 });

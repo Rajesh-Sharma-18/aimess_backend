@@ -334,7 +334,7 @@ model GeneralRoomMessage {
   systemMessageType  String?
   systemMetadata     Json?
   // When set, this message is PERSONAL: visible ONLY to this userId (e.g. the
-  // "You joined this community" onboarding message). null = visible to everyone
+  // "You joined the community" onboarding message). null = visible to everyone
   // with room read access. Read paths filter on { $in: [null, requestingUserId] }.
   visibleToUserId    String?
   createdAt          DateTime @default(now())

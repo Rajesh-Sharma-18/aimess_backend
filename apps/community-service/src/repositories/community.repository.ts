@@ -1008,6 +1008,7 @@ export const communityRepository = {
           lastActivityUsername: true,
           moderationStatus: true,
           lastActivityUserId: true,
+          lastActivitySelfPreview: true,
           category: { select: { id: true, name: true } },
         },
       }),
