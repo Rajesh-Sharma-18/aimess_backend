@@ -250,15 +250,23 @@ describe("joinCommunity — PUBLIC community", () => {
     expect(dto).toMatchObject({ userId: CALLER, role: "MEMBER" });
   });
 
-  it("1.1 fresh join — emits a PERSONAL COMMUNITY_JOINED system message to the joiner only", async () => {
+  it("1.1 fresh join — emits ONLY the PERSONAL COMMUNITY_JOINED to the joiner (no community-wide join line)", async () => {
     await communityService.joinCommunity(CID, CALLER);
 
-    expect(pubSystemMessage).toHaveBeenCalledTimes(1);
-    expect(pubSystemMessage.mock.calls[0][0]).toMatchObject({
+    const types = pubSystemMessage.mock.calls.map(
+      (c) => c[0].systemMessageType
+    );
+    // Only the personal line — no community-wide MEMBER_JOINED announcement.
+    expect(types).toContain("COMMUNITY_JOINED");
+    expect(types).not.toContain("MEMBER_JOINED");
+
+    // Personal "You joined" line — targeted at the joiner.
+    const personal = pubSystemMessage.mock.calls.find(
+      (c) => c[0].systemMessageType === "COMMUNITY_JOINED"
+    )![0];
+    expect(personal).toMatchObject({
       communityId: CID,
-      systemMessageType: "COMMUNITY_JOINED",
       triggeredByUserId: CALLER,
-      visibilityType: "PERSONAL",
       visibleToUserId: CALLER,
     });
   });

@@ -330,9 +330,12 @@ export function registerCommunityNamespace(
         { senderName, communityId }
       );
 
+    // ── FIRE-AND-FORGET (NO ACK) — FE must not pass a callback ──────────────────
+    // These events have NO ack callback. If FE waits for ack, the typing indicator
+    // will never appear. Emit without callback: socket.emit("typing:start", payload)
     socket.on("typing:start", (payload: unknown) => {
       const r = CommunityTypingSchema.safeParse(payload);
-      if (!r.success) return;
+      if (!r.success) return; // Invalid payload is silently dropped (no ack to send)
       const { communityId, senderName } = r.data;
       clearTyping(communityId);
       community
@@ -349,9 +352,10 @@ export function registerCommunityNamespace(
       );
     });
 
+    // ── FIRE-AND-FORGET (NO ACK) ──────────────────────────────────────────────
     socket.on("typing:stop", (payload: unknown) => {
       const r = CommunityTypingSchema.safeParse(payload);
-      if (!r.success) return;
+      if (!r.success) return; // Invalid payload is silently dropped
       const { communityId, senderName } = r.data;
       clearTyping(communityId);
       community

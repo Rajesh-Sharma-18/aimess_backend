@@ -69,6 +69,11 @@ model Community {
   lastActivityPreview  String?
   lastActivityUsername String?
   lastActivityUserId   String?
+  // First-person ("You …") variant of lastActivityPreview for self-referential
+  // SYSTEM lines (role change / join). When the viewer's id === lastActivityUserId
+  // the list renders this instead of the third-person preview. Opaque string —
+  // rendered by chat-service (single template source), never composed here.
+  lastActivitySelfPreview String?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   // Admin moderation state. DISTINCT from `deletedAt`: moderationStatus is an

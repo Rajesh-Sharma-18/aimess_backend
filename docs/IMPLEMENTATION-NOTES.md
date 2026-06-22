@@ -100,6 +100,19 @@ End-to-end inbox delivery with real-time socket notifications to all connected d
 
 ---
 
+## Telegram-style Community System Message Framework (shipped 2026-06-19)
+
+Redesigned the community SYSTEM message system around a single central registry so visibility, templates, and list-bump behaviour can't drift across API / socket / history / preview.
+
+- **Central registry** (`packages/constants/src/community/system-message.ts`): the full subtype set + `SYSTEM_MESSAGE_VISIBILITY` (PERSONAL vs COMMUNITY) + `SYSTEM_MESSAGE_BUMPS_ACTIVITY` (does it reorder the community list). 18 subtypes: COMMUNITY_CREATED, COMMUNITY_NAME_UPDATED, COMMUNITY_AVATAR_UPDATED, COMMUNITY_UPDATED, ROLE_CHANGED, MEMBER_JOINED/LEFT/REMOVED/BANNED/UNBANNED/MUTED/UNMUTED, PINNED_MESSAGE, UNPINNED_MESSAGE, COMMUNITY_INVITE_CREATED, COMMUNITY_JOINED, JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED (+ MEMBER_ROLE_CHANGED legacy alias).
+- **Visibility is derived, not passed.** `CommunitySystemMessageService` reads visibility from the registry; publishers only pass `visibleToUserId` for PERSONAL subtypes. PERSONAL (COMMUNITY*JOINED, JOIN_REQUEST*\*) → `user:<id>` channel + persisted `visibleToUserId`; COMMUNITY → `community:<id>` room.
+- **Deterministic templates** (`buildFallbackText`): "Community created", "Community photo updated", "{name} became an admin", "{name} joined the community", "{name} was banned", "You joined this community", etc. Never composed dynamically. Client renders localized text from `systemMessageType` + `systemMetadata`; the stored `text` is the English fallback (also the community-list preview).
+- **SENDER-LESS** (Telegram parity): SYSTEM messages emit empty `senderId`/`senderName`/`senderAvatar` on both the real-time wire and history reads (`toWire` strips them when contentType==SYSTEM). The actor lives in `systemMetadata.actorUserId`/`actorName` only.
+- **Lifecycle hooks wired** in `community.service.ts` via a small `emitMemberSystemMessage` helper: kick→MEMBER_REMOVED, ban→MEMBER_BANNED, unban→MEMBER_UNBANNED, mute→MEMBER_MUTED, unmute→MEMBER_UNMUTED, leave→MEMBER_LEFT, role→ROLE_CHANGED, update split into COMMUNITY_NAME_UPDATED / COMMUNITY_AVATAR_UPDATED / COMMUNITY_UPDATED. Every join path emits BOTH a personal line (COMMUNITY_JOINED / JOIN_REQUEST_APPROVED) AND community-wide MEMBER_JOINED; reject → personal JOIN_REQUEST_REJECTED.
+- **PIN/UNPIN wired (2026-06-19):** `CommunitySystemMessageService` is now injected as an OPTIONAL 6th constructor arg into BOTH community pin paths — `CommunityMessageService.pinMessage`/`unpinMessage` (gRPC/socket path) and `CommunityPinService.pin`/`unpin` (REST path). Optional so the 5-arg test/app-factory call sites stay untouched; production wires it in `server.ts`. Emits PINNED_MESSAGE / UNPINNED_MESSAGE best-effort (`void …?.post(...)`). roomId === communityId for general rooms.
+- **DEFERRED:** COMMUNITY_INVITE_CREATED is intentionally not auto-emitted (Telegram doesn't post it). Bulk reject doesn't emit per-user JOIN_REQUEST_REJECTED yet (single reject does).
+- Docs: AsyncAPI + OpenAPI `systemMessageType` enums expanded + sender-less note. Tests: `community-read-access.test.ts` (registry visibility, sender-less wire, deterministic templates per subtype) + `join-community.test.ts` (dual join lines). 94 chat-service + 104 community-service tests green.
+
 ## Personal Join System Message + PUBLIC Community History (shipped 2026-06-18)
 
 Telegram-style behaviour for community joins and history visibility. Two changes:

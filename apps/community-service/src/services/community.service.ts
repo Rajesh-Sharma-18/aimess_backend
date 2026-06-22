@@ -208,7 +208,70 @@ function buildAvatarMedia(
   });
 }
 
-function buildLastActivity(community: {
+/**
+ * USER-message activity types: a real member action. The community-list preview
+ * keeps the sender so the client can render "<sender>: <preview>" / "You: …".
+ */
+const PREFIXED_ACTIVITY_TYPES = new Set([
+  "message",
+  "reaction",
+  "edited",
+  "deleted",
+]);
+
+/**
+ * SYSTEM / lifecycle activity types: the stored preview is a complete,
+ * self-describing sentence (e.g. "Community photo updated", "John Doe became
+ * admin", "John Doe joined the community"). These MUST be shown standalone in the
+ * community list — NEVER prefixed with a sender name. This single set is the
+ * source of truth for the no-prefix rule; `buildLastActivity` forces
+ * `username: null` for every member of it so the Mine/List/Search/Summary DTOs
+ * can never leak a "Someone: <system text>" prefix.
+ */
+const SENDERLESS_ACTIVITY_TYPES = new Set([
+  "system",
+  "created",
+  "join",
+  "removal",
+  "pinned",
+  "unpinned",
+]);
+
+/**
+ * The single `buildLastActivityPreview()`-style helper for the community list:
+ * maps the denormalized `lastActivity*` columns to the {@link CommunityLastActivity}
+ * DTO, applying the prefix rule centrally.
+ *
+ * - USER message  → `{ username, preview }` (client prefixes the sender).
+ * - SYSTEM/lifecycle → `{ username: null, preview }` (standalone, no prefix).
+ *
+ * Exported for unit coverage (community-list-activity.test.ts).
+ */
+/**
+ * Personalize the community-list preview for one viewer. Self-referential SYSTEM
+ * lines (a role change or a join) are ABOUT one member: chat-service stores the
+ * subject in `lastActivityUserId` and a first-person `lastActivitySelfPreview`
+ * ("You are now a moderator" / "You joined this community"). The viewer who IS
+ * the subject sees that "You …" line; everyone else sees the third-person
+ * `lastActivityPreview`. Returns null only when there is no stored preview.
+ *
+ * Exported for unit coverage (community-self-preview.test.ts).
+ */
+export function selectListPreview(
+  row: {
+    lastActivityPreview?: string | null;
+    lastActivitySelfPreview?: string | null;
+    lastActivityUserId?: string | null;
+  },
+  viewerId: string
+): string | null {
+  if (row.lastActivitySelfPreview && row.lastActivityUserId === viewerId) {
+    return row.lastActivitySelfPreview;
+  }
+  return row.lastActivityPreview ?? null;
+}
+
+export function buildLastActivity(community: {
   lastActivityAt: Date;
   lastActivityType?: string | null;
   lastActivityPreview?: string | null;
@@ -216,46 +279,134 @@ function buildLastActivity(community: {
   lastActivityUserId?: string | null;
   createdAt: Date;
 }): CommunityLastActivity {
-  const type = community.lastActivityType ?? "created";
-  const dateTime =
-    type === "created"
-      ? community.createdAt.getTime()
-      : community.lastActivityAt.getTime();
+  const rawType = community.lastActivityType ?? "created";
 
-  const NAMED_TYPES = new Set([
-    "message",
-    "join",
-    "removal",
-    "reaction",
-    "edited",
-    "deleted",
-    "pinned",
-    "unpinned",
-  ]);
-  if (NAMED_TYPES.has(type)) {
+  // USER MESSAGE → carry the sender so the client renders "<sender>: <preview>".
+  if (PREFIXED_ACTIVITY_TYPES.has(rawType)) {
     return {
-      type: type as
-        | "message"
-        | "join"
-        | "removal"
-        | "reaction"
-        | "edited"
-        | "deleted"
-        | "pinned"
-        | "unpinned",
+      type: rawType as "message" | "reaction" | "edited" | "deleted",
       userId: community.lastActivityUserId ?? null,
       username: community.lastActivityUsername ?? "",
       preview: community.lastActivityPreview ?? "",
-      dateTime,
+      dateTime: community.lastActivityAt.getTime(),
     };
   }
+
+  // SYSTEM / lifecycle (and any unknown/legacy type → safe "created" default):
+  // standalone sentence, NEVER prefixed → username is forced to null.
+  const systemType = (
+    SENDERLESS_ACTIVITY_TYPES.has(rawType) ? rawType : "created"
+  ) as "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
+  const dateTime =
+    systemType === "created"
+      ? community.createdAt.getTime()
+      : community.lastActivityAt.getTime();
   return {
-    type: "created",
-    userId: null,
+    type: systemType,
+    userId: community.lastActivityUserId ?? null,
     username: null,
-    preview: community.lastActivityPreview ?? "Community created successfully",
+    preview:
+      community.lastActivityPreview ??
+      (systemType === "created" ? "Community created successfully" : ""),
     dateTime,
   };
+}
+
+/**
+ * Telegram-style mapping from the set of community fields that actually changed
+ * in one `update()` call to the ONE system-message subtype to post:
+ *   - 0 fields            → null (nothing changed worth a line)
+ *   - exactly 1 field     → its dedicated specific subtype where one exists
+ *                           (name / description / avatar / banner), else the
+ *                           generic COMMUNITY_UPDATED ("Community details updated")
+ *   - 2+ fields           → one collapsed COMMUNITY_UPDATED ("Community details updated")
+ *
+ * Single source of truth for the "specific-or-collapsed" rule; exported for unit
+ * coverage (community-update-system-message.test.ts).
+ */
+const COMMUNITY_UPDATE_SINGLE_FIELD_SUBTYPE: Record<string, string> = {
+  name: "COMMUNITY_NAME_UPDATED",
+  description: "COMMUNITY_DESCRIPTION_UPDATED",
+  avatar: "COMMUNITY_AVATAR_UPDATED",
+  banner: "COMMUNITY_BANNER_UPDATED",
+};
+
+export function selectCommunityUpdateSystemMessageType(
+  changedFields: string[]
+): string | null {
+  if (changedFields.length === 0) return null;
+  if (changedFields.length === 1) {
+    return (
+      COMMUNITY_UPDATE_SINGLE_FIELD_SUBTYPE[changedFields[0]!] ??
+      "COMMUNITY_UPDATED"
+    );
+  }
+  return "COMMUNITY_UPDATED";
+}
+
+/**
+ * The set of community fields that ACTUALLY changed in one `update()` save —
+ * the input to {@link selectCommunityUpdateSystemMessageType}. Each field counts
+ * ONLY when its incoming value genuinely differs from the stored one. This is
+ * the fix for the "always generic 'Community was updated'" bug: edit forms
+ * resubmit the whole community (current avatar key, current category, the same
+ * description) even when the user touched a single field, so a naive "field was
+ * present in the payload" check inflated the set to 2+ and collapsed every save
+ * into the generic line instead of the specific one (name/description/avatar).
+ *
+ * `name`/`handle` are passed pre-normalized and `avatar` pre-resolved (those
+ * transforms are async / live in `update()`); the comparison itself is pure and
+ * unit-tested. Exported as the single source of truth for the rule.
+ */
+export function detectCommunityChangedFields(
+  current: {
+    name: string;
+    description: string | null;
+    avatarUrl: string | null;
+    type: string;
+    categoryId: string;
+    handle: string;
+  },
+  next: {
+    /** Normalized next name, or undefined when not in the payload. */
+    name?: string;
+    description?: string | null;
+    /** Whether `avatarObjectKey` was present in the payload at all. */
+    avatarProvided: boolean;
+    /** Resolved next avatar object key (null = cleared). */
+    nextAvatarUrl: string | null;
+    type?: string;
+    categoryId?: string;
+    /** Normalized next handle, or undefined when not in the payload. */
+    handle?: string;
+  }
+): string[] {
+  const changed: string[] = [];
+  if (next.name !== undefined && next.name !== current.name) {
+    changed.push("name");
+  }
+  if (
+    next.description !== undefined &&
+    (next.description ?? "") !== (current.description ?? "")
+  ) {
+    changed.push("description");
+  }
+  if (
+    next.avatarProvided &&
+    next.nextAvatarUrl !== (current.avatarUrl ?? null)
+  ) {
+    changed.push("avatar");
+  }
+  if (next.type !== undefined && next.type !== current.type) {
+    changed.push("visibility");
+  }
+  if (next.categoryId !== undefined && next.categoryId !== current.categoryId) {
+    changed.push("category");
+  }
+  if (next.handle !== undefined && next.handle !== current.handle) {
+    changed.push("handle");
+  }
+  return changed;
 }
 
 async function toCommunityData(
@@ -1100,35 +1251,29 @@ export const communityService = {
             );
     }
 
-    // Detect which fields will actually change for the system message.
-    const changedFields: string[] = [];
-    if (
-      input.name !== undefined &&
-      normalizeName(input.name) !== community.name
-    ) {
-      changedFields.push("name");
-    }
-    if (
-      input.description !== undefined &&
-      input.description !== community.description
-    ) {
-      changedFields.push("description");
-    }
-    if (input.avatarObjectKey !== undefined) {
-      changedFields.push("avatar");
-    }
-    if (input.type !== undefined && input.type !== community.type) {
-      changedFields.push("visibility");
-    }
-    if (input.categoryId !== undefined) {
-      changedFields.push("category");
-    }
-    if (
-      input.handle !== undefined &&
-      normalizeHandle(input.handle) !== community.handle
-    ) {
-      changedFields.push("handle");
-    }
+    // Detect which fields ACTUALLY changed (genuine value diff, not merely
+    // present in the payload) so a single real edit posts its specific system
+    // line instead of the generic "Community details updated". See
+    // detectCommunityChangedFields.
+    const changedFields = detectCommunityChangedFields(
+      {
+        name: community.name,
+        description: community.description,
+        avatarUrl: community.avatarUrl,
+        type: community.type,
+        categoryId: community.categoryId,
+        handle: community.handle,
+      },
+      {
+        name: nextName,
+        description: input.description,
+        avatarProvided: input.avatarObjectKey !== undefined,
+        nextAvatarUrl: (data.avatarUrl as string | null | undefined) ?? null,
+        type: input.type,
+        categoryId: input.categoryId,
+        handle: nextHandle,
+      }
+    );
 
     let updated: CommunityWithCategory;
     try {
@@ -1149,15 +1294,27 @@ export const communityService = {
       await communityCache.invalidateHandleAvailability(nextHandle);
     }
 
-    if (changedFields.length > 0) {
+    // Telegram-style system line, exactly ONE per update:
+    //  - a SINGLE field change → its dedicated, specific subtype where one exists
+    //    (name / description / avatar / banner), else the generic COMMUNITY_UPDATED;
+    //  - MULTIPLE simultaneous fields → one collapsed COMMUNITY_UPDATED
+    //    ("Community details updated").
+    // This replaces the previous "emit one line per name/avatar/other group"
+    // behaviour, which could post up to three separate lines for one save and
+    // rendered description/banner edits as the generic "Community info" line.
+    const systemMessageType =
+      selectCommunityUpdateSystemMessageType(changedFields);
+    if (systemMessageType) {
       publishCommunitySystemMessageForChatSafe({
         communityId,
-        systemMessageType: "COMMUNITY_UPDATED",
+        systemMessageType,
         metadata: {
           actorUserId: callerId,
           actorName: "",
           changedFields,
-          ...(input.name !== undefined ? { newName: nextName } : {}),
+          ...(systemMessageType === "COMMUNITY_NAME_UPDATED"
+            ? { newName: nextName }
+            : {}),
           ...(input.type !== undefined ? { newVisibility: input.type } : {}),
         },
         triggeredByUserId: callerId,
@@ -1219,10 +1376,21 @@ export const communityService = {
 
     const communityIds = pageRows.map((row) => row.id);
 
-    // Bulk-fetch chat enrichment and mute settings in parallel.
-    const [chatMap, muteMap] = await Promise.all([
+    // Resolve the last-activity sender name from the LIVE member snapshot — the
+    // same fresh source the chat room renders — overriding the denormalized
+    // `lastActivityUsername`, which is frozen at message-send time and goes
+    // stale after a rename (the cause of "<old name>: 📷 Photo" lingering on the
+    // list while the chat shows the new name). Only user-message activities
+    // carry a sender; system lines render sender-less in buildLastActivity.
+    const senderIds = pageRows
+      .map((row) => row.lastActivityUserId)
+      .filter((id): id is string => Boolean(id));
+
+    // Bulk-fetch chat enrichment, mute settings, and live sender names in parallel.
+    const [chatMap, muteMap, senderNameMap] = await Promise.all([
       fetchChatEnrichment(userId, communityIds),
       loadMuteMap(userId, communityIds),
+      communityRepository.getDisplayNamesByUserIds(senderIds),
     ]);
 
     const communities: CommunityListItem[] = await Promise.all(
@@ -1246,7 +1414,19 @@ export const communityService = {
           isJoined: true,
           lastActivityAt: row.lastActivityAt.getTime(),
           unreadMessageCount: chat.unreadMessageCount,
-          lastActivity: buildLastActivity(row),
+          lastActivity: buildLastActivity({
+            ...row,
+            // Prefer the live member-snapshot name; fall back to the stored value
+            // when the sender has since left every community.
+            lastActivityUsername:
+              (row.lastActivityUserId
+                ? senderNameMap.get(row.lastActivityUserId)
+                : null) ?? row.lastActivityUsername,
+            // Self-referential SYSTEM line (role change / join): the viewer who IS
+            // the subject sees the first-person "You …" preview; everyone else
+            // keeps the third-person text.
+            lastActivityPreview: selectListPreview(row, userId),
+          }),
           ...muteFields(muteMap.get(row.id) ?? null),
           // Phase 1 stub — wire to stream-service gRPC in Phase 2.
           isLive: false,
@@ -1481,9 +1661,10 @@ export const communityService = {
       oldRole: target.role,
       newRole: role,
     });
+    const roleChangedAt = new Date().toISOString();
     publishCommunitySystemMessageForChatSafe({
       communityId,
-      systemMessageType: "MEMBER_ROLE_CHANGED",
+      systemMessageType: "ROLE_CHANGED",
       metadata: {
         actorUserId: callerId,
         actorName: "",
@@ -1493,7 +1674,20 @@ export const communityService = {
         newRole: role as string,
       },
       triggeredByUserId: callerId,
-      eventAt: new Date().toISOString(),
+      eventAt: roleChangedAt,
+    });
+    // Personal counterpart: the target sees "You are now a moderator/member"
+    // while everyone else sees the community-wide line with their real name.
+    publishCommunitySystemMessageForChatSafe({
+      communityId,
+      systemMessageType: "ROLE_CHANGED_SELF",
+      metadata: {
+        oldRole: target.role as string,
+        newRole: role as string,
+      },
+      triggeredByUserId: targetUserId,
+      eventAt: roleChangedAt,
+      visibleToUserId: targetUserId,
     });
 
     return toMemberData(updated);
@@ -1660,6 +1854,13 @@ export const communityService = {
       );
     }
 
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_REMOVED",
+      actorId: callerId,
+      targetUserId,
+    });
+
     return toMemberData(updated);
   },
 
@@ -1790,7 +1991,40 @@ export const communityService = {
       );
     }
 
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_BANNED",
+      actorId: callerId,
+      targetUserId,
+    });
+
     return toMemberData(updated);
+  },
+
+  /**
+   * Emit a community-wide SYSTEM message for a member-moderation lifecycle event
+   * (joined/left/removed/banned/unbanned/muted/unmuted, role change). Thin
+   * wrapper over the chat-sync publisher so every moderation method stays a
+   * one-liner. Visibility + template + list-bump are decided downstream by the
+   * central registry in @aimess/constants — callers never pass them. Best-effort.
+   */
+  emitMemberSystemMessage(args: {
+    communityId: string;
+    systemMessageType: string;
+    actorId: string;
+    targetUserId?: string;
+    extra?: Record<string, unknown>;
+  }): void {
+    publishCommunitySystemMessageForChatSafe({
+      communityId: args.communityId,
+      systemMessageType: args.systemMessageType,
+      metadata: {
+        ...(args.targetUserId ? { targetUserId: args.targetUserId } : {}),
+        ...(args.extra ?? {}),
+      },
+      triggeredByUserId: args.actorId,
+      eventAt: new Date().toISOString(),
+    });
   },
 
   /**
@@ -2195,6 +2429,13 @@ export const communityService = {
       );
     }
 
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_LEFT",
+      actorId: callerId,
+      targetUserId: callerId,
+    });
+
     return toMemberData(updated);
   },
 
@@ -2432,6 +2673,13 @@ export const communityService = {
       );
     }
 
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_UNBANNED",
+      actorId: callerId,
+      targetUserId,
+    });
+
     return toMemberData(updated);
   },
 
@@ -2488,6 +2736,13 @@ export const communityService = {
       targetUserId,
       reason: reason ?? null,
       mutedUntil: mutedUntil?.toISOString() ?? null,
+    });
+
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_MUTED",
+      actorId: callerId,
+      targetUserId,
     });
 
     const view = await buildUserSnapshotView(
@@ -2557,6 +2812,13 @@ export const communityService = {
     publishCommunityMemberUnmutedSafe({
       communityId,
       eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+    });
+
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_UNMUTED",
       actorId: callerId,
       targetUserId,
     });
@@ -3006,14 +3268,14 @@ export const communityService = {
         metadata: { reactivated },
       });
 
-      // STEP 5h2: Emit personal system message "You joined this community" to the joined user only.
+      // STEP 5h2: Personal "You joined this community" to the joiner only.
+      // No community-wide join announcement — only the joiner sees it.
       publishCommunitySystemMessageForChatSafe({
         communityId,
         systemMessageType: "COMMUNITY_JOINED",
         metadata: {},
         triggeredByUserId: callerId,
         eventAt: new Date().toISOString(),
-        visibilityType: "PERSONAL",
         visibleToUserId: callerId,
       });
 
@@ -3574,14 +3836,14 @@ export const communityService = {
       decidedAt: new Date().toISOString(),
     });
 
-    // Emit personal system message "You joined this community" to the approved user only.
+    // PERSONAL "Your request to join was approved" to the approved user only.
+    // No community-wide join announcement — only the approved user sees it.
     publishCommunitySystemMessageForChatSafe({
       communityId: community.id,
-      systemMessageType: "COMMUNITY_JOINED",
+      systemMessageType: "JOIN_REQUEST_APPROVED",
       metadata: {},
       triggeredByUserId: request.userId,
       eventAt: new Date().toISOString(),
-      visibilityType: "PERSONAL",
       visibleToUserId: request.userId,
     });
 
@@ -3650,6 +3912,17 @@ export const communityService = {
         displayName: callerSnapReject?.displayName ?? "Unknown",
       },
       decidedAt: new Date().toISOString(),
+    });
+
+    // PERSONAL "Your request to join was declined" — only the rejected user
+    // sees it (never broadcast to the community).
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "JOIN_REQUEST_REJECTED",
+      metadata: {},
+      triggeredByUserId: request.userId,
+      eventAt: new Date().toISOString(),
+      visibleToUserId: request.userId,
     });
 
     return toJoinRequestData(updated);
@@ -5400,14 +5673,14 @@ export const communityService = {
         requestId: undefined,
       });
 
-      // Emit personal system message "You joined this community" to the joined user only.
+      // PERSONAL "You joined this community" to the joiner only.
+      // No community-wide join announcement — only the joiner sees it.
       publishCommunitySystemMessageForChatSafe({
         communityId: community.id,
         systemMessageType: "COMMUNITY_JOINED",
         metadata: {},
         triggeredByUserId: callerId,
         eventAt: new Date().toISOString(),
-        visibilityType: "PERSONAL",
         visibleToUserId: callerId,
       });
 

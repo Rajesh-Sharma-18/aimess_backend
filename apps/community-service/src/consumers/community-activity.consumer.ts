@@ -27,6 +27,8 @@ interface CommunityActivityMessage {
     senderUsername?: string;
     messagePreview?: string;
     type?: string;
+    /** First-person ("You …") preview for a self-referential SYSTEM line. */
+    selfPreview?: string;
   };
 }
 
@@ -67,7 +69,8 @@ export async function startCommunityActivityConsumer(): Promise<void> {
               parsed.data.type ?? "message",
               parsed.data.messagePreview ?? "",
               parsed.data.senderUsername ?? null,
-              parsed.data.senderUserId ?? null
+              parsed.data.senderUserId ?? null,
+              parsed.data.selfPreview ?? null
             );
           }
         } else {

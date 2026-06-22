@@ -95,66 +95,47 @@ export type CommunityCategoryData = {
   name: string;
   slug: string;
 };
+/**
+ * Community-list "last activity" preview, surfaced by every list/summary surface
+ * (`/communities/mine`, search/discover, get-by-id) and the socket bumps.
+ *
+ * Two shapes, discriminated by the nature of the activity (Telegram parity):
+ *
+ * - **USER MESSAGE** (`message` / `reaction` / `edited` / `deleted`): a real
+ *   member action. `username` is the sender's name and the CLIENT renders
+ *   `"<username>: <preview>"` (or `"You: <preview>"`).
+ *
+ * - **SYSTEM / lifecycle** (`system` / `created` / `join` / `removal` /
+ *   `pinned` / `unpinned`): the `preview` is already a complete, self-describing
+ *   sentence (e.g. "Community photo updated", "John Doe became admin"). For these
+ *   `username` is ALWAYS `null`, so the client shows the text standalone with NO
+ *   sender prefix. Never render `"<actor>: <preview>"` for this shape.
+ */
+export type CommunityLastActivityType =
+  | "message"
+  | "reaction"
+  | "edited"
+  | "deleted"
+  | "system"
+  | "created"
+  | "join"
+  | "removal"
+  | "pinned"
+  | "unpinned";
+
 export type CommunityLastActivity =
   | {
-      type: "message";
+      // USER MESSAGE — client prefixes the preview with the sender / "You".
+      type: "message" | "reaction" | "edited" | "deleted";
       userId: string | null;
       username: string;
       preview: string;
       dateTime: number;
     }
   | {
-      type: "join";
+      // SYSTEM / lifecycle — standalone text, NEVER prefixed (username === null).
+      type: "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
       userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "removal";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "reaction";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "edited";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "deleted";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "pinned";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "unpinned";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "created";
-      userId: null;
       username: null;
       preview: string;
       dateTime: number;

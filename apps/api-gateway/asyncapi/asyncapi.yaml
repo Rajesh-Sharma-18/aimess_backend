@@ -4262,10 +4262,34 @@ components:
           nullable: true
           enum:
             - COMMUNITY_CREATED
-            - COMMUNITY_JOINED
+            - COMMUNITY_NAME_UPDATED
+            - COMMUNITY_DESCRIPTION_UPDATED
+            - COMMUNITY_AVATAR_UPDATED
+            - COMMUNITY_BANNER_UPDATED
             - COMMUNITY_UPDATED
+            - ROLE_CHANGED
+            - MEMBER_JOINED
+            - MEMBER_LEFT
+            - MEMBER_REMOVED
+            - MEMBER_BANNED
+            - MEMBER_UNBANNED
+            - MEMBER_MUTED
+            - MEMBER_UNMUTED
+            - PINNED_MESSAGE
+            - UNPINNED_MESSAGE
+            - COMMUNITY_INVITE_CREATED
+            - COMMUNITY_JOINED
+            - JOIN_REQUEST_APPROVED
+            - JOIN_REQUEST_REJECTED
             - MEMBER_ROLE_CHANGED
           description: >-
+            Present when contentType is SYSTEM. SYSTEM messages are SENDER-LESS
+            (senderId/senderName/senderAvatar are empty) — the actor is in
+            systemMetadata.actorUserId/actorName only. Text is a deterministic
+            template; render localized text from systemMessageType + metadata.
+            COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED are
+            PERSONAL (isPersonal=true). MEMBER_ROLE_CHANGED is the legacy alias
+            for ROLE_CHANGED (old rows only).
         isPersonal:
           type: boolean
           description: >-

@@ -29,6 +29,7 @@ import {
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
+import type { CommunitySystemMessageService } from "./community-system-message.service.js";
 import {
   assertCommunityMember,
   assertCommunityReadAccess,
@@ -97,7 +98,13 @@ export class CommunityMessageService {
     private readonly roomRepo: GeneralRoomRepository,
     private readonly memberRepo: RoomMemberRepository,
     private readonly cacheRepo: CacheRepository,
-    private readonly userSnapshotService: UserSnapshotService
+    private readonly userSnapshotService: UserSnapshotService,
+    /**
+     * Optional — when provided, pin/unpin emit PINNED_MESSAGE / UNPINNED_MESSAGE
+     * SYSTEM lines. Optional so the many 5-arg construction sites (tests,
+     * app-factory) keep working untouched; production wires it in server.ts.
+     */
+    private readonly systemMessageService?: CommunitySystemMessageService
   ) {}
 
   /**
@@ -412,16 +419,20 @@ export class CommunityMessageService {
           ? last.createdAt
           : new Date(last.createdAt);
 
+      // SYSTEM messages are sender-less: the preview is a complete sentence
+      // (e.g. "John joined the community"), so the community list must NEVER
+      // prefix it with a sender name. Force username empty for SYSTEM, mirroring
+      // the REST `lastActivity` rule in community-service's buildLastActivity.
+      const messageType = last.messageType ?? "";
+      const isSystem = messageType.toUpperCase() === "SYSTEM";
+
       return {
         communityId,
         unreadMessageCount,
         hasLastMessage: true,
         lastMessage: {
-          username: last.senderName ?? "",
-          message: convertMessageToPreview(
-            last.messageType ?? "",
-            last.content
-          ),
+          username: isSystem ? "" : (last.senderName ?? ""),
+          message: convertMessageToPreview(messageType, last.content),
           dateTime: Number.isNaN(createdAt.getTime()) ? 0 : createdAt.getTime(),
         },
       };
@@ -567,6 +578,18 @@ export class CommunityMessageService {
     );
     delete (wire as Record<string, unknown>).visibleToUserId;
     wire.isPersonal = isPersonal;
+
+    // SYSTEM messages are SENDER-LESS (Telegram-style): never expose
+    // senderId/senderName/senderAvatar — the actor lives in systemMetadata only.
+    // Also blank the internal idempotency token we stash in `clientMessageId`
+    // (the system-event dedup key); it is not part of the client contract.
+    if (String(wire.contentType).toUpperCase() === "SYSTEM") {
+      wire.senderId = "";
+      wire.sentBy = "";
+      wire.senderName = "";
+      wire.senderAvatar = "";
+      wire.clientMessageId = "";
+    }
 
     return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
   }
@@ -1274,6 +1297,15 @@ export class CommunityMessageService {
 
     const newPinnedIds = [...pinnedIds, params.messageId];
     await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);
+
+    // Telegram-style "{actor} pinned a message" SYSTEM line (best-effort).
+    void this.systemMessageService?.post({
+      communityId: params.communityId,
+      systemMessageType: "PINNED_MESSAGE",
+      metadata: { pinnedMessageId: params.messageId },
+      triggeredByUserId: params.userId,
+    });
+
     return {
       pinnedIds: newPinnedIds,
       pinnedCount: newPinnedIds.length,
@@ -1585,6 +1617,15 @@ export class CommunityMessageService {
 
     const newPinnedIds = pinnedIds.filter((id) => id !== params.messageId);
     await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);
+
+    // Telegram-style "{actor} unpinned a message" SYSTEM line (best-effort).
+    void this.systemMessageService?.post({
+      communityId: params.communityId,
+      systemMessageType: "UNPINNED_MESSAGE",
+      metadata: { pinnedMessageId: params.messageId },
+      triggeredByUserId: params.userId,
+    });
+
     return { pinnedIds: newPinnedIds, pinnedCount: newPinnedIds.length };
   }
 }

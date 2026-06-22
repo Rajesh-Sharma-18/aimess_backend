@@ -118,7 +118,10 @@ export class CommunityRoomSyncConsumer {
     new GeneralRoomRepository(prisma),
     new CacheRepository(redis),
     new UserSnapshotService(),
-    redis
+    redis,
+    // Drives the real-time `community:updated` list bump for COMMUNITY-visible
+    // system lines (role change, community-info update, joins, …).
+    this.memberRepo
   );
 
   async start(connection: ChannelModel): Promise<void> {
@@ -250,8 +253,8 @@ export class CommunityRoomSyncConsumer {
             systemMessageType,
             metadata,
             triggeredByUserId,
-            visibilityType,
             visibleToUserId,
+            eventAt,
           } = event.data;
           if (!systemMessageType || !triggeredByUserId) {
             logger.warn(
@@ -270,18 +273,21 @@ export class CommunityRoomSyncConsumer {
             );
             break;
           }
+          // Visibility is derived from the central registry inside the service —
+          // the publisher no longer dictates it. visibleToUserId is still passed
+          // so PERSONAL subtypes know their target.
           await this.communitySystemMessageService.post({
             communityId,
             systemMessageType: systemMessageType as CommunitySystemMessageType,
             metadata: (metadata ?? {}) as Record<string, unknown>,
             triggeredByUserId,
-            visibilityType: (visibilityType ?? "COMMUNITY") as
-              | "PERSONAL"
-              | "COMMUNITY",
             visibleToUserId,
+            // Anchors the idempotency key so a redelivered event can't post a
+            // duplicate system line.
+            eventAt,
           });
           logger.debug(
-            `community.system_message: posted type=${systemMessageType} communityId=${communityId} visibility=${visibilityType ?? "COMMUNITY"}`
+            `community.system_message: posted type=${systemMessageType} communityId=${communityId}`
           );
           break;
         }

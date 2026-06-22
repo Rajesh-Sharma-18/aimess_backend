@@ -70,6 +70,16 @@ export async function startUserProfileUpdatedConsumer(): Promise<void> {
           snapshotAvatarKey: avatarObjectKey,
         });
 
+        // Keep the community-list preview sender name in sync too. The
+        // `lastActivityUsername` column is denormalized + frozen at message-send
+        // time, so a rename otherwise leaves "<old name>: <preview>" stuck on
+        // the community list even though the chat room (which renders the live
+        // member snapshot refreshed just above) shows the new name.
+        await communityRepository.updateLastActivityUsernameByUserId(
+          userId,
+          displayName
+        );
+
         // Broadcast real-time profile update to all communities the user is in
         void (async () => {
           try {

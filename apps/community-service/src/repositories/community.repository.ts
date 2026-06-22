@@ -761,6 +761,7 @@ export const communityRepository = {
           lastActivityPreview: true,
           lastActivityUsername: true,
           lastActivityUserId: true,
+          lastActivitySelfPreview: true,
           createdAt: true,
           moderationStatus: true,
           // At most one row per (communityId, userId) by unique constraint, so
@@ -794,7 +795,8 @@ export const communityRepository = {
     type: string,
     preview: string,
     username: string | null,
-    userId: string | null
+    userId: string | null,
+    selfPreview: string | null = null
   ): Promise<void> {
     await prisma.community.updateMany({
       where: { id: communityId, lastActivityAt: { lt: activityAt } },
@@ -804,8 +806,60 @@ export const communityRepository = {
         lastActivityPreview: preview,
         lastActivityUsername: username,
         lastActivityUserId: userId,
+        // Always overwrite — a subsequent non-self bump (e.g. a normal message)
+        // must clear a stale "You …" preview from an earlier role-change/join.
+        lastActivitySelfPreview: selfPreview,
       },
     });
+  },
+
+  /**
+   * Re-sync the denormalized community-list preview sender name on a profile
+   * rename. `lastActivityUsername` is frozen at message-send time (it carries
+   * the sender's DISPLAY name, mirroring chat-service's `senderUsername`), so
+   * without this a rename leaves the community list showing the OLD name —
+   * e.g. "Vasu Himanshu" — even though the chat room renders the live member
+   * snapshot ("Himanshu Vasu"). Updates only the communities where this user is
+   * the current last-activity sender. Sibling of
+   * {@link updateMemberSnapshotsByUserId}, which keeps the member-list snapshot
+   * in sync the same way.
+   */
+  updateLastActivityUsernameByUserId(userId: string, displayName: string) {
+    return prisma.community.updateMany({
+      where: { lastActivityUserId: userId },
+      data: { lastActivityUsername: displayName },
+    });
+  },
+
+  /**
+   * Current display name for a set of users, resolved from ANY of their
+   * community memberships. A user's `snapshotDisplayName` is identical across
+   * all their member rows (kept in sync by {@link updateMemberSnapshotsByUserId}
+   * on every `user.profile_updated`), so the first non-empty hit per user is the
+   * live name. Used to resolve the community-list preview sender name at READ
+   * time — matching the live name the chat room renders — instead of trusting
+   * the denormalized `lastActivityUsername`, which is frozen at message-send
+   * time and goes stale after a rename. Returns userId → displayName, omitting
+   * users who are no longer a member anywhere (caller falls back to the stored
+   * value for those).
+   */
+  async getDisplayNamesByUserIds(
+    userIds: string[]
+  ): Promise<Map<string, string>> {
+    const ids = [...new Set(userIds.filter(Boolean))];
+    const map = new Map<string, string>();
+    if (ids.length === 0) return map;
+
+    const rows = await prisma.communityMember.findMany({
+      where: { userId: { in: ids } },
+      select: { userId: true, snapshotDisplayName: true },
+    });
+    for (const r of rows) {
+      if (!map.has(r.userId) && r.snapshotDisplayName) {
+        map.set(r.userId, r.snapshotDisplayName);
+      }
+    }
+    return map;
   },
 
   /**
