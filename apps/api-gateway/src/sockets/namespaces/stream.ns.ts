@@ -1,6 +1,7 @@
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
+import { status as grpcStatus } from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
@@ -16,8 +17,8 @@ const MAX_EMOJI_LEN = 32; // one emoji grapheme incl. ZWJ/skin-tone sequences
 // Recent-comment backfill returned on join.
 const RECENT_COMMENTS_LIMIT = 20;
 
-// Viewer-count Redis key TTL: a stale stream's counter self-expires so a crashed
-// gateway (unclean disconnect) cannot leave a livestream pinned at a phantom count.
+// Session-set TTL: auto-expires so a crashed gateway (unclean disconnect) cannot
+// leave a livestream pinned at a phantom count.
 const VIEWER_KEY_TTL_SEC = 7200; // 2h
 
 // stream:comment sliding-window rate limit (per user, per stream).
@@ -29,8 +30,8 @@ const COMMENT_RATE_WINDOW_SEC = 3; // …per this window
 const VIEWER_COUNT_DEBOUNCE_MS = 1000;
 
 const roomKey = (streamId: string): string => `stream:${streamId}`;
-const viewerKey = (streamId: string): string => `stream:viewers:${streamId}`;
-// Set of userIds currently watching — read by stream-service GET /streams/:id/viewers.
+// Session set: tracks unique watching userIds. SADD/SREM are idempotent per-user
+// so SCARD is always the accurate live viewer count — no separate INCR counter needed.
 const sessionKey = (streamId: string): string =>
   `stream:session:users:${streamId}`;
 
@@ -48,8 +49,13 @@ const StreamReactSchema = z.object({
 });
 const StreamLoadMoreSchema = z.object({
   streamId: z.string().min(1),
-  before: z.string().optional(), // exclusive cursor (comment id); omit for latest page
+  before: z.string().optional(), // history scroll: fetch comments older than this id
+  after: z.string().optional(), // catch-up: fetch comments newer than this id (reconnect gap fill)
   limit: z.number().int().min(1).max(50).optional(),
+});
+const StreamCommentDeleteSchema = z.object({
+  streamId: z.string().min(1),
+  commentId: z.string().min(1),
 });
 
 // ─── Redis pub/sub message shape published by stream-service ─────────────────
@@ -84,14 +90,6 @@ export function registerStreamNamespace(
         if (s.data.userId !== bannedUserId) continue;
         s.emit("stream:banned", { streamId });
         void s.leave(room);
-        try {
-          const count = await redisPub.decr(viewerKey(streamId));
-          if (count < 0) await redisPub.set(viewerKey(streamId), "0");
-        } catch (err) {
-          logger.warn(
-            `/stream ban viewer decr error for ${streamId}: ${String(err)}`
-          );
-        }
       }
       // Remove banned user from the session set so getViewers reflects the kick.
       try {
@@ -101,10 +99,20 @@ export function registerStreamNamespace(
           `/stream ban session srem error for ${streamId}: ${String(err)}`
         );
       }
-      // Broadcast the corrected viewer count to whoever remains.
-      const raw = await redisPub.get(viewerKey(streamId));
-      const viewerCount = Math.max(0, Number(raw ?? 0) || 0);
-      streamNs.to(room).emit("stream:viewer_count", { streamId, viewerCount });
+      // Broadcast the corrected viewer count (SCARD is always accurate).
+      try {
+        const viewerCount = Math.max(
+          0,
+          await redisPub.scard(sessionKey(streamId))
+        );
+        streamNs
+          .to(room)
+          .emit("stream:viewer_count", { streamId, viewerCount });
+      } catch (err) {
+        logger.warn(
+          `/stream ban viewer_count broadcast error for ${streamId}: ${String(err)}`
+        );
+      }
     } catch (err) {
       logger.warn(`/stream ban kick error for ${room}: ${String(err)}`);
     }
@@ -151,9 +159,9 @@ export function registerStreamNamespace(
       const timer = setTimeout(() => {
         viewerCountTimers.delete(streamId);
         redisPub
-          .get(viewerKey(streamId))
-          .then((raw) => {
-            const viewerCount = Math.max(0, Number(raw ?? 0) || 0);
+          .scard(sessionKey(streamId))
+          .then((count) => {
+            const viewerCount = Math.max(0, count);
             streamNs
               .to(roomKey(streamId))
               .emit("stream:viewer_count", { streamId, viewerCount });
@@ -215,25 +223,17 @@ export function registerStreamNamespace(
 
           void socket.join(roomKey(streamId));
 
-          // Increment the viewer counter and (re)arm its TTL so an unclean
-          // disconnect can never pin the count forever.
+          // SADD is idempotent per userId — a rejoining user (whose old socket's
+          // leave hasn't fired yet) won't inflate the count. SCARD then gives the
+          // exact number of unique watchers regardless of join/leave race order.
           let viewerCount = 0;
-          try {
-            viewerCount = await redisPub.incr(viewerKey(streamId));
-            await redisPub.expire(viewerKey(streamId), VIEWER_KEY_TTL_SEC);
-          } catch (err) {
-            logger.warn(
-              `/stream join viewer incr error for ${streamId}: ${String(err)}`
-            );
-          }
-
-          // Track the watching userId in a set so the owner can list who is live.
           try {
             await redisPub.sadd(sessionKey(streamId), userId);
             await redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC);
+            viewerCount = await redisPub.scard(sessionKey(streamId));
           } catch (err) {
             logger.warn(
-              `/stream join session sadd error for ${streamId}: ${String(err)}`
+              `/stream join session error for ${streamId}: ${String(err)}`
             );
           }
 
@@ -282,24 +282,12 @@ export function registerStreamNamespace(
         }
         const { streamId } = r.data;
         void (async () => {
-          // Only decrement if this socket is actually in the room. If the user
-          // was banned, kickBannedUser already removed them from the room and
-          // decremented the counter; a subsequent stream:leave from the unmounting
-          // Chat component must not double-decrement.
+          // Only SREM if this socket was actually in the room. If the user was
+          // banned, kickBannedUser already SREM'd them; a subsequent stream:leave
+          // from the unmounting Chat component is a no-op (SREM is idempotent).
           const wasInRoom = socket.rooms.has(roomKey(streamId));
           void socket.leave(roomKey(streamId));
           if (wasInRoom) {
-            try {
-              const count = await redisPub.decr(viewerKey(streamId));
-              // Floor at 0: a double-leave or a counter reset must not go negative.
-              if (count < 0) {
-                await redisPub.set(viewerKey(streamId), "0");
-              }
-            } catch (err) {
-              logger.warn(
-                `/stream leave viewer decr error for ${streamId}: ${String(err)}`
-              );
-            }
             try {
               await redisPub.srem(sessionKey(streamId), userId);
             } catch (err) {
@@ -347,8 +335,9 @@ export function registerStreamNamespace(
       }
     );
 
-    // Cursor-paginated chat history. Returns the next page (oldest-first) so the
-    // client can prepend it to the top of the chat scroll.
+    // Cursor-paginated chat history / catch-up.
+    // - `before`: history scroll — returns older comments oldest-first (prepend to top).
+    // - `after`:  catch-up after reconnect — returns newer comments oldest-first (append to bottom).
     socket.on(
       "stream:load_more",
       (payload: unknown, callback?: (res: unknown) => void) => {
@@ -357,17 +346,22 @@ export function registerStreamNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        const { streamId, before, limit } = r.data;
+        const { streamId, before, after, limit } = r.data;
         void (async () => {
           try {
             const res = await streamClient.getComments({
               livestreamId: streamId,
               limit: limit ?? RECENT_COMMENTS_LIMIT,
               before: before ?? "",
+              after: after ?? "",
             });
-            // Reverse newest-first → oldest-first so prepending is natural.
+            // `before` (history): service returns newest-first → reverse to oldest-first for prepend.
+            // `after`  (catch-up): service already returns oldest-first → no reverse needed.
+            const isAfterQuery = !before && !!after;
             ackOk(callback, "SOCKET_STREAM_LOAD_MORE", locale, {
-              comments: [...res.comments].reverse(),
+              comments: isAfterQuery
+                ? res.comments
+                : [...res.comments].reverse(),
               nextCursor: res.nextCursor,
               hasMore: res.hasMore,
             });
@@ -399,6 +393,47 @@ export function registerStreamNamespace(
       }
     );
 
+    socket.on(
+      "stream:comment:delete",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = StreamCommentDeleteSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        const { streamId, commentId } = r.data;
+        // Fast pre-check: socket must already be in this stream's room
+        if (!socket.rooms.has(roomKey(streamId))) {
+          ackError(callback, "FORBIDDEN", locale);
+          return;
+        }
+        void (async () => {
+          try {
+            const result = await streamClient.deleteComment({
+              commentId,
+              requesterId: userId,
+            });
+            ackOk(callback, "SOCKET_STREAM_COMMENT_DELETED", locale, {
+              commentId: result.commentId,
+              streamId: result.livestreamId,
+            });
+          } catch (err: unknown) {
+            const code = (err as { code?: number }).code;
+            if (code === grpcStatus.NOT_FOUND) {
+              ackError(callback, "NOT_FOUND", locale);
+            } else if (code === grpcStatus.PERMISSION_DENIED) {
+              ackError(callback, "FORBIDDEN", locale);
+            } else {
+              logger.warn(
+                `/stream stream:comment:delete error: ${String(err)}`
+              );
+              ackError(callback, "SERVICE_ERROR", locale);
+            }
+          }
+        })();
+      }
+    );
+
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/stream disconnected userId=${userId} reason=${reason}`);
 
@@ -421,18 +456,6 @@ export function registerStreamNamespace(
       for (const streamId of streamRooms) {
         void (async () => {
           try {
-            const count = await redisPub.decr(viewerKey(streamId));
-            if (count < 0) {
-              await redisPub.set(viewerKey(streamId), "0");
-            }
-          } catch (err) {
-            logger.warn(
-              `/stream disconnect viewer decr error for ${streamId}: ${String(
-                err
-              )}`
-            );
-          }
-          try {
             await redisPub.srem(sessionKey(streamId), userId);
           } catch (err) {
             logger.warn(
@@ -442,8 +465,10 @@ export function registerStreamNamespace(
           // Emit directly (the per-socket debounce map is already cleared and
           // the socket is leaving — read once and broadcast to the room).
           try {
-            const raw = await redisPub.get(viewerKey(streamId));
-            const viewerCount = Math.max(0, Number(raw ?? 0) || 0);
+            const viewerCount = Math.max(
+              0,
+              await redisPub.scard(sessionKey(streamId))
+            );
             streamNs
               .to(roomKey(streamId))
               .emit("stream:viewer_count", { streamId, viewerCount });

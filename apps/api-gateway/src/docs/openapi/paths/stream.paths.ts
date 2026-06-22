@@ -383,6 +383,29 @@ SRS will also fire \`on_unpublish\`, which is handled idempotently (no-op if alr
 };
 
 // ---------------------------------------------------------------------------
+// POST /streams/{id}/go-live — Manually mark stream as LIVE (owner only)
+// ---------------------------------------------------------------------------
+const goLive = {
+  post: {
+    tags: ["Streams"],
+    summary: "Mark stream as live",
+    description: `Owner-only. Manually transitions a PENDING stream to LIVE and stamps FLV/HLS/DASH playback URLs.
+
+Use this when SRS has no \`on_publish\` hook configured (e.g. hosted SRS). Call this after OBS connects and you confirm the RTMP feed is active. Idempotent if already LIVE.`,
+    security: streamAuth,
+    parameters: [streamIdParam],
+    responses: {
+      "200": streamOk("Stream is now live", "#/components/schemas/StreamView"),
+      "400": { description: "Stream is already ENDED or CANCELLED" },
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // GET /streams/{id}/comments — Paginated comment history
 // ---------------------------------------------------------------------------
 const getComments = {
@@ -697,6 +720,7 @@ export const streamPaths = {
   "/streams": { ...createStream, ...listStreams },
   "/streams/{id}": { ...getStream, ...updateStream, ...deleteStream },
   "/streams/{id}/stop": stopStream,
+  "/streams/{id}/go-live": goLive,
   "/streams/{id}/comments": getComments,
   "/streams/{id}/comment-status": setCommentStatus,
   "/streams/{id}/viewers": getViewers,

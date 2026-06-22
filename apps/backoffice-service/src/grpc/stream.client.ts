@@ -25,6 +25,11 @@ export interface AdminUpdateThumbnailResult {
   success: boolean;
 }
 
+export interface AdminForceEndResult {
+  success: boolean;
+  status: string;
+}
+
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
   longs: String,
@@ -51,6 +56,15 @@ const adminUpdateThumbnailBreaker = makeBreaker(
       "adminUpdateThumbnail",
       args
     ).then((r) => ({ success: r.success ?? false }))
+);
+
+const adminForceEndBreaker = makeBreaker(
+  "stream.adminForceEnd",
+  (args: { streamId: string; reason: string }) =>
+    call<{ streamId: string; reason: string }, AdminForceEndResult>(
+      "adminForceEnd",
+      args
+    ).then((r) => ({ success: r.success ?? false, status: r.status ?? "" }))
 );
 
 const getStreamStatsBreaker = makeBreaker(
@@ -92,5 +106,13 @@ export const streamClient = {
     thumbnail: string
   ): Promise<void> {
     await adminUpdateThumbnailBreaker.fire({ streamId, thumbnail });
+  },
+
+  /** Fail-closed: propagates on error or circuit-open. */
+  async adminForceEnd(
+    streamId: string,
+    reason: string
+  ): Promise<AdminForceEndResult> {
+    return await adminForceEndBreaker.fire({ streamId, reason });
   },
 };

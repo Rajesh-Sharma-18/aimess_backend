@@ -67,11 +67,16 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             livestreamId: string;
             limit?: number;
             before?: string;
+            after?: string;
           };
           const limit = req.limit && req.limit > 0 ? req.limit : 30;
           const result = await deps.commentService.getComments(
             req.livestreamId,
-            { limit, before: req.before || undefined }
+            {
+              limit,
+              before: req.before || undefined,
+              after: req.after || undefined,
+            }
           );
           callback(null, {
             comments: result.items.map((c) => ({
@@ -183,6 +188,61 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
         } catch (err) {
           logger.error(`gRPC getStreamStats error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    adminForceEnd: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string; reason: string };
+          const result = await deps.livestreamService.adminForceEnd(
+            req.streamId,
+            req.reason ?? ""
+          );
+          callback(null, { success: result.success, status: result.status });
+        } catch (err) {
+          logger.error(`gRPC adminForceEnd error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    deleteComment: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            commentId: string;
+            requesterId: string;
+          };
+          const result = await deps.commentService.deleteComment(
+            req.commentId,
+            req.requesterId
+          );
+          callback(null, {
+            success: true,
+            commentId: result.commentId,
+            livestreamId: result.livestreamId,
+          });
+        } catch (err: unknown) {
+          logger.error(`gRPC deleteComment error: ${String(err)}`);
+          const name = (err as { name?: string }).name;
+          if (name === "NotFoundError") {
+            callback({ code: grpc.status.NOT_FOUND, message: String(err) });
+          } else if (name === "ForbiddenError") {
+            callback({
+              code: grpc.status.PERMISSION_DENIED,
+              message: String(err),
+            });
+          } else {
+            callback({ code: grpc.status.INTERNAL, message: String(err) });
+          }
         }
       })();
     },

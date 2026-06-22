@@ -7,6 +7,7 @@ import { env } from "./config/env.js";
 import { prisma } from "./config/prisma.js";
 import { connectBackofficeRedis, redis } from "./config/redis.js";
 import { startAdminReportIngestConsumer } from "./messaging/consume-admin-report-ingest.js";
+import { startStreamLifecycleConsumer } from "./messaging/consume-stream-lifecycle.js";
 
 let httpServer: Server | undefined;
 
@@ -53,6 +54,29 @@ const startServer = async (): Promise<void> => {
     } catch (error) {
       logger.warn(
         "RabbitMQ unavailable/timed out — backoffice-service starting anyway; report ingestion will not run until RabbitMQ is reachable"
+      );
+      logger.warn(error);
+    }
+
+    try {
+      await Promise.race([
+        startStreamLifecycleConsumer(),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "RabbitMQ stream lifecycle connect timed out after 5s"
+                )
+              ),
+            5000
+          )
+        ),
+      ]);
+      logger.info("Stream lifecycle consumer connected");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable/timed out — stream lifecycle consumer will not run until RabbitMQ is reachable"
       );
       logger.warn(error);
     }

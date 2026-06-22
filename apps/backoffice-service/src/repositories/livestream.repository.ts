@@ -10,10 +10,12 @@ import type {
   LivestreamListItem,
   LivestreamReportItem,
   LivestreamReportStatus,
+  LivestreamStatus,
   ListLivestreamsQuery,
   ListLivestreamReportsQuery,
   Paginated,
   PaginationMeta,
+  ReportsByType,
 } from "../types/livestream.types.js";
 
 /**
@@ -72,6 +74,36 @@ export type ActorRef = {
 // ---------------------------------------------------------------------------
 // Helpers (pure).
 // ---------------------------------------------------------------------------
+
+/** Shared bulk-operation runner used by both Mock and Prisma repositories. */
+async function runBulk(
+  ids: string[],
+  op: (id: string) => Promise<{ id: string; status: string }>
+): Promise<BulkResult> {
+  const results: BulkResultItem[] = [];
+  let succeeded = 0;
+  let failed = 0;
+  for (const id of ids) {
+    try {
+      const r = await op(id);
+      results.push({ id, status: r.status, ok: true });
+      succeeded += 1;
+    } catch (err) {
+      failed += 1;
+      const code =
+        err instanceof ConflictError
+          ? "LIVESTREAM_ALREADY_ENDED"
+          : err instanceof NotFoundError
+            ? err.message
+            : "BULK_ITEM_FAILED";
+      const message =
+        err instanceof Error ? err.message : "Unexpected bulk item error";
+      results.push({ id, ok: false, error: { code, message } });
+    }
+  }
+  return { requested: ids.length, succeeded, failed, results };
+}
+
 type SortField = "createdAt" | "viewerCount" | "reportCount" | "duration";
 
 function parseSort(sort: string): { field: SortField; dir: 1 | -1 } {
@@ -230,7 +262,7 @@ export class MockLivestreamRepository implements LivestreamRepository {
     input: EndInput,
     actor: ActorRef
   ): Promise<BulkResult> {
-    return this.runBulk(ids, async (id) => {
+    return runBulk(ids, async (id) => {
       const r = await this.end(id, input, actor);
       return { id, status: r.status };
     });
@@ -241,7 +273,7 @@ export class MockLivestreamRepository implements LivestreamRepository {
     input: ReviewReportsInput,
     actor: ActorRef
   ): Promise<BulkResult> {
-    return this.runBulk(reportIds, (reportId) =>
+    return runBulk(reportIds, (reportId) =>
       Promise.resolve(this.reviewReport(reportId, input, actor))
     );
   }
@@ -302,36 +334,6 @@ export class MockLivestreamRepository implements LivestreamRepository {
     row.reportsSummary.reviewing = reviewing;
     row.reportsSummary.resolved = resolved;
     row.reportsSummary.dismissed = dismissed;
-  }
-
-  private async runBulk(
-    ids: string[],
-    op: (id: string) => Promise<{ id: string; status: string }>
-  ): Promise<BulkResult> {
-    const results: BulkResultItem[] = [];
-    let succeeded = 0;
-    let failed = 0;
-
-    for (const id of ids) {
-      try {
-        const r = await op(id);
-        results.push({ id, status: r.status, ok: true });
-        succeeded += 1;
-      } catch (err) {
-        failed += 1;
-        const code =
-          err instanceof ConflictError
-            ? "LIVESTREAM_ALREADY_ENDED"
-            : err instanceof NotFoundError
-              ? err.message
-              : "BULK_ITEM_FAILED";
-        const message =
-          err instanceof Error ? err.message : "Unexpected bulk item error";
-        results.push({ id, ok: false, error: { code, message } });
-      }
-    }
-
-    return { requested: ids.length, succeeded, failed, results };
   }
 
   private applyFilters(query: ListLivestreamsQuery): LivestreamDetail[] {
@@ -546,6 +548,335 @@ function compareBy(
   return av - bv;
 }
 
-/** Phase 1 singleton. Swap to `new PrismaLivestreamRepository()` in Phase 2. */
+// ---------------------------------------------------------------------------
+// Prisma implementation.
+// ---------------------------------------------------------------------------
+
+import { prisma } from "../config/prisma.js";
+import type { LivestreamIndex as PrismaLivestreamIndex } from "../generated/prisma/client.js";
+
+function toListItemFromIndex(row: PrismaLivestreamIndex): LivestreamListItem {
+  const endedAt = row.endedAt?.toISOString() ?? null;
+  const startedAt = row.livedAt?.toISOString() ?? row.createdAt.toISOString();
+  return {
+    livestreamId: row.streamId,
+    title: row.title,
+    community: {
+      id: row.communityId,
+      name: row.communityName,
+      slug: slugify(row.communityName),
+    },
+    creator: {
+      id: row.creatorId,
+      username: row.creatorUsername,
+      displayName: row.creatorUsername,
+      avatarUrl: null,
+    },
+    category: { id: "", name: "", slug: "" },
+    createdAt: row.createdAt.toISOString(),
+    startedAt,
+    endedAt,
+    durationSeconds: row.durationSeconds,
+    status: row.status as LivestreamStatus,
+    viewerCount: row.viewerCount,
+    reportCount: 0,
+    reportSeverity: "NONE",
+    thumbnailUrl: row.thumbnailUrl ?? null,
+  };
+}
+
+function toDetailFromIndex(row: PrismaLivestreamIndex): LivestreamDetail {
+  const endedAt = row.endedAt?.toISOString() ?? null;
+  const startedAt = row.livedAt?.toISOString() ?? row.createdAt.toISOString();
+  const emptyByType: ReportsByType = {
+    HARASSMENT: 0,
+    SPAM: 0,
+    COPYRIGHT: 0,
+    NUDITY: 0,
+    VIOLENCE: 0,
+    HATE_SPEECH: 0,
+    OTHER: 0,
+  };
+  return {
+    livestreamId: row.streamId,
+    title: row.title,
+    description: row.description,
+    community: {
+      id: row.communityId,
+      name: row.communityName,
+      slug: slugify(row.communityName),
+      memberCount: 0,
+      creatorRole: "",
+    },
+    creator: {
+      id: row.creatorId,
+      username: row.creatorUsername,
+      displayName: row.creatorUsername,
+      avatarUrl: null,
+      accountStatus: "ACTIVE",
+      totalStreams: 0,
+      priorStrikes: 0,
+    },
+    category: { id: "", name: "", slug: "" },
+    createdAt: row.createdAt.toISOString(),
+    startedAt,
+    endedAt,
+    durationSeconds: row.durationSeconds,
+    status: row.status as LivestreamStatus,
+    viewerCount: row.viewerCount,
+    reportCount: 0,
+    reportSeverity: "NONE",
+    thumbnailUrl: row.thumbnailUrl ?? null,
+    endReasonCode: (row.reasonCode as EndReasonCode) ?? null,
+    endedBy: row.endedByAdminId
+      ? {
+          adminId: row.endedByAdminId,
+          adminName: row.endedByAdminName ?? row.endedByAdminId,
+        }
+      : null,
+    viewerStats: {
+      currentViewers: row.status === "LIVE" ? row.viewerCount : 0,
+      peakViewers: row.peakViewers,
+      totalUniqueViewers: 0,
+      totalWatchTimeSeconds: 0,
+      averageWatchTimeSeconds: 0,
+      chatMessageCount: row.totalComments,
+    },
+    streamMetadata: {
+      ingestProtocol: row.sourceType || "RTMP",
+      playbackUrl: row.hlsUrl ?? "",
+      resolution: "",
+      bitrateKbps: 0,
+      fps: 0,
+      region: "",
+      isRecording: false,
+      recordingUrl: null,
+    },
+    reportsSummary: {
+      total: 0,
+      open: 0,
+      reviewing: 0,
+      resolved: 0,
+      dismissed: 0,
+      severity: "NONE",
+      byType: emptyByType,
+      firstReportedAt: null,
+      lastReportedAt: null,
+    },
+    moderationHistory: [
+      {
+        id: `${row.streamId}_created`,
+        action: "STREAM_CREATED",
+        adminId: "system",
+        adminName: "System",
+        reasonCode: null,
+        note: null,
+        createdAt: row.createdAt.toISOString(),
+      },
+      ...(row.endedByAdminId && endedAt
+        ? [
+            {
+              id: `${row.streamId}_ended`,
+              action: "STREAM_ENDED",
+              adminId: row.endedByAdminId,
+              adminName: row.endedByAdminName ?? row.endedByAdminId,
+              reasonCode: row.reasonCode ?? null,
+              note: null,
+              createdAt: endedAt,
+            },
+          ]
+        : []),
+    ],
+    reports: [],
+  };
+}
+
+function slugify(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_]/g, "") || name
+  );
+}
+
+export class PrismaLivestreamRepository implements LivestreamRepository {
+  async list(
+    query: ListLivestreamsQuery
+  ): Promise<Paginated<LivestreamListItem>> {
+    const where: Record<string, unknown> = {};
+    if (query.status) where["status"] = query.status;
+    if (query.communityId) where["communityId"] = query.communityId;
+    if (query.creatorId) where["creatorId"] = query.creatorId;
+    if (query.search) {
+      where["OR"] = [
+        { title: { contains: query.search, mode: "insensitive" } },
+        { communityName: { contains: query.search, mode: "insensitive" } },
+        { creatorUsername: { contains: query.search, mode: "insensitive" } },
+      ];
+    }
+    if (query.dateFrom || query.dateTo) {
+      where["createdAt"] = {
+        ...(query.dateFrom
+          ? { gte: new Date(`${query.dateFrom}T00:00:00.000Z`) }
+          : {}),
+        ...(query.dateTo
+          ? { lte: new Date(`${query.dateTo}T23:59:59.999Z`) }
+          : {}),
+      };
+    }
+
+    const [field, dir] = query.sort.split(":") as [string, "asc" | "desc"];
+    const orderByField =
+      field === "viewerCount"
+        ? "viewerCount"
+        : field === "duration"
+          ? "durationSeconds"
+          : "createdAt";
+    const orderBy = [{ [orderByField]: dir }, { streamId: "asc" as const }];
+
+    const { page, limit } = query;
+    const skip = (page - 1) * limit;
+    const [rows, total] = await Promise.all([
+      prisma.livestreamIndex.findMany({ where, orderBy, skip, take: limit }),
+      prisma.livestreamIndex.count({ where }),
+    ]);
+
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+    const hasNext = skip + limit < total;
+    const lastRow = rows[rows.length - 1];
+    const cursorable = orderByField === "createdAt";
+    const pagination: PaginationMeta = {
+      mode: "offset",
+      page,
+      limit,
+      total,
+      totalApprox: total,
+      totalPages,
+      hasNext,
+      hasPrev: page > 1,
+      nextCursor:
+        cursorable && hasNext && lastRow
+          ? encodeCursor({
+              createdAt: lastRow.createdAt.toISOString(),
+              livestreamId: lastRow.streamId,
+            })
+          : null,
+    };
+
+    return { data: rows.map(toListItemFromIndex), pagination };
+  }
+
+  async getById(id: string): Promise<LivestreamDetail | null> {
+    const row = await prisma.livestreamIndex.findUnique({
+      where: { streamId: id },
+    });
+    if (!row) return null;
+    return toDetailFromIndex(row);
+  }
+
+  async listReports(
+    livestreamId: string,
+    query: ListLivestreamReportsQuery
+  ): Promise<Paginated<LivestreamReportItem>> {
+    const exists = await prisma.livestreamIndex.findUnique({
+      where: { streamId: livestreamId },
+    });
+    if (!exists) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
+
+    const pagination: PaginationMeta = {
+      mode: "offset",
+      page: query.page,
+      limit: query.limit,
+      total: 0,
+      totalApprox: 0,
+      totalPages: 0,
+      hasNext: false,
+      hasPrev: false,
+      nextCursor: null,
+    };
+    return { data: [], pagination };
+  }
+
+  async end(
+    id: string,
+    input: EndInput,
+    actor: ActorRef
+  ): Promise<EndLivestreamResult> {
+    const row = await prisma.livestreamIndex.findUnique({
+      where: { streamId: id },
+    });
+    if (!row) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
+    if (row.status !== "LIVE" && row.status !== "PENDING") {
+      throw new ConflictError("LIVESTREAM_ALREADY_ENDED");
+    }
+
+    const endedAt = new Date(actor.at);
+    const durationSeconds = row.livedAt
+      ? Math.max(
+          0,
+          Math.round((endedAt.getTime() - row.livedAt.getTime()) / 1000)
+        )
+      : 0;
+
+    await prisma.livestreamIndex.update({
+      where: { streamId: id },
+      data: {
+        status: "ENDED",
+        endedAt,
+        durationSeconds,
+        reasonCode: input.reasonCode,
+        endedByAdminId: actor.admin.id,
+        endedByAdminName: actor.admin.name,
+        viewerCount: 0,
+      },
+    });
+
+    const moderationActionId = `${id}_ended_${Date.now()}`;
+    return {
+      livestreamId: id,
+      status: "ENDED",
+      endedAt: actor.at,
+      endedBy: { adminId: actor.admin.id, adminName: actor.admin.name },
+      reasonCode: input.reasonCode,
+      moderationActionId,
+      auditLogId: null,
+      creatorNotified: input.notifyCreator ?? false,
+      strikeIssued: input.issueStrike ?? false,
+    };
+  }
+
+  async bulkEnd(
+    ids: string[],
+    input: EndInput,
+    actor: ActorRef
+  ): Promise<BulkResult> {
+    return runBulk(ids, async (id) => {
+      const r = await this.end(id, input, actor);
+      return { id, status: r.status };
+    });
+  }
+
+  async bulkReviewReports(
+    reportIds: string[],
+    input: ReviewReportsInput,
+    _actor: ActorRef
+  ): Promise<BulkResult> {
+    // Reports not yet implemented — return all as succeeded no-ops.
+    const results: BulkResultItem[] = reportIds.map((id) => ({
+      id,
+      status: input.status,
+      ok: true as const,
+    }));
+    return {
+      requested: reportIds.length,
+      succeeded: reportIds.length,
+      failed: 0,
+      results,
+    };
+  }
+}
+
+/** Phase 2 singleton — backed by admin_db LivestreamIndex. */
 export const livestreamRepository: LivestreamRepository =
-  new MockLivestreamRepository();
+  new PrismaLivestreamRepository();

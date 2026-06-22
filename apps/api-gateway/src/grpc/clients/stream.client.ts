@@ -40,8 +40,10 @@ export interface GetCommentsParams {
   livestreamId: string;
   /** Page size; 0 = server default. */
   limit?: number;
-  /** Exclusive cursor (comment id); "" = latest page. */
+  /** Exclusive cursor — fetch older comments (id < before); "" = latest page. */
   before?: string;
+  /** Exclusive cursor — fetch newer comments (id > after); used for reconnect catch-up. */
+  after?: string;
 }
 export interface GetCommentsResult {
   comments: StreamComment[];
@@ -61,12 +63,23 @@ export interface CheckStreamAccessResult {
   canComment: boolean;
 }
 
+export interface DeleteCommentParams {
+  commentId: string;
+  requesterId: string;
+}
+export interface DeleteCommentResult {
+  success: boolean;
+  commentId: string;
+  livestreamId: string;
+}
+
 export interface StreamClient {
   postComment(p: PostCommentParams): Promise<PostCommentResult>;
   getComments(p: GetCommentsParams): Promise<GetCommentsResult>;
   checkStreamAccess(
     p: CheckStreamAccessParams
   ): Promise<CheckStreamAccessResult>;
+  deleteComment(p: DeleteCommentParams): Promise<DeleteCommentResult>;
 }
 
 /** int64 createdAt arrives as a string (proto-loader longs:String); coerce. */
@@ -113,6 +126,7 @@ export function createStreamClient(): StreamClient {
         livestreamId: p.livestreamId,
         limit: p.limit ?? 0,
         before: p.before ?? "",
+        after: p.after ?? "",
       }).then((r) => ({
         ...r,
         comments: (r.comments ?? []).map(normalizeComment),
@@ -128,9 +142,23 @@ export function createStreamClient(): StreamClient {
       })
   );
 
+  const deleteCommentBreaker = makeBreaker(
+    "stream.deleteComment",
+    (p: DeleteCommentParams) =>
+      call<unknown, DeleteCommentResult>("deleteComment", {
+        commentId: p.commentId,
+        requesterId: p.requesterId,
+      }).then((r) => ({
+        success: r.success ?? false,
+        commentId: r.commentId ?? "",
+        livestreamId: r.livestreamId ?? "",
+      }))
+  );
+
   return {
     postComment: (p) => postCommentBreaker.fire(p),
     getComments: (p) => getCommentsBreaker.fire(p),
     checkStreamAccess: (p) => checkAccessBreaker.fire(p),
+    deleteComment: (p) => deleteCommentBreaker.fire(p),
   };
 }

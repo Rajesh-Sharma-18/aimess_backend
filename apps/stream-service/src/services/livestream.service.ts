@@ -188,6 +188,20 @@ export class LivestreamService {
       dashUrl: playback?.dashUrl ?? null,
     });
 
+    void this.eventPublisher("stream.created", {
+      streamId: created.id,
+      communityId: created.communityId,
+      creatorId: created.creatorId,
+      title: created.title,
+      description: created.description ?? "",
+      thumbnail: created.thumbnail ?? null,
+      sourceType: created.sourceType,
+      status: created.status,
+      hlsUrl: created.hlsUrl ?? null,
+      flvUrl: created.flvUrl ?? null,
+      createdAt: created.createdAt.toISOString(),
+    });
+
     return {
       ...toView(created),
       streamKey,
@@ -319,6 +333,82 @@ export class LivestreamService {
     return toView(updated);
   }
 
+  /**
+   * Manual go-live by the owner. Used when SRS has no on_publish hook (e.g.
+   * hosted SRS without callback support). Flips PENDING→LIVE, stamps playback
+   * URLs, broadcasts stream:status, and emits stream.started. Idempotent if
+   * already LIVE.
+   */
+  async markLive(id: string, requesterId: string): Promise<StreamView> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (stream.status === "ENDED" || stream.status === "CANCELLED") {
+      throw new BadRequestError("STREAM_ALREADY_ENDED");
+    }
+    if (stream.status === "LIVE") {
+      return toView(stream);
+    }
+
+    const playback = this.srsService.buildPlaybackUrls(stream.streamKey);
+    const updated = await this.streamRepo.updateById(id, {
+      status: "LIVE",
+      livedAt: new Date(),
+      hlsUrl: playback.hlsUrl,
+      flvUrl: playback.flvUrl,
+      dashUrl: playback.dashUrl,
+    });
+
+    await this.publishStatus(updated.id, "LIVE");
+    this.eventPublisher("stream.started", {
+      streamId: updated.id,
+      communityId: updated.communityId,
+      creatorId: updated.creatorId,
+      livedAt: updated.livedAt?.getTime() ?? Date.now(),
+    });
+
+    return toView(updated);
+  }
+
+  /**
+   * Admin: force-end a stream. Idempotent — already ENDED/CANCELLED streams
+   * return { success: false } without error. Kicks SRS if stream was LIVE,
+   * then broadcasts ENDED status and emits stream.ended event.
+   */
+  async adminForceEnd(
+    streamId: string,
+    _reason: string
+  ): Promise<{ success: boolean; status: string }> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.status === "ENDED" || stream.status === "CANCELLED") {
+      return { success: false, status: stream.status };
+    }
+
+    const updated = await this.streamRepo.updateById(streamId, {
+      status: "ENDED",
+      endedAt: new Date(),
+    });
+
+    if (stream.status === "LIVE") {
+      // Best-effort — kick SRS publisher if stream was live. Errors are swallowed.
+      await this.srsService.kickStream(stream.streamKey);
+    }
+
+    await this.publishStatus(updated.id, "ENDED");
+    this.eventPublisher("stream.ended", {
+      streamId: updated.id,
+      communityId: updated.communityId,
+      creatorId: updated.creatorId,
+      endedAt: updated.endedAt?.getTime() ?? Date.now(),
+      peakViewers: updated.peakViewers,
+    });
+
+    return { success: true, status: "ENDED" };
+  }
+
   /** Owner updates editable stream metadata (title, description, thumbnail). */
   async updateStream(
     id: string,
@@ -339,6 +429,16 @@ export class LivestreamService {
       ...(updates.thumbnail !== undefined
         ? { thumbnail: updates.thumbnail }
         : {}),
+    });
+
+    void this.eventPublisher("stream.updated", {
+      streamId: updated.id,
+      communityId: updated.communityId,
+      creatorId: updated.creatorId,
+      title: updated.title,
+      description: updated.description ?? "",
+      thumbnail: updated.thumbnail ?? null,
+      updatedAt: updated.updatedAt.toISOString(),
     });
 
     // Broadcast so viewers see the updated title/description in real time.
@@ -418,11 +518,7 @@ export class LivestreamService {
     const view = toView(stream);
 
     try {
-      const liveCount = await this.redis.get(`stream:viewers:${id}`);
-      if (liveCount !== null) {
-        const parsed = Number(liveCount);
-        if (Number.isFinite(parsed)) view.viewerCount = parsed;
-      }
+      view.viewerCount = await this.redis.scard(sessionKey(id));
     } catch (error) {
       logger.warn(
         `live viewer count read failed for stream=${id}: ${String(error)}`
@@ -685,11 +781,7 @@ export class LivestreamService {
 
     let viewerCount = stream.viewerCount;
     try {
-      const liveCount = await this.redis.get(`stream:viewers:${streamId}`);
-      if (liveCount !== null) {
-        const parsed = Number(liveCount);
-        if (Number.isFinite(parsed)) viewerCount = parsed;
-      }
+      viewerCount = await this.redis.scard(sessionKey(streamId));
     } catch {
       // best-effort
     }

@@ -1,4 +1,4 @@
-import { NotFoundError } from "@aimess/errors";
+import { ConflictError, NotFoundError } from "@aimess/errors";
 import { createUploadUrl, type UploadUrlResult } from "@aimess/storage";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
@@ -11,6 +11,7 @@ import type {
 import type { RequestAdmin } from "../types/index.js";
 import type {
   BulkResult,
+  BulkResultItem,
   EndLivestreamResult,
   LivestreamDetail,
   LivestreamListItem,
@@ -93,6 +94,10 @@ export const livestreamService = {
   ): Promise<EndLivestreamResult> {
     const ref = buildActor(actor);
     const before = await livestreamRepository.getById(livestreamId);
+    // Fail-closed: must succeed before mutating admin_db.
+    // If already ENDED (adminForceEnd returns {success:false}), still proceed
+    // with the repo.end() which will throw ConflictError if appropriate.
+    await streamClient.adminForceEnd(livestreamId, input.reasonCode);
     const result = await livestreamRepository.end(livestreamId, input, ref);
 
     await auditService.record({
@@ -122,12 +127,52 @@ export const livestreamService = {
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<BulkResult> {
+    // Call stream-service gRPC for each stream first (fail-closed per item).
+    // already-ENDED is OK — repo.end() will throw ConflictError for those, handled below.
     const ref = buildActor(actor);
-    const result = await livestreamRepository.bulkEnd(
-      livestreamIds,
-      input,
-      ref
-    );
+    const results: BulkResultItem[] = [];
+    let succeeded = 0;
+    let failed = 0;
+
+    for (const livestreamId of livestreamIds) {
+      try {
+        await streamClient.adminForceEnd(livestreamId, input.reasonCode);
+      } catch (err) {
+        failed += 1;
+        results.push({
+          id: livestreamId,
+          ok: false,
+          error: {
+            code: "STREAM_SERVICE_UNAVAILABLE",
+            message:
+              err instanceof Error ? err.message : "stream-service gRPC failed",
+          },
+        });
+        continue;
+      }
+      try {
+        const r = await livestreamRepository.end(livestreamId, input, ref);
+        results.push({ id: livestreamId, status: r.status, ok: true });
+        succeeded += 1;
+      } catch (err) {
+        failed += 1;
+        const code =
+          err instanceof ConflictError
+            ? "LIVESTREAM_ALREADY_ENDED"
+            : err instanceof NotFoundError
+              ? err.message
+              : "BULK_ITEM_FAILED";
+        const message = err instanceof Error ? err.message : "Unexpected error";
+        results.push({ id: livestreamId, ok: false, error: { code, message } });
+      }
+    }
+
+    const result: BulkResult = {
+      requested: livestreamIds.length,
+      succeeded,
+      failed,
+      results,
+    };
 
     await auditService.record({
       actorId: actor.id,

@@ -233,6 +233,10 @@ export const SOCKET_MESSAGES = {
     vi: "Đã tải thêm bình luận",
     en: "Loaded more comments",
   },
+  SOCKET_STREAM_COMMENT_DELETED: {
+    vi: "Đã xóa bình luận",
+    en: "Comment deleted successfully",
+  },
 
   // ── /notify ─────────────────────────────────────────────────────────────
   SOCKET_NOTIFICATIONS_FETCHED: {

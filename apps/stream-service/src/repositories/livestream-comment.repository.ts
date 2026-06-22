@@ -26,6 +26,20 @@ export class LivestreamCommentRepository {
     });
   }
 
+  async findById(id: string): Promise<LivestreamComment | null> {
+    return this.prisma.livestreamComment.findUnique({ where: { id } });
+  }
+
+  async deleteById(id: string): Promise<void> {
+    try {
+      await this.prisma.livestreamComment.delete({ where: { id } });
+    } catch (err: unknown) {
+      // P2025 = record not found — treat concurrent deletes as idempotent
+      if ((err as { code?: string }).code === "P2025") return;
+      throw err;
+    }
+  }
+
   /** Idempotency lookup — matching (livestreamId, sentBy, clientCommentId). */
   async findByClientCommentId(
     livestreamId: string,
@@ -38,19 +52,23 @@ export class LivestreamCommentRepository {
   }
 
   /**
-   * Newest-first cursor page. When `before` is given, returns comments with
-   * id < before (older). Used by REST + gRPC GetComments.
+   * Cursor-paged comment query.
+   * - `before`: newest-first, id < before (scroll back through history).
+   * - `after`:  oldest-first, id > after  (catch-up after a reconnect gap).
+   * Only one of before/after should be set; before takes precedence if both given.
    */
   async findByLivestreamId(
     livestreamId: string,
-    options: { limit: number; before?: string }
+    options: { limit: number; before?: string; after?: string }
   ): Promise<LivestreamComment[]> {
+    const isAfter = !options.before && !!options.after;
     return this.prisma.livestreamComment.findMany({
       where: {
         livestreamId,
         ...(options.before ? { id: { lt: options.before } } : {}),
+        ...(isAfter ? { id: { gt: options.after } } : {}),
       },
-      orderBy: { id: "desc" },
+      orderBy: { id: isAfter ? "asc" : "desc" },
       take: options.limit,
     });
   }

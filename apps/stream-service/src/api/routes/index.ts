@@ -29,6 +29,11 @@ export function createServiceRoutes(controller: StreamController): IRouter {
     authenticateAccessToken,
     controller.stopStream
   );
+  router.post(
+    "/streams/:id/go-live",
+    authenticateAccessToken,
+    controller.goLive
+  );
   router.get(
     "/streams/:id/comments",
     authenticateAccessToken,

@@ -84,6 +84,14 @@ export class StreamController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  goLive = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const result = await this.livestreamService.markLive(id, req.auth.userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   getComments = asyncHandler(async (req: Request, res: Response) => {
     const id = typeof req.params.id === "string" ? req.params.id : "";
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");

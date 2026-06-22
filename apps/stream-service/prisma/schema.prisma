@@ -26,19 +26,19 @@ datasource db {
 //   status:     PENDING | LIVE | ENDED | CANCELLED
 // -----------------------------------------------------------------------------
 model Livestream {
-  id          String    @id @default(auto()) @map("_id") @db.ObjectId
-  communityId String
-  creatorId   String
-  title       String
-  description String    @default("")
-  thumbnail   String?
-  sourceType  String // PHONE_CAMERA | URL
-  sourceUrl   String? // set for URL mode only
-  streamKey   String    @unique
-  status      String    @default("PENDING")
-  hlsUrl      String?
-  flvUrl      String?
-  dashUrl     String?
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  communityId   String
+  creatorId     String
+  title         String
+  description   String    @default("")
+  thumbnail     String?
+  sourceType    String // PHONE_CAMERA | URL
+  sourceUrl     String? // set for URL mode only
+  streamKey     String    @unique
+  status        String    @default("PENDING")
+  hlsUrl        String?
+  flvUrl        String?
+  dashUrl       String?
   commentStatus Boolean   @default(true)
   viewerCount   Int       @default(0)
   peakViewers   Int       @default(0)
@@ -46,8 +46,8 @@ model Livestream {
   totalComments Int       @default(0)
   livedAt       DateTime?
   endedAt       DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   @@index([communityId])
   @@index([status])

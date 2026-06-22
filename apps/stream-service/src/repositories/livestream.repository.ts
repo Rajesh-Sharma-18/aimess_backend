@@ -43,6 +43,7 @@ export class LivestreamRepository {
   }
 
   async findById(id: string): Promise<Livestream | null> {
+    if (!/^[0-9a-f]{24}$/i.test(id)) return null;
     return this.prisma.livestream.findUnique({ where: { id } });
   }
 
@@ -55,11 +56,13 @@ export class LivestreamRepository {
     // Accept any extra fields (e.g. dashUrl) before `prisma generate` adds them to the generated type.
     data: Prisma.LivestreamUpdateInput & Record<string, unknown>
   ): Promise<Livestream> {
+    if (!/^[0-9a-f]{24}$/i.test(id)) throw new Error(`Invalid ObjectId: ${id}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return this.prisma.livestream.update({ where: { id }, data: data as any });
   }
 
   async deleteById(id: string): Promise<void> {
+    if (!/^[0-9a-f]{24}$/i.test(id)) throw new Error(`Invalid ObjectId: ${id}`);
     await this.prisma.livestream.delete({ where: { id } });
   }
 

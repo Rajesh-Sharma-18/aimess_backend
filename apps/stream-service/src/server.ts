@@ -68,7 +68,8 @@ async function start() {
       streamRepo,
       userGrpcClient,
       redis,
-      banRepo
+      banRepo,
+      communityGrpcClient
     );
 
     // 3. Controllers

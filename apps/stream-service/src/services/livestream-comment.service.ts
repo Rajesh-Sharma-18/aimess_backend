@@ -1,5 +1,6 @@
 import { logger } from "@aimess/logger";
-import { ForbiddenError } from "@aimess/errors";
+import { ForbiddenError, NotFoundError } from "@aimess/errors";
+import type { communityGrpcClient as CommunityGrpcClient } from "../grpc/community.client.js";
 
 import type { LivestreamComment } from "../generated/prisma/index.js";
 import type { LivestreamCommentRepository } from "../repositories/livestream-comment.repository.js";
@@ -41,7 +42,8 @@ export class LivestreamCommentService {
     private readonly streamRepo: LivestreamRepository,
     private readonly userClient: typeof UserGrpcClient,
     private readonly redis: typeof RedisClient,
-    private readonly banRepo: LivestreamBanRepository
+    private readonly banRepo: LivestreamBanRepository,
+    private readonly communityClient: typeof CommunityGrpcClient
   ) {}
 
   /**
@@ -142,14 +144,75 @@ export class LivestreamCommentService {
     return dto;
   }
 
-  /** Newest-first page. `nextCursor` is the last item's id (pass back as `before`). */
+  async deleteComment(
+    commentId: string,
+    requesterId: string
+  ): Promise<{ commentId: string; livestreamId: string }> {
+    const comment = await this.commentRepo.findById(commentId);
+    if (!comment) throw new NotFoundError("COMMENT_NOT_FOUND");
+
+    const stream = await this.streamRepo.findById(comment.livestreamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+
+    // Authorization: author OR stream owner OR community admin/mod
+    const isAuthor = comment.sentBy === requesterId;
+    const isHost = stream.creatorId === requesterId;
+
+    if (!isAuthor && !isHost) {
+      // Fail-closed: circuit-open or gRPC error = deny
+      let allowed = false;
+      try {
+        const membership = await this.communityClient.validateMembership(
+          stream.communityId,
+          requesterId
+        );
+        allowed =
+          membership.isMember &&
+          (membership.role === "ADMIN" || membership.role === "MODERATOR");
+      } catch {
+        // deliberately let circuit-open propagate as deny
+      }
+      if (!allowed) throw new ForbiddenError("COMMENT_DELETE_FORBIDDEN");
+    }
+
+    await this.commentRepo.deleteById(commentId);
+
+    // Broadcast deletion (best-effort)
+    try {
+      await this.redis.publish(
+        `stream:${comment.livestreamId}`,
+        JSON.stringify({
+          event: "stream:comment:deleted",
+          data: {
+            commentId: comment.id,
+            streamId: comment.livestreamId,
+            deletedBy: requesterId,
+          },
+        })
+      );
+    } catch (err) {
+      logger.warn(
+        `comment delete broadcast failed stream=${comment.livestreamId}: ${String(err)}`
+      );
+    }
+
+    return { commentId: comment.id, livestreamId: comment.livestreamId };
+  }
+
+  /**
+   * Cursor-paged comment fetch.
+   * - `before`: newest-first (history scroll). nextCursor = oldest item's id.
+   * - `after`:  oldest-first (reconnect catch-up). nextCursor = newest item's id.
+   * Pass nextCursor back as the same cursor direction for the next page.
+   */
   async getComments(
     livestreamId: string,
-    options: { limit: number; before?: string }
+    options: { limit: number; before?: string; after?: string }
   ): Promise<GetCommentsResult> {
     const rows = await this.commentRepo.findByLivestreamId(livestreamId, {
       limit: options.limit + 1,
       before: options.before,
+      after: options.after,
     });
     const hasMore = rows.length > options.limit;
     const page = hasMore ? rows.slice(0, options.limit) : rows;
