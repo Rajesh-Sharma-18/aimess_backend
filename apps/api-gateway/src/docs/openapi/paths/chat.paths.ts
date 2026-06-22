@@ -1277,6 +1277,10 @@ const communityMessages = {
     summary: "Get community room messages",
     description:
       "Dual-mode message endpoint. The query param determines which mode is active — **provide only one of before_ts / after_ts**.\n\n" +
+      "**Access control (Telegram-style):**\n" +
+      "- **PUBLIC** communities: any authenticated user can read message history — membership is NOT required (guests can browse before joining).\n" +
+      "- **PRIVATE** communities: only ACTIVE members can read; non-members and banned users get `403 CHAT_NOT_A_MEMBER`.\n\n" +
+      "**Personal system messages:** SYSTEM messages with `isPersonal: true` (e.g. COMMUNITY_JOINED, 'You joined this community') are returned ONLY to the target user — other members never see them in this history, even in PUBLIC communities.\n\n" +
       "**Scroll / history mode** (`before_ts` or neither):\n" +
       "- `before_ts` → messages with `createdAt <= before_ts`, newest-first.\n" +
       "- Omit both for the newest page.\n" +

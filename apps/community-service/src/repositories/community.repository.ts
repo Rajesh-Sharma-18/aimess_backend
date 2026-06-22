@@ -502,6 +502,17 @@ export const communityRepository = {
     });
   },
 
+  /** Find all ACTIVE communities a user is a member of, with their role. */
+  async findUserMemberships(userId: string) {
+    return prisma.communityMember.findMany({
+      where: { userId, status: CommunityMemberStatus.ACTIVE },
+      select: {
+        communityId: true,
+        role: true,
+      },
+    });
+  },
+
   /** Single-document role update keyed by the (communityId, userId) unique. */
   async updateMemberRole(
     communityId: string,
@@ -635,6 +646,71 @@ export const communityRepository = {
   },
 
   /**
+   * Currently-banned members of a community (status === BANNED only), with
+   * optional free-text search and sort. Search matches displayName / username /
+   * userId case-insensitively. Index-supported by [communityId, status] (+
+   * [communityId, status, bannedAt] / [communityId, status, snapshotDisplayName]
+   * for the sort). Returns the page rows plus the total matching count.
+   *
+   * Lifted bans are not BANNED anymore (unban sets status → LEFT) so they never
+   * appear here — the historical record lives in the moderation audit log.
+   */
+  async listBannedMembers(params: {
+    communityId: string;
+    search?: string;
+    sortBy: "bannedAt" | "displayName" | "username";
+    sortOrder: "asc" | "desc";
+    page: number;
+    limit: number;
+  }) {
+    const where: Prisma.CommunityMemberWhereInput = {
+      communityId: params.communityId,
+      status: CommunityMemberStatus.BANNED,
+    };
+
+    if (params.search) {
+      const term = params.search.trim();
+      where.OR = [
+        { snapshotDisplayName: { contains: term, mode: "insensitive" } },
+        { snapshotUsername: { contains: term, mode: "insensitive" } },
+        { userId: { contains: term, mode: "insensitive" } },
+      ];
+    }
+
+    const orderBy: Prisma.CommunityMemberOrderByWithRelationInput =
+      params.sortBy === "displayName"
+        ? { snapshotDisplayName: params.sortOrder }
+        : params.sortBy === "username"
+          ? { snapshotUsername: params.sortOrder }
+          : { bannedAt: params.sortOrder };
+
+    const [rows, total] = await Promise.all([
+      prisma.communityMember.findMany({
+        where,
+        orderBy,
+        skip: (params.page - 1) * params.limit,
+        take: params.limit,
+        select: {
+          id: true,
+          userId: true,
+          role: true,
+          status: true,
+          joinedAt: true,
+          snapshotUsername: true,
+          snapshotDisplayName: true,
+          snapshotAvatarKey: true,
+          bannedAt: true,
+          bannedBy: true,
+          banReason: true,
+        },
+      }),
+      prisma.communityMember.count({ where }),
+    ]);
+
+    return { rows, total };
+  },
+
+  /**
    * Communities where the caller is an ACTIVE member, timestamp-cursor paginated
    * on `Community.lastActivityAt` (latest message, else createdAt). Queried from
    * the Community side so we can order by the native `lastActivityAt` field and
@@ -685,6 +761,7 @@ export const communityRepository = {
           lastActivityPreview: true,
           lastActivityUsername: true,
           lastActivityUserId: true,
+          lastActivitySelfPreview: true,
           createdAt: true,
           moderationStatus: true,
           // At most one row per (communityId, userId) by unique constraint, so
@@ -718,7 +795,8 @@ export const communityRepository = {
     type: string,
     preview: string,
     username: string | null,
-    userId: string | null
+    userId: string | null,
+    selfPreview: string | null = null
   ): Promise<void> {
     await prisma.community.updateMany({
       where: { id: communityId, lastActivityAt: { lt: activityAt } },
@@ -728,8 +806,60 @@ export const communityRepository = {
         lastActivityPreview: preview,
         lastActivityUsername: username,
         lastActivityUserId: userId,
+        // Always overwrite — a subsequent non-self bump (e.g. a normal message)
+        // must clear a stale "You …" preview from an earlier role-change/join.
+        lastActivitySelfPreview: selfPreview,
       },
     });
+  },
+
+  /**
+   * Re-sync the denormalized community-list preview sender name on a profile
+   * rename. `lastActivityUsername` is frozen at message-send time (it carries
+   * the sender's DISPLAY name, mirroring chat-service's `senderUsername`), so
+   * without this a rename leaves the community list showing the OLD name —
+   * e.g. "Vasu Himanshu" — even though the chat room renders the live member
+   * snapshot ("Himanshu Vasu"). Updates only the communities where this user is
+   * the current last-activity sender. Sibling of
+   * {@link updateMemberSnapshotsByUserId}, which keeps the member-list snapshot
+   * in sync the same way.
+   */
+  updateLastActivityUsernameByUserId(userId: string, displayName: string) {
+    return prisma.community.updateMany({
+      where: { lastActivityUserId: userId },
+      data: { lastActivityUsername: displayName },
+    });
+  },
+
+  /**
+   * Current display name for a set of users, resolved from ANY of their
+   * community memberships. A user's `snapshotDisplayName` is identical across
+   * all their member rows (kept in sync by {@link updateMemberSnapshotsByUserId}
+   * on every `user.profile_updated`), so the first non-empty hit per user is the
+   * live name. Used to resolve the community-list preview sender name at READ
+   * time — matching the live name the chat room renders — instead of trusting
+   * the denormalized `lastActivityUsername`, which is frozen at message-send
+   * time and goes stale after a rename. Returns userId → displayName, omitting
+   * users who are no longer a member anywhere (caller falls back to the stored
+   * value for those).
+   */
+  async getDisplayNamesByUserIds(
+    userIds: string[]
+  ): Promise<Map<string, string>> {
+    const ids = [...new Set(userIds.filter(Boolean))];
+    const map = new Map<string, string>();
+    if (ids.length === 0) return map;
+
+    const rows = await prisma.communityMember.findMany({
+      where: { userId: { in: ids } },
+      select: { userId: true, snapshotDisplayName: true },
+    });
+    for (const r of rows) {
+      if (!map.has(r.userId) && r.snapshotDisplayName) {
+        map.set(r.userId, r.snapshotDisplayName);
+      }
+    }
+    return map;
   },
 
   /**
@@ -753,6 +883,7 @@ export const communityRepository = {
         adminId: true,
         avatarUrl: true,
         deletedAt: true,
+        type: true,
         members: {
           select: {
             userId: true,
@@ -2025,6 +2156,21 @@ export const communityRepository = {
     return prisma.communityMemberMute.findUnique({
       where: { communityId_userId: { communityId, userId } },
     });
+  },
+
+  /**
+   * Like `findMemberMute` but returns the row ONLY when the mute is still
+   * effective (lazy expiration: `mutedUntil` null OR in the future) — matching
+   * the expiry semantics of `listMutedMembers` (`mutedUntil IS NULL OR > now`).
+   * Returns null for an expired mute (or no row). Indefinite mute is stored as
+   * an explicit `null` (NOT an unset field), so a plain equality check is right.
+   */
+  async findActiveMemberMute(communityId: string, userId: string) {
+    const row = await this.findMemberMute(communityId, userId);
+    if (!row) return null;
+    const now = new Date();
+    if (row.mutedUntil === null || row.mutedUntil > now) return row;
+    return null;
   },
 
   /** Idempotent re-mute: updates mutedBy/reason/mutedUntil on conflict. */

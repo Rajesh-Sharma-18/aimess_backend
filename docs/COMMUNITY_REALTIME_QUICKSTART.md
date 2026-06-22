@@ -19,7 +19,7 @@ call fetches the latest state; the socket never fired.
 | #   | Symptom                                                    | Root Cause                                                                    |
 | --- | ---------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | 1   | No message events at all                                   | `community:join` was never emitted — client is not in the socket room         |
-| 2   | Messages arrive but the community list doesn't move to top | Listening for `community:updated` on `/community` — it arrives on **`/chat`** |
+| 2   | Messages arrive but the community list doesn't move to top | Listening for `community:updated` on `/chat` — it arrives on **`/community`** |
 | 3   | Works on first load, breaks on navigation                  | Room re-join not called after socket reconnect                                |
 
 ---
@@ -54,19 +54,20 @@ call fetches the latest state; the socket never fired.
  chat-service  ──── redis.publish("user:{memberId}", { event: "community:updated", data })
       │                    for EVERY active member
       ▼
- api-gateway /chat namespace   ←── NOTE: /chat, not /community
+ api-gateway /community namespace   ←── NOTE: /community, not /chat
       │
       │  io.to("user:{memberId}").emit("community:updated", data)
       ▼
- Receiver's /chat socket  →  move community to top of list, update preview
+ Receiver's /community socket  →  move community to top of list, update preview
 ```
 
 ---
 
 ## Step 1 — Open All Three Namespaces
 
-You need both `/community` (for messages) and `/chat` (for list bumps). Open them
-once when the app starts, before any component mounts.
+You need `/community` (for messages and community-list bumps) and `/chat` (for
+private/group inbox bumps). Open them once when the app starts, before any
+component mounts.
 
 ```ts
 // lib/socket.ts
@@ -167,7 +168,7 @@ import { getSockets } from "@/lib/socket";
 
 export function SocketProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
-    const { community, chat } = getSockets();
+    const { community } = getSockets();
 
     // ── /community namespace ──────────────────────────────────────────────
 
@@ -204,11 +205,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       replacePinnedMessages(data.communityId, data.pinnedIds);
     });
 
-    // ── /chat namespace — list-bump ───────────────────────────────────────
-    // CRITICAL: community:updated arrives on /chat, NOT /community.
+    // ── /community namespace — list-bump ──────────────────────────────────
+    // CRITICAL: community:updated arrives on /community, NOT /chat.
     // If you listen on the wrong namespace, the community list never moves.
 
-    chat.on("community:updated", (update) => {
+    community.on("community:updated", (update) => {
       // Move this community to the top of the list and update the preview.
       reorderCommunityInList(update.communityId, {
         lastMessage: update.lastMessage,
@@ -224,7 +225,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       community.off("community:message:reaction");
       community.off("community:message:pinned");
       community.off("community:message:unpinned");
-      chat.off("community:updated");
+      community.off("community:updated");
     };
   }, []);
 
@@ -369,24 +370,19 @@ export function setupReconnectHandlers(
 
 ### Events you **receive** on `/community` namespace
 
-| Event                        | Trigger                         | Key Fields                                                                                                                                                               |
-| ---------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `community:message:new`      | Any member sends a message      | `id`, `communityId`, `roomId`, `senderId`, `senderName`, `senderAvatar`, `contentType`, `content.text`, `content.files`, `clientMessageId`, `sequenceNumber`, `serverTs` |
-| `community:message:edited`   | Sender edits their message      | `messageId`, `communityId`, `roomId`, `message`, `contentType`, `editedAt`                                                                                               |
-| `community:message:deleted`  | Message deleted for everyone    | `messageId`, `communityId`, `roomId`, `deleteType` (`"forEveryone"`), `deletedBy`                                                                                        |
-| `community:message:reaction` | Any member reacts / un-reacts   | `messageId`, `communityId`, `reactions[]` — **full set, replace don't merge**                                                                                            |
-| `community:message:pinned`   | Mod pins a message              | `messageId`, `communityId`, `pinnedIds[]` — **full list**                                                                                                                |
-| `community:message:unpinned` | Mod unpins a message            | `messageId`, `communityId`, `pinnedIds[]` — **remaining list**                                                                                                           |
-| `community:member:joined`    | A member was approved / joined  | `userId`, `displayName`, `avatarUrl`, `role`, `joinedAt`                                                                                                                 |
-| `community:catchup:result`   | Response to `community:catchup` | `roomId`, `events[]`, `hasMore`, `lastId`                                                                                                                                |
-| `typing:start`               | Member starts typing            | `communityId`, `userId`, `userDetails.displayName`, `userDetails.avatarUrl`                                                                                              |
-| `typing:stop`                | Member stops typing             | same as `typing:start`                                                                                                                                                   |
-
-### Events you **receive** on `/chat` namespace
-
-| Event               | Trigger                            | Key Fields                                                                                        |
-| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `community:updated` | Any message sent to this community | `communityId`, `roomId`, `lastMessage.text`, `lastMessage.contentType`, `lastMessageAt`, `unread` |
+| Event                        | Trigger                            | Key Fields                                                                                                                                                               |
+| ---------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `community:message:new`      | Any member sends a message         | `id`, `communityId`, `roomId`, `senderId`, `senderName`, `senderAvatar`, `contentType`, `content.text`, `content.files`, `clientMessageId`, `sequenceNumber`, `serverTs` |
+| `community:message:edited`   | Sender edits their message         | `messageId`, `communityId`, `roomId`, `message`, `contentType`, `editedAt`                                                                                               |
+| `community:message:deleted`  | Message deleted for everyone       | `messageId`, `communityId`, `roomId`, `deleteType` (`"forEveryone"`), `deletedBy`                                                                                        |
+| `community:message:reaction` | Any member reacts / un-reacts      | `messageId`, `communityId`, `reactions[]` — **full set, replace don't merge**                                                                                            |
+| `community:message:pinned`   | Mod pins a message                 | `messageId`, `communityId`, `pinnedIds[]` — **full list**                                                                                                                |
+| `community:message:unpinned` | Mod unpins a message               | `messageId`, `communityId`, `pinnedIds[]` — **remaining list**                                                                                                           |
+| `community:member:joined`    | A member was approved / joined     | `userId`, `displayName`, `avatarUrl`, `role`, `joinedAt`                                                                                                                 |
+| `community:catchup:result`   | Response to `community:catchup`    | `roomId`, `events[]`, `hasMore`, `lastId`                                                                                                                                |
+| `typing:start`               | Member starts typing               | `communityId`, `userId`, `userDetails.displayName`, `userDetails.avatarUrl`                                                                                              |
+| `typing:stop`                | Member stops typing                | same as `typing:start`                                                                                                                                                   |
+| `community:updated`          | Any message sent to this community | `communityId`, `roomId`, `lastMessage.text`, `lastMessage.contentType`, `lastMessageAt`, `unread`                                                                        |
 
 ### Events you **receive** on `/notify` namespace
 
@@ -536,7 +532,7 @@ If messages still aren't arriving after following this guide:
 [ ] Socket is connected?          console.log(community.connected) → true
 [ ] Joined the room?              Did community:join ack return success: true?
 [ ] Correct namespace?            community:message:new must be on /community socket
-[ ] community:updated namespace?  Must be on /chat socket, NOT /community
+[ ] community:updated namespace?  Must be on /community socket, NOT /chat
 [ ] Token valid?                  connect_error fires with "Authentication failed"?
 [ ] Community has a chat room?    GET /api/v1/communities/{id} → chatEnabled: true
 [ ] Member is active?             role !== null (banned/pending members can't receive)

@@ -188,6 +188,17 @@ export class CacheRepository {
     );
   }
 
+  /**
+   * Invalidate a cached user snapshot so the next read refetches the live
+   * profile from user-service. Called on `user.profile_updated`: snapshots have
+   * a 1h TTL and are otherwise never refreshed, so without this a rename leaves
+   * a stale `displayName` denormalized into every message/preview sent in that
+   * window (the "<old name>: 📷 Photo" community-list bug).
+   */
+  async deleteUserSnapshot(userId: string): Promise<void> {
+    await this.redis.del(`user:snapshot:${userId}`);
+  }
+
   async getUserSnapshot(
     userId: string
   ): Promise<Record<string, unknown> | null> {

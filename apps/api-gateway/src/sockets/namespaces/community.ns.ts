@@ -11,6 +11,8 @@ import {
   resolveSocketUserDetails,
   buildTypingBroadcast,
 } from "../user-details.js";
+import { env } from "../../config/env.js";
+import { createSessionTimers } from "../session-timers.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -50,6 +52,8 @@ const CommunityMsgSendSchema = z.object({
   roomId: z.string().min(1).optional(),
   clientMessageId: z.string().optional(),
   message: z.string().max(MAX_TEXT_LEN).default(""),
+  // Cross-namespace parity alias: `contentText` is accepted as an alias for `message`.
+  contentText: z.string().max(MAX_TEXT_LEN).optional(),
   contentType: z
     .string()
     .min(1)
@@ -57,6 +61,8 @@ const CommunityMsgSendSchema = z.object({
   media: z
     .object({ files: z.array(CommunityMsgSendFileSchema).max(MAX_FILES) })
     .optional(),
+  // Cross-namespace parity alias: top-level `files[]` is accepted as alias for `media.files[]`.
+  files: z.array(CommunityMsgSendFileSchema).max(MAX_FILES).optional(),
   location: z
     .object({
       lat: z.number().min(-90).max(90),
@@ -183,6 +189,28 @@ const DeleteCommunitySchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
+// ── New parity schemas ────────────────────────────────────────────────────────
+const CommunityMsgReadSchema = z.object({
+  communityId: z.string().min(1),
+  roomId: z.string().min(1).optional(),
+  upToMessageId: z.string().min(1),
+});
+const CommunityMsgReactionsGetSchema = z.object({
+  messageId: z.string().min(1),
+  communityId: z.string().min(1),
+});
+const CommunityMsgForwardSchema = z.object({
+  messageId: z.string().min(1),
+  communityId: z.string().min(1),
+  targetCommunityId: z.string().min(1),
+  targetRoomId: z.string().min(1).optional(),
+  clientMessageId: z.string().min(1),
+});
+const CommunityMsgDeliveredSchema = z.object({
+  communityId: z.string().min(1),
+  roomId: z.string().min(1).optional(),
+  upToMessageId: z.string().min(1),
+});
 interface RedisSocketEvent {
   event: string;
   data: unknown;
@@ -192,6 +220,7 @@ export function registerCommunityNamespace(
   io: SocketIOServer,
   communityClient: CommunityClient,
   redisSub: Redis,
+  redisPub: Redis,
   userClient: UserClient,
   mediaClient: MediaClient
 ): void {
@@ -201,14 +230,56 @@ export function registerCommunityNamespace(
   // Dedicated subscriber for community channels.
   // Backend services publish: { event: "community:message:new"|"community:member:joined", data: {...} }
   // to Redis channel community:<communityId>.
+  // Also subscribe to user:* so community:read_sync events reach the reader's own devices.
   void redisSub.psubscribe("community:*");
+  void redisSub.psubscribe("user:*");
   redisSub.on(
     "pmessage",
     (pattern: string, channel: string, message: string) => {
+      // user:* relay: only forward community-scoped events to avoid cross-firing
+      // chat-service events (e.g. message:new for private rooms) onto /community.
+      if (pattern === "user:*") {
+        try {
+          const parsed = JSON.parse(message) as RedisSocketEvent;
+          if ((parsed.event as string).startsWith("community:")) {
+            community.to(channel).emit(parsed.event, parsed.data);
+          }
+        } catch (err) {
+          logger.warn(
+            `/community Redis user:* parse error on ${channel}: ${String(err)}`
+          );
+        }
+        return;
+      }
       if (pattern !== "community:*") return;
       try {
         const parsed = JSON.parse(message) as RedisSocketEvent;
         community.to(channel).emit(parsed.event, parsed.data);
+
+        // Evict-on-removal: when a member is removed (banned/kicked/left), force
+        // their live sockets out of the broadcast room in real time so a BANNED
+        // user stops receiving community events immediately — defense-in-depth
+        // alongside the community:join ban gate (which stops them on reconnect).
+        if (parsed.event === "community:member:removed") {
+          const removedUserId = (parsed.data as { userId?: string } | null)
+            ?.userId;
+          if (removedUserId) {
+            void (async () => {
+              try {
+                const sockets = await community.in(channel).fetchSockets();
+                for (const s of sockets) {
+                  if (s.data.userId === removedUserId) {
+                    void s.leave(channel);
+                  }
+                }
+              } catch (evictErr) {
+                logger.warn(
+                  `/community evict-on-removed failed channel=${channel} user=${removedUserId}: ${String(evictErr)}`
+                );
+              }
+            })();
+          }
+        }
       } catch (err) {
         logger.warn(
           `/community Redis message parse error on ${channel}: ${String(err)}`
@@ -259,9 +330,12 @@ export function registerCommunityNamespace(
         { senderName, communityId }
       );
 
+    // ── FIRE-AND-FORGET (NO ACK) — FE must not pass a callback ──────────────────
+    // These events have NO ack callback. If FE waits for ack, the typing indicator
+    // will never appear. Emit without callback: socket.emit("typing:start", payload)
     socket.on("typing:start", (payload: unknown) => {
       const r = CommunityTypingSchema.safeParse(payload);
-      if (!r.success) return;
+      if (!r.success) return; // Invalid payload is silently dropped (no ack to send)
       const { communityId, senderName } = r.data;
       clearTyping(communityId);
       community
@@ -278,9 +352,10 @@ export function registerCommunityNamespace(
       );
     });
 
+    // ── FIRE-AND-FORGET (NO ACK) ──────────────────────────────────────────────
     socket.on("typing:stop", (payload: unknown) => {
       const r = CommunityTypingSchema.safeParse(payload);
-      if (!r.success) return;
+      if (!r.success) return; // Invalid payload is silently dropped
       const { communityId, senderName } = r.data;
       clearTyping(communityId);
       community
@@ -296,8 +371,31 @@ export function registerCommunityNamespace(
           ackError(callback, "INVALID_PAYLOAD", locale);
           return;
         }
-        void socket.join(`community:${r.data.communityId}`);
-        ackOk(callback, "SOCKET_COMMUNITY_JOINED", locale);
+        const communityId = r.data.communityId;
+        void (async () => {
+          // Ban gate: a BANNED user must not enter the broadcast room (and thus
+          // must not receive messages / member events / typing). Only an explicit
+          // BANNED verdict rejects — on a gRPC/breaker failure we fail OPEN (join
+          // allowed) because the act-vector (send/edit/react) is independently
+          // hard-blocked at chat-service, so the only risk of a transient failure
+          // is a brief receive-side leak, not an integrity breach.
+          try {
+            const m = await communityClient.checkCommunityMembership({
+              communityId,
+              userId,
+            });
+            if (m.isBanned) {
+              ackError(callback, "FORBIDDEN", locale);
+              return;
+            }
+          } catch (err) {
+            logger.warn(
+              `/community join membership check failed (fail-open) community=${communityId} user=${userId}: ${String(err)}`
+            );
+          }
+          void socket.join(`community:${communityId}`);
+          ackOk(callback, "SOCKET_COMMUNITY_JOINED", locale);
+        })();
       }
     );
 
@@ -328,9 +426,11 @@ export function registerCommunityNamespace(
             roomId: r.data.roomId ?? r.data.communityId,
             senderId: userId,
             clientMessageId: r.data.clientMessageId,
-            message: r.data.message,
+            // Cross-namespace parity: accept contentText as an alias for message.
+            message: r.data.message || r.data.contentText || "",
             contentType: r.data.contentType,
-            mediaFiles: r.data.media?.files,
+            // Cross-namespace parity: accept top-level files[] as alias for media.files[].
+            mediaFiles: r.data.media?.files ?? r.data.files,
             location: r.data.location,
             contact: r.data.contact,
             sticker: r.data.sticker,
@@ -828,8 +928,145 @@ export function registerCommunityNamespace(
       }
     );
 
+    // ── community:message:read ─────────────────────────────────────────────────
+    socket.on(
+      "community:message:read",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CommunityMsgReadSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .markCommunityMessageRead({
+            communityId: r.data.communityId,
+            roomId: r.data.roomId ?? r.data.communityId,
+            readerId: userId,
+            upToMessageId: r.data.upToMessageId,
+          })
+          .then((result) =>
+            ackOk(callback, "SOCKET_COMMUNITY_MESSAGE_READ", locale, result)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/community message:read gRPC error: ${String(err)}`);
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    // ── community:message:reactions:get ───────────────────────────────────────
+    socket.on(
+      "community:message:reactions:get",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CommunityMsgReactionsGetSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .getCommunityMessageReactions({ ...r.data, requesterId: userId })
+          .then((result) =>
+            ackOk(
+              callback,
+              "SOCKET_COMMUNITY_REACTIONS_FETCHED",
+              locale,
+              result
+            )
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `/community message:reactions:get gRPC error: ${String(err)}`
+            );
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    // ── community:message:forward ──────────────────────────────────────────────
+    socket.on(
+      "community:message:forward",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CommunityMsgForwardSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .forwardCommunityMessage({
+            sourceMessageId: r.data.messageId,
+            sourceCommunityId: r.data.communityId,
+            targetCommunityId: r.data.targetCommunityId,
+            targetRoomId: r.data.targetRoomId ?? r.data.targetCommunityId,
+            senderId: userId,
+            clientMessageId: r.data.clientMessageId,
+          })
+          .then((result) =>
+            ackOk(
+              callback,
+              "SOCKET_COMMUNITY_MESSAGE_FORWARDED",
+              locale,
+              result
+            )
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `/community message:forward gRPC error: ${String(err)}`
+            );
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    // ── community:message:delivered ───────────────────────────────────────────
+    socket.on(
+      "community:message:delivered",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = CommunityMsgDeliveredSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        communityClient
+          .markCommunityMessageDelivered({
+            communityId: r.data.communityId,
+            roomId: r.data.roomId ?? r.data.communityId,
+            recipientId: userId,
+            upToMessageId: r.data.upToMessageId,
+          })
+          .then((result) =>
+            ackOk(
+              callback,
+              "SOCKET_COMMUNITY_MESSAGE_DELIVERED",
+              locale,
+              result
+            )
+          )
+          .catch((err: unknown) => {
+            logger.warn(
+              `/community message:delivered gRPC error: ${String(err)}`
+            );
+            ackError(callback, "SERVICE_ERROR", locale);
+          });
+      }
+    );
+
+    // ── auth:refresh + session:expired ────────────────────────────────────────
+    const {
+      clearSessionTimers,
+      scheduleSessionTimers,
+      registerAuthRefreshHandler,
+    } = createSessionTimers(socket, locale, "/community", env.AUTH_SERVICE_URL);
+
+    if (socket.data.tokenExpiresAt > 0) {
+      scheduleSessionTimers(socket.data.tokenExpiresAt);
+    }
+    registerAuthRefreshHandler();
+
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/community disconnected userId=${userId} reason=${reason}`);
+
+      // Clear session expiry timers.
+      clearSessionTimers();
 
       // Flush all pending typing-expiry timers and broadcast stop so members are
       // never stuck with a "typing…" indicator after the socket closes.

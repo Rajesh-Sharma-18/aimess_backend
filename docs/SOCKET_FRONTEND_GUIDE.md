@@ -493,12 +493,9 @@ export function SocketProvider({
       /* update pinned banner — pinnedCount/action */
     });
 
-    // list/inbox bump-to-top (delivered to user:<id>, even for communities)
+    // list/inbox bump-to-top (delivered to user:<id>)
     chat.on("conv:updated", (p) => {
       /* splice room to top of inbox, key roomId */
-    });
-    chat.on("community:updated", (p) => {
-      /* splice community to top, key communityId */
     });
 
     // catch-up results (one per room)
@@ -514,6 +511,10 @@ export function SocketProvider({
     // --- community namespace ---
     community.on("community:message:new", (p) => {
       /* dispatch into community store */
+    });
+    // community list bump-to-top (delivered to user:<id> on /community)
+    community.on("community:updated", (p) => {
+      /* splice community to top, key communityId */
     });
     community.on("community:message:reaction", (p) => {
       /* full reaction set */
@@ -938,9 +939,11 @@ await emitAck(community, "community:catchup", {
 // pin/unpin broadcasts send the COMPLETE pinnedIds list — replace, don't merge
 ```
 
-> **List bump for communities arrives on `/chat`**, not `/community` — listen for
-> `community:updated` on the chat socket (the unified inbox uses the chat socket).
-> Community message **deletes** broadcast as `message:delete` on `conv:<roomId>`.
+> **List bump for communities arrives on `/community`**, not `/chat` — listen for
+> `community:updated` on the community socket. The private/group inbox bump
+> `conv:updated` still arrives on the chat socket (the unified inbox uses the chat
+> socket). Community message **deletes** broadcast as `message:delete` on
+> `conv:<roomId>`.
 
 **Notifications** (`/notify`): on connect you get `notification:count` once; new
 items arrive as `notification:new` (read `notificationId ?? id`); the badge total
@@ -1011,10 +1014,15 @@ await emitAck(chat, "call:end", { callId }); // → call:ended { endedBy, durati
 `call:initiate` · `call:answer` · `call:decline` · `call:end` · `call:ice`
 
 **Listen (server → client, `/chat`):** `message:new` · `message:edited` ·
-`conv:updated` · `community:updated` · `chat:catchup:result` · `message:read` ·
+`conv:updated` · `chat:catchup:result` · `message:read` ·
 `message:delivered` · `message:reaction` · `message:delete` · `read_sync` ·
 `pin:updated` · `typing:start` · `typing:stop` · `presence:status` ·
 `call:incoming` · `call:answered` · `call:declined` · `call:ended` · `call:ice`
+
+**Listen (server → client, `/community`):** `community:message:new` ·
+`community:message:reaction` · `community:message:edited` ·
+`community:message:deleted` · `community:message:pinned` ·
+`community:message:unpinned` · `community:updated` (community list bump-to-top)
 
 **Typing (client ↔ server, `/community`):** emit `typing:start` · `typing:stop`
 (`{ communityId }`); listen `typing:start` · `typing:stop` (enriched broadcast

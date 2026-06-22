@@ -3,6 +3,7 @@ export const CommunityEvents = {
   MEMBER_ADDED: "community.member_added",
   MEMBER_KICKED: "community.member_kicked",
   MEMBER_BANNED: "community.member_banned",
+  MEMBER_UNBANNED: "community.member_unbanned",
   MEMBER_MUTED: "community.member_muted",
   MEMBER_UNMUTED: "community.member_unmuted",
   MEMBER_WARNED: "community.member_warned",
@@ -13,6 +14,7 @@ export const CommunityEvents = {
   JOIN_REQUESTED: "community.join_requested",
   JOIN_REQUEST_APPROVED: "community.join_request_approved",
   JOIN_REQUEST_REJECTED: "community.join_request_rejected",
+  JOIN_REQUEST_CANCELLED: "community.join_request_cancelled",
   INVITE_SENT: "community.invite_sent",
   INVITE_ACCEPTED: "community.invite_accepted",
   INVITE_LINK_SHARED: "community.invite_link_shared",
@@ -61,6 +63,16 @@ export type CommunityMemberBannedPayload = CommunityEventBase & {
   actorId: string;
   targetUserId: string;
   reason: string | null;
+};
+
+/**
+ * Cross-service unban event (community-service → notifications-service). Named
+ * with a `Notify` suffix to avoid clashing with the socket-layer
+ * `CommunityMemberUnbannedPayload` in `../community.ts`.
+ */
+export type CommunityMemberUnbannedNotifyPayload = CommunityEventBase & {
+  actorId: string;
+  targetUserId: string;
 };
 
 export type CommunityMemberMutedPayload = CommunityEventBase & {
@@ -171,6 +183,18 @@ export type CommunityJoinRequestRejectedPayload = CommunityEventBase & {
   decidedBy: { userId: string; username: string | null; displayName: string };
   /** ISO-8601. */
   decidedAt: string;
+};
+
+/** Published when a user cancels their own pending join request. */
+export type CommunityJoinRequestCancelledPayload = CommunityEventBase & {
+  communityName: string;
+  communityHandle: string;
+  communityAvatarUrl: string | null;
+  requestId: string;
+  /** The user who cancelled (both actor and notification recipient). */
+  userId: string;
+  /** ISO-8601. */
+  cancelledAt: string;
 };
 
 export type CommunityInviteSentPayload = CommunityEventBase & {

@@ -7,13 +7,16 @@ import type { GeneralRoomMessageRepository } from "../repositories/general-room-
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CommunityMessagePin } from "../generated/prisma/index.js";
+import type { CommunitySystemMessageService } from "./community-system-message.service.js";
 
 export class CommunityPinService {
   constructor(
     private readonly pinRepo: CommunityMessagePinRepository,
     private readonly messageRepo: GeneralRoomMessageRepository,
     private readonly roomRepo: GeneralRoomRepository,
-    private readonly memberRepo: RoomMemberRepository
+    private readonly memberRepo: RoomMemberRepository,
+    /** Optional — when provided, pin/unpin emit PINNED_MESSAGE / UNPINNED_MESSAGE. */
+    private readonly systemMessageService?: CommunitySystemMessageService
   ) {}
 
   async pin(params: {
@@ -62,6 +65,16 @@ export class CommunityPinService {
     });
 
     const updated = await this.roomRepo.incPinnedCount(roomId, 1);
+
+    // Telegram-style "{actor} pinned a message" SYSTEM line (best-effort).
+    // roomId === communityId for community general rooms.
+    void this.systemMessageService?.post({
+      communityId: params.communityId,
+      systemMessageType: "PINNED_MESSAGE",
+      metadata: { pinnedMessageId: messageId },
+      triggeredByUserId: userId,
+    });
+
     return { pin, pinnedCount: updated?.pinnedCount ?? 0 };
   }
 
@@ -84,6 +97,16 @@ export class CommunityPinService {
     if (!result.deletedCount) throw new NotFoundError("CHAT_PIN_NOT_FOUND");
 
     const updated = await this.roomRepo.incPinnedCount(roomId, -1);
+
+    // Telegram-style "{actor} unpinned a message" SYSTEM line (best-effort).
+    // roomId === communityId for community general rooms.
+    void this.systemMessageService?.post({
+      communityId: roomId,
+      systemMessageType: "UNPINNED_MESSAGE",
+      metadata: { pinnedMessageId: messageId },
+      triggeredByUserId: userId,
+    });
+
     return { pinnedCount: updated?.pinnedCount ?? 0 };
   }
 

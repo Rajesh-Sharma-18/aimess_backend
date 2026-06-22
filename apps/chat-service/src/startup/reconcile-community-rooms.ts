@@ -73,12 +73,18 @@ export async function reconcileCommunityRooms(): Promise<void> {
           continue;
         }
 
-        // Active community with no room → provision + seed members.
+        const communityType =
+          c.communityType === "PUBLIC" || c.communityType === "PRIVATE"
+            ? c.communityType
+            : null;
+
+        // Active community with no room → provision (with type) + seed members.
         if (!roomStatus) {
           await roomRepo.provisionForCommunity(c.id, {
             name: c.name,
             owner: c.adminId || null,
             logo: c.avatarUrl || null,
+            communityType,
           });
           provisioned++;
           for (const m of c.members) {
@@ -87,6 +93,11 @@ export async function reconcileCommunityRooms(): Promise<void> {
             await memberRepo.upsert(c.id, m.userId, data);
             membersSynced++;
           }
+        } else if (communityType) {
+          // Room already exists — backfill / refresh its persisted visibility so
+          // existing PUBLIC communities (created before this field) become
+          // browsable by non-members. Authoritative source: the community row.
+          await roomRepo.setCommunityType(c.id, communityType);
         }
       }
 

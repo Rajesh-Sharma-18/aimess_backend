@@ -1,10 +1,10 @@
 # WebSocket — Read / Delivery Receipts, Inbox Bump & Unread
 
 `message:read` and `message:delivered` are ack'd events delegating to
-chat-service; the receipts fan out to `conv:<id>`. `conv:updated` /
-`community:updated` are the move-to-top hints delivered to `user:<id>` on the
-`/chat` namespace. Group **system messages** bump last-message but do not raise
-unread.
+chat-service; the receipts fan out to `conv:<id>`. `conv:updated` is the
+move-to-top hint delivered to `user:<id>` on the `/chat` namespace, while
+`community:updated` is delivered to `user:<id>` on the `/community` namespace.
+Group **system messages** bump last-message but do not raise unread.
 
 **Source:** `apps/api-gateway/src/sockets/namespaces/chat.ns.ts`,
 `docs/SOCKET_EVENTS.md` §4.2, the "List bump events" + "Group system messages"
@@ -92,21 +92,21 @@ notes, §7.6.
 | **Expected Socket/Event** | `conv:updated` to every participant's `user:<id>` on `/chat`: `{ type:"PRIVATE"\|"GROUP", roomId, lastMessageId, lastMessage:{ contentType, text }, lastMessageAt(number, epoch ms), senderId, unread }` |
 | **Notes**                 | Sender's own copy `unread:false`; recipients `unread:true`. Independent of `message:new` — a user inside the conv receives both. Idempotent (key `roomId`).                                              |
 
-### TC-WS-105 — community:updated delivered on /chat (not /community)
+### TC-WS-105 — community:updated delivered on /community (not /chat)
 
-| Field                     | Value                                                                                                                                                                              |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Feature/Module**        | WebSocket / Inbox bump                                                                                                                                                             |
-| **API/Event Name**        | `server→client: community:updated`                                                                                                                                                 |
-| **Test Scenario**         | Business rule — unified inbox bump for communities arrives on the `/chat` socket                                                                                                   |
-| **Category**              | Business Rule                                                                                                                                                                      |
-| **Priority**              | High                                                                                                                                                                               |
-| **Preconditions**         | A is an active member of a community; A connected on `/chat`                                                                                                                       |
-| **Request Payload**       | n/a (a new community message arrives)                                                                                                                                              |
-| **Expected Response**     | n/a                                                                                                                                                                                |
-| **Expected DB Changes**   | Community last-message updated                                                                                                                                                     |
-| **Expected Socket/Event** | `community:updated` to `user:<A>` on **`/chat`**: `{ communityId, roomId, lastMessageId, lastMessage, lastMessageAt, senderId, unread }`                                           |
-| **Notes**                 | Intentional: unified list/inbox uses the `/chat` socket, so FE must listen on `/chat`. Delivered to all active members. Easy to miss — common FE bug is listening on `/community`. |
+| Field                     | Value                                                                                                                                                                                              |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | WebSocket / Inbox bump                                                                                                                                                                             |
+| **API/Event Name**        | `server→client: community:updated`                                                                                                                                                                 |
+| **Test Scenario**         | Business rule — unified inbox bump for communities arrives on the `/community` socket                                                                                                              |
+| **Category**              | Business Rule                                                                                                                                                                                      |
+| **Priority**              | High                                                                                                                                                                                               |
+| **Preconditions**         | A is an active member of a community; A connected on `/community`                                                                                                                                  |
+| **Request Payload**       | n/a (a new community message arrives)                                                                                                                                                              |
+| **Expected Response**     | n/a                                                                                                                                                                                                |
+| **Expected DB Changes**   | Community last-message updated                                                                                                                                                                     |
+| **Expected Socket/Event** | `community:updated` to `user:<A>` on **`/community`**: `{ communityId, roomId, lastMessageId, lastMessage, lastMessageAt, senderId, unread }`                                                      |
+| **Notes**                 | Intentional: the community list/inbox bump uses the `/community` socket, so FE must listen on `/community`. Delivered to all active members. Easy to miss — common FE bug is listening on `/chat`. |
 
 ### TC-WS-106 — Group system message bumps inbox but not unread
 

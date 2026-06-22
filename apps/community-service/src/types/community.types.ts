@@ -95,66 +95,47 @@ export type CommunityCategoryData = {
   name: string;
   slug: string;
 };
+/**
+ * Community-list "last activity" preview, surfaced by every list/summary surface
+ * (`/communities/mine`, search/discover, get-by-id) and the socket bumps.
+ *
+ * Two shapes, discriminated by the nature of the activity (Telegram parity):
+ *
+ * - **USER MESSAGE** (`message` / `reaction` / `edited` / `deleted`): a real
+ *   member action. `username` is the sender's name and the CLIENT renders
+ *   `"<username>: <preview>"` (or `"You: <preview>"`).
+ *
+ * - **SYSTEM / lifecycle** (`system` / `created` / `join` / `removal` /
+ *   `pinned` / `unpinned`): the `preview` is already a complete, self-describing
+ *   sentence (e.g. "Community photo updated", "John Doe became admin"). For these
+ *   `username` is ALWAYS `null`, so the client shows the text standalone with NO
+ *   sender prefix. Never render `"<actor>: <preview>"` for this shape.
+ */
+export type CommunityLastActivityType =
+  | "message"
+  | "reaction"
+  | "edited"
+  | "deleted"
+  | "system"
+  | "created"
+  | "join"
+  | "removal"
+  | "pinned"
+  | "unpinned";
+
 export type CommunityLastActivity =
   | {
-      type: "message";
+      // USER MESSAGE — client prefixes the preview with the sender / "You".
+      type: "message" | "reaction" | "edited" | "deleted";
       userId: string | null;
       username: string;
       preview: string;
       dateTime: number;
     }
   | {
-      type: "join";
+      // SYSTEM / lifecycle — standalone text, NEVER prefixed (username === null).
+      type: "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
       userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "removal";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "reaction";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "edited";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "deleted";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "pinned";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "unpinned";
-      userId: string | null;
-      username: string;
-      preview: string;
-      dateTime: number;
-    }
-  | {
-      type: "created";
-      userId: null;
       username: null;
       preview: string;
       dateTime: number;
@@ -290,6 +271,37 @@ export type CommunityMemberData = {
   banReason: string | null;
 };
 
+/**
+ * A single currently-banned member row. Returned by the banned-members list.
+ *
+ * Only members whose status is BANNED right now appear here — historical bans
+ * that were later lifted live in the moderation audit trail (`listAuditLogs`),
+ * not in this active list.
+ */
+export type CommunityBannedMemberData = {
+  userId: string;
+  username: string;
+  displayName: string;
+  /** Presigned GET URL for the member's avatar (private bucket); null if none. */
+  avatarUrl: string | null;
+  avatarUrlExpiresIn: number | null;
+  /** Nested media object for the avatar (additive; mirrors avatarUrl). */
+  avatar: MediaObject;
+  /** Epoch milliseconds of when the ban was applied; null if unknown. */
+  bannedAt: number | null;
+  /**
+   * The moderator/admin who applied the ban. `displayName` is resolved from the
+   * banning member's snapshot when they are still in the community, else null.
+   */
+  bannedBy: { userId: string; displayName: string | null } | null;
+  banReason: string | null;
+  /**
+   * Ban duration class. Today all community bans are indefinite, so this is
+   * always "PERMANENT"; the field is reserved for future temporary bans.
+   */
+  banType: "PERMANENT";
+};
+
 /** A single moderation-muted member row. Returned by mute / list-muted. */
 export type CommunityMutedMemberData = {
   userId: string;
@@ -380,6 +392,8 @@ export type CommunityInviteLinkData = {
   code: string;
   /** Built from INVITE_LINK_BASE_URL when set, else just the code. */
   url: string;
+  /** Deep-link for mobile: aimess://invite/<code> */
+  appDeepLink: string;
   communityId: string;
   createdBy: string;
   maxUses: number | null;
@@ -391,6 +405,27 @@ export type CommunityInviteLinkData = {
   createdAt: string;
   /** Computed: not revoked, not expired, not exhausted. */
   isActive: boolean;
+};
+
+/**
+ * Community preview returned for an unauthenticated (or optional-auth) invite-link
+ * lookup. Exposes enough detail for the "Join via invite" screen without leaking
+ * full member lists or private metadata.
+ */
+export type InviteLinkPreviewData = {
+  communityId: string;
+  communityName: string;
+  description: string | null;
+  avatarUrl: string | null;
+  bannerUrl: string | null;
+  memberCount: number;
+  communityType: CommunityType;
+  isJoined: boolean;
+  invitationCode: string;
+  inviteUrl: string;
+  appDeepLink: string;
+  expiresAt: number | null;
+  creatorId: string;
 };
 
 /** Liked/favorited community record. */

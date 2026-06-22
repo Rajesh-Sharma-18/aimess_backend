@@ -27,6 +27,7 @@ const envSchema = z.object({
   // Outbound gRPC targets (host:port) for opossum-wrapped clients.
   USER_SERVICE_GRPC_URL: z.string().default("127.0.0.1:4002"),
   CHAT_SERVICE_GRPC_URL: z.string().default("127.0.0.1:4004"),
+  COMMUNITY_SERVICE_GRPC_URL: z.string().default("127.0.0.1:4003"),
 
   // Cached notification-settings TTL (seconds).
   NOTIF_SETTINGS_CACHE_TTL_SEC: z.coerce.number().positive().default(300),

@@ -298,6 +298,10 @@ model GeneralRoom {
   pinnedCount      Int       @default(0)
   lastPinnedAt     DateTime?
   lastSequence     Int       @default(0)
+  // PUBLIC | PRIVATE — the parent community's visibility, synced from
+  // community-service. Drives non-member read access (PUBLIC history is
+  // browsable by guests). null = unknown → treated as PRIVATE (fail-closed).
+  communityType    String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -330,6 +334,10 @@ model GeneralRoomMessage {
   editHistory        Json     @default("[]")
   systemMessageType  String?
   systemMetadata     Json?
+  // When set, this message is PERSONAL: visible ONLY to this userId (e.g. the
+  // "You joined this community" onboarding message). null = visible to everyone
+  // with room read access. Read paths filter on { $in: [null, requestingUserId] }.
+  visibleToUserId    String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -339,6 +347,7 @@ model GeneralRoomMessage {
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
   @@index([roomId, systemMessageType, createdAt(sort: Desc)])
+  @@index([roomId, visibleToUserId, createdAt(sort: Desc)])
   @@map("general_room_messages")
 }
 

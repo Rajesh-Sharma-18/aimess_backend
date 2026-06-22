@@ -3,6 +3,7 @@ import { ForbiddenError, NotFoundError } from "@aimess/errors";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
+import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type {
   PrivateRoom,
   GroupMember,
@@ -88,4 +89,50 @@ export async function assertCommunityMember(
     throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
   }
   return member;
+}
+
+/**
+ * Community read access (Telegram-style): the caller is either an ACTIVE member
+ * OR the community is PUBLIC (non-members can read PUBLIC community chat
+ * history). For PRIVATE communities, active membership is required.
+ *
+ * Returns `{ member: RoomMember | null, canRead: boolean }` so callers know if
+ * they're a member without a separate query.
+ *
+ * The community visibility (PUBLIC/PRIVATE) is persisted on the GeneralRoom
+ * (`communityType`, synced from community-service by the room provisioner, the
+ * `community.visibility_changed` event, and the boot reconciler). A null/missing
+ * value is treated as PRIVATE — conservative fail-closed so an unsynced room
+ * never leaks a PRIVATE community's history to a non-member. The room is only
+ * loaded for non-members; ACTIVE members short-circuit first.
+ *
+ * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller is banned, or is a
+ *   non-member of a PRIVATE (or not-yet-synced) community.
+ */
+export async function assertCommunityReadAccess(
+  roomRepo: Pick<GeneralRoomRepository, "findRoomById">,
+  memberRepo: Pick<RoomMemberRepository, "findByRoomAndUser">,
+  roomId: string,
+  userId: string
+): Promise<{ member: RoomMember | null; canRead: boolean }> {
+  const member = await memberRepo.findByRoomAndUser(roomId, userId);
+
+  // Banned members cannot read (even if the community is PUBLIC).
+  if (member?.status === "banned") {
+    throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+  }
+
+  // Active members can always read.
+  if (member?.status === "active") {
+    return { member, canRead: true };
+  }
+
+  // Non-members can read only if the community is PUBLIC (persisted on the room).
+  const room = await roomRepo.findRoomById(roomId);
+  if (room?.communityType === "PUBLIC") {
+    return { member: null, canRead: true };
+  }
+
+  // Private (or unsynced) community and not a member — denied.
+  throw new ForbiddenError("CHAT_NOT_A_MEMBER");
 }

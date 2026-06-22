@@ -8,6 +8,21 @@ import {
   mapCommunityMediaType,
 } from "../constants/media-limits.js";
 
+/**
+ * PERSONAL system-message visibility check (applied in memory for Prisma
+ * `findMany` reads). A message is visible to `userId` when it has no target
+ * (`visibleToUserId` null OR absent — Prisma's `{ field: null }` filter does NOT
+ * match field-absent Mongo docs, so this MUST be done in memory, not in the
+ * where-clause) or it is targeted at this user. Raw aggregateRaw paths use
+ * `$in: [null, userId]` instead, which matches missing fields natively.
+ */
+function isVisibleToUser(
+  msg: { visibleToUserId?: string | null },
+  userId: string
+): boolean {
+  return !msg.visibleToUserId || msg.visibleToUserId === userId;
+}
+
 export class GeneralRoomMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -45,6 +60,18 @@ export class GeneralRoomMessageRepository {
     triggeredByName: string;
     sequenceNumber: number;
     fallbackText: string;
+    /** When set, the message is PERSONAL: only this user sees it in history. */
+    visibleToUserId?: string | null;
+    /**
+     * Deterministic idempotency key for the originating event, stored in the
+     * (internal) `clientMessageId` column so a REDELIVERED `community.system_message`
+     * event can't create a duplicate timeline line. Relies on the existing unique
+     * partial index `{roomId, sentBy, clientMessageId}` (server.ts ensureIndex):
+     * a second insert with the same key throws a duplicate-key error the caller
+     * treats as an idempotent replay. Stripped from the wire for SYSTEM rows.
+     * Omit for direct/local posts (pin/unpin) that aren't queue-redelivered.
+     */
+    clientMessageId?: string | null;
   }): Promise<GeneralRoomMessage> {
     return this.prisma.generalRoomMessage.create({
       data: {
@@ -56,6 +83,8 @@ export class GeneralRoomMessageRepository {
         messageType: "SYSTEM",
         systemMessageType: params.systemMessageType,
         systemMetadata: params.metadata as Prisma.InputJsonValue,
+        visibleToUserId: params.visibleToUserId ?? null,
+        clientMessageId: params.clientMessageId ?? null,
         reactions: {},
         attachments: [],
         deletedBy: [],
@@ -93,7 +122,7 @@ export class GeneralRoomMessageRepository {
     userId: string
   ): Promise<GeneralRoomMessage[]> {
     // Prisma MongoDB doesn't support $nin on JSON arrays directly.
-    // Fetch and filter in memory for deletedBy.
+    // Fetch and filter in memory for deletedBy + personal visibility.
     const messages = await this.prisma.generalRoomMessage.findMany({
       where: {
         roomId,
@@ -104,11 +133,12 @@ export class GeneralRoomMessageRepository {
       take: limit + 10,
     });
 
-    // Filter out messages where this user is in deletedBy
+    // Filter out messages this user deleted-for-me + PERSONAL messages targeted
+    // at someone else (in memory — see isVisibleToUser).
     return messages
       .filter((msg) => {
         const deletedBy = (msg.deletedBy ?? []) as string[];
-        return !deletedBy.includes(userId);
+        return !deletedBy.includes(userId) && isVisibleToUser(msg, userId);
       })
       .slice(0, limit);
   }
@@ -144,7 +174,10 @@ export class GeneralRoomMessageRepository {
 
     return messages.filter((msg) => {
       const deletedBy = (msg.deletedBy ?? []) as string[];
-      return !deletedBy.includes(params.userId);
+      return (
+        !deletedBy.includes(params.userId) &&
+        isVisibleToUser(msg, params.userId)
+      );
     });
   }
 
@@ -185,7 +218,10 @@ export class GeneralRoomMessageRepository {
 
     return [...older.reverse(), ...newer].filter((msg) => {
       const deletedBy = (msg.deletedBy ?? []) as string[];
-      return !deletedBy.includes(params.userId);
+      return (
+        !deletedBy.includes(params.userId) &&
+        isVisibleToUser(msg, params.userId)
+      );
     });
   }
 
@@ -209,6 +245,9 @@ export class GeneralRoomMessageRepository {
       deletedForAll: false,
       createdAt: { $lt: { $date: new Date(params.beforeMs).toISOString() } },
       deletedBy: { $ne: params.userId },
+      // PERSONAL message visibility: keep messages with no target OR targeted at
+      // this user. Stored as null when absent, so $in must include null.
+      visibleToUserId: { $in: [null, params.userId] },
     };
   }
 
@@ -327,6 +366,8 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             deletedBy: { $ne: params.userId },
             sentBy: { $ne: params.userId },
+            // PERSONAL messages targeted at another user never count as unread here.
+            visibleToUserId: { $in: [null, params.userId] },
           },
         },
         {
@@ -376,7 +417,7 @@ export class GeneralRoomMessageRepository {
     return messages
       .filter((msg) => {
         const deletedBy = (msg.deletedBy ?? []) as string[];
-        return !deletedBy.includes(userId);
+        return !deletedBy.includes(userId) && isVisibleToUser(msg, userId);
       })
       .slice(0, limit);
   }
@@ -503,7 +544,10 @@ export class GeneralRoomMessageRepository {
     return messages
       .filter((msg) => {
         const deletedBy = (msg.deletedBy ?? []) as string[];
-        return !deletedBy.includes(params.userId);
+        return (
+          !deletedBy.includes(params.userId) &&
+          isVisibleToUser(msg, params.userId)
+        );
       })
       .slice(0, params.limit);
   }
@@ -529,6 +573,8 @@ export class GeneralRoomMessageRepository {
     const matchStage: Record<string, unknown> = {
       roomId: { $oid: params.roomId },
       deletedBy: { $ne: params.userId },
+      // PERSONAL message visibility — never surface another user's personal message.
+      visibleToUserId: { $in: [null, params.userId] },
     };
     if (params.sinceId) {
       matchStage["_id"] = { $gt: { $oid: params.sinceId } };
@@ -595,9 +641,12 @@ export class GeneralRoomMessageRepository {
 
     const hasMore = raw.length > params.limit;
     const messages = raw.slice(0, params.limit).filter((msg) => {
-      // Per-user deletedBy filtered in memory (Prisma/Mongo limitation).
+      // Per-user deletedBy + PERSONAL visibility filtered in memory.
       const deletedBy = (msg.deletedBy ?? []) as string[];
-      return !deletedBy.includes(params.userId);
+      return (
+        !deletedBy.includes(params.userId) &&
+        isVisibleToUser(msg, params.userId)
+      );
     });
 
     return { messages, hasMore };

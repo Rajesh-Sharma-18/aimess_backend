@@ -94,6 +94,7 @@ const communityImpl: grpc.UntypedServiceImplementation = {
             adminId: c.adminId,
             avatarUrl: c.avatarUrl ?? "",
             deleted: c.deletedAt != null,
+            communityType: String(c.type),
             members: c.members.map((m) => ({
               userId: m.userId,
               status: String(m.status),
@@ -109,6 +110,85 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "listCommunities failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Membership oracle for the gateway socket ban gate. Returns the caller's
+  // membership status so the /community namespace can reject BANNED users at
+  // community:join. Read-only single-row lookup; never throws on "no row".
+  checkCommunityMembership: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          userId?: string;
+        };
+        if (!req.communityId || !req.userId) {
+          callback(null, {
+            isMember: false,
+            isBanned: false,
+            status: "",
+            role: "",
+          });
+          return;
+        }
+        const membership = await communityRepository.findMembership(
+          req.communityId,
+          req.userId
+        );
+        const status = membership ? String(membership.status) : "";
+        callback(null, {
+          isMember: status === "ACTIVE",
+          isBanned: status === "BANNED",
+          status,
+          role: membership ? String(membership.role) : "",
+        });
+      } catch (err) {
+        logger.error("checkCommunityMembership gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "checkCommunityMembership failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Moderation-mute oracle for notifications-service's eligibility gate. Returns
+  // whether the user has an effective (non-expired) moderation mute in the
+  // community. Read-only single-row lookup; never throws on "no row".
+  checkCommunityMute: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          userId?: string;
+        };
+        if (!req.communityId || !req.userId) {
+          callback(null, { isMuted: false, mutedUntil: 0 });
+          return;
+        }
+        const row = await communityRepository.findActiveMemberMute(
+          req.communityId,
+          req.userId
+        );
+        callback(null, {
+          isMuted: row != null,
+          mutedUntil:
+            row?.mutedUntil instanceof Date ? row.mutedUntil.getTime() : 0,
+        });
+      } catch (err) {
+        logger.error("checkCommunityMute gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "checkCommunityMute failed",
         } as grpc.ServiceError);
       }
     })();

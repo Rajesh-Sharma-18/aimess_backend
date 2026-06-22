@@ -8,6 +8,7 @@ import {
   type CommunityInviteAcceptedPayload,
   type CommunityInviteSentPayload,
   type CommunityJoinRequestApprovedPayload,
+  type CommunityJoinRequestCancelledPayload,
   type CommunityJoinRequestedPayload,
   type CommunityJoinRequestRejectedPayload,
   type CommunityMemberAddedPayload,
@@ -16,6 +17,7 @@ import {
   type CommunityMemberKickedPayload,
   type CommunityMemberMutedPayload,
   type CommunityMemberRoleChangedPayload,
+  type CommunityMemberUnbannedNotifyPayload,
   type CommunityMemberUnmutedPayload,
   type CommunityMemberWarnedPayload,
   type CommunityReportActionedPayload,
@@ -182,6 +184,34 @@ async function handleCommunityEvent(
       break;
     }
 
+    case CommunityEvents.JOIN_REQUEST_CANCELLED: {
+      const p = data as CommunityJoinRequestCancelledPayload;
+      const navigation: NotificationNavigation = {
+        screen: "COMMUNITY_DETAILS",
+        communityId: p.communityId,
+        communityName: p.communityName,
+        communityAvatarUrl: p.communityAvatarUrl,
+        communityHandle: p.communityHandle,
+        requestId: p.requestId,
+      };
+      // No push notification — the user cancelled deliberately on another device.
+      // Only sync the socket state so other sessions flip back to "Join".
+      await publishUserSocketEvent(
+        redis,
+        p.userId,
+        "community:join_request:update",
+        {
+          communityId: p.communityId,
+          requestId: p.requestId,
+          status: "CANCELLED",
+          communityName: p.communityName,
+          decidedAt: p.cancelledAt,
+          navigation,
+        }
+      ).catch((e) => logger.error(e));
+      break;
+    }
+
     case CommunityEvents.MEMBER_JOINED: {
       const p = data as CommunityMemberJoinedPayload;
       const navigation: NotificationNavigation = {
@@ -290,6 +320,17 @@ async function handleCommunityEvent(
         ...base(type, p.communityId, p.actorId, {
           reason: p.reason ?? "",
         }),
+      });
+      break;
+    }
+
+    case CommunityEvents.MEMBER_UNBANNED: {
+      const p = data as CommunityMemberUnbannedNotifyPayload;
+      await pushToUser({
+        userId: p.targetUserId,
+        title: "Ban lifted",
+        body: "Your ban from a community has been lifted.",
+        ...base(type, p.communityId, p.actorId, {}),
       });
       break;
     }

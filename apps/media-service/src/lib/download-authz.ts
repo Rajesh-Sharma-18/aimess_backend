@@ -77,8 +77,11 @@ export async function authorizeMediaAccess(
     // The uploader can always fetch their own object without a membership round-trip.
     if (record.ownerId === requesterId) return;
     if (!record.resourceId) {
-      // No bound resource to check membership against → fail closed.
-      throw new ForbiddenError("CHAT_MEDIA_FORBIDDEN");
+      // resourceId was not supplied at upload time (e.g. upload called without
+      // communityId/groupId/roomId). Fall back to legacy prefix/owner checks so
+      // these files stay accessible — the same behaviour as pre-registry objects.
+      legacyAuthz(objectKey, category, requesterId);
+      return;
     }
     const allowed = await getChatAccessClient().checkMediaAccess({
       userId: requesterId,

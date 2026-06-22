@@ -1,5 +1,6 @@
 import { logger } from "@aimess/logger";
 import amqp from "amqplib";
+import { publishCommunityRoomEvent } from "@aimess/redis";
 
 import {
   UserEvents,
@@ -7,7 +8,9 @@ import {
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { redis } from "../config/redis.js";
 import { communityRepository } from "../repositories/community.repository.js";
+import { buildAvatarMedia } from "../lib/build-avatar-media.js";
 
 const EXCHANGE = "user.profile_updated";
 const QUEUE = "user.profile_updated.community.queue";
@@ -58,14 +61,60 @@ export async function startUserProfileUpdatedConsumer(): Promise<void> {
 
     try {
       if (parsed.type === UserEvents.USER_PROFILE_UPDATED) {
-        await communityRepository.updateMemberSnapshotsByUserId(
-          parsed.data.userId,
-          {
-            snapshotUsername: parsed.data.username,
-            snapshotDisplayName: parsed.data.displayName,
-            snapshotAvatarKey: parsed.data.avatarObjectKey,
-          }
+        const { userId, username, displayName, avatarObjectKey } = parsed.data;
+
+        // Update stored snapshots
+        await communityRepository.updateMemberSnapshotsByUserId(userId, {
+          snapshotUsername: username,
+          snapshotDisplayName: displayName,
+          snapshotAvatarKey: avatarObjectKey,
+        });
+
+        // Keep the community-list preview sender name in sync too. The
+        // `lastActivityUsername` column is denormalized + frozen at message-send
+        // time, so a rename otherwise leaves "<old name>: <preview>" stuck on
+        // the community list even though the chat room (which renders the live
+        // member snapshot refreshed just above) shows the new name.
+        await communityRepository.updateLastActivityUsernameByUserId(
+          userId,
+          displayName
         );
+
+        // Broadcast real-time profile update to all communities the user is in
+        void (async () => {
+          try {
+            const memberships =
+              await communityRepository.findUserMemberships(userId);
+
+            if (memberships.length === 0) return;
+
+            // Resolve avatar to presigned URL (if avatar exists)
+            const avatarMedia = await buildAvatarMedia(avatarObjectKey);
+            const avatarUrl = avatarMedia.downloadUrl;
+
+            // Broadcast member:updated to each community room
+            for (const membership of memberships) {
+              publishCommunityRoomEvent(
+                redis,
+                membership.communityId,
+                "community:member:updated",
+                {
+                  userId,
+                  username,
+                  displayName,
+                  avatarUrl,
+                  role: membership.role,
+                  updatedAt: parsed.data.updatedAt,
+                }
+              );
+            }
+          } catch (error) {
+            logger.error(
+              `Failed to broadcast member update for userId=${parsed.data.userId}`
+            );
+            logger.error(error);
+          }
+        })();
       } else {
         logger.warn(
           `Unknown event type on user.profile_updated.queue: ${parsed.type}`

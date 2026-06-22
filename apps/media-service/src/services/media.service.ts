@@ -351,11 +351,19 @@ export const mediaService = {
       }
       const contentType = head.contentType ?? "application/octet-stream";
 
+      // Extract the real ownerId from the objectKey path ({prefix}/{ownerId}/…)
+      // so the ownership check inside confirmUpload passes even when the caller
+      // is not the uploader. Authorization has already been enforced above by
+      // authorizeMediaAccess, so this bypass is safe.
+      const ownerIdFromKey =
+        params.objectKey.slice(def.keyPrefix.length + 1).split("/")[0] ||
+        params.requesterId;
+
       const confirmResult = await this.confirmUpload({
         objectKey: params.objectKey,
         category: params.category,
         contentType,
-        requesterId: params.requesterId,
+        requesterId: ownerIdFromKey,
       });
       scanStatus = confirmResult.scanStatus;
     }

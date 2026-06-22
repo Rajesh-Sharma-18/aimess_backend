@@ -1,7 +1,10 @@
 import { Router, type IRouter } from "express";
 
 import { createServiceProxy } from "../../proxy/create-service-proxy.js";
-import { sensitiveAuthRateLimiter } from "../../middleware/rate-limit.js";
+import {
+  sensitiveAuthRateLimiter,
+  inviteLinkPreviewRateLimiter,
+} from "../../middleware/rate-limit.js";
 import { getServicesForVersion } from "../../versioning/registry.js";
 import { env } from "../../config/env.js";
 import { appVersionRouter } from "./app-version.routes.js";
@@ -22,6 +25,10 @@ export function createV1Router(messagingClient: MessagingClient): IRouter {
   if (env.MEDIA_SERVICE_URL) {
     v1Router.use(createLegacyUploadsRouter(env.MEDIA_SERVICE_URL));
   }
+
+  // Dedicated limiter for the public invite-link preview endpoint (unauthenticated,
+  // enumeration risk). Must be registered before the generic service proxy.
+  v1Router.use("/communities/invite-links", inviteLinkPreviewRateLimiter);
 
   // Stricter throttle on sensitive auth endpoints, applied before the generic
   // service proxy below. Must be registered ahead of the proxy mount so it runs

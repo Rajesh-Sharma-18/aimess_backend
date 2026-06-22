@@ -71,6 +71,7 @@ export async function setupSockets(
     io,
     communityClient,
     communitySub,
+    pub,
     userClient,
     mediaClient
   );

@@ -3,10 +3,12 @@ import { logger } from "@aimess/logger";
 import { env } from "../config/env.js";
 import { FriendshipEventConsumer } from "./friendship.consumer.js";
 import { CommunityRoomSyncConsumer } from "./community-room-sync.consumer.js";
+import { UserProfileEventConsumer } from "./user-profile.consumer.js";
 
 let connection: amqp.ChannelModel | null = null;
 let friendshipConsumer: FriendshipEventConsumer | null = null;
 let communityRoomSyncConsumer: CommunityRoomSyncConsumer | null = null;
+let userProfileConsumer: UserProfileEventConsumer | null = null;
 
 export async function initializeEventConsumers(): Promise<void> {
   if (!env.RABBITMQ_URL) {
@@ -31,6 +33,7 @@ export async function initializeEventConsumers(): Promise<void> {
       connection = null;
       friendshipConsumer = null;
       communityRoomSyncConsumer = null;
+      userProfileConsumer = null;
     });
 
     // Start friendship event consumer
@@ -40,6 +43,11 @@ export async function initializeEventConsumers(): Promise<void> {
     // Provision/teardown community chat rooms from community-service events
     communityRoomSyncConsumer = new CommunityRoomSyncConsumer();
     await communityRoomSyncConsumer.start(connection);
+
+    // Invalidate cached user snapshots on profile rename so freshly-sent
+    // messages, socket bumps, and list previews carry the current display name.
+    userProfileConsumer = new UserProfileEventConsumer();
+    await userProfileConsumer.start(connection);
   } catch (err) {
     logger.error("Failed to initialize event consumers", err);
     throw err;
@@ -53,6 +61,9 @@ export async function closeEventConsumers(): Promise<void> {
     }
     if (communityRoomSyncConsumer) {
       await communityRoomSyncConsumer.stop();
+    }
+    if (userProfileConsumer) {
+      await userProfileConsumer.stop();
     }
     if (connection) {
       await connection.close();

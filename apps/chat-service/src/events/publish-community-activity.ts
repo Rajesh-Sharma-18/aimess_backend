@@ -23,6 +23,21 @@ export interface CommunityActivityPayload {
   messagePreview: string;
   /** Activity type stored in community-service (e.g. "message", "reaction", "edited"). Defaults to "message". */
   type?: string;
+  /**
+   * For self-referential SYSTEM lines (a role change or a join), the user the
+   * line is ABOUT. community-service stores it as `lastActivityUserId` so the
+   * `GET /communities/mine` list can render the personalized `selfPreview`
+   * ("You are now a moderator" / "You joined this community") to that one viewer
+   * instead of the third-person `messagePreview` everyone else sees.
+   */
+  subjectUserId?: string;
+  /**
+   * The first-person ("You …") variant of `messagePreview`, rendered by the SAME
+   * deterministic template source as the third-person text (chat-service is the
+   * single source of truth — community-service stores this opaque string and
+   * never composes its own copy). Only set for self-referential system lines.
+   */
+  selfPreview?: string;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;

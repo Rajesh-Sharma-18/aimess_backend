@@ -7,6 +7,7 @@ import { communityService } from "../../services/community.service.js";
 import type {
   AddMembersInput,
   AuditLogsQuery,
+  BannedMembersQuery,
   BulkApproveJoinRequestsInput,
   BulkLeaveInput,
   BulkMarkReadInput,
@@ -407,6 +408,29 @@ export const listCommunityMutedMembers = asyncHandler(
         new ApiResponse(
           result,
           t("COMMUNITY_MUTED_MEMBERS_FETCHED", req.locale)
+        )
+      );
+  }
+);
+
+export const listCommunityBannedMembers = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const { page, limit, search, sortBy, sortOrder } =
+      req.query as unknown as BannedMembersQuery;
+
+    const result = await communityService.listBannedMembers(
+      id,
+      req.auth.userId,
+      { page, limit, search, sortBy, sortOrder }
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_BANNED_MEMBERS_FETCHED", req.locale)
         )
       );
   }
@@ -1078,6 +1102,24 @@ export const redeemCommunityInviteLink = asyncHandler(
       .status(HTTP_STATUS.OK)
       .json(
         new ApiResponse(result, t("COMMUNITY_INVITE_LINK_REDEEMED", req.locale))
+      );
+  }
+);
+
+export const lookupCommunityInviteLink = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { code } = req.params as InviteLinkCodeParams;
+    const result = await communityService.lookupInviteLink(
+      code,
+      req.auth.userId
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_INVITE_LINK_PREVIEW_FETCHED", req.locale)
+        )
       );
   }
 );

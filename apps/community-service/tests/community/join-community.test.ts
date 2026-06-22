@@ -116,6 +116,7 @@ import {
   publishCommunityMemberJoinedSafe,
   publishCommunityJoinRequestedSafe,
 } from "../../src/messaging/publish-community.js";
+import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
 
 // ---------------------------------------------------------------------------
 // Typed aliases
@@ -126,6 +127,7 @@ const pubMemberAdded = publishCommunityMemberAddedSafe as jest.Mock;
 const pubMemberJoined = publishCommunityMemberJoinedSafe as jest.Mock;
 const pubJoinRequested = publishCommunityJoinRequestedSafe as jest.Mock;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
+const pubSystemMessage = publishCommunitySystemMessageForChatSafe as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -246,6 +248,27 @@ describe("joinCommunity — PUBLIC community", () => {
     const [, roomCommunityId, , dto] = joinedCall!;
     expect(roomCommunityId).toBe(CID);
     expect(dto).toMatchObject({ userId: CALLER, role: "MEMBER" });
+  });
+
+  it("1.1 fresh join — emits ONLY the PERSONAL COMMUNITY_JOINED to the joiner (no community-wide join line)", async () => {
+    await communityService.joinCommunity(CID, CALLER);
+
+    const types = pubSystemMessage.mock.calls.map(
+      (c) => c[0].systemMessageType
+    );
+    // Only the personal line — no community-wide MEMBER_JOINED announcement.
+    expect(types).toContain("COMMUNITY_JOINED");
+    expect(types).not.toContain("MEMBER_JOINED");
+
+    // Personal "You joined" line — targeted at the joiner.
+    const personal = pubSystemMessage.mock.calls.find(
+      (c) => c[0].systemMessageType === "COMMUNITY_JOINED"
+    )![0];
+    expect(personal).toMatchObject({
+      communityId: CID,
+      triggeredByUserId: CALLER,
+      visibleToUserId: CALLER,
+    });
   });
 
   it("1.2 reactivation (LEFT → ACTIVE) — calls reactivateMemberWithSnapshot", async () => {

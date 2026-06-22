@@ -19,6 +19,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityMemberAddedSafe: jest.fn(),
   publishCommunityMemberKickedSafe: jest.fn(),
   publishCommunityMemberBannedSafe: jest.fn(),
+  publishCommunityMemberUnbannedSafe: jest.fn(),
   publishCommunityMemberMutedSafe: jest.fn(),
   publishCommunityMemberUnmutedSafe: jest.fn(),
   publishCommunityMemberWarnedSafe: jest.fn(),

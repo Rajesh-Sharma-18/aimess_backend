@@ -69,6 +69,11 @@ model Community {
   lastActivityPreview  String?
   lastActivityUsername String?
   lastActivityUserId   String?
+  // First-person ("You …") variant of lastActivityPreview for self-referential
+  // SYSTEM lines (role change / join). When the viewer's id === lastActivityUserId
+  // the list renders this instead of the third-person preview. Opaque string —
+  // rendered by chat-service (single template source), never composed here.
+  lastActivitySelfPreview String?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   // Admin moderation state. DISTINCT from `deletedAt`: moderationStatus is an
@@ -119,6 +124,10 @@ model CommunityMember {
   // Backs the admin member list's username sort (orderBy snapshotUsername within a
   // community); the exclusion + role/search filter is covered by [communityId, status].
   @@index([communityId, status, snapshotUsername])
+  // Banned-members list: default sort is bannedAt within [communityId, status=BANNED];
+  // the displayName index backs the alphabetical displayName sort option.
+  @@index([communityId, status, bannedAt])
+  @@index([communityId, status, snapshotDisplayName])
   @@map("community_members")
 }
 

@@ -24,6 +24,7 @@ import { communityRepository } from "../repositories/community.repository.js";
 import { communityCache } from "../lib/community-cache.js";
 import {
   assertCommunityRole,
+  assertNotBanned,
   COMMUNITY_ROLE_RANK,
 } from "../lib/community-authz.js";
 import {
@@ -71,6 +72,7 @@ import type {
   CommunityJoinRequestData,
   CommunityJoinRequestWithUserData,
   CommunityListItem,
+  CommunityBannedMemberData,
   CommunityMemberData,
   CommunityMemberWarningData,
   CommunityMutedMemberData,
@@ -78,6 +80,7 @@ import type {
   CommunityNotificationPreferenceData,
   CommunityReportData,
   CommunityReportWithUsersData,
+  InviteLinkPreviewData,
   MyInviteData,
   MyJoinRequestData,
   MyReportData,
@@ -99,6 +102,7 @@ import {
   publishCommunityInviteAcceptedSafe,
   publishCommunityInviteSentSafe,
   publishCommunityJoinRequestApprovedSafe,
+  publishCommunityJoinRequestCancelledSafe,
   publishCommunityJoinRequestedSafe,
   publishCommunityJoinRequestRejectedSafe,
   publishCommunityMemberAddedSafe,
@@ -107,6 +111,7 @@ import {
   publishCommunityMemberKickedSafe,
   publishCommunityMemberLeftSafe,
   publishCommunityMemberMutedSafe,
+  publishCommunityMemberUnbannedSafe,
   publishCommunityMemberUnmutedSafe,
   publishCommunityMemberWarnedSafe,
   publishCommunityMemberRoleChangedSafe,
@@ -119,6 +124,7 @@ import {
   publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
+  publishCommunityVisibilityChangedForChatSafe,
 } from "../messaging/publish-community-chat.js";
 import { publishAdminReportIngestSafe } from "../messaging/publish-admin-report.js";
 
@@ -202,7 +208,70 @@ function buildAvatarMedia(
   });
 }
 
-function buildLastActivity(community: {
+/**
+ * USER-message activity types: a real member action. The community-list preview
+ * keeps the sender so the client can render "<sender>: <preview>" / "You: …".
+ */
+const PREFIXED_ACTIVITY_TYPES = new Set([
+  "message",
+  "reaction",
+  "edited",
+  "deleted",
+]);
+
+/**
+ * SYSTEM / lifecycle activity types: the stored preview is a complete,
+ * self-describing sentence (e.g. "Community photo updated", "John Doe became
+ * admin", "John Doe joined the community"). These MUST be shown standalone in the
+ * community list — NEVER prefixed with a sender name. This single set is the
+ * source of truth for the no-prefix rule; `buildLastActivity` forces
+ * `username: null` for every member of it so the Mine/List/Search/Summary DTOs
+ * can never leak a "Someone: <system text>" prefix.
+ */
+const SENDERLESS_ACTIVITY_TYPES = new Set([
+  "system",
+  "created",
+  "join",
+  "removal",
+  "pinned",
+  "unpinned",
+]);
+
+/**
+ * The single `buildLastActivityPreview()`-style helper for the community list:
+ * maps the denormalized `lastActivity*` columns to the {@link CommunityLastActivity}
+ * DTO, applying the prefix rule centrally.
+ *
+ * - USER message  → `{ username, preview }` (client prefixes the sender).
+ * - SYSTEM/lifecycle → `{ username: null, preview }` (standalone, no prefix).
+ *
+ * Exported for unit coverage (community-list-activity.test.ts).
+ */
+/**
+ * Personalize the community-list preview for one viewer. Self-referential SYSTEM
+ * lines (a role change or a join) are ABOUT one member: chat-service stores the
+ * subject in `lastActivityUserId` and a first-person `lastActivitySelfPreview`
+ * ("You are now a moderator" / "You joined this community"). The viewer who IS
+ * the subject sees that "You …" line; everyone else sees the third-person
+ * `lastActivityPreview`. Returns null only when there is no stored preview.
+ *
+ * Exported for unit coverage (community-self-preview.test.ts).
+ */
+export function selectListPreview(
+  row: {
+    lastActivityPreview?: string | null;
+    lastActivitySelfPreview?: string | null;
+    lastActivityUserId?: string | null;
+  },
+  viewerId: string
+): string | null {
+  if (row.lastActivitySelfPreview && row.lastActivityUserId === viewerId) {
+    return row.lastActivitySelfPreview;
+  }
+  return row.lastActivityPreview ?? null;
+}
+
+export function buildLastActivity(community: {
   lastActivityAt: Date;
   lastActivityType?: string | null;
   lastActivityPreview?: string | null;
@@ -210,46 +279,134 @@ function buildLastActivity(community: {
   lastActivityUserId?: string | null;
   createdAt: Date;
 }): CommunityLastActivity {
-  const type = community.lastActivityType ?? "created";
-  const dateTime =
-    type === "created"
-      ? community.createdAt.getTime()
-      : community.lastActivityAt.getTime();
+  const rawType = community.lastActivityType ?? "created";
 
-  const NAMED_TYPES = new Set([
-    "message",
-    "join",
-    "removal",
-    "reaction",
-    "edited",
-    "deleted",
-    "pinned",
-    "unpinned",
-  ]);
-  if (NAMED_TYPES.has(type)) {
+  // USER MESSAGE → carry the sender so the client renders "<sender>: <preview>".
+  if (PREFIXED_ACTIVITY_TYPES.has(rawType)) {
     return {
-      type: type as
-        | "message"
-        | "join"
-        | "removal"
-        | "reaction"
-        | "edited"
-        | "deleted"
-        | "pinned"
-        | "unpinned",
+      type: rawType as "message" | "reaction" | "edited" | "deleted",
       userId: community.lastActivityUserId ?? null,
       username: community.lastActivityUsername ?? "",
       preview: community.lastActivityPreview ?? "",
-      dateTime,
+      dateTime: community.lastActivityAt.getTime(),
     };
   }
+
+  // SYSTEM / lifecycle (and any unknown/legacy type → safe "created" default):
+  // standalone sentence, NEVER prefixed → username is forced to null.
+  const systemType = (
+    SENDERLESS_ACTIVITY_TYPES.has(rawType) ? rawType : "created"
+  ) as "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
+  const dateTime =
+    systemType === "created"
+      ? community.createdAt.getTime()
+      : community.lastActivityAt.getTime();
   return {
-    type: "created",
-    userId: null,
+    type: systemType,
+    userId: community.lastActivityUserId ?? null,
     username: null,
-    preview: community.lastActivityPreview ?? "Community created successfully",
+    preview:
+      community.lastActivityPreview ??
+      (systemType === "created" ? "Community created successfully" : ""),
     dateTime,
   };
+}
+
+/**
+ * Telegram-style mapping from the set of community fields that actually changed
+ * in one `update()` call to the ONE system-message subtype to post:
+ *   - 0 fields            → null (nothing changed worth a line)
+ *   - exactly 1 field     → its dedicated specific subtype where one exists
+ *                           (name / description / avatar / banner), else the
+ *                           generic COMMUNITY_UPDATED ("Community details updated")
+ *   - 2+ fields           → one collapsed COMMUNITY_UPDATED ("Community details updated")
+ *
+ * Single source of truth for the "specific-or-collapsed" rule; exported for unit
+ * coverage (community-update-system-message.test.ts).
+ */
+const COMMUNITY_UPDATE_SINGLE_FIELD_SUBTYPE: Record<string, string> = {
+  name: "COMMUNITY_NAME_UPDATED",
+  description: "COMMUNITY_DESCRIPTION_UPDATED",
+  avatar: "COMMUNITY_AVATAR_UPDATED",
+  banner: "COMMUNITY_BANNER_UPDATED",
+};
+
+export function selectCommunityUpdateSystemMessageType(
+  changedFields: string[]
+): string | null {
+  if (changedFields.length === 0) return null;
+  if (changedFields.length === 1) {
+    return (
+      COMMUNITY_UPDATE_SINGLE_FIELD_SUBTYPE[changedFields[0]!] ??
+      "COMMUNITY_UPDATED"
+    );
+  }
+  return "COMMUNITY_UPDATED";
+}
+
+/**
+ * The set of community fields that ACTUALLY changed in one `update()` save —
+ * the input to {@link selectCommunityUpdateSystemMessageType}. Each field counts
+ * ONLY when its incoming value genuinely differs from the stored one. This is
+ * the fix for the "always generic 'Community was updated'" bug: edit forms
+ * resubmit the whole community (current avatar key, current category, the same
+ * description) even when the user touched a single field, so a naive "field was
+ * present in the payload" check inflated the set to 2+ and collapsed every save
+ * into the generic line instead of the specific one (name/description/avatar).
+ *
+ * `name`/`handle` are passed pre-normalized and `avatar` pre-resolved (those
+ * transforms are async / live in `update()`); the comparison itself is pure and
+ * unit-tested. Exported as the single source of truth for the rule.
+ */
+export function detectCommunityChangedFields(
+  current: {
+    name: string;
+    description: string | null;
+    avatarUrl: string | null;
+    type: string;
+    categoryId: string;
+    handle: string;
+  },
+  next: {
+    /** Normalized next name, or undefined when not in the payload. */
+    name?: string;
+    description?: string | null;
+    /** Whether `avatarObjectKey` was present in the payload at all. */
+    avatarProvided: boolean;
+    /** Resolved next avatar object key (null = cleared). */
+    nextAvatarUrl: string | null;
+    type?: string;
+    categoryId?: string;
+    /** Normalized next handle, or undefined when not in the payload. */
+    handle?: string;
+  }
+): string[] {
+  const changed: string[] = [];
+  if (next.name !== undefined && next.name !== current.name) {
+    changed.push("name");
+  }
+  if (
+    next.description !== undefined &&
+    (next.description ?? "") !== (current.description ?? "")
+  ) {
+    changed.push("description");
+  }
+  if (
+    next.avatarProvided &&
+    next.nextAvatarUrl !== (current.avatarUrl ?? null)
+  ) {
+    changed.push("avatar");
+  }
+  if (next.type !== undefined && next.type !== current.type) {
+    changed.push("visibility");
+  }
+  if (next.categoryId !== undefined && next.categoryId !== current.categoryId) {
+    changed.push("category");
+  }
+  if (next.handle !== undefined && next.handle !== current.handle) {
+    changed.push("handle");
+  }
+  return changed;
 }
 
 async function toCommunityData(
@@ -525,9 +682,25 @@ async function buildUserSnapshotView(
 }
 
 function generateInviteCode(): string {
-  // ~8 URL-safe chars; collision rate is negligible at expected volumes and the
-  // create flow retries on P2002 up to 3 times.
-  return randomBytes(6).toString("base64url");
+  // 16 bytes = 128 bits of entropy → ~22 URL-safe base64url chars.
+  // Sufficient against brute-force on the public preview endpoint.
+  // create flow retries on P2002 up to 3 times to handle the (negligible) collision risk.
+  return randomBytes(16).toString("base64url");
+}
+
+/** Validates that an invite link is currently usable (not revoked, expired, or exhausted). */
+function assertInviteLinkActive(link: {
+  revokedAt: Date | null;
+  expiresAt: Date | null;
+  maxUses: number | null;
+  usedCount: number;
+}): void {
+  if (link.revokedAt)
+    throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
+  if (link.expiresAt && link.expiresAt.getTime() <= Date.now())
+    throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
+  if (link.maxUses !== null && link.usedCount >= link.maxUses)
+    throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
 }
 
 function buildInviteUrl(code: string): string {
@@ -546,6 +719,7 @@ function toInviteLinkData(row: CommunityInviteLink): CommunityInviteLinkData {
     linkId: row.id,
     code: row.code,
     url: buildInviteUrl(row.code),
+    appDeepLink: `aimess://invite/${row.code}`,
     communityId: row.communityId,
     createdBy: row.createdBy,
     maxUses: row.maxUses,
@@ -773,8 +947,11 @@ export const communityService = {
     }
 
     const membership = await communityRepository.findMembership(id, callerId);
-    // Only an ACTIVE membership confers a role; BANNED/LEFT members are treated
-    // as non-members (myRole = null).
+    // A BANNED user is denied the community-details view entirely (403), even
+    // for PUBLIC communities — banned means no access, not "view as stranger".
+    assertNotBanned(membership);
+    // Only an ACTIVE membership confers a role; LEFT members are treated as
+    // non-members (myRole = null).
     const myRole =
       membership && membership.status === CommunityMemberStatus.ACTIVE
         ? membership.role
@@ -924,6 +1101,7 @@ export const communityService = {
       communityId: community.id,
       name: community.name,
       avatarUrl: community.avatarUrl ?? null,
+      communityType: community.type,
       ownerId: creatorId,
     });
     publishCommunitySystemMessageForChatSafe({
@@ -1073,35 +1251,29 @@ export const communityService = {
             );
     }
 
-    // Detect which fields will actually change for the system message.
-    const changedFields: string[] = [];
-    if (
-      input.name !== undefined &&
-      normalizeName(input.name) !== community.name
-    ) {
-      changedFields.push("name");
-    }
-    if (
-      input.description !== undefined &&
-      input.description !== community.description
-    ) {
-      changedFields.push("description");
-    }
-    if (input.avatarObjectKey !== undefined) {
-      changedFields.push("avatar");
-    }
-    if (input.type !== undefined && input.type !== community.type) {
-      changedFields.push("visibility");
-    }
-    if (input.categoryId !== undefined) {
-      changedFields.push("category");
-    }
-    if (
-      input.handle !== undefined &&
-      normalizeHandle(input.handle) !== community.handle
-    ) {
-      changedFields.push("handle");
-    }
+    // Detect which fields ACTUALLY changed (genuine value diff, not merely
+    // present in the payload) so a single real edit posts its specific system
+    // line instead of the generic "Community details updated". See
+    // detectCommunityChangedFields.
+    const changedFields = detectCommunityChangedFields(
+      {
+        name: community.name,
+        description: community.description,
+        avatarUrl: community.avatarUrl,
+        type: community.type,
+        categoryId: community.categoryId,
+        handle: community.handle,
+      },
+      {
+        name: nextName,
+        description: input.description,
+        avatarProvided: input.avatarObjectKey !== undefined,
+        nextAvatarUrl: (data.avatarUrl as string | null | undefined) ?? null,
+        type: input.type,
+        categoryId: input.categoryId,
+        handle: nextHandle,
+      }
+    );
 
     let updated: CommunityWithCategory;
     try {
@@ -1122,19 +1294,40 @@ export const communityService = {
       await communityCache.invalidateHandleAvailability(nextHandle);
     }
 
-    if (changedFields.length > 0) {
+    // Telegram-style system line, exactly ONE per update:
+    //  - a SINGLE field change → its dedicated, specific subtype where one exists
+    //    (name / description / avatar / banner), else the generic COMMUNITY_UPDATED;
+    //  - MULTIPLE simultaneous fields → one collapsed COMMUNITY_UPDATED
+    //    ("Community details updated").
+    // This replaces the previous "emit one line per name/avatar/other group"
+    // behaviour, which could post up to three separate lines for one save and
+    // rendered description/banner edits as the generic "Community info" line.
+    const systemMessageType =
+      selectCommunityUpdateSystemMessageType(changedFields);
+    if (systemMessageType) {
       publishCommunitySystemMessageForChatSafe({
         communityId,
-        systemMessageType: "COMMUNITY_UPDATED",
+        systemMessageType,
         metadata: {
           actorUserId: callerId,
           actorName: "",
           changedFields,
-          ...(input.name !== undefined ? { newName: nextName } : {}),
+          ...(systemMessageType === "COMMUNITY_NAME_UPDATED"
+            ? { newName: nextName }
+            : {}),
           ...(input.type !== undefined ? { newVisibility: input.type } : {}),
         },
         triggeredByUserId: callerId,
         eventAt: new Date().toISOString(),
+      });
+    }
+    // Visibility changed (PUBLIC↔PRIVATE): re-sync the cached community type in
+    // chat-service so the read-access guard immediately reflects the new policy
+    // (a now-PRIVATE community stops leaking history to non-members, and vice versa).
+    if (changedFields.includes("visibility") && input.type !== undefined) {
+      publishCommunityVisibilityChangedForChatSafe({
+        communityId,
+        communityType: input.type,
       });
     }
 
@@ -1183,10 +1376,21 @@ export const communityService = {
 
     const communityIds = pageRows.map((row) => row.id);
 
-    // Bulk-fetch chat enrichment and mute settings in parallel.
-    const [chatMap, muteMap] = await Promise.all([
+    // Resolve the last-activity sender name from the LIVE member snapshot — the
+    // same fresh source the chat room renders — overriding the denormalized
+    // `lastActivityUsername`, which is frozen at message-send time and goes
+    // stale after a rename (the cause of "<old name>: 📷 Photo" lingering on the
+    // list while the chat shows the new name). Only user-message activities
+    // carry a sender; system lines render sender-less in buildLastActivity.
+    const senderIds = pageRows
+      .map((row) => row.lastActivityUserId)
+      .filter((id): id is string => Boolean(id));
+
+    // Bulk-fetch chat enrichment, mute settings, and live sender names in parallel.
+    const [chatMap, muteMap, senderNameMap] = await Promise.all([
       fetchChatEnrichment(userId, communityIds),
       loadMuteMap(userId, communityIds),
+      communityRepository.getDisplayNamesByUserIds(senderIds),
     ]);
 
     const communities: CommunityListItem[] = await Promise.all(
@@ -1210,7 +1414,19 @@ export const communityService = {
           isJoined: true,
           lastActivityAt: row.lastActivityAt.getTime(),
           unreadMessageCount: chat.unreadMessageCount,
-          lastActivity: buildLastActivity(row),
+          lastActivity: buildLastActivity({
+            ...row,
+            // Prefer the live member-snapshot name; fall back to the stored value
+            // when the sender has since left every community.
+            lastActivityUsername:
+              (row.lastActivityUserId
+                ? senderNameMap.get(row.lastActivityUserId)
+                : null) ?? row.lastActivityUsername,
+            // Self-referential SYSTEM line (role change / join): the viewer who IS
+            // the subject sees the first-person "You …" preview; everyone else
+            // keeps the third-person text.
+            lastActivityPreview: selectListPreview(row, userId),
+          }),
           ...muteFields(muteMap.get(row.id) ?? null),
           // Phase 1 stub — wire to stream-service gRPC in Phase 2.
           isLive: false,
@@ -1445,9 +1661,10 @@ export const communityService = {
       oldRole: target.role,
       newRole: role,
     });
+    const roleChangedAt = new Date().toISOString();
     publishCommunitySystemMessageForChatSafe({
       communityId,
-      systemMessageType: "MEMBER_ROLE_CHANGED",
+      systemMessageType: "ROLE_CHANGED",
       metadata: {
         actorUserId: callerId,
         actorName: "",
@@ -1457,7 +1674,20 @@ export const communityService = {
         newRole: role as string,
       },
       triggeredByUserId: callerId,
-      eventAt: new Date().toISOString(),
+      eventAt: roleChangedAt,
+    });
+    // Personal counterpart: the target sees "You are now a moderator/member"
+    // while everyone else sees the community-wide line with their real name.
+    publishCommunitySystemMessageForChatSafe({
+      communityId,
+      systemMessageType: "ROLE_CHANGED_SELF",
+      metadata: {
+        oldRole: target.role as string,
+        newRole: role as string,
+      },
+      triggeredByUserId: targetUserId,
+      eventAt: roleChangedAt,
+      visibleToUserId: targetUserId,
     });
 
     return toMemberData(updated);
@@ -1624,6 +1854,13 @@ export const communityService = {
       );
     }
 
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_REMOVED",
+      actorId: callerId,
+      targetUserId,
+    });
+
     return toMemberData(updated);
   },
 
@@ -1754,7 +1991,40 @@ export const communityService = {
       );
     }
 
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_BANNED",
+      actorId: callerId,
+      targetUserId,
+    });
+
     return toMemberData(updated);
+  },
+
+  /**
+   * Emit a community-wide SYSTEM message for a member-moderation lifecycle event
+   * (joined/left/removed/banned/unbanned/muted/unmuted, role change). Thin
+   * wrapper over the chat-sync publisher so every moderation method stays a
+   * one-liner. Visibility + template + list-bump are decided downstream by the
+   * central registry in @aimess/constants — callers never pass them. Best-effort.
+   */
+  emitMemberSystemMessage(args: {
+    communityId: string;
+    systemMessageType: string;
+    actorId: string;
+    targetUserId?: string;
+    extra?: Record<string, unknown>;
+  }): void {
+    publishCommunitySystemMessageForChatSafe({
+      communityId: args.communityId,
+      systemMessageType: args.systemMessageType,
+      metadata: {
+        ...(args.targetUserId ? { targetUserId: args.targetUserId } : {}),
+        ...(args.extra ?? {}),
+      },
+      triggeredByUserId: args.actorId,
+      eventAt: new Date().toISOString(),
+    });
   },
 
   /**
@@ -2159,6 +2429,13 @@ export const communityService = {
       );
     }
 
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_LEFT",
+      actorId: callerId,
+      targetUserId: callerId,
+    });
+
     return toMemberData(updated);
   },
 
@@ -2367,6 +2644,15 @@ export const communityService = {
       targetUserId,
     });
 
+    // Cross-service event → notifications-service pushes/in-apps the unbanned
+    // user ("Ban lifted"). Mirrors the MEMBER_BANNED publish on ban.
+    publishCommunityMemberUnbannedSafe({
+      communityId,
+      eventAt: new Date().toISOString(),
+      actorId: callerId,
+      targetUserId,
+    });
+
     // Unban: BANNED→LEFT. Count is unchanged (BANNED was already excluded from
     // ACTIVE). Emit only the membership-state event, not stats.
     try {
@@ -2386,6 +2672,13 @@ export const communityService = {
         `community:member:unbanned broadcast failed community=${communityId}: ${String(err)}`
       );
     }
+
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_UNBANNED",
+      actorId: callerId,
+      targetUserId,
+    });
 
     return toMemberData(updated);
   },
@@ -2443,6 +2736,13 @@ export const communityService = {
       targetUserId,
       reason: reason ?? null,
       mutedUntil: mutedUntil?.toISOString() ?? null,
+    });
+
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_MUTED",
+      actorId: callerId,
+      targetUserId,
     });
 
     const view = await buildUserSnapshotView(
@@ -2515,6 +2815,13 @@ export const communityService = {
       actorId: callerId,
       targetUserId,
     });
+
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_UNMUTED",
+      actorId: callerId,
+      targetUserId,
+    });
   },
 
   async listMutedMembers(
@@ -2568,6 +2875,94 @@ export const communityService = {
           reason: row.reason,
           mutedAt: row.createdAt.toISOString(),
           mutedUntil: row.mutedUntil ? row.mutedUntil.toISOString() : null,
+        });
+      }
+    }
+
+    return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Banned-members list (dedicated moderation view — MODERATOR+)
+  // ---------------------------------------------------------------------------
+  /**
+   * Currently-banned members of a community, with search + sort. Visible to
+   * MODERATOR+ (admins have full access; moderators may view per RBAC). Members
+   * have no access. Only status === BANNED rows are returned — lifted bans are
+   * available through the moderation audit trail, not here.
+   */
+  async listBannedMembers(
+    communityId: string,
+    callerId: string,
+    params: {
+      page: number;
+      limit: number;
+      search?: string;
+      sortBy: "bannedAt" | "displayName" | "username";
+      sortOrder: "asc" | "desc";
+    }
+  ): Promise<PaginatedResponse<CommunityBannedMemberData>> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
+
+    const { rows, total } = await communityRepository.listBannedMembers({
+      communityId,
+      search: params.search,
+      sortBy: params.sortBy,
+      sortOrder: params.sortOrder,
+      page: params.page,
+      limit: params.limit,
+    });
+
+    const items: CommunityBannedMemberData[] = [];
+    if (rows.length > 0) {
+      // Resolve banner display names from their own (still-present) member
+      // snapshots in one batched read — no N+1 per banned row.
+      const bannerIds = [
+        ...new Set(
+          rows.map((r) => r.bannedBy).filter((id): id is string => Boolean(id))
+        ),
+      ];
+      const bannerMap = new Map<string, string>();
+      if (bannerIds.length > 0) {
+        const banners = await communityRepository.findMembersByUserIds(
+          communityId,
+          bannerIds
+        );
+        for (const b of banners) {
+          bannerMap.set(b.userId, b.snapshotDisplayName);
+        }
+      }
+
+      for (const row of rows) {
+        const avatarView = await memberAvatarService.resolveViewUrl(
+          row.snapshotAvatarKey
+        );
+        const avatar = await buildAvatarMedia(row.snapshotAvatarKey);
+        items.push({
+          userId: row.userId,
+          username: row.snapshotUsername,
+          displayName: row.snapshotDisplayName,
+          avatarUrl: avatarView?.url ?? null,
+          avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+          avatar,
+          bannedAt: row.bannedAt ? row.bannedAt.getTime() : null,
+          bannedBy: row.bannedBy
+            ? {
+                userId: row.bannedBy,
+                displayName: bannerMap.get(row.bannedBy) ?? null,
+              }
+            : null,
+          banReason: row.banReason,
+          banType: "PERMANENT",
         });
       }
     }
@@ -2875,6 +3270,17 @@ export const communityService = {
         action: "COMMUNITY_JOINED",
         targetUserId: callerId,
         metadata: { reactivated },
+      });
+
+      // STEP 5h2: Personal "You joined this community" to the joiner only.
+      // No community-wide join announcement — only the joiner sees it.
+      publishCommunitySystemMessageForChatSafe({
+        communityId,
+        systemMessageType: "COMMUNITY_JOINED",
+        metadata: {},
+        triggeredByUserId: callerId,
+        eventAt: new Date().toISOString(),
+        visibleToUserId: callerId,
       });
 
       logger.info(
@@ -3434,6 +3840,17 @@ export const communityService = {
       decidedAt: new Date().toISOString(),
     });
 
+    // PERSONAL "Your request to join was approved" to the approved user only.
+    // No community-wide join announcement — only the approved user sees it.
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "JOIN_REQUEST_APPROVED",
+      metadata: {},
+      triggeredByUserId: request.userId,
+      eventAt: new Date().toISOString(),
+      visibleToUserId: request.userId,
+    });
+
     return {
       request: toJoinRequestData(updatedRequest),
       member: await toMemberData(row!),
@@ -3499,6 +3916,17 @@ export const communityService = {
         displayName: callerSnapReject?.displayName ?? "Unknown",
       },
       decidedAt: new Date().toISOString(),
+    });
+
+    // PERSONAL "Your request to join was declined" — only the rejected user
+    // sees it (never broadcast to the community).
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "JOIN_REQUEST_REJECTED",
+      metadata: {},
+      triggeredByUserId: request.userId,
+      eventAt: new Date().toISOString(),
+      visibleToUserId: request.userId,
     });
 
     return toJoinRequestData(updated);
@@ -3774,6 +4202,20 @@ export const communityService = {
       decidedAt: new Date(),
     });
 
+    const communityAvatarMediaCancel = await buildCommunityImageMedia(
+      community.avatarUrl
+    );
+    publishCommunityJoinRequestCancelledSafe({
+      communityId: community.id,
+      communityName: community.name,
+      communityHandle: community.handle,
+      communityAvatarUrl: communityAvatarMediaCancel.downloadUrl,
+      requestId,
+      userId: callerId,
+      cancelledAt: new Date().toISOString(),
+      eventAt: new Date().toISOString(),
+    });
+
     return toJoinRequestData(updated);
   },
 
@@ -3807,6 +4249,20 @@ export const communityService = {
       status: CommunityJoinReqStatus.CANCELLED,
       decidedBy: callerId,
       decidedAt: new Date(),
+    });
+
+    const communityAvatarMediaCancelMine = await buildCommunityImageMedia(
+      community.avatarUrl
+    );
+    publishCommunityJoinRequestCancelledSafe({
+      communityId: community.id,
+      communityName: community.name,
+      communityHandle: community.handle,
+      communityAvatarUrl: communityAvatarMediaCancelMine.downloadUrl,
+      requestId: request.id,
+      userId: callerId,
+      cancelledAt: new Date().toISOString(),
+      eventAt: new Date().toISOString(),
     });
 
     return toJoinRequestData(updated);
@@ -4884,16 +5340,16 @@ export const communityService = {
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
     assertCommunityNotSuspended(community);
 
-    // Invite links are only supported for PUBLIC communities per policy.
-    if (community.type !== CommunityType.PUBLIC) {
-      throw new ForbiddenError("COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC");
-    }
-
     const expiresAt = input.expiresInMinutes
       ? new Date(Date.now() + input.expiresInMinutes * 60_000)
       : null;
     const maxUses = input.maxUses ?? null;
-    const autoApprove = input.autoApprove ?? false;
+    const autoApprove =
+      input.autoApprove !== undefined
+        ? input.autoApprove
+        : community.type === CommunityType.PRIVATE
+          ? true
+          : false;
 
     // Retry up to 3 times on code collision (P2002 unique violation on `code`).
     let row: Awaited<
@@ -5124,24 +5580,11 @@ export const communityService = {
   }> {
     const link = await communityRepository.findInviteLinkByCode(code);
     if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
-    if (link.revokedAt) {
-      throw new GoneError("COMMUNITY_INVITE_LINK_REVOKED_ERROR");
-    }
-    if (link.expiresAt && link.expiresAt.getTime() <= Date.now()) {
-      throw new GoneError("COMMUNITY_INVITE_LINK_EXPIRED");
-    }
-    if (link.maxUses !== null && link.usedCount >= link.maxUses) {
-      throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
-    }
+    assertInviteLinkActive(link);
 
     const community = await communityRepository.findById(link.communityId);
     if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
     assertCommunityNotSuspended(community);
-
-    // Invite links allowed only for PUBLIC communities.
-    if (community.type !== CommunityType.PUBLIC) {
-      throw new ForbiddenError("COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC");
-    }
 
     const existing = await communityRepository.findMemberByUserId(
       community.id,
@@ -5234,6 +5677,17 @@ export const communityService = {
         requestId: undefined,
       });
 
+      // PERSONAL "You joined this community" to the joiner only.
+      // No community-wide join announcement — only the joiner sees it.
+      publishCommunitySystemMessageForChatSafe({
+        communityId: community.id,
+        systemMessageType: "COMMUNITY_JOINED",
+        metadata: {},
+        triggeredByUserId: callerId,
+        eventAt: new Date().toISOString(),
+        visibleToUserId: callerId,
+      });
+
       return {
         link: toInviteLinkData(updatedLink!),
         member: await toMemberData(member),
@@ -5250,6 +5704,58 @@ export const communityService = {
     return {
       link: toInviteLinkData(updatedLink!),
       request: joinResult,
+    };
+  },
+
+  /**
+   * Public (optional-auth) lookup: returns a community preview for the invite
+   * link landing screen. Validates link validity, resolves avatar/banner URLs,
+   * and (when a caller is identified) reports whether they are already a member
+   * and rejects banned callers with 403.
+   */
+  async lookupInviteLink(
+    code: string,
+    callerId: string
+  ): Promise<InviteLinkPreviewData> {
+    const link = await communityRepository.findInviteLinkByCode(code);
+    if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+    assertInviteLinkActive(link);
+
+    const community = await communityRepository.findById(link.communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    // Preview is intentionally read-only: assertCommunityNotSuspended is NOT called here.
+    // Suspended communities remain previewable; they cannot be joined (redeem guards it).
+
+    const membership = await communityRepository.findMemberByUserId(
+      community.id,
+      callerId
+    );
+    if (membership?.status === CommunityMemberStatus.BANNED) {
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+    const isJoined = membership?.status === CommunityMemberStatus.ACTIVE;
+
+    const avatarView = await communityImageService.resolveViewUrlForClient(
+      community.avatarUrl
+    );
+    const coverView = await communityImageService.resolveViewUrlForClient(
+      community.coverUrl
+    );
+
+    return {
+      communityId: community.id,
+      communityName: community.name,
+      description: community.description ?? null,
+      avatarUrl: avatarView?.url ?? null,
+      bannerUrl: coverView?.url ?? null,
+      memberCount: community.memberCount,
+      communityType: community.type,
+      isJoined,
+      invitationCode: code,
+      inviteUrl: buildInviteUrl(code),
+      appDeepLink: `aimess://invite/${code}`,
+      expiresAt: link.expiresAt ? link.expiresAt.getTime() : null,
+      creatorId: link.createdBy,
     };
   },
 };

@@ -53,6 +53,8 @@ export interface CommunityCreatedForChat {
   name: string;
   avatarUrl: string | null;
   ownerId: string;
+  /** PUBLIC or PRIVATE — used to determine if non-members can read chat history. */
+  communityType: "PUBLIC" | "PRIVATE";
 }
 
 /** Tells chat-service to provision the community's chat room. */
@@ -151,6 +153,29 @@ export interface CommunitySystemMessageForChat {
   metadata: Record<string, unknown>;
   triggeredByUserId: string;
   eventAt: string;
+  /** PERSONAL messages are visible only to visibleToUserId; COMMUNITY messages are visible to all. */
+  visibilityType?: "PERSONAL" | "COMMUNITY";
+  /** For PERSONAL messages, the userId who should see this message. */
+  visibleToUserId?: string;
+}
+
+export interface CommunityVisibilityChangedForChat {
+  communityId: string;
+  communityType: "PUBLIC" | "PRIVATE";
+}
+
+/**
+ * Tells chat-service that a community's visibility (PUBLIC/PRIVATE) changed, so
+ * it can refresh the cached community type that drives non-member read access.
+ */
+export function publishCommunityVisibilityChangedForChatSafe(
+  data: CommunityVisibilityChangedForChat
+): void {
+  publishSafe(
+    "community.visibility_changed",
+    data,
+    "community.visibility_changed (chat-sync)"
+  );
 }
 
 /**

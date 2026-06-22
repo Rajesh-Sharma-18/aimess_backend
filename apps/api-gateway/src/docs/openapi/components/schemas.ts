@@ -5750,6 +5750,65 @@ export const openApiSchemas = {
     },
     required: ["pagination", "data"],
   },
+  CommunityBannedMemberData: {
+    type: "object",
+    description:
+      "A single currently-banned member row (status === BANNED). Lifted bans never appear here — see the moderation audit log for history.",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
+      bannedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch milliseconds when the ban was applied.",
+      },
+      bannedBy: {
+        type: "object",
+        nullable: true,
+        description:
+          "The moderator/admin who applied the ban; displayName is null if they have left the community.",
+        properties: {
+          userId: { type: "string", format: "uuid" },
+          displayName: { type: "string", nullable: true },
+        },
+        required: ["userId", "displayName"],
+      },
+      banReason: { type: "string", nullable: true },
+      banType: {
+        type: "string",
+        enum: ["PERMANENT"],
+        description:
+          "Ban duration class. All community bans are indefinite today.",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "bannedAt",
+      "bannedBy",
+      "banReason",
+      "banType",
+    ],
+  },
+  CommunityBannedMembersResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityBannedMemberData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
   SetMemberMuteRequest: {
     type: "object",
     description:
@@ -5865,6 +5924,10 @@ export const openApiSchemas = {
         description:
           "Built from INVITE_LINK_BASE_URL when set, else just the code.",
       },
+      appDeepLink: {
+        type: "string",
+        description: "Mobile deep-link: aimess://invite/<code>",
+      },
       communityId: { type: "string" },
       createdBy: { type: "string", format: "uuid" },
       maxUses: { type: "integer", nullable: true },
@@ -5886,6 +5949,7 @@ export const openApiSchemas = {
       "linkId",
       "code",
       "url",
+      "appDeepLink",
       "communityId",
       "createdBy",
       "maxUses",
@@ -5895,6 +5959,39 @@ export const openApiSchemas = {
       "revokedAt",
       "createdAt",
       "isActive",
+    ],
+  },
+  InviteLinkPreviewData: {
+    type: "object",
+    properties: {
+      communityId: { type: "string" },
+      communityName: { type: "string" },
+      description: { type: "string", nullable: true },
+      avatarUrl: { type: "string", nullable: true },
+      bannerUrl: { type: "string", nullable: true },
+      memberCount: { type: "integer" },
+      communityType: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      isJoined: { type: "boolean" },
+      invitationCode: { type: "string" },
+      inviteUrl: { type: "string" },
+      appDeepLink: { type: "string" },
+      expiresAt: { type: "integer", nullable: true },
+      creatorId: { type: "string" },
+    },
+    required: [
+      "communityId",
+      "communityName",
+      "description",
+      "avatarUrl",
+      "bannerUrl",
+      "memberCount",
+      "communityType",
+      "isJoined",
+      "invitationCode",
+      "inviteUrl",
+      "appDeepLink",
+      "expiresAt",
+      "creatorId",
     ],
   },
   CreateInviteLinkRequest: {
@@ -6721,7 +6818,48 @@ export const openApiSchemas = {
       contentType: {
         type: "string",
         description:
-          "Community message kind (UPPER-CASE on the wire): TEXT, IMAGE, VOICE, CUSTOM, LOCATION, CONTACT, STICKER.",
+          "Community message kind (UPPER-CASE on the wire): TEXT, IMAGE, VOICE, CUSTOM, LOCATION, CONTACT, STICKER, SYSTEM.",
+      },
+      systemMessageType: {
+        type: "string",
+        nullable: true,
+        enum: [
+          "COMMUNITY_CREATED",
+          "COMMUNITY_NAME_UPDATED",
+          "COMMUNITY_DESCRIPTION_UPDATED",
+          "COMMUNITY_AVATAR_UPDATED",
+          "COMMUNITY_BANNER_UPDATED",
+          "COMMUNITY_UPDATED",
+          "ROLE_CHANGED",
+          "MEMBER_JOINED",
+          "MEMBER_LEFT",
+          "MEMBER_REMOVED",
+          "MEMBER_BANNED",
+          "MEMBER_UNBANNED",
+          "MEMBER_MUTED",
+          "MEMBER_UNMUTED",
+          "PINNED_MESSAGE",
+          "UNPINNED_MESSAGE",
+          "COMMUNITY_INVITE_CREATED",
+          "COMMUNITY_JOINED",
+          "JOIN_REQUEST_APPROVED",
+          "JOIN_REQUEST_REJECTED",
+          "MEMBER_ROLE_CHANGED",
+        ],
+        description:
+          "Present when contentType is SYSTEM. SYSTEM messages are SENDER-LESS (sentBy/senderName/senderAvatar empty) — the actor is in systemMetadata only. Text is a deterministic template. COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED are PERSONAL (isPersonal=true). MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED.",
+      },
+      systemMetadata: {
+        type: "object",
+        nullable: true,
+        additionalProperties: true,
+        description:
+          "Structured payload for SYSTEM message rendering. Carries actorUserId + actorName so the client renders 'You' vs the actor name. Null for normal messages.",
+      },
+      isPersonal: {
+        type: "boolean",
+        description:
+          "True for user-scoped SYSTEM messages (e.g. COMMUNITY_JOINED 'You joined this community'). PERSONAL messages are only ever returned to the target user — other members never see them in history. Absent/false for normal and community-wide system messages.",
       },
       attachments: {
         type: "array",
