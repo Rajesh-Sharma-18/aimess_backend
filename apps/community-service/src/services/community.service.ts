@@ -535,11 +535,14 @@ async function broadcastCommunityMetaUpdated(
 ): Promise<void> {
   if (changedFields.length === 0) return;
   try {
+    const dto = await toCommunityMetaDto(community);
     const payload: CommunityMetaUpdatedPayload = {
       communityId: community.id,
       changes: changedFieldsToMetaChanges(changedFields),
-      community: await toCommunityMetaDto(community),
-      updatedAt: Date.now(),
+      community: dto,
+      // Idempotency key = the persisted row mtime (stable + monotonic per write),
+      // not wall-clock now() — so a redelivery/duplicate dedupes on the client.
+      updatedAt: dto.updatedAt,
     };
     await publishCommunityRoomEvent(
       redis,
@@ -1502,13 +1505,6 @@ export const communityService = {
       });
     }
 
-    // Real-time metadata sync: push the new name/avatar/description/category/
-    // visibility to the detail/header (community:<id> room) AND to every member's
-    // list row (user:<id>) so no client needs to refetch or reload. Distinct from
-    // the system-message-driven `community:updated` list bump above, which only
-    // reorders + previews. Fire-and-forget — never blocks the response.
-    void broadcastCommunityMetaUpdated(updated, changedFields);
-
     if (input.memberIds !== undefined) {
       const desiredSet = new Set(input.memberIds);
       const currentIds =
@@ -1532,6 +1528,21 @@ export const communityService = {
         }
       }
     }
+
+    // Real-time metadata sync: push the new name/avatar/description/category/
+    // visibility to the detail/header (community:<id> room) AND to every member's
+    // list row (user:<id>) so no client needs to refetch or reload. Distinct from
+    // the system-message-driven `community:updated` list bump above, which only
+    // reorders + previews. Fire-and-forget — never blocks the response.
+    //
+    // Emitted AFTER the membership add/remove block so the snapshot's memberCount
+    // is post-mutation. When memberIds was touched, re-read the row for an
+    // accurate count (cheap, admin-only path); otherwise the in-hand row is current.
+    const snapshotForBroadcast =
+      input.memberIds !== undefined
+        ? ((await communityRepository.findById(communityId)) ?? updated)
+        : updated;
+    void broadcastCommunityMetaUpdated(snapshotForBroadcast, changedFields);
 
     // Admin who just patched the community isn't asking about mute — skip read.
     return toCommunityData(updated, membership.role, null);

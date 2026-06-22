@@ -93,9 +93,12 @@ export async function startUserProfileUpdatedConsumer(): Promise<void> {
             const avatarMedia = await buildAvatarMedia(avatarObjectKey);
             const avatarUrl = avatarMedia.downloadUrl;
 
-            // Broadcast member:updated to each community room
+            // Broadcast member:updated to each community room. Each publish is
+            // independently guarded — a single room's Redis failure must not
+            // abort the rest of the fan-out (and, un-awaited, would otherwise
+            // surface as an unhandled rejection past this IIFE's try/catch).
             for (const membership of memberships) {
-              publishCommunityRoomEvent(
+              void publishCommunityRoomEvent(
                 redis,
                 membership.communityId,
                 "community:member:updated",
@@ -112,7 +115,11 @@ export async function startUserProfileUpdatedConsumer(): Promise<void> {
                     ? Date.now()
                     : Date.parse(parsed.data.updatedAt),
                 } satisfies CommunityMemberUpdatedPayload
-              );
+              ).catch((err: unknown) => {
+                logger.warn(
+                  `community:member:updated broadcast failed (profile sync) community=${membership.communityId} user=${userId}: ${String(err)}`
+                );
+              });
             }
           } catch (error) {
             logger.error(
