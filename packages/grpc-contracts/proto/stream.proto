@@ -21,6 +21,8 @@ service StreamService {
   rpc AdminForceEnd (AdminForceEndRequest) returns (AdminForceEndResponse);
   // Delete a livestream comment. Author, stream owner, and community ADMIN/MODERATOR may delete.
   rpc DeleteComment (DeleteCommentRequest) returns (DeleteCommentResponse);
+  // Fetch the currently-LIVE streams for a single community (community detail enrichment).
+  rpc GetLiveStreamsByCommunity (GetLiveStreamsByCommunityRequest) returns (GetLiveStreamsByCommunityResponse);
 }
 
 // One livestream comment row, shared by PostComment + GetComments.
@@ -111,4 +113,23 @@ message DeleteCommentResponse {
   bool   success       = 1;
   string comment_id    = 2;
   string livestream_id = 3;
+}
+
+message LiveStreamSummary {
+  string id           = 1;
+  string title        = 2;
+  string thumbnail    = 3;  // "" if none
+  string creator_id   = 4;
+  string hls_url      = 5;  // "" if none
+  string flv_url      = 6;  // "" if none
+  string dash_url     = 7;  // "" if none
+  int64  viewer_count = 8;
+  int64  lived_at     = 9;  // epoch ms; 0 if null
+}
+
+message GetLiveStreamsByCommunityRequest {
+  string community_id = 1;
+}
+message GetLiveStreamsByCommunityResponse {
+  repeated LiveStreamSummary streams = 1;
 }

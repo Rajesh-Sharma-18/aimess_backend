@@ -15,6 +15,20 @@ export type CommunityImageView = {
   expiresIn: number;
 };
 
+/** A single live stream surfaced inside a community detail response. */
+export type LiveStreamSummary = {
+  id: string;
+  title: string;
+  thumbnail: string | null;
+  creatorId: string;
+  hlsUrl: string | null;
+  flvUrl: string | null;
+  dashUrl: string | null;
+  viewerCount: number;
+  /** Epoch ms when the stream went live; null if not yet stamped. */
+  livedAt: number | null;
+};
+
 /** Full community payload returned by create / get / patch. */
 export type CommunityData = {
   id: string;
@@ -60,11 +74,10 @@ export type CommunityData = {
   streamEnabled: boolean;
   chatEnabled: boolean;
   announcementEnabled: boolean;
-  /**
-   * True when the community has at least one active livestream right now.
-   * Always false until stream-service ships; wire to stream-service gRPC in Phase 2.
-   */
+  /** True when the community has at least one active livestream right now. */
   isLive: boolean;
+  /** Currently-LIVE streams for this community. Empty array when none are live. */
+  liveStreams: LiveStreamSummary[];
   /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
   moderationStatus: CommunityModerationStatus;
   createdAt: string;

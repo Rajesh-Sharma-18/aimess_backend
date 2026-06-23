@@ -88,6 +88,8 @@ import type {
 import { communityImageService } from "./community-image.service.js";
 import { memberAvatarService } from "./member-avatar.service.js";
 import { getChatClient } from "../grpc/chat.client.js";
+import { getStreamClient } from "../grpc/stream.client.js";
+import type { LiveStreamSummary } from "../types/community.types.js";
 import {
   fetchAcceptedFriendIds,
   fetchUserSnapshots,
@@ -413,7 +415,8 @@ async function toCommunityData(
   community: CommunityWithCategory,
   myRole: CommunityMemberRole | null,
   muteRow: MuteRowFragment,
-  joinRequest: { id: string; status: CommunityJoinReqStatus } | null = null
+  joinRequest: { id: string; status: CommunityJoinReqStatus } | null = null,
+  liveStreams: LiveStreamSummary[] = []
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -450,8 +453,8 @@ async function toCommunityData(
         : null,
     ...muteFields(muteRow),
     moderationStatus: community.moderationStatus,
-    // Phase 1 stub — wire to stream-service gRPC in Phase 2.
-    isLive: false,
+    isLive: liveStreams.length > 0,
+    liveStreams,
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
     lastActivity: buildLastActivity(community),
@@ -521,7 +524,8 @@ async function toDiscoverItem(
   },
   muteRow: MuteRowFragment,
   isJoined: boolean,
-  hasRequested: boolean
+  hasRequested: boolean,
+  isLive = false
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -543,8 +547,7 @@ async function toDiscoverItem(
     isJoined,
     hasRequested,
     ...muteFields(muteRow),
-    // Phase 1 stub — wire to stream-service gRPC in Phase 2.
-    isLive: false,
+    isLive,
     moderationStatus: community.moderationStatus,
     createdAt: community.createdAt.getTime(),
     lastActivity: buildLastActivity(community),
@@ -789,6 +792,29 @@ const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
   unreadMessageCount: 0,
 };
 
+/**
+ * Bulk-check which of the given communityIds currently have a LIVE stream.
+ * Always degrades gracefully (empty set on stream-service failure — the gRPC
+ * client already falls back, so every community shows isLive=false).
+ */
+async function fetchLiveCommunityIds(
+  communityIds: string[]
+): Promise<Set<string>> {
+  if (!communityIds.length) return new Set();
+  return getStreamClient().getActiveCommunityIds(communityIds);
+}
+
+/**
+ * Fetch the currently-LIVE streams for a single community.
+ * Used by the community detail endpoint to populate liveStreams[].
+ * Degrades to [] on stream-service failure.
+ */
+async function fetchCommunityLiveStreams(
+  communityId: string
+): Promise<LiveStreamSummary[]> {
+  return getStreamClient().getLiveStreamsByCommunity(communityId);
+}
+
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
     return communityRepository.listActiveCategories();
@@ -957,16 +983,22 @@ export const communityService = {
         ? membership.role
         : null;
 
-    // Fetch mute row and (for non-members only) any existing join request in
-    // parallel. Members can't have a pending join request, so skip that query.
-    const [muteRow, joinRequest] = await Promise.all([
+    // Fetch mute row, join request, and live streams in parallel.
+    const [muteRow, joinRequest, liveStreams] = await Promise.all([
       communityRepository.findMuteByUserAndCommunity(callerId, id),
       myRole === null
         ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
         : Promise.resolve(null),
+      fetchCommunityLiveStreams(id),
     ]);
 
-    return toCommunityData(community, myRole, muteRow, joinRequest);
+    return toCommunityData(
+      community,
+      myRole,
+      muteRow,
+      joinRequest,
+      liveStreams
+    );
   },
 
   async create(
@@ -1386,11 +1418,12 @@ export const communityService = {
       .map((row) => row.lastActivityUserId)
       .filter((id): id is string => Boolean(id));
 
-    // Bulk-fetch chat enrichment, mute settings, and live sender names in parallel.
-    const [chatMap, muteMap, senderNameMap] = await Promise.all([
+    // Bulk-fetch chat enrichment, mute settings, live sender names, and live status in parallel.
+    const [chatMap, muteMap, senderNameMap, liveSet] = await Promise.all([
       fetchChatEnrichment(userId, communityIds),
       loadMuteMap(userId, communityIds),
       communityRepository.getDisplayNamesByUserIds(senderIds),
+      fetchLiveCommunityIds(communityIds),
     ]);
 
     const communities: CommunityListItem[] = await Promise.all(
@@ -1428,8 +1461,7 @@ export const communityService = {
             lastActivityPreview: selectListPreview(row, userId),
           }),
           ...muteFields(muteMap.get(row.id) ?? null),
-          // Phase 1 stub — wire to stream-service gRPC in Phase 2.
-          isLive: false,
+          isLive: liveSet.has(row.id),
           moderationStatus: row.moderationStatus,
         };
       })
@@ -1508,13 +1540,14 @@ export const communityService = {
 
     const communityIds = rows.map((row) => row.id);
 
-    // Batch-load mute rows and pending join requests in parallel — one query each.
-    const [muteByCommunityId, pendingRequestSet] = await Promise.all([
+    // Batch-load mute rows, pending join requests, and live status in parallel.
+    const [muteByCommunityId, pendingRequestSet, liveSet] = await Promise.all([
       loadMuteMap(userId, communityIds),
       communityRepository.findPendingRequestedCommunityIds(
         userId,
         communityIds
       ),
+      fetchLiveCommunityIds(communityIds),
     ]);
 
     // Build a fast lookup for membership: used by the mine-search alias
@@ -1529,7 +1562,8 @@ export const communityService = {
           row,
           muteByCommunityId.get(row.id) ?? null,
           memberSet.has(row.id),
-          pendingRequestSet.has(row.id)
+          pendingRequestSet.has(row.id),
+          liveSet.has(row.id)
         )
       )
     );

@@ -211,6 +211,44 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
       })();
     },
 
+    // GetLiveStreamsByCommunity — live stream list for community detail enrichment.
+    getLiveStreamsByCommunity: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { communityId?: string };
+          const communityId = req.communityId ?? "";
+          if (!communityId) {
+            callback(null, { streams: [] });
+            return;
+          }
+          const result = await deps.livestreamService.listStreams({
+            communityId,
+            status: "LIVE",
+            limit: 20,
+          });
+          callback(null, {
+            streams: result.items.map((s) => ({
+              id: s.id,
+              title: s.title,
+              thumbnail: s.thumbnail ?? "",
+              creatorId: s.creatorId,
+              hlsUrl: s.hlsUrl ?? "",
+              flvUrl: s.flvUrl ?? "",
+              dashUrl: s.dashUrl ?? "",
+              viewerCount: s.viewerCount,
+              livedAt: s.livedAt ? s.livedAt.getTime() : 0,
+            })),
+          });
+        } catch (err) {
+          logger.error(`gRPC getLiveStreamsByCommunity error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     deleteComment: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>

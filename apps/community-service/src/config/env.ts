@@ -11,6 +11,9 @@ const envSchema = z.object({
   /** chat-service gRPC endpoint — community-chat summaries for GET /communities/mine. */
   CHAT_GRPC_URL: z.string().default("0.0.0.0:4004"),
 
+  /** stream-service gRPC endpoint — isLive enrichment + live stream list. */
+  STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
+
   COMMUNITY_DATABASE_URL: z.string(),
 
   REDIS_HOST: z.string(),
