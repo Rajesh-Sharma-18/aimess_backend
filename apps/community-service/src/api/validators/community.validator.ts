@@ -217,6 +217,16 @@ export const transferAdminSchema = z.object({
 
 export type TransferAdminInput = z.infer<typeof transferAdminSchema>;
 
+/**
+ * Body for POST /communities/:id/close. `reason` is an optional free-text note
+ * surfaced to evicted members. Empty/omitted body is accepted.
+ */
+export const closeCommunitySchema = z.object({
+  reason: z.string().trim().max(500).optional(),
+});
+
+export type CloseCommunityInput = z.infer<typeof closeCommunitySchema>;
+
 const joinRequestStatusEnum = z.enum([
   "PENDING",
   "APPROVED",

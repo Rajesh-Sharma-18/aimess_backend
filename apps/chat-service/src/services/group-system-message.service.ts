@@ -1,7 +1,11 @@
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
-import { SystemEvent } from "../types/enums.js";
+import {
+  buildGroupSystemFallbackText,
+  resolvePersonDisplayName,
+} from "@aimess/constants";
+import type { SystemEvent } from "../types/enums.js";
 import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -63,9 +67,11 @@ export class GroupSystemMessageService {
         ? ((snapshots.get(actorId)?.avatar as string) ?? "")
         : "";
 
-      const text = buildSystemText(systemEvent, {
+      const text = buildGroupSystemFallbackText(systemEvent, {
         actorName,
         targetName,
+        actorId,
+        ...(targetUserId ? { targetUserId } : {}),
         ...inData,
       });
 
@@ -154,48 +160,6 @@ export class GroupSystemMessageService {
     userId: string | null
   ): string {
     if (!userId) return "";
-    const snap = snapshots.get(userId);
-    if (!snap) return "";
-    return (snap.displayName as string) || (snap.memberId as string) || "";
-  }
-}
-
-/**
- * English fallback text per system event, used for inbox/notification previews.
- * Clients should prefer rendering from `systemEvent` + `systemData` for i18n.
- */
-function buildSystemText(
-  event: SystemEvent,
-  data: Record<string, unknown>
-): string {
-  const actor = (data.actorName as string) || "Someone";
-  const target = (data.targetName as string) || "a member";
-  switch (event) {
-    case SystemEvent.GROUP_CREATED:
-      return `${actor} created the group`;
-    case SystemEvent.MEMBER_ADDED:
-      return `${actor} added ${target}`;
-    case SystemEvent.MEMBER_JOINED:
-      return `${actor} joined the group`;
-    case SystemEvent.MEMBER_LEFT:
-      return `${actor} left the group`;
-    case SystemEvent.MEMBER_REMOVED:
-      return `${actor} removed ${target}`;
-    case SystemEvent.ROLE_CHANGED: {
-      const role = (data.newRole as string) || "a new role";
-      return `${actor} changed ${target}'s role to ${role}`;
-    }
-    case SystemEvent.ROOM_RENAMED: {
-      const name = (data.newName as string) || "";
-      return name
-        ? `${actor} renamed the group to "${name}"`
-        : `${actor} renamed the group`;
-    }
-    case SystemEvent.AVATAR_CHANGED:
-      return `${actor} changed the group photo`;
-    case SystemEvent.DESCRIPTION_CHANGED:
-      return `${actor} updated the group description`;
-    default:
-      return `${actor} updated the group`;
+    return resolvePersonDisplayName(snapshots.get(userId));
   }
 }

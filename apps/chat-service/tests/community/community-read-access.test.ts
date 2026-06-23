@@ -4,7 +4,7 @@
  * Covers two requirements:
  *  1. PUBLIC communities let non-members read message history; PRIVATE communities
  *     block non-members (and banned users in either case) with CHAT_NOT_A_MEMBER.
- *  2. The "You joined this community" SYSTEM message is PERSONAL: persisted with a
+ *  2. The "You joined the community" SYSTEM message is PERSONAL: persisted with a
  *     `visibleToUserId`, published to `user:<id>` (not the community room), and never
  *     surfaced to other members.
  */
@@ -53,6 +53,289 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     // legacy field-absent docs in real Mongo) — visibility is filtered in memory.
     const where = prisma.generalRoomMessage.findMany.mock.calls[0][0].where;
     expect(where.OR).toBeUndefined();
+  });
+
+  it("findLatestPersonalByRooms scopes the $match to the caller and decodes extended-JSON", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([
+      {
+        _id: { $oid: ROOM_ID },
+        message: "You joined the community",
+        createdAt: { $date: "2026-06-20T10:05:00.000Z" },
+      },
+    ]);
+    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const map = await repo.findLatestPersonalByRooms({
+      userId: USER_ID,
+      roomIds: [ROOM_ID],
+    });
+
+    // Keyed by room hex, with a real Date decoded from `{ $date }`.
+    const entry = map.get(ROOM_ID);
+    expect(entry?.message).toBe("You joined the community");
+    expect(entry?.createdAt.toISOString()).toBe("2026-06-20T10:05:00.000Z");
+
+    // The aggregation must restrict to the CALLER's own personal rows — never
+    // another user's (the whole point of PERSONAL visibility).
+    const pipeline = aggregateRaw.mock.calls[0][0].pipeline;
+    const match = pipeline.find(
+      (s: Record<string, unknown>) => "$match" in s
+    ).$match;
+    expect(match.visibleToUserId).toBe(USER_ID);
+    expect(match.roomId).toEqual({ $in: [{ $oid: ROOM_ID }] });
+    expect(match.deletedForAll).toBe(false);
+  });
+
+  it("findLatestPersonalByRooms short-circuits with no rooms (no query)", async () => {
+    const aggregateRaw = jest.fn();
+    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const map = await repo.findLatestPersonalByRooms({
+      userId: USER_ID,
+      roomIds: [],
+    });
+
+    expect(map.size).toBe(0);
+    expect(aggregateRaw).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Membership-lifecycle join-line cleanup (Telegram parity): on leave/remove/
+  // ban the user's PERSONAL join-session onboarding lines are hard-deleted so
+  // they never accumulate across rejoin cycles.
+  // -------------------------------------------------------------------------
+  it("deletePersonalJoinMessages purges only the user's join-session lines, bounded by eventAt", async () => {
+    const deleteMany = jest.fn().mockResolvedValue({ count: 1 });
+    const prisma = { generalRoomMessage: { deleteMany } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const boundary = new Date(1_700_000_500_000);
+    const count = await repo.deletePersonalJoinMessages({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      beforeOrAt: boundary,
+    });
+
+    expect(count).toBe(1);
+    const where = deleteMany.mock.calls[0][0].where;
+    expect(where.roomId).toBe(ROOM_ID);
+    // Scoped to the user's OWN personal rows only.
+    expect(where.visibleToUserId).toBe(USER_ID);
+    // Only the two join-session onboarding subtypes.
+    expect(where.systemMessageType).toEqual({
+      in: ["COMMUNITY_JOINED", "JOIN_REQUEST_APPROVED"],
+    });
+    // Bounded by the leave time so a redelivered stale "left" can't nuke a
+    // fresher rejoin line.
+    expect(where.createdAt).toEqual({ lte: boundary });
+  });
+
+  it("deletePersonalJoinMessages omits the createdAt bound when no eventAt given", async () => {
+    const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
+    const prisma = { generalRoomMessage: { deleteMany } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    await repo.deletePersonalJoinMessages({ roomId: ROOM_ID, userId: USER_ID });
+
+    const where = deleteMany.mock.calls[0][0].where;
+    expect(where.createdAt).toBeUndefined();
+  });
+
+  it("read guard hides a non-active member's OWN join line but keeps it for an active member", async () => {
+    const rows = [
+      {
+        id: "join",
+        deletedBy: [],
+        visibleToUserId: USER_ID,
+        systemMessageType: "COMMUNITY_JOINED",
+      },
+      { id: "msg", deletedBy: [], visibleToUserId: null }, // community-wide
+    ];
+    const makeRepo = () => {
+      const prisma = {
+        generalRoomMessage: { findMany: jest.fn().mockResolvedValue(rows) },
+      };
+      return new GeneralRoomMessageRepository(prisma as never);
+    };
+
+    // Non-active member (left, still browsing PUBLIC history): own join line hidden.
+    const left = await makeRepo().findByRoomIdTimeline({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      direction: "before",
+      ts: new Date(),
+      limit: 30,
+      viewerIsActiveMember: false,
+    });
+    expect(left.map((m) => m.id)).toEqual(["msg"]);
+
+    // Active member: own current-session join line is visible.
+    const active = await makeRepo().findByRoomIdTimeline({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      direction: "before",
+      ts: new Date(),
+      limit: 30,
+      viewerIsActiveMember: true,
+    });
+    expect(active.map((m) => m.id)).toEqual(["join", "msg"]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Suppressed moderation lines (removed / banned / unbanned) are hidden from
+  // EVERYONE — including active members — clears history that piled up before
+  // the silent-kick rule (Telegram parity).
+  // -------------------------------------------------------------------------
+  it("hides all membership-lifecycle lines (removed/banned/unbanned/left/joined) from everyone, even active members", async () => {
+    const rows = [
+      { id: "removed", deletedBy: [], systemMessageType: "MEMBER_REMOVED" },
+      { id: "banned", deletedBy: [], systemMessageType: "MEMBER_BANNED" },
+      { id: "unbanned", deletedBy: [], systemMessageType: "MEMBER_UNBANNED" },
+      { id: "left", deletedBy: [], systemMessageType: "MEMBER_LEFT" },
+      // Legacy community-wide join line — hidden so it can't duplicate the
+      // personal "You joined the community" (own row, would personalize to "You").
+      {
+        id: "joined",
+        deletedBy: [],
+        systemMessageType: "MEMBER_JOINED",
+        visibleToUserId: null,
+      },
+      { id: "rolechg", deletedBy: [], systemMessageType: "ROLE_CHANGED" }, // not hidden
+      { id: "msg", deletedBy: [] }, // regular message
+    ];
+    const prisma = {
+      generalRoomMessage: { findMany: jest.fn().mockResolvedValue(rows) },
+    };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const result = await repo.findByRoomIdTimeline({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      direction: "before",
+      ts: new Date(),
+      limit: 30,
+      viewerIsActiveMember: true,
+    });
+
+    expect(result.map((m) => m.id)).toEqual(["rolechg", "msg"]);
+  });
+
+  it("joiner with a legacy MEMBER_JOINED + personal COMMUNITY_JOINED sees exactly ONE join line (the duplicate fix)", async () => {
+    const rows = [
+      // Legacy community-wide join line (would personalize to "You joined…" for
+      // the joiner) — the source of the duplicate.
+      {
+        id: "legacy-joined",
+        deletedBy: [],
+        visibleToUserId: null,
+        systemMessageType: "MEMBER_JOINED",
+      },
+      // The current personal onboarding line.
+      {
+        id: "personal-joined",
+        deletedBy: [],
+        visibleToUserId: USER_ID,
+        systemMessageType: "COMMUNITY_JOINED",
+      },
+      { id: "msg", deletedBy: [] },
+    ];
+    const prisma = {
+      generalRoomMessage: { findMany: jest.fn().mockResolvedValue(rows) },
+    };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const result = await repo.findByRoomIdTimeline({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      direction: "before",
+      ts: new Date(),
+      limit: 30,
+      viewerIsActiveMember: true,
+    });
+
+    // Legacy MEMBER_JOINED hidden → exactly the single personal line survives.
+    expect(result.map((m) => m.id)).toEqual(["personal-joined", "msg"]);
+    expect(
+      result.filter((m) =>
+        ["MEMBER_JOINED", "COMMUNITY_JOINED"].includes(
+          (m as { systemMessageType?: string }).systemMessageType ?? ""
+        )
+      )
+    ).toHaveLength(1);
+  });
+
+  it("raw catch-up match excludes suppressed moderation types via $nin", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([]);
+    const findMany = jest.fn().mockResolvedValue([]);
+    const prisma = { generalRoomMessage: { aggregateRaw, findMany } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    await repo.findSinceId({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      sinceId: "",
+      limit: 20,
+    });
+
+    const match = aggregateRaw.mock.calls[0][0].pipeline.find(
+      (s: Record<string, unknown>) => "$match" in s
+    ).$match;
+    expect(match.systemMessageType).toEqual({
+      $nin: [
+        "MEMBER_REMOVED",
+        "MEMBER_BANNED",
+        "MEMBER_UNBANNED",
+        "MEMBER_LEFT",
+        "MEMBER_JOINED",
+      ],
+    });
+  });
+
+  it("conversation count match excludes suppressed moderation types via $nin", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([{ total: 0 }]);
+    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    await repo.countConversation({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      beforeMs: 1_700_000_000_000,
+    });
+
+    const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
+    expect(match.systemMessageType).toEqual({
+      $nin: [
+        "MEMBER_REMOVED",
+        "MEMBER_BANNED",
+        "MEMBER_UNBANNED",
+        "MEMBER_LEFT",
+        "MEMBER_JOINED",
+      ],
+    });
+  });
+
+  it("bulk unread count excludes suppressed moderation types via $nin", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([]);
+    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    await repo.countUnreadBulk({
+      userId: USER_ID,
+      thresholds: [{ roomId: ROOM_ID, afterDate: new Date(0) }],
+    });
+
+    const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
+    expect(match.systemMessageType).toEqual({
+      $nin: [
+        "MEMBER_REMOVED",
+        "MEMBER_BANNED",
+        "MEMBER_UNBANNED",
+        "MEMBER_LEFT",
+        "MEMBER_JOINED",
+      ],
+    });
   });
 });
 
@@ -192,7 +475,7 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
       id: "m".repeat(24),
       sentBy: USER_ID,
       senderName: "Bob",
-      message: "You joined this community",
+      message: "You joined the community",
       messageType: "SYSTEM",
       createdAt: new Date(),
     };
@@ -261,10 +544,12 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
   it("COMMUNITY subtypes publish to the room and the wire is SENDER-LESS", async () => {
     const { service, roomRepo, publish } = build();
 
+    // UNPINNED_MESSAGE: a COMMUNITY-visible, non-bumping subtype (MEMBER_JOINED is
+    // now a hidden membership-lifecycle line, so it's no longer a good example).
     await service.post({
       communityId: ROOM_ID,
-      systemMessageType: "MEMBER_JOINED",
-      metadata: { targetUserId: OTHER_ID },
+      systemMessageType: "UNPINNED_MESSAGE",
+      metadata: {},
       triggeredByUserId: OTHER_ID,
     });
 
@@ -275,10 +560,10 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
     expect(data.senderId).toBe("");
     expect(data.senderName).toBe("");
     expect(data.senderAvatar).toBe("");
-    expect(data.systemMessageType).toBe("MEMBER_JOINED");
+    expect(data.systemMessageType).toBe("UNPINNED_MESSAGE");
     expect(data.isPersonal).toBe(false);
-    // MEMBER_JOINED bumps the community list.
-    expect(roomRepo.addLastestMessageToRoom).toHaveBeenCalled();
+    // Low-signal lines must not reorder the community list for other members.
+    expect(roomRepo.addLastestMessageToRoom).not.toHaveBeenCalled();
   });
 
   it("renders deterministic Telegram-style template text per subtype", async () => {
@@ -289,14 +574,15 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
       ["COMMUNITY_AVATAR_UPDATED", {}, "Community photo updated"],
       ["COMMUNITY_BANNER_UPDATED", {}, "Community banner updated"],
       ["COMMUNITY_UPDATED", {}, "Community details updated"],
-      ["MEMBER_REMOVED", { targetUserId: OTHER_ID }, "Bob was removed"],
-      ["MEMBER_BANNED", { targetUserId: OTHER_ID }, "Bob was banned"],
+      // NOTE: MEMBER_REMOVED / MEMBER_BANNED / MEMBER_LEFT / MEMBER_JOINED are
+      // hidden membership lines — post() drops them, so they're not exercised here.
       [
         "ROLE_CHANGED",
         { targetUserId: OTHER_ID, newRole: "ADMIN", oldRole: "MEMBER" },
         "Bob is now an admin",
       ],
-      ["COMMUNITY_JOINED", {}, "You joined this community"],
+      ["COMMUNITY_JOINED", {}, "You joined the community"],
+      ["JOIN_REQUEST_APPROVED", {}, "Your request to join was approved"],
       ["JOIN_REQUEST_REJECTED", {}, "Your request to join was declined"],
     ];
 
@@ -396,9 +682,11 @@ describe("Community pin/unpin → system messages", () => {
         }),
       } as never,
       {
-        findRoomById: jest
-          .fn()
-          .mockResolvedValue({ id: ROOM_ID, listPinedMessage: [] }),
+        findRoomById: jest.fn().mockResolvedValue({
+          id: ROOM_ID,
+          status: "active",
+          listPinedMessage: [],
+        }),
         updatePinnedMessages: jest.fn().mockResolvedValue(undefined),
       } as never,
       { findByRoomAndUser: jest.fn().mockResolvedValue(MOD) } as never,

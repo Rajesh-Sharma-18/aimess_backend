@@ -84,6 +84,15 @@ model Community {
   closedAt         DateTime? // when an admin suspended/closed the community
   closedReasonCode String? // CloseReasonCode from backoffice-service
   closedByAdminId  String? // backoffice AdminUser.id who closed it
+  // Owner-controlled lifecycle status — DISTINCT from `moderationStatus` (platform
+  // SUSPENDED) and `deletedAt` (permanent soft-delete). CLOSED is a reversible
+  // "owner closed this community" state: all members are auto-removed and the
+  // community is read-only until the owner reopens it. Absent ⇒ ACTIVE
+  // (backward-compat for legacy rows; backfilled by db:backfill:status).
+  status            CommunityStatus @default(ACTIVE)
+  statusClosedAt    DateTime? // when the owner CLOSED it (status axis)
+  statusClosedBy    String? // community AuthUser.id (admin/owner) who closed it
+  statusClosedReason String? // optional free-text reason supplied by the owner
   deletedAt   DateTime?
   members     CommunityMember[]
 
@@ -91,6 +100,7 @@ model Community {
   @@index([creatorId])
   @@index([lastActivityAt])
   @@index([moderationStatus, createdAt])
+  @@index([status, createdAt])
   // Backs the admin list's category-name sort (orderBy categoryName, _id tiebreak).
   @@index([categoryName])
   // Backs the admin user→communities list's name sort (orderBy name, _id tiebreak).
@@ -319,6 +329,15 @@ enum CommunityType {
 enum CommunityModerationStatus {
   ACTIVE
   SUSPENDED
+}
+
+// Owner-controlled community lifecycle status. CLOSED is a reversible
+// "owner closed this community" state (all members auto-removed, read-only)
+// — distinct from platform moderation (`moderationStatus=SUSPENDED`) and from
+// permanent deletion (`deletedAt`). Absent on legacy rows ⇒ treat as ACTIVE.
+enum CommunityStatus {
+  ACTIVE
+  CLOSED
 }
 
 enum CommunityMemberRole {

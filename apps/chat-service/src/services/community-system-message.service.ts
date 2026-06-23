@@ -3,7 +3,12 @@ import type { Redis, Cluster } from "ioredis";
 
 import {
   SYSTEM_MESSAGE_VISIBILITY,
-  SYSTEM_MESSAGE_BUMPS_ACTIVITY,
+  isEligibleForLastActivity,
+  isHiddenSystemMessage,
+  buildCommunitySystemFallbackText,
+  buildCommunitySystemSelfPreview,
+  resolveCommunitySystemSubjectUserId,
+  resolvePersonDisplayName,
   type CommunitySystemMessageType,
 } from "@aimess/constants";
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
@@ -44,8 +49,9 @@ export interface PostCommunitySystemMessageParams {
  * Behaviour is driven entirely by the central registry in @aimess/constants:
  * - SYSTEM_MESSAGE_VISIBILITY decides PERSONAL (→ user:<id> channel, persisted
  *   with visibleToUserId) vs COMMUNITY (→ community:<id> room).
- * - SYSTEM_MESSAGE_BUMPS_ACTIVITY decides whether the community-list preview is
- *   bumped (most do; unpin / invite-created / personal lines do not).
+ * - isEligibleForLastActivity decides whether the line bumps + becomes the
+ *   community-list preview. Excluded: personal/onboarding lines, unpin,
+ *   invite-created, and membership/moderation churn (left/removed/banned/…).
  *
  * The text is a DETERMINISTIC template (buildFallbackText) — never a dynamically
  * composed sentence. The client renders localized text from systemMessageType +
@@ -83,10 +89,24 @@ export class CommunitySystemMessageService {
     const { communityId, systemMessageType, metadata, triggeredByUserId } =
       params;
 
+    // Backstop: hidden membership-lifecycle lines (left / removed / banned /
+    // unbanned / joined) are never persisted OR broadcast. community-service's
+    // emitMemberSystemMessage already drops them at the source, but a redelivered
+    // legacy event could still reach here — skip so it can't flash on a live
+    // socket (the read-time filter can't catch a real-time push).
+    if (isHiddenSystemMessage(systemMessageType)) {
+      logger.debug(
+        `CommunitySystemMessageService|skip hidden type=${systemMessageType}`
+      );
+      return;
+    }
+
     const visibility =
       SYSTEM_MESSAGE_VISIBILITY[systemMessageType] ?? "COMMUNITY";
-    const bumpsActivity =
-      SYSTEM_MESSAGE_BUMPS_ACTIVITY[systemMessageType] ?? false;
+    // Single source of truth: membership/moderation churn (left/removed/banned/…)
+    // is NOT eligible to bump or become the community-list lastActivity preview.
+    const eligibleForLastActivity =
+      isEligibleForLastActivity(systemMessageType);
     const isPersonal = visibility === "PERSONAL";
     const visibleToUserId = isPersonal
       ? (params.visibleToUserId ?? null)
@@ -119,7 +139,7 @@ export class CommunitySystemMessageService {
         ...(targetUserId ? { targetName } : {}),
       };
 
-      const fallbackText = buildFallbackText(
+      const fallbackText = buildCommunitySystemFallbackText(
         systemMessageType,
         enrichedMetadata,
         actorName,
@@ -184,7 +204,7 @@ export class CommunitySystemMessageService {
       // Bump the community-list ordering only for subtypes that should reorder
       // the chat list (registry-driven). No unread increment — system messages
       // never badge.
-      if (bumpsActivity) {
+      if (eligibleForLastActivity) {
         this.roomRepo
           .addLastestMessageToRoom(communityId, {
             _id: message.id,
@@ -249,14 +269,16 @@ export class CommunitySystemMessageService {
           );
         });
 
-      if (bumpsActivity) {
+      if (eligibleForLastActivity) {
         // Self-referential lines (role change / join) carry the subject + a
         // first-person "You …" preview so the community list can personalize for
         // that one member; null for community-wide lines (everyone sees the same).
         const selfActivity = buildSelfActivity(
           systemMessageType,
           enrichedMetadata,
-          triggeredByUserId
+          triggeredByUserId,
+          actorName,
+          targetName
         );
         const clip = (s: string) => (s.length > 80 ? s.slice(0, 80) : s);
 
@@ -337,148 +359,36 @@ export class CommunitySystemMessageService {
     userId: string | null
   ): string {
     if (!userId) return "";
-    const snap = snapshots.get(userId);
-    if (!snap) return "";
-    return (snap.displayName as string) || (snap.username as string) || "";
-  }
-}
-
-/** "MODERATOR" → "moderator", "ADMIN" → "admin". */
-function roleArticleForm(role: string): string {
-  const r = role.toUpperCase();
-  if (r === "ADMIN") return "an admin";
-  if (r === "MODERATOR") return "a moderator";
-  return "a member";
-}
-
-/**
- * Deterministic English fallback text per subtype (Telegram phrasing). The
- * client renders its own localized string from systemMessageType + metadata;
- * this is the stored fallback + the community-list preview. NEVER compose a
- * sentence outside this function.
- */
-function buildFallbackText(
-  type: CommunitySystemMessageType,
-  metadata: Record<string, unknown>,
-  actorName: string,
-  targetName: string
-): string {
-  const actor = actorName || "Someone";
-  const target =
-    (metadata.targetName as string) || targetName || actorName || "A member";
-
-  switch (type) {
-    case "COMMUNITY_CREATED":
-      return "Community created";
-    case "COMMUNITY_NAME_UPDATED":
-      return "Community name updated";
-    case "COMMUNITY_DESCRIPTION_UPDATED":
-      return "Community description updated";
-    case "COMMUNITY_AVATAR_UPDATED":
-      return "Community photo updated";
-    case "COMMUNITY_BANNER_UPDATED":
-      return "Community banner updated";
-    case "COMMUNITY_UPDATED":
-      // Single non-name/avatar/description field OR multiple simultaneous fields.
-      return "Community details updated";
-
-    case "ROLE_CHANGED":
-    case "MEMBER_ROLE_CHANGED": {
-      const newRole = ((metadata.newRole as string) || "").toUpperCase();
-      const oldRole = ((metadata.oldRole as string) || "").toUpperCase();
-      if (
-        newRole === "MEMBER" &&
-        (oldRole === "ADMIN" || oldRole === "MODERATOR")
-      ) {
-        return `${target} is now a member`;
-      }
-      return `${target} is now ${roleArticleForm(newRole)}`;
-    }
-
-    case "ROLE_CHANGED_SELF": {
-      const newRole = ((metadata.newRole as string) || "").toUpperCase();
-      const oldRole = ((metadata.oldRole as string) || "").toUpperCase();
-      if (
-        newRole === "MEMBER" &&
-        (oldRole === "ADMIN" || oldRole === "MODERATOR")
-      ) {
-        return "You are now a member";
-      }
-      return `You are now ${roleArticleForm(newRole)}`;
-    }
-
-    case "MEMBER_JOINED":
-      return `${target} joined the community`;
-    case "MEMBER_LEFT":
-      return `${target} left the community`;
-    case "MEMBER_REMOVED":
-      return `${target} was removed`;
-    case "MEMBER_BANNED":
-      return `${target} was banned`;
-    case "MEMBER_UNBANNED":
-      return `${target} was unbanned`;
-    case "MEMBER_MUTED":
-      return `${target} was muted`;
-    case "MEMBER_UNMUTED":
-      return `${target} was unmuted`;
-
-    case "PINNED_MESSAGE":
-      return `${actor} pinned a message`;
-    case "UNPINNED_MESSAGE":
-      return `${actor} unpinned a message`;
-    case "COMMUNITY_INVITE_CREATED":
-      return `${actor} created an invite link`;
-
-    case "COMMUNITY_JOINED":
-      return "You joined this community";
-    case "JOIN_REQUEST_APPROVED":
-      return "Your request to join was approved";
-    case "JOIN_REQUEST_REJECTED":
-      return "Your request to join was declined";
-
-    default:
-      return "Community details updated";
+    return resolvePersonDisplayName(snapshots.get(userId));
   }
 }
 
 /**
  * Self-referential community-list personalization for a COMMUNITY-visible system
- * line. Most lifecycle lines read identically to everyone, but a few are ABOUT a
- * specific member — a role change ("Jim is now a moderator") or a join ("Jim
- * joined the community"). For those, the community list should show that one
- * member the first-person form ("You are now a moderator" / "You joined this
- * community") while everyone else sees the third-person line.
- *
- * Returns the `subjectUserId` (whom the line is about) and the `selfPreview`
- * (the "You …" text, produced by the same {@link buildFallbackText} source of
- * truth so community-service never composes its own copy), or `null` when the
- * subtype is not self-referential. Used to enrich both the `community.activity`
- * REST denormalization and the `community:updated` live bump.
+ * line. Returns the subject member + first-person preview when the subtype names
+ * a specific actor or target; null when everyone sees the same text.
  */
 function buildSelfActivity(
   type: CommunitySystemMessageType,
   metadata: Record<string, unknown>,
-  triggeredByUserId: string
+  triggeredByUserId: string,
+  actorName: string,
+  targetName: string
 ): { subjectUserId: string; selfPreview: string } | null {
-  switch (type) {
-    case "ROLE_CHANGED":
-    case "MEMBER_ROLE_CHANGED": {
-      const subjectUserId =
-        typeof metadata.targetUserId === "string" ? metadata.targetUserId : "";
-      if (!subjectUserId) return null;
-      return {
-        subjectUserId,
-        selfPreview: buildFallbackText("ROLE_CHANGED_SELF", metadata, "", ""),
-      };
-    }
-    case "MEMBER_JOINED":
-      // The joiner IS the actor for a join, so the actor id is the subject.
-      if (!triggeredByUserId) return null;
-      return {
-        subjectUserId: triggeredByUserId,
-        selfPreview: buildFallbackText("COMMUNITY_JOINED", metadata, "", ""),
-      };
-    default:
-      return null;
-  }
+  const subjectUserId = resolveCommunitySystemSubjectUserId(
+    type,
+    metadata,
+    triggeredByUserId
+  );
+  if (!subjectUserId) return null;
+  return {
+    subjectUserId,
+    selfPreview: buildCommunitySystemSelfPreview(
+      type,
+      metadata,
+      actorName,
+      targetName,
+      subjectUserId
+    ),
+  };
 }

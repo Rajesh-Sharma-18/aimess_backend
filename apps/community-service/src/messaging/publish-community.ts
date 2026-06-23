@@ -4,6 +4,7 @@ import amqp from "amqplib";
 import {
   CommunityEvents,
   type CommunityAdminTransferredPayload,
+  type CommunityClosedNotifyPayload,
   type CommunityDeletedPayload,
   type CommunityInviteAcceptedPayload,
   type CommunityInviteSentPayload,
@@ -133,6 +134,16 @@ export function publishCommunityDeletedSafe(
   data: CommunityDeletedPayload
 ): void {
   publishSafe(CommunityEvents.DELETED, data, "community.deleted");
+}
+
+/**
+ * Published when the owner CLOSES a community (status → CLOSED). All members
+ * were auto-removed — notifications-service pushes "Community closed" to each.
+ */
+export function publishCommunityClosedSafe(
+  data: CommunityClosedNotifyPayload
+): void {
+  publishSafe(CommunityEvents.CLOSED, data, "community.closed");
 }
 
 export function publishCommunityMemberLeftSafe(

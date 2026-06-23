@@ -80,6 +80,13 @@ export type CommunityData = {
   liveStreams: LiveStreamSummary[];
   /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
   moderationStatus: CommunityModerationStatus;
+  /**
+   * Owner-controlled lifecycle status. ACTIVE = open; CLOSED = the community
+   * owner closed it (all members removed, read-only) until reopened. Absent on
+   * legacy data ⇒ "ACTIVE". This is the field clients branch on to disable
+   * community actions; `moderationStatus` is a separate platform concern.
+   */
+  status: "ACTIVE" | "CLOSED";
   createdAt: string;
   updatedAt: string;
   lastActivity: CommunityLastActivity;
@@ -148,7 +155,7 @@ export type CommunityLastActivity =
   | {
       // SYSTEM / lifecycle — standalone text, NEVER prefixed (username === null).
       type: "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
-      userId: string | null;
+      userId: null;
       username: null;
       preview: string;
       dateTime: number;
@@ -206,8 +213,10 @@ export type CommunityListItem = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
-  /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
+  /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
+  /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
+  status: "ACTIVE" | "CLOSED";
 };
 
 /**
@@ -258,8 +267,10 @@ export type CommunityDiscoverItem = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
-  /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
+  /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
+  /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
+  status: "ACTIVE" | "CLOSED";
 };
 
 /** A single community member row returned by the member-listing endpoint. */
@@ -382,6 +393,8 @@ export type CommunityAuditAction =
   | "ADMIN_TRANSFERRED"
   | "COMMUNITY_JOINED"
   | "COMMUNITY_DELETED"
+  | "COMMUNITY_CLOSED"
+  | "COMMUNITY_REOPENED"
   | "JOIN_REQUEST_APPROVED"
   | "JOIN_REQUEST_REJECTED"
   | "MEMBER_INVITED"
@@ -512,6 +525,8 @@ export type MyJoinRequestData = CommunityJoinRequestData & {
     avatarUrlExpiresIn: number | null;
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */
     avatar: MediaObject;
+    /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed. */
+    status: "ACTIVE" | "CLOSED";
   };
 };
 
@@ -553,6 +568,8 @@ export type MyInviteData = CommunityInviteData & {
     avatarUrlExpiresIn: number | null;
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */
     avatar: MediaObject;
+    /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed. */
+    status: "ACTIVE" | "CLOSED";
   };
 };
 
@@ -611,6 +628,8 @@ export type MyReportData = CommunityReportData & {
     avatarUrlExpiresIn: number | null;
     /** Nested media object for the avatar (additive; mirrors avatarUrl). */
     avatar: MediaObject;
+    /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed. */
+    status: "ACTIVE" | "CLOSED";
   };
 };
 

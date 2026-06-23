@@ -27,7 +27,7 @@ export interface CommunityActivityPayload {
    * For self-referential SYSTEM lines (a role change or a join), the user the
    * line is ABOUT. community-service stores it as `lastActivityUserId` so the
    * `GET /communities/mine` list can render the personalized `selfPreview`
-   * ("You are now a moderator" / "You joined this community") to that one viewer
+   * ("You are now a moderator" / "You joined the community") to that one viewer
    * instead of the third-person `messagePreview` everyone else sees.
    */
   subjectUserId?: string;

@@ -9,7 +9,7 @@
  *     bump (via publishCommunityUpdatedSafe) so the live list reorders and shows
  *     the standalone system line — byte-identical to the room — WITHOUT a manual
  *     refetch. The bump fires ONLY when a memberRepo is wired (production) and is
- *     SUPPRESSED for PERSONAL lines (e.g. "You joined this community").
+ *     SUPPRESSED for PERSONAL lines (e.g. "You joined the community").
  *
  *  2. DETERMINISTIC ROLE-CHANGE TEXT (Issue #1). One stored row, identical for
  *     every viewer; the 6 role transitions render the exact Telegram phrasing.
@@ -31,8 +31,10 @@ import {
 } from "@aimess/constants";
 import { CommunitySystemMessageService } from "../../src/services/community-system-message.service.js";
 import { publishCommunityUpdatedSafe } from "../../src/events/publish-conv-updated.js";
+import { publishCommunityActivitySafe } from "../../src/events/publish-community-activity.js";
 
 const pubListBump = publishCommunityUpdatedSafe as jest.Mock;
+const pubActivity = publishCommunityActivitySafe as jest.Mock;
 
 const EVENT_AT = "2026-06-19T12:00:00.000Z";
 const COMMUNITY_ID = "comm-1";
@@ -101,6 +103,111 @@ function makeService(
 
 beforeEach(() => {
   pubListBump.mockClear();
+  pubActivity.mockClear();
+});
+
+describe("CommunitySystemMessageService — lastActivity eligibility", () => {
+  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"])(
+    "%s is a hidden membership line — never persisted or broadcast (post backstop)",
+    async (type) => {
+      const h = makeService({
+        withMemberRepo: true,
+        snapshots: [[TARGET, { displayName: "John Doe" }]],
+      });
+
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: type as never,
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: TARGET,
+        eventAt: EVENT_AT,
+      });
+
+      // Hidden lines are dropped at post(): no row, no live broadcast, no bump.
+      expect(h.createSystemMessage).not.toHaveBeenCalled();
+      expect(h.redis.publish).not.toHaveBeenCalled();
+      expect(pubActivity).not.toHaveBeenCalled();
+      expect(pubListBump).not.toHaveBeenCalled();
+    }
+  );
+
+  it("a COMMUNITY content line (ROLE_CHANGED) still bumps lastActivity", async () => {
+    const h = makeService({
+      withMemberRepo: true,
+      snapshots: [
+        [ACTOR, { displayName: "Admin" }],
+        [TARGET, { displayName: "John Doe" }],
+      ],
+    });
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "ROLE_CHANGED",
+      metadata: {
+        targetUserId: TARGET,
+        oldRole: "MEMBER",
+        newRole: "MODERATOR",
+      },
+      triggeredByUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    expect(pubActivity).toHaveBeenCalledTimes(1);
+    expect(pubListBump).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["MEMBER_MUTED", "MEMBER_UNMUTED"])(
+    "%s is delivered but does not bump lastActivity (non-hidden moderation churn)",
+    async (type) => {
+      const h = makeService({
+        withMemberRepo: true,
+        snapshots: [[TARGET, { displayName: "John Doe" }]],
+      });
+
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: type as never,
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        eventAt: EVENT_AT,
+      });
+
+      // Not hidden → still persisted/delivered, but not eligible to bump.
+      expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
+      expect(pubActivity).not.toHaveBeenCalled();
+      expect(pubListBump).not.toHaveBeenCalled();
+    }
+  );
+
+  it("Case 3: an eligible line AFTER an ineligible one becomes the new preview", async () => {
+    const h = makeService({
+      withMemberRepo: true,
+      snapshots: [
+        [ACTOR, { displayName: "Admin" }],
+        [TARGET, { displayName: "John Doe" }],
+      ],
+    });
+
+    // Ban (ineligible) → no bump.
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "MEMBER_BANNED",
+      metadata: { targetUserId: TARGET },
+      triggeredByUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+    expect(pubActivity).not.toHaveBeenCalled();
+
+    // Community name updated (eligible) → bumps and becomes the preview.
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "COMMUNITY_NAME_UPDATED",
+      metadata: {},
+      triggeredByUserId: ACTOR,
+      eventAt: "2026-06-19T12:01:00.000Z",
+    });
+    expect(pubActivity).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("CommunitySystemMessageService — real-time list bump", () => {

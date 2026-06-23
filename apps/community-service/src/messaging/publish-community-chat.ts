@@ -80,6 +80,13 @@ export interface CommunityMemberSyncedForChat {
   status?: string;
   /** community member role (ADMIN | MODERATOR | MEMBER); omit if unchanged. */
   role?: string;
+  /**
+   * ISO timestamp of the membership change. Stamped automatically by the
+   * publisher. chat-service uses it as the upper bound for the join-line cleanup
+   * on leave/remove/ban, so a redelivered stale event can't purge a fresher
+   * rejoin line.
+   */
+  eventAt?: string;
 }
 
 /**
@@ -95,7 +102,10 @@ export function publishCommunityMemberSyncedForChatSafe(
 ): void {
   publishSafe(
     "community.member.synced",
-    data,
+    // Stamp eventAt once here so every emit site (createMember / updateMemberStatus
+    // / updateMemberRole funnel) carries the membership-change time without
+    // duplicating it at each call. chat-service bounds its join-line cleanup by it.
+    { ...data, eventAt: data.eventAt ?? new Date().toISOString() },
     "community.member.synced (chat-sync)"
   );
 }

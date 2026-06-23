@@ -172,10 +172,16 @@ describe("CommunitySystemMessageService — idempotent post", () => {
   it("dedup key includes the target user for membership events", async () => {
     const h = makeService({ findOneResult: null });
 
+    // ROLE_CHANGED: a non-hidden, target-scoped subtype (hidden membership lines
+    // like MEMBER_BANNED are dropped at post(), so they can't exercise dedup).
     await h.service.post({
       communityId: COMMUNITY_ID,
-      systemMessageType: "MEMBER_BANNED",
-      metadata: { targetUserId: "victim-9" },
+      systemMessageType: "ROLE_CHANGED",
+      metadata: {
+        targetUserId: "victim-9",
+        oldRole: "MEMBER",
+        newRole: "ADMIN",
+      },
       triggeredByUserId: "actor-1",
       eventAt: EVENT_AT,
     });
@@ -183,7 +189,7 @@ describe("CommunitySystemMessageService — idempotent post", () => {
     const arg = h.createSystemMessage.mock.calls[0][0] as {
       clientMessageId?: string;
     };
-    expect(arg.clientMessageId).toBe(`sys:MEMBER_BANNED:${EVENT_AT}:victim-9`);
+    expect(arg.clientMessageId).toBe(`sys:ROLE_CHANGED:${EVENT_AT}:victim-9`);
   });
 
   it("without eventAt (direct/local post) there is no dedup key and no pre-check read", async () => {

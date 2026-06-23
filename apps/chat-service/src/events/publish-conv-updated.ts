@@ -116,7 +116,7 @@ interface PublishCommunityUpdatedParams {
   /**
    * Self-referential SYSTEM line personalization. When set, the single member
    * whose id === `subjectUserId` receives `selfPreview` ("You are now a
-   * moderator" / "You joined this community") in place of `preview.text`, while
+   * moderator" / "You joined the community") in place of `preview.text`, while
    * every other member receives the third-person `preview` unchanged.
    */
   subjectUserId?: string;

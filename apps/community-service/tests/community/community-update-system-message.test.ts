@@ -19,6 +19,7 @@
 import {
   selectCommunityUpdateSystemMessageType,
   detectCommunityChangedFields,
+  changedFieldsToMetaChanges,
 } from "../../src/services/community.service.js";
 
 describe("selectCommunityUpdateSystemMessageType", () => {
@@ -173,5 +174,43 @@ describe("detectCommunityChangedFields — only genuine value diffs count", () =
     expect(selectCommunityUpdateSystemMessageType(changed)).toBe(
       "COMMUNITY_UPDATED"
     );
+  });
+});
+
+/**
+ * The SAME changedFields array that picks the system-message subtype also drives
+ * the `changes` boolean map on the `community:meta:updated` socket payload — so
+ * the chat line and the metadata-sync event can never disagree about what changed.
+ */
+describe("changedFieldsToMetaChanges — maps changed fields to the socket `changes` map", () => {
+  it("returns an empty object for no changes", () => {
+    expect(changedFieldsToMetaChanges([])).toEqual({});
+  });
+
+  it("maps each known field to its boolean flag", () => {
+    expect(changedFieldsToMetaChanges(["name"])).toEqual({ name: true });
+    expect(changedFieldsToMetaChanges(["description"])).toEqual({
+      description: true,
+    });
+    expect(changedFieldsToMetaChanges(["avatar"])).toEqual({ avatar: true });
+    expect(changedFieldsToMetaChanges(["visibility"])).toEqual({
+      visibility: true,
+    });
+    expect(changedFieldsToMetaChanges(["category"])).toEqual({
+      category: true,
+    });
+    expect(changedFieldsToMetaChanges(["handle"])).toEqual({ handle: true });
+  });
+
+  it("sets a flag per field on a multi-field change", () => {
+    expect(
+      changedFieldsToMetaChanges(["name", "avatar", "description"])
+    ).toEqual({ name: true, avatar: true, description: true });
+  });
+
+  it("ignores unknown field names", () => {
+    expect(changedFieldsToMetaChanges(["bogus", "name"])).toEqual({
+      name: true,
+    });
   });
 });

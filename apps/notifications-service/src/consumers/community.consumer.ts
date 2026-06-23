@@ -4,6 +4,7 @@ import amqp from "amqplib";
 import {
   CommunityEvents,
   type CommunityAdminTransferredPayload,
+  type CommunityClosedNotifyPayload,
   type CommunityDeletedPayload,
   type CommunityInviteAcceptedPayload,
   type CommunityInviteSentPayload,
@@ -444,6 +445,17 @@ async function handleCommunityEvent(
         title: "Community deleted",
         body: "A community you were in was deleted.",
         ...base(type, p.communityId, p.actorId, { reason: p.reason }),
+      }));
+      break;
+    }
+
+    case CommunityEvents.CLOSED: {
+      const p = data as CommunityClosedNotifyPayload;
+      await pushToUsers(p.memberIds, (userId) => ({
+        userId,
+        title: "Community closed",
+        body: "A community you were in has been closed.",
+        ...base(type, p.communityId, p.actorId, { reason: p.reason ?? "" }),
       }));
       break;
     }

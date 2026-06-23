@@ -247,6 +247,9 @@ channels:
       communityDelete: { $ref: "#/components/messages/CommunityDelete" }
       # moderation (server -> client)
       communityDeleted: { $ref: "#/components/messages/CommunityDeleted" }
+      # owner lifecycle (server -> client)
+      communityClosed: { $ref: "#/components/messages/CommunityClosed" }
+      communityReopened: { $ref: "#/components/messages/CommunityReopened" }
       # membership real-time (server -> client)
       communityStatsUpdated:
         { $ref: "#/components/messages/CommunityStatsUpdated" }
@@ -254,6 +257,11 @@ channels:
         { $ref: "#/components/messages/CommunityMemberRemoved" }
       communityMemberUnbanned:
         { $ref: "#/components/messages/CommunityMemberUnbanned" }
+      # metadata + roster real-time (server -> client)
+      communityMetaUpdated:
+        { $ref: "#/components/messages/CommunityMetaUpdated" }
+      communityMemberUpdated:
+        { $ref: "#/components/messages/CommunityMemberUpdated" }
       # parity (client -> server)
       communityMessageRead:
         { $ref: "#/components/messages/CommunityMessageReadRequest" }
@@ -1021,6 +1029,25 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community.deleted — the community was deleted (broadcast to all members)"
     messages: [{ $ref: "#/channels/community/messages/communityDeleted" }]
+  community.onClosed:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:closed — the owner closed the community (status → CLOSED)"
+    description: |
+      Broadcast to the `community:<id>` room AND to every (now ex-)member's
+      `user:<id>` room when the community ADMIN/owner closes the community. All
+      members have been auto-removed and the community is read-only. Clients
+      should disable all community actions immediately — no refresh, no polling.
+    messages: [{ $ref: "#/channels/community/messages/communityClosed" }]
+  community.onReopened:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:reopened — the owner reopened a closed community (status → ACTIVE)"
+    description: |
+      Broadcast to the `community:<id>` room when the owner reopens a previously
+      CLOSED community. Former members are NOT auto-restored — they re-join via
+      the normal flow.
+    messages: [{ $ref: "#/channels/community/messages/communityReopened" }]
   community.onStatsUpdated:
     action: receive
     channel: { $ref: "#/channels/community" }
@@ -2563,6 +2590,78 @@ components:
             userId: "user_def456"
             actorId: "user_admin001"
             updatedAt: 1749465800000
+    CommunityMetaUpdated:
+      name: "community:meta:updated"
+      title: "community:meta:updated"
+      summary: >-
+        Community metadata changed (name / avatar / description / category /
+        visibility / handle). Delivered to the community:<id> room (detail /
+        header / chat viewers) AND to every active member's user:<id> channel
+        (list rows). Distinct from community:updated (the list bump-to-top, which
+        carries a last-message preview and reorders) — community:meta:updated is
+        a metadata patch and does NOT reorder. Idempotent on updatedAt.
+      payload: { $ref: "#/components/schemas/CommunityMetaUpdatedPayload" }
+      examples:
+        - name: Name changed
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            changes:
+              name: true
+            community:
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              name: "AI Community"
+              handle: "ai-community"
+              description: "All things AI"
+              avatar: "https://cdn.example.com/community/avatar.png?sig=abc"
+              type: PUBLIC
+              categoryId: "cat_tech"
+              categoryName: "Technology"
+              memberCount: 142
+              updatedAt: 1749465800000
+            updatedAt: 1749465800000
+        - name: Avatar + description changed together
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            changes:
+              avatar: true
+              description: true
+            community:
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              name: "Photography Club"
+              handle: "photography-club"
+              description: "Share your best shots"
+              avatar: "https://cdn.example.com/community/new.png?sig=def"
+              type: PRIVATE
+              categoryId: "cat_arts"
+              categoryName: "Arts"
+              memberCount: 88
+              updatedAt: 1749465900000
+            updatedAt: 1749465900000
+    CommunityMemberUpdated:
+      name: "community:member:updated"
+      title: "community:member:updated"
+      summary: >-
+        A single member's roster row changed — role promotion/demotion, admin
+        transfer (emitted once per affected member), or a profile name/avatar
+        sync. Broadcast to community:<id>; the client patches the Members page
+        badge + chat header without a refetch.
+      payload: { $ref: "#/components/schemas/CommunityMemberUpdatedPayload" }
+      examples:
+        - name: Member promoted to moderator
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            role: MODERATOR
+            updatedAt: 1749465800000
+        - name: Profile name/avatar synced
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            username: "newhandle"
+            displayName: "New Name"
+            avatarUrl: "https://cdn.example.com/avatar.png?sig=ghi"
+            role: MEMBER
+            updatedAt: 1749465800000
     CommunityJoinRequestUpdate:
       name: "community:join_request:update"
       title: "community:join_request:update"
@@ -3078,6 +3177,36 @@ components:
           payload:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             deletedBy: "user_admin_001"
+
+    # -------- /community owner lifecycle (server -> client) --------
+    CommunityClosed:
+      name: "community:closed"
+      title: "community:closed"
+      summary: "Broadcast to community:<id> AND each ex-member's user:<id> when the owner closes the community (status → CLOSED). All members are auto-removed; clients disable all community actions immediately."
+      payload: { $ref: "#/components/schemas/CommunityClosedPayload" }
+      examples:
+        - name: Owner closed the community with a reason
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "CLOSED"
+            closedAt: 1749983445000
+            reason: "Archiving for the season"
+        - name: Owner closed the community (no reason)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "CLOSED"
+            closedAt: 1749983445000
+    CommunityReopened:
+      name: "community:reopened"
+      title: "community:reopened"
+      summary: "Broadcast to community:<id> when the owner reopens a closed community (status → ACTIVE). Former members re-join via the normal flow."
+      payload: { $ref: "#/components/schemas/CommunityReopenedPayload" }
+      examples:
+        - name: Owner reopened the community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "ACTIVE"
+            reopenedAt: 1749990000000
 
     # -------- /notify --------
     NotificationsFetch:
@@ -4878,6 +5007,41 @@ components:
         deletedBy:
           { type: string, description: "userId of the admin who deleted it." }
       required: [communityId, deletedBy]
+    CommunityClosedPayload:
+      type: object
+      description: |
+        Server → client. Broadcast to community:<id> AND to every (now ex-)member's
+        user:<id> room when the owner closes the community (status → CLOSED). All
+        members are auto-removed; the community is read-only until reopened.
+      properties:
+        communityId: { type: string }
+        status: { type: string, enum: [CLOSED] }
+        closedAt:
+          {
+            type: integer,
+            description: "Epoch ms when the community was closed.",
+          }
+        reason:
+          {
+            type: string,
+            description: "Optional owner-supplied reason. Absent when none given.",
+          }
+      required: [communityId, status, closedAt]
+    CommunityReopenedPayload:
+      type: object
+      description: |
+        Server → client. Broadcast to community:<id> when the owner reopens a
+        previously CLOSED community (status → ACTIVE). Former members are NOT
+        auto-restored — they re-join via the normal flow.
+      properties:
+        communityId: { type: string }
+        status: { type: string, enum: [ACTIVE] }
+        reopenedAt:
+          {
+            type: integer,
+            description: "Epoch ms when the community was reopened.",
+          }
+      required: [communityId, status, reopenedAt]
     CommunityStatsUpdatedPayload:
       type: object
       description: "Server → client. Broadcast to community:<id> when active memberCount changes."
@@ -4911,6 +5075,75 @@ components:
         actorId: { type: string, description: "The admin who lifted the ban." }
         updatedAt: { type: integer, description: "Epoch ms." }
       required: [communityId, userId, actorId, updatedAt]
+    CommunityMetaDto:
+      type: object
+      description: "Canonical post-update community metadata snapshot. Apply verbatim to the detail/header; patch the list row from it. `avatar` is a resolved presigned URL."
+      properties:
+        communityId: { type: string }
+        name: { type: string }
+        handle: { type: string }
+        description: { type: string, nullable: true }
+        avatar:
+          type: string
+          nullable: true
+          description: "Resolved presigned URL — render as-is, never persist."
+        type:
+          type: string
+          enum: [PUBLIC, PRIVATE]
+        categoryId: { type: string, nullable: true }
+        categoryName: { type: string, nullable: true }
+        memberCount: { type: integer }
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required:
+        [
+          communityId,
+          name,
+          handle,
+          description,
+          avatar,
+          type,
+          categoryId,
+          categoryName,
+          memberCount,
+          updatedAt,
+        ]
+    CommunityMetaUpdatedPayload:
+      type: object
+      description: >-
+        Server → client. Community metadata changed. Delivered to community:<id>
+        (detail/header/chat) AND each active member's user:<id> (list row).
+        Distinct from community:updated (list bump) — a metadata patch, no reorder.
+      properties:
+        communityId: { type: string }
+        changes:
+          type: object
+          description: "Only the keys that genuinely changed are present and true."
+          properties:
+            name: { type: boolean }
+            avatar: { type: boolean }
+            description: { type: boolean }
+            category: { type: boolean }
+            visibility: { type: boolean }
+            handle: { type: boolean }
+        community: { $ref: "#/components/schemas/CommunityMetaDto" }
+        updatedAt: { type: integer, description: "Epoch ms — idempotency key." }
+      required: [communityId, changes, community, updatedAt]
+    CommunityMemberUpdatedPayload:
+      type: object
+      description: >-
+        Server → client. A single member's roster row changed (role change, admin
+        transfer, or profile sync). Broadcast to community:<id>.
+      properties:
+        communityId: { type: string }
+        userId: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        avatarUrl: { type: string, nullable: true }
+        role:
+          type: string
+          enum: [ADMIN, MODERATOR, MEMBER]
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required: [communityId, userId, updatedAt]
 
     # -------- /community parity schemas --------
     CommunityMarkReadPayload:

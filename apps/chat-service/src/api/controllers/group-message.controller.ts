@@ -116,7 +116,7 @@ export class GroupMessageController {
         limit,
       });
       const [wire, totalCount] = await Promise.all([
-        this.messageService.enrichForWire(items),
+        this.messageService.enrichForWire(items, userId),
         this.messageService.countMessages(roomId),
       ]);
       const paginated = buildTimelineResponse(
@@ -152,7 +152,10 @@ export class GroupMessageController {
         }),
         this.messageService.countMessages(roomId),
       ]);
-      const wire = await this.messageService.enrichForWire(result.items);
+      const wire = await this.messageService.enrichForWire(
+        result.items,
+        userId
+      );
       const paginated = buildTimelineResponse(
         wire,
         totalCount,
@@ -192,7 +195,7 @@ export class GroupMessageController {
       }),
       this.messageService.countMessages(roomId),
     ]);
-    const wire = await this.messageService.enrichForWire(result.items);
+    const wire = await this.messageService.enrichForWire(result.items, userId);
     const paginated = buildTimelineResponse(
       wire,
       totalCount,
@@ -221,7 +224,7 @@ export class GroupMessageController {
       limit,
       timestamp,
     });
-    const wire = await this.messageService.enrichForWire(messages);
+    const wire = await this.messageService.enrichForWire(messages, userId);
     const paginated = buildPaginatedResponse(
       wire,
       total,
@@ -248,7 +251,7 @@ export class GroupMessageController {
       cursor,
       limit,
     });
-    const wire = await this.messageService.enrichForWire(messages);
+    const wire = await this.messageService.enrichForWire(messages, userId);
     const paginated = buildCursorResponse(wire, limit, "createdAt");
     const msg = paginated.items.length
       ? t("CHAT_MESSAGES_FETCHED", req.locale)
@@ -431,7 +434,7 @@ export class GroupMessageController {
       this.messageService.searchMessages({ roomId, userId, query, limit }),
       this.messageService.countSearchResults(roomId, query),
     ]);
-    const wire = await this.messageService.enrichForWire(messages);
+    const wire = await this.messageService.enrichForWire(messages, userId);
     const paginated = buildListResponse(wire, totalCount, page, limit);
     const msg = paginated.data.length
       ? t("CHAT_MESSAGES_SEARCHED", req.locale)

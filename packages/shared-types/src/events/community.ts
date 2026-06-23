@@ -11,6 +11,8 @@ export const CommunityEvents = {
   JOINED: "community.joined",
   ADMIN_TRANSFERRED: "community.admin_transferred",
   DELETED: "community.deleted",
+  CLOSED: "community.closed",
+  REOPENED: "community.reopened",
   JOIN_REQUESTED: "community.join_requested",
   JOIN_REQUEST_APPROVED: "community.join_request_approved",
   JOIN_REQUEST_REJECTED: "community.join_request_rejected",
@@ -134,6 +136,22 @@ export type CommunityDeletedPayload = CommunityEventBase & {
   actorId: string;
   reason: "explicit_delete" | "admin_left_no_successor";
   /** All members that were active at deletion time — notify each. */
+  memberIds: string[];
+};
+
+/**
+ * Cross-service close event (community-service → notifications-service). Named
+ * with a `Notify` suffix to avoid clashing with the socket-layer
+ * `CommunityClosedPayload` in `../community.ts`.
+ *
+ * Published when the community ADMIN/owner CLOSES the community (status → CLOSED).
+ * All members are auto-removed; notify each so their UI updates. Distinct from
+ * `community.deleted` (permanent) — a CLOSED community can be reopened.
+ */
+export type CommunityClosedNotifyPayload = CommunityEventBase & {
+  actorId: string;
+  reason: string | null;
+  /** All members that were active at close time — notify each. */
   memberIds: string[];
 };
 

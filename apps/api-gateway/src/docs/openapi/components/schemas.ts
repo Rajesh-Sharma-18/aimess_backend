@@ -4233,6 +4233,12 @@ export const openApiSchemas = {
         description:
           "ACTIVE = open; SUSPENDED = closed by a platform admin (clients show a read-only banner).",
       },
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "CLOSED"],
+        description:
+          "Owner-controlled lifecycle status. ACTIVE = open; CLOSED = the community owner closed it (all members removed, read-only) until reopened. This is the field clients branch on to disable community actions; `moderationStatus` is a separate platform concern. Absent on legacy data ⇒ ACTIVE.",
+      },
       isLive: {
         type: "boolean",
         description:
@@ -4265,6 +4271,7 @@ export const openApiSchemas = {
       "announcementEnabled",
       "isJoined",
       "moderationStatus",
+      "status",
       "isLive",
       "lastActivity",
       "createdAt",

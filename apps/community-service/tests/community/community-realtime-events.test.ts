@@ -76,6 +76,7 @@ import { publishCommunityRoomEvent } from "@aimess/redis";
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { publishCommunityMemberLeftSafe } from "../../src/messaging/publish-community.js";
+import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
 
 // ---------------------------------------------------------------------------
 // Typed aliases
@@ -84,6 +85,7 @@ import { publishCommunityMemberLeftSafe } from "../../src/messaging/publish-comm
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
 const pubMemberLeft = publishCommunityMemberLeftSafe as jest.Mock;
+const pubSysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -138,6 +140,7 @@ const activeMemberNonAdmin = {
 beforeEach(() => {
   pubRoomEvent.mockClear();
   pubMemberLeft.mockClear();
+  pubSysMsg.mockClear();
 });
 
 // ---------------------------------------------------------------------------
@@ -208,6 +211,23 @@ describe("kickMember — real-time broadcasts", () => {
       communityService.kickMember(CID, ADMIN, TARGET)
     ).resolves.not.toThrow();
   });
+
+  it("does NOT post a MEMBER_REMOVED chat system message (silent kick)", async () => {
+    await communityService.kickMember(CID, ADMIN, TARGET, "violating rules");
+
+    // The roster socket + domain event still fire (asserted above); only the
+    // chat-timeline SYSTEM line is suppressed so "X was removed" can't pile up.
+    const postedTypes = pubSysMsg.mock.calls.map(
+      ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
+    );
+    expect(postedTypes).not.toContain("MEMBER_REMOVED");
+  });
+
+  it("does NOT write removal to lastActivity (removal never becomes the list preview)", async () => {
+    repo.updateLastActivity.mockClear();
+    await communityService.kickMember(CID, ADMIN, TARGET, "violating rules");
+    expect(repo.updateLastActivity).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -274,6 +294,21 @@ describe("banMember — real-time broadcasts", () => {
 
     expect(pubRoomEvent).not.toHaveBeenCalled();
   });
+
+  it("does NOT post a MEMBER_BANNED chat system message (silent ban)", async () => {
+    await communityService.banMember(CID, ADMIN, TARGET, "spam");
+
+    const postedTypes = pubSysMsg.mock.calls.map(
+      ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
+    );
+    expect(postedTypes).not.toContain("MEMBER_BANNED");
+  });
+
+  it("does NOT write removal/ban to lastActivity (ban never becomes the list preview)", async () => {
+    repo.updateLastActivity.mockClear();
+    await communityService.banMember(CID, ADMIN, TARGET, "spam");
+    expect(repo.updateLastActivity).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -338,6 +373,17 @@ describe("leaveCommunity — real-time broadcasts", () => {
       actorId: NON_ADMIN,
     });
     expect(typeof payload.eventAt).toBe("string");
+  });
+
+  it("does NOT post a MEMBER_LEFT chat system message (silent leave)", async () => {
+    await communityService.leaveCommunity(CID, NON_ADMIN);
+
+    // The roster socket + domain event still fire (asserted above); the chat
+    // timeline line "X left the community" is suppressed for everyone.
+    const postedTypes = pubSysMsg.mock.calls.map(
+      ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
+    );
+    expect(postedTypes).not.toContain("MEMBER_LEFT");
   });
 
   it("emits NO room events when admin is the last member (auto-delete branch)", async () => {
@@ -419,6 +465,15 @@ describe("unbanMember — real-time broadcast", () => {
   it("emits exactly 1 room event total", async () => {
     await communityService.unbanMember(CID, ADMIN, TARGET);
     expect(pubRoomEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT post a MEMBER_UNBANNED chat system message (silent unban)", async () => {
+    await communityService.unbanMember(CID, ADMIN, TARGET);
+
+    const postedTypes = pubSysMsg.mock.calls.map(
+      ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
+    );
+    expect(postedTypes).not.toContain("MEMBER_UNBANNED");
   });
 });
 

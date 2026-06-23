@@ -7,6 +7,12 @@ import {
   COMMUNITY_MEDIA_MESSAGE_TYPES,
   mapCommunityMediaType,
 } from "../constants/media-limits.js";
+import {
+  PERSONAL_JOIN_SESSION_TYPES,
+  HIDDEN_SYSTEM_MESSAGE_TYPES,
+  isPersonalJoinSessionType,
+  isHiddenSystemMessage,
+} from "@aimess/constants";
 
 /**
  * PERSONAL system-message visibility check (applied in memory for Prisma
@@ -15,12 +21,47 @@ import {
  * match field-absent Mongo docs, so this MUST be done in memory, not in the
  * where-clause) or it is targeted at this user. Raw aggregateRaw paths use
  * `$in: [null, userId]` instead, which matches missing fields natively.
+ *
+ * `viewerIsActiveMember` is the membership-session guard: personal JOIN-session
+ * onboarding lines ("You joined the community") belong only to the CURRENT
+ * membership session, so a non-active viewer (left / banned) browsing PUBLIC
+ * community history must never see a prior session's join line — even though it
+ * is targeted at them. The hard-delete-on-leave cleanup is the primary removal;
+ * this is the read-time safety net for the window before (or if) it lands.
  */
 function isVisibleToUser(
-  msg: { visibleToUserId?: string | null },
-  userId: string
+  msg: {
+    visibleToUserId?: string | null;
+    systemMessageType?: string | null;
+    systemMetadata?: unknown;
+    sentBy?: string | null;
+  },
+  userId: string,
+  viewerIsActiveMember = true
 ): boolean {
-  return !msg.visibleToUserId || msg.visibleToUserId === userId;
+  // Hidden membership-lifecycle lines (removed / banned / unbanned / left /
+  // joined) are never shown in the chat timeline — to ANYONE — clearing rows
+  // persisted before this rule (Telegram parity). This also kills the duplicate
+  // "You joined the community" the joiner saw: the legacy community-wide
+  // MEMBER_JOINED was personalized to "You joined…", doubling the personal
+  // COMMUNITY_JOINED line; hiding MEMBER_JOINED leaves exactly the one personal
+  // line. Applies regardless of membership/visibility, so it runs first.
+  if (isHiddenSystemMessage(msg.systemMessageType)) {
+    return false;
+  }
+  if (msg.visibleToUserId && msg.visibleToUserId !== userId) {
+    return false;
+  }
+  // Membership-session guard: hide the viewer's OWN join-session onboarding line
+  // once they are no longer an active member (a prior session's line).
+  if (
+    !viewerIsActiveMember &&
+    msg.visibleToUserId === userId &&
+    isPersonalJoinSessionType(msg.systemMessageType)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export class GeneralRoomMessageRepository {
@@ -119,7 +160,8 @@ export class GeneralRoomMessageRepository {
     beforeTimestamp: string,
     _direction: string,
     limit: number,
-    userId: string
+    userId: string,
+    viewerIsActiveMember = true
   ): Promise<GeneralRoomMessage[]> {
     // Prisma MongoDB doesn't support $nin on JSON arrays directly.
     // Fetch and filter in memory for deletedBy + personal visibility.
@@ -138,7 +180,10 @@ export class GeneralRoomMessageRepository {
     return messages
       .filter((msg) => {
         const deletedBy = (msg.deletedBy ?? []) as string[];
-        return !deletedBy.includes(userId) && isVisibleToUser(msg, userId);
+        return (
+          !deletedBy.includes(userId) &&
+          isVisibleToUser(msg, userId, viewerIsActiveMember)
+        );
       })
       .slice(0, limit);
   }
@@ -156,6 +201,7 @@ export class GeneralRoomMessageRepository {
     direction: "before" | "after";
     ts: Date;
     limit: number;
+    viewerIsActiveMember?: boolean;
   }): Promise<GeneralRoomMessage[]> {
     const messages = await this.prisma.generalRoomMessage.findMany({
       where: {
@@ -176,7 +222,7 @@ export class GeneralRoomMessageRepository {
       const deletedBy = (msg.deletedBy ?? []) as string[];
       return (
         !deletedBy.includes(params.userId) &&
-        isVisibleToUser(msg, params.userId)
+        isVisibleToUser(msg, params.userId, params.viewerIsActiveMember ?? true)
       );
     });
   }
@@ -190,6 +236,7 @@ export class GeneralRoomMessageRepository {
     userId: string;
     anchorDate: Date;
     limit: number;
+    viewerIsActiveMember?: boolean;
   }): Promise<GeneralRoomMessage[]> {
     const half = Math.floor(params.limit / 2);
 
@@ -220,7 +267,7 @@ export class GeneralRoomMessageRepository {
       const deletedBy = (msg.deletedBy ?? []) as string[];
       return (
         !deletedBy.includes(params.userId) &&
-        isVisibleToUser(msg, params.userId)
+        isVisibleToUser(msg, params.userId, params.viewerIsActiveMember ?? true)
       );
     });
   }
@@ -248,6 +295,10 @@ export class GeneralRoomMessageRepository {
       // PERSONAL message visibility: keep messages with no target OR targeted at
       // this user. Stored as null when absent, so $in must include null.
       visibleToUserId: { $in: [null, params.userId] },
+      // Suppressed moderation lines (removed/banned/unbanned) are hidden from the
+      // chat timeline for everyone. `$nin` also matches docs where the field is
+      // absent (regular messages), so they pass through.
+      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
     };
   }
 
@@ -327,6 +378,9 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             createdAt: { $gt: { $date: params.afterDate.toISOString() } },
             deletedBy: { $ne: params.userId },
+            // Hidden membership lines never count toward unread (consistency with
+            // countUnreadBulk / conversationMatch).
+            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
           },
         },
         { $count: "total" },
@@ -368,6 +422,8 @@ export class GeneralRoomMessageRepository {
             sentBy: { $ne: params.userId },
             // PERSONAL messages targeted at another user never count as unread here.
             visibleToUserId: { $in: [null, params.userId] },
+            // Suppressed moderation lines never count toward unread either.
+            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
           },
         },
         {
@@ -396,11 +452,98 @@ export class GeneralRoomMessageRepository {
     return counts;
   }
 
+  /**
+   * Latest PERSONAL system line per room for one viewer — the newest message
+   * targeted ONLY at this user (`visibleToUserId === userId`), e.g. "You joined
+   * the community". Returns a Map keyed by room hex id. Used by getChatSummaries
+   * so /communities/mine can show the joiner their own join line as lastActivity
+   * while everyone else keeps the community-wide message. One aggregateRaw query
+   * for all requested rooms (no N+1). `roomId` is an ObjectId column, matched via
+   * `{ $oid }`; the grouped `_id` returns as `{ $oid: "<hex>" }`.
+   */
+  async findLatestPersonalByRooms(params: {
+    userId: string;
+    roomIds: string[];
+  }): Promise<Map<string, { message: string; createdAt: Date }>> {
+    if (!params.roomIds.length) return new Map();
+    const oids = params.roomIds.map((id) => ({ $oid: id }));
+
+    const result = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $in: oids },
+            deletedForAll: false,
+            // Only rows targeted at THIS viewer (community rows have null and are
+            // excluded — they're already covered by room.lastMessage).
+            visibleToUserId: params.userId,
+            deletedBy: { $ne: params.userId },
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        {
+          $group: {
+            _id: "$roomId",
+            message: { $first: "$message" },
+            createdAt: { $first: "$createdAt" },
+          },
+        },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{
+      _id: { $oid?: string } | string;
+      message?: string | null;
+      createdAt?: { $date?: string | number } | string | number | null;
+    }>;
+
+    const map = new Map<string, { message: string; createdAt: Date }>();
+    for (const row of result) {
+      const hex = typeof row._id === "string" ? row._id : row._id?.$oid;
+      if (!hex) continue;
+      const rawDate = row.createdAt;
+      const iso =
+        rawDate && typeof rawDate === "object" && "$date" in rawDate
+          ? rawDate.$date
+          : (rawDate as string | number | undefined);
+      const createdAt = iso != null ? new Date(iso) : new Date(0);
+      map.set(hex, { message: row.message ?? "", createdAt });
+    }
+    return map;
+  }
+
+  /**
+   * Membership-lifecycle cleanup (Telegram-style): hard-delete the user's
+   * PERSONAL join-session onboarding lines ("You joined the community", "Your
+   * request to join was approved") for one community, so they never accumulate
+   * across join→leave→rejoin cycles. Invoked when a membership goes inactive
+   * (left / removed / banned). Returns the deleted count.
+   *
+   * `beforeOrAt` is the leave-event timestamp: only rows created at/BEFORE it are
+   * purged, so a redelivered stale "left" event can never delete the FRESH join
+   * line created by a subsequent rejoin (which is strictly newer). Omit to purge
+   * all sessions (e.g. one-time backfill).
+   */
+  async deletePersonalJoinMessages(params: {
+    roomId: string;
+    userId: string;
+    beforeOrAt?: Date;
+  }): Promise<number> {
+    const res = await this.prisma.generalRoomMessage.deleteMany({
+      where: {
+        roomId: params.roomId,
+        visibleToUserId: params.userId,
+        systemMessageType: { in: [...PERSONAL_JOIN_SESSION_TYPES] },
+        ...(params.beforeOrAt ? { createdAt: { lte: params.beforeOrAt } } : {}),
+      },
+    });
+    return res.count;
+  }
+
   async searchByText(
     roomId: string,
     query: string,
     limit: number,
-    userId: string
+    userId: string,
+    viewerIsActiveMember = true
   ): Promise<GeneralRoomMessage[]> {
     // `message` is a top-level String field, so a case-insensitive `contains`
     // works directly.
@@ -417,7 +560,10 @@ export class GeneralRoomMessageRepository {
     return messages
       .filter((msg) => {
         const deletedBy = (msg.deletedBy ?? []) as string[];
-        return !deletedBy.includes(userId) && isVisibleToUser(msg, userId);
+        return (
+          !deletedBy.includes(userId) &&
+          isVisibleToUser(msg, userId, viewerIsActiveMember)
+        );
       })
       .slice(0, limit);
   }
@@ -575,6 +721,9 @@ export class GeneralRoomMessageRepository {
       deletedBy: { $ne: params.userId },
       // PERSONAL message visibility — never surface another user's personal message.
       visibleToUserId: { $in: [null, params.userId] },
+      // Suppressed moderation lines hidden from everyone ($nin keeps field-absent
+      // regular messages).
+      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
     };
     if (params.sinceId) {
       matchStage["_id"] = { $gt: { $oid: params.sinceId } };
@@ -627,6 +776,7 @@ export class GeneralRoomMessageRepository {
     userId: string;
     fromTs: Date;
     limit: number;
+    viewerIsActiveMember?: boolean;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     const raw = await this.prisma.generalRoomMessage.findMany({
       where: {
@@ -645,7 +795,7 @@ export class GeneralRoomMessageRepository {
       const deletedBy = (msg.deletedBy ?? []) as string[];
       return (
         !deletedBy.includes(params.userId) &&
-        isVisibleToUser(msg, params.userId)
+        isVisibleToUser(msg, params.userId, params.viewerIsActiveMember ?? true)
       );
     });
 

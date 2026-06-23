@@ -1432,6 +1432,126 @@ export const communityPaths = {
       },
     },
   },
+  "/communities/{id}/close": {
+    post: {
+      tags: ["Communities"],
+      summary: "Close a community (owner lifecycle)",
+      description:
+        "Community ADMIN (owner) only. Sets `status` to CLOSED: ALL members (including the admin) are auto-removed (`memberCount → 0`), the community chat room is suspended (read-only), and a realtime `community:closed` event is broadcast to the `community:<id>` room and to every ex-member's `user:<id>` room so connected clients disable actions immediately. Reversible via `POST /communities/{id}/reopen` — distinct from `DELETE /communities/{id}` (permanent). Idempotent: closing an already-CLOSED community is a no-op.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      requestBody: {
+        required: false,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                reason: {
+                  type: "string",
+                  maxLength: 500,
+                  description:
+                    "Optional free-text reason surfaced to evicted members.",
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Community closed",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Not the community admin",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
+  "/communities/{id}/reopen": {
+    post: {
+      tags: ["Communities"],
+      summary: "Reopen a closed community (owner lifecycle)",
+      description:
+        "Community owner only (authorized by `adminId`, NOT active membership — the owner left the roster on close). Sets `status` back to ACTIVE, re-establishes the owner as the sole ACTIVE ADMIN (`memberCount → 1`), unsuspends the chat room, and broadcasts a realtime `community:reopened` event. Former members are NOT restored — they re-join via the normal join flow. Returns the updated community DTO. Idempotent: reopening an already-open community returns its current state.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          description: "Community ID.",
+          schema: { type: "string" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Community reopened — returns the updated community DTO",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/CommunityData" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Not the community owner",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Community not found",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/communities/{id}/members/{userId}/role": {
     put: {
       tags: ["Communities"],
