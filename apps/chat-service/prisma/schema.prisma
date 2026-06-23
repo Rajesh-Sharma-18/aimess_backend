@@ -352,6 +352,15 @@ model GeneralRoomMessage {
   @@index([roomId, sequenceNumber])
   @@index([roomId, systemMessageType, createdAt(sort: Desc)])
   @@index([roomId, visibleToUserId, createdAt(sort: Desc)])
+  // Covering index for findByRoomIdTimeline (scroll/history): equality roomId +
+  // deletedForAll, range+sort createdAt, sequenceNumber tiebreak. Desc/Desc serves
+  // both before (desc) and after (asc, reverse scan) directions — index-backed sort
+  // with early termination instead of a full-room blocking sort.
+  @@index([roomId, deletedForAll, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
+  // Covering index for findUpdatedAtSince (incremental sync): roomId + updatedAt ASC,
+  // sequenceNumber tiebreak. Tombstones are intentionally not filtered, so deletedForAll
+  // is excluded here.
+  @@index([roomId, updatedAt(sort: Asc), sequenceNumber(sort: Asc)])
   @@map("general_room_messages")
 }
 
