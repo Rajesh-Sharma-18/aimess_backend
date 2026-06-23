@@ -6,6 +6,7 @@ import {
   CommunityMemberStatus,
   CommunityModerationStatus,
   CommunityReportStatus,
+  CommunityStatus,
   CommunityType,
   type CommunityMember,
   type Prisma,
@@ -459,6 +460,11 @@ export const communityRepository = {
       data: {
         status: CommunityMemberStatus.ACTIVE,
         role: CommunityMemberRole.MEMBER,
+        // Rejoin starts a fresh membership: advance joinedAt to now so the member
+        // list shows the LATEST join time, not the original (stale) one. joinedAt
+        // is @default(now()) which only applies on create, so reactivation must
+        // set it explicitly.
+        joinedAt: new Date(),
         ...snapshot,
       },
       select: {
@@ -484,6 +490,53 @@ export const communityRepository = {
       userId,
       status: CommunityMemberStatus.ACTIVE,
       role: CommunityMemberRole.MEMBER,
+    });
+    return row;
+  },
+
+  /**
+   * Reopen helper: re-establish the community owner as the sole ACTIVE ADMIN
+   * after a CLOSE evicted everyone (status → LEFT). Mirrors
+   * `reactivateMemberWithSnapshot` but restores the ADMIN role (the owner), and
+   * mirrors the reactivation into chat-service's RoomMember so the owner regains
+   * send/read in the general room.
+   */
+  async reactivateAdminMember(
+    communityId: string,
+    userId: string,
+    snapshot: {
+      snapshotUsername: string;
+      snapshotDisplayName: string;
+      snapshotAvatarKey: string | null;
+    }
+  ) {
+    const row = await prisma.communityMember.update({
+      where: { communityId_userId: { communityId, userId } },
+      data: {
+        status: CommunityMemberStatus.ACTIVE,
+        role: CommunityMemberRole.ADMIN,
+        joinedAt: new Date(),
+        ...snapshot,
+      },
+      select: {
+        id: true,
+        userId: true,
+        role: true,
+        status: true,
+        joinedAt: true,
+        snapshotUsername: true,
+        snapshotDisplayName: true,
+        snapshotAvatarKey: true,
+        bannedAt: true,
+        bannedBy: true,
+        banReason: true,
+      },
+    });
+    publishCommunityMemberSyncedForChatSafe({
+      communityId,
+      userId,
+      status: CommunityMemberStatus.ACTIVE,
+      role: CommunityMemberRole.ADMIN,
     });
     return row;
   },
@@ -764,6 +817,7 @@ export const communityRepository = {
           lastActivitySelfPreview: true,
           createdAt: true,
           moderationStatus: true,
+          status: true,
           // At most one row per (communityId, userId) by unique constraint, so
           // no take needed (Prisma's mongodb provider doesn't support take on a
           // nested relation read anyway).
@@ -984,6 +1038,10 @@ export const communityRepository = {
 
     const where: Prisma.CommunityWhereInput = {
       deletedAt: { isSet: false },
+      // Owner-CLOSED communities are not surfaced for discovery/joining. `not`
+      // → Mongo `$ne`, which also matches legacy rows where `status` is unset
+      // (treated as ACTIVE), so backward-compat is preserved.
+      status: { not: CommunityStatus.CLOSED },
       AND: and,
     };
 
@@ -1007,6 +1065,7 @@ export const communityRepository = {
           lastActivityPreview: true,
           lastActivityUsername: true,
           moderationStatus: true,
+          status: true,
           lastActivityUserId: true,
           lastActivitySelfPreview: true,
           category: { select: { id: true, name: true } },
@@ -1959,6 +2018,7 @@ export const communityRepository = {
         type: true,
         memberCount: true,
         avatarUrl: true,
+        status: true,
       },
     });
   },

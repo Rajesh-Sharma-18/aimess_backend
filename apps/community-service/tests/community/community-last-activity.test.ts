@@ -50,8 +50,8 @@ describe("buildLastActivity — SYSTEM activities are NEVER sender-prefixed", ()
     ["Role Changed (admin)", "system", "John Doe became admin"],
     ["Role Changed (moderator)", "system", "John Doe became moderator"],
     ["Member Joined", "join", "John Doe joined the community"],
-    ["Member Left", "system", "John Doe left the community"],
-    ["Member Removed", "removal", "John Doe was removed from the community"],
+    // NOTE: "removal" is no longer a standalone preview — it is suppressed to the
+    // "created" fallback (see the dedicated eligibility suite below).
     ["Member Banned", "system", "John Doe was banned"],
     ["Member Unbanned", "system", "John Doe was unbanned"],
     ["Pinned", "pinned", "John Doe pinned a message"],
@@ -75,12 +75,9 @@ describe("buildLastActivity — SYSTEM activities are NEVER sender-prefixed", ()
     }
   );
 
-  it("preserves the SYSTEM type discriminant (system/join/removal/pinned/unpinned)", () => {
+  it("preserves the SYSTEM type discriminant (system/join/pinned/unpinned)", () => {
     expect(buildLastActivity(row({ lastActivityType: "join" })).type).toBe(
       "join"
-    );
-    expect(buildLastActivity(row({ lastActivityType: "removal" })).type).toBe(
-      "removal"
     );
     expect(buildLastActivity(row({ lastActivityType: "system" })).type).toBe(
       "system"
@@ -146,5 +143,25 @@ describe("buildLastActivity — USER messages KEEP the sender prefix (unchanged)
       })
     );
     expect(result.username).toBe("");
+  });
+});
+
+describe("buildLastActivity — ineligible lifecycle activity is suppressed", () => {
+  it("a legacy 'removal' row never surfaces the removal text (falls back to 'created')", () => {
+    const result = buildLastActivity(
+      row({
+        lastActivityType: "removal",
+        lastActivityPreview: "Jim Methews was removed from the community",
+        lastActivityUsername: "Admin",
+      })
+    );
+
+    // The exact screenshot bug: "Jim Methews was removed from the community" must
+    // NOT be the lastActivity. We can't recover the prior eligible message from
+    // the single column, so Case 4 fallback = the sender-less "created" baseline.
+    expect(result.preview).toBe("Community created successfully");
+    expect(result.type).toBe("created");
+    expect(result.username).toBeNull();
+    expect(result.dateTime).toBe(CREATED_AT.getTime());
   });
 });

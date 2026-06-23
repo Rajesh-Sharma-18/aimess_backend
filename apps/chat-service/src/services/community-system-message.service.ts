@@ -3,7 +3,8 @@ import type { Redis, Cluster } from "ioredis";
 
 import {
   SYSTEM_MESSAGE_VISIBILITY,
-  SYSTEM_MESSAGE_BUMPS_ACTIVITY,
+  isEligibleForLastActivity,
+  isHiddenSystemMessage,
   buildCommunitySystemFallbackText,
   buildCommunitySystemSelfPreview,
   resolveCommunitySystemSubjectUserId,
@@ -48,8 +49,9 @@ export interface PostCommunitySystemMessageParams {
  * Behaviour is driven entirely by the central registry in @aimess/constants:
  * - SYSTEM_MESSAGE_VISIBILITY decides PERSONAL (→ user:<id> channel, persisted
  *   with visibleToUserId) vs COMMUNITY (→ community:<id> room).
- * - SYSTEM_MESSAGE_BUMPS_ACTIVITY decides whether the community-list preview is
- *   bumped (most do; unpin / invite-created / personal lines do not).
+ * - isEligibleForLastActivity decides whether the line bumps + becomes the
+ *   community-list preview. Excluded: personal/onboarding lines, unpin,
+ *   invite-created, and membership/moderation churn (left/removed/banned/…).
  *
  * The text is a DETERMINISTIC template (buildFallbackText) — never a dynamically
  * composed sentence. The client renders localized text from systemMessageType +
@@ -87,10 +89,24 @@ export class CommunitySystemMessageService {
     const { communityId, systemMessageType, metadata, triggeredByUserId } =
       params;
 
+    // Backstop: hidden membership-lifecycle lines (left / removed / banned /
+    // unbanned / joined) are never persisted OR broadcast. community-service's
+    // emitMemberSystemMessage already drops them at the source, but a redelivered
+    // legacy event could still reach here — skip so it can't flash on a live
+    // socket (the read-time filter can't catch a real-time push).
+    if (isHiddenSystemMessage(systemMessageType)) {
+      logger.debug(
+        `CommunitySystemMessageService|skip hidden type=${systemMessageType}`
+      );
+      return;
+    }
+
     const visibility =
       SYSTEM_MESSAGE_VISIBILITY[systemMessageType] ?? "COMMUNITY";
-    const bumpsActivity =
-      SYSTEM_MESSAGE_BUMPS_ACTIVITY[systemMessageType] ?? false;
+    // Single source of truth: membership/moderation churn (left/removed/banned/…)
+    // is NOT eligible to bump or become the community-list lastActivity preview.
+    const eligibleForLastActivity =
+      isEligibleForLastActivity(systemMessageType);
     const isPersonal = visibility === "PERSONAL";
     const visibleToUserId = isPersonal
       ? (params.visibleToUserId ?? null)
@@ -188,7 +204,7 @@ export class CommunitySystemMessageService {
       // Bump the community-list ordering only for subtypes that should reorder
       // the chat list (registry-driven). No unread increment — system messages
       // never badge.
-      if (bumpsActivity) {
+      if (eligibleForLastActivity) {
         this.roomRepo
           .addLastestMessageToRoom(communityId, {
             _id: message.id,
@@ -253,7 +269,7 @@ export class CommunitySystemMessageService {
           );
         });
 
-      if (bumpsActivity) {
+      if (eligibleForLastActivity) {
         // Self-referential lines (role change / join) carry the subject + a
         // first-person "You …" preview so the community list can personalize for
         // that one member; null for community-wide lines (everyone sees the same).

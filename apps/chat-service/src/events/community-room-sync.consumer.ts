@@ -111,6 +111,7 @@ export class CommunityRoomSyncConsumer {
   private channel: Channel | null = null;
   private roomRepo = new GeneralRoomRepository(prisma);
   private memberRepo = new RoomMemberRepository(prisma);
+  private messageRepo = new GeneralRoomMessageRepository(prisma);
   private privateRoomRepo = new PrivateRoomRepository(prisma);
   private privateMessageRepo = new PrivateMessageRepository(prisma);
   private communitySystemMessageService = new CommunitySystemMessageService(
@@ -221,6 +222,44 @@ export class CommunityRoomSyncConsumer {
           logger.debug(
             `Synced RoomMember community=${communityId} user=${userId} status=${String(data.status ?? "-")} role=${String(data.role ?? "-")}`
           );
+
+          // Membership-lifecycle cleanup (Telegram parity): when a membership
+          // goes INACTIVE (left / removed / banned), hard-delete the user's
+          // PERSONAL join-session onboarding lines ("You joined the community",
+          // "Your request to join was approved") so they never accumulate across
+          // join→leave→rejoin cycles. INTERNAL — no community-wide socket emit.
+          // Bounded by the leave-event timestamp so a redelivered stale "left"
+          // can't delete a FRESH rejoin line (which is strictly newer).
+          //
+          // Gate on the RAW event status (LEFT / BANNED), not the mapped
+          // `data.status`: mapMemberStatus collapses PENDING (and unknowns) into
+          // "left", and a PENDING join-request sync must NOT purge a join line.
+          const rawStatus = (event.data.status ?? "").toUpperCase();
+          if (rawStatus === "LEFT" || rawStatus === "BANNED") {
+            const boundary = event.data.eventAt
+              ? new Date(event.data.eventAt)
+              : undefined;
+            const deleted = await this.messageRepo
+              .deletePersonalJoinMessages({
+                roomId: communityId,
+                userId,
+                beforeOrAt:
+                  boundary && !Number.isNaN(boundary.getTime())
+                    ? boundary
+                    : undefined,
+              })
+              .catch((err: unknown) => {
+                logger.warn(
+                  `member.synced join-cleanup failed community=${communityId} user=${userId}: ${String(err)}`
+                );
+                return 0;
+              });
+            if (deleted > 0) {
+              logger.debug(
+                `member.synced join-cleanup: removed ${deleted} personal join line(s) community=${communityId} user=${userId}`
+              );
+            }
+          }
           break;
         }
 

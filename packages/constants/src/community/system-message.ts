@@ -114,12 +114,16 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   COMMUNITY_UPDATED: true,
   ROLE_CHANGED: true,
   MEMBER_JOINED: false,
-  MEMBER_LEFT: true,
-  MEMBER_REMOVED: true,
-  MEMBER_BANNED: true,
-  MEMBER_UNBANNED: true,
-  MEMBER_MUTED: true,
-  MEMBER_UNMUTED: true,
+  // Membership / moderation churn — NEVER eligible as a community-list
+  // lastActivity preview (Telegram parity: admin/member lifecycle lines must not
+  // dominate the list; previews should prioritize real conversation/community
+  // activity). They still render in chat history where applicable.
+  MEMBER_LEFT: false,
+  MEMBER_REMOVED: false,
+  MEMBER_BANNED: false,
+  MEMBER_UNBANNED: false,
+  MEMBER_MUTED: false,
+  MEMBER_UNMUTED: false,
   PINNED_MESSAGE: true,
   UNPINNED_MESSAGE: false,
   COMMUNITY_INVITE_CREATED: false,
@@ -135,6 +139,99 @@ export function isPersonalSystemMessage(
   type: CommunitySystemMessageType
 ): boolean {
   return SYSTEM_MESSAGE_VISIBILITY[type] === "PERSONAL";
+}
+
+/**
+ * SINGLE SOURCE OF TRUTH for community-list `lastActivity` eligibility.
+ *
+ * Returns whether a message may become the community's `lastActivity` preview in
+ * the Mine / List / Discovery / Summary APIs (and, equivalently, whether it
+ * reorders the list). Regular conversation messages (no `systemMessageType`) are
+ * always eligible. SYSTEM messages defer to `SYSTEM_MESSAGE_BUMPS_ACTIVITY` —
+ * membership/moderation churn (left, removed, banned, unbanned, muted, unmuted)
+ * is excluded so "John left the community" / "Jim was removed" can never become
+ * the preview. Such messages still appear in chat history where applicable.
+ *
+ * Every lastActivity producer (chat-service system-message bump gate; any
+ * activity publisher) MUST route through this so the rule can't drift per query.
+ */
+export function isEligibleForLastActivity(
+  systemMessageType?: string | null
+): boolean {
+  if (!systemMessageType) return true; // regular conversation message
+  // The registry is an exhaustive Record over the enum, so the `?? true` branch
+  // is only reached by an OFF-enum/legacy string — default ELIGIBLE so a future
+  // subtype can't be silently swallowed (a real churn type must be added to the
+  // map, which is type-checked). Known churn types resolve to false from the map.
+  return (
+    SYSTEM_MESSAGE_BUMPS_ACTIVITY[
+      systemMessageType as CommunitySystemMessageType
+    ] ?? true
+  );
+}
+
+/**
+ * PERSONAL onboarding lines that are bound to the user's CURRENT membership
+ * session (Telegram-style): "You joined the community" / "Your request to join
+ * was approved". They must NOT accumulate across join→leave→rejoin cycles — when
+ * a membership goes inactive (left / removed / banned) every prior-session copy
+ * for that (community, user) is purged, and a fresh one is created on rejoin. A
+ * user must never see more than the current session's line.
+ */
+export const PERSONAL_JOIN_SESSION_TYPES = [
+  "COMMUNITY_JOINED",
+  "JOIN_REQUEST_APPROVED",
+] as const satisfies readonly CommunitySystemMessageType[];
+
+/** Membership test for a readonly subtype tuple (handles null/undefined). */
+function inTypeSet(
+  set: readonly string[],
+  type: string | null | undefined
+): boolean {
+  return !!type && set.includes(type);
+}
+
+/** True when the subtype is a current-membership-session join onboarding line. */
+export function isPersonalJoinSessionType(
+  type: string | null | undefined
+): boolean {
+  return inTypeSet(PERSONAL_JOIN_SESSION_TYPES, type);
+}
+
+/**
+ * Membership-lifecycle lines that are NEVER shown in the chat timeline (Telegram
+ * parity: join/leave/kick/ban service lines clutter history and don't belong in
+ * the conversation). They are SUPPRESSED end-to-end:
+ *  - community-service does not emit them as chat SYSTEM messages (the domain
+ *    event + roster socket + notifications still fire — only the chat line is
+ *    dropped), and
+ *  - chat-service hides any already-persisted rows of these types on every read
+ *    path (clears history that accumulated before this rule).
+ *
+ * Why each is here:
+ *  - MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED: "Peter was removed" /
+ *    "You were removed" piled up across remove→rejoin cycles.
+ *  - MEMBER_LEFT: "Peter Parker left the community" must not show to anyone.
+ *  - MEMBER_JOINED: the legacy COMMUNITY-WIDE join line is personalized to "You
+ *    joined the community" for the joiner, DUPLICATING the personal
+ *    COMMUNITY_JOINED line (the current flow emits only COMMUNITY_JOINED, so this
+ *    only hides vestigial rows). The joiner keeps the single personal line.
+ *
+ * Membership history still lives in the backoffice/audit log, not the chat.
+ */
+export const HIDDEN_SYSTEM_MESSAGE_TYPES = [
+  "MEMBER_REMOVED",
+  "MEMBER_BANNED",
+  "MEMBER_UNBANNED",
+  "MEMBER_LEFT",
+  "MEMBER_JOINED",
+] as const satisfies readonly CommunitySystemMessageType[];
+
+/** True when the subtype must never appear in the chat timeline (see above). */
+export function isHiddenSystemMessage(
+  type: string | null | undefined
+): boolean {
+  return inTypeSet(HIDDEN_SYSTEM_MESSAGE_TYPES, type);
 }
 
 /**

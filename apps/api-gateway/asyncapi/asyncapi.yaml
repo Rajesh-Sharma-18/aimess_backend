@@ -247,6 +247,9 @@ channels:
       communityDelete: { $ref: "#/components/messages/CommunityDelete" }
       # moderation (server -> client)
       communityDeleted: { $ref: "#/components/messages/CommunityDeleted" }
+      # owner lifecycle (server -> client)
+      communityClosed: { $ref: "#/components/messages/CommunityClosed" }
+      communityReopened: { $ref: "#/components/messages/CommunityReopened" }
       # membership real-time (server -> client)
       communityStatsUpdated:
         { $ref: "#/components/messages/CommunityStatsUpdated" }
@@ -1026,6 +1029,25 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community.deleted — the community was deleted (broadcast to all members)"
     messages: [{ $ref: "#/channels/community/messages/communityDeleted" }]
+  community.onClosed:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:closed — the owner closed the community (status → CLOSED)"
+    description: |
+      Broadcast to the `community:<id>` room AND to every (now ex-)member's
+      `user:<id>` room when the community ADMIN/owner closes the community. All
+      members have been auto-removed and the community is read-only. Clients
+      should disable all community actions immediately — no refresh, no polling.
+    messages: [{ $ref: "#/channels/community/messages/communityClosed" }]
+  community.onReopened:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:reopened — the owner reopened a closed community (status → ACTIVE)"
+    description: |
+      Broadcast to the `community:<id>` room when the owner reopens a previously
+      CLOSED community. Former members are NOT auto-restored — they re-join via
+      the normal flow.
+    messages: [{ $ref: "#/channels/community/messages/communityReopened" }]
   community.onStatsUpdated:
     action: receive
     channel: { $ref: "#/channels/community" }
@@ -3156,6 +3178,36 @@ components:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             deletedBy: "user_admin_001"
 
+    # -------- /community owner lifecycle (server -> client) --------
+    CommunityClosed:
+      name: "community:closed"
+      title: "community:closed"
+      summary: "Broadcast to community:<id> AND each ex-member's user:<id> when the owner closes the community (status → CLOSED). All members are auto-removed; clients disable all community actions immediately."
+      payload: { $ref: "#/components/schemas/CommunityClosedPayload" }
+      examples:
+        - name: Owner closed the community with a reason
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "CLOSED"
+            closedAt: 1749983445000
+            reason: "Archiving for the season"
+        - name: Owner closed the community (no reason)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "CLOSED"
+            closedAt: 1749983445000
+    CommunityReopened:
+      name: "community:reopened"
+      title: "community:reopened"
+      summary: "Broadcast to community:<id> when the owner reopens a closed community (status → ACTIVE). Former members re-join via the normal flow."
+      payload: { $ref: "#/components/schemas/CommunityReopenedPayload" }
+      examples:
+        - name: Owner reopened the community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "ACTIVE"
+            reopenedAt: 1749990000000
+
     # -------- /notify --------
     NotificationsFetch:
       name: "notifications:fetch"
@@ -4955,6 +5007,41 @@ components:
         deletedBy:
           { type: string, description: "userId of the admin who deleted it." }
       required: [communityId, deletedBy]
+    CommunityClosedPayload:
+      type: object
+      description: |
+        Server → client. Broadcast to community:<id> AND to every (now ex-)member's
+        user:<id> room when the owner closes the community (status → CLOSED). All
+        members are auto-removed; the community is read-only until reopened.
+      properties:
+        communityId: { type: string }
+        status: { type: string, enum: [CLOSED] }
+        closedAt:
+          {
+            type: integer,
+            description: "Epoch ms when the community was closed.",
+          }
+        reason:
+          {
+            type: string,
+            description: "Optional owner-supplied reason. Absent when none given.",
+          }
+      required: [communityId, status, closedAt]
+    CommunityReopenedPayload:
+      type: object
+      description: |
+        Server → client. Broadcast to community:<id> when the owner reopens a
+        previously CLOSED community (status → ACTIVE). Former members are NOT
+        auto-restored — they re-join via the normal flow.
+      properties:
+        communityId: { type: string }
+        status: { type: string, enum: [ACTIVE] }
+        reopenedAt:
+          {
+            type: integer,
+            description: "Epoch ms when the community was reopened.",
+          }
+      required: [communityId, status, reopenedAt]
     CommunityStatsUpdatedPayload:
       type: object
       description: "Server → client. Broadcast to community:<id> when active memberCount changes."

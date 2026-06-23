@@ -37,6 +37,7 @@ import type { CommunitySystemMessageService } from "./community-system-message.s
 import {
   assertCommunityMember,
   assertCommunityReadAccess,
+  assertCommunityRoomWritable,
 } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
@@ -97,6 +98,15 @@ export interface CommunityChatSummary {
     /** epoch ms */
     dateTime: number;
   };
+}
+
+/** A viewer is an active member when their loaded RoomMember row is "active".
+ *  Drives the membership-session read guard (`viewerIsActiveMember`) — a left /
+ *  non-member (PUBLIC) reader must not see their own prior-session join line. */
+function isActiveMember(
+  member: { status?: string | null } | null | undefined
+): boolean {
+  return member?.status === "active";
 }
 
 /** Denormalized last-message JSON stored on a GeneralRoom. */
@@ -162,16 +172,12 @@ export class CommunityMessageService {
     assertAttachmentsValid(params.messageType, params.attachments);
 
     // Guard: block sends to suspended or deactivated rooms. "suspended" means
-    // the community was closed by an admin; "inactive" means it was deleted.
-    // This check runs before idempotency so a suspended-community retry never
-    // returns a previously-cached message as if the send succeeded.
+    // the community was closed (owner status=CLOSED or platform SUSPENDED);
+    // "inactive" means it was deleted. This check runs before idempotency so a
+    // closed-community retry never returns a previously-cached message as if the
+    // send succeeded. Single source of truth for community write-ability.
     const room = await this.roomRepo.findRoomById(params.roomId);
-    if (!room || room.status !== "active") {
-      if (room?.status === "suspended") {
-        throw new ForbiddenError("COMMUNITY_SUSPENDED");
-      }
-      throw new ForbiddenError("COMMUNITY_CHAT_DISABLED");
-    }
+    assertCommunityRoomWritable(room);
 
     // Sender must be an ACTIVE community member. A BANNED (or LEFT) member's
     // RoomMember row is mirrored as non-"active" by the community sync consumer,
@@ -687,12 +693,13 @@ export class CommunityMessageService {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
     // 2. The community is PUBLIC (non-members can read history)
-    await assertCommunityReadAccess(
+    const { member } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
       params.userId
     );
+    const viewerIsActiveMember = isActiveMember(member);
     const beforeTimestamp = params.cursor || new Date().toISOString();
     const [rows, members] = await Promise.all([
       this.messageRepo.findByRoomIdWithTime(
@@ -700,7 +707,8 @@ export class CommunityMessageService {
         beforeTimestamp,
         "older",
         params.limit,
-        params.userId
+        params.userId,
+        viewerIsActiveMember
       ),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
@@ -728,7 +736,7 @@ export class CommunityMessageService {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
     // 2. The community is PUBLIC (non-members can read history)
-    await assertCommunityReadAccess(
+    const { member } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -741,6 +749,7 @@ export class CommunityMessageService {
         direction: params.direction,
         ts: params.ts,
         limit: params.limit,
+        viewerIsActiveMember: isActiveMember(member),
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
@@ -850,7 +859,7 @@ export class CommunityMessageService {
     // 2. The community is PUBLIC (non-members can read history)
     // Note: sync path is typically members-only (offline-first mobile), but we enforce
     // the same rules for consistency.
-    await assertCommunityReadAccess(
+    const { member } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -865,6 +874,7 @@ export class CommunityMessageService {
       userId: params.userId,
       fromTs: params.fromTs,
       limit: params.limit,
+      viewerIsActiveMember: member?.status === "active",
     });
 
     const last = messages[messages.length - 1];
@@ -998,7 +1008,7 @@ export class CommunityMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: CommunityMessageWire[] }> {
-    await assertCommunityReadAccess(
+    const { member } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1014,6 +1024,7 @@ export class CommunityMessageService {
         userId: params.userId,
         anchorDate: anchor.createdAt,
         limit: params.limit,
+        viewerIsActiveMember: isActiveMember(member),
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
@@ -1100,7 +1111,7 @@ export class CommunityMessageService {
     query: string;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
-    await assertCommunityReadAccess(
+    const { member } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1110,7 +1121,8 @@ export class CommunityMessageService {
       params.roomId,
       params.query,
       params.limit,
-      params.userId
+      params.userId,
+      isActiveMember(member)
     );
     const urlMap = await this.resolveRowsMedia(rows);
     return rows.map((m) =>
@@ -1167,8 +1179,14 @@ export class CommunityMessageService {
       message.roomId,
       userId
     );
+    // Membership check FIRST so non-members get NotFound (no foreign-message
+    // existence leak), THEN the write-ability gate so only real members learn a
+    // room is closed/suspended.
     if (!member || member.status !== "active")
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    assertCommunityRoomWritable(
+      await this.roomRepo.findRoomById(message.roomId)
+    );
     return member;
   }
 
@@ -1229,6 +1247,10 @@ export class CommunityMessageService {
     if (!member || member.status !== "active") {
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
     }
+    // ...and only when the community room is open (closed/suspended → read-only).
+    assertCommunityRoomWritable(
+      await this.roomRepo.findRoomById(message.roomId)
+    );
 
     // Toggle the reactor in/out of the emoji bucket (shared with private/group);
     // non-atomic read-modify-write, acceptable at current scale.
@@ -1394,6 +1416,7 @@ export class CommunityMessageService {
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    assertCommunityRoomWritable(room);
     const pinnedIds: string[] = Array.isArray(room.listPinedMessage)
       ? (room.listPinedMessage as string[])
       : [];
@@ -1714,6 +1737,7 @@ export class CommunityMessageService {
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    assertCommunityRoomWritable(room);
     const pinnedIds: string[] = Array.isArray(room.listPinedMessage)
       ? (room.listPinedMessage as string[])
       : [];

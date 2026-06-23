@@ -98,6 +98,19 @@ describe("communityRepository.reactivateMemberWithSnapshot", () => {
     expect(row).toBe(reactivatedRow);
   });
 
+  it("advances joinedAt to NOW on rejoin so the member list shows the latest join time", async () => {
+    const before = Date.now();
+    await communityRepository.reactivateMemberWithSnapshot(CID, USER, snapshot);
+    const after = Date.now();
+
+    const arg = updateMock.mock.calls[0][0];
+    expect(arg.data.joinedAt).toBeInstanceOf(Date);
+    const joinedMs = (arg.data.joinedAt as Date).getTime();
+    // Stamped at reactivation time, not the original (stale) join time.
+    expect(joinedMs).toBeGreaterThanOrEqual(before);
+    expect(joinedMs).toBeLessThanOrEqual(after);
+  });
+
   it("publishes community.member.synced so chat-service re-adds the RoomMember (the regression fix)", async () => {
     await communityRepository.reactivateMemberWithSnapshot(CID, USER, snapshot);
 

@@ -14,6 +14,7 @@ import type {
   BulkMuteInput,
   BulkRejectJoinRequestsInput,
   BulkSendInviteLinkInput,
+  CloseCommunityInput,
   CommunityIdParams,
   CommunityMemberParams,
   CreateCommunityInput,
@@ -533,6 +534,39 @@ export const deleteCommunity = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(null, t("COMMUNITY_DELETED", req.locale)));
+  }
+);
+
+export const closeCommunity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    // Body fully optional — body-parser yields `{}` for empty POSTs.
+    const body = req.body as CloseCommunityInput | undefined;
+
+    await communityService.closeCommunity(
+      id,
+      req.auth.userId,
+      body?.reason ?? null
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("COMMUNITY_CLOSED", req.locale)));
+  }
+);
+
+export const reopenCommunity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+
+    const community = await communityService.reopenCommunity(
+      id,
+      req.auth.userId
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(community, t("COMMUNITY_REOPENED", req.locale)));
   }
 );
 

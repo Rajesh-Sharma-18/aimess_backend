@@ -8,6 +8,21 @@
 
 ---
 
+## Community Status (ACTIVE / CLOSED) + realtime close/reopen (shipped 2026-06-22)
+
+### What shipped
+
+- New **owner-controlled** `Community.status` (`ACTIVE | CLOSED`, default ACTIVE) — a third lifecycle axis alongside platform `moderationStatus` (`SUSPENDED`) and `deletedAt`. Absent ⇒ ACTIVE (backfill: `pnpm --filter @aimess/community-service db:backfill:status`).
+- **Close** (`POST /communities/:id/close`, ADMIN) sets `status=CLOSED`, auto-removes **all** members (incl. admin, `memberCount→0`), suspends the chat room, broadcasts `community:closed`, and pushes to ex-members. **Reopen** (`POST /communities/:id/reopen`, owner by `adminId`) sets ACTIVE, re-adds the owner as sole ADMIN; former members re-join normally. Both idempotent.
+- **Centralized policy** `apps/community-service/src/lib/community-access-policy.ts` (`assertWritable`/`assertJoinable`/`deriveStatus`/`isEffectivelyClosed`) is the single chokepoint — replaced the scattered `assertCommunityNotSuspended` (12 sites). Either CLOSED or SUSPENDED ⇒ non-writable. chat-service mirrors this with `assertCommunityRoomWritable` (access-guard) wired into send/edit/delete/react/pin.
+- `status` added to every community response (details/mine/discover/invites/join-requests/reports) + OpenAPI `CommunityData`. Realtime `community:closed` / `community:reopened` added to AsyncAPI + SOCKET_EVENTS §5.2. No gateway/proto changes (generic Redis relay + reused `community.chat.sync.queue` `community.status.changed`).
+
+### Deferred
+
+- close/reopen SYSTEM chat messages (no audience after eject); auto-restore of members on reopen; exposing `status` to backoffice (platform stays on `moderationStatus`).
+
+---
+
 ## Real-time Notification Spine (shipped 2026-06-17)
 
 End-to-end inbox delivery with real-time socket notifications to all connected devices. **The platform-wide notification flow is now complete and working.**

@@ -72,6 +72,32 @@ export interface CommunityMetaUpdatedPayload {
 }
 
 /**
+ * `community:closed` — the community ADMIN/owner closed the community
+ * (status → CLOSED). Broadcast to the `community:<id>` room AND to every
+ * (now ex-)member's `user:<id>` channel so connected clients disable all
+ * community actions immediately — no refresh, no polling. All members have
+ * been auto-removed; the client should treat the community as read-only/gone
+ * until a `community:reopened` arrives or the user re-joins.
+ */
+export interface CommunityClosedPayload {
+  communityId: string;
+  status: "CLOSED";
+  closedAt: number; // epoch ms
+  reason?: string;
+}
+
+/**
+ * `community:reopened` — the community ADMIN/owner reopened a previously
+ * CLOSED community (status → ACTIVE). Broadcast to the `community:<id>` room.
+ * Former members are NOT auto-restored — they re-join via the normal flow.
+ */
+export interface CommunityReopenedPayload {
+  communityId: string;
+  status: "ACTIVE";
+  reopenedAt: number; // epoch ms
+}
+
+/**
  * `community:member:updated` — a single member's roster row changed (role
  * promotion/demotion, admin transfer, or profile name/avatar sync). Room-scoped
  * to `community:<id>`; the client patches the Members page badge + chat header.

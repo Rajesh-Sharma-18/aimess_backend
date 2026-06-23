@@ -150,6 +150,29 @@ export const COMMUNITY_MESSAGES = {
     vi: "Đã xóa cộng đồng",
     en: "Community deleted",
   },
+  COMMUNITY_CLOSED: {
+    vi: "Đã đóng cộng đồng",
+    en: "Community closed",
+  },
+  COMMUNITY_REOPENED: {
+    vi: "Đã mở lại cộng đồng",
+    en: "Community reopened",
+  },
+  // Thrown when an action is attempted on a community the owner has CLOSED.
+  COMMUNITY_IS_CLOSED: {
+    vi: "Cộng đồng này đã đóng",
+    en: "This community is closed",
+  },
+  // Thrown when an action is attempted on a community the platform SUSPENDED.
+  COMMUNITY_SUSPENDED: {
+    vi: "Cộng đồng này đang bị tạm khóa",
+    en: "This community is suspended",
+  },
+  // Thrown by chat-service when the community chat room is unavailable.
+  COMMUNITY_CHAT_DISABLED: {
+    vi: "Trò chuyện cộng đồng hiện không khả dụng",
+    en: "Community chat is currently unavailable",
+  },
   COMMUNITY_JOIN_REQUEST_CREATED: {
     vi: "Đã gửi yêu cầu tham gia",
     en: "Join request submitted",

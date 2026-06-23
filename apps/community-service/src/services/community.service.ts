@@ -12,12 +12,14 @@ import { isHiddenSystemMessage } from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
+  CommunityClosedPayload,
   CommunityMemberAddedPayload,
   CommunityMemberRemovedPayload,
   CommunityMemberUnbannedPayload,
   CommunityMemberUpdatedPayload,
   CommunityMetaDto,
   CommunityMetaUpdatedPayload,
+  CommunityReopenedPayload,
   CommunityStatsUpdatedPayload,
   MediaObject,
 } from "@aimess/shared-types";
@@ -31,6 +33,7 @@ import {
   assertNotBanned,
   COMMUNITY_ROLE_RANK,
 } from "../lib/community-authz.js";
+import { communityAccessPolicy } from "../lib/community-access-policy.js";
 import {
   buildPaginatedResponse,
   type PaginatedResponse,
@@ -49,6 +52,7 @@ import {
   CommunityMemberStatus,
   CommunityModerationStatus,
   CommunityReportStatus,
+  CommunityStatus,
   CommunityType,
   Prisma,
   type Community,
@@ -102,6 +106,7 @@ import type {
 } from "../api/validators/community.validator.js";
 import {
   publishCommunityAdminTransferredSafe,
+  publishCommunityClosedSafe,
   publishCommunityDeletedSafe,
   publishCommunityInviteAcceptedSafe,
   publishCommunityInviteSentSafe,
@@ -159,21 +164,6 @@ function uniqueViolationToConflict(
     return new ConflictError("COMMUNITY_HANDLE_TAKEN");
   }
   return new ConflictError("COMMUNITY_NAME_TAKEN");
-}
-
-/**
- * Guard: throws 403 COMMUNITY_SUSPENDED when a community has been closed by an
- * admin. Call this after the community is loaded in any write path that should
- * be blocked while the community is suspended (join, update, add members, etc.).
- * Read-only paths and existing-member moderation actions (kick/ban/mute/leave)
- * are intentionally NOT blocked.
- */
-function assertCommunityNotSuspended(community: {
-  moderationStatus: CommunityModerationStatus;
-}): void {
-  if (community.moderationStatus === CommunityModerationStatus.SUSPENDED) {
-    throw new ForbiddenError("COMMUNITY_SUSPENDED");
-  }
 }
 
 const COMMUNITY_IMAGE_PREFIXES = MEDIA_PREFIXES.community;
@@ -241,6 +231,17 @@ const SENDERLESS_ACTIVITY_TYPES = new Set([
   "unpinned",
 ]);
 
+/**
+ * Denormalized `lastActivityType` values that must NEVER surface as the community
+ * list preview (membership/moderation churn). Mirror of the chat-layer
+ * `isEligibleForLastActivity` rule at the community-service denormalization layer:
+ * going forward these are never WRITTEN (kick/ban no longer call updateLastActivity
+ * and the churn SYSTEM types don't bump), so this set only neutralizes LEGACY rows
+ * persisted before the rule. "join" has its own per-viewer handling in
+ * selectListPreview, so it is not included here.
+ */
+const LAST_ACTIVITY_INELIGIBLE_TYPES = new Set(["removal"]);
+
 const SELF_JOIN_ACTIVITY_PREVIEW = "You joined the community";
 
 /**
@@ -295,6 +296,21 @@ export function buildLastActivity(community: {
   createdAt: Date;
 }): CommunityLastActivity {
   const rawType = community.lastActivityType ?? "created";
+
+  // Legacy ineligible activity (e.g. a "X was removed" line written by an old
+  // kick/ban build before the eligibility rule): never surface it as the preview.
+  // We can't recover the prior eligible message from the single denormalized
+  // column, so fall back to the senderless "created" baseline (Case 4); the next
+  // eligible message replaces it. Going forward such lines are never written.
+  if (LAST_ACTIVITY_INELIGIBLE_TYPES.has(rawType)) {
+    return {
+      type: "created",
+      userId: null,
+      username: null,
+      preview: "Community created successfully",
+      dateTime: community.createdAt.getTime(),
+    };
+  }
 
   // USER MESSAGE → carry the sender so the client renders "<sender>: <preview>".
   if (PREFIXED_ACTIVITY_TYPES.has(rawType)) {
@@ -606,6 +622,7 @@ async function toCommunityData(
         : null,
     ...muteFields(muteRow),
     moderationStatus: community.moderationStatus,
+    status: communityAccessPolicy.deriveStatus(community),
     // Phase 1 stub — wire to stream-service gRPC in Phase 2.
     isLive: false,
     createdAt: community.createdAt.toISOString(),
@@ -675,6 +692,7 @@ async function toDiscoverItem(
     lastActivityUserId?: string | null;
     lastActivitySelfPreview?: string | null;
     moderationStatus: CommunityModerationStatus;
+    status?: CommunityStatus | null;
     category: { id: string; name: string };
   },
   muteRow: MuteRowFragment,
@@ -705,6 +723,7 @@ async function toDiscoverItem(
     // Phase 1 stub — wire to stream-service gRPC in Phase 2.
     isLive: false,
     moderationStatus: community.moderationStatus,
+    status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.getTime(),
     lastActivity: buildLastActivity({
       ...community,
@@ -804,6 +823,7 @@ async function toEmbeddedCommunitySummary(community: {
   type: CommunityType;
   memberCount: number;
   avatarUrl: string | null;
+  status?: CommunityStatus | null;
 }) {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -819,6 +839,7 @@ async function toEmbeddedCommunitySummary(community: {
     avatarUrl: avatarView?.url ?? null,
     avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
     avatar,
+    status: communityAccessPolicy.deriveStatus(community),
   };
 }
 
@@ -1363,7 +1384,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(membership, CommunityMemberRole.ADMIN);
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     const data: Prisma.CommunityUpdateInput = {};
     let nextName: string | undefined;
@@ -1635,6 +1656,7 @@ export const communityService = {
           // Phase 1 stub — wire to stream-service gRPC in Phase 2.
           isLive: false,
           moderationStatus: row.moderationStatus,
+          status: communityAccessPolicy.deriveStatus(row),
         };
       })
     );
@@ -2009,20 +2031,10 @@ export const communityService = {
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
 
-    void communityRepository
-      .updateLastActivity(
-        communityId,
-        new Date(),
-        "removal",
-        `${updated.snapshotUsername} was removed from the community`,
-        updated.snapshotUsername,
-        targetUserId
-      )
-      .catch((err) =>
-        logger.warn(
-          `updateLastActivity failed for community=${communityId}: ${String(err)}`
-        )
-      );
+    // NOTE: removal is intentionally NOT written to lastActivity — "X was removed
+    // from the community" must never become the community-list preview (Telegram
+    // parity; see isEligibleForLastActivity). The previous eligible activity
+    // stays. The chat SYSTEM line (MEMBER_REMOVED) is handled separately.
 
     await this.recordAudit({
       communityId,
@@ -2146,20 +2158,9 @@ export const communityService = {
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
 
-    void communityRepository
-      .updateLastActivity(
-        communityId,
-        new Date(),
-        "removal",
-        `${updated.snapshotUsername} was removed from the community`,
-        updated.snapshotUsername,
-        targetUserId
-      )
-      .catch((err) =>
-        logger.warn(
-          `updateLastActivity failed for community=${communityId}: ${String(err)}`
-        )
-      );
+    // NOTE: ban is intentionally NOT written to lastActivity — a ban line must
+    // never become the community-list preview (Telegram parity; see
+    // isEligibleForLastActivity). The previous eligible activity stays.
 
     await this.recordAudit({
       communityId,
@@ -2363,7 +2364,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     // Server-side friend validation BEFORE existing-row partitioning. Any
     // candidate not an ACCEPTED friend of the caller is skipped as NOT_FRIEND.
@@ -3276,7 +3277,7 @@ export const communityService = {
   ): Promise<CommunityFavoriteData> {
     const community = await communityRepository.findById(communityId);
     if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     const row = await communityRepository.likeCommunity(callerId, communityId);
     return {
@@ -3370,7 +3371,7 @@ export const communityService = {
     }
 
     // STEP 2: Guard suspended.
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     // STEP 3: Load existing membership row (any status).
     const existingMember = await communityRepository.findMemberByUserId(
@@ -3683,6 +3684,222 @@ export const communityService = {
     publishCommunityDeletedForChatSafe(communityId);
   },
 
+  /**
+   * CLOSE a community (owner lifecycle, status → CLOSED). Reversible disband:
+   * ALL members (including the admin) are auto-removed, memberCount → 0, and the
+   * chat room is suspended. Distinct from `deleteCommunity` (permanent) and from
+   * platform `moderationStatus=SUSPENDED` (which keeps members). Broadcasts
+   * `community:closed` so connected clients disable actions immediately.
+   */
+  async closeCommunity(
+    communityId: string,
+    callerId: string,
+    reason: string | null = null
+  ): Promise<void> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    // Only the ACTIVE admin (owner) may close. The admin is still an ACTIVE
+    // member here — eviction happens below.
+    const callerMembership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(callerMembership, CommunityMemberRole.ADMIN);
+
+    // Idempotent: re-closing an already-CLOSED community is a no-op.
+    if (communityAccessPolicy.isOwnerClosed(community)) {
+      return;
+    }
+
+    // Capture the active roster BEFORE eviction so the CLOSED event + push can
+    // reach everyone who was a member at close time.
+    const memberIds =
+      await communityRepository.findActiveMemberIds(communityId);
+
+    const closedAt = new Date();
+    // ORDER MATTERS: flip status first so any concurrent writer hits
+    // COMMUNITY_IS_CLOSED, then evict the roster.
+    await communityRepository.updateCommunity(communityId, {
+      status: CommunityStatus.CLOSED,
+      statusClosedAt: closedAt,
+      statusClosedBy: callerId,
+      statusClosedReason: reason,
+    });
+    await communityRepository.markAllActiveMembersLeft(communityId);
+    await communityRepository.setMemberCount(communityId, 0);
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "COMMUNITY_CLOSED",
+      metadata: { reason },
+    });
+
+    logger.info(
+      `Community closed: community=${communityId} by=${callerId} evicted=${String(memberIds.length)}`
+    );
+
+    // Real-time: broadcast to the community room AND to every ex-member's
+    // `user:<id>` room so connected clients disable actions immediately.
+    const payload: CommunityClosedPayload = {
+      communityId,
+      status: "CLOSED",
+      closedAt: closedAt.getTime(),
+      ...(reason ? { reason } : {}),
+    };
+    try {
+      await publishCommunityRoomEvent(
+        redis,
+        communityId,
+        "community:closed",
+        payload
+      );
+      await Promise.allSettled(
+        memberIds.map((memberId) =>
+          publishChatUserEvent(redis, memberId, "community:closed", payload)
+        )
+      );
+    } catch (error) {
+      logger.warn(
+        `community:closed broadcast failed for community=${communityId}: ${String(error)}`
+      );
+    }
+
+    // Chat-sync: suspend the general room so community chat writes are blocked.
+    publishCommunityStatusChangedForChatSafe({
+      communityId,
+      communityStatus: "SUSPENDED",
+    });
+
+    // Push fan-out: notify each ex-member the community was closed.
+    publishCommunityClosedSafe({
+      communityId,
+      eventAt: closedAt.toISOString(),
+      actorId: callerId,
+      reason,
+      memberIds,
+    });
+  },
+
+  /**
+   * REOPEN a previously CLOSED community (status → ACTIVE). Authorized by
+   * community ownership (`adminId`), NOT active membership — the owner left the
+   * roster on close. Re-establishes the owner as the sole ACTIVE ADMIN
+   * (memberCount → 1); former members are NOT restored (they re-join normally).
+   * Broadcasts `community:reopened` and unsuspends the chat room.
+   */
+  async reopenCommunity(
+    communityId: string,
+    callerId: string
+  ): Promise<CommunityData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    // Ownership check (adminId) — the owner has no ACTIVE membership while CLOSED.
+    if (community.adminId !== callerId) {
+      throw new ForbiddenError("COMMUNITY_FORBIDDEN");
+    }
+
+    // Idempotent: reopening an already-open community returns its current state.
+    if (!communityAccessPolicy.isOwnerClosed(community)) {
+      const membership = await communityRepository.findMembership(
+        communityId,
+        callerId
+      );
+      const myRole =
+        membership && membership.status === CommunityMemberStatus.ACTIVE
+          ? membership.role
+          : null;
+      const muteRow = await communityRepository.findMuteByUserAndCommunity(
+        callerId,
+        communityId
+      );
+      return toCommunityData(community, myRole, muteRow);
+    }
+
+    const reopenedAt = new Date();
+    const updated = await communityRepository.updateCommunity(communityId, {
+      status: CommunityStatus.ACTIVE,
+      statusClosedAt: null,
+      statusClosedBy: null,
+      statusClosedReason: null,
+    });
+
+    // Re-establish the owner as the sole ACTIVE ADMIN so the community is usable
+    // again. Prefer a fresh user-service snapshot; fall back to the stored
+    // member snapshot if user-service is unavailable.
+    const existing = await communityRepository.findMemberByUserId(
+      communityId,
+      callerId
+    );
+    const snapshotMap = await fetchUserSnapshots([callerId]);
+    const ownerSnap = snapshotMap.get(callerId);
+    const ownerSnapshot = {
+      snapshotUsername: ownerSnap?.username ?? existing?.snapshotUsername ?? "",
+      snapshotDisplayName:
+        ownerSnap?.displayName ?? existing?.snapshotDisplayName ?? "",
+      snapshotAvatarKey:
+        ownerSnap?.avatarObjectKey ?? existing?.snapshotAvatarKey ?? null,
+    };
+    if (existing) {
+      await communityRepository.reactivateAdminMember(
+        communityId,
+        callerId,
+        ownerSnapshot
+      );
+    } else {
+      await communityRepository.createMember({
+        communityId,
+        userId: callerId,
+        role: CommunityMemberRole.ADMIN,
+        status: CommunityMemberStatus.ACTIVE,
+        ...ownerSnapshot,
+      });
+    }
+    await communityRepository.setMemberCount(communityId, 1);
+
+    await this.recordAudit({
+      communityId,
+      actorId: callerId,
+      action: "COMMUNITY_REOPENED",
+      metadata: {},
+    });
+
+    logger.info(`Community reopened: community=${communityId} by=${callerId}`);
+
+    // Real-time: announce reopen to the community room.
+    const payload: CommunityReopenedPayload = {
+      communityId,
+      status: "ACTIVE",
+      reopenedAt: reopenedAt.getTime(),
+    };
+    try {
+      await publishCommunityRoomEvent(
+        redis,
+        communityId,
+        "community:reopened",
+        payload
+      );
+    } catch (error) {
+      logger.warn(
+        `community:reopened broadcast failed for community=${communityId}: ${String(error)}`
+      );
+    }
+
+    // Chat-sync: unsuspend the general room so community chat writes resume.
+    publishCommunityStatusChangedForChatSafe({
+      communityId,
+      communityStatus: "ACTIVE",
+    });
+
+    return toCommunityData(updated, CommunityMemberRole.ADMIN, null);
+  },
+
   async listAuditLogs(
     communityId: string,
     callerId: string,
@@ -3724,7 +3941,7 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     // Join requests are allowed for both PUBLIC and PRIVATE communities.
     // PUBLIC: user-initiated joins create a PENDING request for moderators
@@ -3907,7 +4124,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     const request = await communityRepository.findJoinRequestById(requestId);
     if (!request || request.communityId !== communityId) {
@@ -4161,7 +4378,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     const rows = await communityRepository.findJoinRequestsByIds(requestIds);
     const rowMap = new Map(rows.map((r) => [r.id, r]));
@@ -4502,7 +4719,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     if (inviteeId === callerId) {
       throw new BadRequestError("COMMUNITY_MEMBER_CANNOT_MODIFY_SELF");
@@ -4667,7 +4884,7 @@ export const communityService = {
     if (!community) {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     if (invite.status === CommunityInviteStatus.ACCEPTED) {
       const existing = await communityRepository.findMemberByUserId(
@@ -5539,7 +5756,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     const expiresAt = input.expiresInMinutes
       ? new Date(Date.now() + input.expiresInMinutes * 60_000)
@@ -5692,7 +5909,7 @@ export const communityService = {
       callerId
     );
     assertCommunityRole(membership, CommunityMemberRole.MODERATOR);
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     // --- Resolve or create the invite link -----------------------------------
 
@@ -5785,7 +6002,7 @@ export const communityService = {
 
     const community = await communityRepository.findById(link.communityId);
     if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
-    assertCommunityNotSuspended(community);
+    communityAccessPolicy.assertWritable(community);
 
     const existing = await communityRepository.findMemberByUserId(
       community.id,

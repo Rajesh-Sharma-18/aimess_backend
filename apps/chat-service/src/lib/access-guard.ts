@@ -92,6 +92,30 @@ export async function assertCommunityMember(
 }
 
 /**
+ * Community WRITE gate: the community general room must be open (`status ===
+ * "active"`) before any mutating chat action (send / reply / edit / delete /
+ * react / pin). A room is moved to `"suspended"` when the community is closed
+ * by its owner (status → CLOSED) or suspended by the platform; `"inactive"`
+ * means deleted/unprovisioned.
+ *
+ * This is the SINGLE place chat-service interprets community-room writability —
+ * call it in every write path so a closed community is read-only regardless of
+ * any stale RoomMember rows.
+ *
+ * @throws ForbiddenError `COMMUNITY_SUSPENDED`     when the room is suspended (closed).
+ * @throws ForbiddenError `COMMUNITY_CHAT_DISABLED` when the room is missing/inactive.
+ */
+export function assertCommunityRoomWritable(
+  room: { status: string } | null | undefined
+): void {
+  if (room?.status === "active") return;
+  if (room?.status === "suspended") {
+    throw new ForbiddenError("COMMUNITY_SUSPENDED");
+  }
+  throw new ForbiddenError("COMMUNITY_CHAT_DISABLED");
+}
+
+/**
  * Community read access (Telegram-style): the caller is either an ACTIVE member
  * OR the community is PUBLIC (non-members can read PUBLIC community chat
  * history). For PRIVATE communities, active membership is required.

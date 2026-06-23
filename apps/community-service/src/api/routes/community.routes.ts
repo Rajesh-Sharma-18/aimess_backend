@@ -27,6 +27,7 @@ import {
   createCommunityJoinRequest,
   createCommunityReport,
   declineCommunityInvite,
+  closeCommunity,
   deleteCommunity,
   deleteCommunityReport,
   discoverCommunities,
@@ -57,6 +58,7 @@ import {
   muteCommunityMember,
   redeemCommunityInviteLink,
   rejectCommunityJoinRequest,
+  reopenCommunity,
   reviewCommunityReport,
   revokeCommunityInviteLink,
   setMuteSetting,
@@ -93,6 +95,7 @@ import {
   createCategorySchema,
   createCommunitySchema,
   createInviteLinkSchema,
+  closeCommunitySchema,
   createInviteSchema,
   createJoinRequestSchema,
   createReportSchema,
@@ -317,6 +320,20 @@ communityRoutes.post(
   validateParams(communityIdParamsSchema),
   validateBody(leaveReasonSchema),
   leaveCommunity
+);
+
+// Owner lifecycle: close (status → CLOSED, evict all members) / reopen.
+communityRoutes.post(
+  "/:id/close",
+  validateParams(communityIdParamsSchema),
+  validateBody(closeCommunitySchema),
+  closeCommunity
+);
+
+communityRoutes.post(
+  "/:id/reopen",
+  validateParams(communityIdParamsSchema),
+  reopenCommunity
 );
 
 communityRoutes.post(
