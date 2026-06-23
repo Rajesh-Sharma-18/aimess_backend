@@ -4585,13 +4585,19 @@ export const openApiSchemas = {
   },
   PaginationMeta: {
     type: "object",
-    description: "Offset/page pagination metadata.",
+    description:
+      "Pagination metadata shared by offset/page and timestamp-cursor endpoints. " +
+      "In offset mode (page param) `currentPage`/`totalPage`/`totalData` are " +
+      "authoritative and `nextCursor` is null. In timestamp-cursor mode " +
+      "(before_ts/after_ts) rely on `hasMore`/`nextCursor`; `currentPage` is " +
+      "reported as 1 and `totalPage`/`totalData` are best-effort counts, not page anchors.",
     properties: {
       totalData: { type: "integer", description: "Total matching records." },
       totalPage: { type: "integer", description: "Total number of pages." },
       currentPage: {
         type: "integer",
-        description: "The requested page (1-based).",
+        description:
+          "The requested page (1-based) in offset mode; always 1 in cursor mode.",
       },
       limit: { type: "integer", description: "Page size." },
       nextCursor: {
@@ -4599,11 +4605,14 @@ export const openApiSchemas = {
         nullable: true,
         description:
           "Cursor for the next page. For offset/page pagination this is null (use page param). " +
-          "For timeline/cursor-paginated endpoints this is an epoch-ms string — feed it back as the same before_ts/after_ts you used.",
+          "For timeline/cursor-paginated endpoints this is an epoch-ms string — parse it to an " +
+          "integer and feed it back as the same before_ts/after_ts you used. Null when hasMore is false.",
       },
       hasMore: {
         type: "boolean",
-        description: "True when currentPage < totalPage.",
+        description:
+          "True when more pages may exist. In cursor mode this is computed as " +
+          "(returned == limit) — use it (not currentPage/totalPage) to decide whether to keep paging.",
       },
     },
     required: [
@@ -6137,6 +6146,34 @@ export const openApiSchemas = {
     type: "array",
     items: { $ref: "#/components/schemas/ChatInboxItem" },
   },
+  /**
+   * Actual runtime shape of GET /chat/inbox — the timestamp-paginated wrapper
+   * (`pagination` + `data[]` + top-level `hasMore`/`nextCursor`), NOT a bare array.
+   */
+  ChatInboxPage: {
+    type: "object",
+    description:
+      "Timestamp-paginated unified inbox (before_ts/after_ts over lastMessageAt). " +
+      "Boundaries inclusive — de-dupe by roomId. Use hasMore/nextCursor to page.",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatInboxItem" },
+      },
+      hasMore: {
+        type: "boolean",
+        description: "Top-level shortcut — same value as pagination.hasMore.",
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description:
+          "Top-level shortcut — epoch-ms string; parse to integer and feed back as the same before_ts/after_ts.",
+      },
+    },
+    required: ["pagination", "data", "hasMore", "nextCursor"],
+  },
   ChatMessage: {
     type: "object",
     properties: {
@@ -6233,6 +6270,35 @@ export const openApiSchemas = {
   ChatMessageList: {
     type: "array",
     items: { $ref: "#/components/schemas/ChatMessage" },
+  },
+  /**
+   * Actual runtime shape of GET /chat/private/.../messages and
+   * GET /chat/groups/.../messages — the timestamp-paginated wrapper
+   * (`pagination` + `data[]` + top-level `hasMore`/`nextCursor`), NOT a bare array.
+   */
+  ChatMessagePage: {
+    type: "object",
+    description:
+      "Timestamp-paginated private/group messages (before_ts/after_ts over createdAt). " +
+      "Boundaries inclusive — de-dupe by message id. Use hasMore/nextCursor to page.",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatMessage" },
+      },
+      hasMore: {
+        type: "boolean",
+        description: "Top-level shortcut — same value as pagination.hasMore.",
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description:
+          "Top-level shortcut — epoch-ms string; parse to integer and feed back as the same before_ts/after_ts.",
+      },
+    },
+    required: ["pagination", "data", "hasMore", "nextCursor"],
   },
   /**
    * Canonical wire message returned by the REST private/group SEND endpoints

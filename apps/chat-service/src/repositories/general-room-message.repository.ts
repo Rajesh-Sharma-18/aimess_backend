@@ -212,9 +212,14 @@ export class GeneralRoomMessageRepository {
             ? { lte: params.ts }
             : { gte: params.ts },
       },
-      orderBy: {
-        createdAt: params.direction === "before" ? "desc" : "asc",
-      },
+      // `sequenceNumber` is the secondary sort key so messages sharing the same
+      // createdAt millisecond have a deterministic, total order — without it,
+      // ms-tie messages can be skipped or duplicated across pages even though
+      // the boundary is inclusive and clients de-dupe by id.
+      orderBy: [
+        { createdAt: params.direction === "before" ? "desc" : "asc" },
+        { sequenceNumber: params.direction === "before" ? "desc" : "asc" },
+      ],
       take: params.limit + 1,
     });
 
@@ -785,7 +790,12 @@ export class GeneralRoomMessageRepository {
         // deletedForAll intentionally NOT filtered — tombstones must be
         // included so the client can reconcile deletes missed while offline.
       },
-      orderBy: { updatedAt: "asc" },
+      // `sequenceNumber` is the secondary sort key so messages sharing the same
+      // updatedAt millisecond have a deterministic, total order across sync pages.
+      // NOTE: the boundary stays inclusive (`gte`) by design — clients de-dupe by
+      // id and apply mutations idempotently; a hot message whose updatedAt keeps
+      // advancing can still re-appear on the boundary (acceptable for sync).
+      orderBy: [{ updatedAt: "asc" }, { sequenceNumber: "asc" }],
       take: params.limit + 1,
     });
 

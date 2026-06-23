@@ -105,7 +105,13 @@ export class GroupMessageRepository {
         roomId: params.roomId,
         createdAt: bound,
       },
-      orderBy: { createdAt: order },
+      // `sequenceNumber` is the secondary sort key so messages sharing the same
+      // createdAt millisecond have a deterministic, total order — without it,
+      // ms-tie messages can be skipped or duplicated across pages even though
+      // the boundary is inclusive and clients de-dupe by id. It is the per-room
+      // monotonic ordering key and is covered by the (roomId, createdAt,
+      // sequenceNumber) index so the sort stays index-backed.
+      orderBy: [{ createdAt: order }, { sequenceNumber: order }],
       take: params.limit + 1 + 10,
     });
 

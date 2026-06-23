@@ -85,7 +85,9 @@ model PrivateMessage {
   deliveredAt      Json      @default("{}")
 
   @@index([roomId, createdAt(sort: Desc)])
-  @@index([roomId, isDeleted, createdAt(sort: Desc)])
+  // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
+  // get a deterministic, index-backed total order with early-termination preserved.
+  @@index([roomId, isDeleted, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
@@ -186,7 +188,9 @@ model GroupMessage {
   editedAt           DateTime?
   editHistory        Json      @default("[]")
 
-  @@index([roomId, createdAt(sort: Desc)])
+  // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
+  // get a deterministic, index-backed total order with early-termination preserved.
+  @@index([roomId, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])

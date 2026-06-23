@@ -476,8 +476,10 @@ export const communityPaths = {
       summary: "List my communities (joined) / search communities",
       description:
         "Unified communities list. The mode is inferred from the params — there " +
-        "is no `scope` flag. **At least one of `before_ts`, `after_ts`, `q`, or " +
-        "`categoryId` must be present**, else a 400 validation error.\n\n" +
+        "is no `scope` flag. All params are optional: omitting `before_ts`, " +
+        "`after_ts`, `q`, and `categoryId` returns the default **search mode** page " +
+        "(PUBLIC + joined PRIVATE, `filter=all`, page 1). The only mutually-exclusive " +
+        "rule is that `before_ts` and `after_ts` cannot both be sent (→ 400).\n\n" +
         "**Joined mode** (`before_ts` or `after_ts` present) — communities where " +
         "you are an ACTIVE member, ordered by `lastActivityAt` (latest community " +
         "message, else createdAt). Timestamp-cursor pagination: `before_ts` " +
