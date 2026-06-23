@@ -5933,7 +5933,7 @@ export const openApiSchemas = {
       },
       appDeepLink: {
         type: "string",
-        description: "Mobile deep-link: aimess://invite/<code>",
+        description: "Mobile deep-link: aimess://join?code=<code>",
       },
       communityId: { type: "string" },
       createdBy: { type: "string", format: "uuid" },
@@ -5979,9 +5979,26 @@ export const openApiSchemas = {
       memberCount: { type: "integer" },
       communityType: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
       isJoined: { type: "boolean" },
+      joinRequestId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Caller's PENDING join-request id, or null. Non-null → render PRIVATE_REQUESTED (+Cancel).",
+      },
+      joinRequestStatus: {
+        type: "string",
+        enum: ["PENDING"],
+        nullable: true,
+      },
       invitationCode: { type: "string" },
-      inviteUrl: { type: "string" },
-      appDeepLink: { type: "string" },
+      inviteUrl: {
+        type: "string",
+        description: "Shareable HTTPS link: https://aimess.me/+<code>",
+      },
+      appDeepLink: {
+        type: "string",
+        description: "App deep link: aimess://join?code=<code>",
+      },
       expiresAt: { type: "integer", nullable: true },
       creatorId: { type: "string" },
     },
@@ -5994,11 +6011,48 @@ export const openApiSchemas = {
       "memberCount",
       "communityType",
       "isJoined",
+      "joinRequestId",
+      "joinRequestStatus",
       "invitationCode",
       "inviteUrl",
       "appDeepLink",
       "expiresAt",
       "creatorId",
+    ],
+  },
+  PublicCommunityResponse: {
+    type: "object",
+    description:
+      "Public deep-link resolver result (GET /communities/by-handle/:handle). PUBLIC only.",
+    properties: {
+      communityId: { type: "string" },
+      handle: { type: "string" },
+      name: { type: "string" },
+      description: { type: "string", nullable: true },
+      avatarUrl: { type: "string", nullable: true },
+      bannerUrl: { type: "string", nullable: true },
+      memberCount: { type: "integer" },
+      type: { type: "string", enum: ["PUBLIC"] },
+      isJoined: { type: "boolean" },
+      role: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        nullable: true,
+      },
+      isBanned: { type: "boolean" },
+    },
+    required: [
+      "communityId",
+      "handle",
+      "name",
+      "description",
+      "avatarUrl",
+      "bannerUrl",
+      "memberCount",
+      "type",
+      "isJoined",
+      "role",
+      "isBanned",
     ],
   },
   CreateInviteLinkRequest: {
@@ -6831,12 +6885,17 @@ export const openApiSchemas = {
         type: "string",
         nullable: true,
         enum: [
+          // Community lifecycle
           "COMMUNITY_CREATED",
           "COMMUNITY_NAME_UPDATED",
           "COMMUNITY_DESCRIPTION_UPDATED",
           "COMMUNITY_AVATAR_UPDATED",
           "COMMUNITY_BANNER_UPDATED",
           "COMMUNITY_UPDATED",
+          // Live streaming
+          "LIVE_STREAM_STARTED",
+          "LIVE_STREAM_ENDED",
+          // Membership / moderation (COMMUNITY-visible)
           "ROLE_CHANGED",
           "MEMBER_JOINED",
           "MEMBER_LEFT",
@@ -6845,28 +6904,63 @@ export const openApiSchemas = {
           "MEMBER_UNBANNED",
           "MEMBER_MUTED",
           "MEMBER_UNMUTED",
+          // Message actions
           "PINNED_MESSAGE",
           "UNPINNED_MESSAGE",
           "COMMUNITY_INVITE_CREATED",
+          // Personal (visible only to the affected user)
           "COMMUNITY_JOINED",
           "JOIN_REQUEST_APPROVED",
           "JOIN_REQUEST_REJECTED",
+          "ROLE_CHANGED_SELF",
+          // Legacy alias — old persisted rows only
           "MEMBER_ROLE_CHANGED",
         ],
         description:
-          "Present when contentType is SYSTEM. SYSTEM messages are SENDER-LESS (sentBy/senderName/senderAvatar empty) — the actor is in systemMetadata only. Text is a deterministic template. COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED are PERSONAL (isPersonal=true). MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED.",
+          "Present when contentType is SYSTEM. SYSTEM messages are SENDER-LESS " +
+          "(sentBy/senderName/senderAvatar empty) — the actor is in systemMetadata only. " +
+          "The `message` field carries the canonical English fallback text; render it directly " +
+          "or localize from systemMessageType + systemMetadata. " +
+          "Canonical fallback texts by type: " +
+          "COMMUNITY_CREATED → 'Community created'; " +
+          "COMMUNITY_NAME_UPDATED → 'Renamed to {{newName}}' (metadata.newName); " +
+          "COMMUNITY_AVATAR_UPDATED → 'Community photo updated'; " +
+          "COMMUNITY_DESCRIPTION_UPDATED → 'Community description updated'; " +
+          "LIVE_STREAM_STARTED → 'Live stream started'; " +
+          "LIVE_STREAM_ENDED → 'Live stream ended ({{duration}})' or 'Live stream ended' when duration absent; " +
+          "ROLE_CHANGED (bystander) → '{{targetName}} is now a moderator/admin/member'; " +
+          "ROLE_CHANGED (viewer=target) → 'You are now a moderator/admin/member'; " +
+          "MEMBER_REMOVED → '{{targetName}} was removed'; MEMBER_BANNED → '{{targetName}} was banned'. " +
+          "PERSONAL types (isPersonal=true): COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF. " +
+          "Hidden in chat timeline (never returned): MEMBER_LEFT, MEMBER_JOINED. " +
+          "MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are visible to all members. " +
+          "MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED (old rows only).",
       },
       systemMetadata: {
         type: "object",
         nullable: true,
         additionalProperties: true,
         description:
-          "Structured payload for SYSTEM message rendering. Carries actorUserId + actorName so the client renders 'You' vs the actor name. Null for normal messages.",
+          "Structured payload for SYSTEM message rendering. All types share " +
+          "`actorUserId` (userId who triggered the event) and `actorName` (their display name). " +
+          "Render 'You' when actorUserId === currentUserId, otherwise use actorName. " +
+          "Per-type extra fields: " +
+          "COMMUNITY_CREATED: { communityName }. " +
+          "COMMUNITY_NAME_UPDATED: { newName } — the rename target. " +
+          "LIVE_STREAM_ENDED: { duration? } — human-readable runtime, e.g. '2 hours 15 minutes'. " +
+          "ROLE_CHANGED / MEMBER_ROLE_CHANGED: { targetUserId, targetName, oldRole, newRole }. " +
+          "MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_MUTED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
+          "PINNED_MESSAGE / UNPINNED_MESSAGE: { messageId, messagePreview }. " +
+          "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED: personal — same shape, no targetUserId. " +
+          "Null for normal messages.",
       },
       isPersonal: {
         type: "boolean",
         description:
-          "True for user-scoped SYSTEM messages (e.g. COMMUNITY_JOINED 'You joined this community'). PERSONAL messages are only ever returned to the target user — other members never see them in history. Absent/false for normal and community-wide system messages.",
+          "True for user-scoped SYSTEM messages (COMMUNITY_JOINED 'You joined the community', " +
+          "JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF). " +
+          "PERSONAL messages are only ever returned to the target user — other members never see them in history. " +
+          "Absent/false for normal and community-wide system messages.",
       },
       attachments: {
         type: "array",

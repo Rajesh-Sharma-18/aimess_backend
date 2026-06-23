@@ -46,6 +46,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Định danh cộng đồng này đã được sử dụng",
     en: "This community handle is already taken",
   },
+  INVALID_HANDLE: {
+    vi: "Định danh cộng đồng không hợp lệ",
+    en: "Invalid community handle format",
+  },
   COMMUNITY_NOT_FOUND: {
     vi: "Không tìm thấy cộng đồng",
     en: "Community not found",

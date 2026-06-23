@@ -6,7 +6,8 @@
   "main": "index.js",
   "scripts": {
     "prepare": "node scripts/prepare-husky.mjs",
-    "dev": "turbo run dev",
+    "dev": "turbo run dev --filter=./apps/*",
+    "dev:all": "turbo run dev",
     "build": "turbo run build",
     "build:packages": "turbo run build --filter=./packages/*",
     "typecheck": "turbo run typecheck",

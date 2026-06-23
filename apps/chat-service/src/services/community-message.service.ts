@@ -13,7 +13,8 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import {
-  personalizeCommunitySystemMessageForViewer,
+  buildCommunitySystemFallbackText,
+  sanitizeCommunitySystemMetadata,
   type CommunitySystemMessageType,
 } from "@aimess/constants";
 import { env } from "../config/env.js";
@@ -555,19 +556,36 @@ export class CommunityMessageService {
   private personalizeSystemText(
     systemMessageType: string | null | undefined,
     systemMetadata: unknown,
-    thirdPersonText: string,
+    storedText: string,
     viewerUserId: string | undefined
   ): string {
-    if (!viewerUserId || !systemMessageType) return thirdPersonText;
+    if (!systemMessageType) return storedText;
     const metadata = (systemMetadata ?? {}) as Record<string, unknown>;
-    return personalizeCommunitySystemMessageForViewer(
+
+    // Always rebuild from the canonical builder. This achieves three things:
+    //
+    //  1. CANONICAL UPGRADE — stale stored rows written by old code (e.g.
+    //     "Jim Methews created the community") are transparently upgraded to the
+    //     current text ("Community created") with no DB migration required.
+    //
+    //  2. PERSONALIZATION — when the viewer is the actor or target of the
+    //     event, the builder switches to the "You …" first-person form
+    //     ("You are now a moderator" vs "John Doe is now a moderator").
+    //
+    //  3. SSoT — Chat Room / Sync / Socket read paths all produce the same
+    //     text because they all run through this single rebuild gate.
+    //
+    // storedText is only used as a final fallback in the impossible case that
+    // the builder returns empty (the default case in the switch never fires,
+    // so this guard is purely defensive).
+    const rebuilt = buildCommunitySystemFallbackText(
       systemMessageType as CommunitySystemMessageType,
       metadata,
-      thirdPersonText,
       String(metadata.actorName ?? ""),
       String(metadata.targetName ?? ""),
-      viewerUserId
+      viewerUserId ?? ""
     );
+    return rebuilt || storedText;
   }
 
   private toWire(
@@ -679,6 +697,15 @@ export class CommunityMessageService {
           wire.content = { ...content, text: personalized };
         }
       }
+
+      // ACTOR-LESS lifecycle lines must not leak actor identity to the client
+      // (which localizes from systemMetadata). Strip actor/target keys so a
+      // legacy row that stored creatorName/actorName can never render
+      // "{name} created the community". No-op for actor-bearing types.
+      wire.systemMetadata = sanitizeCommunitySystemMetadata(
+        m.systemMessageType,
+        wire.systemMetadata as Record<string, unknown> | null | undefined
+      );
     }
 
     return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
@@ -991,7 +1018,14 @@ export class CommunityMessageService {
         syncEventType,
         systemMessageType:
           (msg as Record<string, unknown>).systemMessageType ?? null,
-        systemMetadata: (msg as Record<string, unknown>).systemMetadata ?? null,
+        systemMetadata:
+          sanitizeCommunitySystemMetadata(
+            msg.systemMessageType,
+            (msg as Record<string, unknown>).systemMetadata as
+              | Record<string, unknown>
+              | null
+              | undefined
+          ) ?? null,
       };
     });
 

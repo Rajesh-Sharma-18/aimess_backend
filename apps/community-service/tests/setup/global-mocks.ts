@@ -60,6 +60,21 @@ jest.mock("../../src/grpc/chat.client.js", () => ({
   })),
 }));
 
+// --- stream-service gRPC client: created lazily, but stub it so no proto load
+//     (path derived from `import.meta.url`) / gRPC channel is ever attempted
+//     under test. Without this, the real module is transpiled to CJS and its
+//     top-level `const __dirname` collides with the wrapper-provided binding. --
+jest.mock("../../src/grpc/stream.client.js", () => ({
+  getStreamClient: jest.fn(() => ({
+    getActiveCommunityIds: jest.fn(async () => new Set()),
+    getLiveStreamsByCommunity: jest.fn(async () => []),
+  })),
+  createStreamClient: jest.fn(() => ({
+    getActiveCommunityIds: jest.fn(async () => new Set()),
+    getLiveStreamsByCommunity: jest.fn(async () => []),
+  })),
+}));
+
 // --- RabbitMQ publishers: fire-and-forget no-ops. The real modules import
 //     amqplib and connect lazily; stub the *-Safe publishers so nothing is
 //     ever queued or connected under test. ------------------------------------

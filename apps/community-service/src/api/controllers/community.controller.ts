@@ -24,6 +24,7 @@ import type {
   CreateReportInput,
   DiscoverQuery,
   HandleAvailableQuery,
+  HandleParams,
   InviteIdParams,
   InviteLinkCodeParams,
   InviteLinkIdParams,
@@ -85,6 +86,24 @@ export const getCommunity = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
     const community = await communityService.getById(id, req.auth.userId);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(community, t("COMMUNITY_FETCHED", req.locale)));
+  }
+);
+
+/**
+ * `GET /communities/by-handle/:handle` — public deep-link resolver.
+ * PUBLIC communities only; private/suspended/missing → 404; banned caller → 403.
+ */
+export const resolveCommunityByHandle = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { handle } = req.params as unknown as HandleParams;
+    const community = await communityService.getByHandle(
+      handle,
+      req.auth.userId
+    );
 
     return res
       .status(HTTP_STATUS.OK)

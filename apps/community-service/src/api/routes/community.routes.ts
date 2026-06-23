@@ -58,6 +58,7 @@ import {
   muteCommunityMember,
   redeemCommunityInviteLink,
   rejectCommunityJoinRequest,
+  resolveCommunityByHandle,
   reopenCommunity,
   reviewCommunityReport,
   revokeCommunityInviteLink,
@@ -101,6 +102,7 @@ import {
   createReportSchema,
   discoverQuerySchema,
   handleAvailableQuerySchema,
+  handleParamsSchema,
   inviteIdParamsSchema,
   inviteLinkCodeParamsSchema,
   inviteLinkIdParamsSchema,
@@ -183,6 +185,15 @@ communityRoutes.get(
   "/handle-available",
   validateQuery(handleAvailableQuerySchema),
   checkHandleAvailable
+);
+
+// Public deep-link resolver. Static segment "/by-handle/:handle" MUST be before
+// the `/:id` param route so "by-handle" isn't captured as a community id.
+// PUBLIC-only: a private community's handle resolves to 404 (never revealed).
+communityRoutes.get(
+  "/by-handle/:handle",
+  validateParams(handleParamsSchema),
+  resolveCommunityByHandle
 );
 
 // Unified list: mode inferred from params. Pagination (before_ts/after_ts) →

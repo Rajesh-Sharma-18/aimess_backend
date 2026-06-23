@@ -20,6 +20,10 @@ export const CommunitySystemMessageType = {
    * rules, visibility…) — renders "Community details updated". */
   COMMUNITY_UPDATED: "COMMUNITY_UPDATED",
 
+  // --- Live streaming (COMMUNITY-visible) -----------------------------------
+  LIVE_STREAM_STARTED: "LIVE_STREAM_STARTED",
+  LIVE_STREAM_ENDED: "LIVE_STREAM_ENDED",
+
   // --- Membership / moderation (COMMUNITY-visible) ----------------------------
   ROLE_CHANGED: "ROLE_CHANGED",
   MEMBER_JOINED: "MEMBER_JOINED",
@@ -79,6 +83,8 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   COMMUNITY_AVATAR_UPDATED: "COMMUNITY",
   COMMUNITY_BANNER_UPDATED: "COMMUNITY",
   COMMUNITY_UPDATED: "COMMUNITY",
+  LIVE_STREAM_STARTED: "COMMUNITY",
+  LIVE_STREAM_ENDED: "COMMUNITY",
   ROLE_CHANGED: "COMMUNITY",
   MEMBER_JOINED: "COMMUNITY",
   MEMBER_LEFT: "COMMUNITY",
@@ -112,6 +118,8 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   COMMUNITY_AVATAR_UPDATED: true,
   COMMUNITY_BANNER_UPDATED: true,
   COMMUNITY_UPDATED: true,
+  LIVE_STREAM_STARTED: true,
+  LIVE_STREAM_ENDED: true,
   ROLE_CHANGED: true,
   MEMBER_JOINED: false,
   // Membership / moderation churn — NEVER eligible as a community-list
@@ -199,30 +207,23 @@ export function isPersonalJoinSessionType(
 }
 
 /**
- * Membership-lifecycle lines that are NEVER shown in the chat timeline (Telegram
- * parity: join/leave/kick/ban service lines clutter history and don't belong in
- * the conversation). They are SUPPRESSED end-to-end:
- *  - community-service does not emit them as chat SYSTEM messages (the domain
- *    event + roster socket + notifications still fire — only the chat line is
- *    dropped), and
- *  - chat-service hides any already-persisted rows of these types on every read
- *    path (clears history that accumulated before this rule).
+ * Membership-lifecycle lines that are NEVER shown in the chat timeline. They are
+ * SUPPRESSED end-to-end: community-service does not emit them as chat SYSTEM
+ * messages, and chat-service hides any already-persisted rows on every read path.
  *
  * Why each is here:
- *  - MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED: "Peter was removed" /
- *    "You were removed" piled up across remove→rejoin cycles.
- *  - MEMBER_LEFT: "Peter Parker left the community" must not show to anyone.
- *  - MEMBER_JOINED: the legacy COMMUNITY-WIDE join line is personalized to "You
- *    joined the community" for the joiner, DUPLICATING the personal
- *    COMMUNITY_JOINED line (the current flow emits only COMMUNITY_JOINED, so this
- *    only hides vestigial rows). The joiner keeps the single personal line.
+ *  - MEMBER_LEFT: high-churn noise; a voluntary leave must not pollute chat.
+ *  - MEMBER_JOINED: the legacy COMMUNITY-WIDE join line duplicates the personal
+ *    COMMUNITY_JOINED line (current flow emits only COMMUNITY_JOINED; this hides
+ *    vestigial rows from before that change).
  *
- * Membership history still lives in the backoffice/audit log, not the chat.
+ * MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are intentionally NOT hidden:
+ * moderation actions should be visible to all members (Telegram parity). The
+ * community-service emits each at most once per action, so pile-up cannot occur.
+ *
+ * Membership history also lives in the backoffice/audit log.
  */
 export const HIDDEN_SYSTEM_MESSAGE_TYPES = [
-  "MEMBER_REMOVED",
-  "MEMBER_BANNED",
-  "MEMBER_UNBANNED",
   "MEMBER_LEFT",
   "MEMBER_JOINED",
 ] as const satisfies readonly CommunitySystemMessageType[];
@@ -232,6 +233,65 @@ export function isHiddenSystemMessage(
   type: string | null | undefined
 ): boolean {
   return inTypeSet(HIDDEN_SYSTEM_MESSAGE_TYPES, type);
+}
+
+/**
+ * Pure, ACTOR-LESS lifecycle SYSTEM types. Their canonical text describes the
+ * EVENT and never the actor ("Community created", "Community photo updated"), so
+ * the actor's identity must NEVER reach the client. A client that localizes from
+ * `systemMessageType` + `systemMetadata` (the documented contract) would otherwise
+ * render "{name} created the community" off a leaked `actorName`/`creatorName`.
+ * For these types the persisted + wire `systemMetadata` carries ONLY the event
+ * fields (communityName, newName, duration) — all actor/target identity is
+ * stripped via {@link sanitizeCommunitySystemMetadata}.
+ */
+export const ACTOR_LESS_SYSTEM_MESSAGE_TYPES = [
+  "COMMUNITY_CREATED",
+  "COMMUNITY_NAME_UPDATED",
+  "COMMUNITY_DESCRIPTION_UPDATED",
+  "COMMUNITY_AVATAR_UPDATED",
+  "COMMUNITY_BANNER_UPDATED",
+  "COMMUNITY_UPDATED",
+  "LIVE_STREAM_STARTED",
+  "LIVE_STREAM_ENDED",
+] as const satisfies readonly CommunitySystemMessageType[];
+
+/** True when the subtype is a pure event whose text must never name an actor. */
+export function isActorLessSystemMessage(
+  type: string | null | undefined
+): boolean {
+  return inTypeSet(ACTOR_LESS_SYSTEM_MESSAGE_TYPES, type);
+}
+
+/**
+ * Identity keys that must never reach the client for an ACTOR-LESS SYSTEM type.
+ * Covers both the current schema (actorUserId/actorName) and the legacy schema
+ * (creatorId/creatorName) so old persisted rows are cleaned on read too.
+ */
+const ACTOR_IDENTITY_METADATA_KEYS = [
+  "actorUserId",
+  "actorName",
+  "creatorId",
+  "creatorName",
+  "targetUserId",
+  "targetName",
+] as const;
+
+/**
+ * Strip actor/target identity from an ACTOR-LESS SYSTEM message's metadata so no
+ * client can interpolate a name into a pure-event line ("{name} created the
+ * community"). No-op for actor-bearing types (role change, pin, member
+ * moderation) and for null/non-system metadata — those legitimately render the
+ * actor/target. Single source of truth shared by the persist path, the socket
+ * publish, and every read path (history / sync).
+ */
+export function sanitizeCommunitySystemMetadata<
+  T extends Record<string, unknown> | null | undefined,
+>(type: string | null | undefined, metadata: T): T {
+  if (!metadata || !isActorLessSystemMessage(type)) return metadata;
+  const out: Record<string, unknown> = { ...metadata };
+  for (const k of ACTOR_IDENTITY_METADATA_KEYS) delete out[k];
+  return out as T;
 }
 
 /**

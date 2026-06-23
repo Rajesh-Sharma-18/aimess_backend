@@ -40,8 +40,7 @@ export function buildCommunitySystemFallbackText(
   viewerUserId?: string | null
 ): string {
   const actor = actorName || "Someone";
-  const target =
-    (metadata.targetName as string) || targetName || actorName || "A member";
+  const target = (metadata.targetName as string) || targetName || "A member";
 
   const actorId = actorUserIdOf(metadata);
   const targetId = targetUserIdOf(metadata);
@@ -52,8 +51,10 @@ export function buildCommunitySystemFallbackText(
   switch (type) {
     case "COMMUNITY_CREATED":
       return "Community created";
-    case "COMMUNITY_NAME_UPDATED":
-      return "Community name updated";
+    case "COMMUNITY_NAME_UPDATED": {
+      const newName = ((metadata.newName as string) || "").trim();
+      return newName ? `Renamed to ${newName}` : "Community name updated";
+    }
     case "COMMUNITY_DESCRIPTION_UPDATED":
       return "Community description updated";
     case "COMMUNITY_AVATAR_UPDATED":
@@ -62,6 +63,12 @@ export function buildCommunitySystemFallbackText(
       return "Community banner updated";
     case "COMMUNITY_UPDATED":
       return "Community details updated";
+    case "LIVE_STREAM_STARTED":
+      return "Live stream started";
+    case "LIVE_STREAM_ENDED": {
+      const duration = ((metadata.duration as string) || "").trim();
+      return duration ? `Live stream ended (${duration})` : "Live stream ended";
+    }
 
     case "ROLE_CHANGED":
     case "MEMBER_ROLE_CHANGED": {

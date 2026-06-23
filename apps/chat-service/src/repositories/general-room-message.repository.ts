@@ -39,13 +39,13 @@ function isVisibleToUser(
   userId: string,
   viewerIsActiveMember = true
 ): boolean {
-  // Hidden membership-lifecycle lines (removed / banned / unbanned / left /
-  // joined) are never shown in the chat timeline — to ANYONE — clearing rows
-  // persisted before this rule (Telegram parity). This also kills the duplicate
-  // "You joined the community" the joiner saw: the legacy community-wide
+  // Hidden membership-lifecycle lines (left / joined) are never shown in the
+  // chat timeline. MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are NOT
+  // hidden — moderation actions are visible (Telegram parity). This also kills
+  // the duplicate "You joined the community" the joiner saw: the legacy
   // MEMBER_JOINED was personalized to "You joined…", doubling the personal
-  // COMMUNITY_JOINED line; hiding MEMBER_JOINED leaves exactly the one personal
-  // line. Applies regardless of membership/visibility, so it runs first.
+  // COMMUNITY_JOINED line; hiding MEMBER_JOINED leaves exactly one personal line.
+  // Applies regardless of membership/visibility, so it runs first.
   if (isHiddenSystemMessage(msg.systemMessageType)) {
     return false;
   }

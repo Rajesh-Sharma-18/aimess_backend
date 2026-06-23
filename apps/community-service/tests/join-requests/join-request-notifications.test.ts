@@ -77,6 +77,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
 // roster broadcast goes through the ONE shared helper.
 jest.mock("@aimess/redis", () => ({
   publishCommunityRoomEvent: jest.fn(async () => 1),
+  publishChatUserEvent: jest.fn(async () => 1),
 }));
 
 // Mock the repository (the Prisma I/O boundary).

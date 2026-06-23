@@ -92,6 +92,45 @@ export type CommunityData = {
   lastActivity: CommunityLastActivity;
 };
 
+/**
+ * Public community resolver response — `GET /communities/by-handle/:handle`.
+ * Returned ONLY for PUBLIC communities (a private community's handle yields 404,
+ * so this surface never reveals private metadata). Drives the deep-link
+ * "Join" preview screen on all clients (Sharing & Deep-Linking spec §3/§9.1).
+ */
+export type PublicCommunityResponse = {
+  communityId: string;
+  handle: string;
+  name: string;
+  description: string | null;
+  /** Presigned GET URL (private bucket); null if no avatar. */
+  avatarUrl: string | null;
+  /** Presigned GET URL for the cover image; null if none. */
+  bannerUrl: string | null;
+  memberCount: number;
+  /** by-handle only ever resolves PUBLIC communities. */
+  type: "PUBLIC";
+  /** True when the caller is an ACTIVE member. */
+  isJoined: boolean;
+  /** Caller's role, or null if not an ACTIVE member. */
+  role: CommunityMemberRole | null;
+  /** Always false here — a banned caller gets 403, never a body. */
+  isBanned: boolean;
+};
+
+/**
+ * Minimal PUBLIC community metadata for the gateway's unauthenticated link
+ * preview (OG card). Internal-only — never returned to end clients.
+ */
+export type PublicCommunityCard = {
+  communityId: string;
+  name: string;
+  description: string | null;
+  avatarUrl: string | null;
+  bannerUrl: string | null;
+  memberCount: number;
+};
+
 /** Per-user mute config for a community. Returned by `GET /:id/mute`. */
 export type CommunityMuteData = {
   communityId: string;
@@ -293,6 +332,12 @@ export type CommunityMemberData = {
   bannedBy: string | null;
   /** Operator-supplied ban reason; null when not banned or no reason given. */
   banReason: string | null;
+  /** ISO-8601 timestamp of when the active mute was applied; null if not muted. */
+  mutedAt: string | null;
+  /** AuthUser.id of the moderator who muted the member; null if not muted. */
+  mutedBy: string | null;
+  /** ISO-8601 timestamp when the mute expires; null = indefinite or not muted. */
+  mutedUntil: string | null;
 };
 
 /**
@@ -418,7 +463,7 @@ export type CommunityInviteLinkData = {
   code: string;
   /** Built from INVITE_LINK_BASE_URL when set, else just the code. */
   url: string;
-  /** Deep-link for mobile: aimess://invite/<code> */
+  /** Deep-link for mobile: aimess://join?code=<code> */
   appDeepLink: string;
   communityId: string;
   createdBy: string;
@@ -447,6 +492,13 @@ export type InviteLinkPreviewData = {
   memberCount: number;
   communityType: CommunityType;
   isJoined: boolean;
+  /**
+   * Caller's PENDING join-request id for this community, or null. Non-null →
+   * the client renders PRIVATE_REQUESTED (+Cancel) instead of "Request to Join"
+   * (Sharing & Deep-Linking spec §3/§6, flow F5/E5).
+   */
+  joinRequestId: string | null;
+  joinRequestStatus: "PENDING" | null;
   invitationCode: string;
   inviteUrl: string;
   appDeepLink: string;

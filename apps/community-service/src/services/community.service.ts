@@ -12,6 +12,7 @@ import { isHiddenSystemMessage } from "@aimess/constants";
 import { publishChatUserEvent, publishCommunityRoomEvent } from "@aimess/redis";
 import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
+  CommunityAddedPayload,
   CommunityClosedPayload,
   CommunityMemberAddedPayload,
   CommunityMemberRemovedPayload,
@@ -39,6 +40,7 @@ import {
   type PaginatedResponse,
 } from "../lib/pagination.js";
 import {
+  isValidHandleFormat,
   normalizeHandle,
   normalizeName,
   slugifyCategoryName,
@@ -92,6 +94,8 @@ import type {
   MyInviteData,
   MyJoinRequestData,
   MyReportData,
+  PublicCommunityCard,
+  PublicCommunityResponse,
 } from "../types/community.types.js";
 import { communityImageService } from "./community-image.service.js";
 import { memberAvatarService } from "./member-avatar.service.js";
@@ -309,7 +313,8 @@ export function buildLastActivity(community: {
       type: "created",
       userId: null,
       username: null,
-      preview: "Community created successfully",
+      // MUST match buildCommunitySystemFallbackText("COMMUNITY_CREATED") — single source of truth.
+      preview: "Community created",
       dateTime: community.createdAt.getTime(),
     };
   }
@@ -338,9 +343,14 @@ export function buildLastActivity(community: {
     type: systemType,
     userId: null,
     username: null,
+    // Null-preview fallback MUST match the canonical builder — see buildCommunitySystemFallbackText.
+    // This branch is only reached when lastActivityPreview has not yet been written
+    // (race: community was just created and the async community.activity event hasn't
+    // landed yet). Using the canonical text here means Chat Room / Mine / List / Socket
+    // all show the same string while the async write catches up.
     preview:
       community.lastActivityPreview ??
-      (systemType === "created" ? "Community created successfully" : ""),
+      (systemType === "created" ? "Community created" : ""),
     dateTime,
   };
 }
@@ -749,6 +759,9 @@ async function toMemberData(member: {
   bannedAt?: Date | null;
   bannedBy?: string | null;
   banReason?: string | null;
+  mutedAt?: Date | null;
+  mutedBy?: string | null;
+  mutedUntil?: Date | null;
 }): Promise<CommunityMemberData> {
   const avatarView = await memberAvatarService.resolveViewUrl(
     member.snapshotAvatarKey
@@ -768,6 +781,9 @@ async function toMemberData(member: {
     bannedAt: member.bannedAt ? member.bannedAt.toISOString() : null,
     bannedBy: member.bannedBy ?? null,
     banReason: member.banReason ?? null,
+    mutedAt: member.mutedAt ? member.mutedAt.toISOString() : null,
+    mutedBy: member.mutedBy ?? null,
+    mutedUntil: member.mutedUntil ? member.mutedUntil.toISOString() : null,
   };
 }
 
@@ -891,10 +907,23 @@ function assertInviteLinkActive(link: {
     throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
 }
 
+/**
+ * Build the shareable HTTPS invite URL. Invite links are code-based (the PRIVATE
+ * mechanism), so the path carries the Telegram-style `+` marker:
+ * `https://aimess.me/+<code>` (Sharing & Deep-Linking spec §9.5). base64url codes
+ * never contain `+`, so the prefix is an unambiguous private-link marker that
+ * `detectLink()` strips on the client. Falls back to the bare code when no base
+ * URL is configured (local/dev).
+ */
 function buildInviteUrl(code: string): string {
   return env.INVITE_LINK_BASE_URL
-    ? `${env.INVITE_LINK_BASE_URL}/${code}`
+    ? `${env.INVITE_LINK_BASE_URL}/+${code}`
     : code;
+}
+
+/** App deep-link for an invite code: `aimess://join?code=<code>` (spec §4.1/§9.5). */
+function buildInviteDeepLink(code: string): string {
+  return `aimess://join?code=${encodeURIComponent(code)}`;
 }
 
 function toInviteLinkData(row: CommunityInviteLink): CommunityInviteLinkData {
@@ -907,7 +936,7 @@ function toInviteLinkData(row: CommunityInviteLink): CommunityInviteLinkData {
     linkId: row.id,
     code: row.code,
     url: buildInviteUrl(row.code),
-    appDeepLink: `aimess://invite/${row.code}`,
+    appDeepLink: buildInviteDeepLink(row.code),
     communityId: row.communityId,
     createdBy: row.createdBy,
     maxUses: row.maxUses,
@@ -1194,6 +1223,100 @@ export const communityService = {
       joinRequest,
       liveStreams
     );
+  },
+
+  /**
+   * Public deep-link resolver — `GET /communities/by-handle/:handle`.
+   *
+   * PUBLIC-only by design (Sharing & Deep-Linking spec §9.1): a private
+   * community's handle resolves to 404 so this surface NEVER reveals a private
+   * community's existence or metadata. A suspended or soft-deleted community is
+   * likewise 404 ("not available"). A banned caller gets 403.
+   */
+  async getByHandle(
+    handle: string,
+    callerId: string
+  ): Promise<PublicCommunityResponse> {
+    const canonical = normalizeHandle(handle);
+    if (!isValidHandleFormat(canonical)) {
+      throw new BadRequestError("INVALID_HANDLE");
+    }
+
+    const community = await communityRepository.findByHandleFull(canonical);
+    // Collapse "missing", "private", and "not-available" (owner-CLOSED or
+    // platform-SUSPENDED) into a single 404 so the response is identical whether
+    // the community doesn't exist or is simply not publicly resolvable — no
+    // oracle for private-community discovery, and no "join" CTA for a community
+    // that can't be joined.
+    if (
+      !community ||
+      community.type !== CommunityType.PUBLIC ||
+      communityAccessPolicy.isEffectivelyClosed(community)
+    ) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const membership = await communityRepository.findMembership(
+      community.id,
+      callerId
+    );
+    // Banned ⇒ 403 (no body), matching getById and the spec's BANNED state.
+    assertNotBanned(membership);
+    const isActive = membership?.status === CommunityMemberStatus.ACTIVE;
+
+    const [avatarView, coverView] = await Promise.all([
+      communityImageService.resolveViewUrlForClient(community.avatarUrl),
+      communityImageService.resolveViewUrlForClient(community.coverUrl),
+    ]);
+
+    return {
+      communityId: community.id,
+      handle: community.handle,
+      name: community.name,
+      description: community.description ?? null,
+      avatarUrl: avatarView?.url ?? null,
+      bannerUrl: coverView?.url ?? null,
+      memberCount: community.memberCount,
+      type: "PUBLIC",
+      isJoined: isActive,
+      role: isActive ? membership.role : null,
+      isBanned: false,
+    };
+  },
+
+  /**
+   * Unauthenticated PUBLIC-only metadata card for the gateway's server-rendered
+   * link preview (OG unfurl). No caller, no membership, no ban logic — it must
+   * never reveal a private/suspended community (→ 404). Consumed internally over
+   * a shared-secret-guarded route, never exposed to clients.
+   */
+  async getPublicCard(handle: string): Promise<PublicCommunityCard> {
+    const canonical = normalizeHandle(handle);
+    if (!isValidHandleFormat(canonical)) {
+      throw new BadRequestError("INVALID_HANDLE");
+    }
+    const community = await communityRepository.findByHandleFull(canonical);
+    if (
+      !community ||
+      community.type !== CommunityType.PUBLIC ||
+      communityAccessPolicy.isEffectivelyClosed(community)
+    ) {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+
+    const [avatarView, coverView] = await Promise.all([
+      communityImageService.resolveViewUrlForClient(community.avatarUrl),
+      communityImageService.resolveViewUrlForClient(community.coverUrl),
+    ]);
+
+    return {
+      communityId: community.id,
+      name: community.name,
+      description: community.description ?? null,
+      avatarUrl: avatarView?.url ?? null,
+      bannerUrl: coverView?.url ?? null,
+      memberCount: community.memberCount,
+    };
   },
 
   async create(
@@ -1743,17 +1866,23 @@ export const communityService = {
 
     // Visibility strategy differs by caller: search mode (`includeJoined`) widens
     // to PUBLIC + the caller's ACTIVE memberships; the discover alias narrows to
-    // PUBLIC and excludes communities the caller already relates to.
-    const [includeMemberCommunityIds, excludeCommunityIds] =
-      params.includeJoined
-        ? [
-            await communityRepository.listActiveMemberCommunityIds(userId),
-            undefined,
-          ]
-        : [
-            undefined,
-            await communityRepository.listExcludedCommunityIds(userId),
-          ];
+    // PUBLIC and excludes communities the caller already relates to. In both
+    // paths, communities where the caller is BANNED must never appear.
+    let includeMemberCommunityIds: string[] | undefined;
+    let excludeCommunityIds: string[] | undefined;
+
+    if (params.includeJoined) {
+      const [memberIds, bannedIds] = await Promise.all([
+        communityRepository.listActiveMemberCommunityIds(userId),
+        communityRepository.findBannedCommunityIds(userId),
+      ]);
+      includeMemberCommunityIds = memberIds;
+      excludeCommunityIds = bannedIds.length ? bannedIds : undefined;
+    } else {
+      // listExcludedCommunityIds already covers ACTIVE + PENDING + BANNED.
+      excludeCommunityIds =
+        await communityRepository.listExcludedCommunityIds(userId);
+    }
 
     const { rows, total } = await communityRepository.listDiscoverable({
       q: params.q,
@@ -1846,8 +1975,30 @@ export const communityService = {
       limit: params.limit,
     });
 
+    const userIds = rows.map((r) => r.userId);
+    const [snapshotMap, muteMap] = await Promise.all([
+      fetchUserSnapshots(userIds),
+      communityRepository.findActiveMemberMutesByUserIds(communityId, userIds),
+    ]);
+
+    const enrichedRows = rows.map((r) => {
+      const snap = snapshotMap.get(r.userId);
+      const mute = muteMap.get(r.userId);
+      return {
+        ...r,
+        ...(snap && {
+          snapshotUsername: snap.username,
+          snapshotDisplayName: snap.displayName,
+          snapshotAvatarKey: snap.avatarObjectKey,
+        }),
+        mutedAt: mute?.createdAt ?? null,
+        mutedBy: mute?.mutedBy ?? null,
+        mutedUntil: mute?.mutedUntil ?? null,
+      };
+    });
+
     const members: CommunityMemberData[] = await Promise.all(
-      rows.map(toMemberData)
+      enrichedRows.map(toMemberData)
     );
 
     return buildPaginatedResponse(members, total, params.page, params.limit);
@@ -1930,7 +2081,7 @@ export const communityService = {
         actorUserId: callerId,
         actorName: "",
         targetUserId,
-        targetName: "",
+        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
         oldRole: target.role as string,
         newRole: role as string,
       },
@@ -2052,7 +2203,11 @@ export const communityService = {
     targetUserId: string,
     reason?: string
   ): Promise<CommunityMemberData> {
-    await this._assertCanModerateMember(communityId, callerId, targetUserId);
+    const { target } = await this._assertCanModerateMember(
+      communityId,
+      callerId,
+      targetUserId
+    );
 
     // Single-document update + recompute of memberCount — no $transaction
     // (standalone Mongo). Recounting ACTIVE members is robust against drift.
@@ -2128,6 +2283,9 @@ export const communityService = {
       systemMessageType: "MEMBER_REMOVED",
       actorId: callerId,
       targetUserId,
+      extra: {
+        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
+      },
     });
 
     return toMemberData(updated);
@@ -2254,6 +2412,9 @@ export const communityService = {
       systemMessageType: "MEMBER_BANNED",
       actorId: callerId,
       targetUserId,
+      extra: {
+        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
+      },
     });
 
     return toMemberData(updated);
@@ -2302,7 +2463,7 @@ export const communityService = {
    *      room (best-effort; never throws into the request path).
    */
   async notifyMemberJoined(args: {
-    community: { id: string; name: string };
+    community: CommunityWithCategory;
     member: {
       userId: string;
       role: CommunityMemberRole;
@@ -2377,6 +2538,47 @@ export const communityService = {
     } catch (error) {
       logger.warn(
         `community:member:joined broadcast failed for community=${community.id} user=${member.userId}`
+      );
+      logger.warn(error);
+    }
+
+    // Personal onboarding event — the new member is NOT yet in the
+    // `community:<id>` room, so the roster broadcast above never reaches them.
+    // Emit `community:added` to THEIR `user:<id>` channel with a full list-row
+    // snapshot so the client inserts the community into the sidebar / "mine" list
+    // INSTANTLY — no GET /communities/mine round-trip, no page refresh. Idempotent
+    // (client upserts by communityId). Fire-and-forget: a publish failure must
+    // never fail the membership write (REST + /communities/mine stay the truth).
+    try {
+      const communityAvatar =
+        await communityImageService.resolveViewUrlForClient(
+          community.avatarUrl
+        );
+      const addedPayload: CommunityAddedPayload = {
+        communityId: community.id,
+        name: community.name,
+        handle: community.handle,
+        description: community.description,
+        avatarUrl: communityAvatar?.url ?? null,
+        type: community.type as "PUBLIC" | "PRIVATE",
+        categoryId: community.category.id,
+        categoryName: community.category.name,
+        memberCount,
+        role: member.role,
+        status: communityAccessPolicy.deriveStatus(community),
+        via,
+        joinedAt: member.joinedAt.getTime(),
+        addedAt: Date.now(),
+      };
+      await publishChatUserEvent(
+        redis,
+        member.userId,
+        "community:added",
+        addedPayload
+      );
+    } catch (error) {
+      logger.warn(
+        `community:added personal emit failed for community=${community.id} user=${member.userId}`
       );
       logger.warn(error);
     }
@@ -2928,6 +3130,9 @@ export const communityService = {
       systemMessageType: "MEMBER_UNBANNED",
       actorId: callerId,
       targetUserId,
+      extra: {
+        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
+      },
     });
 
     return toMemberData(updated);
@@ -2993,6 +3198,9 @@ export const communityService = {
       systemMessageType: "MEMBER_MUTED",
       actorId: callerId,
       targetUserId,
+      extra: {
+        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
+      },
     });
 
     const view = await buildUserSnapshotView(
@@ -3034,10 +3242,10 @@ export const communityService = {
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
 
-    const existing = await communityRepository.findMemberMute(
-      communityId,
-      targetUserId
-    );
+    const [existing, targetMember] = await Promise.all([
+      communityRepository.findMemberMute(communityId, targetUserId),
+      communityRepository.findMemberByUserId(communityId, targetUserId),
+    ]);
     // No active mute → 404 (a fully-expired row is treated as not muted).
     if (
       !existing ||
@@ -3071,6 +3279,12 @@ export const communityService = {
       systemMessageType: "MEMBER_UNMUTED",
       actorId: callerId,
       targetUserId,
+      extra: {
+        targetName:
+          targetMember?.snapshotDisplayName ||
+          targetMember?.snapshotUsername ||
+          "",
+      },
     });
   },
 
@@ -3911,7 +4125,13 @@ export const communityService = {
 
     logger.info(`Community reopened: community=${communityId} by=${callerId}`);
 
-    // Real-time: announce reopen to the community room.
+    // Real-time: announce reopen to the community room AND to the owner's
+    // `user:<id>` channel. The room is EMPTY post-close (every member was evicted
+    // on close), and reopen does not restore the former roster — so a room-only
+    // emit reaches nobody. The owner is the sole ACTIVE member now; fan out to
+    // their user channel so their other tabs/devices flip the community back to
+    // ACTIVE live (the triggering tab already has the REST response). Mirrors the
+    // per-member fan-out in closeCommunity.
     const payload: CommunityReopenedPayload = {
       communityId,
       status: "ACTIVE",
@@ -3921,6 +4141,12 @@ export const communityService = {
       await publishCommunityRoomEvent(
         redis,
         communityId,
+        "community:reopened",
+        payload
+      );
+      await publishChatUserEvent(
+        redis,
+        callerId,
         "community:reopened",
         payload
       );
@@ -5801,12 +6027,11 @@ export const communityService = {
       ? new Date(Date.now() + input.expiresInMinutes * 60_000)
       : null;
     const maxUses = input.maxUses ?? null;
-    const autoApprove =
-      input.autoApprove !== undefined
-        ? input.autoApprove
-        : community.type === CommunityType.PRIVATE
-          ? true
-          : false;
+    // Default = request-to-join for BOTH types (Sharing & Deep-Linking spec,
+    // flow F5: a private link's primary path is "Request to Join" with moderator
+    // approval). Moderators can still opt into instant-join by passing
+    // `autoApprove: true` explicitly at create time.
+    const autoApprove = input.autoApprove ?? false;
 
     // Retry up to 3 times on code collision (P2002 unique violation on `code`).
     let row: Awaited<
@@ -6058,27 +6283,34 @@ export const communityService = {
       };
     }
 
-    // Atomic capacity-guarded increment — if count === 0, another redeemer
-    // beat us across the line and the link is now exhausted.
-    const incRes = await communityRepository.incrementInviteLinkUsageIfUnder(
-      link.id
-    );
-    if (incRes.count === 0) {
-      throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
-    }
-
-    // Record audit that the link was used.
-    await this.recordAudit({
-      communityId: community.id,
-      actorId: callerId,
-      action: "INVITE_LINK_REDEEMED",
-      targetUserId: callerId,
-      metadata: { linkId: link.id, code: link.code },
-    });
-
-    const updatedLink = await communityRepository.findInviteLinkById(link.id);
+    // A redeem only consumes a usage slot when it produces a REAL join effect:
+    // a new/reactivated membership (autoApprove) or a NEW/recycled join request.
+    // An idempotent re-tap (already ACTIVE — handled above; or already PENDING —
+    // handled below) must NOT burn a use, otherwise a single user re-tapping a
+    // maxUses-limited link would prematurely exhaust it for everyone.
+    const burnUsageSlot = async (): Promise<void> => {
+      // Atomic capacity-guarded increment — if count === 0, another redeemer
+      // beat us across the line and the link is now exhausted.
+      const incRes = await communityRepository.incrementInviteLinkUsageIfUnder(
+        link.id
+      );
+      if (incRes.count === 0) {
+        throw new GoneError("COMMUNITY_INVITE_LINK_EXHAUSTED");
+      }
+      // Audit only when a use is actually consumed.
+      await this.recordAudit({
+        communityId: community.id,
+        actorId: callerId,
+        action: "INVITE_LINK_REDEEMED",
+        targetUserId: callerId,
+        metadata: { linkId: link.id, code: link.code },
+      });
+    };
 
     if (link.autoApprove) {
+      // autoApprove=true always creates/reactivates a membership → consume a use.
+      await burnUsageSlot();
+      const updatedLink = await communityRepository.findInviteLinkById(link.id);
       // autoApprove=true: directly add the member without a join request.
       const snapshotMap = await fetchUserSnapshots([callerId]);
       const snap = snapshotMap.get(callerId)!;
@@ -6137,11 +6369,26 @@ export const communityService = {
     }
 
     // autoApprove=false (default): create a join request through approval flow.
+    // Only consume a usage slot for a NEW or recycled request — an existing
+    // PENDING request is returned idempotently and must not burn a use.
+    const existingRequest =
+      await communityRepository.findJoinRequestByCommunityAndUser(
+        community.id,
+        callerId
+      );
+    const willCreateOrRecycle =
+      !existingRequest ||
+      existingRequest.status !== CommunityJoinReqStatus.PENDING;
+    if (willCreateOrRecycle) {
+      await burnUsageSlot();
+    }
+
     const joinResult = await this.createJoinRequest(
       community.id,
       callerId,
       null
     );
+    const updatedLink = await communityRepository.findInviteLinkById(link.id);
 
     return {
       link: toInviteLinkData(updatedLink!),
@@ -6177,6 +6424,16 @@ export const communityService = {
     }
     const isJoined = membership?.status === CommunityMemberStatus.ACTIVE;
 
+    const pendingRequest =
+      !isJoined && callerId
+        ? await communityRepository.findJoinRequestByCommunityAndUser(
+            community.id,
+            callerId
+          )
+        : null;
+    const pendingRow =
+      pendingRequest?.status === "PENDING" ? pendingRequest : null;
+
     const avatarView = await communityImageService.resolveViewUrlForClient(
       community.avatarUrl
     );
@@ -6193,9 +6450,11 @@ export const communityService = {
       memberCount: community.memberCount,
       communityType: community.type,
       isJoined,
+      joinRequestId: pendingRow?.id ?? null,
+      joinRequestStatus: pendingRow ? ("PENDING" as const) : null,
       invitationCode: code,
       inviteUrl: buildInviteUrl(code),
-      appDeepLink: `aimess://invite/${code}`,
+      appDeepLink: buildInviteDeepLink(code),
       expiresAt: link.expiresAt ? link.expiresAt.getTime() : null,
       creatorId: link.createdBy,
     };

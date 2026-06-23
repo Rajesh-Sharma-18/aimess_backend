@@ -197,6 +197,22 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * Full-row, case-insensitive handle lookup (with category) for the public
+   * by-handle resolver. Unlike `findByHandle` (id-only uniqueness probe), this
+   * returns the whole community so the service can apply PUBLIC/suspended gates
+   * and serialize the preview.
+   */
+  findByHandleFull(handle: string) {
+    return prisma.community.findFirst({
+      where: {
+        deletedAt: { isSet: false },
+        handle: { equals: handle, mode: "insensitive" },
+      },
+      include: { category: { select: { id: true, name: true } } },
+    });
+  },
+
   createCommunity(data: {
     name: string;
     handle: string;
@@ -216,7 +232,11 @@ export const communityRepository = {
         ...data,
         memberCount: 1,
         lastActivityType: "created",
-        lastActivityPreview: "Community created successfully",
+        // Canonical SYSTEM text — MUST match buildCommunitySystemFallbackText(
+        // "COMMUNITY_CREATED") and buildLastActivity's "created" fallback so the
+        // Mine / List / Sync APIs show the same string as the chat room from the
+        // instant of creation (before the async community.activity event lands).
+        lastActivityPreview: "Community created",
         lastActivityUsername: null,
       },
       include: { category: { select: { id: true, name: true } } },
@@ -971,6 +991,15 @@ export const communityRepository = {
           ],
         },
       },
+      select: { communityId: true },
+    });
+    return rows.map((r) => r.communityId);
+  },
+
+  /** Community ids where the user has an active ban. */
+  async findBannedCommunityIds(userId: string): Promise<string[]> {
+    const rows = await prisma.communityMember.findMany({
+      where: { userId, status: CommunityMemberStatus.BANNED },
       select: { communityId: true },
     });
     return rows.map((r) => r.communityId);
@@ -1885,8 +1914,10 @@ export const communityRepository = {
     page: number;
     limit: number;
   }) {
+    const bannedIds = await this.findBannedCommunityIds(params.userId);
     const where: Prisma.CommunityJoinRequestWhereInput = {
       userId: params.userId,
+      ...(bannedIds.length > 0 && { communityId: { notIn: bannedIds } }),
     };
     if (params.status) where.status = params.status;
 
@@ -1984,8 +2015,10 @@ export const communityRepository = {
     page: number;
     limit: number;
   }) {
+    const bannedIds = await this.findBannedCommunityIds(params.inviteeId);
     const where: Prisma.CommunityInviteWhereInput = {
       inviteeId: params.inviteeId,
+      ...(bannedIds.length > 0 && { communityId: { notIn: bannedIds } }),
     };
     if (params.status) where.status = params.status;
 
@@ -2232,6 +2265,30 @@ export const communityRepository = {
     const now = new Date();
     if (row.mutedUntil === null || row.mutedUntil > now) return row;
     return null;
+  },
+
+  /** Batch-fetch active mutes for a set of userIds in one community page. */
+  async findActiveMemberMutesByUserIds(communityId: string, userIds: string[]) {
+    if (userIds.length === 0)
+      return new Map<
+        string,
+        { mutedBy: string; mutedUntil: Date | null; createdAt: Date }
+      >();
+    const now = new Date();
+    const rows = await prisma.communityMemberMute.findMany({
+      where: {
+        communityId,
+        userId: { in: userIds },
+        OR: [{ mutedUntil: null }, { mutedUntil: { gt: now } }],
+      },
+      select: {
+        userId: true,
+        mutedBy: true,
+        mutedUntil: true,
+        createdAt: true,
+      },
+    });
+    return new Map(rows.map((r) => [r.userId, r]));
   },
 
   /** Idempotent re-mute: updates mutedBy/reason/mutedUntil on conflict. */

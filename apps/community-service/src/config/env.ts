@@ -30,8 +30,19 @@ const envSchema = z.object({
   /** Reserved for future community events (publish/consume). */
   RABBITMQ_URL: z.string().min(1),
 
-  /** Optional base URL used to build shareable community invite links. */
-  INVITE_LINK_BASE_URL: z.string().url().optional(),
+  /**
+   * Shared secret for unauthenticated internal (service-to-service) routes such
+   * as the gateway's public-card lookup for the link preview. When unset, the
+   * internal routes are disabled (return 404) — they are never public.
+   */
+  INTERNAL_SHARED_SECRET: z.string().optional(),
+
+  /**
+   * Dedicated link host for shareable community links (Telegram's `t.me`
+   * equivalent). Private invite links render as `<base>/+<code>`. Defaults to
+   * the production link domain; override per-env (e.g. a staging host).
+   */
+  INVITE_LINK_BASE_URL: z.string().url().default("https://aimess.me"),
 
   USER_GRPC_URL: z.string().default("0.0.0.0:4002"),
 

@@ -34,3 +34,7 @@ tree-data.json
 community_*.json
 demo-frontend/
 demo-frontend/*.tsx
+
+.vscode
+.claude
+.serena

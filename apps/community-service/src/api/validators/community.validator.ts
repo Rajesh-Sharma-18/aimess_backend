@@ -100,6 +100,16 @@ export const handleAvailableQuerySchema = z.object({
 
 export type HandleAvailableQuery = z.infer<typeof handleAvailableQuerySchema>;
 
+/**
+ * `GET /communities/by-handle/:handle` path param. Reuses `handleSchema` so a
+ * malformed handle is rejected (400 INVALID_HANDLE) before hitting the service.
+ */
+export const handleParamsSchema = z.object({
+  handle: handleSchema,
+});
+
+export type HandleParams = z.infer<typeof handleParamsSchema>;
+
 /** Reusable discovery search query field (`q`). */
 const discoverSearchSchema = z
   .string()
@@ -221,9 +231,11 @@ export type TransferAdminInput = z.infer<typeof transferAdminSchema>;
  * Body for POST /communities/:id/close. `reason` is an optional free-text note
  * surfaced to evicted members. Empty/omitted body is accepted.
  */
-export const closeCommunitySchema = z.object({
-  reason: z.string().trim().max(500).optional(),
-});
+export const closeCommunitySchema = z
+  .object({
+    reason: z.string().trim().max(500).optional(),
+  })
+  .default({});
 
 export type CloseCommunityInput = z.infer<typeof closeCommunitySchema>;
 

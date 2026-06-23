@@ -38,6 +38,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
 
 jest.mock("@aimess/redis", () => ({
   publishCommunityRoomEvent: jest.fn(async () => 1),
+  publishChatUserEvent: jest.fn(async () => 1),
 }));
 
 jest.mock("../../src/repositories/community.repository.js", () => ({
@@ -72,7 +73,7 @@ jest.mock("../../src/services/member-avatar.service.js", () => ({
 // Imports (after all jest.mock declarations)
 // ---------------------------------------------------------------------------
 
-import { publishCommunityRoomEvent } from "@aimess/redis";
+import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { publishCommunityMemberLeftSafe } from "../../src/messaging/publish-community.js";
@@ -84,6 +85,7 @@ import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/pu
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
+const pubUserEvent = publishChatUserEvent as jest.Mock;
 const pubMemberLeft = publishCommunityMemberLeftSafe as jest.Mock;
 const pubSysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
 
@@ -101,10 +103,15 @@ const RID = "r".repeat(24); // join-request id
 const community = {
   id: CID,
   name: "Test Community",
+  handle: "test-community",
+  description: "A test community",
+  avatarUrl: null,
   type: "PUBLIC",
   adminId: ADMIN,
   memberCount: 10,
   moderationStatus: "ACTIVE",
+  status: "ACTIVE",
+  category: { id: "cat-1", name: "General" },
 };
 
 const activeMemberTarget = {
@@ -139,6 +146,7 @@ const activeMemberNonAdmin = {
 
 beforeEach(() => {
   pubRoomEvent.mockClear();
+  pubUserEvent.mockClear();
   pubMemberLeft.mockClear();
   pubSysMsg.mockClear();
 });
@@ -212,15 +220,16 @@ describe("kickMember — real-time broadcasts", () => {
     ).resolves.not.toThrow();
   });
 
-  it("does NOT post a MEMBER_REMOVED chat system message (silent kick)", async () => {
+  it("posts a MEMBER_REMOVED chat system message (visible moderation — Telegram parity)", async () => {
     await communityService.kickMember(CID, ADMIN, TARGET, "violating rules");
 
-    // The roster socket + domain event still fire (asserted above); only the
-    // chat-timeline SYSTEM line is suppressed so "X was removed" can't pile up.
+    // Moderation actions are visible to all members (Telegram parity): the
+    // chat-timeline SYSTEM line is posted. Only MEMBER_LEFT / MEMBER_JOINED are
+    // hidden (HIDDEN_SYSTEM_MESSAGE_TYPES); MEMBER_REMOVED is NOT.
     const postedTypes = pubSysMsg.mock.calls.map(
       ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
     );
-    expect(postedTypes).not.toContain("MEMBER_REMOVED");
+    expect(postedTypes).toContain("MEMBER_REMOVED");
   });
 
   it("does NOT write removal to lastActivity (removal never becomes the list preview)", async () => {
@@ -295,13 +304,15 @@ describe("banMember — real-time broadcasts", () => {
     expect(pubRoomEvent).not.toHaveBeenCalled();
   });
 
-  it("does NOT post a MEMBER_BANNED chat system message (silent ban)", async () => {
+  it("posts a MEMBER_BANNED chat system message (visible moderation — Telegram parity)", async () => {
     await communityService.banMember(CID, ADMIN, TARGET, "spam");
 
+    // MEMBER_BANNED is NOT in HIDDEN_SYSTEM_MESSAGE_TYPES — a ban is shown in the
+    // chat timeline to all members (Telegram parity).
     const postedTypes = pubSysMsg.mock.calls.map(
       ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
     );
-    expect(postedTypes).not.toContain("MEMBER_BANNED");
+    expect(postedTypes).toContain("MEMBER_BANNED");
   });
 
   it("does NOT write removal/ban to lastActivity (ban never becomes the list preview)", async () => {
@@ -467,13 +478,15 @@ describe("unbanMember — real-time broadcast", () => {
     expect(pubRoomEvent).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT post a MEMBER_UNBANNED chat system message (silent unban)", async () => {
+  it("posts a MEMBER_UNBANNED chat system message (visible moderation — Telegram parity)", async () => {
     await communityService.unbanMember(CID, ADMIN, TARGET);
 
+    // MEMBER_UNBANNED is NOT in HIDDEN_SYSTEM_MESSAGE_TYPES — lifting a ban is
+    // shown in the chat timeline to all members (Telegram parity).
     const postedTypes = pubSysMsg.mock.calls.map(
       ([arg]) => (arg as { systemMessageType?: string }).systemMessageType
     );
-    expect(postedTypes).not.toContain("MEMBER_UNBANNED");
+    expect(postedTypes).toContain("MEMBER_UNBANNED");
   });
 });
 
@@ -549,5 +562,30 @@ describe("notifyMemberJoined — emits community:stats:updated alongside communi
       memberCount: 11,
     });
     expect(typeof payload.updatedAt).toBe("number");
+  });
+
+  it("emits community:added to the new member's user channel with full community data", async () => {
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    // Personal onboarding event — the new member is not yet in the community
+    // room, so this user-channel emit is what makes the community appear in
+    // their list WITHOUT a refresh or GET /communities/mine round-trip.
+    const addedCall = pubUserEvent.mock.calls.find(
+      ([, , evt]) => evt === "community:added"
+    );
+    expect(addedCall).toBeDefined();
+    const [, userId, , payload] = addedCall!;
+    expect(userId).toBe(TARGET);
+    expect(payload).toMatchObject({
+      communityId: CID,
+      name: "Test Community",
+      handle: "test-community",
+      memberCount: 11,
+      role: "MEMBER",
+      status: "ACTIVE",
+      via: "join_request_approved",
+    });
+    expect(typeof payload.joinedAt).toBe("number");
+    expect(typeof payload.addedAt).toBe("number");
   });
 });

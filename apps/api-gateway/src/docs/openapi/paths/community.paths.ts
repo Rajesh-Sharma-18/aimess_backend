@@ -470,6 +470,75 @@ export const communityPaths = {
       },
     },
   },
+  "/communities/by-handle/{handle}": {
+    get: {
+      tags: ["Communities"],
+      summary: "Resolve a public community by handle (deep-link)",
+      description:
+        "Public deep-link resolver for `https://aimess.me/<handle>` (Community " +
+        "Sharing & Deep-Linking). **PUBLIC communities only** — a private " +
+        "community's handle returns 404, so this surface never reveals a private " +
+        "community. Suspended/soft-deleted communities also return 404. A banned " +
+        "caller gets 403. Drives the client's Join preview screen.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "handle",
+          in: "path",
+          required: true,
+          schema: { type: "string", minLength: 3, maxLength: 32 },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Public community resolved",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/PublicCommunityResponse",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        "400": {
+          description: "Malformed handle (INVALID_HANDLE)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "401": unauthorized,
+        "403": {
+          description: "Caller is banned (COMMUNITY_JOIN_BANNED)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "404": {
+          description: "Not found / private / suspended (COMMUNITY_NOT_FOUND)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+      },
+    },
+  },
   "/communities/mine": {
     get: {
       tags: ["Communities"],
