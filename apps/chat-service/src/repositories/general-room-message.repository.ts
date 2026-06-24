@@ -1025,7 +1025,12 @@ export class GeneralRoomMessageRepository {
         // deletedForAll intentionally NOT filtered — tombstones must be
         // included so the client can reconcile deletes missed while offline.
       },
-      orderBy: { updatedAt: "asc" },
+      // `sequenceNumber` is the secondary sort key so messages sharing the same
+      // updatedAt millisecond have a deterministic, total order across sync pages.
+      // NOTE: the boundary stays inclusive (`gte`) by design — clients de-dupe by
+      // id and apply mutations idempotently; a hot message whose updatedAt keeps
+      // advancing can still re-appear on the boundary (acceptable for sync).
+      orderBy: [{ updatedAt: "asc" }, { sequenceNumber: "asc" }],
       take: params.limit + 1,
     });
 
