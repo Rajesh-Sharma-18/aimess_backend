@@ -99,7 +99,27 @@ describe("POST /api/v1/media/download-url", () => {
     expect(res.body.success).toBe(false);
   });
 
-  it("400: COMMUNITY_CHAT_ATTACHMENT key with wrong prefix", async () => {
+  it("200: declared category mismatch self-heals from the objectKey prefix", async () => {
+    // The reported bug: client sent category CHAT_ATTACHMENT for a
+    // community-chat-uploads/* key. The objectKey's own prefix is authoritative,
+    // so the object resolves (as COMMUNITY_CHAT_ATTACHMENT) instead of returning
+    // an all-null MediaObject with an empty downloadUrl.
+    const key = `community-chat-uploads/${TEST_USER_ID}/file.mp4`;
+    const res = await request(app)
+      .post("/api/v1/media/download-url")
+      .set(auth())
+      .send({ objectKey: key, category: "CHAT_ATTACHMENT" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.downloadUrl).toBe("https://minio.test/presigned-get");
+    expect(res.body.data.media.objectKey).toBe(key);
+  });
+
+  it("403: objectKey prefix governs over a mismatched declared category (IDOR)", async () => {
+    // A chat-uploads key owned by ANOTHER user, declared (wrongly) as
+    // COMMUNITY_CHAT_ATTACHMENT, is recognized as CHAT_ATTACHMENT by its prefix
+    // and rejected by the owner check — not masked as a generic 400.
     const res = await request(app)
       .post("/api/v1/media/download-url")
       .set(auth())
@@ -108,7 +128,7 @@ describe("POST /api/v1/media/download-url", () => {
         category: "COMMUNITY_CHAT_ATTACHMENT",
       });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
     expect(res.body.success).toBe(false);
   });
 
@@ -140,7 +160,8 @@ describe("POST /api/v1/media/download-url", () => {
     expect(res.body.data.downloadUrl).toBe("https://minio.test/presigned-get");
   });
 
-  it("400: GROUP_CHAT_ATTACHMENT key with wrong prefix", async () => {
+  it("403: GROUP_CHAT_ATTACHMENT declared but key is another user's chat-uploads key (IDOR)", async () => {
+    // Prefix governs → resolved as CHAT_ATTACHMENT → owner check fails.
     const res = await request(app)
       .post("/api/v1/media/download-url")
       .set(auth())
@@ -149,7 +170,7 @@ describe("POST /api/v1/media/download-url", () => {
         category: "GROUP_CHAT_ATTACHMENT",
       });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
     expect(res.body.success).toBe(false);
   });
 
