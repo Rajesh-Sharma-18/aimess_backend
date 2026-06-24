@@ -11,8 +11,10 @@ import type {
   LivestreamReportItem,
   LivestreamReportStatus,
   LivestreamStatus,
+  LivestreamUserItem,
   ListLivestreamsQuery,
   ListLivestreamReportsQuery,
+  ListLivestreamUsersQuery,
   Paginated,
   PaginationMeta,
   ReportsByType,
@@ -34,6 +36,10 @@ export interface LivestreamRepository {
     livestreamId: string,
     query: ListLivestreamReportsQuery
   ): Promise<Paginated<LivestreamReportItem>>;
+  listUsers(
+    livestreamId: string,
+    query: ListLivestreamUsersQuery
+  ): Promise<Paginated<LivestreamUserItem>>;
   end(
     id: string,
     input: EndInput,
@@ -208,6 +214,27 @@ export class MockLivestreamRepository implements LivestreamRepository {
     const sorted = this.applyReportSort(filtered, query.sort);
 
     return Promise.resolve(this.offsetReportPage(sorted, query));
+  }
+
+  listUsers(
+    livestreamId: string,
+    query: ListLivestreamUsersQuery
+  ): Promise<Paginated<LivestreamUserItem>> {
+    const row = this.rows.find((r) => r.livestreamId === livestreamId);
+    if (!row) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
+    // Mock has no roster — return an empty page (the gRPC repo is the real impl).
+    const pagination: PaginationMeta = {
+      mode: "offset",
+      page: query.page,
+      limit: query.limit,
+      total: 0,
+      totalApprox: 0,
+      totalPages: 0,
+      hasNext: false,
+      hasPrev: false,
+      nextCursor: null,
+    };
+    return Promise.resolve({ data: [], pagination });
   }
 
   end(
@@ -549,146 +576,45 @@ function compareBy(
 }
 
 // ---------------------------------------------------------------------------
-// Prisma implementation.
+// gRPC live-read implementation (source of truth).
+//
+// The admin Livestream Management screen reads streams LIVE from stream-service
+// over gRPC and enriches each row with community/creator/category/avatars (from
+// community + user gRPC) and report counts (from admin_db `Report`, type=stream).
+// There is NO event-fed read-model to drift out of sync — this replaced the
+// old PrismaLivestreamRepository that read the chronically-empty LivestreamIndex.
 // ---------------------------------------------------------------------------
 
 import { prisma } from "../config/prisma.js";
-import type { LivestreamIndex as PrismaLivestreamIndex } from "../generated/prisma/client.js";
+import { env } from "../config/env.js";
+import { mediaUrlStrategy } from "../config/storage.js";
+import { streamClient, type AdminStreamRow } from "../grpc/stream.client.js";
+import {
+  communityClient,
+  type AdminCommunityBrief,
+} from "../grpc/community.client.js";
+import { userClient, type AdminProfileRecord } from "../grpc/user.client.js";
+import { communityMembersRepository } from "./community-members.repository.js";
+import type {
+  LivestreamReportType,
+  ReportSeverity,
+  ReportsSummary,
+} from "../types/livestream.types.js";
 
-function toListItemFromIndex(row: PrismaLivestreamIndex): LivestreamListItem {
-  const endedAt = row.endedAt?.toISOString() ?? null;
-  const startedAt = row.livedAt?.toISOString() ?? row.createdAt.toISOString();
-  return {
-    livestreamId: row.streamId,
-    title: row.title,
-    community: {
-      id: row.communityId,
-      name: row.communityName,
-      slug: slugify(row.communityName),
-    },
-    creator: {
-      id: row.creatorId,
-      username: row.creatorUsername,
-      displayName: row.creatorUsername,
-      avatarUrl: null,
-    },
-    category: { id: "", name: "", slug: "" },
-    createdAt: row.createdAt.toISOString(),
-    startedAt,
-    endedAt,
-    durationSeconds: row.durationSeconds,
-    status: row.status as LivestreamStatus,
-    viewerCount: row.viewerCount,
-    reportCount: 0,
-    reportSeverity: "NONE",
-    thumbnailUrl: row.thumbnailUrl ?? null,
-  };
+const STREAM_BUCKET = env.MINIO_BUCKET_STREAM;
+
+// --- pure mappers ----------------------------------------------------------
+
+/** stream-service PENDING ⇄ admin-facing SCHEDULED. */
+function toAdminStatus(s: string): LivestreamStatus {
+  if (s === "PENDING") return "SCHEDULED";
+  if (s === "LIVE" || s === "ENDED" || s === "CANCELLED" || s === "SCHEDULED") {
+    return s;
+  }
+  return s as LivestreamStatus;
 }
-
-function toDetailFromIndex(row: PrismaLivestreamIndex): LivestreamDetail {
-  const endedAt = row.endedAt?.toISOString() ?? null;
-  const startedAt = row.livedAt?.toISOString() ?? row.createdAt.toISOString();
-  const emptyByType: ReportsByType = {
-    HARASSMENT: 0,
-    SPAM: 0,
-    COPYRIGHT: 0,
-    NUDITY: 0,
-    VIOLENCE: 0,
-    HATE_SPEECH: 0,
-    OTHER: 0,
-  };
-  return {
-    livestreamId: row.streamId,
-    title: row.title,
-    description: row.description,
-    community: {
-      id: row.communityId,
-      name: row.communityName,
-      slug: slugify(row.communityName),
-      memberCount: 0,
-      creatorRole: "",
-    },
-    creator: {
-      id: row.creatorId,
-      username: row.creatorUsername,
-      displayName: row.creatorUsername,
-      avatarUrl: null,
-      accountStatus: "ACTIVE",
-      totalStreams: 0,
-      priorStrikes: 0,
-    },
-    category: { id: "", name: "", slug: "" },
-    createdAt: row.createdAt.toISOString(),
-    startedAt,
-    endedAt,
-    durationSeconds: row.durationSeconds,
-    status: row.status as LivestreamStatus,
-    viewerCount: row.viewerCount,
-    reportCount: 0,
-    reportSeverity: "NONE",
-    thumbnailUrl: row.thumbnailUrl ?? null,
-    endReasonCode: (row.reasonCode as EndReasonCode) ?? null,
-    endedBy: row.endedByAdminId
-      ? {
-          adminId: row.endedByAdminId,
-          adminName: row.endedByAdminName ?? row.endedByAdminId,
-        }
-      : null,
-    viewerStats: {
-      currentViewers: row.status === "LIVE" ? row.viewerCount : 0,
-      peakViewers: row.peakViewers,
-      totalUniqueViewers: 0,
-      totalWatchTimeSeconds: 0,
-      averageWatchTimeSeconds: 0,
-      chatMessageCount: row.totalComments,
-    },
-    streamMetadata: {
-      ingestProtocol: row.sourceType || "RTMP",
-      playbackUrl: row.hlsUrl ?? "",
-      resolution: "",
-      bitrateKbps: 0,
-      fps: 0,
-      region: "",
-      isRecording: false,
-      recordingUrl: null,
-    },
-    reportsSummary: {
-      total: 0,
-      open: 0,
-      reviewing: 0,
-      resolved: 0,
-      dismissed: 0,
-      severity: "NONE",
-      byType: emptyByType,
-      firstReportedAt: null,
-      lastReportedAt: null,
-    },
-    moderationHistory: [
-      {
-        id: `${row.streamId}_created`,
-        action: "STREAM_CREATED",
-        adminId: "system",
-        adminName: "System",
-        reasonCode: null,
-        note: null,
-        createdAt: row.createdAt.toISOString(),
-      },
-      ...(row.endedByAdminId && endedAt
-        ? [
-            {
-              id: `${row.streamId}_ended`,
-              action: "STREAM_ENDED",
-              adminId: row.endedByAdminId,
-              adminName: row.endedByAdminName ?? row.endedByAdminId,
-              reasonCode: row.reasonCode ?? null,
-              note: null,
-              createdAt: endedAt,
-            },
-          ]
-        : []),
-    ],
-    reports: [],
-  };
+function toStreamStatus(s: LivestreamStatus): string {
+  return s === "SCHEDULED" ? "PENDING" : s;
 }
 
 function slugify(name: string): string {
@@ -700,102 +626,550 @@ function slugify(name: string): string {
   );
 }
 
-export class PrismaLivestreamRepository implements LivestreamRepository {
+function severityFromCount(n: number): ReportSeverity {
+  if (n <= 0) return "NONE";
+  if (n <= 2) return "LOW";
+  if (n <= 5) return "MEDIUM";
+  return "HIGH";
+}
+
+function displayNameOf(u?: AdminProfileRecord | null): string {
+  if (!u) return "";
+  const full = [u.firstName, u.lastName].filter(Boolean).join(" ").trim();
+  return full || u.username;
+}
+
+const REPORT_TYPE_SET = new Set<LivestreamReportType>([
+  "HARASSMENT",
+  "SPAM",
+  "COPYRIGHT",
+  "NUDITY",
+  "VIOLENCE",
+  "HATE_SPEECH",
+  "OTHER",
+]);
+function toReportType(reason: string): LivestreamReportType {
+  const up = (reason || "").toUpperCase().replace(/\s+/g, "_");
+  return REPORT_TYPE_SET.has(up as LivestreamReportType)
+    ? (up as LivestreamReportType)
+    : "OTHER";
+}
+function toReportStatus(s: string): LivestreamReportStatus {
+  const up = (s || "").toUpperCase();
+  return up === "OPEN" ||
+    up === "REVIEWING" ||
+    up === "RESOLVED" ||
+    up === "DISMISSED"
+    ? (up as LivestreamReportStatus)
+    : "OPEN";
+}
+
+function unique(arr: string[]): string[] {
+  return [...new Set(arr.filter(Boolean))];
+}
+
+function offsetMeta(
+  page: number,
+  limit: number,
+  total: number
+): PaginationMeta {
+  const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+  return {
+    mode: "offset",
+    page,
+    limit,
+    total,
+    totalApprox: total,
+    totalPages,
+    hasNext: page * limit < total,
+    hasPrev: page > 1,
+    nextCursor: null,
+  };
+}
+
+function emptyListPage(
+  query: ListLivestreamsQuery
+): Paginated<LivestreamListItem> {
+  return { data: [], pagination: offsetMeta(query.page, query.limit, 0) };
+}
+
+async function resolveThumb(key: string | null): Promise<string | null> {
+  if (!key) return null;
+  try {
+    const r = await mediaUrlStrategy.resolveDownloadUrl(STREAM_BUCKET, key);
+    return r.url;
+  } catch {
+    return null;
+  }
+}
+
+// --- search/filter resolution (push everything down to a paginated query) --
+
+/** Community-name search → matching community ids (best-effort, degrades to []). */
+async function resolveCommunityIdsByName(search: string): Promise<string[]> {
+  try {
+    const r = await communityClient.adminListCommunities({
+      search,
+      type: "",
+      category: "",
+      status: "",
+      createdFrom: "",
+      createdTo: "",
+      sortField: "createdAt",
+      sortDir: "desc",
+      page: 1,
+      limit: 50,
+    });
+    return r.communities.map((c) => c.communityId);
+  } catch {
+    return [];
+  }
+}
+
+/** Creator-name search → matching creator ids (admin_db UserIndex). */
+async function resolveCreatorIdsByName(search: string): Promise<string[]> {
+  const rows = await prisma.userIndex.findMany({
+    where: { username: { contains: search, mode: "insensitive" } },
+    select: { userId: true },
+    take: 50,
+  });
+  return rows.map((r) => r.userId);
+}
+
+/** Category filter → community ids in that category (matched by slug/id/name). */
+async function resolveCommunityIdsByCategory(
+  category: string
+): Promise<string[]> {
+  try {
+    const r = await communityClient.adminListCommunities({
+      search: "",
+      type: "",
+      category,
+      status: "",
+      createdFrom: "",
+      createdTo: "",
+      sortField: "createdAt",
+      sortDir: "desc",
+      page: 1,
+      limit: 200,
+    });
+    return r.communities.map((c) => c.communityId);
+  } catch {
+    return [];
+  }
+}
+
+/** Stream ids with at least `min` reports (admin_db Report, type=stream). */
+async function resolveStreamIdsWithReports(min: number): Promise<string[]> {
+  const rows = await prisma.report.groupBy({
+    by: ["targetId"],
+    where: { type: "stream" },
+    _count: { _all: true },
+  });
+  return rows.filter((r) => r._count._all >= min).map((r) => r.targetId);
+}
+
+/** Report counts keyed by streamId (admin_db Report, type=stream). */
+async function reportCountsByStream(
+  streamIds: string[]
+): Promise<Map<string, number>> {
+  if (streamIds.length === 0) return new Map();
+  const rows = await prisma.report.groupBy({
+    by: ["targetId"],
+    where: { type: "stream", targetId: { in: streamIds } },
+    _count: { _all: true },
+  });
+  return new Map(rows.map((r) => [r.targetId, r._count._all]));
+}
+
+type StreamReportRow = {
+  id: string;
+  reporterId: string;
+  reason: string;
+  details: string | null;
+  status: string;
+  createdAt: Date;
+};
+
+/** All admin_db Report rows for one stream (optionally status-filtered). */
+async function streamReportRows(
+  livestreamId: string,
+  statusLower?: string
+): Promise<StreamReportRow[]> {
+  return prisma.report.findMany({
+    where: {
+      type: "stream",
+      targetId: livestreamId,
+      ...(statusLower ? { status: statusLower } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      reporterId: true,
+      reason: true,
+      details: true,
+      status: true,
+      createdAt: true,
+    },
+  });
+}
+
+/** Map Report rows → API report items, enriching the reporter from UserIndex. */
+async function toReportItems(
+  livestreamId: string,
+  rows: StreamReportRow[]
+): Promise<LivestreamReportItem[]> {
+  const reporterIds = unique(rows.map((r) => r.reporterId));
+  const idx = reporterIds.length
+    ? await prisma.userIndex.findMany({
+        where: { userId: { in: reporterIds } },
+        select: { userId: true, username: true },
+      })
+    : [];
+  const nameMap = new Map(idx.map((u) => [u.userId, u.username]));
+  return rows.map((r) => {
+    const username = nameMap.get(r.reporterId) ?? "";
+    return {
+      reportId: r.id,
+      livestreamId,
+      reporter: { id: r.reporterId, username, displayName: username },
+      reportType: toReportType(r.reason),
+      description: r.details ?? r.reason ?? "",
+      status: toReportStatus(r.status),
+      resolution: null,
+      createdAt: r.createdAt.toISOString(),
+      evidence: { timestampSeconds: null, clipUrl: null },
+    };
+  });
+}
+
+function buildReportsSummary(items: LivestreamReportItem[]): ReportsSummary {
+  const byType: ReportsByType = {
+    HARASSMENT: 0,
+    SPAM: 0,
+    COPYRIGHT: 0,
+    NUDITY: 0,
+    VIOLENCE: 0,
+    HATE_SPEECH: 0,
+    OTHER: 0,
+  };
+  let open = 0;
+  let reviewing = 0;
+  let resolved = 0;
+  let dismissed = 0;
+  let first: string | null = null;
+  let last: string | null = null;
+  for (const r of items) {
+    byType[r.reportType] += 1;
+    if (r.status === "OPEN") open += 1;
+    else if (r.status === "REVIEWING") reviewing += 1;
+    else if (r.status === "RESOLVED") resolved += 1;
+    else dismissed += 1;
+    if (!first || r.createdAt < first) first = r.createdAt;
+    if (!last || r.createdAt > last) last = r.createdAt;
+  }
+  return {
+    total: items.length,
+    open,
+    reviewing,
+    resolved,
+    dismissed,
+    severity: severityFromCount(items.length),
+    byType,
+    firstReportedAt: first,
+    lastReportedAt: last,
+  };
+}
+
+async function toListItemEnriched(
+  s: AdminStreamRow,
+  c: AdminCommunityBrief | undefined,
+  u: AdminProfileRecord | undefined,
+  reportCount: number
+): Promise<LivestreamListItem> {
+  return {
+    livestreamId: s.id,
+    title: s.title,
+    community: {
+      id: s.communityId,
+      name: c?.name ?? "",
+      slug: slugify(c?.name ?? ""),
+      avatarUrl: c?.avatarUrl || null,
+    },
+    creator: {
+      id: s.creatorId,
+      username: u?.username ?? "",
+      displayName: displayNameOf(u),
+      avatarUrl: u?.avatarUrl || null,
+    },
+    category: {
+      id: c?.categoryId ?? "",
+      name: c?.categoryName ?? "",
+      slug: c?.categorySlug ?? "",
+    },
+    createdAt: new Date(s.createdAt).toISOString(),
+    startedAt:
+      s.livedAt > 0
+        ? new Date(s.livedAt).toISOString()
+        : new Date(s.createdAt).toISOString(),
+    endedAt: s.endedAt > 0 ? new Date(s.endedAt).toISOString() : null,
+    durationSeconds: s.durationSeconds,
+    status: toAdminStatus(s.status),
+    viewerCount: s.viewerCount,
+    reportCount,
+    reportSeverity: severityFromCount(reportCount),
+    thumbnailUrl: await resolveThumb(s.thumbnail || null),
+  };
+}
+
+export class GrpcLivestreamRepository implements LivestreamRepository {
   async list(
     query: ListLivestreamsQuery
   ): Promise<Paginated<LivestreamListItem>> {
-    const where: Record<string, unknown> = {};
-    if (query.status) where["status"] = query.status;
-    if (query.communityId) where["communityId"] = query.communityId;
-    if (query.creatorId) where["creatorId"] = query.creatorId;
+    const [field, dir] = query.sort.split(":") as [string, "asc" | "desc"];
+
+    // Name search → OR-ed community/creator id sets (title match is added in
+    // stream-service). Resolution failures degrade to a title-only search.
+    let searchCommunityIds: string[] | undefined;
+    let searchCreatorIds: string[] | undefined;
     if (query.search) {
-      where["OR"] = [
-        { title: { contains: query.search, mode: "insensitive" } },
-        { communityName: { contains: query.search, mode: "insensitive" } },
-        { creatorUsername: { contains: query.search, mode: "insensitive" } },
-      ];
-    }
-    if (query.dateFrom || query.dateTo) {
-      where["createdAt"] = {
-        ...(query.dateFrom
-          ? { gte: new Date(`${query.dateFrom}T00:00:00.000Z`) }
-          : {}),
-        ...(query.dateTo
-          ? { lte: new Date(`${query.dateTo}T23:59:59.999Z`) }
-          : {}),
-      };
+      [searchCommunityIds, searchCreatorIds] = await Promise.all([
+        resolveCommunityIdsByName(query.search),
+        resolveCreatorIdsByName(query.search),
+      ]);
     }
 
-    const [field, dir] = query.sort.split(":") as [string, "asc" | "desc"];
-    const orderByField =
+    // Category filter → AND-restrict to that category's communities.
+    let restrictCommunityIds: string[] | undefined;
+    if (query.category) {
+      restrictCommunityIds = await resolveCommunityIdsByCategory(
+        query.category
+      );
+      if (restrictCommunityIds.length === 0) return emptyListPage(query);
+    }
+
+    // hasReports / minReports → AND-restrict to reported stream ids.
+    let restrictStreamIds: string[] | undefined;
+    const minReports =
+      query.hasReports === true
+        ? Math.max(1, query.minReports ?? 1)
+        : query.minReports;
+    if (minReports && minReports > 0) {
+      restrictStreamIds = await resolveStreamIdsWithReports(minReports);
+      if (restrictStreamIds.length === 0) return emptyListPage(query);
+    }
+
+    const sortField =
       field === "viewerCount"
         ? "viewerCount"
         : field === "duration"
-          ? "durationSeconds"
+          ? "duration"
           : "createdAt";
-    const orderBy = [{ [orderByField]: dir }, { streamId: "asc" as const }];
 
-    const { page, limit } = query;
-    const skip = (page - 1) * limit;
-    const [rows, total] = await Promise.all([
-      prisma.livestreamIndex.findMany({ where, orderBy, skip, take: limit }),
-      prisma.livestreamIndex.count({ where }),
+    const { streams, total } = await streamClient.adminListStreams({
+      search: query.search,
+      communityIds: searchCommunityIds,
+      creatorIds: searchCreatorIds,
+      restrictCommunityIds,
+      restrictStreamIds,
+      status: query.status ? toStreamStatus(query.status) : undefined,
+      communityId: query.communityId,
+      creatorId: query.creatorId,
+      dateFrom: query.dateFrom
+        ? Date.parse(`${query.dateFrom}T00:00:00.000Z`)
+        : undefined,
+      dateTo: query.dateTo
+        ? Date.parse(`${query.dateTo}T23:59:59.999Z`)
+        : undefined,
+      sortField,
+      sortDir: dir === "asc" ? "asc" : "desc",
+      page: query.page,
+      limit: query.limit,
+    });
+
+    const data = await this.enrichListItems(streams);
+    return { data, pagination: offsetMeta(query.page, query.limit, total) };
+  }
+
+  private async enrichListItems(
+    streams: AdminStreamRow[]
+  ): Promise<LivestreamListItem[]> {
+    if (streams.length === 0) return [];
+    const communityIds = unique(streams.map((s) => s.communityId));
+    const creatorIds = unique(streams.map((s) => s.creatorId));
+    const streamIds = streams.map((s) => s.id);
+    const [communityMap, creators, reportCounts] = await Promise.all([
+      communityClient.adminGetCommunitiesByIds(communityIds),
+      userClient.adminGetProfilesByIds(creatorIds),
+      reportCountsByStream(streamIds),
     ]);
-
-    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
-    const hasNext = skip + limit < total;
-    const lastRow = rows[rows.length - 1];
-    const cursorable = orderByField === "createdAt";
-    const pagination: PaginationMeta = {
-      mode: "offset",
-      page,
-      limit,
-      total,
-      totalApprox: total,
-      totalPages,
-      hasNext,
-      hasPrev: page > 1,
-      nextCursor:
-        cursorable && hasNext && lastRow
-          ? encodeCursor({
-              createdAt: lastRow.createdAt.toISOString(),
-              livestreamId: lastRow.streamId,
-            })
-          : null,
-    };
-
-    return { data: rows.map(toListItemFromIndex), pagination };
+    const creatorMap = new Map(creators.map((c) => [c.userId, c]));
+    return Promise.all(
+      streams.map((s) =>
+        toListItemEnriched(
+          s,
+          communityMap.get(s.communityId),
+          creatorMap.get(s.creatorId),
+          reportCounts.get(s.id) ?? 0
+        )
+      )
+    );
   }
 
   async getById(id: string): Promise<LivestreamDetail | null> {
-    const row = await prisma.livestreamIndex.findUnique({
-      where: { streamId: id },
-    });
-    if (!row) return null;
-    return toDetailFromIndex(row);
+    const s = await streamClient.adminGetStream(id);
+    if (!s) return null;
+    const [communityMap, creators, reportRows] = await Promise.all([
+      communityClient.adminGetCommunitiesByIds([s.communityId]),
+      userClient.adminGetProfilesByIds([s.creatorId]),
+      streamReportRows(id),
+    ]);
+    const c = communityMap.get(s.communityId);
+    const u = creators[0];
+    const thumbnailUrl = await resolveThumb(s.thumbnail || null);
+    const reports = await toReportItems(id, reportRows);
+    const summary = buildReportsSummary(reports);
+    const createdAtIso = new Date(s.createdAt).toISOString();
+    const endedAtIso = s.endedAt > 0 ? new Date(s.endedAt).toISOString() : null;
+
+    return {
+      livestreamId: s.id,
+      title: s.title,
+      description: s.description,
+      community: {
+        id: s.communityId,
+        name: c?.name ?? "",
+        slug: slugify(c?.name ?? ""),
+        avatarUrl: c?.avatarUrl || null,
+        memberCount: c?.memberCount ?? 0,
+        creatorRole: "",
+      },
+      creator: {
+        id: s.creatorId,
+        username: u?.username ?? "",
+        displayName: displayNameOf(u),
+        avatarUrl: u?.avatarUrl || null,
+        accountStatus: "ACTIVE",
+        totalStreams: 0,
+        priorStrikes: 0,
+      },
+      category: {
+        id: c?.categoryId ?? "",
+        name: c?.categoryName ?? "",
+        slug: c?.categorySlug ?? "",
+      },
+      createdAt: createdAtIso,
+      startedAt:
+        s.livedAt > 0 ? new Date(s.livedAt).toISOString() : createdAtIso,
+      endedAt: endedAtIso,
+      durationSeconds: s.durationSeconds,
+      status: toAdminStatus(s.status),
+      viewerCount: s.viewerCount,
+      reportCount: reports.length,
+      reportSeverity: severityFromCount(reports.length),
+      thumbnailUrl,
+      endReasonCode: null,
+      endedBy: null,
+      viewerStats: {
+        currentViewers: s.status === "LIVE" ? s.viewerCount : 0,
+        peakViewers: s.peakViewers,
+        totalUniqueViewers: 0,
+        totalWatchTimeSeconds: 0,
+        averageWatchTimeSeconds: 0,
+        chatMessageCount: s.totalComments,
+      },
+      streamMetadata: {
+        ingestProtocol: s.sourceType || "RTMP",
+        playbackUrl: s.hlsUrl || "",
+        resolution: "",
+        bitrateKbps: 0,
+        fps: 0,
+        region: "",
+        isRecording: false,
+        recordingUrl: null,
+      },
+      reportsSummary: summary,
+      moderationHistory: [
+        {
+          id: `${s.id}_created`,
+          action: "STREAM_CREATED",
+          adminId: "system",
+          adminName: "System",
+          reasonCode: null,
+          note: null,
+          createdAt: createdAtIso,
+        },
+        ...(endedAtIso
+          ? [
+              {
+                id: `${s.id}_ended`,
+                action: "STREAM_ENDED",
+                adminId: "system",
+                adminName: "System",
+                reasonCode: null,
+                note: null,
+                createdAt: endedAtIso,
+              },
+            ]
+          : []),
+      ],
+      reports,
+    };
   }
 
   async listReports(
     livestreamId: string,
     query: ListLivestreamReportsQuery
   ): Promise<Paginated<LivestreamReportItem>> {
-    const exists = await prisma.livestreamIndex.findUnique({
-      where: { streamId: livestreamId },
-    });
-    if (!exists) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
+    const s = await streamClient.adminGetStream(livestreamId);
+    if (!s) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
 
-    const pagination: PaginationMeta = {
-      mode: "offset",
+    const rows = await streamReportRows(
+      livestreamId,
+      query.status ? query.status.toLowerCase() : undefined
+    );
+    let items = await toReportItems(livestreamId, rows);
+    if (query.reportType) {
+      items = items.filter((r) => r.reportType === query.reportType);
+    }
+    const dir = query.sort.endsWith(":asc") ? 1 : -1;
+    items.sort((a, b) =>
+      a.createdAt < b.createdAt
+        ? -1 * dir
+        : a.createdAt > b.createdAt
+          ? 1 * dir
+          : 0
+    );
+    const total = items.length;
+    const start = (query.page - 1) * query.limit;
+    const data = items.slice(start, start + query.limit);
+    return { data, pagination: offsetMeta(query.page, query.limit, total) };
+  }
+
+  async listUsers(
+    livestreamId: string,
+    query: ListLivestreamUsersQuery
+  ): Promise<Paginated<LivestreamUserItem>> {
+    const s = await streamClient.adminGetStream(livestreamId);
+    if (!s) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
+
+    const page = await communityMembersRepository.listMembers(s.communityId, {
+      search: query.search,
+      role: query.type,
       page: query.page,
       limit: query.limit,
-      total: 0,
-      totalApprox: 0,
-      totalPages: 0,
-      hasNext: false,
-      hasPrev: false,
-      nextCursor: null,
-    };
-    return { data: [], pagination };
+      sortField: "joinedAt",
+      sortDir: "desc",
+    });
+    const data: LivestreamUserItem[] = page.data.map((m) => ({
+      userId: m.userId,
+      username: m.username,
+      handle: m.handle || null,
+      avatarUrl: m.avatarUrl,
+      type: m.role,
+      joinedAt: m.joinedAt,
+    }));
+    return { data, pagination: page.pagination };
   }
 
   async end(
@@ -803,43 +1177,25 @@ export class PrismaLivestreamRepository implements LivestreamRepository {
     input: EndInput,
     actor: ActorRef
   ): Promise<EndLivestreamResult> {
-    const row = await prisma.livestreamIndex.findUnique({
-      where: { streamId: id },
-    });
+    const row = await streamClient.adminGetStream(id);
     if (!row) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
     if (row.status !== "LIVE" && row.status !== "PENDING") {
       throw new ConflictError("LIVESTREAM_ALREADY_ENDED");
     }
-
-    const endedAt = new Date(actor.at);
-    const durationSeconds = row.livedAt
-      ? Math.max(
-          0,
-          Math.round((endedAt.getTime() - row.livedAt.getTime()) / 1000)
-        )
-      : 0;
-
-    await prisma.livestreamIndex.update({
-      where: { streamId: id },
-      data: {
-        status: "ENDED",
-        endedAt,
-        durationSeconds,
-        reasonCode: input.reasonCode,
-        endedByAdminId: actor.admin.id,
-        endedByAdminName: actor.admin.name,
-        viewerCount: 0,
-      },
-    });
-
-    const moderationActionId = `${id}_ended_${Date.now()}`;
+    const res = await streamClient.adminForceEnd(id, input.reasonCode);
+    if (
+      !res.success &&
+      (res.status === "ENDED" || res.status === "CANCELLED")
+    ) {
+      throw new ConflictError("LIVESTREAM_ALREADY_ENDED");
+    }
     return {
       livestreamId: id,
       status: "ENDED",
       endedAt: actor.at,
       endedBy: { adminId: actor.admin.id, adminName: actor.admin.name },
       reasonCode: input.reasonCode,
-      moderationActionId,
+      moderationActionId: `${id}_ended_${Date.parse(actor.at)}`,
       auditLogId: null,
       creatorNotified: input.notifyCreator ?? false,
       strikeIssued: input.issueStrike ?? false,
@@ -862,7 +1218,9 @@ export class PrismaLivestreamRepository implements LivestreamRepository {
     input: ReviewReportsInput,
     _actor: ActorRef
   ): Promise<BulkResult> {
-    // Reports not yet implemented — return all as succeeded no-ops.
+    // Livestream report state transitions are owned by the Reports & Moderation
+    // module (admin_db Report). This slice records the action in the audit log
+    // but does not mutate report rows — return all as succeeded no-ops.
     const results: BulkResultItem[] = reportIds.map((id) => ({
       id,
       status: input.status,
@@ -877,6 +1235,6 @@ export class PrismaLivestreamRepository implements LivestreamRepository {
   }
 }
 
-/** Phase 2 singleton — backed by admin_db LivestreamIndex. */
+/** Phase 2 singleton — gRPC live-read source of truth (no read-model). */
 export const livestreamRepository: LivestreamRepository =
-  new PrismaLivestreamRepository();
+  new GrpcLivestreamRepository();

@@ -1,4 +1,4 @@
-import { ConflictError, NotFoundError } from "@aimess/errors";
+import { NotFoundError } from "@aimess/errors";
 import { createUploadUrl, type UploadUrlResult } from "@aimess/storage";
 
 import { AUDIT_ACTIONS } from "../constants/index.js";
@@ -11,13 +11,14 @@ import type {
 import type { RequestAdmin } from "../types/index.js";
 import type {
   BulkResult,
-  BulkResultItem,
   EndLivestreamResult,
   LivestreamDetail,
   LivestreamListItem,
   LivestreamReportItem,
+  LivestreamUserItem,
   ListLivestreamsQuery,
   ListLivestreamReportsQuery,
+  ListLivestreamUsersQuery,
   PaginationMeta,
 } from "../types/livestream.types.js";
 import { auditService } from "./audit.service.js";
@@ -86,6 +87,25 @@ export const livestreamService = {
     };
   },
 
+  /**
+   * List the members of a stream's community (the admin "Livestream User List").
+   * Repository 404s on an unknown stream id. Supports search + role/type filter
+   * + pagination via the shared community-members gRPC read path.
+   */
+  async listLivestreamUsers(
+    livestreamId: string,
+    query: ListLivestreamUsersQuery
+  ): Promise<{
+    data: LivestreamUserItem[];
+    pagination: PaginationMeta;
+  }> {
+    const page = await livestreamRepository.listUsers(livestreamId, query);
+    return {
+      data: page.data,
+      pagination: page.pagination,
+    };
+  },
+
   async endLivestream(
     livestreamId: string,
     input: EndInput,
@@ -93,11 +113,10 @@ export const livestreamService = {
     ctx: RequestCtx
   ): Promise<EndLivestreamResult> {
     const ref = buildActor(actor);
-    const before = await livestreamRepository.getById(livestreamId);
-    // Fail-closed: must succeed before mutating admin_db.
-    // If already ENDED (adminForceEnd returns {success:false}), still proceed
-    // with the repo.end() which will throw ConflictError if appropriate.
-    await streamClient.adminForceEnd(livestreamId, input.reasonCode);
+    // Light pre-read for the audit `before` snapshot (no enrichment). The repo's
+    // end() re-validates and performs the gRPC force-end against stream-service
+    // (the source of truth) — throwing NotFound/Conflict as appropriate.
+    const before = await streamClient.adminGetStream(livestreamId);
     const result = await livestreamRepository.end(livestreamId, input, ref);
 
     await auditService.record({
@@ -127,52 +146,14 @@ export const livestreamService = {
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<BulkResult> {
-    // Call stream-service gRPC for each stream first (fail-closed per item).
-    // already-ENDED is OK — repo.end() will throw ConflictError for those, handled below.
+    // Each item: repo.end() validates + force-ends against stream-service and
+    // throws NotFound/Conflict, which the bulk runner records per item.
     const ref = buildActor(actor);
-    const results: BulkResultItem[] = [];
-    let succeeded = 0;
-    let failed = 0;
-
-    for (const livestreamId of livestreamIds) {
-      try {
-        await streamClient.adminForceEnd(livestreamId, input.reasonCode);
-      } catch (err) {
-        failed += 1;
-        results.push({
-          id: livestreamId,
-          ok: false,
-          error: {
-            code: "STREAM_SERVICE_UNAVAILABLE",
-            message:
-              err instanceof Error ? err.message : "stream-service gRPC failed",
-          },
-        });
-        continue;
-      }
-      try {
-        const r = await livestreamRepository.end(livestreamId, input, ref);
-        results.push({ id: livestreamId, status: r.status, ok: true });
-        succeeded += 1;
-      } catch (err) {
-        failed += 1;
-        const code =
-          err instanceof ConflictError
-            ? "LIVESTREAM_ALREADY_ENDED"
-            : err instanceof NotFoundError
-              ? err.message
-              : "BULK_ITEM_FAILED";
-        const message = err instanceof Error ? err.message : "Unexpected error";
-        results.push({ id: livestreamId, ok: false, error: { code, message } });
-      }
-    }
-
-    const result: BulkResult = {
-      requested: livestreamIds.length,
-      succeeded,
-      failed,
-      results,
-    };
+    const result = await livestreamRepository.bulkEnd(
+      livestreamIds,
+      input,
+      ref
+    );
 
     await auditService.record({
       actorId: actor.id,

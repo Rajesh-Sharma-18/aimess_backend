@@ -17,7 +17,9 @@ import type {
 // from a single place (mirrors how moderation.types owns them).
 export type { AccountStatus, Paginated, PaginationMeta };
 
-export type LivestreamStatus = "LIVE" | "ENDED" | "CANCELLED";
+// SCHEDULED is the admin-facing label for a stream-service PENDING stream
+// (created but not yet live). The repository maps PENDING⇄SCHEDULED at the edge.
+export type LivestreamStatus = "LIVE" | "ENDED" | "CANCELLED" | "SCHEDULED";
 
 export type EndReasonCode =
   | "POLICY_VIOLATION"
@@ -58,6 +60,8 @@ export type CommunityRef = {
   id: string;
   name: string;
   slug: string;
+  /** Presigned community avatar URL (null if none). Optional for fixtures. */
+  avatarUrl?: string | null;
 };
 
 /** Compact creator reference shown in the list table. */
@@ -265,4 +269,26 @@ export type ListLivestreamReportsQuery = {
   page: number;
   limit: number;
   cursor?: string;
+};
+
+/** Membership type in a livestream's community (the "Type" column). */
+export type LivestreamUserType = "ADMIN" | "MODERATOR" | "MEMBER";
+
+/** One row in the per-livestream user (community member) list. */
+export type LivestreamUserItem = {
+  userId: string;
+  username: string;
+  handle: string | null;
+  avatarUrl: string | null;
+  /** ADMIN | MODERATOR | MEMBER — the member's role in the stream's community. */
+  type: LivestreamUserType;
+  joinedAt: string;
+};
+
+/** Normalized per-stream users list query (post-validation/coercion). */
+export type ListLivestreamUsersQuery = {
+  search?: string;
+  type?: LivestreamUserType;
+  page: number;
+  limit: number;
 };

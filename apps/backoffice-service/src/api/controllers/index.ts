@@ -21,6 +21,7 @@ export {
   listLivestreams,
   getLivestreamDetails,
   listLivestreamReports,
+  listLivestreamUsers,
   endLivestream,
   bulkEndLivestreams,
   bulkReviewLivestreamReports,

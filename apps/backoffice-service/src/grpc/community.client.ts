@@ -153,6 +153,20 @@ export interface AdminListUserCommunitiesRes {
   total: string | number;
 }
 
+/** AdminCommunityBrief — batch enrichment row; avatar already presigned. */
+export interface AdminCommunityBrief {
+  communityId: string;
+  name: string;
+  avatarUrl: string;
+  categoryId: string;
+  categoryName: string;
+  categorySlug: string;
+  memberCount: number;
+}
+interface RawAdminGetCommunitiesByIdsRes {
+  communities: AdminCommunityBrief[];
+}
+
 export interface AdminSetModerationStatusReq {
   communityId: string;
   status: string;
@@ -256,10 +270,33 @@ export const adminSetModerationStatusBreaker: Breaker<
     )
 );
 
+export const adminGetCommunitiesByIdsBreaker: Breaker<
+  { communityIds: string[] },
+  RawAdminGetCommunitiesByIdsRes
+> = makeBreaker(
+  "community.adminGetCommunitiesByIds",
+  (req: { communityIds: string[] }) =>
+    call<{ communityIds: string[] }, RawAdminGetCommunitiesByIdsRes>(
+      "adminGetCommunitiesByIds",
+      req
+    )
+);
+
 export const communityClient = {
   async getCommunityCount(): Promise<number> {
     const r = await getCommunityCountBreaker.fire();
     return Number(r.total);
+  },
+  /**
+   * Batch community enrichment for the Livestream Management list/detail.
+   * Returns a map keyed by communityId. Empty input → no gRPC call.
+   */
+  async adminGetCommunitiesByIds(
+    communityIds: string[]
+  ): Promise<Map<string, AdminCommunityBrief>> {
+    if (communityIds.length === 0) return new Map();
+    const r = await adminGetCommunitiesByIdsBreaker.fire({ communityIds });
+    return new Map((r.communities ?? []).map((c) => [c.communityId, c]));
   },
   adminListCommunities(
     req: AdminListCommunitiesReq
