@@ -319,6 +319,7 @@ channels:
       mediaScanResult: { $ref: "#/components/messages/MediaScanResult" }
       communityJoinRequestUpdate:
         { $ref: "#/components/messages/CommunityJoinRequestUpdate" }
+      communityJoined: { $ref: "#/components/messages/CommunityJoined" }
 
 operations:
   # =================================================== /chat client -> server
@@ -1341,6 +1342,18 @@ operations:
       delivered alongside it.
     messages:
       [{ $ref: "#/channels/notify/messages/communityJoinRequestUpdate" }]
+  notify.onCommunityJoined:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "community:joined — the user became an ACTIVE member (multi-device reconcile)"
+    description: |
+      Forwarded verbatim from `notify:<userId>` when the user becomes an ACTIVE
+      member of a community via any path (public self-join, invite-link redeem
+      with autoApprove, or a moderator approving their join request). Primary use:
+      reconcile the user's OTHER connected devices — flip the community's "Join"
+      button to "Open" and add it to the community list without a refresh. An
+      in-app `notification:new` (`community.member_joined`) is delivered alongside.
+    messages: [{ $ref: "#/channels/notify/messages/communityJoined" }]
 
 components:
   securitySchemes:
@@ -2815,6 +2828,18 @@ components:
               communityAvatarUrl: null
               communityHandle: "photography-club"
               requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+    CommunityJoined:
+      name: "community:joined"
+      title: "community:joined"
+      payload: { $ref: "#/components/schemas/CommunityJoinedDTO" }
+      examples:
+        - name: Public/direct join reconcile (self-join or invite auto-approve)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            communityName: "Photography Club"
+            communityHandle: "photography_club"
+            communityAvatarUrl: "https://cdn.example.com/avatar.png?sig=abc"
+            reactivated: false
     CommunityCatchup:
       name: "community:catchup"
       title: "community:catchup"
@@ -4665,6 +4690,29 @@ components:
             - $ref: "#/components/schemas/NotificationNavigation"
           description: "Deep-link navigation included in the realtime status-flip event."
       required: [communityId, requestId, status]
+    CommunityJoinedDTO:
+      type: object
+      description: |
+        Server → client (`/notify`, room `user:<userId>`). Real-time confirmation
+        to the JOINER that they are now an ACTIVE member of a community — fired on
+        every path that turns the caller active (public self-join, invite-link
+        redeem with autoApprove, join-request approval). Primary use is to
+        reconcile the user's OTHER connected devices (flip "Join" → "Open" and
+        insert the community into the list without a refresh). Published by
+        notifications-service to `notify:<userId>` on the `community.member_joined`
+        domain event and forwarded verbatim by the gateway. An in-app
+        `notification:new` (type `community.member_joined`) is delivered alongside.
+      properties:
+        communityId: { type: string }
+        communityName: { type: string }
+        communityHandle: { type: string }
+        communityAvatarUrl: { type: string, nullable: true }
+        reactivated:
+          {
+            type: boolean,
+            description: "True when a previously-LEFT membership was reactivated rather than freshly created.",
+          }
+      required: [communityId, communityName, communityHandle, reactivated]
     CommunityCatchupPayload:
       type: object
       properties:
