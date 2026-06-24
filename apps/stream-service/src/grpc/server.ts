@@ -252,6 +252,8 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             creatorId?: string;
             communityIds?: string[];
             creatorIds?: string[];
+            restrictCommunityIds?: string[];
+            restrictStreamIds?: string[];
             dateFrom?: string | number;
             dateTo?: string | number;
             sortField?: string;
@@ -280,6 +282,14 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
               creatorIds:
                 req.creatorIds && req.creatorIds.length > 0
                   ? req.creatorIds
+                  : undefined,
+              restrictCommunityIds:
+                req.restrictCommunityIds && req.restrictCommunityIds.length > 0
+                  ? req.restrictCommunityIds
+                  : undefined,
+              restrictStreamIds:
+                req.restrictStreamIds && req.restrictStreamIds.length > 0
+                  ? req.restrictStreamIds
                   : undefined,
               dateFrom: dateFrom > 0 ? new Date(dateFrom) : undefined,
               dateTo: dateTo > 0 ? new Date(dateTo) : undefined,

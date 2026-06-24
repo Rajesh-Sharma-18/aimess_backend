@@ -181,6 +181,10 @@ export interface AdminStreamFilter {
   communityId?: string;
   /** Exact creator filter (AND). */
   creatorId?: string;
+  /** AND-restrict to these communities (category filter). Empty/undefined = no restriction. */
+  restrictCommunityIds?: string[];
+  /** AND-restrict to these stream ids (report filter). Empty/undefined = no restriction. */
+  restrictStreamIds?: string[];
   /** createdAt lower bound (inclusive). */
   dateFrom?: Date;
   /** createdAt upper bound (inclusive). */
@@ -194,6 +198,12 @@ function buildAdminWhere(f: AdminStreamFilter): Prisma.LivestreamWhereInput {
   if (f.status) and.push({ status: f.status });
   if (f.communityId) and.push({ communityId: f.communityId });
   if (f.creatorId) and.push({ creatorId: f.creatorId });
+  if (f.restrictCommunityIds?.length) {
+    and.push({ communityId: { in: f.restrictCommunityIds } });
+  }
+  if (f.restrictStreamIds?.length) {
+    and.push({ id: { in: f.restrictStreamIds } });
+  }
   if (f.dateFrom || f.dateTo) {
     and.push({
       createdAt: {

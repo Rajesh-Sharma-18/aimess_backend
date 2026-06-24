@@ -618,6 +618,8 @@ export class LivestreamService {
     status?: string;
     communityId?: string;
     creatorId?: string;
+    restrictCommunityIds?: string[];
+    restrictStreamIds?: string[];
     dateFrom?: Date;
     dateTo?: Date;
     sortField: "createdAt" | "viewerCount" | "durationSeconds";
@@ -632,6 +634,8 @@ export class LivestreamService {
       status: params.status,
       communityId: params.communityId,
       creatorId: params.creatorId,
+      restrictCommunityIds: params.restrictCommunityIds,
+      restrictStreamIds: params.restrictStreamIds,
       dateFrom: params.dateFrom,
       dateTo: params.dateTo,
     };

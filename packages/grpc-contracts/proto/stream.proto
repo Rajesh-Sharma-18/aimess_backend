@@ -183,6 +183,10 @@ message AdminListStreamsRequest {
   string sort_dir      = 10; // asc | desc; "" = desc
   int32  page          = 11; // 1-based
   int32  limit         = 12;
+  // AND-restrict to these communities (drives the category filter — empty = no restriction).
+  repeated string restrict_community_ids = 13;
+  // AND-restrict to these stream ids (drives the has-reports/min-reports filter — empty = no restriction).
+  repeated string restrict_stream_ids = 14;
 }
 message AdminListStreamsResponse {
   repeated AdminStreamRow streams = 1;
