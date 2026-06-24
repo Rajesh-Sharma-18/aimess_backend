@@ -85,7 +85,8 @@ export class LivestreamCommentService {
       const snaps = await this.userClient.bulkGetUserSnapshots([params.userId]);
       const snap = snaps.find((s) => s.userId === params.userId);
       if (snap) {
-        senderName = snap.displayName || snap.username || "";
+        // Live chat shows the username, not the full display name.
+        senderName = snap.username || snap.displayName || "";
         senderAvatar = snap.avatarObjectKey || "";
       }
     } catch (error) {

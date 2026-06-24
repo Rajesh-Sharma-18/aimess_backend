@@ -237,6 +237,12 @@ export class LivestreamService {
     });
 
     await this.publishStatus(updated.id, "LIVE");
+    void this.publishCommunityStreamStarted(
+      updated.communityId,
+      updated.id,
+      updated.title,
+      updated.hlsUrl
+    );
     this.eventPublisher("stream.started", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -267,6 +273,7 @@ export class LivestreamService {
     });
 
     await this.publishStatus(updated.id, "ENDED");
+    void this.publishCommunityStreamEnded(updated.communityId);
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -322,6 +329,7 @@ export class LivestreamService {
     await this.srsService.kickStream(stream.streamKey);
 
     await this.publishStatus(updated.id, "ENDED");
+    void this.publishCommunityStreamEnded(updated.communityId);
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -362,6 +370,12 @@ export class LivestreamService {
     });
 
     await this.publishStatus(updated.id, "LIVE");
+    void this.publishCommunityStreamStarted(
+      updated.communityId,
+      updated.id,
+      updated.title,
+      updated.hlsUrl
+    );
     this.eventPublisher("stream.started", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -398,6 +412,7 @@ export class LivestreamService {
     }
 
     await this.publishStatus(updated.id, "ENDED");
+    void this.publishCommunityStreamEnded(updated.communityId);
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -818,6 +833,52 @@ export class LivestreamService {
     } catch (error) {
       logger.warn(
         `status broadcast failed for stream=${streamId}: ${String(error)}`
+      );
+    }
+  }
+
+  /** Notify every member in the community room that a stream just went live. */
+  private async publishCommunityStreamStarted(
+    communityId: string,
+    streamId: string,
+    title: string,
+    hlsUrl: string | null
+  ): Promise<void> {
+    try {
+      await this.redis.publish(
+        `community:${communityId}`,
+        JSON.stringify({
+          event: "community:stream:started",
+          data: { communityId, streamId, title, hlsUrl },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `community stream-started broadcast failed for community=${communityId}: ${String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Notify every member in the community room that no streams are live anymore.
+   * Only fires when the last LIVE stream for this community has ended.
+   */
+  private async publishCommunityStreamEnded(
+    communityId: string
+  ): Promise<void> {
+    try {
+      const liveCount = await this.streamRepo.countLiveByCommunity(communityId);
+      if (liveCount > 0) return; // another stream is still live
+      await this.redis.publish(
+        `community:${communityId}`,
+        JSON.stringify({
+          event: "community:stream:ended",
+          data: { communityId },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `community stream-ended broadcast failed for community=${communityId}: ${String(error)}`
       );
     }
   }

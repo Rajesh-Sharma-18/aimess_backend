@@ -96,6 +96,13 @@ export class LivestreamRepository {
     });
   }
 
+  /** Count of LIVE-only streams for a community (post-end check for last-live broadcast). */
+  async countLiveByCommunity(communityId: string): Promise<number> {
+    return this.prisma.livestream.count({
+      where: { communityId, status: "LIVE" },
+    });
+  }
+
   /** Atomic +1 on totalViews. Best-effort — callers should not throw on failure. */
   async incrementTotalViews(id: string): Promise<void> {
     await this.prisma.livestream.update({
