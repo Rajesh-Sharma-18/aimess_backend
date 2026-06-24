@@ -20,6 +20,7 @@ jest.mock("../../src/services/index.js", () => {
       listLivestreams: jest.fn(),
       getLivestream: jest.fn(),
       listLivestreamReports: jest.fn(),
+      listLivestreamUsers: jest.fn(),
       endLivestream: jest.fn(),
       bulkEnd: jest.fn(),
       bulkReviewReports: jest.fn(),
@@ -58,6 +59,19 @@ beforeEach(() => {
   svc.listLivestreams.mockResolvedValue(PAGE);
   svc.getLivestream.mockResolvedValue({ livestreamId: LID, status: "LIVE" });
   svc.listLivestreamReports.mockResolvedValue(PAGE);
+  svc.listLivestreamUsers.mockResolvedValue({
+    data: [
+      {
+        userId: "u1",
+        username: "john",
+        handle: "john",
+        avatarUrl: null,
+        type: "ADMIN",
+        joinedAt: "2026-06-01T00:00:00.000Z",
+      },
+    ],
+    pagination: { mode: "offset", page: 1, limit: 20, total: 1 },
+  });
   svc.endLivestream.mockResolvedValue({ livestreamId: LID, status: "ENDED" });
   svc.bulkEnd.mockResolvedValue(BULK);
   svc.bulkReviewReports.mockResolvedValue(BULK);
@@ -90,6 +104,14 @@ describe("GET /v1/livestreams", () => {
     expect(res.status).toBe(403);
   });
 
+  it("accepts the SCHEDULED status filter", async () => {
+    const res = await request(app)
+      .get("/v1/livestreams?status=SCHEDULED")
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listLivestreams.mock.calls[0][0].status).toBe("SCHEDULED");
+  });
+
   it.each([
     ["invalid status enum", "status=PAUSED"],
     ["malformed sort token", "sort=viewerCount"],
@@ -98,6 +120,48 @@ describe("GET /v1/livestreams", () => {
   ])("returns 400 for %s", async (_label, qs) => {
     const res = await request(app).get(`/v1/livestreams?${qs}`).set(auth());
     expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /v1/livestreams/:livestreamId/users", () => {
+  it("returns 200 with the community-member page", async () => {
+    const res = await request(app)
+      .get(`/v1/livestreams/${LID}/users`)
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.data[0].type).toBe("ADMIN");
+    expect(svc.listLivestreamUsers).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards the search + type filter to the service", async () => {
+    await request(app)
+      .get(`/v1/livestreams/${LID}/users?search=john&type=MODERATOR`)
+      .set(auth());
+    const [, query] = svc.listLivestreamUsers.mock.calls[0];
+    expect(query.search).toBe("john");
+    expect(query.type).toBe("MODERATOR");
+  });
+
+  it("rejects an invalid type filter (400)", async () => {
+    const res = await request(app)
+      .get(`/v1/livestreams/${LID}/users?type=OWNER`)
+      .set(auth());
+    expect(res.status).toBe(400);
+    expect(svc.listLivestreamUsers).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 without a token", async () => {
+    const res = await request(app).get(`/v1/livestreams/${LID}/users`);
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 without livestreams.read", async () => {
+    grantPermissions(perms, []);
+    const res = await request(app)
+      .get(`/v1/livestreams/${LID}/users`)
+      .set(auth());
+    expect(res.status).toBe(403);
+    expect(svc.listLivestreamUsers).not.toHaveBeenCalled();
   });
 });
 
