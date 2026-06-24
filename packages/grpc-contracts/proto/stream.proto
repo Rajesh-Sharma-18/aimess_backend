@@ -23,6 +23,15 @@ service StreamService {
   rpc DeleteComment (DeleteCommentRequest) returns (DeleteCommentResponse);
   // Fetch the currently-LIVE streams for a single community (community detail enrichment).
   rpc GetLiveStreamsByCommunity (GetLiveStreamsByCommunityRequest) returns (GetLiveStreamsByCommunityResponse);
+
+  // ---- Backoffice (admin panel) Livestream Management ----
+  // Source-of-truth read path for the admin Livestream Management screen.
+  // backoffice-service is the only caller; it enriches community/creator/
+  // category/avatars and resolves the raw thumbnail key on read.
+  // Offset-paginated, filtered list of streams.
+  rpc AdminListStreams (AdminListStreamsRequest) returns (AdminListStreamsResponse);
+  // Single stream detail (LIVE viewer count overlaid from Redis).
+  rpc AdminGetStream (AdminGetStreamRequest) returns (AdminGetStreamResponse);
 }
 
 // One livestream comment row, shared by PostComment + GetComments.
@@ -132,4 +141,58 @@ message GetLiveStreamsByCommunityRequest {
 }
 message GetLiveStreamsByCommunityResponse {
   repeated LiveStreamSummary streams = 1;
+}
+
+// ---- Backoffice admin Livestream Management -------------------------------
+
+// One stream row for the admin screen. thumbnail is a RAW object key ("" if
+// none) — the backoffice resolves it to a presigned URL on read. All epoch
+// fields are int64 ms (0 = null).
+message AdminStreamRow {
+  string id              = 1;
+  string community_id    = 2;
+  string creator_id      = 3;
+  string title           = 4;
+  string description     = 5;
+  string thumbnail       = 6;  // raw object key; "" if none
+  string source_type     = 7;  // PHONE_CAMERA | URL | YOUTUBE
+  string status          = 8;  // PENDING | LIVE | ENDED | CANCELLED
+  string hls_url         = 9;  // "" if none
+  string flv_url         = 10; // "" if none
+  int64  viewer_count    = 11; // live count for LIVE streams, else stored
+  int64  peak_viewers    = 12;
+  int64  total_views     = 13;
+  int64  total_comments  = 14;
+  int64  duration_seconds = 15; // server-computed
+  int64  lived_at        = 16; // epoch ms; 0 if never went live
+  int64  ended_at        = 17; // epoch ms; 0 if not ended
+  int64  created_at      = 18; // epoch ms
+}
+
+message AdminListStreamsRequest {
+  string search        = 1;  // title contains (case-insensitive); "" = no filter
+  string status        = 2;  // exact status filter; "" = all
+  string community_id  = 3;  // exact community filter; "" = all
+  string creator_id    = 4;  // exact creator filter; "" = all
+  // Search-resolved ids OR-ed with `search` (community-name / creator-name match).
+  repeated string community_ids = 5;
+  repeated string creator_ids   = 6;
+  int64  date_from     = 7;  // createdAt lower bound (epoch ms, inclusive); 0 = none
+  int64  date_to       = 8;  // createdAt upper bound (epoch ms, inclusive); 0 = none
+  string sort_field    = 9;  // createdAt | viewerCount | duration; "" = createdAt
+  string sort_dir      = 10; // asc | desc; "" = desc
+  int32  page          = 11; // 1-based
+  int32  limit         = 12;
+}
+message AdminListStreamsResponse {
+  repeated AdminStreamRow streams = 1;
+  int64 total = 2;
+}
+
+message AdminGetStreamRequest {
+  string stream_id = 1;
+}
+message AdminGetStreamResponse {
+  bool found = 1;
+  AdminStreamRow stream = 2;
 }
