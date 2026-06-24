@@ -308,7 +308,11 @@ export type BulkRejectJoinRequestsInput = z.infer<
 // --- Invites --------------------------------------------------------------
 
 export const createInviteSchema = z.object({
-  inviteeId: z.string().trim().uuid("Invitee ID is invalid"),
+  userIds: z
+    .array(z.string().trim().uuid("Each user ID must be a valid UUID"))
+    .min(1, "Provide at least one user ID")
+    .max(50, "You can invite at most 50 users at once")
+    .transform((ids) => [...new Set(ids)]),
 });
 export type CreateInviteInput = z.infer<typeof createInviteSchema>;
 
@@ -608,10 +612,11 @@ export const bulkSendInviteLinkSchema = z.object({
    */
   userIds: z
     .array(
-      z
-        .string()
-        .trim()
-        .regex(OBJECT_ID_REGEX, "One or more user IDs are invalid")
+      // Recipients are platform users, identified by their canonical UUID
+      // (AuthUser.id), NOT a Mongo ObjectId. This previously used OBJECT_ID_REGEX,
+      // so every real userId (a UUID) failed DTO validation with "One or more user
+      // IDs are invalid" before the request ever reached the service.
+      z.string().trim().uuid("One or more user IDs are invalid")
     )
     .min(1, "Select at least one user")
     .max(50, "You can select at most 50 users"),

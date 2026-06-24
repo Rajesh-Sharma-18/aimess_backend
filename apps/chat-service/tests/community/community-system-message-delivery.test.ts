@@ -357,13 +357,13 @@ describe("CommunitySystemMessageService — deterministic role-change text", () 
       label: "Member → Admin",
       oldRole: "MEMBER",
       newRole: "ADMIN",
-      expected: "John Doe is now an admin",
+      expected: "John Doe is now the community admin",
     },
     {
       label: "Moderator → Admin",
       oldRole: "MODERATOR",
       newRole: "ADMIN",
-      expected: "John Doe is now an admin",
+      expected: "John Doe is now the community admin",
     },
     {
       label: "Moderator → Member",

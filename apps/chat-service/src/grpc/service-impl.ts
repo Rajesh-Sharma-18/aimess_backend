@@ -2532,7 +2532,14 @@ export function createNotificationImpl(
           }
           // referenceId/entityId carried in data (if present) populate `entity`
           // so existing inbox queries that filter on entity.id keep working.
-          const entityId = data.entityId ?? data.referenceId ?? "";
+          // Fall back to communityId last so community notifications that carry
+          // only `data.communityId` (e.g. member_kicked / member_banned /
+          // community_deleted) still expose the id as `referenceId` on the
+          // notification:new socket DTO — the client uses it to drop the
+          // community from the sidebar without a hard refresh. Lowest priority,
+          // so an explicit entityId/referenceId always wins.
+          const entityId =
+            data.entityId ?? data.referenceId ?? data.communityId ?? "";
 
           const created = await deps.notificationRepo.create({
             userId: req.userId,

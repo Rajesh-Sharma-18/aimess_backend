@@ -9,6 +9,7 @@ import {
   buildListResponse,
   buildCursorResponse,
   buildTimelineResponse,
+  parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
@@ -176,29 +177,30 @@ export class GroupMessageController {
       return;
     }
 
-    // Timestamp pagination (epoch ms) — V1 fallback.
-    const beforeTs =
-      req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
-    const afterTs =
-      req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
-    const direction = afterTs != null ? "after" : "before";
-    const tsMs =
-      afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
+    // Timestamp pagination (epoch ms) — V1 fallback. before_ts/after_ts are
+    // EITHER a plain epoch-ms OR the opaque COMPOUND keyset cursor "<ms>_<id>"
+    // handed back as nextCursor. The _id tiebreaker is what keeps messages that
+    // share a millisecond reachable instead of skipped at a page boundary.
+    const beforeCursor = parseTsCursor(req.query.before_ts);
+    const afterCursor = parseTsCursor(req.query.after_ts);
+    const cursor = afterCursor ?? beforeCursor;
+    const direction = afterCursor != null ? "after" : "before";
 
-    const [result, totalCount] = await Promise.all([
-      this.messageService.getMessagesTimeline({
-        roomId,
-        userId,
-        direction,
-        ts: new Date(tsMs),
-        limit,
-      }),
-      this.messageService.countMessages(roomId),
-    ]);
+    const result = await this.messageService.getMessagesTimeline({
+      roomId,
+      userId,
+      direction,
+      ts: new Date(cursor ? cursor.ms : Date.now()),
+      boundaryId: cursor?.id ?? null,
+      // The first page (no cursor) includes the newest message; a cursor page is
+      // exclusive so it never re-returns its own boundary row.
+      inclusive: cursor == null,
+      limit,
+    });
     const wire = await this.messageService.enrichForWire(result.items, userId);
     const paginated = buildTimelineResponse(
       wire,
-      totalCount,
+      result.total,
       limit,
       result.hasMore,
       result.nextCursor

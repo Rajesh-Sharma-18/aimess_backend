@@ -13,6 +13,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findByHandleFull: jest.fn(),
     findMembership: jest.fn(),
     findById: jest.fn(),
+    countActiveInviteLinksByCreator: jest.fn(async () => 0),
     createInviteLink: jest.fn(),
     createAuditLog: jest.fn(),
   },
@@ -67,6 +68,21 @@ describe("getByHandle", () => {
     expect(res.isJoined).toBe(false);
     expect(res.role).toBeNull();
     expect(res.isBanned).toBe(false);
+  });
+
+  it("returns server-built canonical shareUrl + appDeepLink (public form, no + marker)", async () => {
+    repo.findByHandleFull.mockResolvedValue(publicCommunity);
+    repo.findMembership.mockResolvedValue(null);
+
+    const res = await communityService.getByHandle("backend_devs", CALLER);
+
+    // Deep link is env-independent → assert exactly.
+    expect(res.appDeepLink).toBe("aimess://resolve?handle=backend_devs");
+    // Share URL = <INVITE_LINK_BASE_URL>/<handle>; the base can vary by env, but
+    // the PUBLIC form carries NO "+" marker (that prefix is the PRIVATE code case)
+    // and always ends in the bare handle.
+    expect(res.shareUrl).toMatch(/(^|\/)backend_devs$/);
+    expect(res.shareUrl).not.toContain("+");
   });
 
   it("reports isJoined + role for an active member", async () => {

@@ -37,15 +37,18 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
       participants: [TEST_USER_ID, "peer"],
       deletedFor: {},
     });
-    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue([
-      {
-        id: "m1",
-        senderId: "peer",
-        content: { text: "hi" },
-        createdAt: new Date(1000),
-      },
-    ]);
-    mocks.privateMessageRepo.countByRoom.mockResolvedValue(1);
+    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m1",
+          senderId: "peer",
+          content: { text: "hi" },
+          createdAt: new Date(1000),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
 
     const res = await request(app)
       .get(`/api/chat/private/rooms/${ROOM}/messages`)

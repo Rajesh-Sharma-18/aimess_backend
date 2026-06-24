@@ -282,4 +282,32 @@ describe("transferAdmin() — dual community:member:updated", () => {
     expect(byUser.get(TARGET)).toBe("ADMIN");
     expect(byUser.get(ADMIN)).toBe("MEMBER");
   });
+
+  it("posts exactly ONE community-wide ROLE_CHANGED line and no personal ROLE_CHANGED_SELF (no duplicate bubbles for new/outgoing admin)", async () => {
+    const sysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
+    sysMsg.mockClear();
+    await communityService.transferAdmin(CID, ADMIN, TARGET);
+
+    const calls = sysMsg.mock.calls.map(([arg]) => arg);
+
+    // ONE community-wide promotion line ("X is now the community admin"), bumps
+    // the list, personalized per-viewer at read time. oldRole is the SNAPSHOT
+    // taken before the flip. It carries NO visibleToUserId (community-visible).
+    const community = calls.find((c) => c.systemMessageType === "ROLE_CHANGED");
+    expect(community).toBeDefined();
+    expect(community).toMatchObject({
+      communityId: CID,
+      systemMessageType: "ROLE_CHANGED",
+      triggeredByUserId: ADMIN,
+      metadata: { targetUserId: TARGET, oldRole: "MEMBER", newRole: "ADMIN" },
+    });
+    expect(community.visibleToUserId).toBeUndefined();
+
+    // NO personal self-lines: both the new admin and the outgoing admin are in
+    // the room and receive the single community line (personalized to "You …"),
+    // so a personal ROLE_CHANGED_SELF would duplicate the bubble for them.
+    const types = calls.map((c) => c.systemMessageType);
+    expect(types).not.toContain("ROLE_CHANGED_SELF");
+    expect(calls).toHaveLength(1);
+  });
 });

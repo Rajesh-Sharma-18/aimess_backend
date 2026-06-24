@@ -770,16 +770,16 @@ export const cancelMyCommunityJoinRequest = asyncHandler(
 export const createCommunityInvite = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
-    const { inviteeId } = req.body as CreateInviteInput;
-    const result = await communityService.createInvite(
+    const { userIds } = req.body as CreateInviteInput;
+    const result = await communityService.bulkCreateInvites(
       id,
       req.auth.userId,
-      inviteeId
+      userIds
     );
 
     return res
       .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(result, t("COMMUNITY_INVITE_CREATED", req.locale)));
+      .json(new ApiResponse(result, t("COMMUNITY_INVITES_SENT", req.locale)));
   }
 );
 

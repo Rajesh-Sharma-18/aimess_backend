@@ -807,19 +807,29 @@ export class CommunityMessageService {
   }
 
   /**
-   * Timestamp-keyset page (before_ts / after_ts). Over-fetches one extra row so
-   * `hasMore` is exact; `nextCursor` is the boundary createdAt as epoch-ms.
+   * Keyset history page (before_ts scroll). The repo filters hidden/personal/
+   * deleted rows in the DB and returns exactly `limit` visible rows plus an exact
+   * `hasMore`, so a hidden row in the window can no longer make pagination
+   * terminate early. `nextCursor` is a COMPOUND `"<createdAtMs>_<id>"` keyset
+   * cursor (not a bare millisecond): the `_id` tiebreaker is what keeps messages
+   * sharing one millisecond reachable. The client feeds it back verbatim as the
+   * next `before_ts`.
    */
   async getMessagesTimeline(params: {
     roomId: string;
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** Keyset tiebreaker parsed from a compound before_ts ("<ms>_<id>"). */
+    boundaryId?: string | null;
+    /** True for the first page (no cursor) so the newest message is included. */
+    inclusive?: boolean;
     limit: number;
   }): Promise<{
     items: CommunityMessageWire[];
     hasMore: boolean;
     nextCursor: string | null;
+    total: number;
   }> {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
@@ -830,28 +840,36 @@ export class CommunityMessageService {
       params.roomId,
       params.userId
     );
-    const [rows, members] = await Promise.all([
-      this.messageRepo.findByRoomIdTimeline({
-        roomId: params.roomId,
-        userId: params.userId,
-        direction: params.direction,
-        ts: params.ts,
-        limit: params.limit,
-        viewerIsActiveMember: isActiveMember(member),
-      }),
-      this.memberRepo.findReadStatusByRoom(params.roomId),
-    ]);
+    const viewerIsActiveMember = isActiveMember(member);
+    const [{ messages: pageRows, hasMore }, members, total] = await Promise.all(
+      [
+        this.messageRepo.findByRoomIdTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          direction: params.direction,
+          ts: params.ts,
+          boundaryId: params.boundaryId ?? null,
+          inclusive: params.inclusive ?? false,
+          limit: params.limit,
+          viewerIsActiveMember,
+        }),
+        this.memberRepo.findReadStatusByRoom(params.roomId),
+        this.messageRepo.countTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          viewerIsActiveMember,
+        }),
+      ]
+    );
 
-    const hasMore = rows.length > params.limit;
-    const pageRows = rows.slice(0, params.limit);
-
-    // For "before" direction the DB fetches newest-first so LIMIT correctly
-    // selects the closest-to-cursor window. The boundary for the next page is
-    // the oldest item in that window (pageRows tail). Reverse before returning
-    // so every response surface is oldest→newest (ascending chronological order).
+    // For "before" the DB returns newest-first, so the boundary for the next
+    // (older) page is the oldest item in the window — the tail. Reverse before
+    // returning so every response surface is oldest→newest (ascending order).
     const boundary = pageRows[pageRows.length - 1];
     const nextCursor =
-      hasMore && boundary ? String(boundary.createdAt.getTime()) : null;
+      hasMore && boundary
+        ? `${boundary.createdAt.getTime()}_${boundary.id}`
+        : null;
 
     const orderedItems =
       params.direction === "before" ? [...pageRows].reverse() : pageRows;
@@ -892,6 +910,7 @@ export class CommunityMessageService {
       ),
       hasMore,
       nextCursor,
+      total,
     };
   }
 
@@ -1102,32 +1121,42 @@ export class CommunityMessageService {
     userId: string;
     messageId: string;
     limit: number;
-  }): Promise<{ items: CommunityMessageWire[] }> {
+  }): Promise<{ items: CommunityMessageWire[]; total: number }> {
     const { member } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
       params.userId
     );
+    const viewerIsActiveMember = isActiveMember(member);
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
-      return { items: [] };
+      return { items: [], total: 0 };
     }
-    const [rows, members] = await Promise.all([
+    const [rows, members, total] = await Promise.all([
       this.messageRepo.findAroundDate({
         roomId: params.roomId,
         userId: params.userId,
         anchorDate: anchor.createdAt,
         limit: params.limit,
-        viewerIsActiveMember: isActiveMember(member),
+        viewerIsActiveMember,
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
+      // Use the history-visible count (same filter as the timeline) so `total`
+      // matches what the client can actually page through — not countByRoom's
+      // raw total (which includes hidden/personal/deleted-for-me rows).
+      this.messageRepo.countTimeline({
+        roomId: params.roomId,
+        userId: params.userId,
+        viewerIsActiveMember,
+      }),
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
     return {
       items: rows.map((m) =>
         this.toWire(m, members, urlMap, undefined, params.userId)
       ),
+      total,
     };
   }
 

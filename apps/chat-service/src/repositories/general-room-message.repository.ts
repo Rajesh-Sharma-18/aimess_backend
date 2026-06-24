@@ -1,4 +1,5 @@
-﻿import type {
+﻿import { logger } from "@aimess/logger";
+import type {
   PrismaClient,
   GeneralRoomMessage,
   Prisma,
@@ -189,42 +190,281 @@ export class GeneralRoomMessageRepository {
   }
 
   /**
-   * Timestamp-keyset page for community messages. Over-fetches by 1 so the
-   * caller can detect `hasMore` without a separate count query.
-   * `direction="before"` → createdAt <= ts, newest-first (the default load).
-   * `direction="after"`  → createdAt >= ts, oldest-first (upward scroll).
-   * Per-user deletedBy filtering is done in memory (Prisma/Mongo limitation).
+   * Shared `$match` for the community history timeline (and its count) — the
+   * SINGLE source of truth so `findByRoomIdTimeline` and `countTimeline` filter
+   * IDENTICALLY (otherwise `total` overstates what pagination can actually reach,
+   * and infinite-scroll appears to "lose" messages). Mirrors `isVisibleToUser`
+   * but expressed for Mongo so the filtering happens in the DB:
+   *
+   *  - `deletedForAll:false`        — tombstones never appear in history.
+   *  - `deletedBy: { $ne }`         — messages this viewer deleted-for-me.
+   *  - `visibleToUserId: $in[null,u]` — PERSONAL targeting; `$in:[null,…]` also
+   *      matches field-absent docs natively (the reason the legacy findMany path
+   *      had to filter in memory — Prisma's `{ field: null }` does NOT).
+   *  - `systemMessageType: $nin HIDDEN` — high-churn lifecycle lines (joined/left)
+   *      are hidden for everyone; `$nin` keeps field-absent regular messages.
+   *  - `$nor` (only when the viewer is NOT an active member) — a left/non-member
+   *      browsing PUBLIC history must not see their OWN prior-session join line.
+   *
+   * `roomId` is an ObjectId column, so it is matched as `{ $oid }`.
+   */
+  private timelineMatch(params: {
+    roomId: string;
+    userId: string;
+    viewerIsActiveMember: boolean;
+  }): Record<string, unknown> {
+    const match: Record<string, unknown> = {
+      roomId: { $oid: params.roomId },
+      deletedForAll: false,
+      deletedBy: { $ne: params.userId },
+      visibleToUserId: { $in: [null, params.userId] },
+      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+    };
+    if (!params.viewerIsActiveMember) {
+      match.$nor = [
+        {
+          visibleToUserId: params.userId,
+          systemMessageType: { $in: [...PERSONAL_JOIN_SESSION_TYPES] },
+        },
+      ];
+    }
+    return match;
+  }
+
+  /**
+   * Keyset history page for community messages.
+   *
+   * Why this is an `aggregateRaw` keyset (not a `findMany` + in-memory filter):
+   * the previous implementation over-fetched `limit + 1` rows and then removed
+   * hidden/personal/deleted-for-me rows in memory. That made `hasMore` (derived
+   * from the post-filter length) UNDERFLOW whenever a single hidden row landed in
+   * the window — so infinite scroll terminated early and older messages became
+   * unreachable. Doing ALL filtering in the DB means the page is exactly `limit`
+   * visible rows and the `+1` over-fetch detects `hasMore` reliably.
+   *
+   * The cursor is a `(createdAt, _id)` keyset, NOT a bare timestamp. With a
+   * millisecond-only cursor, messages sharing one millisecond get split across a
+   * page boundary and silently skipped (or duplicated). The `_id` tiebreaker
+   * gives a total order so every message is reachable exactly once.
+   *
+   *  - `direction="before"` → older page, newest-first; boundary is exclusive
+   *    `createdAt < ts OR (createdAt == ts AND _id < boundaryId)`.
+   *  - `direction="after"`  → newer page, oldest-first; boundary is the mirror.
+   *  - No `boundaryId` → first page (or a coarse timestamp jump): `inclusive`
+   *    picks `<=`/`>=` (initial newest page) vs `<`/`>` (legacy bare-ms cursor).
    */
   async findByRoomIdTimeline(params: {
     roomId: string;
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** ObjectId of the cursor row — the keyset tiebreaker for same-ms messages. */
+    boundaryId?: string | null;
+    /** Include rows whose createdAt == ts (first page); ignored when boundaryId set. */
+    inclusive?: boolean;
     limit: number;
     viewerIsActiveMember?: boolean;
-  }): Promise<GeneralRoomMessage[]> {
-    const messages = await this.prisma.generalRoomMessage.findMany({
-      where: {
-        roomId: params.roomId,
-        deletedForAll: false,
-        createdAt:
-          params.direction === "before"
-            ? { lte: params.ts }
-            : { gte: params.ts },
-      },
-      orderBy: {
-        createdAt: params.direction === "before" ? "desc" : "asc",
-      },
-      take: params.limit + 1,
+  }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
+    const before = params.direction === "before";
+    const base = this.timelineMatch({
+      roomId: params.roomId,
+      userId: params.userId,
+      viewerIsActiveMember: params.viewerIsActiveMember ?? true,
     });
 
-    return messages.filter((msg) => {
-      const deletedBy = (msg.deletedBy ?? []) as string[];
-      return (
-        !deletedBy.includes(params.userId) &&
-        isVisibleToUser(msg, params.userId, params.viewerIsActiveMember ?? true)
-      );
+    const date = { $date: params.ts.toISOString() };
+    const match: Record<string, unknown> = { ...base };
+    if (params.boundaryId) {
+      // Exclusive keyset boundary with an `_id` tiebreaker.
+      match.$or = before
+        ? [
+            { createdAt: { $lt: date } },
+            { createdAt: date, _id: { $lt: { $oid: params.boundaryId } } },
+          ]
+        : [
+            { createdAt: { $gt: date } },
+            { createdAt: date, _id: { $gt: { $oid: params.boundaryId } } },
+          ];
+    } else {
+      match.createdAt = before
+        ? params.inclusive
+          ? { $lte: date }
+          : { $lt: date }
+        : params.inclusive
+          ? { $gte: date }
+          : { $gt: date };
+    }
+
+    const sort = before ? { createdAt: -1, _id: -1 } : { createdAt: 1, _id: 1 };
+
+    // Over-fetch ONE extra row: it both detects `hasMore` and lets us inspect the
+    // dropped row's millisecond for the snap-to-ms guard below.
+    const ordered = await this.runTimelinePage(match, sort, params.limit + 1);
+    const hasMoreRaw = ordered.length > params.limit;
+    let page = ordered.slice(0, params.limit);
+    let hasMore = hasMoreRaw;
+
+    // SNAP-TO-MILLISECOND — never end a page in the MIDDLE of a same-millisecond
+    // cluster. Messages stamped in the same millisecond are ordered only by the
+    // `_id` tiebreaker. If the boundary row shares its ms with the dropped next
+    // row, the cluster straddles the page edge — and a client that paginates with
+    // a BARE millisecond cursor (`before_ts=<ms>` instead of the compound
+    // `<ms>_<id>` we hand back) skips the rest of that ms via the exclusive
+    // `$lt`/`$gt`, silently losing messages. Trimming the trailing same-ms rows
+    // makes EVERY page end on a clean ms boundary, so bare-ms and compound cursors
+    // are both lossless. Compound clients are unaffected for correctness; they
+    // just get a slightly smaller page next to a cluster. No extra query in this
+    // common path — it's an in-memory trim.
+    if (hasMoreRaw && page.length === params.limit) {
+      const boundaryMs = page[page.length - 1]!.createdAt.getTime();
+      const nextMs = ordered[params.limit]!.createdAt.getTime();
+      if (boundaryMs === nextMs) {
+        const trimmed = page.filter(
+          (d) => d.createdAt.getTime() !== boundaryMs
+        );
+        if (trimmed.length > 0) {
+          // The trimmed same-ms rows (and the dropped next row) are reachable on
+          // the next page; the new boundary now sits on a strictly different ms.
+          page = trimmed;
+          hasMore = true;
+        } else {
+          // Degenerate: the WHOLE page is a single millisecond with yet more rows
+          // at that ms. Trimming would empty the page and loop forever, so EXTEND
+          // to the full cluster instead — a clean boundary at the cost of a larger
+          // page (bounded by TIMELINE_CLUSTER_CAP).
+          const lastId = page[page.length - 1]!.id;
+          const extra = await this.fetchSameMsBeyond(
+            base,
+            boundaryMs,
+            lastId,
+            before
+          );
+          page = page.concat(extra);
+          hasMore = await this.existsBeyondMs(base, boundaryMs, before);
+        }
+      }
+    }
+
+    return { messages: page, hasMore };
+  }
+
+  /** Max rows pulled when EXTENDING past a degenerate single-millisecond page
+   *  (every row in the page shares one ms). A real chat never approaches this; the
+   *  cap is a safety bound so a pathological burst can't load an unbounded page. */
+  private readonly TIMELINE_CLUSTER_CAP = 5000;
+
+  /**
+   * Run one keyset page: aggregateRaw for the ordered ids, then re-fetch typed
+   * docs and restore that exact order (aggregateRaw returns extended-JSON, not
+   * Prisma entities). Shared by the main page and the same-ms extend query.
+   */
+  private async runTimelinePage(
+    match: Record<string, unknown>,
+    sort: Record<string, number>,
+    limit: number
+  ): Promise<GeneralRoomMessage[]> {
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        { $match: match },
+        { $sort: sort },
+        { $limit: limit },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+
+    const ids = raw
+      .map((doc) => (typeof doc._id === "string" ? doc._id : doc._id?.$oid))
+      .filter((id): id is string => Boolean(id));
+    if (!ids.length) return [];
+
+    const docs = await this.prisma.generalRoomMessage.findMany({
+      where: { id: { in: ids } },
     });
+    const byId = new Map(docs.map((d) => [d.id, d]));
+    return ids
+      .map((id) => byId.get(id))
+      .filter((d): d is GeneralRoomMessage => Boolean(d));
+  }
+
+  /**
+   * Fetch the rest of a same-millisecond cluster beyond `lastId` (used only by the
+   * degenerate single-ms extend path). `before` walks older `_id`s; `after` walks
+   * newer ones — same direction as the page so the appended rows keep order.
+   */
+  private async fetchSameMsBeyond(
+    base: Record<string, unknown>,
+    boundaryMs: number,
+    lastId: string,
+    before: boolean
+  ): Promise<GeneralRoomMessage[]> {
+    const date = { $date: new Date(boundaryMs).toISOString() };
+    const match: Record<string, unknown> = {
+      ...base,
+      createdAt: date,
+      _id: before ? { $lt: { $oid: lastId } } : { $gt: { $oid: lastId } },
+    };
+    const extra = await this.runTimelinePage(
+      match,
+      before ? { _id: -1 } : { _id: 1 },
+      this.TIMELINE_CLUSTER_CAP
+    );
+    if (extra.length >= this.TIMELINE_CLUSTER_CAP) {
+      logger.warn(
+        `findByRoomIdTimeline|same-ms cluster at ${boundaryMs} hit TIMELINE_CLUSTER_CAP (${this.TIMELINE_CLUSTER_CAP}); page may still split`
+      );
+    }
+    return extra;
+  }
+
+  /**
+   * Cheap existence probe: is there at least one history-visible row strictly
+   * beyond `boundaryMs` (older for `before`, newer for `after`)? Used to set
+   * `hasMore` after the extend path without a full page fetch.
+   */
+  private async existsBeyondMs(
+    base: Record<string, unknown>,
+    boundaryMs: number,
+    before: boolean
+  ): Promise<boolean> {
+    const date = { $date: new Date(boundaryMs).toISOString() };
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            ...base,
+            createdAt: before ? { $lt: date } : { $gt: date },
+          },
+        },
+        { $limit: 1 },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as unknown[];
+    return raw.length > 0;
+  }
+
+  /**
+   * Count of history-visible messages in a room for one viewer — the SAME filter
+   * as `findByRoomIdTimeline` (minus the keyset boundary). Used so the timeline
+   * response's `total` equals the number of messages pagination can actually
+   * reach, instead of `countByRoom`'s raw total (which counts hidden/personal/
+   * deleted-for-me rows the client will never receive).
+   */
+  async countTimeline(params: {
+    roomId: string;
+    userId: string;
+    viewerIsActiveMember?: boolean;
+  }): Promise<number> {
+    const result = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: this.timelineMatch({
+            roomId: params.roomId,
+            userId: params.userId,
+            viewerIsActiveMember: params.viewerIsActiveMember ?? true,
+          }),
+        },
+        { $count: "total" },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ total: number }>;
+    return result[0]?.total ?? 0;
   }
 
   /**

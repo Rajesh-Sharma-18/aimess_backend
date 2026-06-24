@@ -114,6 +114,27 @@ export function buildTimelineResponse<T>(
 }
 
 /**
+ * Parse a timestamp pagination cursor (`before_ts` / `after_ts`). The wire value
+ * is EITHER a plain epoch-ms ("1782133107521") OR the opaque COMPOUND keyset
+ * cursor "<ms>_<objectId>" handed back as `nextCursor`. Returns the millisecond
+ * boundary plus the optional `_id` tiebreaker (the tiebreaker is what keeps
+ * messages sharing one millisecond reachable instead of skipped at a page edge).
+ * Returns `null` when the param is absent/empty. Assumes the value already passed
+ * the `/^\d+(_[a-fA-F0-9]{24})?$/` Zod validator.
+ */
+export function parseTsCursor(
+  raw: unknown
+): { ms: number; id: string | null } | null {
+  if (raw == null) return null;
+  const s = String(raw);
+  if (s === "") return null;
+  const sep = s.indexOf("_");
+  const msPart = sep === -1 ? s : s.slice(0, sep);
+  const idPart = sep === -1 ? "" : s.slice(sep + 1);
+  return { ms: Number(msPart), id: idPart || null };
+}
+
+/**
  * Build a cursor-based pagination filter for Mongoose queries.
  * Uses date-based cursors (ISO string of lastMessageAt or createdAt).
  */

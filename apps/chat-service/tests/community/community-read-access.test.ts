@@ -21,12 +21,153 @@ const USER_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_ID = "22222222-2222-4222-8222-222222222222";
 
 // ---------------------------------------------------------------------------
-// Repository in-memory PERSONAL-visibility filter — the regression that caused
-// non-members to see an empty page (data:[] while totalData>0). Prisma's
-// `{ visibleToUserId: null }` does NOT match field-absent Mongo docs, so the
-// filter runs in memory: field-absent + null + own-target are kept, another
-// user's personal message is dropped.
+// Community-aware in-memory emulator for `findByRoomIdTimeline`. Visibility is
+// now filtered in the DB via `timelineMatch` ($in/$nin/$nor + (createdAt,_id)
+// keyset), so a findMany-only mock no longer exercises it. This emulator applies
+// the exact aggregateRaw operators the keyset path emits ($oid/$date/$in/$nin/
+// $nor/$or, createdAt+_id range, $sort, $limit) so these visibility regressions
+// run through the REAL repo and assert on `result.messages`.
 // ---------------------------------------------------------------------------
+type EmuRow = {
+  id: string;
+  deletedBy?: string[];
+  visibleToUserId?: string | null;
+  systemMessageType?: string | null;
+  [k: string]: unknown;
+};
+
+function dateMsOf(v: { $date: string }): number {
+  return new Date(v.$date).getTime();
+}
+
+function emuMatchField(
+  doc: Record<string, unknown>,
+  key: string,
+  cond: unknown
+): boolean {
+  if (key === "$or")
+    return (cond as Array<Record<string, unknown>>).some((s) =>
+      emuMatchDoc(doc, s)
+    );
+  if (key === "$nor")
+    return !(cond as Array<Record<string, unknown>>).some((s) =>
+      emuMatchDoc(doc, s)
+    );
+  const value = doc[key];
+  if (cond === null || typeof cond !== "object") return value === cond;
+  const c = cond as Record<string, unknown>;
+  if ("$oid" in c) return value === (c as { $oid: string }).$oid;
+  if ("$date" in c)
+    return value instanceof Date && value.getTime() === dateMsOf(c as never);
+  if ("$ne" in c)
+    return Array.isArray(value) ? !value.includes(c.$ne) : value !== c.$ne;
+  if ("$in" in c)
+    return (c.$in as Array<string | null>).some((a) =>
+      a === null ? value == null : value === a
+    );
+  if ("$nin" in c)
+    return !(c.$nin as string[]).includes((value as string) ?? "");
+  // Range ops on createdAt (date) / _id (oid).
+  return Object.entries(c).every(([op, against]) => {
+    if (
+      against &&
+      typeof against === "object" &&
+      "$date" in (against as object)
+    ) {
+      const t = value instanceof Date ? value.getTime() : Number(value);
+      const r = dateMsOf(against as { $date: string });
+      return op === "$lt"
+        ? t < r
+        : op === "$lte"
+          ? t <= r
+          : op === "$gt"
+            ? t > r
+            : op === "$gte"
+              ? t >= r
+              : false;
+    }
+    if (
+      against &&
+      typeof against === "object" &&
+      "$oid" in (against as object)
+    ) {
+      const r = (against as { $oid: string }).$oid;
+      return op === "$lt"
+        ? String(value) < r
+        : op === "$gt"
+          ? String(value) > r
+          : false;
+    }
+    return false;
+  });
+}
+
+function emuMatchDoc(
+  doc: Record<string, unknown>,
+  match: Record<string, unknown>
+): boolean {
+  return Object.entries(match).every(([k, v]) => emuMatchField(doc, k, v));
+}
+
+/** Build a community-timeline prisma mock from minimal rows. Each row gets a
+ *  roomId (ROOM_ID), a strictly-decreasing createdAt by declaration index (so a
+ *  newest-first page preserves declaration order), and defaulted delete flags. */
+function makeCommunityPrisma(rows: EmuRow[]) {
+  const base = 1_700_000_000_000;
+  const docs = rows.map((r, i) => ({
+    deletedForAll: false,
+    deletedBy: r.deletedBy ?? [],
+    visibleToUserId: r.visibleToUserId ?? null,
+    systemMessageType: r.systemMessageType ?? null,
+    ...r,
+    _id: r.id,
+    roomId: ROOM_ID,
+    createdAt: new Date(base - i * 1000),
+  })) as Array<Record<string, unknown>>;
+
+  const aggregateRaw = jest.fn(async ({ pipeline }: { pipeline: any[] }) => {
+    const match = pipeline.find((s) => "$match" in s)?.$match ?? {};
+    let out = docs.filter((d) => emuMatchDoc(d, match));
+    if (pipeline.find((s) => "$count" in s))
+      return out.length ? [{ total: out.length }] : [];
+    const sort = pipeline.find((s) => "$sort" in s)?.$sort as
+      | Record<string, number>
+      | undefined;
+    if (sort) {
+      const [[k1, d1], tie] = Object.entries(sort);
+      const [k2, d2] = tie ?? [];
+      out = [...out].sort((a, b) => {
+        const av1 = k1 === "_id" ? a._id : (a.createdAt as Date).getTime();
+        const bv1 = k1 === "_id" ? b._id : (b.createdAt as Date).getTime();
+        if ((av1 as never) < (bv1 as never)) return -1 * d1;
+        if ((av1 as never) > (bv1 as never)) return 1 * d1;
+        if (!k2) return 0;
+        const av2 = k2 === "_id" ? a._id : (a.createdAt as Date).getTime();
+        const bv2 = k2 === "_id" ? b._id : (b.createdAt as Date).getTime();
+        if ((av2 as never) < (bv2 as never)) return -1 * d2!;
+        if ((av2 as never) > (bv2 as never)) return 1 * d2!;
+        return 0;
+      });
+    }
+    const limit = pipeline.find((s) => "$limit" in s)?.$limit as
+      | number
+      | undefined;
+    if (limit != null) out = out.slice(0, limit);
+    return out.map((d) => ({ _id: { $oid: d._id } }));
+  });
+
+  const findMany = jest.fn(
+    async ({ where }: { where: { id: { in: string[] } } }) => {
+      const want = new Set(where.id.in);
+      return docs
+        .filter((d) => want.has(d._id as string))
+        .map((d) => ({ ...d, id: d._id }));
+    }
+  );
+
+  return { generalRoomMessage: { aggregateRaw, findMany } };
+}
+
 describe("GeneralRoomMessageRepository personal-visibility filter", () => {
   it("findByRoomIdTimeline keeps field-absent/own messages, drops others' personal", async () => {
     const rows = [
@@ -35,24 +176,22 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       { id: "3", deletedBy: [], visibleToUserId: USER_ID }, // mine
       { id: "4", deletedBy: [], visibleToUserId: OTHER_ID }, // someone else's
     ];
-    const prisma = {
-      generalRoomMessage: { findMany: jest.fn().mockResolvedValue(rows) },
-    };
-    const repo = new GeneralRoomMessageRepository(prisma as never);
+    const repo = new GeneralRoomMessageRepository(
+      makeCommunityPrisma(rows) as never
+    );
 
-    const result = await repo.findByRoomIdTimeline({
+    const { messages } = await repo.findByRoomIdTimeline({
       roomId: ROOM_ID,
       userId: USER_ID,
       direction: "before",
       ts: new Date(),
+      inclusive: true,
       limit: 30,
     });
 
-    expect(result.map((m) => m.id)).toEqual(["1", "2", "3"]);
-    // The where-clause must NOT carry an `OR` on visibleToUserId (it would drop
-    // legacy field-absent docs in real Mongo) — visibility is filtered in memory.
-    const where = prisma.generalRoomMessage.findMany.mock.calls[0][0].where;
-    expect(where.OR).toBeUndefined();
+    // field-absent + null + own-target kept; another user's personal dropped.
+    // ($in:[null,user] matches field-absent docs natively in the keyset $match.)
+    expect(messages.map((m) => m.id)).toEqual(["1", "2", "3"]);
   });
 
   it("findLatestPersonalByRooms scopes the $match to the caller and decodes extended-JSON", async () => {
@@ -153,12 +292,8 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       },
       { id: "msg", deletedBy: [], visibleToUserId: null }, // community-wide
     ];
-    const makeRepo = () => {
-      const prisma = {
-        generalRoomMessage: { findMany: jest.fn().mockResolvedValue(rows) },
-      };
-      return new GeneralRoomMessageRepository(prisma as never);
-    };
+    const makeRepo = () =>
+      new GeneralRoomMessageRepository(makeCommunityPrisma(rows) as never);
 
     // Non-active member (left, still browsing PUBLIC history): own join line hidden.
     const left = await makeRepo().findByRoomIdTimeline({
@@ -166,10 +301,11 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       userId: USER_ID,
       direction: "before",
       ts: new Date(),
+      inclusive: true,
       limit: 30,
       viewerIsActiveMember: false,
     });
-    expect(left.map((m) => m.id)).toEqual(["msg"]);
+    expect(left.messages.map((m) => m.id)).toEqual(["msg"]);
 
     // Active member: own current-session join line is visible.
     const active = await makeRepo().findByRoomIdTimeline({
@@ -177,10 +313,11 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       userId: USER_ID,
       direction: "before",
       ts: new Date(),
+      inclusive: true,
       limit: 30,
       viewerIsActiveMember: true,
     });
-    expect(active.map((m) => m.id)).toEqual(["join", "msg"]);
+    expect(active.messages.map((m) => m.id)).toEqual(["join", "msg"]);
   });
 
   // -------------------------------------------------------------------------
@@ -207,22 +344,22 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       { id: "rolechg", deletedBy: [], systemMessageType: "ROLE_CHANGED" }, // not hidden
       { id: "msg", deletedBy: [] }, // regular message
     ];
-    const prisma = {
-      generalRoomMessage: { findMany: jest.fn().mockResolvedValue(rows) },
-    };
-    const repo = new GeneralRoomMessageRepository(prisma as never);
+    const repo = new GeneralRoomMessageRepository(
+      makeCommunityPrisma(rows) as never
+    );
 
-    const result = await repo.findByRoomIdTimeline({
+    const { messages } = await repo.findByRoomIdTimeline({
       roomId: ROOM_ID,
       userId: USER_ID,
       direction: "before",
       ts: new Date(),
+      inclusive: true,
       limit: 30,
       viewerIsActiveMember: true,
     });
 
     // left + joined dropped; moderation lines + role change + message survive.
-    expect(result.map((m) => m.id)).toEqual([
+    expect(messages.map((m) => m.id)).toEqual([
       "removed",
       "banned",
       "unbanned",
@@ -250,24 +387,24 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       },
       { id: "msg", deletedBy: [] },
     ];
-    const prisma = {
-      generalRoomMessage: { findMany: jest.fn().mockResolvedValue(rows) },
-    };
-    const repo = new GeneralRoomMessageRepository(prisma as never);
+    const repo = new GeneralRoomMessageRepository(
+      makeCommunityPrisma(rows) as never
+    );
 
-    const result = await repo.findByRoomIdTimeline({
+    const { messages } = await repo.findByRoomIdTimeline({
       roomId: ROOM_ID,
       userId: USER_ID,
       direction: "before",
       ts: new Date(),
+      inclusive: true,
       limit: 30,
       viewerIsActiveMember: true,
     });
 
     // Legacy MEMBER_JOINED hidden → exactly the single personal line survives.
-    expect(result.map((m) => m.id)).toEqual(["personal-joined", "msg"]);
+    expect(messages.map((m) => m.id)).toEqual(["personal-joined", "msg"]);
     expect(
-      result.filter((m) =>
+      messages.filter((m) =>
         ["MEMBER_JOINED", "COMMUNITY_JOINED"].includes(
           (m as { systemMessageType?: string }).systemMessageType ?? ""
         )
@@ -570,7 +707,7 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
       [
         "ROLE_CHANGED",
         { targetUserId: OTHER_ID, newRole: "ADMIN", oldRole: "MEMBER" },
-        "Bob is now an admin",
+        "Bob is now the community admin",
       ],
       ["COMMUNITY_JOINED", {}, "You joined the community"],
       ["JOIN_REQUEST_APPROVED", {}, "Your request to join was approved"],

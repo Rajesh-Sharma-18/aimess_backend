@@ -3353,9 +3353,9 @@ export const communityPaths = {
   "/communities/{id}/invites": {
     post: {
       tags: ["Communities"],
-      summary: "Invite a user to a community",
+      summary: "Bulk-invite users to a community",
       description:
-        "Moderator or admin only. If a PENDING join-request already exists from the invitee, this auto-approves the request (returns `JoinRequestApprovedData` with status 200) instead of creating a new invite.",
+        "Moderator or admin only. Accepts 1–50 user IDs in a single request. Invalid users (banned, self, already member, already pending) are reported in the `results` array instead of failing the entire request. Notifications and socket events are fired only for users that receive a new or recycled invite.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -3372,12 +3372,20 @@ export const communityPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/CreateInviteRequest" },
+            example: {
+              userIds: [
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222",
+                "33333333-3333-4333-8333-333333333333",
+              ],
+            },
           },
         },
       },
       responses: {
         "201": {
-          description: "Invite created",
+          description:
+            "Bulk invite processed. Check `data.invited` for the number of new invites sent. A 201 is returned even when some users were skipped — inspect `data.results` for per-user outcomes.",
           content: {
             "application/json": {
               schema: {
@@ -3386,37 +3394,44 @@ export const communityPaths = {
                   {
                     type: "object",
                     properties: {
-                      data: { $ref: "#/components/schemas/InviteData" },
+                      data: { $ref: "#/components/schemas/BulkInviteResult" },
                     },
                   },
                 ],
               },
-            },
-          },
-        },
-        "200": {
-          description:
-            "Mutual want detected — pending join-request auto-approved, invitee is now an ACTIVE member.",
-          content: {
-            "application/json": {
-              schema: {
-                allOf: [
-                  { $ref: "#/components/schemas/ApiSuccessResponse" },
-                  {
-                    type: "object",
-                    properties: {
-                      data: {
-                        $ref: "#/components/schemas/JoinRequestApprovedData",
-                      },
+              example: {
+                success: true,
+                message: "Invites processed",
+                data: {
+                  totalRequested: 3,
+                  invited: 1,
+                  alreadyInvited: 1,
+                  alreadyMembers: 1,
+                  failed: 0,
+                  results: [
+                    {
+                      userId: "11111111-1111-4111-8111-111111111111",
+                      outcome: "INVITED",
+                      inviteId: "aaaaaaaaaaaaaaaaaaaaaaaa",
                     },
-                  },
-                ],
+                    {
+                      userId: "22222222-2222-4222-8222-222222222222",
+                      outcome: "ALREADY_INVITED",
+                      inviteId: "bbbbbbbbbbbbbbbbbbbbbbbb",
+                    },
+                    {
+                      userId: "33333333-3333-4333-8333-333333333333",
+                      outcome: "ALREADY_MEMBER",
+                    },
+                  ],
+                },
               },
             },
           },
         },
         "400": {
-          description: "Validation failed or caller cannot invite self",
+          description:
+            "Validation failed — missing userIds, empty array, array exceeds 50 items, or one or more IDs are not valid UUIDs.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -3426,7 +3441,7 @@ export const communityPaths = {
         "401": unauthorized,
         "403": {
           description:
-            "Caller is not a moderator/admin, or the invitee is banned",
+            "Caller is not a moderator/admin, or the community is closed/suspended.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -3434,15 +3449,7 @@ export const communityPaths = {
           },
         },
         "404": {
-          description: "Community not found",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
-        "409": {
-          description: "Invitee is already an ACTIVE member",
+          description: "Community not found.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -4586,9 +4593,13 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Create a shareable invite link",
       description:
-        "MODERATOR/ADMIN only. `maxUses` null/omitted → unlimited; `expiresInMinutes` null/omitted → never expires. " +
+        "**Authorization: any active community member** (MEMBER, MODERATOR, or ADMIN). " +
+        "Required state: the caller must have an ACTIVE membership in this community. " +
+        "Non-members, removed (LEFT), banned (BANNED), and pending (PENDING) members are rejected with 403. " +
+        "`maxUses` null/omitted → unlimited; `expiresInMinutes` null/omitted → never expires. " +
         "For **PRIVATE** communities, `autoApprove` defaults to `true` (link grants direct membership). " +
-        "Set `autoApprove: false` explicitly if moderator approval is still required after invite.",
+        "Set `autoApprove: false` explicitly if moderator approval is still required after invite. " +
+        "Abuse-protected: per-user create rate limit (429) and a per-member cap on simultaneously-active links (403).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -4631,7 +4642,8 @@ export const communityPaths = {
         },
         "401": unauthorized,
         "403": {
-          description: "Caller lacks MODERATOR rank in this community",
+          description:
+            "Caller is not an ACTIVE member of this community (non-member, removed/LEFT, banned, or pending), the community is not writable (suspended/closed), or the per-member active-link cap is reached.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -4646,13 +4658,21 @@ export const communityPaths = {
             },
           },
         },
+        "429": {
+          description: "Per-user invite-link create rate limit exceeded",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
       },
     },
     get: {
       tags: ["Communities"],
       summary: "List invite links for a community",
       description:
-        "MODERATOR/ADMIN only. Filter by status: active/expired/revoked.",
+        "Any active member (MEMBER, MODERATOR, or ADMIN). Filter by status: active/expired/revoked.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -4702,7 +4722,7 @@ export const communityPaths = {
         },
         "401": unauthorized,
         "403": {
-          description: "Caller lacks MODERATOR rank in this community",
+          description: "Caller is not an active member of this community",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -4790,10 +4810,14 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Bulk-share an invite link via system DMs",
       description:
-        "MODERATOR/ADMIN only. Resolves or auto-creates one active invite link for this community, then fires a system DM to each unique recipient via chat-service (RabbitMQ fan-out). " +
+        "**Authorization: any active community member** (MEMBER, MODERATOR, or ADMIN). " +
+        "Required state: the caller must have an ACTIVE membership in this community; non-members, removed (LEFT), banned (BANNED), and pending (PENDING) members are rejected with 403. " +
+        "Resolves or auto-creates one active invite link **belonging to this community**, then fires a system DM to each unique recipient via chat-service (RabbitMQ fan-out). " +
+        "A `linkId` from a DIFFERENT community is rejected with 404 (a Community A member can never send a Community B link); an inactive/expired/revoked link is rejected with 403. " +
         "The caller is automatically excluded from the recipient list. " +
         "Pass `linkId` to reuse a specific link; omit to auto-pick the first active link (or create one if none exists). " +
-        "Recipients receive a `SYSTEM` / `COMMUNITY_INVITE` message in their private conversation with the inviter.",
+        "Recipients receive a `SYSTEM` / `COMMUNITY_INVITE` message in their private conversation with the inviter. " +
+        "Abuse-protected: per-user bulk-send rate limit (429), max 50 recipients per request, and a recorded audit entry per call.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -4815,16 +4839,18 @@ export const communityPaths = {
               properties: {
                 userIds: {
                   type: "array",
-                  items: { type: "string" },
+                  items: { type: "string", format: "uuid" },
                   minItems: 1,
                   maxItems: 50,
                   description:
-                    "List of user IDs to send the invite link to (max 50 per request).",
+                    "Recipients, identified by their canonical platform user UUID (AuthUser.id) — NOT a Mongo ObjectId. 1–50 per request; duplicates and the caller are removed. A non-UUID value is rejected with 400.",
+                  example: ["885ad4e0-e238-4f9a-9773-e215321885b4"],
                 },
                 linkId: {
                   type: "string",
                   description:
-                    "Optional. Reuse this specific invite link. If omitted, the first active link is used (or a new one is created).",
+                    "Optional. Reuse this specific invite link (a Mongo ObjectId, 24 hex chars). If omitted, the first active link is used (or a new one is created).",
+                  example: "6a3b77c160056d00f5b8d6ee",
                 },
               },
             },
@@ -4834,7 +4860,7 @@ export const communityPaths = {
       responses: {
         "200": {
           description:
-            "Invite link DMs queued. `queued` is the number of recipients notified; `skipped` is the count excluded (caller excluded themselves).",
+            "Partial-success (non-atomic). The link DM is enqueued for every ELIGIBLE recipient; ineligible recipients are reported per-user in `failures` and never hide the valid sends. A system DM is enqueued ONLY for the userIds in `sentUserIds`.",
           content: {
             "application/json": {
               schema: {
@@ -4849,14 +4875,68 @@ export const communityPaths = {
                           link: {
                             $ref: "#/components/schemas/CommunityInviteLinkData",
                           },
+                          summary: {
+                            type: "object",
+                            description: "Per-request counts.",
+                            properties: {
+                              requested: {
+                                type: "integer",
+                                description: "Unique userIds received.",
+                              },
+                              sent: {
+                                type: "integer",
+                                description:
+                                  "Recipients the invite DM was enqueued for.",
+                              },
+                              failed: {
+                                type: "integer",
+                                description:
+                                  "Recipients rejected (see failures).",
+                              },
+                              skipped: {
+                                type: "integer",
+                                description:
+                                  "Recipients excluded without being a failure (the caller themselves).",
+                              },
+                            },
+                          },
+                          sentUserIds: {
+                            type: "array",
+                            items: { type: "string", format: "uuid" },
+                            description:
+                              "UUIDs the invite DM was enqueued for (events emitted ONLY for these).",
+                          },
+                          failures: {
+                            type: "array",
+                            description:
+                              "Per-user rejections, each with an exact code.",
+                            items: {
+                              type: "object",
+                              properties: {
+                                userId: { type: "string", format: "uuid" },
+                                code: {
+                                  type: "string",
+                                  enum: [
+                                    "USER_NOT_FOUND",
+                                    "ALREADY_MEMBER",
+                                    "USER_BANNED",
+                                  ],
+                                  description:
+                                    "USER_NOT_FOUND = no such user; ALREADY_MEMBER = already an active member; USER_BANNED = banned from this community.",
+                                },
+                                message: { type: "string" },
+                              },
+                            },
+                          },
                           queued: {
                             type: "integer",
-                            description: "Number of system DMs enqueued.",
+                            description:
+                              "Back-compat alias of summary.sent (number of DMs enqueued).",
                           },
                           skipped: {
                             type: "integer",
                             description:
-                              "Number of userIds skipped (caller sent to themselves, duplicates).",
+                              "Back-compat alias of summary.skipped (caller excluded).",
                           },
                         },
                       },
@@ -4869,7 +4949,7 @@ export const communityPaths = {
         },
         "400": {
           description:
-            "Validation error — userIds is empty or linkId is invalid",
+            'Validation error — `userIds` is empty, exceeds 50, or contains a value that is not a valid UUID ("One or more user IDs are invalid"); or `linkId` is not a valid ObjectId.',
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -4879,7 +4959,7 @@ export const communityPaths = {
         "401": unauthorized,
         "403": {
           description:
-            "Caller lacks MODERATOR rank, community is suspended, or specified link is inactive",
+            "Caller is not an ACTIVE member of this community (non-member, removed/LEFT, banned, or pending), the community is not writable (suspended/closed), or the specified link is inactive/expired/revoked.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -4887,7 +4967,16 @@ export const communityPaths = {
           },
         },
         "404": {
-          description: "Community or specified invite link not found",
+          description:
+            "Community not found, or the specified invite link does not exist OR belongs to a different community (cross-community link use).",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            },
+          },
+        },
+        "429": {
+          description: "Per-user invite-link bulk-send rate limit exceeded",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },

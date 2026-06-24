@@ -2498,9 +2498,9 @@ components:
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "Renamed to Tech Enthusiasts Pro"
+              text: 'Community renamed to "Tech Enthusiasts Pro"'
               files: []
-            message: "Renamed to Tech Enthusiasts Pro"
+            message: 'Community renamed to "Tech Enthusiasts Pro"'
             clientMessageId: ""
             reactions: []
             serverTs: 1750000050000
@@ -4574,7 +4574,7 @@ components:
 
             Canonical fallback texts:
               COMMUNITY_CREATED             → "Community created"
-              COMMUNITY_NAME_UPDATED        → "Renamed to {{metadata.newName}}"
+              COMMUNITY_NAME_UPDATED        → 'Community renamed to "{{metadata.newName}}"'
               COMMUNITY_AVATAR_UPDATED      → "Community photo updated"
               COMMUNITY_DESCRIPTION_UPDATED → "Community description updated"
               COMMUNITY_BANNER_UPDATED      → "Community banner updated"

@@ -110,6 +110,15 @@ export type PublicCommunityResponse = {
   memberCount: number;
   /** by-handle only ever resolves PUBLIC communities. */
   type: "PUBLIC";
+  /**
+   * Canonical HTTPS share URL for this public community: `https://aimess.me/<handle>`
+   * (Sharing & Deep-Linking spec §9.5). Server-owned — clients MUST use this
+   * verbatim and never reconstruct it. No `+` marker (that prefix is reserved
+   * for code-based PRIVATE invite links).
+   */
+  shareUrl: string;
+  /** App deep-link: `aimess://resolve?handle=<handle>` (spec §4.1/§9.5). */
+  appDeepLink: string;
   /** True when the caller is an ACTIVE member. */
   isJoined: boolean;
   /** Caller's role, or null if not an ACTIVE member. */
@@ -326,6 +335,14 @@ export type CommunityMemberData = {
   snapshotAvatarUrlExpiresIn: number | null;
   /** Nested media object for the snapshot avatar (additive; mirrors snapshotAvatarUrl). */
   snapshotAvatar: MediaObject;
+  /**
+   * True only when the member's user profile genuinely could not be resolved
+   * (deleted user with no usable stored snapshot). When false (the default),
+   * snapshotUsername/snapshotDisplayName carry the live profile if user-service
+   * resolved it, otherwise the last-known-good stored snapshot — never a
+   * synthetic "Unknown" placeholder for a valid user.
+   */
+  profileUnavailable?: boolean;
   /** ISO-8601 timestamp of when the member was banned; null when not banned. */
   bannedAt: string | null;
   /** AuthUser.id of the admin who banned the member; null when not banned. */
@@ -453,6 +470,7 @@ export type CommunityAuditAction =
   | "INVITE_LINK_CREATED"
   | "INVITE_LINK_REVOKED"
   | "INVITE_LINK_REDEEMED"
+  | "INVITE_LINK_BULK_SENT"
   // Backoffice (admin panel) moderation: close/reopen a community.
   | "ADMIN_SUSPEND_COMMUNITY"
   | "ADMIN_REOPEN_COMMUNITY";
@@ -580,6 +598,29 @@ export type MyJoinRequestData = CommunityJoinRequestData & {
     /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed. */
     status: "ACTIVE" | "CLOSED";
   };
+};
+
+export type BulkInviteOutcome =
+  | "INVITED"
+  | "ALREADY_INVITED"
+  | "ALREADY_MEMBER"
+  | "FAILED";
+
+export type BulkInviteUserResult = {
+  userId: string;
+  outcome: BulkInviteOutcome;
+  inviteId?: string;
+  reason?: string;
+};
+
+/** Summary returned by the bulk-invite endpoint. */
+export type BulkInviteResult = {
+  totalRequested: number;
+  invited: number;
+  alreadyInvited: number;
+  alreadyMembers: number;
+  failed: number;
+  results: BulkInviteUserResult[];
 };
 
 /** Plain invite DTO (accept/decline responses, create response). */

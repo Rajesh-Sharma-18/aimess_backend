@@ -74,6 +74,42 @@ const envSchema = z.object({
     .positive()
     .max(20 * 1024 * 1024)
     .default(5 * 1024 * 1024),
+
+  // --- Invite-link abuse protection (per-user, applies to ALL active members) ---
+  // Now that any active member (not just MODERATOR/ADMIN) can create + share
+  // invite links, these per-user caps bound the new abuse surface. All are
+  // optional with safe defaults so existing .env files keep working.
+
+  /** Max invite-link CREATE calls per user inside the rolling window. */
+  COMMUNITY_INVITE_CREATE_RATE_MAX: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(20),
+  /** Rolling window (seconds) for the invite-link CREATE rate limit. */
+  COMMUNITY_INVITE_CREATE_RATE_WINDOW_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3600),
+  /** Max invite-link BULK-SEND calls per user inside the rolling window. */
+  COMMUNITY_INVITE_BULK_RATE_MAX: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10),
+  /** Rolling window (seconds) for the invite-link BULK-SEND rate limit. */
+  COMMUNITY_INVITE_BULK_RATE_WINDOW_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3600),
+  /** Max simultaneously-ACTIVE invite links one member may own per community. */
+  COMMUNITY_INVITE_MAX_ACTIVE_LINKS_PER_MEMBER: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(20),
 });
 
 const parsed = envSchema.safeParse(process.env);

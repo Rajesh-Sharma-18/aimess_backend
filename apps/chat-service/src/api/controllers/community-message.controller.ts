@@ -111,16 +111,15 @@ export class CommunityMessageController {
     const around = req.query.around as string | undefined;
 
     if (around) {
-      const { items } = await this.service.getMessagesAround({
+      const { items, total } = await this.service.getMessagesAround({
         roomId,
         userId,
         messageId: around,
         limit,
       });
-      const totalCount = await this.service.countMessages(roomId);
       const paginated = buildTimelineResponse(
         items as unknown as Record<string, unknown>[],
-        totalCount,
+        total,
         limit,
         false,
         null
@@ -138,8 +137,22 @@ export class CommunityMessageController {
       return;
     }
 
-    const beforeTs =
-      req.query.before_ts != null ? Number(req.query.before_ts) : undefined;
+    // `before_ts` is the history-scroll cursor. It is EITHER a plain epoch-ms
+    // (a first/manual call) OR the opaque COMPOUND cursor "<ms>_<objectId>"
+    // handed back as `nextCursor` from a previous page. Splitting on "_" yields
+    // the keyset (ts, id) — the id tiebreaker is what makes messages that share
+    // a millisecond reachable instead of being skipped at a page boundary.
+    const rawBeforeTs =
+      req.query.before_ts != null ? String(req.query.before_ts) : undefined;
+    let beforeTs: number | undefined;
+    let beforeId: string | null = null;
+    if (rawBeforeTs != null && rawBeforeTs !== "") {
+      const sep = rawBeforeTs.indexOf("_");
+      const msPart = sep === -1 ? rawBeforeTs : rawBeforeTs.slice(0, sep);
+      const idPart = sep === -1 ? "" : rawBeforeTs.slice(sep + 1);
+      beforeTs = Number(msPart);
+      beforeId = idPart || null;
+    }
     const afterTs =
       req.query.after_ts != null ? Number(req.query.after_ts) : undefined;
 
@@ -173,24 +186,23 @@ export class CommunityMessageController {
       return;
     }
 
-    // Scroll / history mode: before_ts → newest-first, omit → latest page.
-    const direction = afterTs != null ? "after" : "before";
-    const tsMs =
-      afterTs != null ? afterTs : beforeTs != null ? beforeTs : Date.now();
-
-    const [result, totalCount] = await Promise.all([
-      this.service.getMessagesTimeline({
-        roomId,
-        userId,
-        direction,
-        ts: new Date(tsMs),
-        limit,
-      }),
-      this.service.countMessages(roomId),
-    ]);
+    // Scroll / history mode: before_ts → newest-first older page, omit → latest
+    // page. (after_ts was handled above via incremental sync and returned.)
+    const hasBefore = beforeTs != null;
+    const result = await this.service.getMessagesTimeline({
+      roomId,
+      userId,
+      direction: "before",
+      ts: new Date(hasBefore ? beforeTs! : Date.now()),
+      boundaryId: beforeId,
+      // First page (no before_ts) includes the newest message; a bare-ms cursor
+      // is treated as exclusive so it never re-returns its own boundary row.
+      inclusive: !hasBefore,
+      limit,
+    });
     const paginated = buildTimelineResponse(
       result.items as unknown as Record<string, unknown>[],
-      totalCount,
+      result.total,
       limit,
       result.hasMore,
       result.nextCursor

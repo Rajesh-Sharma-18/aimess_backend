@@ -53,7 +53,9 @@ export function buildCommunitySystemFallbackText(
       return "Community created";
     case "COMMUNITY_NAME_UPDATED": {
       const newName = ((metadata.newName as string) || "").trim();
-      return newName ? `Renamed to ${newName}` : "Community name updated";
+      return newName
+        ? `Community renamed to "${newName}"`
+        : "Community name updated";
     }
     case "COMMUNITY_DESCRIPTION_UPDATED":
       return "Community description updated";
@@ -83,6 +85,11 @@ export function buildCommunitySystemFallbackText(
       }
       const newRole = ((metadata.newRole as string) || "").toUpperCase();
       const oldRole = ((metadata.oldRole as string) || "").toUpperCase();
+      // Admin promotion is an ownership hand-off — there is exactly ONE admin, so
+      // phrase it as "the community admin" (Telegram-style) rather than "an admin".
+      if (newRole === "ADMIN") {
+        return `${target} is now the community admin`;
+      }
       if (
         newRole === "MEMBER" &&
         (oldRole === "ADMIN" || oldRole === "MODERATOR")
@@ -95,6 +102,9 @@ export function buildCommunitySystemFallbackText(
     case "ROLE_CHANGED_SELF": {
       const newRole = ((metadata.newRole as string) || "").toUpperCase();
       const oldRole = ((metadata.oldRole as string) || "").toUpperCase();
+      if (newRole === "ADMIN") {
+        return "You are now the community admin";
+      }
       if (
         newRole === "MEMBER" &&
         (oldRole === "ADMIN" || oldRole === "MODERATOR")

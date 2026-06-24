@@ -175,10 +175,18 @@ export class CommunitySystemMessageService {
       // deterministic dedup key — one logical event ⇒ one timeline line, no
       // duplicate "Community info was updated" / "X joined" bubbles. Two genuinely
       // distinct events differ in (type, eventAt, target) so both persist.
+      //
+      // The recipient (`visibleToUserId`) is part of the key for PERSONAL lines so
+      // that a single logical event which fans out a personal line to MORE THAN ONE
+      // user — e.g. an admin TRANSFER posts "You are now the community admin" to the
+      // new admin AND "You are now a member" to the outgoing admin under one shared
+      // `eventAt` — keeps both lines instead of the second colliding with the first
+      // and being dropped as a "replay". The key only ever grows MORE specific, so a
+      // real redelivery (same type+eventAt+recipient) still dedupes correctly.
       const dedupeKey = params.eventAt
         ? `sys:${systemMessageType}:${params.eventAt}${
             targetUserId ? `:${targetUserId}` : ""
-          }`
+          }${isPersonal && visibleToUserId ? `:u:${visibleToUserId}` : ""}`
         : null;
 
       // Cheap pre-check skips the sequence allocation + bump + publish on a

@@ -249,6 +249,25 @@ const startServer = async () => {
       }
     }
 
+    // Backs the community history (createdAt, _id) keyset page + countTimeline.
+    // Declared on the schema too; created here so existing deployments pick it up
+    // without a `prisma db push`. _id is the implicit trailing sort key in Mongo.
+    try {
+      await ensureIndex(
+        "general_room_messages",
+        {
+          key: { roomId: 1, createdAt: -1 },
+          name: "general_room_messages_room_createdAt_idx",
+        },
+        "general_room_messages_room_createdAt_idx"
+      );
+    } catch (err) {
+      logger.warn(
+        "Failed to create general_room_messages timeline index — continuing"
+      );
+      logger.warn(err);
+    }
+
     await connectChatRedis();
 
     // Initialize event consumers (RabbitMQ-based eventual consistency)

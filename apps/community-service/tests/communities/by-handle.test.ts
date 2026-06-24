@@ -31,6 +31,8 @@ const publicDto = (over: Record<string, unknown> = {}) => ({
   bannerUrl: null,
   memberCount: 42,
   type: "PUBLIC",
+  shareUrl: "https://aimess.me/backend_devs",
+  appDeepLink: "aimess://resolve?handle=backend_devs",
   isJoined: false,
   role: null,
   isBanned: false,
@@ -60,6 +62,11 @@ describe("GET /api/v1/communities/by-handle/:handle", () => {
     expect(res.body.data.type).toBe("PUBLIC");
     expect(res.body.data.isJoined).toBe(false);
     expect(res.body.data.role).toBeNull();
+    // Canonical share URLs are server-owned and surfaced verbatim to the client.
+    expect(res.body.data.shareUrl).toBe("https://aimess.me/backend_devs");
+    expect(res.body.data.appDeepLink).toBe(
+      "aimess://resolve?handle=backend_devs"
+    );
     expect(svc.getByHandle).toHaveBeenCalledWith(
       "backend_devs",
       expect.any(String)

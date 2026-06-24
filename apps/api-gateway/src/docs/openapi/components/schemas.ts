@@ -2158,13 +2158,23 @@ export const openApiSchemas = {
     properties: {
       livestreamId: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
       title: { type: "string", example: "Weekly Dev Q&A" },
-      status: { type: "string", enum: ["LIVE", "ENDED", "CANCELLED"] },
+      status: {
+        type: "string",
+        enum: ["LIVE", "ENDED", "SCHEDULED", "CANCELLED"],
+        description: "SCHEDULED maps to a stream-service PENDING stream.",
+      },
       community: {
         type: "object",
         properties: {
           id: { type: "string" },
           name: { type: "string" },
           slug: { type: "string" },
+          avatarUrl: {
+            type: "string",
+            nullable: true,
+            description:
+              "Presigned community avatar URL (full URL, never a key).",
+          },
         },
       },
       creator: {
@@ -2173,7 +2183,22 @@ export const openApiSchemas = {
           id: { type: "string" },
           username: { type: "string" },
           displayName: { type: "string" },
-          avatarUrl: { type: "string", nullable: true },
+          avatarUrl: {
+            type: "string",
+            nullable: true,
+            description:
+              "Presigned creator avatar URL (full URL, never a key).",
+          },
+        },
+      },
+      category: {
+        type: "object",
+        description:
+          "The stream's community category (streams have no own category).",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string", example: "Technology" },
+          slug: { type: "string", example: "technology" },
         },
       },
       createdAt: { type: "string", format: "date-time" },
@@ -2316,6 +2341,28 @@ export const openApiSchemas = {
       },
       createdAt: { type: "string", format: "date-time" },
     },
+  },
+
+  AdminLivestreamUserItem: {
+    type: "object",
+    description:
+      "A member of the stream's community (the Livestream User List row). `type` is the member's community role.",
+    properties: {
+      userId: { type: "string" },
+      username: { type: "string" },
+      handle: { type: "string", nullable: true },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description: "Presigned avatar URL (full URL, never a key).",
+      },
+      type: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+      },
+      joinedAt: { type: "string", format: "date-time" },
+    },
+    required: ["userId", "username", "type", "joinedAt"],
   },
 
   AdminEndLivestreamResult: {
@@ -4846,6 +4893,11 @@ export const openApiSchemas = {
       snapshotAvatarUrl: { type: "string", nullable: true },
       snapshotAvatarUrlExpiresIn: { type: "integer", nullable: true },
       snapshotAvatar: { $ref: "#/components/schemas/MediaObject" },
+      profileUnavailable: {
+        type: "boolean",
+        description:
+          'True only when the member\'s user profile genuinely could not be resolved (deleted user with no usable stored snapshot). When false/absent (the default), snapshotUsername/snapshotDisplayName carry the live profile when user-service resolves it, otherwise the last-known-good stored snapshot — never a synthetic "Unknown" placeholder for a valid user.',
+      },
       bannedAt: {
         type: "string",
         format: "date-time",
@@ -5271,10 +5323,84 @@ export const openApiSchemas = {
   // --- Invites ------------------------------------------------------------
   CreateInviteRequest: {
     type: "object",
+    description:
+      "Bulk invite request. Supply 1–50 unique user UUIDs. Duplicates are deduplicated server-side. Invalid users (banned, self, already member, already pending) are reported in the result instead of failing the entire request.",
     properties: {
-      inviteeId: { type: "string", format: "uuid" },
+      userIds: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
+        minItems: 1,
+        maxItems: 50,
+        description: "User IDs to invite (1–50 items).",
+      },
     },
-    required: ["inviteeId"],
+    required: ["userIds"],
+    example: {
+      userIds: [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+      ],
+    },
+  },
+  BulkInviteUserResult: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      outcome: {
+        type: "string",
+        enum: ["INVITED", "ALREADY_INVITED", "ALREADY_MEMBER", "FAILED"],
+        description:
+          "INVITED = new or recycled invite created; ALREADY_INVITED = existing PENDING invite (no new notification); ALREADY_MEMBER = user is already an ACTIVE member; FAILED = banned, self-invite, or other error.",
+      },
+      inviteId: {
+        type: "string",
+        description: "Present when outcome is INVITED or ALREADY_INVITED.",
+      },
+      reason: {
+        type: "string",
+        description:
+          "Present when outcome is FAILED (e.g. SELF_INVITE, USER_BANNED).",
+      },
+    },
+    required: ["userId", "outcome"],
+  },
+  BulkInviteResult: {
+    type: "object",
+    properties: {
+      totalRequested: {
+        type: "integer",
+        description: "Number of distinct user IDs received (after dedup).",
+      },
+      invited: {
+        type: "integer",
+        description: "Users successfully invited (new invite or recycled).",
+      },
+      alreadyInvited: {
+        type: "integer",
+        description:
+          "Users who already had a PENDING invite — no action taken.",
+      },
+      alreadyMembers: {
+        type: "integer",
+        description: "Users who are already ACTIVE members — skipped.",
+      },
+      failed: {
+        type: "integer",
+        description: "Users that could not be invited (banned, self, etc.).",
+      },
+      results: {
+        type: "array",
+        items: { $ref: "#/components/schemas/BulkInviteUserResult" },
+      },
+    },
+    required: [
+      "totalRequested",
+      "invited",
+      "alreadyInvited",
+      "alreadyMembers",
+      "failed",
+      "results",
+    ],
   },
   InviteData: {
     type: "object",
@@ -6117,6 +6243,17 @@ export const openApiSchemas = {
       bannerUrl: { type: "string", nullable: true },
       memberCount: { type: "integer" },
       type: { type: "string", enum: ["PUBLIC"] },
+      shareUrl: {
+        type: "string",
+        description:
+          "Canonical HTTPS share URL (https://aimess.me/<handle>). Server-owned — use verbatim, do not reconstruct.",
+        example: "https://aimess.me/photography_club",
+      },
+      appDeepLink: {
+        type: "string",
+        description: "App deep link (aimess://resolve?handle=<handle>).",
+        example: "aimess://resolve?handle=photography_club",
+      },
       isJoined: { type: "boolean" },
       role: {
         type: "string",
@@ -6134,6 +6271,8 @@ export const openApiSchemas = {
       "bannerUrl",
       "memberCount",
       "type",
+      "shareUrl",
+      "appDeepLink",
       "isJoined",
       "role",
       "isBanned",
@@ -7007,7 +7146,7 @@ export const openApiSchemas = {
           "or localize from systemMessageType + systemMetadata. " +
           "Canonical fallback texts by type: " +
           "COMMUNITY_CREATED → 'Community created'; " +
-          "COMMUNITY_NAME_UPDATED → 'Renamed to {{newName}}' (metadata.newName); " +
+          "COMMUNITY_NAME_UPDATED → 'Community renamed to \"{{newName}}\"' (metadata.newName); " +
           "COMMUNITY_AVATAR_UPDATED → 'Community photo updated'; " +
           "COMMUNITY_DESCRIPTION_UPDATED → 'Community description updated'; " +
           "LIVE_STREAM_STARTED → 'Live stream started'; " +

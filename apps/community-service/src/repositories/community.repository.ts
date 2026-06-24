@@ -2460,6 +2460,25 @@ export const communityRepository = {
     return prisma.communityInviteLink.findUnique({ where: { id: linkId } });
   },
 
+  /**
+   * Count a member's currently-ACTIVE invite links in a community: not revoked
+   * and not past their expiry. Exhausted links (usedCount >= maxUses) are NOT
+   * filtered out here — that requires a field-to-field comparison Mongo can't do
+   * in a `count` predicate — so the cap is a slight over-count, which is the safe
+   * direction for an abuse guard.
+   */
+  countActiveInviteLinksByCreator(communityId: string, createdBy: string) {
+    const now = new Date();
+    return prisma.communityInviteLink.count({
+      where: {
+        communityId,
+        createdBy,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+    });
+  },
+
   findInviteLinkByCode(code: string) {
     return prisma.communityInviteLink.findUnique({ where: { code } });
   },

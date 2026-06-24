@@ -133,7 +133,7 @@ describe("system message text — display names and You personalization", () => 
         "",
         ""
       )
-    ).toBe("Renamed to New Community Name");
+    ).toBe('Community renamed to "New Community Name"');
   });
 
   it("displays community name updated fallback when name is missing", () => {
@@ -310,5 +310,153 @@ describe("canonical builder — stale-row upgrade guarantee", () => {
       TARGET // the person whose role changed
     );
     expect(text).toBe("You are now a moderator");
+  });
+});
+
+/**
+ * Admin ownership hand-off phrasing (Issue #1). A community has exactly ONE admin,
+ * so promotion to ADMIN reads "the community admin" rather than "an admin".
+ */
+describe("ROLE_CHANGED — ADMIN ownership hand-off phrasing", () => {
+  it("third-person: 'X is now the community admin'", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "ROLE_CHANGED",
+        {
+          actorUserId: ACTOR,
+          targetUserId: TARGET,
+          targetName: "John Doe",
+          newRole: "ADMIN",
+          oldRole: "MODERATOR",
+        },
+        "Admin",
+        "John Doe",
+        BYSTANDER
+      )
+    ).toBe("John Doe is now the community admin");
+  });
+
+  it("self-form for the new admin: 'You are now the community admin'", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "ROLE_CHANGED",
+        {
+          actorUserId: ACTOR,
+          targetUserId: TARGET,
+          targetName: "John Doe",
+          newRole: "ADMIN",
+          oldRole: "MODERATOR",
+        },
+        "Admin",
+        "John Doe",
+        TARGET
+      )
+    ).toBe("You are now the community admin");
+  });
+
+  it("ROLE_CHANGED_SELF renders the admin self line directly", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "ROLE_CHANGED_SELF",
+        { newRole: "ADMIN", oldRole: "MODERATOR" },
+        "",
+        "",
+        TARGET
+      )
+    ).toBe("You are now the community admin");
+  });
+
+  it("outgoing admin demotion self line: 'You are now a member'", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "ROLE_CHANGED_SELF",
+        { newRole: "MEMBER", oldRole: "ADMIN" },
+        "",
+        "",
+        ACTOR
+      )
+    ).toBe("You are now a member");
+  });
+});
+
+/**
+ * HISTORICAL IMMUTABILITY (Issue #2). The read-time text builder is a PURE function
+ * of the message's OWN stored metadata (its snapshot `newRole`/`oldRole`), never of
+ * the member's CURRENT role. Therefore a "moderator" line written at promotion time
+ * can NEVER mutate into an "admin" line when that same user is later promoted to
+ * admin — the later promotion is a SEPARATE message with its OWN metadata. These
+ * tests lock that contract: the same (type, metadata) always yields the same text,
+ * and a later event with different metadata does not touch the earlier text.
+ */
+describe("historical immutability — text depends only on the message's own snapshot", () => {
+  // The exact metadata persisted when User A was promoted Member → Moderator.
+  const moderatorLineMetadata = {
+    actorUserId: ACTOR,
+    actorName: "Admin",
+    targetUserId: TARGET,
+    targetName: "Rajesh",
+    newRole: "MODERATOR",
+    oldRole: "MEMBER",
+  };
+
+  // A DISTINCT message persisted later when the SAME user was promoted to ADMIN.
+  const adminLineMetadata = {
+    actorUserId: ACTOR,
+    actorName: "Admin",
+    targetUserId: TARGET,
+    targetName: "Rajesh",
+    newRole: "ADMIN",
+    oldRole: "MODERATOR",
+  };
+
+  const renderFor = (md: Record<string, unknown>, viewer: string) =>
+    buildCommunitySystemFallbackText(
+      "ROLE_CHANGED",
+      md,
+      String(md.actorName ?? ""),
+      String(md.targetName ?? ""),
+      viewer
+    );
+
+  it("the moderator line stays 'Rajesh is now a moderator' for bystanders, before AND after an admin promotion exists", () => {
+    // Render the moderator line. Then render the (later) admin line. Then render
+    // the moderator line AGAIN — its text is byte-identical because it reads only
+    // its own frozen metadata. A future role change cannot reach back into it.
+    const before = renderFor(moderatorLineMetadata, BYSTANDER);
+    renderFor(adminLineMetadata, BYSTANDER); // later promotion happens
+    const after = renderFor(moderatorLineMetadata, BYSTANDER);
+
+    expect(before).toBe("Rajesh is now a moderator");
+    expect(after).toBe(before);
+  });
+
+  it("the moderator line stays 'You are now a moderator' for the subject, independent of the admin line", () => {
+    const moderatorSelf = renderFor(moderatorLineMetadata, TARGET);
+    const adminSelf = renderFor(adminLineMetadata, TARGET);
+
+    // Two independent, immutable lines — the moderator one is NOT rewritten to the
+    // admin one.
+    expect(moderatorSelf).toBe("You are now a moderator");
+    expect(adminSelf).toBe("You are now the community admin");
+    expect(moderatorSelf).not.toBe(adminSelf);
+  });
+
+  it("Member → Moderator → Admin yields three independent, stable lines", () => {
+    const promotedToMod = renderFor(moderatorLineMetadata, BYSTANDER);
+    const promotedToAdmin = renderFor(adminLineMetadata, BYSTANDER);
+    const demotedToMember = renderFor(
+      {
+        ...moderatorLineMetadata,
+        newRole: "MEMBER",
+        oldRole: "ADMIN",
+      },
+      BYSTANDER
+    );
+
+    expect(promotedToMod).toBe("Rajesh is now a moderator");
+    expect(promotedToAdmin).toBe("Rajesh is now the community admin");
+    expect(demotedToMember).toBe("Rajesh is now a member");
+    // Re-render the first line one more time: still the moderator text.
+    expect(renderFor(moderatorLineMetadata, BYSTANDER)).toBe(promotedToMod);
   });
 });
