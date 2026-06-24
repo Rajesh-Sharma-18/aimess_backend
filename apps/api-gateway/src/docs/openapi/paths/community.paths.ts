@@ -4597,9 +4597,18 @@ export const communityPaths = {
         "Required state: the caller must have an ACTIVE membership in this community. " +
         "Non-members, removed (LEFT), banned (BANNED), and pending (PENDING) members are rejected with 403. " +
         "`maxUses` null/omitted → unlimited; `expiresInMinutes` null/omitted → never expires. " +
-        "For **PRIVATE** communities, `autoApprove` defaults to `true` (link grants direct membership). " +
-        "Set `autoApprove: false` explicitly if moderator approval is still required after invite. " +
-        "Abuse-protected: per-user create rate limit (429) and a per-member cap on simultaneously-active links (403).",
+        "Set `autoApprove: false` (the default) if moderator approval is still required after invite. " +
+        "Abuse-protected: per-user create rate limit (429) and a per-member cap on simultaneously-active links (403).\n\n" +
+        "**Privacy-based share URL** — the returned `url`/`appDeepLink` depend on the community's privacy, " +
+        "signalled by `linkType`:\n" +
+        "- **PUBLIC** (`linkType: PUBLIC_HANDLE`): a handle-based, deterministic link " +
+        "(`https://aimess.me/<handle>` + `aimess://resolve?handle=<handle>`). It does NOT contain an invite " +
+        "code and never changes with expiry/usage — repeated calls return the same URL. An invite-link record " +
+        "is still persisted (so `code`/`maxUses`/`expiresAt`/bulk-send/redeem keep working for audit & parity), " +
+        "but the code never appears in the primary share URL.\n" +
+        "- **PRIVATE** (`linkType: PRIVATE_INVITE`): the existing invite-code link " +
+        "(`https://aimess.me/+<code>` + `aimess://join?code=<code>`) — non-guessable, revocable, and " +
+        "expiry/`maxUses`-tracked. Redeem still validates the code on the approval/auto-approve flow. Unchanged.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -4636,6 +4645,61 @@ export const communityPaths = {
                     },
                   },
                 ],
+              },
+              examples: {
+                publicCommunity: {
+                  summary: "PUBLIC community — handle-based share URL",
+                  description:
+                    "`url`/`appDeepLink` are derived from the community handle and are deterministic; " +
+                    "`linkType` is PUBLIC_HANDLE. The persisted `code` is retained for bulk-send/redeem " +
+                    "parity but never appears in the primary share URL.",
+                  value: {
+                    success: true,
+                    message: "Invite link created",
+                    data: {
+                      linkId: "6843e1a2b5c3d4e5f6a7b8c9",
+                      code: "AbCdEf123",
+                      url: "https://aimess.me/tech_community",
+                      appDeepLink: "aimess://resolve?handle=tech_community",
+                      linkType: "PUBLIC_HANDLE",
+                      communityId: "6843d0f1a4b2c3d4e5f60718",
+                      createdBy: "11111111-1111-4111-8111-111111111111",
+                      maxUses: null,
+                      usedCount: 0,
+                      autoApprove: false,
+                      expiresAt: null,
+                      revokedAt: null,
+                      createdAt: "2026-06-24T10:00:00.000Z",
+                      isActive: true,
+                    },
+                  },
+                },
+                privateCommunity: {
+                  summary: "PRIVATE community — invite-code share URL",
+                  description:
+                    "`url`/`appDeepLink` carry the non-guessable invite code; `linkType` is PRIVATE_INVITE. " +
+                    "Expiry, `maxUses`, revocation and redeem all behave as before.",
+                  value: {
+                    success: true,
+                    message: "Invite link created",
+                    data: {
+                      linkId: "6843e1a2b5c3d4e5f6a7b8ca",
+                      code: "Zk9Qw2Lp7",
+                      url: "https://aimess.me/+Zk9Qw2Lp7",
+                      appDeepLink: "aimess://join?code=Zk9Qw2Lp7",
+                      linkType: "PRIVATE_INVITE",
+                      communityId: "6843d0f1a4b2c3d4e5f60719",
+                      createdBy: "22222222-2222-4222-8222-222222222222",
+                      maxUses: 100,
+                      usedCount: 0,
+                      autoApprove: false,
+                      expiresAt: "2026-07-24T10:00:00.000Z",
+                      revokedAt: null,
+                      createdAt: "2026-06-24T10:00:00.000Z",
+                      isActive: true,
+                    },
+                  },
+                },
               },
             },
           },

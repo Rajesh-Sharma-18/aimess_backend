@@ -1005,17 +1005,62 @@ function buildPublicDeepLink(handle: string): string {
   return `aimess://resolve?handle=${encodeURIComponent(handle)}`;
 }
 
-function toInviteLinkData(row: CommunityInviteLink): CommunityInviteLinkData {
+/**
+ * Single source of truth for a community's PRIMARY shareable link. The link
+ * mechanism is driven by the community's privacy, NOT by which endpoint produced
+ * it — so create / list / revoke / bulk-send / redeem all return a consistent URL:
+ *
+ *  • PUBLIC  → handle-based, deterministic, and independent of the invite row's
+ *              `code`/`linkId`/expiry/usage. Anyone resolves it and joins directly.
+ *  • PRIVATE → the existing invite-code-based link (non-guessable, revocable,
+ *              usage/expiry-tracked). Unchanged from prior behavior.
+ *
+ * A PUBLIC community ALWAYS has a `handle` (non-null unique column set at
+ * creation), so the missing-handle branch is a defensive guard that surfaces a
+ * clear domain error rather than silently emitting a broken `<base>/` URL.
+ */
+function resolveCommunityShareLink(
+  community: { type: CommunityType; handle: string },
+  code: string
+): {
+  url: string;
+  appDeepLink: string;
+  linkType: CommunityInviteLinkData["linkType"];
+} {
+  if (community.type === CommunityType.PUBLIC) {
+    const handle = community.handle?.trim();
+    if (!handle) {
+      throw new BadRequestError("COMMUNITY_HANDLE_REQUIRED");
+    }
+    return {
+      url: buildPublicShareUrl(handle),
+      appDeepLink: buildPublicDeepLink(handle),
+      linkType: "PUBLIC_HANDLE",
+    };
+  }
+  return {
+    url: buildInviteUrl(code),
+    appDeepLink: buildInviteDeepLink(code),
+    linkType: "PRIVATE_INVITE",
+  };
+}
+
+function toInviteLinkData(
+  row: CommunityInviteLink,
+  community: { type: CommunityType; handle: string }
+): CommunityInviteLinkData {
   const now = Date.now();
   const isActive =
     !row.revokedAt &&
     (!row.expiresAt || row.expiresAt.getTime() > now) &&
     (row.maxUses === null || row.usedCount < row.maxUses);
+  const share = resolveCommunityShareLink(community, row.code);
   return {
     linkId: row.id,
     code: row.code,
-    url: buildInviteUrl(row.code),
-    appDeepLink: buildInviteDeepLink(row.code),
+    url: share.url,
+    appDeepLink: share.appDeepLink,
+    linkType: share.linkType,
     communityId: row.communityId,
     createdBy: row.createdBy,
     maxUses: row.maxUses,
@@ -6325,7 +6370,7 @@ export const communityService = {
       },
     });
 
-    return toInviteLinkData(row);
+    return toInviteLinkData(row, community);
   },
 
   async listInviteLinks(
@@ -6355,7 +6400,7 @@ export const communityService = {
       limit: params.limit,
     });
     return buildPaginatedResponse(
-      rows.map(toInviteLinkData),
+      rows.map((row) => toInviteLinkData(row, community)),
       total,
       params.page,
       params.limit
@@ -6383,7 +6428,7 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
     }
     if (link.revokedAt) {
-      return toInviteLinkData(link); // idempotent
+      return toInviteLinkData(link, community); // idempotent
     }
     const updated = await communityRepository.updateInviteLink(linkId, {
       revokedAt: new Date(),
@@ -6396,7 +6441,7 @@ export const communityService = {
       metadata: { linkId },
     });
 
-    return toInviteLinkData(updated);
+    return toInviteLinkData(updated, community);
   },
 
   /**
@@ -6595,7 +6640,7 @@ export const communityService = {
     });
 
     return {
-      link: toInviteLinkData(linkRow),
+      link: toInviteLinkData(linkRow, community),
       summary: {
         requested: requestedIds.length,
         sent: sentUserIds.length,
@@ -6636,7 +6681,7 @@ export const communityService = {
     if (existing?.status === CommunityMemberStatus.ACTIVE) {
       // Idempotent: do NOT increment usedCount or re-emit MEMBER_ADDED.
       return {
-        link: toInviteLinkData(link),
+        link: toInviteLinkData(link, community),
         member: await toMemberData(existing),
       };
     }
@@ -6721,7 +6766,7 @@ export const communityService = {
       });
 
       return {
-        link: toInviteLinkData(updatedLink!),
+        link: toInviteLinkData(updatedLink!, community),
         member: await toMemberData(member),
       };
     }
@@ -6749,7 +6794,7 @@ export const communityService = {
     const updatedLink = await communityRepository.findInviteLinkById(link.id);
 
     return {
-      link: toInviteLinkData(updatedLink!),
+      link: toInviteLinkData(updatedLink!, community),
       request: joinResult,
     };
   },

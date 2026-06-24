@@ -6139,11 +6139,24 @@ export const openApiSchemas = {
       url: {
         type: "string",
         description:
-          "Built from INVITE_LINK_BASE_URL when set, else just the code.",
+          "Primary shareable HTTPS link, generated from the community's privacy. " +
+          "PUBLIC → handle-based & deterministic (`<base>/<handle>`, e.g. https://aimess.me/tech_community), " +
+          "independent of code/expiry/usage. " +
+          "PRIVATE → invite-code-based & revocable (`<base>/+<code>`, e.g. https://aimess.me/+AbCdEf123). " +
+          "Falls back to the bare handle/code when INVITE_LINK_BASE_URL is unset.",
       },
       appDeepLink: {
         type: "string",
-        description: "Mobile deep-link: aimess://join?code=<code>",
+        description:
+          "App deep-link matching `url`. PUBLIC → aimess://resolve?handle=<handle>; " +
+          "PRIVATE → aimess://join?code=<code>.",
+      },
+      linkType: {
+        type: "string",
+        enum: ["PUBLIC_HANDLE", "PRIVATE_INVITE"],
+        description:
+          "Which mechanism produced `url`/`appDeepLink`: PUBLIC_HANDLE (handle-based, PUBLIC community) " +
+          "or PRIVATE_INVITE (invite-code-based, PRIVATE community). Lets clients branch without parsing the URL.",
       },
       communityId: { type: "string" },
       createdBy: { type: "string", format: "uuid" },
@@ -6167,6 +6180,7 @@ export const openApiSchemas = {
       "code",
       "url",
       "appDeepLink",
+      "linkType",
       "communityId",
       "createdBy",
       "maxUses",

@@ -54,6 +54,8 @@ const envSchema = z
     MINIO_BUCKET: z.string().min(1).optional(),
     MINIO_BUCKET_AVATARS: z.string().min(1).optional(),
     MINIO_REGION: z.string().default("us-east-1"),
+    /** Presigned PUT lifetime for upload URLs (seconds). */
+    MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(900),
     /** Presigned GET lifetime for avatar display URLs (seconds). */
     MINIO_AVATAR_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
     /** Max avatar file size in bytes (default 5 MB). */
@@ -62,6 +64,8 @@ const envSchema = z
       .positive()
       .max(20 * 1024 * 1024)
       .default(5 * 1024 * 1024),
+    /** Timeout (ms) for outbound HTTP calls to auth-service. */
+    AUTH_SERVICE_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
   })
   .refine((data) => Boolean(data.MINIO_BUCKET_AVATARS ?? data.MINIO_BUCKET), {
     message: "Set MINIO_BUCKET_AVATARS or MINIO_BUCKET",

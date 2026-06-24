@@ -50,6 +50,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Định danh cộng đồng không hợp lệ",
     en: "Invalid community handle format",
   },
+  COMMUNITY_HANDLE_REQUIRED: {
+    vi: "Cộng đồng công khai cần có định danh hợp lệ để tạo liên kết chia sẻ",
+    en: "A public community requires a valid handle to build its share link",
+  },
   COMMUNITY_NOT_FOUND: {
     vi: "Không tìm thấy cộng đồng",
     en: "Community not found",

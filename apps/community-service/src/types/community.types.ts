@@ -479,10 +479,26 @@ export type CommunityAuditAction =
 export type CommunityInviteLinkData = {
   linkId: string;
   code: string;
-  /** Built from INVITE_LINK_BASE_URL when set, else just the code. */
+  /**
+   * Primary shareable HTTPS link, generated from the community's privacy:
+   *  • PUBLIC  → handle-based, deterministic, code-independent: `<base>/<handle>`
+   *  • PRIVATE → invite-code-based, revocable: `<base>/+<code>`
+   * Falls back to the bare handle/code when no base URL is configured (local/dev).
+   */
   url: string;
-  /** Deep-link for mobile: aimess://join?code=<code> */
+  /**
+   * App deep-link matching `url`'s privacy mechanism:
+   *  • PUBLIC  → `aimess://resolve?handle=<handle>`
+   *  • PRIVATE → `aimess://join?code=<code>`
+   */
   appDeepLink: string;
+  /**
+   * Which mechanism produced `url`/`appDeepLink`. Lets clients branch without
+   * re-deriving privacy from the URL shape:
+   *  • "PUBLIC_HANDLE"  → handle-based (PUBLIC community)
+   *  • "PRIVATE_INVITE" → invite-code-based (PRIVATE community)
+   */
+  linkType: "PUBLIC_HANDLE" | "PRIVATE_INVITE";
   communityId: string;
   createdBy: string;
   maxUses: number | null;
