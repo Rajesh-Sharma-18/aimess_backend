@@ -338,6 +338,46 @@ const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // Batch community enrichment for the backoffice Livestream Management list.
+  // Returns name + presigned avatar + category + memberCount per id. Unknown or
+  // malformed ids are silently omitted (caller treats them as "unknown community").
+  adminGetCommunitiesByIds: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { communityIds?: string[] };
+        const ids = Array.isArray(req.communityIds)
+          ? req.communityIds.filter((id) => /^[0-9a-f]{24}$/i.test(id))
+          : [];
+        const rows = await communityRepository.adminGetCommunitiesByIds(ids);
+        const communities = await Promise.all(
+          rows.map(async (r) => {
+            const avatarView =
+              await communityImageService.resolveViewUrlForClient(r.avatarUrl);
+            return {
+              communityId: r.id,
+              name: r.name,
+              avatarUrl: avatarView?.url ?? "",
+              categoryId: r.categoryId,
+              categoryName: r.category?.name ?? r.categoryName ?? "",
+              categorySlug: r.category?.slug ?? "",
+              memberCount: r.memberCount,
+            };
+          })
+        );
+        callback(null, { communities });
+      } catch (err) {
+        logger.error("adminGetCommunitiesByIds gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminGetCommunitiesByIds failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   // Admin Community Management detail. `found:false` + empty community when missing.
   adminGetCommunity: (
     call: grpc.ServerUnaryCall<unknown, unknown>,

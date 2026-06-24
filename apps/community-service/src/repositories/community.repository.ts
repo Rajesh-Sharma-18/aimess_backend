@@ -33,6 +33,30 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * Batch fetch of communities by id for backoffice enrichment (the Livestream
+   * Management list/detail joins community name + avatar + category onto each
+   * stream in a single round-trip). Returns the RAW avatar object key — the
+   * caller resolves it to a presigned URL. Soft-deleted communities are still
+   * returned (admin context can surface streams from removed communities).
+   * Callers must pre-filter to valid ObjectId strings.
+   */
+  async adminGetCommunitiesByIds(ids: string[]) {
+    if (ids.length === 0) return [];
+    return prisma.community.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        name: true,
+        avatarUrl: true,
+        categoryId: true,
+        categoryName: true,
+        memberCount: true,
+        category: { select: { slug: true, name: true } },
+      },
+    });
+  },
+
   // ---------------------------------------------------------------------------
   // Admin category CRUD
   // ---------------------------------------------------------------------------
@@ -1961,6 +1985,23 @@ export const communityRepository = {
   findInviteByCommunityAndInvitee(communityId: string, inviteeId: string) {
     return prisma.communityInvite.findUnique({
       where: { communityId_inviteeId: { communityId, inviteeId } },
+    });
+  },
+
+  /** Batch fetch existing invite rows for multiple invitees in one query. */
+  findInvitesByUserIds(communityId: string, userIds: string[]) {
+    if (userIds.length === 0) return Promise.resolve([]);
+    return prisma.communityInvite.findMany({
+      where: { communityId, inviteeId: { in: userIds } },
+    });
+  },
+
+  /** Bulk-recycle multiple non-PENDING invites back to PENDING with a new inviter. */
+  recycleManyPendingInvites(ids: string[], inviterId: string) {
+    if (ids.length === 0) return Promise.resolve({ count: 0 });
+    return prisma.communityInvite.updateMany({
+      where: { id: { in: ids } },
+      data: { status: CommunityInviteStatus.PENDING, inviterId },
     });
   },
 

@@ -29,6 +29,10 @@ service CommunityService {
   rpc AdminListCommunities (AdminListCommunitiesRequest) returns (AdminListCommunitiesResponse);
   rpc AdminGetCommunity (AdminGetCommunityRequest) returns (AdminCommunityDetail);
   rpc AdminListCommunityMembers (AdminListCommunityMembersRequest) returns (AdminListCommunityMembersResponse);
+  // Batch enrichment: fetch name + avatar + category + memberCount for a set of
+  // community ids. Backs the backoffice Livestream Management list/detail join
+  // (one round-trip per page). avatar_url is already presigned.
+  rpc AdminGetCommunitiesByIds (AdminGetCommunitiesByIdsRequest) returns (AdminGetCommunitiesByIdsResponse);
   // Reverse lookup for the admin User Management detail screen: the communities a
   // given user is an ACTIVE member of. Searchable by community name/id, sortable.
   rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
@@ -235,6 +239,23 @@ message AdminCommunityMemberRow {
 message AdminListCommunityMembersResponse {
   repeated AdminCommunityMemberRow members = 1;
   int64 total = 2;
+}
+
+// ---- Backoffice batch community enrichment (Livestream Management) ----
+message AdminGetCommunitiesByIdsRequest {
+  repeated string community_ids = 1;
+}
+message AdminCommunityBrief {
+  string community_id  = 1;
+  string name          = 2;
+  string avatar_url    = 3; // presigned ("" if none)
+  string category_id   = 4;
+  string category_name = 5;
+  string category_slug = 6;
+  int64  member_count  = 7;
+}
+message AdminGetCommunitiesByIdsResponse {
+  repeated AdminCommunityBrief communities = 1;
 }
 
 // ---- Backoffice User → Communities reverse lookup ----
