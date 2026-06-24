@@ -29,6 +29,30 @@
 
 ---
 
+## Community report cards — reported-content snapshot (shipped 2026-06-23)
+
+The moderator report card (`GET /communities/:id/reports`) needed "Reported Content", "Posted on", and a short "Reported ID" that the user-level report DTO didn't carry. Added **optional, backward-compatible** fields.
+
+### What shipped
+
+- **`CommunityReport` model** gained optional `reportedMessageId`, `reportedContentType`, `reportedContentText`, `reportedContentMedia` (Json — RAW object keys), `reportedContentPostedAt`. MongoDB is schemaless → no migration/`db push` required for optional fields.
+- **Message-level resolution (2026-06-23, follow-up)** — the report card was coming back with empty content because the FE filed user-level reports with no message reference. Reporting is now **message-level**: the client sends only `reportedMessageId`, and `createReport` resolves the message's text/media(raw keys)/postedAt from chat-service via a **new gRPC `GetCommunityMessageById`** (`community.proto`; chat-service `CommunityMessageService.getModerationSnapshot` reads the RAW row — IDOR-scoped on roomId, skips deleted-for-all — and returns RAW object keys + UPPER contentType + epoch-ms sentAt). community-service calls it through `chat.client.ts` (`getCommunityMessageById`, opossum breaker, fallback `found:false`). Best-effort: a missing/deleted message or chat-service outage stores the id with null content (report still created). proto is loaded from source at runtime — no `build:packages` needed.
+- **Snapshot-at-report-time (legacy fallback)** — the client MAY still pass the content in the create-report body; `createReportSchema` validates it (≤10 media, each `{ objectKey, contentType?, fileName?, size? }`; `reportedContentPostedAt` coerced ISO→Date). Used only when `reportedMessageId` is absent/unresolved. The server **never stores presigned URLs** — only raw keys.
+- **Resolve-on-read** — `toReportData` is now **async**: resolves each `reportedContentMedia` object key → presigned `MediaObject` via `toMediaObject` against `MINIO_BUCKET_COMMUNITY` (community chat attachments share that bucket). All 6 call sites updated; the two object-spread sites now `await`.
+- **`displayId`** — short, deterministic, display-only id derived from the report ObjectId (`deriveReportDisplayId`: last 6 hex → int → mod 100000 → 5-digit pad). Render as `#<displayId>`. No counter collection.
+- **Card field mapping** documented in `docs/COMMUNITIES_API.md` §3.9.
+
+### Tests
+
+- `tests/reports/reports.test.ts` (+3: snapshot forwarding, media-missing-objectKey 400, >10 media 400) and new `tests/reports/report-content-snapshot.test.ts` (service-level read path: `displayId`, snapshot fields, media resolved from raw key, user-level report → `[]`/null). Suite 467 green.
+
+### Notes
+
+- User-level reports keep working unchanged (all snapshot fields null/`[]`). Idempotent dedup returns the first report (does not merge a later tap's content).
+- Source = client snapshot (chosen over a chat-service gRPC resolve) so the card survives later edit/delete of the original message and needs no cross-service read.
+
+---
+
 ## Community Status (ACTIVE / CLOSED) + realtime close/reopen (shipped 2026-06-22)
 
 ### What shipped

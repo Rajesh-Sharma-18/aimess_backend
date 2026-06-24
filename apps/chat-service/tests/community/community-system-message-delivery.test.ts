@@ -107,7 +107,7 @@ beforeEach(() => {
 });
 
 describe("CommunitySystemMessageService — lastActivity eligibility", () => {
-  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"])(
+  it.each(["MEMBER_LEFT", "MEMBER_JOINED"])(
     "%s is a hidden membership line — never persisted or broadcast (post backstop)",
     async (type) => {
       const h = makeService({
@@ -156,7 +156,15 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
     expect(pubListBump).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["MEMBER_MUTED", "MEMBER_UNMUTED"])(
+  it.each([
+    "MEMBER_MUTED",
+    "MEMBER_UNMUTED",
+    // Visible moderation lines (Telegram parity): delivered to all members but
+    // not eligible to bump the community-list preview. NOT in HIDDEN_SYSTEM_MESSAGE_TYPES.
+    "MEMBER_REMOVED",
+    "MEMBER_BANNED",
+    "MEMBER_UNBANNED",
+  ])(
     "%s is delivered but does not bump lastActivity (non-hidden moderation churn)",
     async (type) => {
       const h = makeService({

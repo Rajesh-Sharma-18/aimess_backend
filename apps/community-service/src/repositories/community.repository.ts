@@ -2064,6 +2064,18 @@ export const communityRepository = {
     reporterId: string;
     targetUserId: string | null;
     reason: string;
+    reportedMessageId?: string | null;
+    reportedContentType?: string | null;
+    reportedContentText?: string | null;
+    reportedContentPostedAt?: Date | null;
+    reportedContentMedia?:
+      | {
+          objectKey: string;
+          contentType?: string | null;
+          fileName?: string | null;
+          size?: number | null;
+        }[]
+      | null;
   }) {
     return prisma.communityReport.create({
       data: {
@@ -2072,6 +2084,11 @@ export const communityRepository = {
         targetUserId: data.targetUserId,
         reason: data.reason,
         status: CommunityReportStatus.OPEN,
+        reportedMessageId: data.reportedMessageId ?? null,
+        reportedContentType: data.reportedContentType ?? null,
+        reportedContentText: data.reportedContentText ?? null,
+        reportedContentPostedAt: data.reportedContentPostedAt ?? null,
+        reportedContentMedia: data.reportedContentMedia ?? undefined,
       },
     });
   },

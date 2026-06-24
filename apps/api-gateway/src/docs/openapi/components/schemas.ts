@@ -5388,6 +5388,48 @@ export const openApiSchemas = {
         maxLength: 1000,
         description: "Reporter-supplied reason text.",
       },
+      reportedMessageId: {
+        type: "string",
+        minLength: 1,
+        maxLength: 100,
+        description:
+          "Id of the reported community message (message-level report). When set, the server resolves the message's text, media (raw object keys), and posted-at from chat-service and snapshots them onto the report — this populates the moderator card's \"Reported Content\". Best-effort: a missing / deleted-for-all / cross-room message stores the id with null content. Omit for a plain user-level report.",
+      },
+      reportedContentType: {
+        type: "string",
+        minLength: 1,
+        maxLength: 40,
+        description:
+          "Legacy fallback (used only when reportedMessageId is absent/unresolved). CONTENT_TYPES (UPPER): TEXT | IMAGE | VIDEO | …",
+      },
+      reportedContentText: {
+        type: "string",
+        maxLength: 4000,
+        description:
+          "Legacy fallback — text/caption snapshot of the reported content.",
+      },
+      reportedContentPostedAt: {
+        type: "string",
+        format: "date-time",
+        description:
+          "Legacy fallback — ISO-8601 timestamp of when the reported content was posted.",
+      },
+      reportedContentMedia: {
+        type: "array",
+        maxItems: 10,
+        description:
+          "Legacy fallback — RAW object keys only; the server resolves them to presigned URLs on read. Never send presigned URLs.",
+        items: {
+          type: "object",
+          properties: {
+            objectKey: { type: "string", minLength: 1, maxLength: 512 },
+            contentType: { type: "string", maxLength: 100, nullable: true },
+            fileName: { type: "string", maxLength: 255, nullable: true },
+            size: { type: "integer", minimum: 0, nullable: true },
+          },
+          required: ["objectKey"],
+        },
+      },
     },
     required: ["reason"],
   },
@@ -5405,6 +5447,11 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       reportId: { type: "string" },
+      displayId: {
+        type: "string",
+        description:
+          'Short, deterministic, display-only id derived from reportId — render as "#<displayId>" (e.g. "#99421").',
+      },
       communityId: { type: "string" },
       reporterId: { type: "string", format: "uuid" },
       targetUserId: { type: "string", format: "uuid", nullable: true },
@@ -5416,11 +5463,43 @@ export const openApiSchemas = {
       reviewedBy: { type: "string", format: "uuid", nullable: true },
       reviewedAt: { type: "string", format: "date-time", nullable: true },
       resolution: { type: "string", nullable: true },
+      reportedMessageId: {
+        type: "string",
+        nullable: true,
+        description:
+          "The reported community message id (null for a user-level report).",
+      },
+      reportedContentType: {
+        type: "string",
+        nullable: true,
+        description:
+          "CONTENT_TYPES (UPPER) of the reported content; null when none.",
+      },
+      reportedContentText: {
+        type: "string",
+        nullable: true,
+        description:
+          "Text/caption snapshot of the reported content; null when none.",
+      },
+      reportedContentPostedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the reported content was originally posted; null when none.",
+      },
+      reportedContentMedia: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MediaObject" },
+        description:
+          "Reported attachments, resolved to presigned media on read ([] when none).",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
     required: [
       "reportId",
+      "displayId",
       "communityId",
       "reporterId",
       "targetUserId",
@@ -5429,6 +5508,11 @@ export const openApiSchemas = {
       "reviewedBy",
       "reviewedAt",
       "resolution",
+      "reportedMessageId",
+      "reportedContentType",
+      "reportedContentText",
+      "reportedContentPostedAt",
+      "reportedContentMedia",
       "createdAt",
       "updatedAt",
     ],

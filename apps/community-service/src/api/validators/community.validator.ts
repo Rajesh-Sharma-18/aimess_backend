@@ -351,6 +351,24 @@ export const createReportSchema = z.object({
     .trim()
     .min(3, "Reason must be at least 3 characters")
     .max(1000, "Reason must be at most 1000 characters"),
+  // --- Optional reported-content snapshot (client-captured at report time) ---
+  reportedMessageId: z.string().trim().min(1).max(100).optional(),
+  reportedContentType: z.string().trim().min(1).max(40).optional(),
+  reportedContentText: z.string().trim().max(4000).optional(),
+  /** ISO-8601 string → Date; when the reported content was posted. */
+  reportedContentPostedAt: z.coerce.date().optional(),
+  /** RAW object keys only — server resolves to presigned URLs on read. */
+  reportedContentMedia: z
+    .array(
+      z.object({
+        objectKey: z.string().trim().min(1).max(512),
+        contentType: z.string().trim().max(100).nullish(),
+        fileName: z.string().trim().max(255).nullish(),
+        size: z.number().int().nonnegative().nullish(),
+      })
+    )
+    .max(10, "At most 10 attachments may be reported")
+    .optional(),
 });
 export type CreateReportInput = z.infer<typeof createReportSchema>;
 

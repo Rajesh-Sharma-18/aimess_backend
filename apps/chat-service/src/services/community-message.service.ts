@@ -155,6 +155,67 @@ export class CommunityMessageService {
     });
   }
 
+  /**
+   * Moderation snapshot of a single community message — for the report card.
+   * Reads the RAW row (no URL resolution) so the caller persists RAW object
+   * keys and resolves them to presigned URLs on read. Scoped by roomId as an
+   * IDOR guard; `found:false` for a missing / cross-room / deleted-for-all id.
+   */
+  async getModerationSnapshot(params: {
+    roomId: string;
+    messageId: string;
+  }): Promise<{
+    found: boolean;
+    message: string;
+    contentType: string;
+    sentAt: number;
+    senderId: string;
+    media: {
+      objectKey: string;
+      contentType: string;
+      fileName: string;
+      size: number;
+    }[];
+  }> {
+    const empty = {
+      found: false,
+      message: "",
+      contentType: "",
+      sentAt: 0,
+      senderId: "",
+      media: [] as {
+        objectKey: string;
+        contentType: string;
+        fileName: string;
+        size: number;
+      }[],
+    };
+    const msg = await this.messageRepo.findById(params.messageId);
+    if (!msg || msg.roomId !== params.roomId || msg.deletedForAll) {
+      return empty;
+    }
+    const atts = Array.isArray(msg.attachments)
+      ? (msg.attachments as Record<string, unknown>[])
+      : [];
+    const media = atts
+      .map((a) => ({
+        objectKey: String(a.objectKey ?? ""),
+        contentType: String(a.contentType ?? a.mimeType ?? ""),
+        fileName: String(a.fileName ?? a.name ?? ""),
+        size: typeof a.size === "number" ? a.size : 0,
+      }))
+      .filter((m) => m.objectKey);
+    return {
+      found: true,
+      message: msg.message ?? "",
+      contentType: normalizeMessageType(msg.messageType),
+      sentAt:
+        msg.createdAt instanceof Date ? msg.createdAt.getTime() : Date.now(),
+      senderId: msg.sentBy,
+      media,
+    };
+  }
+
   async sendMessage(params: {
     roomId: string;
     sentBy: string;

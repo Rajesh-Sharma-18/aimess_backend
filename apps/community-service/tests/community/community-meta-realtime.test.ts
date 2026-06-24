@@ -55,6 +55,7 @@ jest.mock("../../src/services/community-image.service.js", () => ({
 import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
+import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
 
 // ---------------------------------------------------------------------------
 // Typed aliases
@@ -235,6 +236,21 @@ describe("updateMemberRole() — community:member:updated", () => {
       role: "MODERATOR",
     });
     expect(typeof payload.updatedAt).toBe("number");
+  });
+
+  it("posts exactly ONE community-wide ROLE_CHANGED line and no personal ROLE_CHANGED_SELF (no duplicate for the target)", async () => {
+    const sysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
+    await communityService.updateMemberRole(
+      CID,
+      ADMIN,
+      TARGET,
+      "MODERATOR" as never
+    );
+
+    const types = sysMsg.mock.calls.map((c) => c[0]?.systemMessageType);
+    expect(types).toContain("ROLE_CHANGED");
+    expect(types).not.toContain("ROLE_CHANGED_SELF");
+    expect(types.filter((t: string) => t === "ROLE_CHANGED")).toHaveLength(1);
   });
 });
 

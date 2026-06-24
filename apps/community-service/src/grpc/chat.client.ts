@@ -55,6 +55,29 @@ export interface ChatClient {
     ownerId: string;
     avatarUrl: string | null;
   }): Promise<boolean>;
+  /**
+   * Moderation snapshot of one community message (for report cards). Returns RAW
+   * object keys — the caller resolves them to presigned URLs on read. `null` on
+   * any failure (chat-service down / breaker open); `found:false` when the
+   * message is missing / cross-room / deleted-for-all. Best-effort — never throws.
+   */
+  getCommunityMessageById(params: {
+    communityId: string;
+    messageId: string;
+  }): Promise<{
+    found: boolean;
+    message: string;
+    contentType: string;
+    /** epoch ms */
+    postedAt: number;
+    senderId: string;
+    media: {
+      objectKey: string;
+      contentType: string;
+      fileName: string;
+      size: number;
+    }[];
+  } | null>;
 }
 
 export function createChatClient(): ChatClient {
@@ -121,6 +144,34 @@ export function createChatClient(): ChatClient {
   // failure logs + relies on the async community.created backstop — a silent
   // success fallback would re-open the send-before-provision race.
 
+  const messageByIdBreaker = makeBreaker(
+    "chat.getCommunityMessageById",
+    (p: { communityId: string; messageId: string }) =>
+      makeGrpcCall<
+        unknown,
+        {
+          found?: boolean;
+          message?: string;
+          contentType?: string;
+          // int64 decoded as STRING (longs:"String").
+          sentAt?: string | number;
+          senderId?: string;
+          media?: {
+            objectKey?: string;
+            contentType?: string;
+            fileName?: string;
+            size?: string | number;
+          }[];
+        }
+      >(client, "getCommunityMessageById", {
+        roomId: p.communityId,
+        messageId: p.messageId,
+      })
+  );
+  // Best-effort: a failed lookup degrades to "no content" — the report is still
+  // filed; the moderator card just omits the reported-content section.
+  messageByIdBreaker.fallback(() => ({ found: false }));
+
   return {
     getCommunityChatSummaries: async (params) => {
       if (!params.communityIds.length) return [];
@@ -176,6 +227,42 @@ export function createChatClient(): ChatClient {
     ensureCommunityRoom: async (params) => {
       const res = await ensureRoomBreaker.fire(params);
       return Boolean(res.ok);
+    },
+
+    getCommunityMessageById: async (params) => {
+      try {
+        const res = await messageByIdBreaker.fire(params);
+        if (!res.found) {
+          return {
+            found: false,
+            message: "",
+            contentType: "",
+            postedAt: 0,
+            senderId: "",
+            media: [],
+          };
+        }
+        return {
+          found: true,
+          message: res.message ?? "",
+          contentType: res.contentType ?? "",
+          postedAt: Number(res.sentAt ?? 0),
+          senderId: res.senderId ?? "",
+          media: (res.media ?? [])
+            .map((m) => ({
+              objectKey: m.objectKey ?? "",
+              contentType: m.contentType ?? "",
+              fileName: m.fileName ?? "",
+              size: Number(m.size ?? 0),
+            }))
+            .filter((m) => m.objectKey),
+        };
+      } catch (err) {
+        logger.warn(
+          `chat.getCommunityMessageById failed; degrading to no content: ${String(err)}`
+        );
+        return null;
+      }
     },
   };
 }

@@ -851,10 +851,23 @@ export const declineCommunityInvite = asyncHandler(
 export const createCommunityReport = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
-    const { targetUserId, reason } = req.body as CreateReportInput;
+    const {
+      targetUserId,
+      reason,
+      reportedMessageId,
+      reportedContentType,
+      reportedContentText,
+      reportedContentPostedAt,
+      reportedContentMedia,
+    } = req.body as CreateReportInput;
     const result = await communityService.createReport(id, req.auth.userId, {
       targetUserId,
       reason,
+      reportedMessageId,
+      reportedContentType,
+      reportedContentText,
+      reportedContentPostedAt,
+      reportedContentMedia,
     });
     return res
       .status(HTTP_STATUS.CREATED)

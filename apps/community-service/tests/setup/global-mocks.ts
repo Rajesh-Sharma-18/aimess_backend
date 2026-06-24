@@ -49,15 +49,22 @@ jest.mock("../../src/grpc/user.client.js", () => ({
 
 // --- chat-service gRPC client: created lazily, but stub it so no proto load /
 //     gRPC channel is ever attempted under test. -----------------------------
+const chatClientStub = () => ({
+  getCommunityChatSummaries: jest.fn(async () => []),
+  bulkMarkCommunityRead: jest.fn(async () => 0),
+  ensureCommunityRoom: jest.fn(async () => true),
+  getCommunityMessageById: jest.fn(async () => ({
+    found: false,
+    message: "",
+    contentType: "",
+    postedAt: 0,
+    senderId: "",
+    media: [],
+  })),
+});
 jest.mock("../../src/grpc/chat.client.js", () => ({
-  getChatClient: jest.fn(() => ({
-    getCommunityChatSummaries: jest.fn(async () => []),
-    bulkMarkCommunityRead: jest.fn(async () => 0),
-  })),
-  createChatClient: jest.fn(() => ({
-    getCommunityChatSummaries: jest.fn(async () => []),
-    bulkMarkCommunityRead: jest.fn(async () => 0),
-  })),
+  getChatClient: jest.fn(() => chatClientStub()),
+  createChatClient: jest.fn(() => chatClientStub()),
 }));
 
 // --- stream-service gRPC client: created lazily, but stub it so no proto load

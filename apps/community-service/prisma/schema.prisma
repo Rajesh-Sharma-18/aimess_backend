@@ -213,6 +213,18 @@ model CommunityReport {
   reviewedBy   String?
   reviewedAt   DateTime?
   resolution   String?
+
+  // --- Reported-content snapshot (optional; all null for user-level reports) ---
+  // Captured by the client at report time so the moderator card survives a later
+  // edit/delete of the original message and avoids a cross-service read.
+  // `reportedContentMedia` stores RAW object keys only — resolved to presigned
+  // URLs on read (never persist a resolved URL).
+  reportedMessageId       String?
+  reportedContentType     String? // CONTENT_TYPES (UPPER): TEXT, IMAGE, VIDEO, ...
+  reportedContentText     String? // text / caption snapshot
+  reportedContentMedia    Json? // [{ objectKey, contentType?, fileName?, size? }]
+  reportedContentPostedAt DateTime? // when the reported content was originally posted
+
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
 

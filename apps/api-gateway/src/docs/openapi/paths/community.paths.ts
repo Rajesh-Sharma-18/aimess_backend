@@ -3532,7 +3532,7 @@ export const communityPaths = {
       tags: ["Communities"],
       summary: "Submit a community report",
       description:
-        "Any ACTIVE member may file a report. Omit `targetUserId` to report the community itself; otherwise the targeted user must currently have a member row (any status). An existing OPEN report from the same reporter on the same (community, target) tuple is returned idempotently (still 201).",
+        "Any ACTIVE member may file a report. Omit `targetUserId` to report the community itself; otherwise the targeted user must currently have a member row (any status). For a message-level report, send `reportedMessageId` — the server resolves the message's text/media/posted-at from chat-service and snapshots it onto the report (populates the moderator card's \"Reported Content\"); resolution is best-effort. An existing OPEN report from the same reporter on the same (community, target) tuple is returned idempotently (still 201).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

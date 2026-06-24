@@ -127,6 +127,62 @@ describe("POST /:id/reports (create)", () => {
       .send({ reason: "valid reason here" });
     expect(res.status).toBe(404);
   });
+
+  it("forwards the reported-content snapshot (message + media + postedAt) → 201", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/reports`)
+      .set(auth())
+      .send({
+        targetUserId: TARGET,
+        reason: "spam messages",
+        reportedMessageId: "msg_123",
+        reportedContentType: "IMAGE",
+        reportedContentText: "check this out",
+        reportedContentPostedAt: "2026-02-02T10:00:00.000Z",
+        reportedContentMedia: [
+          { objectKey: "community-chat/abc.jpg", contentType: "image/jpeg" },
+        ],
+      });
+    expect(res.status).toBe(201);
+    expect(svc.createReport).toHaveBeenCalledWith(
+      CID,
+      SELF,
+      expect.objectContaining({
+        reportedMessageId: "msg_123",
+        reportedContentType: "IMAGE",
+        reportedContentText: "check this out",
+        reportedContentPostedAt: new Date("2026-02-02T10:00:00.000Z"),
+        reportedContentMedia: [
+          { objectKey: "community-chat/abc.jpg", contentType: "image/jpeg" },
+        ],
+      })
+    );
+  });
+
+  it("400 when a reported media entry is missing objectKey", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/reports`)
+      .set(auth())
+      .send({
+        reason: "spam messages",
+        reportedContentMedia: [{ contentType: "image/jpeg" }],
+      });
+    expect(res.status).toBe(400);
+    expect(svc.createReport).not.toHaveBeenCalled();
+  });
+
+  it("400 when more than 10 reported media entries", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/reports`)
+      .set(auth())
+      .send({
+        reason: "spam messages",
+        reportedContentMedia: Array.from({ length: 11 }, (_, i) => ({
+          objectKey: `community-chat/${i}.jpg`,
+        })),
+      });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("GET report lists", () => {

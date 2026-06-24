@@ -188,14 +188,16 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
   // EVERYONE — including active members — clears history that piled up before
   // the silent-kick rule (Telegram parity).
   // -------------------------------------------------------------------------
-  it("hides all membership-lifecycle lines (removed/banned/unbanned/left/joined) from everyone, even active members", async () => {
+  it("hides only the high-churn lifecycle lines (left/joined); moderation lines (removed/banned/unbanned) stay visible — Telegram parity", async () => {
     const rows = [
+      // Visible moderation lines (NOT in HIDDEN_SYSTEM_MESSAGE_TYPES).
       { id: "removed", deletedBy: [], systemMessageType: "MEMBER_REMOVED" },
       { id: "banned", deletedBy: [], systemMessageType: "MEMBER_BANNED" },
       { id: "unbanned", deletedBy: [], systemMessageType: "MEMBER_UNBANNED" },
+      // Hidden: voluntary-leave noise.
       { id: "left", deletedBy: [], systemMessageType: "MEMBER_LEFT" },
-      // Legacy community-wide join line — hidden so it can't duplicate the
-      // personal "You joined the community" (own row, would personalize to "You").
+      // Hidden: legacy community-wide join line — would duplicate the personal
+      // "You joined the community" (own row, would personalize to "You").
       {
         id: "joined",
         deletedBy: [],
@@ -219,7 +221,14 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       viewerIsActiveMember: true,
     });
 
-    expect(result.map((m) => m.id)).toEqual(["rolechg", "msg"]);
+    // left + joined dropped; moderation lines + role change + message survive.
+    expect(result.map((m) => m.id)).toEqual([
+      "removed",
+      "banned",
+      "unbanned",
+      "rolechg",
+      "msg",
+    ]);
   });
 
   it("joiner with a legacy MEMBER_JOINED + personal COMMUNITY_JOINED sees exactly ONE join line (the duplicate fix)", async () => {
@@ -283,13 +292,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       (s: Record<string, unknown>) => "$match" in s
     ).$match;
     expect(match.systemMessageType).toEqual({
-      $nin: [
-        "MEMBER_REMOVED",
-        "MEMBER_BANNED",
-        "MEMBER_UNBANNED",
-        "MEMBER_LEFT",
-        "MEMBER_JOINED",
-      ],
+      $nin: ["MEMBER_LEFT", "MEMBER_JOINED"],
     });
   });
 
@@ -306,13 +309,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
 
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
     expect(match.systemMessageType).toEqual({
-      $nin: [
-        "MEMBER_REMOVED",
-        "MEMBER_BANNED",
-        "MEMBER_UNBANNED",
-        "MEMBER_LEFT",
-        "MEMBER_JOINED",
-      ],
+      $nin: ["MEMBER_LEFT", "MEMBER_JOINED"],
     });
   });
 
@@ -328,13 +325,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
 
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
     expect(match.systemMessageType).toEqual({
-      $nin: [
-        "MEMBER_REMOVED",
-        "MEMBER_BANNED",
-        "MEMBER_UNBANNED",
-        "MEMBER_LEFT",
-        "MEMBER_JOINED",
-      ],
+      $nin: ["MEMBER_LEFT", "MEMBER_JOINED"],
     });
   });
 });

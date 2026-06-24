@@ -1879,6 +1879,35 @@ export function createCommunityImpl(
       })();
     },
 
+    getCommunityMessageById: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomId: string; messageId: string };
+          const snap = await deps.communityMessageService.getModerationSnapshot(
+            {
+              roomId: req.roomId,
+              messageId: req.messageId,
+            }
+          );
+          // camelCase keys (proto-loader keepCase:false maps object_key→objectKey …).
+          callback(null, {
+            found: snap.found,
+            message: snap.message,
+            contentType: snap.contentType,
+            sentAt: snap.sentAt,
+            senderId: snap.senderId,
+            media: snap.media,
+          });
+        } catch (err) {
+          logger.error(`gRPC getCommunityMessageById error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     getCommunityChatSummaries: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>

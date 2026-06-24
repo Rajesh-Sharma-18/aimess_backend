@@ -815,9 +815,51 @@ function toInviteData(row: CommunityInvite): CommunityInviteData {
   };
 }
 
-function toReportData(row: CommunityReport): CommunityReportData {
+/**
+ * Short, human-friendly display id derived deterministically from the report's
+ * Mongo ObjectId (clients render it as e.g. "#99421"). Stable per report — no
+ * counter collection or migration required.
+ */
+function deriveReportDisplayId(reportId: string): string {
+  const hex = reportId.replace(/[^0-9a-f]/gi, "").slice(-6) || "0";
+  const n = parseInt(hex, 16) % 100000;
+  return String(n).padStart(5, "0");
+}
+
+/**
+ * Resolve the snapshotted reported-content media (RAW object keys persisted at
+ * report time) into presigned {@link MediaObject}s. Community chat attachments
+ * share `MINIO_BUCKET_COMMUNITY`. Never persists a resolved URL.
+ */
+function buildReportedContentMedia(media: unknown): Promise<MediaObject[]> {
+  if (!Array.isArray(media)) return Promise.resolve([]);
+  return Promise.all(
+    media.map((raw) => {
+      const m = (raw ?? {}) as {
+        objectKey?: string | null;
+        contentType?: string | null;
+        fileName?: string | null;
+        size?: number | null;
+      };
+      return toMediaObject({
+        bucket: env.MINIO_BUCKET_COMMUNITY,
+        stored: m.objectKey ?? null,
+        prefixes: [],
+        strategy: mediaUrlStrategy,
+        contentType: m.contentType ?? null,
+        fileName: m.fileName ?? null,
+        size: m.size ?? null,
+      });
+    })
+  );
+}
+
+async function toReportData(
+  row: CommunityReport
+): Promise<CommunityReportData> {
   return {
     reportId: row.id,
+    displayId: deriveReportDisplayId(row.id),
     communityId: row.communityId,
     reporterId: row.reporterId,
     targetUserId: row.targetUserId,
@@ -826,6 +868,15 @@ function toReportData(row: CommunityReport): CommunityReportData {
     reviewedBy: row.reviewedBy,
     reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : null,
     resolution: row.resolution,
+    reportedMessageId: row.reportedMessageId ?? null,
+    reportedContentType: row.reportedContentType ?? null,
+    reportedContentText: row.reportedContentText ?? null,
+    reportedContentPostedAt: row.reportedContentPostedAt
+      ? row.reportedContentPostedAt.toISOString()
+      : null,
+    reportedContentMedia: await buildReportedContentMedia(
+      row.reportedContentMedia
+    ),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -2073,7 +2124,12 @@ export const communityService = {
       oldRole: target.role,
       newRole: role,
     });
-    const roleChangedAt = new Date().toISOString();
+    // ONE community-wide line, personalized PER VIEWER by the fallback-text
+    // builder / client: the target sees "You are now a moderator" (viewer ===
+    // targetUserId) while everyone else sees "<name> is now a moderator".
+    // Do NOT also emit a personal ROLE_CHANGED_SELF — the target is already in
+    // the community room and receives this line, so a second personal line
+    // duplicated the message for them ("You are now a moderator" shown twice).
     publishCommunitySystemMessageForChatSafe({
       communityId,
       systemMessageType: "ROLE_CHANGED",
@@ -2086,20 +2142,7 @@ export const communityService = {
         newRole: role as string,
       },
       triggeredByUserId: callerId,
-      eventAt: roleChangedAt,
-    });
-    // Personal counterpart: the target sees "You are now a moderator/member"
-    // while everyone else sees the community-wide line with their real name.
-    publishCommunitySystemMessageForChatSafe({
-      communityId,
-      systemMessageType: "ROLE_CHANGED_SELF",
-      metadata: {
-        oldRole: target.role as string,
-        newRole: role as string,
-      },
-      triggeredByUserId: targetUserId,
-      eventAt: roleChangedAt,
-      visibleToUserId: targetUserId,
+      eventAt: new Date().toISOString(),
     });
 
     // Real-time roster sync: flip the member's role badge on the Members page +
@@ -5299,7 +5342,20 @@ export const communityService = {
   async createReport(
     communityId: string,
     callerId: string,
-    input: { targetUserId?: string; reason: string }
+    input: {
+      targetUserId?: string;
+      reason: string;
+      reportedMessageId?: string;
+      reportedContentType?: string;
+      reportedContentText?: string;
+      reportedContentPostedAt?: Date;
+      reportedContentMedia?: {
+        objectKey: string;
+        contentType?: string | null;
+        fileName?: string | null;
+        size?: number | null;
+      }[];
+    }
   ): Promise<CommunityReportData> {
     const community = await communityRepository.findById(communityId);
     if (!community) {
@@ -5348,11 +5404,55 @@ export const communityService = {
       return toReportData(existing);
     }
 
+    // Message-level report: resolve the reported content from chat-service so the
+    // moderator card shows the actual message (text + media + posted-at). RAW
+    // object keys are stored and resolved to presigned URLs on read. Best-effort
+    // — a missing/deleted message or chat-service outage just stores the id with
+    // no content rather than failing the report. A FE-provided snapshot (legacy
+    // path) is used as a fallback when resolution yields nothing.
+    let reportedContentType = input.reportedContentType ?? null;
+    let reportedContentText = input.reportedContentText ?? null;
+    let reportedContentPostedAt = input.reportedContentPostedAt ?? null;
+    let reportedContentMedia:
+      | {
+          objectKey: string;
+          contentType?: string | null;
+          fileName?: string | null;
+          size?: number | null;
+        }[]
+      | null = input.reportedContentMedia ?? null;
+    if (input.reportedMessageId) {
+      const snap = await getChatClient().getCommunityMessageById({
+        communityId,
+        messageId: input.reportedMessageId,
+      });
+      if (snap?.found) {
+        reportedContentText = snap.message || null;
+        reportedContentType = snap.contentType || null;
+        reportedContentPostedAt = snap.postedAt
+          ? new Date(snap.postedAt)
+          : null;
+        reportedContentMedia = snap.media.length
+          ? snap.media.map((m) => ({
+              objectKey: m.objectKey,
+              contentType: m.contentType || null,
+              fileName: m.fileName || null,
+              size: m.size || null,
+            }))
+          : null;
+      }
+    }
+
     const row = await communityRepository.createReport({
       communityId,
       reporterId: callerId,
       targetUserId,
       reason: input.reason,
+      reportedMessageId: input.reportedMessageId ?? null,
+      reportedContentType,
+      reportedContentText,
+      reportedContentPostedAt,
+      reportedContentMedia,
     });
 
     logger.info(
@@ -5438,7 +5538,7 @@ export const communityService = {
           const targetSnap = snapshotMap.get(row.targetUserId)!;
           target = await buildUserSnapshotView(targetSnap, row.targetUserId);
         }
-        items.push({ ...toReportData(row), reporter, target });
+        items.push({ ...(await toReportData(row)), reporter, target });
       }
     }
 
@@ -5471,7 +5571,7 @@ export const communityService = {
         const community = communityMap.get(row.communityId);
         if (!community) continue; // soft-deleted; best-effort filter
         items.push({
-          ...toReportData(row),
+          ...(await toReportData(row)),
           community: await toEmbeddedCommunitySummary(community),
         });
       }

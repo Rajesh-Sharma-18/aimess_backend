@@ -628,6 +628,11 @@ export type MyInviteData = CommunityInviteData & {
 /** Plain report DTO (create / resolve responses, mine list base). */
 export type CommunityReportData = {
   reportId: string;
+  /**
+   * Short, human-friendly id derived deterministically from `reportId`
+   * (clients render it as e.g. "#99421"). Stable per report; display-only.
+   */
+  displayId: string;
   communityId: string;
   reporterId: string;
   targetUserId: string | null;
@@ -637,6 +642,19 @@ export type CommunityReportData = {
   /** ISO-8601 */
   reviewedAt: string | null;
   resolution: string | null;
+  /**
+   * Reported-content snapshot — all null/empty when the report is user-level
+   * only (no specific message referenced).
+   */
+  reportedMessageId: string | null;
+  /** CONTENT_TYPES (UPPER): TEXT, IMAGE, VIDEO, … */
+  reportedContentType: string | null;
+  /** Text / caption snapshot of the reported content. */
+  reportedContentText: string | null;
+  /** ISO-8601 — when the reported content was originally posted. */
+  reportedContentPostedAt: string | null;
+  /** Reported attachments, resolved to presigned media on read ([] when none). */
+  reportedContentMedia: MediaObject[];
   createdAt: string;
   updatedAt: string;
 };

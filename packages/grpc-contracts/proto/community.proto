@@ -4,6 +4,10 @@ package community;
 service CommunityService {
   rpc SendCommunityMessage (SendCommunityMessageRequest) returns (SendCommunityMessageResponse);
   rpc GetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
+  // Fetch a single community message by id for moderation snapshotting (report
+  // cards). Scoped by room_id (=== communityId) as an IDOR guard. Returns RAW
+  // object keys — the caller resolves them to presigned URLs on read.
+  rpc GetCommunityMessageById (GetCommunityMessageByIdRequest) returns (GetCommunityMessageByIdResponse);
   // Synchronous, idempotent provisioning of a community's chat room (GeneralRoom,
   // id === communityId). community-service calls this during community creation so
   // a member's first message can never race ahead of the async community.created
@@ -334,6 +338,26 @@ message CommunityMessageDto {
   string system_message_type = 8;  // e.g. COMMUNITY_JOINED (empty for normal messages)
   string system_metadata     = 9;  // JSON string of the system metadata map
   bool   is_personal         = 10; // true = user-scoped SYSTEM message ("You joined")
+}
+
+// ---- Single message fetch for moderation report snapshots ----
+message GetCommunityMessageByIdRequest {
+  string room_id    = 1; // === communityId; IDOR scope
+  string message_id = 2;
+}
+message ReportedMediaDto {
+  string object_key   = 1; // RAW object key (resolve to presigned on read)
+  string content_type = 2; // MIME, e.g. image/jpeg ("" if unknown)
+  string file_name    = 3; // "" if unknown
+  int64  size         = 4; // bytes; 0 if unknown
+}
+message GetCommunityMessageByIdResponse {
+  bool   found        = 1; // false → missing / wrong room / deleted-for-all
+  string message      = 2; // text / caption
+  string content_type = 3; // canonical UPPER kind: TEXT | IMAGE | VIDEO | ...
+  int64  sent_at      = 4; // epoch ms — when the content was posted
+  string sender_id    = 5;
+  repeated ReportedMediaDto media = 6;
 }
 
 // ---- Reconciliation (ListCommunities) ----
