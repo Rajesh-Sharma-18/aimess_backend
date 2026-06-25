@@ -38,3 +38,4 @@ demo-frontend/*.tsx
 .vscode
 .claude
 .serena
+docs/
