@@ -8197,31 +8197,37 @@ export const openApiSchemas = {
     type: "object",
     description: "Result of unpinning a community-chat message.",
     properties: {
+      pin: {
+        allOf: [{ $ref: "#/components/schemas/CommunityMessagePin" }],
+        nullable: true,
+        description: "The soft-deleted pin record (null if not found).",
+      },
       pinnedCount: {
         type: "integer",
-        description: "Total pinned messages in the room after the unpin.",
+        description:
+          "Total active pinned messages in the room after the unpin.",
       },
     },
-    required: ["pinnedCount"],
+    required: ["pin", "pinnedCount"],
   },
   CommunityMessagePinList: {
     type: "object",
     description:
-      "Cursor-paginated pinned messages for a community room. `items[].pinnedAt` is epoch ms (number), but `nextCursor` is the ISO-8601 pinnedAt of the last item (string).",
+      'Cursor-paginated pinned messages for a community room. `data[].pinnedAt` is epoch ms (number). `nextCursor` is a compound `"<ms>_<id>"` string — pass it verbatim as `?cursor=` for the next page.',
     properties: {
-      items: {
+      data: {
         type: "array",
         items: { $ref: "#/components/schemas/CommunityMessagePin" },
       },
       nextCursor: {
         type: "string",
-        format: "date-time",
         nullable: true,
-        description: "ISO-8601 pinnedAt cursor for the next page; null at end.",
+        description:
+          'Compound `"<pinnedAt_ms>_<pinId>"` cursor for the next page; null when no more pages.',
       },
       hasMore: { type: "boolean" },
     },
-    required: ["items", "nextCursor", "hasMore"],
+    required: ["data", "nextCursor", "hasMore"],
   },
 
   // ===========================================================================
