@@ -24,12 +24,16 @@ const envSchema = z.object({
   NOTIFICATION_SERVICE_URL: z.string().url().optional(),
   MEDIA_SERVICE_URL: z.string().url().optional(),
   MEDIA_GRPC_URL: z.string().min(1).default("0.0.0.0:4009"),
+  /** Stream service REST URL — gated proxy for /api/v1/streams/*. */
+  STREAM_SERVICE_URL: z.string().url().optional(),
   AUTH_GRPC_URL: z.string().optional(),
   USER_GRPC_URL: z.string().optional(),
   /** gRPC URLs for socket-facing services (required — sockets cannot operate without them). */
   MESSAGING_GRPC_URL: z.string().min(1),
   COMMUNITY_GRPC_URL: z.string().min(1),
   NOTIFICATION_GRPC_URL: z.string().min(1),
+  /** stream-service gRPC URL (livestream comments) — used by the /stream socket namespace. */
+  STREAM_GRPC_URL: z.string().min(1).default("0.0.0.0:4007"),
   /** Same JWT secret as auth-service — used by socket auth middleware. */
   JWT_ACCESS_SECRET: z.string().min(1),
   /** Downstream backoffice (admin) service. */
@@ -77,6 +81,41 @@ const envSchema = z.object({
    * Use 1 behind nginx/ALB. Do not use `true` — express-rate-limit rejects it.
    */
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(0),
+  // --- Community link host (aimess.me deep-link domain) ---
+  /**
+   * Comma-separated hostnames that should be treated as the dedicated community
+   * link domain (Telegram's `t.me` equivalent). On these hosts the gateway
+   * serves `.well-known` App/Universal-Link proofs and the server-rendered
+   * "open in app" preview/interstitial instead of the API. Other hosts pass
+   * straight through to the normal API routing.
+   */
+  LINK_HOSTS: z.string().default("aimess.me"),
+  /** App custom scheme used in deep links (`<scheme>://join?code=…`). */
+  APP_SCHEME: z.string().default("aimess"),
+  /** Web app origin for "Continue on web" + logged-out `returnTo` redirects. */
+  WEB_APP_URL: z.string().url().default("https://aimess.com"),
+  /** Android package name (assetlinks.json + intent:// fallback). */
+  ANDROID_PACKAGE_NAME: z.string().default("com.aimess.app"),
+  /**
+   * Comma-separated SHA-256 signing-cert fingerprints for assetlinks.json.
+   * MUST list BOTH the upload cert and Google's Play App Signing cert, or
+   * Android App Links silently fall back to the browser. Empty in dev.
+   */
+  ANDROID_SHA256_CERT_FINGERPRINTS: z.string().default(""),
+  /** Google Play store id (referrer-carrying store URL for deferred deep link). */
+  ANDROID_STORE_APP_ID: z.string().optional(),
+  /**
+   * Comma-separated Apple app IDs (`<TEAMID>.com.aimess.app`) for the
+   * apple-app-site-association file.
+   */
+  APPLE_APP_IDS: z.string().default(""),
+  /** Apple App Store numeric id (App Store URL for deferred deep link). */
+  APPLE_STORE_APP_ID: z.string().optional(),
+  /** community-service internal base URL for unauthenticated public-card lookups. */
+  COMMUNITY_INTERNAL_URL: z.string().url().optional(),
+  /** Shared secret for gateway → service internal (unauthenticated) calls. */
+  INTERNAL_SHARED_SECRET: z.string().optional(),
+
   /** Optional JSON policy file (default: apps/api-gateway/config/app-versions.json). */
   APP_VERSION_CONFIG_PATH: z.string().min(1).optional(),
   APP_VERSION_ANDROID_MANDATORY: semverLike.default("1.0.0"),
@@ -132,6 +171,34 @@ export function getAdminIpWhitelist(): string[] {
   return env.ADMIN_IP_WHITELIST.split(",")
     .map((ip) => ip.trim())
     .filter(Boolean);
+}
+
+function splitCsv(value: string): string[] {
+  return value
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+/** Hostnames treated as the dedicated community link domain (lowercased). */
+export function getLinkHosts(): string[] {
+  return splitCsv(env.LINK_HOSTS).map((h) => h.toLowerCase());
+}
+
+/** True when the request host is the dedicated community link domain. */
+export function isLinkHost(hostname: string | undefined): boolean {
+  if (!hostname) return false;
+  return getLinkHosts().includes(hostname.toLowerCase());
+}
+
+/** Android signing-cert fingerprints for assetlinks.json. */
+export function getAndroidCertFingerprints(): string[] {
+  return splitCsv(env.ANDROID_SHA256_CERT_FINGERPRINTS);
+}
+
+/** Apple app IDs for apple-app-site-association. */
+export function getAppleAppIds(): string[] {
+  return splitCsv(env.APPLE_APP_IDS);
 }
 
 function normalizeGatewayBaseUrl(url: string): string {

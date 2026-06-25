@@ -1971,7 +1971,489 @@ export const openApiSchemas = {
     required: ["success", "data"],
   },
 
-  // ---- Livestreams ----
+  // ===========================================================================
+  // Stream Service — user-facing schemas
+  // ===========================================================================
+
+  StreamView: {
+    type: "object",
+    description: "A livestream record as seen by any authenticated user.",
+    required: [
+      "id",
+      "communityId",
+      "creatorId",
+      "title",
+      "sourceType",
+      "status",
+      "commentStatus",
+      "viewerCount",
+      "peakViewers",
+      "totalViews",
+      "totalComments",
+      "createdAt",
+      "updatedAt",
+    ],
+    properties: {
+      id: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
+      communityId: {
+        type: "string",
+        example: "550e8400-e29b-41d4-a716-446655440000",
+      },
+      creatorId: {
+        type: "string",
+        example: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+      },
+      title: { type: "string", example: "Weekly Dev Q&A" },
+      description: { type: "string", example: "Ask me anything." },
+      thumbnail: {
+        type: "string",
+        nullable: true,
+        example: "stream/thumbnail/64a1.../uuid.jpg",
+        description: "MinIO object key for the thumbnail image.",
+      },
+      sourceType: {
+        type: "string",
+        enum: ["PHONE_CAMERA", "URL", "YOUTUBE"],
+        example: "PHONE_CAMERA",
+      },
+      sourceUrl: {
+        type: "string",
+        nullable: true,
+        example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      },
+      status: {
+        type: "string",
+        enum: ["PENDING", "LIVE", "ENDED", "CANCELLED"],
+        example: "LIVE",
+      },
+      commentStatus: {
+        type: "boolean",
+        example: true,
+        description: "true = chat open, false = chat frozen.",
+      },
+      hlsUrl: {
+        type: "string",
+        nullable: true,
+        example: "http://srs.example.com:8080/live/abc123.m3u8",
+      },
+      flvUrl: {
+        type: "string",
+        nullable: true,
+        example: "http://srs.example.com:8080/live/abc123.flv",
+      },
+      dashUrl: {
+        type: "string",
+        nullable: true,
+        example: "http://srs.example.com:8080/live/abc123.mpd",
+      },
+      viewerCount: {
+        type: "integer",
+        example: 42,
+        description:
+          "Live count (from Redis when LIVE, DB fallback otherwise).",
+      },
+      peakViewers: { type: "integer", example: 87 },
+      totalViews: { type: "integer", example: 512 },
+      totalComments: { type: "integer", example: 203 },
+      livedAt: { type: "string", format: "date-time", nullable: true },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  StreamCreateResult: {
+    type: "object",
+    description: "Stream record plus owner-only fields returned on creation.",
+    allOf: [{ $ref: "#/components/schemas/StreamView" }],
+    properties: {
+      streamKey: {
+        type: "string",
+        example: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+        description:
+          "32-char hex key for OBS/SRS RTMP. NEVER share with viewers.",
+      },
+      ingest: {
+        type: "object",
+        description:
+          "Publish endpoints for PHONE_CAMERA mode (null for YOUTUBE).",
+        properties: {
+          whipUrl: {
+            type: "string",
+            nullable: true,
+            example:
+              "http://srs.example.com:1985/rtc/v1/whip/?app=live&stream=abc123",
+          },
+          rtmpUrl: {
+            type: "string",
+            nullable: true,
+            example: "rtmp://srs.example.com/live/abc123",
+          },
+        },
+      },
+    },
+  },
+
+  StreamComment: {
+    type: "object",
+    description: "A single livestream comment.",
+    required: [
+      "id",
+      "livestreamId",
+      "sentBy",
+      "senderName",
+      "message",
+      "createdAt",
+    ],
+    properties: {
+      id: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
+      livestreamId: { type: "string" },
+      sentBy: { type: "string", description: "userId of the author (UUID)." },
+      senderName: {
+        type: "string",
+        example: "alice",
+        description: "Snapshot display name at send time.",
+      },
+      senderAvatar: {
+        type: "string",
+        nullable: true,
+        description: "Snapshot avatar MinIO key.",
+      },
+      message: { type: "string", maxLength: 500, example: "Great stream!" },
+      clientCommentId: {
+        type: "string",
+        nullable: true,
+        description: "Client-supplied idempotency key.",
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  StreamBanItem: {
+    type: "object",
+    description: "A single ban entry on a livestream.",
+    required: ["userId", "bannedAt"],
+    properties: {
+      userId: { type: "string", description: "UUID of the banned user." },
+      reason: { type: "string", nullable: true, example: "Spamming" },
+      bannedAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  // ===========================================================================
+  // Admin Livestream schemas
+  // ===========================================================================
+
+  AdminLivestreamItem: {
+    type: "object",
+    description: "Compact livestream row for the admin list table.",
+    required: [
+      "livestreamId",
+      "title",
+      "status",
+      "community",
+      "creator",
+      "createdAt",
+    ],
+    properties: {
+      livestreamId: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
+      title: { type: "string", example: "Weekly Dev Q&A" },
+      status: {
+        type: "string",
+        enum: ["LIVE", "ENDED", "SCHEDULED", "CANCELLED"],
+        description: "SCHEDULED maps to a stream-service PENDING stream.",
+      },
+      community: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          slug: { type: "string" },
+          avatarUrl: {
+            type: "string",
+            nullable: true,
+            description:
+              "Presigned community avatar URL (full URL, never a key).",
+          },
+        },
+      },
+      creator: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: {
+            type: "string",
+            nullable: true,
+            description:
+              "Presigned creator avatar URL (full URL, never a key).",
+          },
+        },
+      },
+      category: {
+        type: "object",
+        description:
+          "The stream's community category (streams have no own category).",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string", example: "Technology" },
+          slug: { type: "string", example: "technology" },
+        },
+      },
+      createdAt: { type: "string", format: "date-time" },
+      startedAt: { type: "string", format: "date-time" },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+      durationSeconds: { type: "integer", example: 3600 },
+      viewerCount: { type: "integer", example: 134 },
+      reportCount: { type: "integer", example: 2 },
+      reportSeverity: {
+        type: "string",
+        enum: ["NONE", "LOW", "MEDIUM", "HIGH"],
+      },
+      thumbnailUrl: { type: "string", nullable: true },
+    },
+  },
+
+  AdminLivestreamDetail: {
+    type: "object",
+    description:
+      "Full livestream detail returned by GET /admin/v1/livestreams/{id}.",
+    required: ["livestreamId", "title", "status"],
+    properties: {
+      livestreamId: { type: "string" },
+      title: { type: "string" },
+      description: { type: "string" },
+      status: { type: "string", enum: ["LIVE", "ENDED", "CANCELLED"] },
+      thumbnailUrl: { type: "string", nullable: true },
+      endReasonCode: { type: "string", nullable: true },
+      endedBy: {
+        type: "object",
+        nullable: true,
+        properties: {
+          adminId: { type: "string" },
+          adminName: { type: "string" },
+        },
+      },
+      community: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          slug: { type: "string" },
+          memberCount: { type: "integer" },
+          creatorRole: { type: "string" },
+        },
+      },
+      creator: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: { type: "string", nullable: true },
+          accountStatus: { type: "string" },
+          totalStreams: { type: "integer" },
+          priorStrikes: { type: "integer" },
+        },
+      },
+      viewerStats: {
+        type: "object",
+        properties: {
+          currentViewers: { type: "integer" },
+          peakViewers: { type: "integer" },
+          totalUniqueViewers: { type: "integer" },
+          chatMessageCount: { type: "integer" },
+        },
+      },
+      reportsSummary: {
+        type: "object",
+        properties: {
+          total: { type: "integer" },
+          open: { type: "integer" },
+          reviewing: { type: "integer" },
+          resolved: { type: "integer" },
+          dismissed: { type: "integer" },
+          severity: { type: "string", enum: ["NONE", "LOW", "MEDIUM", "HIGH"] },
+        },
+      },
+      moderationHistory: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            action: { type: "string" },
+            adminId: { type: "string" },
+            adminName: { type: "string" },
+            reasonCode: { type: "string", nullable: true },
+            note: { type: "string", nullable: true },
+            createdAt: { type: "string", format: "date-time" },
+          },
+        },
+      },
+      createdAt: { type: "string", format: "date-time" },
+      startedAt: { type: "string", format: "date-time" },
+      endedAt: { type: "string", format: "date-time", nullable: true },
+    },
+  },
+
+  AdminLivestreamReport: {
+    type: "object",
+    description: "A single report filed against a livestream.",
+    properties: {
+      reportId: { type: "string" },
+      livestreamId: { type: "string" },
+      reporter: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+        },
+      },
+      reportType: {
+        type: "string",
+        enum: [
+          "HARASSMENT",
+          "SPAM",
+          "COPYRIGHT",
+          "NUDITY",
+          "VIOLENCE",
+          "HATE_SPEECH",
+          "OTHER",
+        ],
+      },
+      description: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["OPEN", "REVIEWING", "RESOLVED", "DISMISSED"],
+      },
+      resolution: {
+        type: "object",
+        nullable: true,
+        properties: {
+          action: { type: "string" },
+          note: { type: "string", nullable: true },
+          resolvedBy: { type: "string" },
+          resolvedAt: { type: "string", format: "date-time" },
+        },
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  AdminLivestreamUserItem: {
+    type: "object",
+    description:
+      "A member of the stream's community (the Livestream User List row). `type` is the member's community role.",
+    properties: {
+      userId: { type: "string" },
+      username: { type: "string" },
+      handle: { type: "string", nullable: true },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description: "Presigned avatar URL (full URL, never a key).",
+      },
+      type: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+      },
+      joinedAt: { type: "string", format: "date-time" },
+    },
+    required: ["userId", "username", "type", "joinedAt"],
+  },
+
+  AdminEndLivestreamResult: {
+    type: "object",
+    description: "Result of ending a single livestream via admin action.",
+    properties: {
+      livestreamId: { type: "string" },
+      status: { type: "string", example: "ENDED" },
+      endedAt: { type: "string", format: "date-time" },
+      endedBy: {
+        type: "object",
+        properties: {
+          adminId: { type: "string" },
+          adminName: { type: "string" },
+        },
+      },
+      reasonCode: { type: "string" },
+      moderationActionId: { type: "string" },
+      auditLogId: { type: "string", nullable: true },
+      creatorNotified: { type: "boolean" },
+      strikeIssued: { type: "boolean" },
+    },
+  },
+
+  AdminBulkResult: {
+    type: "object",
+    description: "Aggregate result of a bulk operation.",
+    properties: {
+      requested: { type: "integer", example: 5 },
+      succeeded: { type: "integer", example: 4 },
+      failed: { type: "integer", example: 1 },
+      results: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            ok: { type: "boolean" },
+            status: { type: "string", nullable: true },
+            error: {
+              type: "object",
+              nullable: true,
+              properties: {
+                code: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+
+  AdminThumbnailPresignResult: {
+    type: "object",
+    description: "Presigned PUT URL for a stream thumbnail admin upload.",
+    required: ["uploadUrl", "objectKey", "expiresIn", "maxBytes", "headers"],
+    properties: {
+      uploadUrl: {
+        type: "string",
+        example:
+          "https://minio.example.com/aimess-stream/stream/thumbnail/abc/uuid.jpg?X-Amz-Expires=300&...",
+        description:
+          "Short-lived presigned PUT URL. PUT the image directly here.",
+      },
+      objectKey: {
+        type: "string",
+        example: "stream/thumbnail/64a1b2c3d4e5f6a7b8c9d0e1/f47ac10b.jpg",
+        description:
+          "Pass this to PATCH /admin/v1/livestreams/{id}/thumbnail to commit the upload.",
+      },
+      expiresIn: {
+        type: "integer",
+        example: 300,
+        description: "URL lifetime in seconds.",
+      },
+      maxBytes: {
+        type: "integer",
+        example: 5242880,
+        description: "Maximum allowed file size in bytes (5 MB).",
+      },
+      headers: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        example: { "Content-Type": "image/jpeg" },
+        description: "Headers the client must set on the PUT request.",
+      },
+    },
+  },
+
+  // ---- Livestreams (legacy stub — kept for backward compat, prefer AdminLivestreamItem) ----
   AdminLivestream: {
     type: "object",
     properties: {
@@ -3798,6 +4280,12 @@ export const openApiSchemas = {
         description:
           "ACTIVE = open; SUSPENDED = closed by a platform admin (clients show a read-only banner).",
       },
+      status: {
+        type: "string",
+        enum: ["ACTIVE", "CLOSED"],
+        description:
+          "Owner-controlled lifecycle status. ACTIVE = open; CLOSED = the community owner closed it (all members removed, read-only) until reopened. This is the field clients branch on to disable community actions; `moderationStatus` is a separate platform concern. Absent on legacy data ⇒ ACTIVE.",
+      },
       isLive: {
         type: "boolean",
         description:
@@ -3830,6 +4318,7 @@ export const openApiSchemas = {
       "announcementEnabled",
       "isJoined",
       "moderationStatus",
+      "status",
       "isLive",
       "lastActivity",
       "createdAt",
@@ -4143,13 +4632,19 @@ export const openApiSchemas = {
   },
   PaginationMeta: {
     type: "object",
-    description: "Offset/page pagination metadata.",
+    description:
+      "Pagination metadata shared by offset/page and timestamp-cursor endpoints. " +
+      "In offset mode (page param) `currentPage`/`totalPage`/`totalData` are " +
+      "authoritative and `nextCursor` is null. In timestamp-cursor mode " +
+      "(before_ts/after_ts) rely on `hasMore`/`nextCursor`; `currentPage` is " +
+      "reported as 1 and `totalPage`/`totalData` are best-effort counts, not page anchors.",
     properties: {
       totalData: { type: "integer", description: "Total matching records." },
       totalPage: { type: "integer", description: "Total number of pages." },
       currentPage: {
         type: "integer",
-        description: "The requested page (1-based).",
+        description:
+          "The requested page (1-based) in offset mode; always 1 in cursor mode.",
       },
       limit: { type: "integer", description: "Page size." },
       nextCursor: {
@@ -4157,11 +4652,14 @@ export const openApiSchemas = {
         nullable: true,
         description:
           "Cursor for the next page. For offset/page pagination this is null (use page param). " +
-          "For timeline/cursor-paginated endpoints this is an epoch-ms string — feed it back as the same before_ts/after_ts you used.",
+          "For timeline/cursor-paginated endpoints this is an epoch-ms string — parse it to an " +
+          "integer and feed it back as the same before_ts/after_ts you used. Null when hasMore is false.",
       },
       hasMore: {
         type: "boolean",
-        description: "True when currentPage < totalPage.",
+        description:
+          "True when more pages may exist. In cursor mode this is computed as " +
+          "(returned == limit) — use it (not currentPage/totalPage) to decide whether to keep paging.",
       },
     },
     required: [
@@ -4404,6 +4902,11 @@ export const openApiSchemas = {
       snapshotAvatarUrl: { type: "string", nullable: true },
       snapshotAvatarUrlExpiresIn: { type: "integer", nullable: true },
       snapshotAvatar: { $ref: "#/components/schemas/MediaObject" },
+      profileUnavailable: {
+        type: "boolean",
+        description:
+          'True only when the member\'s user profile genuinely could not be resolved (deleted user with no usable stored snapshot). When false/absent (the default), snapshotUsername/snapshotDisplayName carry the live profile when user-service resolves it, otherwise the last-known-good stored snapshot — never a synthetic "Unknown" placeholder for a valid user.',
+      },
       bannedAt: {
         type: "string",
         format: "date-time",
@@ -4829,10 +5332,84 @@ export const openApiSchemas = {
   // --- Invites ------------------------------------------------------------
   CreateInviteRequest: {
     type: "object",
+    description:
+      "Bulk invite request. Supply 1–50 unique user UUIDs. Duplicates are deduplicated server-side. Invalid users (banned, self, already member, already pending) are reported in the result instead of failing the entire request.",
     properties: {
-      inviteeId: { type: "string", format: "uuid" },
+      userIds: {
+        type: "array",
+        items: { type: "string", format: "uuid" },
+        minItems: 1,
+        maxItems: 50,
+        description: "User IDs to invite (1–50 items).",
+      },
     },
-    required: ["inviteeId"],
+    required: ["userIds"],
+    example: {
+      userIds: [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+      ],
+    },
+  },
+  BulkInviteUserResult: {
+    type: "object",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      outcome: {
+        type: "string",
+        enum: ["INVITED", "ALREADY_INVITED", "ALREADY_MEMBER", "FAILED"],
+        description:
+          "INVITED = new or recycled invite created; ALREADY_INVITED = existing PENDING invite (no new notification); ALREADY_MEMBER = user is already an ACTIVE member; FAILED = banned, self-invite, or other error.",
+      },
+      inviteId: {
+        type: "string",
+        description: "Present when outcome is INVITED or ALREADY_INVITED.",
+      },
+      reason: {
+        type: "string",
+        description:
+          "Present when outcome is FAILED (e.g. SELF_INVITE, USER_BANNED).",
+      },
+    },
+    required: ["userId", "outcome"],
+  },
+  BulkInviteResult: {
+    type: "object",
+    properties: {
+      totalRequested: {
+        type: "integer",
+        description: "Number of distinct user IDs received (after dedup).",
+      },
+      invited: {
+        type: "integer",
+        description: "Users successfully invited (new invite or recycled).",
+      },
+      alreadyInvited: {
+        type: "integer",
+        description:
+          "Users who already had a PENDING invite — no action taken.",
+      },
+      alreadyMembers: {
+        type: "integer",
+        description: "Users who are already ACTIVE members — skipped.",
+      },
+      failed: {
+        type: "integer",
+        description: "Users that could not be invited (banned, self, etc.).",
+      },
+      results: {
+        type: "array",
+        items: { $ref: "#/components/schemas/BulkInviteUserResult" },
+      },
+    },
+    required: [
+      "totalRequested",
+      "invited",
+      "alreadyInvited",
+      "alreadyMembers",
+      "failed",
+      "results",
+    ],
   },
   InviteData: {
     type: "object",
@@ -4946,6 +5523,48 @@ export const openApiSchemas = {
         maxLength: 1000,
         description: "Reporter-supplied reason text.",
       },
+      reportedMessageId: {
+        type: "string",
+        minLength: 1,
+        maxLength: 100,
+        description:
+          "Id of the reported community message (message-level report). When set, the server resolves the message's text, media (raw object keys), and posted-at from chat-service and snapshots them onto the report — this populates the moderator card's \"Reported Content\". Best-effort: a missing / deleted-for-all / cross-room message stores the id with null content. Omit for a plain user-level report.",
+      },
+      reportedContentType: {
+        type: "string",
+        minLength: 1,
+        maxLength: 40,
+        description:
+          "Legacy fallback (used only when reportedMessageId is absent/unresolved). CONTENT_TYPES (UPPER): TEXT | IMAGE | VIDEO | …",
+      },
+      reportedContentText: {
+        type: "string",
+        maxLength: 4000,
+        description:
+          "Legacy fallback — text/caption snapshot of the reported content.",
+      },
+      reportedContentPostedAt: {
+        type: "string",
+        format: "date-time",
+        description:
+          "Legacy fallback — ISO-8601 timestamp of when the reported content was posted.",
+      },
+      reportedContentMedia: {
+        type: "array",
+        maxItems: 10,
+        description:
+          "Legacy fallback — RAW object keys only; the server resolves them to presigned URLs on read. Never send presigned URLs.",
+        items: {
+          type: "object",
+          properties: {
+            objectKey: { type: "string", minLength: 1, maxLength: 512 },
+            contentType: { type: "string", maxLength: 100, nullable: true },
+            fileName: { type: "string", maxLength: 255, nullable: true },
+            size: { type: "integer", minimum: 0, nullable: true },
+          },
+          required: ["objectKey"],
+        },
+      },
     },
     required: ["reason"],
   },
@@ -4963,6 +5582,11 @@ export const openApiSchemas = {
     type: "object",
     properties: {
       reportId: { type: "string" },
+      displayId: {
+        type: "string",
+        description:
+          'Short, deterministic, display-only id derived from reportId — render as "#<displayId>" (e.g. "#99421").',
+      },
       communityId: { type: "string" },
       reporterId: { type: "string", format: "uuid" },
       targetUserId: { type: "string", format: "uuid", nullable: true },
@@ -4974,11 +5598,43 @@ export const openApiSchemas = {
       reviewedBy: { type: "string", format: "uuid", nullable: true },
       reviewedAt: { type: "string", format: "date-time", nullable: true },
       resolution: { type: "string", nullable: true },
+      reportedMessageId: {
+        type: "string",
+        nullable: true,
+        description:
+          "The reported community message id (null for a user-level report).",
+      },
+      reportedContentType: {
+        type: "string",
+        nullable: true,
+        description:
+          "CONTENT_TYPES (UPPER) of the reported content; null when none.",
+      },
+      reportedContentText: {
+        type: "string",
+        nullable: true,
+        description:
+          "Text/caption snapshot of the reported content; null when none.",
+      },
+      reportedContentPostedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the reported content was originally posted; null when none.",
+      },
+      reportedContentMedia: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MediaObject" },
+        description:
+          "Reported attachments, resolved to presigned media on read ([] when none).",
+      },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
     required: [
       "reportId",
+      "displayId",
       "communityId",
       "reporterId",
       "targetUserId",
@@ -4987,6 +5643,11 @@ export const openApiSchemas = {
       "reviewedBy",
       "reviewedAt",
       "resolution",
+      "reportedMessageId",
+      "reportedContentType",
+      "reportedContentText",
+      "reportedContentPostedAt",
+      "reportedContentMedia",
       "createdAt",
       "updatedAt",
     ],
@@ -5315,6 +5976,65 @@ export const openApiSchemas = {
     },
     required: ["pagination", "data"],
   },
+  CommunityBannedMemberData: {
+    type: "object",
+    description:
+      "A single currently-banned member row (status === BANNED). Lifted bans never appear here — see the moderation audit log for history.",
+    properties: {
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      displayName: { type: "string" },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
+      bannedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description: "Epoch milliseconds when the ban was applied.",
+      },
+      bannedBy: {
+        type: "object",
+        nullable: true,
+        description:
+          "The moderator/admin who applied the ban; displayName is null if they have left the community.",
+        properties: {
+          userId: { type: "string", format: "uuid" },
+          displayName: { type: "string", nullable: true },
+        },
+        required: ["userId", "displayName"],
+      },
+      banReason: { type: "string", nullable: true },
+      banType: {
+        type: "string",
+        enum: ["PERMANENT"],
+        description:
+          "Ban duration class. All community bans are indefinite today.",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "bannedAt",
+      "bannedBy",
+      "banReason",
+      "banType",
+    ],
+  },
+  CommunityBannedMembersResponseData: {
+    type: "object",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/CommunityBannedMemberData" },
+      },
+    },
+    required: ["pagination", "data"],
+  },
   SetMemberMuteRequest: {
     type: "object",
     description:
@@ -5428,7 +6148,24 @@ export const openApiSchemas = {
       url: {
         type: "string",
         description:
-          "Built from INVITE_LINK_BASE_URL when set, else just the code.",
+          "Primary shareable HTTPS link, generated from the community's privacy. " +
+          "PUBLIC → handle-based & deterministic (`<base>/<handle>`, e.g. https://aimess.me/tech_community), " +
+          "independent of code/expiry/usage. " +
+          "PRIVATE → invite-code-based & revocable (`<base>/+<code>`, e.g. https://aimess.me/+AbCdEf123). " +
+          "Falls back to the bare handle/code when INVITE_LINK_BASE_URL is unset.",
+      },
+      appDeepLink: {
+        type: "string",
+        description:
+          "App deep-link matching `url`. PUBLIC → aimess://resolve?handle=<handle>; " +
+          "PRIVATE → aimess://join?code=<code>.",
+      },
+      linkType: {
+        type: "string",
+        enum: ["PUBLIC_HANDLE", "PRIVATE_INVITE"],
+        description:
+          "Which mechanism produced `url`/`appDeepLink`: PUBLIC_HANDLE (handle-based, PUBLIC community) " +
+          "or PRIVATE_INVITE (invite-code-based, PRIVATE community). Lets clients branch without parsing the URL.",
       },
       communityId: { type: "string" },
       createdBy: { type: "string", format: "uuid" },
@@ -5451,6 +6188,8 @@ export const openApiSchemas = {
       "linkId",
       "code",
       "url",
+      "appDeepLink",
+      "linkType",
       "communityId",
       "createdBy",
       "maxUses",
@@ -5460,6 +6199,106 @@ export const openApiSchemas = {
       "revokedAt",
       "createdAt",
       "isActive",
+    ],
+  },
+  InviteLinkPreviewData: {
+    type: "object",
+    properties: {
+      communityId: { type: "string" },
+      communityName: { type: "string" },
+      description: { type: "string", nullable: true },
+      avatarUrl: { type: "string", nullable: true },
+      bannerUrl: { type: "string", nullable: true },
+      memberCount: { type: "integer" },
+      communityType: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
+      isJoined: { type: "boolean" },
+      joinRequestId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Caller's PENDING join-request id, or null. Non-null → render PRIVATE_REQUESTED (+Cancel).",
+      },
+      joinRequestStatus: {
+        type: "string",
+        enum: ["PENDING"],
+        nullable: true,
+      },
+      invitationCode: { type: "string" },
+      inviteUrl: {
+        type: "string",
+        description: "Shareable HTTPS link: https://aimess.me/+<code>",
+      },
+      appDeepLink: {
+        type: "string",
+        description: "App deep link: aimess://join?code=<code>",
+      },
+      expiresAt: { type: "integer", nullable: true },
+      creatorId: { type: "string" },
+    },
+    required: [
+      "communityId",
+      "communityName",
+      "description",
+      "avatarUrl",
+      "bannerUrl",
+      "memberCount",
+      "communityType",
+      "isJoined",
+      "joinRequestId",
+      "joinRequestStatus",
+      "invitationCode",
+      "inviteUrl",
+      "appDeepLink",
+      "expiresAt",
+      "creatorId",
+    ],
+  },
+  PublicCommunityResponse: {
+    type: "object",
+    description:
+      "Public deep-link resolver result (GET /communities/by-handle/:handle). PUBLIC only.",
+    properties: {
+      communityId: { type: "string" },
+      handle: { type: "string" },
+      name: { type: "string" },
+      description: { type: "string", nullable: true },
+      avatarUrl: { type: "string", nullable: true },
+      bannerUrl: { type: "string", nullable: true },
+      memberCount: { type: "integer" },
+      type: { type: "string", enum: ["PUBLIC"] },
+      shareUrl: {
+        type: "string",
+        description:
+          "Canonical HTTPS share URL (https://aimess.me/<handle>). Server-owned — use verbatim, do not reconstruct.",
+        example: "https://aimess.me/photography_club",
+      },
+      appDeepLink: {
+        type: "string",
+        description: "App deep link (aimess://resolve?handle=<handle>).",
+        example: "aimess://resolve?handle=photography_club",
+      },
+      isJoined: { type: "boolean" },
+      role: {
+        type: "string",
+        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        nullable: true,
+      },
+      isBanned: { type: "boolean" },
+    },
+    required: [
+      "communityId",
+      "handle",
+      "name",
+      "description",
+      "avatarUrl",
+      "bannerUrl",
+      "memberCount",
+      "type",
+      "shareUrl",
+      "appDeepLink",
+      "isJoined",
+      "role",
+      "isBanned",
     ],
   },
   CreateInviteLinkRequest: {
@@ -5598,6 +6437,34 @@ export const openApiSchemas = {
     type: "array",
     items: { $ref: "#/components/schemas/ChatInboxItem" },
   },
+  /**
+   * Actual runtime shape of GET /chat/inbox — the timestamp-paginated wrapper
+   * (`pagination` + `data[]` + top-level `hasMore`/`nextCursor`), NOT a bare array.
+   */
+  ChatInboxPage: {
+    type: "object",
+    description:
+      "Timestamp-paginated unified inbox (before_ts/after_ts over lastMessageAt). " +
+      "Boundaries inclusive — de-dupe by roomId. Use hasMore/nextCursor to page.",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatInboxItem" },
+      },
+      hasMore: {
+        type: "boolean",
+        description: "Top-level shortcut — same value as pagination.hasMore.",
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description:
+          "Top-level shortcut — epoch-ms string; parse to integer and feed back as the same before_ts/after_ts.",
+      },
+    },
+    required: ["pagination", "data", "hasMore", "nextCursor"],
+  },
   ChatMessage: {
     type: "object",
     properties: {
@@ -5694,6 +6561,35 @@ export const openApiSchemas = {
   ChatMessageList: {
     type: "array",
     items: { $ref: "#/components/schemas/ChatMessage" },
+  },
+  /**
+   * Actual runtime shape of GET /chat/private/.../messages and
+   * GET /chat/groups/.../messages — the timestamp-paginated wrapper
+   * (`pagination` + `data[]` + top-level `hasMore`/`nextCursor`), NOT a bare array.
+   */
+  ChatMessagePage: {
+    type: "object",
+    description:
+      "Timestamp-paginated private/group messages (before_ts/after_ts over createdAt). " +
+      "Boundaries inclusive — de-dupe by message id. Use hasMore/nextCursor to page.",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatMessage" },
+      },
+      hasMore: {
+        type: "boolean",
+        description: "Top-level shortcut — same value as pagination.hasMore.",
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description:
+          "Top-level shortcut — epoch-ms string; parse to integer and feed back as the same before_ts/after_ts.",
+      },
+    },
+    required: ["pagination", "data", "hasMore", "nextCursor"],
   },
   /**
    * Canonical wire message returned by the REST private/group SEND endpoints
@@ -6286,7 +7182,88 @@ export const openApiSchemas = {
       contentType: {
         type: "string",
         description:
-          "Community message kind (UPPER-CASE on the wire): TEXT, IMAGE, VOICE, CUSTOM, LOCATION, CONTACT, STICKER.",
+          "Community message kind (UPPER-CASE on the wire): TEXT, IMAGE, VOICE, CUSTOM, LOCATION, CONTACT, STICKER, SYSTEM.",
+      },
+      systemMessageType: {
+        type: "string",
+        nullable: true,
+        enum: [
+          // Community lifecycle
+          "COMMUNITY_CREATED",
+          "COMMUNITY_NAME_UPDATED",
+          "COMMUNITY_DESCRIPTION_UPDATED",
+          "COMMUNITY_AVATAR_UPDATED",
+          "COMMUNITY_BANNER_UPDATED",
+          "COMMUNITY_UPDATED",
+          // Live streaming
+          "LIVE_STREAM_STARTED",
+          "LIVE_STREAM_ENDED",
+          // Membership / moderation (COMMUNITY-visible)
+          "ROLE_CHANGED",
+          "MEMBER_JOINED",
+          "MEMBER_LEFT",
+          "MEMBER_REMOVED",
+          "MEMBER_BANNED",
+          "MEMBER_UNBANNED",
+          "MEMBER_MUTED",
+          "MEMBER_UNMUTED",
+          // Message actions
+          "PINNED_MESSAGE",
+          "UNPINNED_MESSAGE",
+          "COMMUNITY_INVITE_CREATED",
+          // Personal (visible only to the affected user)
+          "COMMUNITY_JOINED",
+          "JOIN_REQUEST_APPROVED",
+          "JOIN_REQUEST_REJECTED",
+          "ROLE_CHANGED_SELF",
+          // Legacy alias — old persisted rows only
+          "MEMBER_ROLE_CHANGED",
+        ],
+        description:
+          "Present when contentType is SYSTEM. SYSTEM messages are SENDER-LESS " +
+          "(sentBy/senderName/senderAvatar empty) — the actor is in systemMetadata only. " +
+          "The `message` field carries the canonical English fallback text; render it directly " +
+          "or localize from systemMessageType + systemMetadata. " +
+          "Canonical fallback texts by type: " +
+          "COMMUNITY_CREATED → 'Community created'; " +
+          "COMMUNITY_NAME_UPDATED → 'Community renamed to \"{{newName}}\"' (metadata.newName); " +
+          "COMMUNITY_AVATAR_UPDATED → 'Community photo updated'; " +
+          "COMMUNITY_DESCRIPTION_UPDATED → 'Community description updated'; " +
+          "LIVE_STREAM_STARTED → 'Live stream started'; " +
+          "LIVE_STREAM_ENDED → 'Live stream ended ({{duration}})' or 'Live stream ended' when duration absent; " +
+          "ROLE_CHANGED (bystander) → '{{targetName}} is now a moderator/admin/member'; " +
+          "ROLE_CHANGED (viewer=target) → 'You are now a moderator/admin/member'; " +
+          "MEMBER_REMOVED → '{{targetName}} was removed'; MEMBER_BANNED → '{{targetName}} was banned'. " +
+          "PERSONAL types (isPersonal=true): COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF. " +
+          "Hidden in chat timeline (never returned): MEMBER_LEFT, MEMBER_JOINED. " +
+          "MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are visible to all members. " +
+          "MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED (old rows only).",
+      },
+      systemMetadata: {
+        type: "object",
+        nullable: true,
+        additionalProperties: true,
+        description:
+          "Structured payload for SYSTEM message rendering. All types share " +
+          "`actorUserId` (userId who triggered the event) and `actorName` (their display name). " +
+          "Render 'You' when actorUserId === currentUserId, otherwise use actorName. " +
+          "Per-type extra fields: " +
+          "COMMUNITY_CREATED: { communityName }. " +
+          "COMMUNITY_NAME_UPDATED: { newName } — the rename target. " +
+          "LIVE_STREAM_ENDED: { duration? } — human-readable runtime, e.g. '2 hours 15 minutes'. " +
+          "ROLE_CHANGED / MEMBER_ROLE_CHANGED: { targetUserId, targetName, oldRole, newRole }. " +
+          "MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_MUTED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
+          "PINNED_MESSAGE / UNPINNED_MESSAGE: { messageId, messagePreview }. " +
+          "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED: personal — same shape, no targetUserId. " +
+          "Null for normal messages.",
+      },
+      isPersonal: {
+        type: "boolean",
+        description:
+          "True for user-scoped SYSTEM messages (COMMUNITY_JOINED 'You joined the community', " +
+          "JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF). " +
+          "PERSONAL messages are only ever returned to the target user — other members never see them in history. " +
+          "Absent/false for normal and community-wide system messages.",
       },
       attachments: {
         type: "array",

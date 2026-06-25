@@ -806,6 +806,44 @@ describe("createNotificationImpl — navigation deep-link enrichment", () => {
     );
   });
 
+  // Test 5b: communityId in data falls through to referenceId so the client can
+  // drop the community from the sidebar (member_kicked / member_banned carry
+  // only data.communityId — no explicit entityId/referenceId).
+  it("referenceId falls back to data.communityId on notification:new", async () => {
+    const notifRepo = makeNotifRepo();
+    const deps = makeDeps({ notificationRepo: notifRepo });
+    const handler = createNotificationImpl(deps).createNotification as Handler;
+
+    await invoke(handler, {
+      userId: "user-9",
+      type: "community.member_kicked",
+      title: "Removed from community",
+      body: "You were removed from a community.",
+      data: { communityId: "comm-123", reason: "" },
+    });
+
+    const { data } = notificationNew();
+    expect(data.referenceId).toBe("comm-123");
+  });
+
+  // Test 5c: an explicit entityId/referenceId always wins over communityId.
+  it("explicit entityId wins over data.communityId for referenceId", async () => {
+    const notifRepo = makeNotifRepo();
+    const deps = makeDeps({ notificationRepo: notifRepo });
+    const handler = createNotificationImpl(deps).createNotification as Handler;
+
+    await invoke(handler, {
+      userId: "user-10",
+      type: "community.message",
+      title: "New message",
+      body: "Someone posted",
+      data: { communityId: "comm-123", entityId: "msg-456" },
+    });
+
+    const { data } = notificationNew();
+    expect(data.referenceId).toBe("msg-456");
+  });
+
   // Test 6: getNotifications returns navigation as parsed object
   it("getNotifications returns navigation as a parsed object (not a JSON string)", async () => {
     const nav = {

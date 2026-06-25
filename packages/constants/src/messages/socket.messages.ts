@@ -165,6 +165,22 @@ export const SOCKET_MESSAGES = {
     vi: "Đã bỏ ghim tin nhắn",
     en: "Message unpinned successfully",
   },
+  SOCKET_COMMUNITY_MESSAGE_READ: {
+    vi: "Đã đánh dấu tin nhắn cộng đồng là đã đọc",
+    en: "Messages marked as read",
+  },
+  SOCKET_COMMUNITY_REACTIONS_FETCHED: {
+    vi: "Lấy danh sách cảm xúc cộng đồng thành công",
+    en: "Reactions fetched successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_FORWARDED: {
+    vi: "Đã chuyển tiếp tin nhắn cộng đồng",
+    en: "Message forwarded successfully",
+  },
+  SOCKET_COMMUNITY_MESSAGE_DELIVERED: {
+    vi: "Đã đánh dấu tin nhắn cộng đồng là đã gửi",
+    en: "Message delivery receipt recorded",
+  },
 
   // ── /community — moderation ─────────────────────────────────────────────
   SOCKET_COMMUNITY_MEMBER_KICKED: {
@@ -194,6 +210,32 @@ export const SOCKET_MESSAGES = {
   SOCKET_COMMUNITY_DELETED: {
     vi: "Cộng đồng đã bị xóa",
     en: "Community deleted successfully",
+  },
+
+  // ── /stream — livestream ────────────────────────────────────────────────
+  SOCKET_STREAM_JOINED: {
+    vi: "Đã tham gia buổi phát trực tiếp",
+    en: "Joined the livestream successfully",
+  },
+  SOCKET_STREAM_LEFT: {
+    vi: "Đã rời buổi phát trực tiếp",
+    en: "Left the livestream successfully",
+  },
+  SOCKET_STREAM_COMMENT_POSTED: {
+    vi: "Đã gửi bình luận",
+    en: "Comment posted successfully",
+  },
+  SOCKET_STREAM_REACTED: {
+    vi: "Đã thêm cảm xúc",
+    en: "Reaction added successfully",
+  },
+  SOCKET_STREAM_LOAD_MORE: {
+    vi: "Đã tải thêm bình luận",
+    en: "Loaded more comments",
+  },
+  SOCKET_STREAM_COMMENT_DELETED: {
+    vi: "Đã xóa bình luận",
+    en: "Comment deleted successfully",
   },
 
   // ── /notify ─────────────────────────────────────────────────────────────

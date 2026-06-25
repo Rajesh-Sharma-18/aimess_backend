@@ -234,15 +234,7 @@ services:
     container_name: aimess-redis-node-1
     restart: unless-stopped
     command: >
-      redis-server
-      --cluster-enabled yes
-      --cluster-config-file /data/nodes.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-hostname host.docker.internal
-      --cluster-announce-port 7001
-      --cluster-announce-bus-port 17001
-      --appendonly yes
-      --bind 0.0.0.0
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7001 --cluster-announce-bus-port 17001 --appendonly yes --bind 0.0.0.0
     ports:
       - "7001:6379"
       - "17001:17001"
@@ -256,15 +248,7 @@ services:
     container_name: aimess-redis-node-2
     restart: unless-stopped
     command: >
-      redis-server
-      --cluster-enabled yes
-      --cluster-config-file /data/nodes.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-hostname host.docker.internal
-      --cluster-announce-port 7002
-      --cluster-announce-bus-port 17002
-      --appendonly yes
-      --bind 0.0.0.0
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7002 --cluster-announce-bus-port 17002 --appendonly yes --bind 0.0.0.0
     ports:
       - "7002:6379"
       - "17002:17002"
@@ -278,15 +262,7 @@ services:
     container_name: aimess-redis-node-3
     restart: unless-stopped
     command: >
-      redis-server
-      --cluster-enabled yes
-      --cluster-config-file /data/nodes.conf
-      --cluster-node-timeout 5000
-      --cluster-announce-hostname host.docker.internal
-      --cluster-announce-port 7003
-      --cluster-announce-bus-port 17003
-      --appendonly yes
-      --bind 0.0.0.0
+      redis-server --cluster-enabled yes --cluster-config-file /data/nodes.conf --cluster-node-timeout 5000 --cluster-announce-hostname host.docker.internal --cluster-announce-port 7003 --cluster-announce-bus-port 17003 --appendonly yes --bind 0.0.0.0
     ports:
       - "7003:6379"
       - "17003:17003"
@@ -330,6 +306,61 @@ services:
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
       - aimess-network
+
+  # ============================================================================
+  # SRS (OSSRS) — local media server for HLS/FLV/WebRTC (WHIP/WHEP) streaming.
+  #
+  # Ports (host):
+  #   1935  — RTMP ingest  (OBS: rtmp://10.0.127.212/live/<key>)
+  #   1985  — HTTP API + WHIP WebRTC ingest
+  #   8080  — HTTP playback (FLV + HLS + DASH)
+  #   8000/udp — WebRTC UDP (WHIP/WHEP ICE)
+  #
+  # Config: docker/srs/aimess.conf (HLS + FLV + WebRTC + http_hooks enabled).
+  # http_hooks fire to host.docker.internal:3007 — stream-service must be running
+  # on the host for PENDING→LIVE auto-transitions to work.
+  #
+  # CANDIDATE env var tells SRS which IP to advertise in WebRTC ICE candidates.
+  # Set it to your LAN IP so browsers on the same network can do WHIP/WHEP.
+  # Default falls back to host.docker.internal (works for same-machine dev).
+  # ============================================================================
+  srs:
+    image: ossrs/srs:5
+    container_name: aimess-srs
+    restart: unless-stopped
+
+    environment:
+      # ICE candidate IP advertised to WebRTC clients.
+      # Must be reachable from the browser — use your LAN IP (not host.docker.internal,
+      # which only resolves on the Windows host, not on other LAN devices).
+      CANDIDATE: ${SRS_CANDIDATE:-10.0.127.212}
+
+    ports:
+      - "1935:1935"
+      - "1985:1985"
+      - "8080:8080"
+      - "8000:8000/udp"
+
+    volumes:
+      - ./docker/srs/aimess.conf:/usr/local/srs/conf/aimess.conf:ro
+
+    command: ["./objs/srs", "-c", "conf/aimess.conf"]
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - aimess-network
+
+  # ============================================================================
+  # stream-service (Node, HTTP 3007 / gRPC 4007) is NOT containerized here.
+  # Like every other Node app (api-gateway, auth, user, community, chat, …) it
+  # runs via `pnpm dev` (Turborepo) against this infra. docker-compose stays
+  # infra-only (databases, cache, queue, object store).
+  # It owns the `stream_db` MongoDB database, receives SRS http_hooks from
+  # aimess-srs (local Docker) or ai5stream.tech (hosted), and talks to
+  # user-service/community-service over gRPC.
+  # ============================================================================
 
 # ============================================================================
 # Volumes

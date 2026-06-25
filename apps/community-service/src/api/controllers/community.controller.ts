@@ -7,12 +7,14 @@ import { communityService } from "../../services/community.service.js";
 import type {
   AddMembersInput,
   AuditLogsQuery,
+  BannedMembersQuery,
   BulkApproveJoinRequestsInput,
   BulkLeaveInput,
   BulkMarkReadInput,
   BulkMuteInput,
   BulkRejectJoinRequestsInput,
   BulkSendInviteLinkInput,
+  CloseCommunityInput,
   CommunityIdParams,
   CommunityMemberParams,
   CreateCommunityInput,
@@ -22,6 +24,7 @@ import type {
   CreateReportInput,
   DiscoverQuery,
   HandleAvailableQuery,
+  HandleParams,
   InviteIdParams,
   InviteLinkCodeParams,
   InviteLinkIdParams,
@@ -83,6 +86,24 @@ export const getCommunity = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
     const community = await communityService.getById(id, req.auth.userId);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(community, t("COMMUNITY_FETCHED", req.locale)));
+  }
+);
+
+/**
+ * `GET /communities/by-handle/:handle` — public deep-link resolver.
+ * PUBLIC communities only; private/suspended/missing → 404; banned caller → 403.
+ */
+export const resolveCommunityByHandle = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { handle } = req.params as unknown as HandleParams;
+    const community = await communityService.getByHandle(
+      handle,
+      req.auth.userId
+    );
 
     return res
       .status(HTTP_STATUS.OK)
@@ -412,6 +433,29 @@ export const listCommunityMutedMembers = asyncHandler(
   }
 );
 
+export const listCommunityBannedMembers = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const { page, limit, search, sortBy, sortOrder } =
+      req.query as unknown as BannedMembersQuery;
+
+    const result = await communityService.listBannedMembers(
+      id,
+      req.auth.userId,
+      { page, limit, search, sortBy, sortOrder }
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_BANNED_MEMBERS_FETCHED", req.locale)
+        )
+      );
+  }
+);
+
 export const warnCommunityMember = asyncHandler(
   async (req: Request, res: Response) => {
     const { id, userId } = req.params as CommunityMemberParams;
@@ -509,6 +553,39 @@ export const deleteCommunity = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(null, t("COMMUNITY_DELETED", req.locale)));
+  }
+);
+
+export const closeCommunity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    // Body fully optional — body-parser yields `{}` for empty POSTs.
+    const body = req.body as CloseCommunityInput | undefined;
+
+    await communityService.closeCommunity(
+      id,
+      req.auth.userId,
+      body?.reason ?? null
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("COMMUNITY_CLOSED", req.locale)));
+  }
+);
+
+export const reopenCommunity = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+
+    const community = await communityService.reopenCommunity(
+      id,
+      req.auth.userId
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(community, t("COMMUNITY_REOPENED", req.locale)));
   }
 );
 
@@ -693,16 +770,16 @@ export const cancelMyCommunityJoinRequest = asyncHandler(
 export const createCommunityInvite = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
-    const { inviteeId } = req.body as CreateInviteInput;
-    const result = await communityService.createInvite(
+    const { userIds } = req.body as CreateInviteInput;
+    const result = await communityService.bulkCreateInvites(
       id,
       req.auth.userId,
-      inviteeId
+      userIds
     );
 
     return res
       .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(result, t("COMMUNITY_INVITE_CREATED", req.locale)));
+      .json(new ApiResponse(result, t("COMMUNITY_INVITES_SENT", req.locale)));
   }
 );
 
@@ -774,10 +851,23 @@ export const declineCommunityInvite = asyncHandler(
 export const createCommunityReport = asyncHandler(
   async (req: Request, res: Response) => {
     const { id } = req.params as CommunityIdParams;
-    const { targetUserId, reason } = req.body as CreateReportInput;
+    const {
+      targetUserId,
+      reason,
+      reportedMessageId,
+      reportedContentType,
+      reportedContentText,
+      reportedContentPostedAt,
+      reportedContentMedia,
+    } = req.body as CreateReportInput;
     const result = await communityService.createReport(id, req.auth.userId, {
       targetUserId,
       reason,
+      reportedMessageId,
+      reportedContentType,
+      reportedContentText,
+      reportedContentPostedAt,
+      reportedContentMedia,
     });
     return res
       .status(HTTP_STATUS.CREATED)
@@ -1078,6 +1168,24 @@ export const redeemCommunityInviteLink = asyncHandler(
       .status(HTTP_STATUS.OK)
       .json(
         new ApiResponse(result, t("COMMUNITY_INVITE_LINK_REDEEMED", req.locale))
+      );
+  }
+);
+
+export const lookupCommunityInviteLink = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { code } = req.params as InviteLinkCodeParams;
+    const result = await communityService.lookupInviteLink(
+      code,
+      req.auth.userId
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_INVITE_LINK_PREVIEW_FETCHED", req.locale)
+        )
       );
   }
 );

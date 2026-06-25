@@ -11,7 +11,13 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 // Enums (reused across schemas).
 // ---------------------------------------------------------------------------
-export const livestreamStatusEnum = z.enum(["LIVE", "ENDED", "CANCELLED"]);
+// SCHEDULED maps to a stream-service PENDING stream (created, not yet live).
+export const livestreamStatusEnum = z.enum([
+  "LIVE",
+  "ENDED",
+  "SCHEDULED",
+  "CANCELLED",
+]);
 
 export const endReasonCodeEnum = z.enum([
   "POLICY_VIOLATION",
@@ -128,6 +134,21 @@ export type ListLivestreamReportsQueryInput = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// Per-stream users (community members) list query.
+// ---------------------------------------------------------------------------
+export const livestreamUserTypeEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
+
+export const listLivestreamUsersQuerySchema = z.object({
+  search: z.string().trim().min(1).optional(),
+  type: livestreamUserTypeEnum.optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type ListLivestreamUsersQueryInput = z.infer<
+  typeof listLivestreamUsersQuerySchema
+>;
+
+// ---------------------------------------------------------------------------
 // Review reports.
 // ---------------------------------------------------------------------------
 export const reviewReportsSchema = z.object({
@@ -157,3 +178,30 @@ export const bulkReviewReportsSchema = reviewReportsSchema.extend({
   reportIds: reportIdsField,
 });
 export type BulkReviewReportsInput = z.infer<typeof bulkReviewReportsSchema>;
+
+// ---------------------------------------------------------------------------
+// Thumbnail upload (two-step presign → confirm).
+// ---------------------------------------------------------------------------
+const THUMBNAIL_MIME = ["image/jpeg", "image/png", "image/webp"] as const;
+
+export const thumbnailPresignSchema = z.object({
+  contentType: z.enum(THUMBNAIL_MIME),
+  contentLength: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(5 * 1024 * 1024),
+});
+export type ThumbnailPresignInput = z.infer<typeof thumbnailPresignSchema>;
+
+export const thumbnailSaveSchema = z.object({
+  objectKey: z
+    .string()
+    .trim()
+    .min(1)
+    .max(512)
+    .refine((k) => k.startsWith("stream/thumbnail/") && !k.includes(".."), {
+      message: "objectKey must be a stream/thumbnail/ key",
+    }),
+});
+export type ThumbnailSaveInput = z.infer<typeof thumbnailSaveSchema>;

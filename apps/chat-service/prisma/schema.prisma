@@ -1,7 +1,8 @@
 // =============================================================================
 // chat-service  ·  MongoDB  ·  chat_db
 // Owns: private messaging, group messaging, community rooms,
-//       notifications, livestream comments, pins.
+//       notifications, pins.
+//       (Livestream comments are owned by stream-service.)
 // =============================================================================
 
 generator client {
@@ -84,7 +85,9 @@ model PrivateMessage {
   deliveredAt      Json      @default("{}")
 
   @@index([roomId, createdAt(sort: Desc)])
-  @@index([roomId, isDeleted, createdAt(sort: Desc)])
+  // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
+  // get a deterministic, index-backed total order with early-termination preserved.
+  @@index([roomId, isDeleted, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
@@ -185,7 +188,9 @@ model GroupMessage {
   editedAt           DateTime?
   editHistory        Json      @default("[]")
 
-  @@index([roomId, createdAt(sort: Desc)])
+  // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
+  // get a deterministic, index-backed total order with early-termination preserved.
+  @@index([roomId, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
@@ -297,6 +302,10 @@ model GeneralRoom {
   pinnedCount      Int       @default(0)
   lastPinnedAt     DateTime?
   lastSequence     Int       @default(0)
+  // PUBLIC | PRIVATE — the parent community's visibility, synced from
+  // community-service. Drives non-member read access (PUBLIC history is
+  // browsable by guests). null = unknown → treated as PRIVATE (fail-closed).
+  communityType    String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -329,6 +338,10 @@ model GeneralRoomMessage {
   editHistory        Json     @default("[]")
   systemMessageType  String?
   systemMetadata     Json?
+  // When set, this message is PERSONAL: visible ONLY to this userId (e.g. the
+  // "You joined the community" onboarding message). null = visible to everyone
+  // with room read access. Read paths filter on { $in: [null, requestingUserId] }.
+  visibleToUserId    String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -336,8 +349,21 @@ model GeneralRoomMessage {
   @@index([roomId, sentBy])
   @@index([deletedForAll])
   @@index([roomId, messageType, createdAt(sort: Desc)])
+  // Backs the (createdAt, _id) keyset history page + countTimeline. Mongo uses
+  // _id as the implicit trailing sort key, so this covers the timeline scan.
+  @@index([roomId, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
   @@index([roomId, systemMessageType, createdAt(sort: Desc)])
+  @@index([roomId, visibleToUserId, createdAt(sort: Desc)])
+  // Covering index for findByRoomIdTimeline (scroll/history): equality roomId +
+  // deletedForAll, range+sort createdAt, sequenceNumber tiebreak. Desc/Desc serves
+  // both before (desc) and after (asc, reverse scan) directions — index-backed sort
+  // with early termination instead of a full-room blocking sort.
+  @@index([roomId, deletedForAll, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
+  // Covering index for findUpdatedAtSince (incremental sync): roomId + updatedAt ASC,
+  // sequenceNumber tiebreak. Tombstones are intentionally not filtered, so deletedForAll
+  // is excluded here.
+  @@index([roomId, updatedAt(sort: Asc), sequenceNumber(sort: Asc)])
   @@map("general_room_messages")
 }
 
@@ -408,26 +434,6 @@ model Livestream {
 
   @@index([roomId])
   @@map("livestreams")
-}
-
-// -----------------------------------------------------------------------------
-// LivestreamComment
-// -----------------------------------------------------------------------------
-model LivestreamComment {
-  id              String   @id @default(auto()) @map("_id") @db.ObjectId
-  livestreamId    String
-  roomId          String
-  sentBy          String
-  senderName      String   @default("")
-  senderAvatar    String   @default("")
-  message         String
-  clientCommentId String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  @@index([livestreamId, createdAt(sort: Desc)])
-  @@index([livestreamId, sentBy, clientCommentId])
-  @@map("chat_livestream_comments")
 }
 
 // -----------------------------------------------------------------------------

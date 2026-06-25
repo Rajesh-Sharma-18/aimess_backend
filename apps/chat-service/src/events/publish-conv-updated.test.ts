@@ -92,6 +92,7 @@ describe("publishConvUpdated", () => {
 
     assert.equal(fake.pipelineCount, 1, "exactly one pipeline used");
     assert.equal(publishCalls.length, 3, "one publish per recipient");
+    console.log("publish calls 1:", publishCalls);
     assert.deepEqual(
       publishCalls.map((c) => c.channel),
       ["user:u1", "user:u2", "user:u3"]
@@ -150,6 +151,7 @@ describe("publishConvUpdated", () => {
     });
 
     assert.equal(publishCalls.length, 2);
+    console.log("publish calls 2:", publishCalls);
     assert.deepEqual(publishCalls.map((c) => c.channel).sort(), [
       "user:a",
       "user:b",
@@ -224,6 +226,7 @@ describe("publishCommunityUpdated", () => {
     });
 
     assert.equal(publishCalls.length, 3);
+    console.log("publish calls 3:", publishCalls);
     assert.deepEqual(
       publishCalls.map((c) => c.channel),
       ["user:sender", "user:m2", "user:m3"]
@@ -248,6 +251,104 @@ describe("publishCommunityUpdated", () => {
     assert.equal(memberMsg.data.unread, true);
   });
 
+  it("SYSTEM message bump strips senderId+senderName and forces unread=false", async () => {
+    // Regression: a SYSTEM lifecycle line ("John is now a moderator") is a
+    // complete sentence and must render standalone in the list — the bump must
+    // NOT carry senderId (which the client uses to show "You:") or senderName.
+    // unread must be false: system lines have no real sender to diff against.
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishCommunityUpdated({
+      redis,
+      communityId: "comm-sys",
+      roomId: "room-sys",
+      memberIds: ["m1", "m2"],
+      senderId: "actor", // actor id must be blanked on the wire
+      senderName: "Rajesh", // caller passed an actor; it must be stripped
+      lastMessageId: "sys-1",
+      lastMessageAt: 1717000001000,
+      preview: { contentType: "SYSTEM", text: "John is now a moderator" },
+    });
+
+    assert.equal(publishCalls.length, 2);
+    for (const call of publishCalls) {
+      const msg = JSON.parse(call.payload);
+      assert.equal(msg.event, "community:updated");
+      assert.equal(
+        msg.data.senderId,
+        "",
+        "SYSTEM bump must not carry a sender id"
+      );
+      assert.equal(
+        msg.data.senderName,
+        "",
+        "SYSTEM bump must not carry a sender name"
+      );
+      assert.equal(
+        msg.data.unread,
+        false,
+        "SYSTEM bump must not mark as unread"
+      );
+      // The preview text itself stays intact and standalone.
+      assert.equal(msg.data.lastMessage.text, "John is now a moderator");
+      assert.equal(msg.data.lastMessage.contentType, "SYSTEM");
+    }
+  });
+
+  it("self-referential SYSTEM line: only the subject member gets the 'You …' preview", async () => {
+    // Role change / join lines are ABOUT one member. That member's community-list
+    // bump must read "You are now a moderator"; everyone else gets the
+    // third-person "Jim is now a moderator". Per-recipient swap, single publish.
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishCommunityUpdated({
+      redis,
+      communityId: "comm-self",
+      roomId: "room-self",
+      memberIds: ["subject", "bystander"],
+      senderId: "admin",
+      senderName: "Admin",
+      lastMessageId: "sys-role-1",
+      lastMessageAt: 1717000003000,
+      preview: { contentType: "SYSTEM", text: "Jim is now a moderator" },
+      subjectUserId: "subject",
+      selfPreview: "You are now a moderator",
+    });
+
+    const subjectMsg = JSON.parse(
+      publishCalls.find((c) => c.channel === "user:subject")!.payload
+    );
+    const bystanderMsg = JSON.parse(
+      publishCalls.find((c) => c.channel === "user:bystander")!.payload
+    );
+
+    assert.equal(subjectMsg.data.lastMessage.text, "You are now a moderator");
+    assert.equal(bystanderMsg.data.lastMessage.text, "Jim is now a moderator");
+    // Sender stripping still applies to both (SYSTEM line).
+    assert.equal(subjectMsg.data.senderId, "");
+    assert.equal(bystanderMsg.data.senderId, "");
+    assert.equal(subjectMsg.data.lastMessage.contentType, "SYSTEM");
+  });
+
+  it("non-SYSTEM (lowercase 'text') preview keeps the real senderName", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishCommunityUpdated({
+      redis,
+      communityId: "comm-txt",
+      roomId: "room-txt",
+      memberIds: ["m1"],
+      senderId: "actor",
+      senderName: "Rajesh",
+      lastMessageId: "txt-1",
+      lastMessageAt: 1717000002000,
+      preview: { contentType: "text", text: "Hello" },
+    });
+
+    const msg = JSON.parse(publishCalls[0].payload);
+    assert.equal(msg.data.senderName, "Rajesh");
+  });
+
   it("de-dupes duplicate member ids", async () => {
     const { redis, publishCalls } = makeFakeRedis();
 
@@ -264,6 +365,7 @@ describe("publishCommunityUpdated", () => {
     });
 
     assert.equal(publishCalls.length, 2);
+    console.log("publish calls 4:", publishCalls);
     assert.deepEqual(publishCalls.map((c) => c.channel).sort(), [
       "user:x",
       "user:y",

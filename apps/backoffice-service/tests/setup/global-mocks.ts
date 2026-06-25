@@ -59,7 +59,21 @@ jest.mock("../../src/grpc/user.client.js", () => ({
   adminGetProfileBreaker: { fire: jest.fn() },
 }));
 jest.mock("../../src/grpc/community.client.js", () => ({
-  communityClient: {},
+  communityClient: {
+    adminGetCommunitiesByIds: jest.fn(async () => new Map()),
+    adminListCommunities: jest.fn(async () => ({ communities: [], total: 0 })),
+  },
+}));
+// stream.client runs `import.meta.url` + a live gRPC dial at import; it is now
+// pulled into the app graph by the livestream repository, so it must be mocked.
+jest.mock("../../src/grpc/stream.client.js", () => ({
+  streamClient: {
+    adminListStreams: jest.fn(async () => ({ streams: [], total: 0 })),
+    adminGetStream: jest.fn(async () => null),
+    adminForceEnd: jest.fn(async () => ({ success: true, status: "ENDED" })),
+    getStreamStats: jest.fn(async () => ({ found: false })),
+    adminUpdateThumbnail: jest.fn(async () => undefined),
+  },
 }));
 jest.mock("../../src/grpc/chat.client.js", () => ({
   chatClient: {},

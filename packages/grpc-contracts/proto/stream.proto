@@ -1,0 +1,202 @@
+syntax = "proto3";
+package stream;
+
+service StreamService {
+  // Post a livestream comment. Idempotent on (livestream_id, client_comment_id).
+  rpc PostComment (PostCommentRequest) returns (PostCommentResponse);
+  // Cursor-paginated comment history for a livestream (newest first).
+  rpc GetComments (GetCommentsRequest) returns (GetCommentsResponse);
+  // Bulk: which of the given communities currently have a LIVE stream.
+  // Backs community-service `isLive` on GET /communities/mine (fail-open).
+  rpc GetActiveStreamsByCommunityIds (GetActiveStreamsRequest) returns (GetActiveStreamsResponse);
+  // Gate a viewer joining a livestream room: ACTIVE community membership
+  // (when STREAM_REQUIRE_MEMBERSHIP) + not banned from this stream.
+  rpc CheckStreamAccess (CheckStreamAccessRequest) returns (CheckStreamAccessResponse);
+  // Fetch live stats for a single stream (backoffice dashboard enrichment).
+  rpc GetStreamStats (GetStreamStatsRequest) returns (GetStreamStatsResponse);
+  // Admin: update (or clear) the thumbnail object key for a stream.
+  rpc AdminUpdateThumbnail (AdminUpdateThumbnailRequest) returns (AdminUpdateThumbnailResponse);
+  // Admin: force-end a LIVE or PENDING stream. Idempotent — already-ended
+  // streams return success=false without error.
+  rpc AdminForceEnd (AdminForceEndRequest) returns (AdminForceEndResponse);
+  // Delete a livestream comment. Author, stream owner, and community ADMIN/MODERATOR may delete.
+  rpc DeleteComment (DeleteCommentRequest) returns (DeleteCommentResponse);
+  // Fetch the currently-LIVE streams for a single community (community detail enrichment).
+  rpc GetLiveStreamsByCommunity (GetLiveStreamsByCommunityRequest) returns (GetLiveStreamsByCommunityResponse);
+
+  // ---- Backoffice (admin panel) Livestream Management ----
+  // Source-of-truth read path for the admin Livestream Management screen.
+  // backoffice-service is the only caller; it enriches community/creator/
+  // category/avatars and resolves the raw thumbnail key on read.
+  // Offset-paginated, filtered list of streams.
+  rpc AdminListStreams (AdminListStreamsRequest) returns (AdminListStreamsResponse);
+  // Single stream detail (LIVE viewer count overlaid from Redis).
+  rpc AdminGetStream (AdminGetStreamRequest) returns (AdminGetStreamResponse);
+}
+
+// One livestream comment row, shared by PostComment + GetComments.
+message Comment {
+  string id            = 1;
+  string sent_by       = 2;  // author userId (auth-service AuthUser.id)
+  string sender_name   = 3;  // snapshot display name; "" if unknown
+  string sender_avatar = 4;  // snapshot avatar key/url; "" if none
+  string message       = 5;
+  int64  created_at    = 6;  // epoch ms
+}
+
+message PostCommentRequest {
+  string livestream_id    = 1;
+  string user_id          = 2;
+  string message          = 3;
+  string client_comment_id = 4; // "" if not provided; used for idempotency
+}
+message PostCommentResponse {
+  Comment comment = 1;
+}
+
+message GetCommentsRequest {
+  string livestream_id = 1;
+  int32  limit         = 2; // page size; 0 = server default
+  string before        = 3; // exclusive cursor — fetch older comments (id < before); "" = latest page
+  string after         = 4; // exclusive cursor — fetch newer comments (id > after); used for reconnect catch-up
+}
+message GetCommentsResponse {
+  repeated Comment comments = 1;
+  string next_cursor        = 2; // pass back as `before` (history) or `after` (catch-up) for next page
+  bool   has_more           = 3;
+}
+
+message GetActiveStreamsRequest {
+  repeated string community_ids = 1;
+}
+message GetActiveStreamsResponse {
+  repeated string live_community_ids = 1; // subset of community_ids currently LIVE
+}
+
+message CheckStreamAccessRequest {
+  string stream_id = 1;
+  string user_id   = 2;
+}
+message CheckStreamAccessResponse {
+  bool   allowed     = 1; // may the user join + view the stream?
+  bool   is_banned   = 2; // explicitly banned from this stream
+  string status      = 3; // membership status: ACTIVE|PENDING|...|OWNER|""
+  string reason      = 4; // "" | NOT_MEMBER | BANNED | STREAM_NOT_FOUND
+  bool   can_comment = 5; // reflects stream.commentStatus; false = chat disabled
+}
+
+message GetStreamStatsRequest {
+  string stream_id = 1;
+}
+message GetStreamStatsResponse {
+  bool   found          = 1; // false if stream_id not found
+  string status         = 2; // PENDING | LIVE | ENDED | CANCELLED | ""
+  int64  viewer_count   = 3; // current live viewer count (from Redis when LIVE)
+  int64  peak_viewers   = 4;
+  int64  total_views    = 5;
+  int64  total_comments = 6;
+}
+
+message AdminUpdateThumbnailRequest {
+  string stream_id  = 1;
+  string thumbnail  = 2; // MinIO object key; "" to clear the thumbnail
+}
+message AdminUpdateThumbnailResponse {
+  bool success = 1;
+}
+
+message AdminForceEndRequest {
+  string stream_id = 1;
+  string reason    = 2;
+}
+message AdminForceEndResponse {
+  bool   success = 1; // true = transitioned to ENDED; false = already ENDED/CANCELLED
+  string status  = 2; // final status string
+}
+
+message DeleteCommentRequest {
+  string comment_id   = 1;
+  string requester_id = 2;
+}
+message DeleteCommentResponse {
+  bool   success       = 1;
+  string comment_id    = 2;
+  string livestream_id = 3;
+}
+
+message LiveStreamSummary {
+  string id           = 1;
+  string title        = 2;
+  string thumbnail    = 3;  // "" if none
+  string creator_id   = 4;
+  string hls_url      = 5;  // "" if none
+  string flv_url      = 6;  // "" if none
+  string dash_url     = 7;  // "" if none
+  int64  viewer_count = 8;
+  int64  lived_at     = 9;  // epoch ms; 0 if null
+}
+
+message GetLiveStreamsByCommunityRequest {
+  string community_id = 1;
+}
+message GetLiveStreamsByCommunityResponse {
+  repeated LiveStreamSummary streams = 1;
+}
+
+// ---- Backoffice admin Livestream Management -------------------------------
+
+// One stream row for the admin screen. thumbnail is a RAW object key ("" if
+// none) — the backoffice resolves it to a presigned URL on read. All epoch
+// fields are int64 ms (0 = null).
+message AdminStreamRow {
+  string id              = 1;
+  string community_id    = 2;
+  string creator_id      = 3;
+  string title           = 4;
+  string description     = 5;
+  string thumbnail       = 6;  // raw object key; "" if none
+  string source_type     = 7;  // PHONE_CAMERA | URL | YOUTUBE
+  string status          = 8;  // PENDING | LIVE | ENDED | CANCELLED
+  string hls_url         = 9;  // "" if none
+  string flv_url         = 10; // "" if none
+  int64  viewer_count    = 11; // live count for LIVE streams, else stored
+  int64  peak_viewers    = 12;
+  int64  total_views     = 13;
+  int64  total_comments  = 14;
+  int64  duration_seconds = 15; // server-computed
+  int64  lived_at        = 16; // epoch ms; 0 if never went live
+  int64  ended_at        = 17; // epoch ms; 0 if not ended
+  int64  created_at      = 18; // epoch ms
+}
+
+message AdminListStreamsRequest {
+  string search        = 1;  // title contains (case-insensitive); "" = no filter
+  string status        = 2;  // exact status filter; "" = all
+  string community_id  = 3;  // exact community filter; "" = all
+  string creator_id    = 4;  // exact creator filter; "" = all
+  // Search-resolved ids OR-ed with `search` (community-name / creator-name match).
+  repeated string community_ids = 5;
+  repeated string creator_ids   = 6;
+  int64  date_from     = 7;  // createdAt lower bound (epoch ms, inclusive); 0 = none
+  int64  date_to       = 8;  // createdAt upper bound (epoch ms, inclusive); 0 = none
+  string sort_field    = 9;  // createdAt | viewerCount | duration; "" = createdAt
+  string sort_dir      = 10; // asc | desc; "" = desc
+  int32  page          = 11; // 1-based
+  int32  limit         = 12;
+  // AND-restrict to these communities (drives the category filter — empty = no restriction).
+  repeated string restrict_community_ids = 13;
+  // AND-restrict to these stream ids (drives the has-reports/min-reports filter — empty = no restriction).
+  repeated string restrict_stream_ids = 14;
+}
+message AdminListStreamsResponse {
+  repeated AdminStreamRow streams = 1;
+  int64 total = 2;
+}
+
+message AdminGetStreamRequest {
+  string stream_id = 1;
+}
+message AdminGetStreamResponse {
+  bool found = 1;
+  AdminStreamRow stream = 2;
+}

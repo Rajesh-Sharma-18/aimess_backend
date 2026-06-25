@@ -19,11 +19,11 @@ import {
   publishConvUpdatedSafe,
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
+import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import {
-  publishMessageSentSafe,
+  convertMessageToPreview,
   buildPushPreview,
-  buildMessagePreview,
-} from "../events/publish-message-sent.js";
+} from "../services/message-preview.service.js";
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
@@ -282,7 +282,7 @@ export function createMessagingImpl(
               lastMessageAt: bumpSentAt,
               preview: {
                 contentType: normalizeMessageType(msg.messageType),
-                text: buildMessagePreview(msg.messageType, msg.content),
+                text: convertMessageToPreview(msg.messageType, msg.content),
               },
             };
             if (conversationType === "GROUP") {
@@ -1050,7 +1050,7 @@ export function createMessagingImpl(
               lastMessageAt: message.createdAt.getTime(),
               preview: {
                 contentType: normalizeMessageType(message.messageType),
-                text: buildMessagePreview(
+                text: convertMessageToPreview(
                   message.messageType,
                   (message as unknown as Record<string, unknown>).content
                 ),
@@ -1723,7 +1723,6 @@ export function createCommunityImpl(
             // can order by latest message. Uses req.communityId (the
             // community-service Community.id), NOT roomId (chat GeneralRoom.id).
             if (req.communityId) {
-              const messageText = saved.message ?? "";
               publishCommunityActivitySafe({
                 communityId: req.communityId,
                 lastMessageAt:
@@ -1733,10 +1732,15 @@ export function createCommunityImpl(
                 lastMessageId: saved.id,
                 senderUserId: req.senderId,
                 senderUsername: senderName,
-                messagePreview:
-                  messageText.length > 80
-                    ? messageText.slice(0, 80)
-                    : messageText,
+                // Centralized preview — identical to the sibling community:updated
+                // socket preview below, so non-text messages (media/sticker/
+                // voice/document/location/contact) never persist a blank preview.
+                messagePreview: convertMessageToPreview(saved.messageType, {
+                  text: saved.message ?? "",
+                  files: parsed.files ?? [],
+                  ...(parsed.location ? { location: parsed.location } : {}),
+                  ...(parsed.contact ? { contact: parsed.contact } : {}),
+                }),
               });
             }
 
@@ -1755,7 +1759,7 @@ export function createCommunityImpl(
               lastMessageAt: sentAt,
               preview: {
                 contentType: normalizeMessageType(saved.messageType),
-                text: buildMessagePreview(saved.messageType, {
+                text: convertMessageToPreview(saved.messageType, {
                   text: saved.message ?? "",
                   files: parsed.files ?? [],
                   ...(parsed.location ? { location: parsed.location } : {}),
@@ -1829,6 +1833,11 @@ export function createCommunityImpl(
               messageId: m.id,
               roomId: m.roomId,
               senderId: m.sentBy,
+              senderName: m.senderName ?? "",
+              // senderAvatar is already resolved to a presigned URL by toWire
+              senderAvatar:
+                ((m as unknown as Record<string, unknown>)
+                  .senderAvatar as string) ?? "",
               message: m.message ?? "",
               // getMessages now returns the wire shape: `contentType` is already
               // the canonical UPPER-CASE value (§1), so no re-normalize needed.
@@ -1837,22 +1846,63 @@ export function createCommunityImpl(
                 const att = Array.isArray(m.attachments)
                   ? (m.attachments[0] as Record<string, unknown> | undefined)
                   : undefined;
-                return (att?.objectKey as string) ?? "";
+                return (att?.url as string) ?? (att?.objectKey as string) ?? "";
               })(),
+              // Full attachment array (URLs already resolved by toWire/applyUrlMapToFiles).
+              // The api-gateway uses this to build content.files for the FE.
+              attachmentsJson: Array.isArray(m.attachments)
+                ? JSON.stringify(m.attachments)
+                : "[]",
+              reactionsJson: JSON.stringify(m.reactions ?? []),
+              quoteDataJson: m.quoteData ? JSON.stringify(m.quoteData) : "",
               sentAt:
                 m.createdAt instanceof Date
                   ? m.createdAt.getTime()
                   : Date.now(),
               systemMessageType:
-                (m as Record<string, unknown>).systemMessageType ?? null,
-              systemMetadata:
-                (m as Record<string, unknown>).systemMetadata ?? null,
+                ((m as Record<string, unknown>).systemMessageType as string) ??
+                "",
+              // Proto field is a string — serialize the metadata map to JSON.
+              systemMetadata: (() => {
+                const meta = (m as Record<string, unknown>).systemMetadata;
+                return meta ? JSON.stringify(meta) : "";
+              })(),
+              isPersonal: Boolean((m as Record<string, unknown>).isPersonal),
             })),
             nextCursor,
             hasMore,
           });
         } catch (err) {
           logger.error(`gRPC getCommunityMessages error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    getCommunityMessageById: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomId: string; messageId: string };
+          const snap = await deps.communityMessageService.getModerationSnapshot(
+            {
+              roomId: req.roomId,
+              messageId: req.messageId,
+            }
+          );
+          // camelCase keys (proto-loader keepCase:false maps object_key→objectKey …).
+          callback(null, {
+            found: snap.found,
+            message: snap.message,
+            contentType: snap.contentType,
+            sentAt: snap.sentAt,
+            senderId: snap.senderId,
+            media: snap.media,
+          });
+        } catch (err) {
+          logger.error(`gRPC getCommunityMessageById error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
@@ -1888,6 +1938,14 @@ export function createCommunityImpl(
                     username: s.lastMessage.username,
                     message: s.lastMessage.message,
                     dateTime: s.lastMessage.dateTime,
+                  }
+                : undefined,
+              // Viewer-private join line ("You joined the community"); sender-less.
+              personalLastMessage: s.personalLastMessage
+                ? {
+                    username: "",
+                    message: s.personalLastMessage.message,
+                    dateTime: s.personalLastMessage.dateTime,
                   }
                 : undefined,
             })),
@@ -2303,6 +2361,131 @@ export function createCommunityImpl(
         }
       })();
     },
+
+    markCommunityMessageRead: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            communityId: string;
+            roomId: string;
+            readerId: string;
+            upToMessageId: string;
+          };
+          const result = await deps.communityMessageService.markMessageRead({
+            communityId: req.communityId,
+            roomId: req.roomId || req.communityId,
+            readerId: req.readerId,
+            upToMessageId: req.upToMessageId,
+          });
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC markCommunityMessageRead error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    getCommunityMessageReactions: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            messageId: string;
+            communityId: string;
+            requesterId: string;
+          };
+          const result = await deps.communityMessageService.getMessageReactions(
+            {
+              messageId: req.messageId,
+              communityId: req.communityId,
+              requesterId: req.requesterId,
+            }
+          );
+          callback(null, {
+            messageId: result.messageId,
+            communityId: result.communityId,
+            reactions: result.reactions.map((g) => ({
+              emoji: g.emoji,
+              count: g.count,
+              users: g.users.map((u) => ({
+                userId: u.userId,
+                displayName: u.displayName,
+                avatar: u.avatar,
+              })),
+            })),
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC getCommunityMessageReactions error: ${String(err)}`
+          );
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    forwardCommunityMessage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            sourceMessageId: string;
+            sourceCommunityId: string;
+            targetCommunityId: string;
+            targetRoomId: string;
+            senderId: string;
+            clientMessageId: string;
+          };
+          const result = await deps.communityMessageService.forwardMessage({
+            sourceMessageId: req.sourceMessageId,
+            sourceCommunityId: req.sourceCommunityId,
+            targetCommunityId: req.targetCommunityId,
+            targetRoomId: req.targetRoomId || req.targetCommunityId,
+            senderId: req.senderId,
+            clientMessageId: req.clientMessageId,
+          });
+          callback(null, result);
+        } catch (err) {
+          logger.error(`gRPC forwardCommunityMessage error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    markCommunityMessageDelivered: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            communityId: string;
+            roomId: string;
+            recipientId: string;
+            upToMessageId: string;
+          };
+          const result =
+            await deps.communityMessageService.markMessageDelivered({
+              communityId: req.communityId,
+              roomId: req.roomId || req.communityId,
+              recipientId: req.recipientId,
+              upToMessageId: req.upToMessageId,
+            });
+          callback(null, result);
+        } catch (err) {
+          logger.error(
+            `gRPC markCommunityMessageDelivered error: ${String(err)}`
+          );
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
   };
 }
 
@@ -2349,7 +2532,14 @@ export function createNotificationImpl(
           }
           // referenceId/entityId carried in data (if present) populate `entity`
           // so existing inbox queries that filter on entity.id keep working.
-          const entityId = data.entityId ?? data.referenceId ?? "";
+          // Fall back to communityId last so community notifications that carry
+          // only `data.communityId` (e.g. member_kicked / member_banned /
+          // community_deleted) still expose the id as `referenceId` on the
+          // notification:new socket DTO — the client uses it to drop the
+          // community from the sidebar without a hard refresh. Lowest priority,
+          // so an explicit entityId/referenceId always wins.
+          const entityId =
+            data.entityId ?? data.referenceId ?? data.communityId ?? "";
 
           const created = await deps.notificationRepo.create({
             userId: req.userId,

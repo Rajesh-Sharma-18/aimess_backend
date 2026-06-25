@@ -164,7 +164,14 @@ Without \`resourceId\`, media-service would have no way to know which room each 
         description: "Upload URL generated",
         content: {
           "application/json": {
-            schema: { $ref: "#/components/schemas/MediaUploadUrlResponse" },
+            schema: {
+              type: "object" as const,
+              required: ["success", "data"],
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: { $ref: "#/components/schemas/MediaUploadUrlResponse" },
+              },
+            },
           },
         },
       },
@@ -357,7 +364,14 @@ If the file has never been confirmed, this endpoint automatically runs the secur
         description: "Download URL generated",
         content: {
           "application/json": {
-            schema: { $ref: "#/components/schemas/MediaDownloadUrlResponse" },
+            schema: {
+              type: "object" as const,
+              required: ["success", "data"],
+              properties: {
+                success: { type: "boolean" as const, example: true },
+                data: { $ref: "#/components/schemas/MediaDownloadUrlResponse" },
+              },
+            },
           },
         },
       },

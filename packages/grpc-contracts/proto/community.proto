@@ -4,6 +4,10 @@ package community;
 service CommunityService {
   rpc SendCommunityMessage (SendCommunityMessageRequest) returns (SendCommunityMessageResponse);
   rpc GetCommunityMessages (GetCommunityMessagesRequest) returns (GetCommunityMessagesResponse);
+  // Fetch a single community message by id for moderation snapshotting (report
+  // cards). Scoped by room_id (=== communityId) as an IDOR guard. Returns RAW
+  // object keys — the caller resolves them to presigned URLs on read.
+  rpc GetCommunityMessageById (GetCommunityMessageByIdRequest) returns (GetCommunityMessageByIdResponse);
   // Synchronous, idempotent provisioning of a community's chat room (GeneralRoom,
   // id === communityId). community-service calls this during community creation so
   // a member's first message can never race ahead of the async community.created
@@ -15,12 +19,20 @@ service CommunityService {
   // Admin dashboard: count of active (non-soft-deleted) communities.
   rpc GetCommunityCount (GetCommunityCountRequest) returns (CommunityCount);
 
+  // Authorization gate for stream-service: is `user_id` an ACTIVE member of
+  // `community_id`, and what is their role. Backs the go-live check.
+  rpc ValidateMembership (ValidateMembershipRequest) returns (ValidateMembershipResponse);
+
   // ---- Backoffice (admin panel) Community Management ----
   // Read-through queries for the admin Community Management screen + the
   // close/reopen moderation command. backoffice-service is the only caller.
   rpc AdminListCommunities (AdminListCommunitiesRequest) returns (AdminListCommunitiesResponse);
   rpc AdminGetCommunity (AdminGetCommunityRequest) returns (AdminCommunityDetail);
   rpc AdminListCommunityMembers (AdminListCommunityMembersRequest) returns (AdminListCommunityMembersResponse);
+  // Batch enrichment: fetch name + avatar + category + memberCount for a set of
+  // community ids. Backs the backoffice Livestream Management list/detail join
+  // (one round-trip per page). avatar_url is already presigned.
+  rpc AdminGetCommunitiesByIds (AdminGetCommunitiesByIdsRequest) returns (AdminGetCommunitiesByIdsResponse);
   // Reverse lookup for the admin User Management detail screen: the communities a
   // given user is an ACTIVE member of. Searchable by community name/id, sortable.
   rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
@@ -38,6 +50,16 @@ service CommunityService {
   // message id. Used on reconnect to fill the gap without re-fetching history.
   rpc CommunityCatchup (CommunityCatchupRequest) returns (CommunityCatchupResponse);
 
+  // Lightweight membership oracle for the gateway socket layer: lets the
+  // /community namespace reject a BANNED (or non-member) user at community:join
+  // before they enter the broadcast room. Read-only, single-row lookup.
+  rpc CheckCommunityMembership (CheckCommunityMembershipRequest) returns (CheckCommunityMembershipResponse);
+
+  // Moderation-mute oracle for notifications-service: lets the notification
+  // eligibility gate suppress community-action notifications from a member who
+  // has been muted by a moderator. Read-only, single-row lookup; never throws.
+  rpc CheckCommunityMute (CheckCommunityMuteRequest) returns (CheckCommunityMuteResponse);
+
   // Toggle reaction on a community message (add if absent, remove if present).
   rpc ReactToCommunityMessage (ReactToCommunityMessageRequest) returns (ReactToCommunityMessageResponse);
 
@@ -54,6 +76,18 @@ service CommunityService {
   rpc ChangeMemberRole  (ChangeMemberRoleRequest)   returns (ModerationActionResponse);
   rpc CreateReport      (CreateReportRequest)       returns (CreateReportResponse);
   rpc DeleteCommunity   (DeleteCommunityRequest)    returns (ModerationActionResponse);
+
+  // ---- Per-message read receipt (fine-grained, single room) ----
+  rpc MarkCommunityMessageRead (MarkCommunityMessageReadRequest) returns (MarkCommunityMessageReadResponse);
+
+  // ---- Full reaction user list for a message ----
+  rpc GetCommunityMessageReactions (GetCommunityMessageReactionsRequest) returns (GetCommunityMessageReactionsResponse);
+
+  // ---- Forward a community message to another community room ----
+  rpc ForwardCommunityMessage (ForwardCommunityMessageRequest) returns (ForwardCommunityMessageResponse);
+
+  // ---- Delivery receipt (client emits on receiving message:new) ----
+  rpc MarkCommunityMessageDelivered (MarkCommunityMessageDeliveredRequest) returns (MarkCommunityMessageDeliveredResponse);
 }
 
 // ---- Bulk mark-as-read ----
@@ -80,6 +114,13 @@ message CommunityChatSummary {
   int32  unreadMessageCount = 2;
   bool   hasLastMessage     = 3; // false => lastMessageActivity is null
   CommunityChatLastMessage lastMessage = 4;
+  // Viewer-private SYSTEM line (e.g. "You joined the community"): the latest
+  // message visible ONLY to the requesting user (GeneralRoomMessage.visibleToUserId
+  // == userId). community-service overlays this onto the per-viewer
+  // /communities/mine lastActivity when it is newer than the community-wide
+  // activity, so the joiner sees "You joined the community" while everyone else
+  // keeps the community-wide message. Absent when the viewer has no personal line.
+  CommunityChatLastMessage personalLastMessage = 5;
 }
 message GetCommunityChatSummariesResponse {
   repeated CommunityChatSummary summaries = 1;
@@ -200,6 +241,23 @@ message AdminListCommunityMembersResponse {
   int64 total = 2;
 }
 
+// ---- Backoffice batch community enrichment (Livestream Management) ----
+message AdminGetCommunitiesByIdsRequest {
+  repeated string community_ids = 1;
+}
+message AdminCommunityBrief {
+  string community_id  = 1;
+  string name          = 2;
+  string avatar_url    = 3; // presigned ("" if none)
+  string category_id   = 4;
+  string category_name = 5;
+  string category_slug = 6;
+  int64  member_count  = 7;
+}
+message AdminGetCommunitiesByIdsResponse {
+  repeated AdminCommunityBrief communities = 1;
+}
+
 // ---- Backoffice User → Communities reverse lookup ----
 // The "Communities" grid on the admin User Management detail screen: the
 // communities the given user is an ACTIVE member of. Driving filter is the
@@ -250,6 +308,17 @@ message CommunityCount {
   int64 total = 1;
 }
 
+// ---- Membership validation (stream-service go-live gate) ----
+message ValidateMembershipRequest {
+  string community_id = 1;
+  string user_id      = 2;
+}
+message ValidateMembershipResponse {
+  bool   is_member = 1;  // true only when an ACTIVE member
+  string role      = 2;  // ADMIN | MODERATOR | MEMBER | "" when not a member
+  string status    = 3;  // ACTIVE | PENDING | BANNED | LEFT | "" when no row
+}
+
 message SendCommunityMessageRequest {
   string community_id      = 1;
   string room_id           = 2;
@@ -280,13 +349,36 @@ message GetCommunityMessagesResponse {
   bool                         has_more   = 3;
 }
 message CommunityMessageDto {
-  string message_id   = 1;
-  string room_id      = 2;
-  string sender_id    = 3;
-  string message      = 4;
-  string content_type = 5;
-  string media_key    = 6;
-  int64  sent_at      = 7;
+  string message_id          = 1;
+  string room_id             = 2;
+  string sender_id           = 3;
+  string message             = 4;
+  string content_type        = 5;
+  string media_key           = 6;
+  int64  sent_at             = 7;
+  string system_message_type = 8;  // e.g. COMMUNITY_JOINED (empty for normal messages)
+  string system_metadata     = 9;  // JSON string of the system metadata map
+  bool   is_personal         = 10; // true = user-scoped SYSTEM message ("You joined")
+}
+
+// ---- Single message fetch for moderation report snapshots ----
+message GetCommunityMessageByIdRequest {
+  string room_id    = 1; // === communityId; IDOR scope
+  string message_id = 2;
+}
+message ReportedMediaDto {
+  string object_key   = 1; // RAW object key (resolve to presigned on read)
+  string content_type = 2; // MIME, e.g. image/jpeg ("" if unknown)
+  string file_name    = 3; // "" if unknown
+  int64  size         = 4; // bytes; 0 if unknown
+}
+message GetCommunityMessageByIdResponse {
+  bool   found        = 1; // false → missing / wrong room / deleted-for-all
+  string message      = 2; // text / caption
+  string content_type = 3; // canonical UPPER kind: TEXT | IMAGE | VIDEO | ...
+  int64  sent_at      = 4; // epoch ms — when the content was posted
+  string sender_id    = 5;
+  repeated ReportedMediaDto media = 6;
 }
 
 // ---- Reconciliation (ListCommunities) ----
@@ -307,6 +399,7 @@ message ReconcileCommunityDto {
   string avatar_url = 4;
   bool   deleted    = 5; // deletedAt is set (soft-deleted)
   repeated ReconcileMemberDto members = 6;
+  string community_type = 7; // PUBLIC | PRIVATE — drives non-member read access
 }
 message ListCommunitiesResponse {
   repeated ReconcileCommunityDto communities = 1;
@@ -359,6 +452,27 @@ message CommunityCatchupResponse {
   // Feed back as the next since_ts to continue paging. Zero in since_id mode.
   int64  next_ts                             = 6;
 }
+
+// ---- Membership check (gateway socket ban gate) ----
+message CheckCommunityMembershipRequest {
+  string community_id = 1;
+  string user_id      = 2;
+}
+message CheckCommunityMembershipResponse {
+  // True only when the user has an ACTIVE membership row.
+  bool   is_member = 1;
+  // True when the user has a BANNED membership row (mutually exclusive with
+  // is_member). Lets the gateway distinguish "banned" from "not a member".
+  bool   is_banned = 2;
+  // Raw membership status: ACTIVE | BANNED | LEFT | PENDING | "" (no row).
+  string status    = 3;
+  // ACTIVE member's role (ADMIN|MODERATOR|MEMBER); empty when not a member.
+  string role      = 4;
+}
+
+// ---- Moderation-mute check (notifications eligibility gate) ----
+message CheckCommunityMuteRequest  { string community_id = 1; string user_id = 2; }
+message CheckCommunityMuteResponse { bool is_muted = 1; int64 muted_until = 2; } // epoch ms; 0 = indefinite or not muted
 
 // ---- Community message reaction (toggle: add if absent, remove if present) ----
 message ReactToCommunityMessageRequest {
@@ -488,6 +602,59 @@ message DeleteCommunityRequest {
   string community_id = 1;
   string actor_id     = 2; // must be admin
   string reason       = 3; // "" if not provided
+}
+
+// ---- Mark community message read (per-message, fine-grained) ----
+message MarkCommunityMessageReadRequest {
+  string community_id      = 1;
+  string room_id           = 2;
+  string reader_id         = 3;
+  string up_to_message_id  = 4;
+}
+message MarkCommunityMessageReadResponse {
+  bool   ok           = 1;
+  string community_id = 2;
+  int64  read_at      = 3; // epoch ms
+}
+
+// ---- Get full reaction user list for a message ----
+message GetCommunityMessageReactionsRequest {
+  string message_id    = 1;
+  string community_id  = 2;
+  string requester_id  = 3;
+}
+message GetCommunityMessageReactionsResponse {
+  string message_id   = 1;
+  string community_id = 2;
+  repeated CommunityReactionGroupDto reactions = 3;
+}
+
+// ---- Forward a community message ----
+message ForwardCommunityMessageRequest {
+  string source_message_id   = 1;
+  string source_community_id = 2;
+  string target_community_id = 3;
+  string target_room_id      = 4;
+  string sender_id           = 5;
+  string client_message_id   = 6;
+}
+message ForwardCommunityMessageResponse {
+  string message_id = 1;
+  string room_id    = 2;
+  int64  sent_at    = 3; // epoch ms
+}
+
+// ---- Delivery receipt ----
+message MarkCommunityMessageDeliveredRequest {
+  string community_id      = 1;
+  string room_id           = 2;
+  string recipient_id      = 3;
+  string up_to_message_id  = 4;
+}
+message MarkCommunityMessageDeliveredResponse {
+  bool   ok           = 1;
+  string community_id = 2;
+  int64  delivered_at = 3; // epoch ms
 }
 
 // ---- Unpin ----

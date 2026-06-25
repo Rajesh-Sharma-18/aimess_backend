@@ -113,6 +113,14 @@ interface PublishCommunityUpdatedParams {
   /** epoch ms */
   lastMessageAt: number;
   preview: BumpPreview;
+  /**
+   * Self-referential SYSTEM line personalization. When set, the single member
+   * whose id === `subjectUserId` receives `selfPreview` ("You are now a
+   * moderator" / "You joined the community") in place of `preview.text`, while
+   * every other member receives the third-person `preview` unchanged.
+   */
+  subjectUserId?: string;
+  selfPreview?: string;
 }
 
 export async function publishCommunityUpdated(
@@ -121,9 +129,24 @@ export async function publishCommunityUpdated(
   const memberIds = [...new Set(p.memberIds)];
   if (memberIds.length === 0) return;
 
+  // SYSTEM activity (lifecycle lines such as "John is now a moderator") is
+  // sender-less: the preview is a complete sentence. Force both senderId and
+  // senderName empty so the frontend never prefixes with "You:" or an actor
+  // name, and force unread=false (system lines carry no real sender to diff).
+  const isSystem =
+    String(p.preview.contentType ?? "").toUpperCase() === "SYSTEM";
+  const senderId = isSystem ? "" : p.senderId;
+  const senderName = isSystem ? "" : p.senderName;
+
   try {
     const pipeline = p.redis.pipeline();
     for (const memberId of memberIds) {
+      // Self-referential system line: the subject member sees "You …"; everyone
+      // else gets the third-person preview as-is.
+      const lastMessage =
+        p.selfPreview && p.subjectUserId && memberId === p.subjectUserId
+          ? { ...p.preview, text: p.selfPreview }
+          : p.preview;
       pipeline.publish(
         `user:${memberId}`,
         JSON.stringify({
@@ -132,11 +155,11 @@ export async function publishCommunityUpdated(
             communityId: p.communityId,
             roomId: p.roomId,
             lastMessageId: p.lastMessageId,
-            lastMessage: p.preview,
+            lastMessage,
             lastMessageAt: p.lastMessageAt,
-            senderId: p.senderId,
-            senderName: p.senderName,
-            unread: memberId !== p.senderId,
+            senderId,
+            senderName,
+            unread: isSystem ? false : memberId !== p.senderId,
           },
         })
       );
@@ -175,6 +198,8 @@ export function publishCommunityUpdatedSafe(
       lastMessageId: p.lastMessageId,
       lastMessageAt: p.lastMessageAt,
       preview: p.preview,
+      subjectUserId: p.subjectUserId,
+      selfPreview: p.selfPreview,
     });
   })().catch((error) => {
     logger.warn(

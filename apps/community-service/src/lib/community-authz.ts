@@ -40,3 +40,21 @@ export function assertCommunityRole(
     throw new ForbiddenError("COMMUNITY_FORBIDDEN");
   }
 }
+
+/**
+ * Assert the caller is not BANNED from the community. Single source of truth for
+ * the ban gate across access / join / invite / view paths, so the BANNED check
+ * is no longer hand-rolled at each call site.
+ *
+ * Pass the caller's membership row (or null when they have none). Throws
+ * `ForbiddenError("COMMUNITY_JOIN_BANNED")` only when the row exists AND is
+ * BANNED; a missing row (non-member) or any non-banned status passes — callers
+ * that additionally require ACTIVE membership should use `assertCommunityRole`.
+ */
+export function assertNotBanned(
+  membership: { status: CommunityMemberStatus } | null
+): void {
+  if (membership?.status === CommunityMemberStatus.BANNED) {
+    throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+  }
+}

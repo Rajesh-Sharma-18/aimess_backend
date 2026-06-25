@@ -1,0 +1,174 @@
+/**
+ * Suite: community-self-preview
+ *
+ * Pins the per-viewer personalization of the `GET /communities/mine` list
+ * preview for self-referential SYSTEM lines (role change / join):
+ *   - the viewer who IS the subject sees the first-person "You …" line;
+ *   - every other member sees the third-person line;
+ *   - non-self lines (a normal message, a community-wide system line with no
+ *     stored selfPreview) are returned verbatim to everyone.
+ *
+ * Regression target: Jim demoted himself-or-was-demoted and the community list
+ * showed "Jim Methews is now a member" to Jim instead of "You are now a member".
+ *
+ * Pure unit test of the exported `selectListPreview` helper — the single source
+ * of truth `listMine` calls; no repository / cache surface needed.
+ */
+
+import {
+  selectListPreview,
+  applyPersonalLastActivityOverlay,
+} from "../../src/services/community.service.js";
+
+const SUBJECT = "11111111-1111-4111-8111-111111111111";
+const OTHER = "22222222-2222-4222-8222-222222222222";
+
+describe("selectListPreview", () => {
+  it("gives the subject the first-person 'You …' preview", () => {
+    const row = {
+      lastActivityPreview: "Jim is now a moderator",
+      lastActivitySelfPreview: "You are now a moderator",
+      lastActivityUserId: SUBJECT,
+    };
+    expect(selectListPreview(row, SUBJECT)).toBe("You are now a moderator");
+  });
+
+  it("gives every other member the third-person preview", () => {
+    const row = {
+      lastActivityPreview: "Jim is now a moderator",
+      lastActivitySelfPreview: "You are now a moderator",
+      lastActivityUserId: SUBJECT,
+    };
+    expect(selectListPreview(row, OTHER)).toBe("Jim is now a moderator");
+  });
+
+  it("hides join activity from every member except the joiner", () => {
+    const row = {
+      lastActivityType: "join",
+      lastActivityPreview: "Jim joined the community",
+      lastActivitySelfPreview: "You joined the community",
+      lastActivityUserId: SUBJECT,
+    };
+    expect(selectListPreview(row, SUBJECT)).toBe("You joined the community");
+    expect(selectListPreview(row, OTHER)).toBeNull();
+  });
+
+  it("works for the join line too (subject sees 'You joined the community')", () => {
+    const row = {
+      lastActivityType: "join",
+      lastActivityPreview: "Jim joined the community",
+      lastActivitySelfPreview: "You joined the community",
+      lastActivityUserId: SUBJECT,
+    };
+    expect(selectListPreview(row, SUBJECT)).toBe("You joined the community");
+    expect(selectListPreview(row, OTHER)).toBeNull();
+  });
+
+  it("backfills old join rows that do not have a stored self preview", () => {
+    const row = {
+      lastActivityType: "join",
+      lastActivityPreview: "Jim joined the community",
+      lastActivitySelfPreview: null,
+      lastActivityUserId: SUBJECT,
+    };
+    expect(selectListPreview(row, SUBJECT)).toBe("You joined the community");
+    expect(selectListPreview(row, OTHER)).toBeNull();
+  });
+
+  it("returns the third-person preview when there is no selfPreview (community-wide line)", () => {
+    const row = {
+      lastActivityPreview: "Community photo updated",
+      lastActivitySelfPreview: null,
+      lastActivityUserId: SUBJECT,
+    };
+    // Even the matching viewer gets the shared line — nothing to personalize.
+    expect(selectListPreview(row, SUBJECT)).toBe("Community photo updated");
+  });
+
+  it("does NOT leak the self preview when the subject id does not match the viewer", () => {
+    const row = {
+      lastActivityPreview: "Jim is now a moderator",
+      lastActivitySelfPreview: "You are now a moderator",
+      lastActivityUserId: SUBJECT,
+    };
+    // A stale/blank viewer id must never see another member's "You …" line.
+    expect(selectListPreview(row, "")).toBe("Jim is now a moderator");
+  });
+
+  it("returns null when there is no stored preview at all", () => {
+    expect(
+      selectListPreview(
+        {
+          lastActivityPreview: null,
+          lastActivitySelfPreview: null,
+          lastActivityUserId: null,
+        },
+        SUBJECT
+      )
+    ).toBeNull();
+  });
+});
+
+/**
+ * Suite: applyPersonalLastActivityOverlay
+ *
+ * Pins the per-viewer PERSONAL overlay that gives the joiner "You joined the
+ * community" as their /communities/mine lastActivity while everyone else keeps
+ * the community-wide message — the single source of truth `listMine` calls.
+ *
+ * Scenario (from the spec):
+ *   10:00  Community photo updated   (community-wide)
+ *   10:05  You joined the community  (PERSONAL → joiner only)
+ *   joiner → "You joined the community" (@10:05);  others → "Community photo updated" (@10:00)
+ */
+describe("applyPersonalLastActivityOverlay", () => {
+  const PHOTO_AT = 1_700_000_000_000; // 10:00 community-wide
+  const JOIN_AT = PHOTO_AT + 5 * 60_000; // 10:05 personal
+
+  const communityWide = {
+    lastActivity: {
+      type: "system" as const,
+      userId: null,
+      username: null,
+      preview: "Community photo updated",
+      dateTime: PHOTO_AT,
+    },
+    lastActivityAt: PHOTO_AT,
+  };
+
+  it("overlays the joiner's 'You joined the community' line when it is newer (Test 3 — joiner)", () => {
+    const out = applyPersonalLastActivityOverlay(communityWide, {
+      message: "You joined the community",
+      dateTime: JOIN_AT,
+    });
+    expect(out.lastActivity.preview).toBe("You joined the community");
+    expect(out.lastActivity.type).toBe("system");
+    expect(out.lastActivity.username).toBeNull();
+    expect(out.lastActivityAt).toBe(JOIN_AT);
+  });
+
+  it("leaves the community-wide activity untouched for other members (Test 3 — admin/mod/member)", () => {
+    // Admin / moderator / member receive NO personal line → base is returned.
+    const out = applyPersonalLastActivityOverlay(communityWide, undefined);
+    expect(out).toBe(communityWide);
+    expect(out.lastActivity.preview).toBe("Community photo updated");
+    expect(out.lastActivityAt).toBe(PHOTO_AT);
+  });
+
+  it("does NOT overlay a personal line that is older than the community-wide activity", () => {
+    const out = applyPersonalLastActivityOverlay(communityWide, {
+      message: "You joined the community",
+      dateTime: PHOTO_AT - 1,
+    });
+    expect(out.lastActivity.preview).toBe("Community photo updated");
+    expect(out.lastActivityAt).toBe(PHOTO_AT);
+  });
+
+  it("ignores an empty personal message", () => {
+    const out = applyPersonalLastActivityOverlay(communityWide, {
+      message: "",
+      dateTime: JOIN_AT,
+    });
+    expect(out).toBe(communityWide);
+  });
+});

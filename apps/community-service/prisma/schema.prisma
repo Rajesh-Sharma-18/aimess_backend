@@ -69,6 +69,11 @@ model Community {
   lastActivityPreview  String?
   lastActivityUsername String?
   lastActivityUserId   String?
+  // First-person ("You …") variant of lastActivityPreview for self-referential
+  // SYSTEM lines (role change / join). When the viewer's id === lastActivityUserId
+  // the list renders this instead of the third-person preview. Opaque string —
+  // rendered by chat-service (single template source), never composed here.
+  lastActivitySelfPreview String?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   // Admin moderation state. DISTINCT from `deletedAt`: moderationStatus is an
@@ -79,6 +84,15 @@ model Community {
   closedAt         DateTime? // when an admin suspended/closed the community
   closedReasonCode String? // CloseReasonCode from backoffice-service
   closedByAdminId  String? // backoffice AdminUser.id who closed it
+  // Owner-controlled lifecycle status — DISTINCT from `moderationStatus` (platform
+  // SUSPENDED) and `deletedAt` (permanent soft-delete). CLOSED is a reversible
+  // "owner closed this community" state: all members are auto-removed and the
+  // community is read-only until the owner reopens it. Absent ⇒ ACTIVE
+  // (backward-compat for legacy rows; backfilled by db:backfill:status).
+  status            CommunityStatus @default(ACTIVE)
+  statusClosedAt    DateTime? // when the owner CLOSED it (status axis)
+  statusClosedBy    String? // community AuthUser.id (admin/owner) who closed it
+  statusClosedReason String? // optional free-text reason supplied by the owner
   deletedAt   DateTime?
   members     CommunityMember[]
 
@@ -86,6 +100,7 @@ model Community {
   @@index([creatorId])
   @@index([lastActivityAt])
   @@index([moderationStatus, createdAt])
+  @@index([status, createdAt])
   // Backs the admin list's category-name sort (orderBy categoryName, _id tiebreak).
   @@index([categoryName])
   // Backs the admin user→communities list's name sort (orderBy name, _id tiebreak).
@@ -119,6 +134,10 @@ model CommunityMember {
   // Backs the admin member list's username sort (orderBy snapshotUsername within a
   // community); the exclusion + role/search filter is covered by [communityId, status].
   @@index([communityId, status, snapshotUsername])
+  // Banned-members list: default sort is bannedAt within [communityId, status=BANNED];
+  // the displayName index backs the alphabetical displayName sort option.
+  @@index([communityId, status, bannedAt])
+  @@index([communityId, status, snapshotDisplayName])
   @@map("community_members")
 }
 
@@ -194,6 +213,18 @@ model CommunityReport {
   reviewedBy   String?
   reviewedAt   DateTime?
   resolution   String?
+
+  // --- Reported-content snapshot (optional; all null for user-level reports) ---
+  // Captured by the client at report time so the moderator card survives a later
+  // edit/delete of the original message and avoids a cross-service read.
+  // `reportedContentMedia` stores RAW object keys only — resolved to presigned
+  // URLs on read (never persist a resolved URL).
+  reportedMessageId       String?
+  reportedContentType     String? // CONTENT_TYPES (UPPER): TEXT, IMAGE, VIDEO, ...
+  reportedContentText     String? // text / caption snapshot
+  reportedContentMedia    Json? // [{ objectKey, contentType?, fileName?, size? }]
+  reportedContentPostedAt DateTime? // when the reported content was originally posted
+
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
 
@@ -310,6 +341,15 @@ enum CommunityType {
 enum CommunityModerationStatus {
   ACTIVE
   SUSPENDED
+}
+
+// Owner-controlled community lifecycle status. CLOSED is a reversible
+// "owner closed this community" state (all members auto-removed, read-only)
+// — distinct from platform moderation (`moderationStatus=SUSPENDED`) and from
+// permanent deletion (`deletedAt`). Absent on legacy rows ⇒ treat as ACTIVE.
+enum CommunityStatus {
+  ACTIVE
+  CLOSED
 }
 
 enum CommunityMemberRole {

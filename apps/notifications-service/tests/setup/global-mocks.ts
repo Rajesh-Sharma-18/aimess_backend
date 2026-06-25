@@ -50,6 +50,23 @@ jest.mock("../../src/grpc/chat-notification.client.js", () => ({
     createNotification: jest.fn(),
   })),
 }));
+// community.client.js uses import.meta.url at module load (proto path) which the
+// CJS-mode Jest cannot evaluate — stub the seam. Default is fail-open (not muted)
+// so suppression specs must explicitly re-mock to assert the muted path.
+jest.mock("../../src/grpc/community.client.js", () => ({
+  createCommunityClient: jest.fn(() => ({
+    checkCommunityMute: jest.fn(async () => ({
+      isMuted: false,
+      mutedUntil: 0,
+    })),
+  })),
+  communityClient: {
+    checkCommunityMute: jest.fn(async () => ({
+      isMuted: false,
+      mutedUntil: 0,
+    })),
+  },
+}));
 
 // --- Firebase Admin (pulls native/ESM firebase-admin at import) --------------
 //     Mocking the thin wrapper keeps the real SDK out of the CJS require graph.

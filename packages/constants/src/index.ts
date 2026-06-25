@@ -6,3 +6,5 @@ export * from "./media/content-type.js";
 export * from "./messages/index.js";
 export * from "./webrtc.js";
 export * from "./community/system-message.js";
+export * from "./community/system-message-text.js";
+export * from "./chat/group-system-message-text.js";

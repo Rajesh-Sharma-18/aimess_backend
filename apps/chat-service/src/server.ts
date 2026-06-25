@@ -44,6 +44,7 @@ import { CommunityPinService } from "./services/community-pin.service.js";
 import { NotificationService } from "./services/notification.service.js";
 import { CommunityRoomService } from "./services/community-room.service.js";
 import { CommunityMessageService } from "./services/community-message.service.js";
+import { CommunitySystemMessageService } from "./services/community-system-message.service.js";
 import { ChatMessageOrchestrator } from "./services/chat-message-orchestrator.js";
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
 import { AdminGroupService } from "./services/admin-group.service.js";
@@ -248,6 +249,25 @@ const startServer = async () => {
       }
     }
 
+    // Backs the community history (createdAt, _id) keyset page + countTimeline.
+    // Declared on the schema too; created here so existing deployments pick it up
+    // without a `prisma db push`. _id is the implicit trailing sort key in Mongo.
+    try {
+      await ensureIndex(
+        "general_room_messages",
+        {
+          key: { roomId: 1, createdAt: -1 },
+          name: "general_room_messages_room_createdAt_idx",
+        },
+        "general_room_messages_room_createdAt_idx"
+      );
+    } catch (err) {
+      logger.warn(
+        "Failed to create general_room_messages timeline index — continuing"
+      );
+      logger.warn(err);
+    }
+
     await connectChatRedis();
 
     // Initialize event consumers (RabbitMQ-based eventual consistency)
@@ -371,19 +391,32 @@ const startServer = async () => {
       cacheRepo
     );
 
+    const communitySystemMessageService = new CommunitySystemMessageService(
+      generalRoomMessageRepo,
+      generalRoomRepo,
+      cacheRepo,
+      userSnapshotService,
+      redis,
+      // Drives the real-time `community:updated` list bump for COMMUNITY-visible
+      // system lines posted via the pin/unpin REST + socket paths.
+      roomMemberRepo
+    );
+
     const communityMessageService = new CommunityMessageService(
       generalRoomMessageRepo,
       generalRoomRepo,
       roomMemberRepo,
       cacheRepo,
-      userSnapshotService
+      userSnapshotService,
+      communitySystemMessageService
     );
 
     const communityPinService = new CommunityPinService(
       communityMessagePinRepo,
       generalRoomMessageRepo,
       generalRoomRepo,
-      roomMemberRepo
+      roomMemberRepo,
+      communitySystemMessageService
     );
 
     const webRtcConfigService = new WebRtcConfigService();

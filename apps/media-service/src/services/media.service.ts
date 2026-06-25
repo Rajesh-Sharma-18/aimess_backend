@@ -23,6 +23,7 @@ import {
 import {
   UPLOAD_CATEGORIES,
   dispositionForKey,
+  resolveCategoryFromObjectKey,
   type MediaCategoryKey,
 } from "../config/uploads.js";
 import { env } from "../config/env.js";
@@ -317,7 +318,14 @@ export const mediaService = {
   async generateDownloadUrl(
     params: GenerateDownloadUrlParams
   ): Promise<GenerateDownloadUrlResult> {
-    const def = UPLOAD_CATEGORIES[params.category];
+    // The objectKey is the ground truth for where the file physically lives
+    // (bucket + keyPrefix). Trust the key's own prefix over the client-supplied
+    // category when they disagree (e.g. a `community-chat-uploads/…` key sent
+    // with `category: "CHAT_ATTACHMENT"`) — otherwise the wrong keyPrefix makes
+    // toMediaObject fail to resolve the key and return an all-null MediaObject.
+    const effectiveCategory =
+      resolveCategoryFromObjectKey(params.objectKey) ?? params.category;
+    const def = UPLOAD_CATEGORIES[effectiveCategory];
     if (!def) {
       throw new BadRequestError("MEDIA_UNKNOWN_CATEGORY");
     }
@@ -329,7 +337,7 @@ export const mediaService = {
     // prefix/owner checks.
     await authorizeMediaAccess({
       objectKey: params.objectKey,
-      category: params.category,
+      category: effectiveCategory,
       requesterId: params.requesterId,
     });
 
@@ -351,11 +359,19 @@ export const mediaService = {
       }
       const contentType = head.contentType ?? "application/octet-stream";
 
+      // Extract the real ownerId from the objectKey path ({prefix}/{ownerId}/…)
+      // so the ownership check inside confirmUpload passes even when the caller
+      // is not the uploader. Authorization has already been enforced above by
+      // authorizeMediaAccess, so this bypass is safe.
+      const ownerIdFromKey =
+        params.objectKey.slice(def.keyPrefix.length + 1).split("/")[0] ||
+        params.requesterId;
+
       const confirmResult = await this.confirmUpload({
         objectKey: params.objectKey,
-        category: params.category,
+        category: effectiveCategory,
         contentType,
-        requesterId: params.requesterId,
+        requesterId: ownerIdFromKey,
       });
       scanStatus = confirmResult.scanStatus;
     }
@@ -407,13 +423,17 @@ export const mediaService = {
   async getScanStatus(
     params: GetScanStatusParams
   ): Promise<GetScanStatusResult> {
-    const def = UPLOAD_CATEGORIES[params.category];
+    // Trust the objectKey's own prefix over a mismatched client category
+    // (mirrors generateDownloadUrl) so authz uses the right resolution.
+    const effectiveCategory =
+      resolveCategoryFromObjectKey(params.objectKey) ?? params.category;
+    const def = UPLOAD_CATEGORIES[effectiveCategory];
     if (!def) throw new BadRequestError("MEDIA_UNKNOWN_CATEGORY");
 
     // Authz mirrors generateDownloadUrl (resource-driven, registry-bound).
     await authorizeMediaAccess({
       objectKey: params.objectKey,
-      category: params.category,
+      category: effectiveCategory,
       requesterId: params.requesterId,
     });
 

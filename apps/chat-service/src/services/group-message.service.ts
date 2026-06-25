@@ -11,6 +11,7 @@ import {
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import { personalizeGroupSystemMessageForViewer } from "@aimess/constants";
 import {
   normalizeMessageType,
   buildCanonicalQuote,
@@ -232,28 +233,44 @@ export class GroupMessageService {
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** Keyset tiebreaker parsed from a compound before_ts/after_ts ("<ms>_<id>"). */
+    boundaryId?: string | null;
+    /** True for the first page (no cursor) so the boundary message is included. */
+    inclusive?: boolean;
     limit: number;
   }): Promise<{
     items: GroupMessage[];
     hasMore: boolean;
     nextCursor: string | null;
+    total: number;
   }> {
     await assertGroupMember(this.memberRepo, params.roomId, params.userId);
-    const rows = await this.messageRepo.findByRoomIdTimeline({
-      userId: params.userId,
-      roomId: params.roomId,
-      direction: params.direction,
-      ts: params.ts,
-      limit: params.limit,
-    });
+    const [{ messages: items, hasMore }, total] = await Promise.all([
+      this.messageRepo.findByRoomIdTimeline({
+        userId: params.userId,
+        roomId: params.roomId,
+        direction: params.direction,
+        ts: params.ts,
+        boundaryId: params.boundaryId ?? null,
+        inclusive: params.inclusive ?? false,
+        limit: params.limit,
+      }),
+      this.messageRepo.countTimeline({
+        roomId: params.roomId,
+        userId: params.userId,
+      }),
+    ]);
 
-    const hasMore = rows.length > params.limit;
-    const items = rows.slice(0, params.limit);
+    // The repo returns the page in DB order (before → newest-first, after →
+    // oldest-first); the boundary for the next page is the LAST row either way.
+    // nextCursor is a COMPOUND "<createdAtMs>_<id>" keyset cursor — the _id
+    // tiebreaker is what keeps same-millisecond messages reachable. The client
+    // feeds it back verbatim as the next before_ts/after_ts.
     const last = items[items.length - 1];
     const nextCursor =
-      hasMore && last ? String(last.createdAt.getTime()) : null;
+      hasMore && last ? `${last.createdAt.getTime()}_${last.id}` : null;
 
-    return { items, hasMore, nextCursor };
+    return { items, hasMore, nextCursor, total };
   }
 
   /**
@@ -791,7 +808,8 @@ export class GroupMessageService {
    * receives a raw key (URLs are derived at read time, never persisted).
    */
   async enrichForWire(
-    messages: GroupMessage[]
+    messages: GroupMessage[],
+    viewerUserId?: string
   ): Promise<Array<Record<string, unknown>>> {
     const mediaKeys: string[] = [];
     for (const message of messages) {
@@ -870,6 +888,29 @@ export class GroupMessageService {
       );
       wire.serverTs =
         message.createdAt instanceof Date ? message.createdAt.getTime() : 0;
+
+      if (
+        viewerUserId &&
+        String(wire.contentType).toUpperCase() === "SYSTEM" &&
+        message.systemEvent
+      ) {
+        const systemData = (message.systemData ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const content = wire.content as Record<string, unknown> | null;
+        const thirdPersonText = String(content?.text ?? "");
+        const personalized = personalizeGroupSystemMessageForViewer(
+          message.systemEvent,
+          systemData,
+          thirdPersonText,
+          viewerUserId
+        );
+        if (personalized !== thirdPersonText && content) {
+          wire.content = { ...content, text: personalized };
+        }
+      }
+
       return wire;
     });
   }

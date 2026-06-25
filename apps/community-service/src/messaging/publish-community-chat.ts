@@ -53,6 +53,8 @@ export interface CommunityCreatedForChat {
   name: string;
   avatarUrl: string | null;
   ownerId: string;
+  /** PUBLIC or PRIVATE — used to determine if non-members can read chat history. */
+  communityType: "PUBLIC" | "PRIVATE";
 }
 
 /** Tells chat-service to provision the community's chat room. */
@@ -78,6 +80,13 @@ export interface CommunityMemberSyncedForChat {
   status?: string;
   /** community member role (ADMIN | MODERATOR | MEMBER); omit if unchanged. */
   role?: string;
+  /**
+   * ISO timestamp of the membership change. Stamped automatically by the
+   * publisher. chat-service uses it as the upper bound for the join-line cleanup
+   * on leave/remove/ban, so a redelivered stale event can't purge a fresher
+   * rejoin line.
+   */
+  eventAt?: string;
 }
 
 /**
@@ -93,7 +102,10 @@ export function publishCommunityMemberSyncedForChatSafe(
 ): void {
   publishSafe(
     "community.member.synced",
-    data,
+    // Stamp eventAt once here so every emit site (createMember / updateMemberStatus
+    // / updateMemberRole funnel) carries the membership-change time without
+    // duplicating it at each call. chat-service bounds its join-line cleanup by it.
+    { ...data, eventAt: data.eventAt ?? new Date().toISOString() },
     "community.member.synced (chat-sync)"
   );
 }
@@ -151,6 +163,29 @@ export interface CommunitySystemMessageForChat {
   metadata: Record<string, unknown>;
   triggeredByUserId: string;
   eventAt: string;
+  /** PERSONAL messages are visible only to visibleToUserId; COMMUNITY messages are visible to all. */
+  visibilityType?: "PERSONAL" | "COMMUNITY";
+  /** For PERSONAL messages, the userId who should see this message. */
+  visibleToUserId?: string;
+}
+
+export interface CommunityVisibilityChangedForChat {
+  communityId: string;
+  communityType: "PUBLIC" | "PRIVATE";
+}
+
+/**
+ * Tells chat-service that a community's visibility (PUBLIC/PRIVATE) changed, so
+ * it can refresh the cached community type that drives non-member read access.
+ */
+export function publishCommunityVisibilityChangedForChatSafe(
+  data: CommunityVisibilityChangedForChat
+): void {
+  publishSafe(
+    "community.visibility_changed",
+    data,
+    "community.visibility_changed (chat-sync)"
+  );
 }
 
 /**

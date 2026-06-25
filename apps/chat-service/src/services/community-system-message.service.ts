@@ -1,33 +1,65 @@
 import { logger } from "@aimess/logger";
 import type { Redis, Cluster } from "ioredis";
 
-import { type CommunitySystemMessageType } from "@aimess/constants";
+import {
+  SYSTEM_MESSAGE_VISIBILITY,
+  isEligibleForLastActivity,
+  isHiddenSystemMessage,
+  isActorLessSystemMessage,
+  sanitizeCommunitySystemMetadata,
+  buildCommunitySystemFallbackText,
+  buildCommunitySystemSelfPreview,
+  resolveCommunitySystemSubjectUserId,
+  resolvePersonDisplayName,
+  type CommunitySystemMessageType,
+} from "@aimess/constants";
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
-import { resolveMediaUrl } from "../lib/media-resolve.js";
+import { isDuplicateKeyError } from "../lib/db-errors.js";
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
+import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
+import { publishCommunityUpdatedSafe } from "../events/publish-conv-updated.js";
 
 export interface PostCommunitySystemMessageParams {
   communityId: string;
   systemMessageType: CommunitySystemMessageType;
   metadata: Record<string, unknown>;
+  /** The user who triggered the event (the actor). Recorded in metadata only. */
   triggeredByUserId: string;
+  /**
+   * For PERSONAL subtypes (COMMUNITY_JOINED, JOIN_REQUEST_*), the userId who
+   * should see the message. Required for PERSONAL subtypes; ignored otherwise.
+   * Visibility itself is derived from SYSTEM_MESSAGE_VISIBILITY, not passed.
+   */
+  visibleToUserId?: string;
+  /**
+   * ISO timestamp stamped by the producer when the originating event occurred.
+   * Stable across RabbitMQ redeliveries, so it anchors the idempotency key that
+   * prevents a redelivered event from posting a duplicate system line. Omit for
+   * direct/local posts (pin/unpin) that don't flow through the redelivery-prone
+   * `community.system_message` queue.
+   */
+  eventAt?: string;
 }
 
 /**
- * Posts SYSTEM messages for community lifecycle events.
+ * Posts SYSTEM messages for community lifecycle events (Telegram-style).
  *
- * Telegram-style rules:
- * - COMMUNITY_CREATED  → one message ("John created the community")
- * - COMMUNITY_UPDATED  → one message PER changed field ("John changed the community photo")
- * - MEMBER_ROLE_CHANGED → one message ("John promoted Jane to Moderator")
+ * Behaviour is driven entirely by the central registry in @aimess/constants:
+ * - SYSTEM_MESSAGE_VISIBILITY decides PERSONAL (→ user:<id> channel, persisted
+ *   with visibleToUserId) vs COMMUNITY (→ community:<id> room).
+ * - isEligibleForLastActivity decides whether the line bumps + becomes the
+ *   community-list preview. Excluded: personal/onboarding lines, unpin,
+ *   invite-created, and membership/moderation churn (left/removed/banned/…).
  *
- * All metadata carries `actorUserId` so the frontend can compare against the
- * logged-in user and render "You" vs the actor's display name — the backend
- * never stores "You".
+ * The text is a DETERMINISTIC template (buildFallbackText) — never a dynamically
+ * composed sentence. The client renders localized text from systemMessageType +
+ * systemMetadata; the stored text is the English fallback. SYSTEM messages are
+ * SENDER-LESS: the wire carries no senderId/senderName/senderAvatar — the actor
+ * lives in systemMetadata.actorUserId/actorName only.
  *
  * Posts are best-effort: failures are logged, never thrown.
  */
@@ -37,27 +69,19 @@ export class CommunitySystemMessageService {
     private readonly roomRepo: GeneralRoomRepository,
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
-    private readonly redis: Redis | Cluster
+    private readonly redis: Redis | Cluster,
+    /**
+     * Optional — when provided, COMMUNITY-visible system lines that bump activity
+     * ALSO fan out a sender-less `community:updated` socket bump so the community
+     * LIST reorders + shows the new line in real time (parity with the normal
+     * send path in service-impl.ts / chat-message-orchestrator.ts). Optional so
+     * the 5-arg test construction sites keep working untouched; production wires
+     * it in server.ts and the room-sync consumer.
+     */
+    private readonly memberRepo?: RoomMemberRepository
   ) {}
 
   async post(params: PostCommunitySystemMessageParams): Promise<void> {
-    // For COMMUNITY_UPDATED: emit one system message per changed field (Telegram-style).
-    // Each message carries changedFields with exactly one item so the frontend
-    // can produce a precise label ("changed the community photo", etc.).
-    if (params.systemMessageType === "COMMUNITY_UPDATED") {
-      const fields = Array.isArray(params.metadata.changedFields)
-        ? (params.metadata.changedFields as string[])
-        : [];
-      if (fields.length > 1) {
-        for (const field of fields) {
-          await this.postOne({
-            ...params,
-            metadata: { ...params.metadata, changedFields: [field] },
-          });
-        }
-        return;
-      }
-    }
     await this.postOne(params);
   }
 
@@ -66,6 +90,29 @@ export class CommunitySystemMessageService {
   ): Promise<void> {
     const { communityId, systemMessageType, metadata, triggeredByUserId } =
       params;
+
+    // Backstop: hidden membership-lifecycle lines (left / removed / banned /
+    // unbanned / joined) are never persisted OR broadcast. community-service's
+    // emitMemberSystemMessage already drops them at the source, but a redelivered
+    // legacy event could still reach here — skip so it can't flash on a live
+    // socket (the read-time filter can't catch a real-time push).
+    if (isHiddenSystemMessage(systemMessageType)) {
+      logger.debug(
+        `CommunitySystemMessageService|skip hidden type=${systemMessageType}`
+      );
+      return;
+    }
+
+    const visibility =
+      SYSTEM_MESSAGE_VISIBILITY[systemMessageType] ?? "COMMUNITY";
+    // Single source of truth: membership/moderation churn (left/removed/banned/…)
+    // is NOT eligible to bump or become the community-list lastActivity preview.
+    const eligibleForLastActivity =
+      isEligibleForLastActivity(systemMessageType);
+    const isPersonal = visibility === "PERSONAL";
+    const visibleToUserId = isPersonal
+      ? (params.visibleToUserId ?? null)
+      : null;
 
     try {
       const targetUserId =
@@ -84,65 +131,144 @@ export class CommunitySystemMessageService {
 
       const actorName = this.nameOf(snapshots, triggeredByUserId);
       const targetName = this.nameOf(snapshots, targetUserId);
-      const actorAvatar =
-        (snapshots.get(triggeredByUserId)?.avatar as string) ?? "";
 
-      // Build enriched metadata with resolved names. actorUserId is the single
-      // consistent key across all system message types so the frontend can always
-      // do `metadata.actorUserId === currentUserId` to decide "You" vs actorName.
+      // actorUserId is the single consistent key across all subtypes so the
+      // client can do `metadata.actorUserId === currentUserId` → render "You".
       const enrichedMetadata: Record<string, unknown> = {
         ...metadata,
         actorUserId: triggeredByUserId,
         actorName,
-        ...(targetUserId ? { targetName } : {}),
+        // Prefer the publisher-provided targetName (DB snapshot) over the
+        // re-fetched value, which may be "" when user-service has no profile yet.
+        ...(targetUserId
+          ? { targetName: (metadata.targetName as string) || targetName }
+          : {}),
       };
 
-      const fallbackText = buildFallbackText(
+      const fallbackText = buildCommunitySystemFallbackText(
         systemMessageType,
         enrichedMetadata,
         actorName,
         targetName
       );
+
+      // ACTOR-LESS lifecycle types ("Community created", "Community photo
+      // updated") must never expose actor identity — a client that localizes
+      // from systemMetadata would otherwise render "{name} created the
+      // community". Strip actor/target keys from what we PERSIST and BROADCAST
+      // (enrichedMetadata is kept locally for the activity/self-preview logic,
+      // which is a no-op for these types anyway). actor-bearing types pass
+      // through unchanged.
+      const wireMetadata = sanitizeCommunitySystemMetadata(
+        systemMessageType,
+        enrichedMetadata
+      );
+      // Sender-less in the timeline AND in the stored row for actor-less types,
+      // so no surface (including non-wire readers) can fall back to a name.
+      const wireSenderName = isActorLessSystemMessage(systemMessageType)
+        ? ""
+        : actorName;
+
+      // Idempotency: a `community.system_message` event can be REDELIVERED
+      // (at-least-once queue; broker redelivers on ack-loss). Each event carries
+      // a producer `eventAt`, stable across redeliveries, so derive a
+      // deterministic dedup key — one logical event ⇒ one timeline line, no
+      // duplicate "Community info was updated" / "X joined" bubbles. Two genuinely
+      // distinct events differ in (type, eventAt, target) so both persist.
+      //
+      // The recipient (`visibleToUserId`) is part of the key for PERSONAL lines so
+      // that a single logical event which fans out a personal line to MORE THAN ONE
+      // user — e.g. an admin TRANSFER posts "You are now the community admin" to the
+      // new admin AND "You are now a member" to the outgoing admin under one shared
+      // `eventAt` — keeps both lines instead of the second colliding with the first
+      // and being dropped as a "replay". The key only ever grows MORE specific, so a
+      // real redelivery (same type+eventAt+recipient) still dedupes correctly.
+      const dedupeKey = params.eventAt
+        ? `sys:${systemMessageType}:${params.eventAt}${
+            targetUserId ? `:${targetUserId}` : ""
+          }${isPersonal && visibleToUserId ? `:u:${visibleToUserId}` : ""}`
+        : null;
+
+      // Cheap pre-check skips the sequence allocation + bump + publish on a
+      // redelivery (sequential case); the unique-index insert below is the race
+      // backstop for concurrent redeliveries.
+      if (dedupeKey) {
+        const existing = await this.messageRepo.findOne({
+          roomId: communityId,
+          clientMessageId: dedupeKey,
+        });
+        if (existing) {
+          logger.debug(
+            `CommunitySystemMessageService|skip duplicate (replay) type=${systemMessageType} key=${dedupeKey}`
+          );
+          return;
+        }
+      }
+
       const seq = await this.roomRepo.allocateSequence(communityId);
 
-      const message = await this.messageRepo.createSystemMessage({
-        roomId: communityId,
-        systemMessageType,
-        metadata: enrichedMetadata,
-        triggeredByUserId,
-        triggeredByName: actorName,
-        sequenceNumber: seq,
-        fallbackText,
-      });
-
-      // Bump inbox ordering (no unread increment — system messages don't badge).
-      this.roomRepo
-        .addLastestMessageToRoom(communityId, {
-          _id: message.id,
-          sentBy: message.sentBy,
-          senderName: message.senderName ?? "",
-          message: message.message ?? "",
-          messageType: message.messageType,
-          createdAt: message.createdAt,
+      const message = await this.messageRepo
+        .createSystemMessage({
+          roomId: communityId,
+          systemMessageType,
+          metadata: wireMetadata,
+          // sentBy is retained internally for audit, but is NEVER surfaced on the
+          // wire for SYSTEM messages (toWire strips it). senderName is blanked for
+          // actor-less types so even a non-wire reader can't surface a name.
+          triggeredByUserId,
+          triggeredByName: wireSenderName,
+          sequenceNumber: seq,
+          fallbackText,
+          visibleToUserId,
+          clientMessageId: dedupeKey,
         })
         .catch((err: unknown) => {
-          logger.warn(
-            `CommunitySystemMessageService|addLastestMessageToRoom failed: ${String(err)}`
-          );
+          // Concurrent redelivery lost the unique-index race — already persisted
+          // by the winning delivery. Treat as an idempotent no-op.
+          if (dedupeKey && isDuplicateKeyError(err)) return null;
+          throw err;
         });
+
+      // Duplicate replay — the line (and its bump/publish) already happened on
+      // the first delivery; do nothing further.
+      if (!message) return;
+
+      // Bump the community-list ordering only for subtypes that should reorder
+      // the chat list (registry-driven). No unread increment — system messages
+      // never badge.
+      if (eligibleForLastActivity) {
+        this.roomRepo
+          .addLastestMessageToRoom(communityId, {
+            _id: message.id,
+            sentBy: message.sentBy,
+            senderName: message.senderName ?? "",
+            message: message.message ?? "",
+            messageType: message.messageType,
+            createdAt: message.createdAt,
+          })
+          .catch((err: unknown) => {
+            logger.warn(
+              `CommunitySystemMessageService|addLastestMessageToRoom failed: ${String(err)}`
+            );
+          });
+      }
 
       const serverTs =
         message.createdAt instanceof Date
           ? message.createdAt.getTime()
           : Date.now();
-      const actorAvatarUrl = await resolveMediaUrl(actorAvatar);
 
-      // Real-time fan-out — mirrors the orchestrator community wire shape with
-      // SYSTEM extras. systemMetadata always carries actorUserId so clients can
-      // render "You" vs actor name without an additional fetch.
+      // PERSONAL → only the affected user's channel; COMMUNITY → the room.
+      const redisChannel =
+        isPersonal && visibleToUserId
+          ? `user:${visibleToUserId}`
+          : `community:${communityId}`;
+
+      // SENDER-LESS wire: senderId/senderName/senderAvatar are intentionally
+      // empty for SYSTEM messages — the actor is in systemMetadata only.
       this.redis
         .publish(
-          `community:${communityId}`,
+          redisChannel,
           JSON.stringify({
             event: "community:message:new",
             data: {
@@ -150,9 +276,9 @@ export class CommunitySystemMessageService {
               messageId: message.id,
               communityId,
               roomId: communityId,
-              senderId: triggeredByUserId,
-              senderName: actorName,
-              senderAvatar: actorAvatarUrl,
+              senderId: "",
+              senderName: "",
+              senderAvatar: "",
               parentMessageId: "",
               quoteData: null,
               content: { text: fallbackText, files: [] },
@@ -164,29 +290,95 @@ export class CommunitySystemMessageService {
               sentAt: serverTs,
               sequenceNumber: seq,
               systemMessageType,
-              systemMetadata: enrichedMetadata,
+              isPersonal,
+              systemMetadata: wireMetadata,
             },
           })
         )
         .catch((err: unknown) => {
           logger.warn(
-            `CommunitySystemMessageService|redis.publish failed communityId=${communityId}: ${String(err)}`
+            `CommunitySystemMessageService|redis.publish failed channel=${redisChannel}: ${String(err)}`
           );
         });
 
-      publishCommunityActivitySafe({
-        communityId,
-        lastMessageAt:
-          message.createdAt instanceof Date
-            ? message.createdAt.toISOString()
-            : new Date(serverTs).toISOString(),
-        lastMessageId: message.id,
-        senderUserId: triggeredByUserId,
-        senderUsername: actorName,
-        messagePreview:
-          fallbackText.length > 80 ? fallbackText.slice(0, 80) : fallbackText,
-        type: "system",
-      });
+      if (eligibleForLastActivity) {
+        // Self-referential lines (role change / join) carry the subject + a
+        // first-person "You …" preview so the community list can personalize for
+        // that one member; null for community-wide lines (everyone sees the same).
+        const selfActivity = buildSelfActivity(
+          systemMessageType,
+          enrichedMetadata,
+          triggeredByUserId,
+          actorName,
+          targetName
+        );
+        const clip = (s: string) => (s.length > 80 ? s.slice(0, 80) : s);
+
+        publishCommunityActivitySafe({
+          communityId,
+          lastMessageAt:
+            message.createdAt instanceof Date
+              ? message.createdAt.toISOString()
+              : new Date(serverTs).toISOString(),
+          lastMessageId: message.id,
+          // For a self-referential line, store the SUBJECT as lastActivityUserId so
+          // the list can match `viewer === subject` and swap in the self-preview.
+          // (For community-wide lines this is the actor; username stays null either
+          // way since buildLastActivity nulls it for system types.)
+          senderUserId: selfActivity?.subjectUserId ?? triggeredByUserId,
+          // SYSTEM lines are sender-less in the community list — community-service's
+          // buildLastActivity forces username:null for type:"system" anyway, so we
+          // don't ship the actor name into the lastActivityUsername column.
+          senderUsername: "",
+          messagePreview: clip(fallbackText),
+          type: "system",
+          ...(selfActivity
+            ? {
+                subjectUserId: selfActivity.subjectUserId,
+                selfPreview: clip(selfActivity.selfPreview),
+              }
+            : {}),
+        });
+
+        // Real-time community-LIST bump: the REST `/communities/mine` list is fed
+        // by the `community.activity` event above, but the LIVE list is driven by
+        // the `community:updated` socket event — which the normal send path emits
+        // (service-impl.ts / chat-message-orchestrator.ts) and which the system
+        // path historically did NOT. Without it, a role change / community-info
+        // update updated the room but left the live list showing the previous
+        // (sender-prefixed) message until a manual refetch. Emit a sender-less
+        // bump here so the live list reorders + shows the standalone system line,
+        // byte-identical to the room. SYSTEM contentType makes publishCommunityUpdated
+        // blank the senderName, so the list never renders "<actor>: <system text>".
+        if (!isPersonal && this.memberRepo) {
+          const memberRepo = this.memberRepo;
+          publishCommunityUpdatedSafe({
+            redis: this.redis,
+            communityId,
+            // GeneralRoom id === communityId (same value community:message:new uses).
+            roomId: communityId,
+            fetchMembers: () =>
+              memberRepo
+                .findActiveByRoom(communityId)
+                .then((members) => members.map((m) => m.userId)),
+            senderId: triggeredByUserId,
+            // Blanked downstream for SYSTEM previews anyway; pass "" so no actor
+            // name is carried on a sender-less bump (parity with the activity event).
+            senderName: "",
+            lastMessageId: message.id,
+            lastMessageAt: serverTs,
+            preview: { contentType: "SYSTEM", text: fallbackText },
+            // Live-list parity with the REST personalization: the one subject
+            // member receives the "You …" preview, everyone else the third-person.
+            ...(selfActivity
+              ? {
+                  subjectUserId: selfActivity.subjectUserId,
+                  selfPreview: selfActivity.selfPreview,
+                }
+              : {}),
+          });
+        }
+      }
     } catch (err) {
       logger.warn(
         `CommunitySystemMessageService|postOne failed type=${systemMessageType} communityId=${communityId}: ${String(err)}`
@@ -199,78 +391,36 @@ export class CommunitySystemMessageService {
     userId: string | null
   ): string {
     if (!userId) return "";
-    const snap = snapshots.get(userId);
-    if (!snap) return "";
-    return (snap.displayName as string) || (snap.username as string) || "";
+    return resolvePersonDisplayName(snapshots.get(userId));
   }
 }
 
 /**
- * Maps the stored `changedFields` token to a human-readable label used in the
- * English fallback text (and as a hint to the frontend).
+ * Self-referential community-list personalization for a COMMUNITY-visible system
+ * line. Returns the subject member + first-person preview when the subtype names
+ * a specific actor or target; null when everyone sees the same text.
  */
-const FIELD_LABEL: Record<string, string> = {
-  avatar: "community photo",
-  name: "community title",
-  description: "community description",
-  visibility: "community visibility",
-  handle: "community link",
-  category: "community category",
-  rules: "community rules",
-  banner: "community banner",
-};
-
-/**
- * Returns a numeric rank for role comparison so we can say "promoted" vs
- * "demoted" without hardcoding string comparisons.
- */
-function roleRank(role: string): number {
-  if (role === "ADMIN") return 2;
-  if (role === "MODERATOR") return 1;
-  return 0; // MEMBER or unknown
-}
-
-/** "MODERATOR" → "Moderator" */
-function formatRole(role: string): string {
-  if (!role) return role;
-  return role.charAt(0).toUpperCase() + role.slice(1).toLowerCase();
-}
-
-function buildFallbackText(
+function buildSelfActivity(
   type: CommunitySystemMessageType,
   metadata: Record<string, unknown>,
+  triggeredByUserId: string,
   actorName: string,
   targetName: string
-): string {
-  const actor = actorName || "Someone";
-
-  switch (type) {
-    case "COMMUNITY_CREATED":
-      return `${actor} created the community`;
-
-    case "COMMUNITY_UPDATED": {
-      const fields = Array.isArray(metadata.changedFields)
-        ? (metadata.changedFields as string[])
-        : [];
-      // changedFields always has one item here (multi-field callers loop via post()).
-      if (fields.length === 1) {
-        const label = FIELD_LABEL[fields[0]] ?? `community ${fields[0]}`;
-        return `${actor} changed the ${label}`;
-      }
-      return `${actor} updated the community`;
-    }
-
-    case "MEMBER_ROLE_CHANGED": {
-      const target =
-        (metadata.targetName as string) || targetName || "a member";
-      const newRole = (metadata.newRole as string) || "";
-      const oldRole = (metadata.oldRole as string) || "";
-      const verb =
-        roleRank(newRole) > roleRank(oldRole) ? "promoted" : "demoted";
-      return `${actor} ${verb} ${target} to ${formatRole(newRole)}`;
-    }
-
-    default:
-      return `${actor} updated the community`;
-  }
+): { subjectUserId: string; selfPreview: string } | null {
+  const subjectUserId = resolveCommunitySystemSubjectUserId(
+    type,
+    metadata,
+    triggeredByUserId
+  );
+  if (!subjectUserId) return null;
+  return {
+    subjectUserId,
+    selfPreview: buildCommunitySystemSelfPreview(
+      type,
+      metadata,
+      actorName,
+      targetName,
+      subjectUserId
+    ),
+  };
 }

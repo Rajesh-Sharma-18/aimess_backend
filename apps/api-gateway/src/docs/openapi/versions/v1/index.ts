@@ -9,6 +9,7 @@ import { userPaths } from "../../paths/user.paths.js";
 import { chatExtrasPaths } from "../../paths/chat-extras.paths.js";
 import { devicesPaths } from "../../paths/devices.paths.js";
 import { mediaPaths } from "../../paths/media.paths.js";
+import { streamPaths } from "../../paths/stream.paths.js";
 
 /**
  * OpenAPI paths for API v1.
@@ -26,6 +27,7 @@ export const v1Paths = {
   ...chatExtrasPaths,
   ...devicesPaths,
   ...mediaPaths,
+  ...streamPaths,
   ...adminPaths,
 };
 
@@ -61,6 +63,11 @@ export const v1Tags = [
     name: "Media",
     description:
       "Centralized presigned URL generation for all media uploads and downloads",
+  },
+  {
+    name: "Streams",
+    description:
+      "Livestream lifecycle, comments, viewers, and moderation (stream-service)",
   },
   {
     name: "Devices",

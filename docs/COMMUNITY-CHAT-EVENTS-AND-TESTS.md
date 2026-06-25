@@ -15,11 +15,11 @@ sources remain:
 
 ## 1. Architecture (who owns what)
 
-| Concern                                                                   | Service                                    | Transport                                               |
-| ------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------- |
-| Membership, roles, join requests, invites, bans, mutes, warnings, reports | **community-service** (gRPC 4003, MongoDB) | REST `/communities/...`                                 |
-| Messages: send, history, conversation, media, edit, delete, search        | **chat-service** (gRPC 4004, MongoDB)      | gateway `/community` ns + chat-service REST             |
-| Socket fan-out                                                            | **api-gateway**                            | `/community` namespace, `/chat` for `community:updated` |
+| Concern                                                                   | Service                                    | Transport                                          |
+| ------------------------------------------------------------------------- | ------------------------------------------ | -------------------------------------------------- |
+| Membership, roles, join requests, invites, bans, mutes, warnings, reports | **community-service** (gRPC 4003, MongoDB) | REST `/communities/...`                            |
+| Messages: send, history, conversation, media, edit, delete, search        | **chat-service** (gRPC 4004, MongoDB)      | gateway `/community` ns + chat-service REST        |
+| Socket fan-out                                                            | **api-gateway**                            | `/community` namespace (incl. `community:updated`) |
 
 - A community maps to **one `GeneralRoom`** (`roomId === communityId`).
 - Sends persist via `CommunityMessageService` ([community-message.service.ts](../apps/chat-service/src/services/community-message.service.ts)) and publish
@@ -48,13 +48,13 @@ Ack shape: `{ success: boolean, data?, error?: "INVALID_PAYLOAD" | "SERVICE_ERRO
 
 ### 2.2 Server → Client (forwarded verbatim from Redis `community:*`)
 
-| Event                      | Target room                    | Payload                                                                                                                           | Description                                                                                                      |
-| -------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `community:message:new`    | `community:<communityId>`      | `{ messageId, communityId, roomId, senderId, senderName, senderAvatar, message, contentType, mediaKey, clientMessageId, sentAt }` | New message broadcast. `sentAt` is a **number** (epoch ms) — coerce defensively.                                 |
-| `community:member:joined`  | `community:<communityId>`      | member DTO                                                                                                                        | A member joins the community.                                                                                    |
-| `community:message:edited` | `community:<communityId>`      | `{ messageId, communityId, roomId, senderId, message, contentType, editedAt }`                                                    | Published when a message is edited via REST `PATCH /messages/:id`.                                               |
-| `community:updated`        | `user:<userId>` on **`/chat`** | `{ communityId, roomId, lastMessageId, lastMessage:{ contentType, text }, lastMessageAt, senderId, unread }`                      | List bump-to-top — fired to every active member on each new message. **Delivered on `/chat`, not `/community`.** |
-| `message:delete`           | `conv:<roomId>` on **`/chat`** | `{ messageId, type:"forEveryone"\|"forMe", deletedBy }`                                                                           | Community message deletes fan out on the `/chat` conv channel, **not** the community channel.                    |
+| Event                      | Target room                         | Payload                                                                                                                           | Description                                                                                                      |
+| -------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `community:message:new`    | `community:<communityId>`           | `{ messageId, communityId, roomId, senderId, senderName, senderAvatar, message, contentType, mediaKey, clientMessageId, sentAt }` | New message broadcast. `sentAt` is a **number** (epoch ms) — coerce defensively.                                 |
+| `community:member:joined`  | `community:<communityId>`           | member DTO                                                                                                                        | A member joins the community.                                                                                    |
+| `community:message:edited` | `community:<communityId>`           | `{ messageId, communityId, roomId, senderId, message, contentType, editedAt }`                                                    | Published when a message is edited via REST `PATCH /messages/:id`.                                               |
+| `community:updated`        | `user:<userId>` on **`/community`** | `{ communityId, roomId, lastMessageId, lastMessage:{ contentType, text }, lastMessageAt, senderId, unread }`                      | List bump-to-top — fired to every active member on each new message. **Delivered on `/community`, not `/chat`.** |
+| `message:delete`           | `conv:<roomId>` on **`/chat`**      | `{ messageId, type:"forEveryone"\|"forMe", deletedBy }`                                                                           | Community message deletes fan out on the `/chat` conv channel, **not** the community channel.                    |
 
 > The `/community` namespace forwards **any** `{ event, data }` published to the
 > channel verbatim — there is no event-name allow-list (see TC-WS-128).
@@ -91,19 +91,19 @@ Ack shape: `{ success: boolean, data?, error?: "INVALID_PAYLOAD" | "SERVICE_ERRO
 
 ### 3.1 Socket — `/community` namespace (TC-WS-120 → 130)
 
-| ID        | Event                      | Scenario                             | Category         | Pri  | Expected                                                                                                                            |
-| --------- | -------------------------- | ------------------------------------ | ---------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| TC-WS-120 | `community:message:send`   | Happy path text post                 | Happy Path       | High | Ack `{success:true,data:{messageId,sentAt}}`; persists; `community:message:new` to room + `community:updated` to members on `/chat` |
-| TC-WS-121 | `community:message:send`   | Image via `mediaKey`                 | File Upload      | Med  | Ack success; `community:message:new` carries `mediaKey` (note: `message` must still be non-empty)                                   |
-| TC-WS-122 | `community:message:send`   | `message:""`                         | Input Validation | Med  | Ack `{success:false,error:"INVALID_PAYLOAD"}`; no DB/event                                                                          |
-| TC-WS-123 | `community:message:send`   | Missing `roomId`                     | Input Validation | Med  | Ack `INVALID_PAYLOAD`; no DB/event                                                                                                  |
-| TC-WS-124 | `community:message:send`   | Non-member posts                     | AuthZ            | High | Ack `{success:false,error:"SERVICE_ERROR"}` (chat-service rejects); no DB                                                           |
-| TC-WS-125 | `community:message:send`   | Spoofed `senderId` in payload        | Security         | High | Stored with authed `senderId` (schema strips it; gateway overrides)                                                                 |
-| TC-WS-126 | `community:messages:fetch` | Cursor pagination                    | Pagination       | Med  | Ack `{success:true,data:{messages,nextCursor}}`; `limit≤100`, `requesterId` forced                                                  |
-| TC-WS-127 | `community:member:joined`  | Member join broadcast                | DB State         | Low  | `community:member:joined` (member DTO) to `community:<id>`                                                                          |
-| TC-WS-128 | `*` (Redis forward)        | Arbitrary event forwarded            | Edge Case        | Low  | Gateway emits `parsed.event`+`parsed.data` blindly (no allow-list) — security note                                                  |
-| TC-WS-129 | `message:delete`           | Community delete fans out on `/chat` | Business Rule    | Med  | `message:delete{messageId,type,deletedBy}` on `conv:<roomId>` (NOT community channel)                                               |
-| TC-WS-130 | Redis `pmessage`           | Malformed JSON on channel            | Error Handling   | Low  | Dropped; parse-error warning logged; no crash                                                                                       |
+| ID        | Event                      | Scenario                             | Category         | Pri  | Expected                                                                                                                                 |
+| --------- | -------------------------- | ------------------------------------ | ---------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| TC-WS-120 | `community:message:send`   | Happy path text post                 | Happy Path       | High | Ack `{success:true,data:{messageId,sentAt}}`; persists; `community:message:new` to room + `community:updated` to members on `/community` |
+| TC-WS-121 | `community:message:send`   | Image via `mediaKey`                 | File Upload      | Med  | Ack success; `community:message:new` carries `mediaKey` (note: `message` must still be non-empty)                                        |
+| TC-WS-122 | `community:message:send`   | `message:""`                         | Input Validation | Med  | Ack `{success:false,error:"INVALID_PAYLOAD"}`; no DB/event                                                                               |
+| TC-WS-123 | `community:message:send`   | Missing `roomId`                     | Input Validation | Med  | Ack `INVALID_PAYLOAD`; no DB/event                                                                                                       |
+| TC-WS-124 | `community:message:send`   | Non-member posts                     | AuthZ            | High | Ack `{success:false,error:"SERVICE_ERROR"}` (chat-service rejects); no DB                                                                |
+| TC-WS-125 | `community:message:send`   | Spoofed `senderId` in payload        | Security         | High | Stored with authed `senderId` (schema strips it; gateway overrides)                                                                      |
+| TC-WS-126 | `community:messages:fetch` | Cursor pagination                    | Pagination       | Med  | Ack `{success:true,data:{messages,nextCursor}}`; `limit≤100`, `requesterId` forced                                                       |
+| TC-WS-127 | `community:member:joined`  | Member join broadcast                | DB State         | Low  | `community:member:joined` (member DTO) to `community:<id>`                                                                               |
+| TC-WS-128 | `*` (Redis forward)        | Arbitrary event forwarded            | Edge Case        | Low  | Gateway emits `parsed.event`+`parsed.data` blindly (no allow-list) — security note                                                       |
+| TC-WS-129 | `message:delete`           | Community delete fans out on `/chat` | Business Rule    | Med  | `message:delete{messageId,type,deletedBy}` on `conv:<roomId>` (NOT community channel)                                                    |
+| TC-WS-130 | Redis `pmessage`           | Malformed JSON on channel            | Error Handling   | Low  | Dropped; parse-error warning logged; no crash                                                                                            |
 
 ### 3.2 REST + Realtime — community chat (TC-COMM-117 → 130)
 
@@ -121,7 +121,7 @@ Ack shape: `{ success: boolean, data?, error?: "INVALID_PAYLOAD" | "SERVICE_ERRO
 | TC-COMM-126 | `PATCH /messages/:messageId`                           | Not owner / expired / non-text | Business Rule    | High | 4xx — `CHAT_EDIT_OWN_MESSAGES_ONLY` / `CHAT_EDIT_WINDOW_EXPIRED` (410) / `CHAT_EDIT_TEXT_ONLY`                                             |
 | TC-COMM-127 | `PATCH /messages/:messageId`                           | Empty / too-long text          | Input Validation | Med  | 400 (`text` min 1, max `CHAT_TEXT_MAX_CHARS`)                                                                                              |
 | TC-COMM-128 | `DELETE /messages/:messageId`                          | forMe / forEveryone            | Happy Path       | High | 200; soft-delete or per-user hide; `message:delete` on `conv:<roomId>`. Non-sender needs admin/moderator (`CHAT_INSUFFICIENT_PERMISSIONS`) |
-| TC-COMM-129 | `community:updated`                                    | New-message bump-to-top        | Realtime         | Med  | `community:updated` to `user:<id>` on `/chat`; room lastMessage updated                                                                    |
+| TC-COMM-129 | `community:updated`                                    | New-message bump-to-top        | Realtime         | Med  | `community:updated` to `user:<id>` on `/community`; room lastMessage updated                                                               |
 | TC-COMM-130 | `PATCH`/`DELETE /messages`                             | Rate limit                     | Rate Limit       | Med  | 429 after 30 mutations/60s (`cm:send`)                                                                                                     |
 
 ### 3.3 Additional service-level rules worth covering

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
+import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
@@ -12,6 +13,7 @@ import {
   buildTypingBroadcast,
 } from "../user-details.js";
 import { env } from "../../config/env.js";
+import { createSessionTimers } from "../session-timers.js";
 
 // §3: bound free-text + array fields so a naive or abusive client cannot exceed
 // the 1 MB socket frame, blow up storage, or fan an oversized payload out to a
@@ -131,10 +133,6 @@ const CatchupSchema = z.object({
     .max(50),
 });
 
-const AuthRefreshSchema = z.object({
-  refreshToken: z.string().min(1),
-});
-
 // ── Friend management schemas ─────────────────────────────────────────────────
 const FriendRequestSchema = z.object({
   addresseeId: z.string().uuid(),
@@ -184,6 +182,14 @@ export function registerChatNamespace(
       try {
         const parsed = JSON.parse(message) as RedisSocketEvent;
 
+        // Community list-bump / read-sync events (community:updated,
+        // community:read_sync, …) ride the shared user:<id> channel but belong to
+        // the /community namespace only. Skip them here so they are NOT duplicated
+        // onto /chat — the mirror filter in community.ns.ts forwards exactly these
+        // (event name starts with "community:") from user:*. /chat keeps delivering
+        // conv:updated for the private/group inbox bump.
+        if (parsed.event.startsWith("community:")) return;
+
         // V2 §2.3 fix: inject conversationId into message:delete so clients can
         // route the tombstone even if the conversation isn't currently loaded.
         // The channel is always "conv:<conversationId>", so we parse it here.
@@ -195,6 +201,35 @@ export function registerChatNamespace(
           };
           chat.to(channel).emit(parsed.event, enriched);
           return;
+        }
+
+        if (parsed.event === "message:new" && pattern === "conv:*") {
+          const contentType = String(
+            (parsed.data as { contentType?: string; messageType?: string })
+              .contentType ??
+              (parsed.data as { messageType?: string }).messageType ??
+              ""
+          ).toUpperCase();
+          if (contentType === "SYSTEM") {
+            void (async () => {
+              try {
+                const sockets = await chat.in(channel).fetchSockets();
+                for (const socket of sockets) {
+                  const viewerUserId = String(socket.data.userId ?? "");
+                  socket.emit(
+                    parsed.event,
+                    personalizeGroupSocketMessage(parsed.data, viewerUserId)
+                  );
+                }
+              } catch (emitErr) {
+                logger.warn(
+                  `/chat personalized SYSTEM emit failed on ${channel}: ${String(emitErr)}`
+                );
+                chat.to(channel).emit(parsed.event, parsed.data);
+              }
+            })();
+            return;
+          }
         }
 
         chat.to(channel).emit(parsed.event, parsed.data);
@@ -631,97 +666,18 @@ export function registerChatNamespace(
       }
     );
 
-    // Task #2: session:expired warning + auth:refresh socket event.
-    // Emit a warning 5 min before the handshake token expires; force-disconnect
-    // after a 60 s grace period unless the client refreshes in time.
-    let sessionWarnTimer: ReturnType<typeof setTimeout> | null = null;
-    let sessionExpireTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const clearSessionTimers = (): void => {
-      if (sessionWarnTimer !== null) {
-        clearTimeout(sessionWarnTimer);
-        sessionWarnTimer = null;
-      }
-      if (sessionExpireTimer !== null) {
-        clearTimeout(sessionExpireTimer);
-        sessionExpireTimer = null;
-      }
-    };
-
-    const scheduleSessionTimers = (expiresAt: number): void => {
-      clearSessionTimers();
-      const warnMs = Math.max(0, expiresAt - Date.now() - 5 * 60 * 1000);
-      sessionWarnTimer = setTimeout(() => {
-        sessionWarnTimer = null;
-        socket.emit("session:expired", {
-          reason: "TOKEN_EXPIRED",
-          expiresAt,
-          reconnect: true,
-          gracePeriod: 60,
-        });
-        sessionExpireTimer = setTimeout(() => {
-          sessionExpireTimer = null;
-          logger.debug(
-            `/chat session grace elapsed, disconnecting userId=${userId}`
-          );
-          socket.disconnect(true);
-        }, 60_000);
-      }, warnMs);
-    };
+    // session:expired warning + auth:refresh — shared helper handles the 5-min
+    // warn timer, 60-s grace disconnect, and token-refresh event registration.
+    const {
+      clearSessionTimers,
+      scheduleSessionTimers,
+      registerAuthRefreshHandler,
+    } = createSessionTimers(socket, locale, "/chat", env.AUTH_SERVICE_URL);
 
     if (socket.data.tokenExpiresAt > 0) {
       scheduleSessionTimers(socket.data.tokenExpiresAt);
     }
-
-    // Client sends its refresh token via socket to obtain a new access token
-    // without a full transport reconnect. Resets both session expiry timers.
-    socket.on(
-      "auth:refresh",
-      (payload: unknown, callback?: (res: unknown) => void) => {
-        const r = AuthRefreshSchema.safeParse(payload);
-        if (!r.success) {
-          ackError(callback, "INVALID_PAYLOAD", locale);
-          return;
-        }
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
-        fetch(`${env.AUTH_SERVICE_URL}/api/auth/token`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refreshToken: r.data.refreshToken }),
-          signal: controller.signal,
-        })
-          .then(async (res) => {
-            clearTimeout(timeoutId);
-            if (!res.ok) {
-              ackError(callback, "SERVICE_ERROR", locale);
-              return;
-            }
-            const body = (await res.json()) as {
-              data?: { accessToken?: string; accessTokenExpiresIn?: number };
-            };
-            const token = body.data?.accessToken;
-            if (!token) {
-              ackError(callback, "SERVICE_ERROR", locale);
-              return;
-            }
-            const expiresIn = body.data?.accessTokenExpiresIn ?? 900;
-            const newExpiresAt = Date.now() + expiresIn * 1000;
-            socket.data.tokenExpiresAt = newExpiresAt;
-            socket.data.accessToken = token;
-            scheduleSessionTimers(newExpiresAt);
-            ackOk(callback, "SOCKET_AUTH_REFRESHED", locale, {
-              accessToken: token,
-              expiresIn,
-            });
-          })
-          .catch((err: unknown) => {
-            clearTimeout(timeoutId);
-            logger.warn(`/chat auth:refresh error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
-          });
-      }
-    );
+    registerAuthRefreshHandler();
 
     // Gap #7: per-socket typing-expiry timers.
     // Fire-and-forget (no ack). Server holds a 6 s countdown per

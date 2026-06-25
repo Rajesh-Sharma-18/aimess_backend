@@ -71,8 +71,13 @@ function cursorParam(description = "Cursor for pagination") {
 /**
  * before_ts / after_ts pair for the timestamp-paginated message endpoints.
  * Epoch ms, mutually exclusive; omit both for the newest page.
+ *
+ * Pass `{ incrementalSyncAfterTs: true }` for the community messages endpoint,
+ * whose `after_ts` is an incremental-sync cursor over `updatedAt` (not
+ * `createdAt`) — it surfaces edits, reactions, and deletions. Private/group
+ * `after_ts` is plain history forward-paging over `createdAt`.
  */
-function messageTimelineParams() {
+function messageTimelineParams(opts?: { incrementalSyncAfterTs?: boolean }) {
   return [
     {
       name: "before_ts",
@@ -80,15 +85,26 @@ function messageTimelineParams() {
       required: false,
       schema: { type: "integer" as const, minimum: 1 },
       description:
-        "Epoch ms. Returns messages with createdAt <= before_ts (newest-first).",
+        "Epoch ms. Returns messages with createdAt <= before_ts (newest-first). " +
+        "Mutually exclusive with after_ts; omit both for the newest page. " +
+        "`nextCursor` comes back as an epoch-ms string — parse it to an integer " +
+        "before feeding it back as before_ts.",
     },
     {
       name: "after_ts",
       in: "query" as const,
       required: false,
       schema: { type: "integer" as const, minimum: 1 },
-      description:
-        "Epoch ms. Returns messages with createdAt >= after_ts (oldest-first).",
+      description: opts?.incrementalSyncAfterTs
+        ? "Epoch ms. Incremental-sync mode: returns messages with updatedAt >= " +
+          "after_ts (oldest-first) — new, edited, reacted, and deleted (tombstone) " +
+          "messages, each carrying a syncEventType for reconciliation. NOTE: the " +
+          "sort key is updatedAt, NOT createdAt. Mutually exclusive with before_ts. " +
+          "`nextCursor` (epoch-ms string of the last updatedAt) must be parsed to an " +
+          "integer before feeding it back as after_ts."
+        : "Epoch ms. Returns messages with createdAt >= after_ts (oldest-first). " +
+          "Mutually exclusive with before_ts. `nextCursor` comes back as an epoch-ms " +
+          "string — parse it to an integer before feeding it back as after_ts.",
     },
   ];
 }
@@ -375,7 +391,7 @@ const chatInbox = {
       limitParam(20),
     ],
     responses: {
-      ...successResponse("Inbox list", "ChatInboxList"),
+      ...successResponse("Inbox list", "ChatInboxPage"),
       "400": badRequest,
       "401": unauthorized,
     },
@@ -453,7 +469,7 @@ const privateMessages = {
       limitParam(30),
     ],
     responses: {
-      ...successResponse("Messages", "ChatMessageList"),
+      ...successResponse("Messages", "ChatMessagePage"),
       "401": unauthorized,
       "404": notFound,
     },
@@ -805,7 +821,7 @@ const groupMessages = {
       limitParam(30),
     ],
     responses: {
-      ...successResponse("Messages", "ChatMessageList"),
+      ...successResponse("Messages", "ChatMessagePage"),
       "401": unauthorized,
       "404": notFound,
     },
@@ -1277,6 +1293,10 @@ const communityMessages = {
     summary: "Get community room messages",
     description:
       "Dual-mode message endpoint. The query param determines which mode is active — **provide only one of before_ts / after_ts**.\n\n" +
+      "**Access control (Telegram-style):**\n" +
+      "- **PUBLIC** communities: any authenticated user can read message history — membership is NOT required (guests can browse before joining).\n" +
+      "- **PRIVATE** communities: only ACTIVE members can read; non-members and banned users get `403 CHAT_NOT_A_MEMBER`.\n\n" +
+      "**Personal system messages:** SYSTEM messages with `isPersonal: true` (e.g. COMMUNITY_JOINED, 'You joined this community') are returned ONLY to the target user — other members never see them in this history, even in PUBLIC communities.\n\n" +
       "**Scroll / history mode** (`before_ts` or neither):\n" +
       "- `before_ts` → messages with `createdAt <= before_ts`, newest-first.\n" +
       "- Omit both for the newest page.\n" +
@@ -1298,7 +1318,7 @@ const communityMessages = {
         required: true,
         schema: { type: "string" },
       },
-      ...messageTimelineParams(),
+      ...messageTimelineParams({ incrementalSyncAfterTs: true }),
       {
         name: "around",
         in: "query",

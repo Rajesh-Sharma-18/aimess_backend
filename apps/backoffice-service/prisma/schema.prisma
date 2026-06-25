@@ -290,6 +290,40 @@ model UserIndex {
   @@index([email])
 }
 
+// Event-fed read-model for the Livestream Management admin API.
+// Populated by RabbitMQ consumer consuming stream.* events from aimess.events.
+// communityName and creatorUsername are denormalized at ingest time from
+// CommunityIndex / UserIndex (best-effort: empty string if not yet populated).
+model LivestreamIndex {
+  streamId         String    @id
+  communityId      String
+  communityName    String    @default("")
+  creatorId        String
+  creatorUsername  String    @default("")
+  title            String
+  description      String    @default("")
+  thumbnailUrl     String?
+  sourceType       String    @default("")
+  status           String    @default("PENDING")
+  hlsUrl           String?
+  flvUrl           String?
+  viewerCount      Int       @default(0)
+  peakViewers      Int       @default(0)
+  totalComments    Int       @default(0)
+  livedAt          DateTime? @db.Timestamptz(3)
+  endedAt          DateTime? @db.Timestamptz(3)
+  durationSeconds  Int       @default(0)
+  reasonCode       String?
+  endedByAdminId   String?
+  endedByAdminName String?
+  createdAt        DateTime  @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([communityId, status])
+  @@index([creatorId])
+}
+
 // -----------------------------------------------------------------------------
 // Future: report queue (counter static until built)
 // -----------------------------------------------------------------------------

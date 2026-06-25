@@ -7,7 +7,10 @@ import {
   endLivestream,
   getLivestreamDetails,
   listLivestreamReports,
+  listLivestreamUsers,
   listLivestreams,
+  presignThumbnailUpload,
+  saveThumbnail,
 } from "../controllers/index.js";
 import {
   adminAuth,
@@ -21,8 +24,11 @@ import {
   bulkReviewReportsSchema,
   endLivestreamSchema,
   listLivestreamReportsQuerySchema,
+  listLivestreamUsersQuerySchema,
   listLivestreamsQuerySchema,
   livestreamIdParamSchema,
+  thumbnailPresignSchema,
+  thumbnailSaveSchema,
 } from "../validators/index.js";
 
 /** Livestream Management admin API — self-prefixed with `/livestreams`. */
@@ -68,10 +74,33 @@ livestreamRoutes.get(
   validateQuery(listLivestreamReportsQuerySchema),
   listLivestreamReports
 );
+livestreamRoutes.get(
+  "/livestreams/:livestreamId/users",
+  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  validateParams(livestreamIdParamSchema),
+  validateQuery(listLivestreamUsersQuerySchema),
+  listLivestreamUsers
+);
 livestreamRoutes.post(
   "/livestreams/:livestreamId/end",
   requirePermission(PERMISSIONS.LIVESTREAMS_MODERATE),
   validateParams(livestreamIdParamSchema),
   validateBody(endLivestreamSchema),
   endLivestream
+);
+
+// Thumbnail management — two-step: presign → client PUT to MinIO → confirm.
+livestreamRoutes.post(
+  "/livestreams/:livestreamId/thumbnail/presign",
+  requirePermission(PERMISSIONS.LIVESTREAMS_MODERATE),
+  validateParams(livestreamIdParamSchema),
+  validateBody(thumbnailPresignSchema),
+  presignThumbnailUpload
+);
+livestreamRoutes.patch(
+  "/livestreams/:livestreamId/thumbnail",
+  requirePermission(PERMISSIONS.LIVESTREAMS_MODERATE),
+  validateParams(livestreamIdParamSchema),
+  validateBody(thumbnailSaveSchema),
+  saveThumbnail
 );

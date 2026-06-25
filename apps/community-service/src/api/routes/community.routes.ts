@@ -27,6 +27,7 @@ import {
   createCommunityJoinRequest,
   createCommunityReport,
   declineCommunityInvite,
+  closeCommunity,
   deleteCommunity,
   deleteCommunityReport,
   discoverCommunities,
@@ -44,6 +45,7 @@ import {
   listCommunityInvites,
   listCommunityInviteLinks,
   listCommunityJoinRequests,
+  listCommunityBannedMembers,
   listCommunityMembers,
   listCommunityMemberWarnings,
   listCommunityMutedMembers,
@@ -52,9 +54,12 @@ import {
   listMyInvites,
   listMyJoinRequests,
   listMyReports,
+  lookupCommunityInviteLink,
   muteCommunityMember,
   redeemCommunityInviteLink,
   rejectCommunityJoinRequest,
+  resolveCommunityByHandle,
+  reopenCommunity,
   reviewCommunityReport,
   revokeCommunityInviteLink,
   setMuteSetting,
@@ -72,6 +77,7 @@ import { validateBody } from "../middleware/validate-body.js";
 import { validateParams } from "../middleware/validate-params.js";
 import { validateQuery } from "../middleware/validate-query.js";
 import { authenticateAccessToken } from "../../middleware/authenticate-access-token.js";
+
 import { requirePlatformAdmin } from "../../middleware/require-platform-admin.js";
 import {
   addMembersSchema,
@@ -85,15 +91,18 @@ import {
   auditLogsQuerySchema,
   categoryIdParamSchema,
   communityIdParamsSchema,
+  bannedMembersQuerySchema,
   communityMemberParamsSchema,
   createCategorySchema,
   createCommunitySchema,
   createInviteLinkSchema,
+  closeCommunitySchema,
   createInviteSchema,
   createJoinRequestSchema,
   createReportSchema,
   discoverQuerySchema,
   handleAvailableQuerySchema,
+  handleParamsSchema,
   inviteIdParamsSchema,
   inviteLinkCodeParamsSchema,
   inviteLinkIdParamsSchema,
@@ -178,6 +187,15 @@ communityRoutes.get(
   checkHandleAvailable
 );
 
+// Public deep-link resolver. Static segment "/by-handle/:handle" MUST be before
+// the `/:id` param route so "by-handle" isn't captured as a community id.
+// PUBLIC-only: a private community's handle resolves to 404 (never revealed).
+communityRoutes.get(
+  "/by-handle/:handle",
+  validateParams(handleParamsSchema),
+  resolveCommunityByHandle
+);
+
 // Unified list: mode inferred from params. Pagination (before_ts/after_ts) →
 // my joined communities (cursor pagination); else q/categoryId → search across
 // public + my private communities (offset pagination). At least one required.
@@ -231,8 +249,13 @@ communityRoutes.post(
   declineCommunityInvite
 );
 
-// Static `/invite-links/:code/redeem` MUST come BEFORE the `/:id` capture so
+// Static `/invite-links/:code[/redeem]` MUST come BEFORE the `/:id` capture so
 // the param route doesn't swallow `invite-links` as a community id.
+communityRoutes.get(
+  "/invite-links/:code",
+  validateParams(inviteLinkCodeParamsSchema),
+  lookupCommunityInviteLink
+);
 communityRoutes.post(
   "/invite-links/:code/redeem",
   validateParams(inviteLinkCodeParamsSchema),
@@ -310,6 +333,20 @@ communityRoutes.post(
   leaveCommunity
 );
 
+// Owner lifecycle: close (status → CLOSED, evict all members) / reopen.
+communityRoutes.post(
+  "/:id/close",
+  validateParams(communityIdParamsSchema),
+  validateBody(closeCommunitySchema),
+  closeCommunity
+);
+
+communityRoutes.post(
+  "/:id/reopen",
+  validateParams(communityIdParamsSchema),
+  reopenCommunity
+);
+
 communityRoutes.post(
   "/:id/like",
   validateParams(communityIdParamsSchema),
@@ -358,6 +395,23 @@ communityRoutes.post(
 
 communityRoutes.delete(
   "/:id/members/:userId/ban",
+  validateParams(communityMemberParamsSchema),
+  unbanCommunityMember
+);
+
+// --- Banned-members moderation list (MODERATOR+ view; unban per RBAC) ---
+
+communityRoutes.get(
+  "/:id/banned-members",
+  validateParams(communityIdParamsSchema),
+  validateQuery(bannedMembersQuerySchema),
+  listCommunityBannedMembers
+);
+
+// Dedicated unban alias for the banned-members section. Functionally identical
+// to DELETE /:id/members/:userId/ban — both call unbanMember.
+communityRoutes.post(
+  "/:id/banned-members/:userId/unban",
   validateParams(communityMemberParamsSchema),
   unbanCommunityMember
 );

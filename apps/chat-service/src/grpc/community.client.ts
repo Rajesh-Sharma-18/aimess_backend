@@ -26,6 +26,8 @@ export interface ReconcileCommunity {
   adminId: string;
   avatarUrl: string;
   deleted: boolean;
+  /** PUBLIC | PRIVATE — drives non-member read access. May be "" on older servers. */
+  communityType: string;
   members: ReconcileMember[];
 }
 

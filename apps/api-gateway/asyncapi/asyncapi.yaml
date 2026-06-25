@@ -59,6 +59,20 @@ info:
       emits for up to **2 min**; past that, the client re-joins rooms and runs
       `chat:catchup` / `community:catchup`. See SOCKET_EVENTS.md
       "Reconnection & State Recovery".
+    - **Cursor pagination (socket ↔ REST).** History scroll and sync use different
+      cursor codecs per transport — do not feed one transport's cursor into the
+      other verbatim. Mapping:
+      | Operation | REST (HTTP) | Socket.IO |
+      | --- | --- | --- |
+      | Newest page | `GET .../messages` (no cursor) | `messages:fetch` / `community:messages:fetch` (no cursor) |
+      | Page backward (history) | `?before_ts=<epoch-ms>` (inclusive, `createdAt`) | `messages:fetch { cursor }` (ISO-8601 string, exclusive, `createdAt`) |
+      | Page forward (history) | `?after_ts=<epoch-ms>` (inclusive, `createdAt`) | — (use catch-up) |
+      | Incremental sync (edits/reactions/deletes) | community `?after_ts=<epoch-ms>` (inclusive, `updatedAt`) | `community:catchup { sinceTs }` (exclusive, `updatedAt`) |
+      | Jump to message | `?around=<id>` | — |
+      REST boundaries are **inclusive** (de-dupe by id); socket `messages:fetch`
+      and `community:catchup` boundaries are **exclusive** (the cursor item is not
+      re-returned). REST timestamp cursors are epoch-ms; socket `messages:fetch`
+      cursors are ISO-8601 strings.
     - **Throttling:** fire-and-forget events (`typing:*`, `presence:heartbeat`,
       `call:ice`) carry client-side throttle expectations — see SOCKET_EVENTS.md
       "Rate limiting & throttling".
@@ -161,8 +175,6 @@ channels:
       messageNew: { $ref: "#/components/messages/MessageNew" }
       messageEdited: { $ref: "#/components/messages/MessageEdited" }
       convUpdated: { $ref: "#/components/messages/ConvUpdated" }
-      communityUpdated: { $ref: "#/components/messages/CommunityUpdated" }
-      communityCreated: { $ref: "#/components/messages/CommunityCreated" }
       chatCatchupResult: { $ref: "#/components/messages/ChatCatchupResult" }
       messageReadReceipt: { $ref: "#/components/messages/MessageReadReceipt" }
       messageDeliveredReceipt:
@@ -249,13 +261,44 @@ channels:
       communityDelete: { $ref: "#/components/messages/CommunityDelete" }
       # moderation (server -> client)
       communityDeleted: { $ref: "#/components/messages/CommunityDeleted" }
+      # owner lifecycle (server -> client)
+      communityClosed: { $ref: "#/components/messages/CommunityClosed" }
+      communityReopened: { $ref: "#/components/messages/CommunityReopened" }
       # membership real-time (server -> client)
+      communityAdded: { $ref: "#/components/messages/CommunityAdded" }
       communityStatsUpdated:
         { $ref: "#/components/messages/CommunityStatsUpdated" }
       communityMemberRemoved:
         { $ref: "#/components/messages/CommunityMemberRemoved" }
       communityMemberUnbanned:
         { $ref: "#/components/messages/CommunityMemberUnbanned" }
+      # metadata + roster real-time (server -> client)
+      communityMetaUpdated:
+        { $ref: "#/components/messages/CommunityMetaUpdated" }
+      communityMemberUpdated:
+        { $ref: "#/components/messages/CommunityMemberUpdated" }
+      # parity (client -> server)
+      communityMessageRead:
+        { $ref: "#/components/messages/CommunityMessageReadRequest" }
+      communityMessageReactionsGet:
+        { $ref: "#/components/messages/CommunityMessageReactionsGet" }
+      communityMessageForward:
+        { $ref: "#/components/messages/CommunityMessageForward" }
+      communityMessageDelivered:
+        { $ref: "#/components/messages/CommunityMessageDelivered" }
+      communityAuthRefresh:
+        { $ref: "#/components/messages/CommunityAuthRefresh" }
+      # parity (server -> client)
+      communityMessageReadBroadcast:
+        { $ref: "#/components/messages/CommunityMessageReadBroadcast" }
+      communityReadSync: { $ref: "#/components/messages/CommunityReadSync" }
+      # community-list events (delivered to user:<id> on /community)
+      communityUpdated: { $ref: "#/components/messages/CommunityUpdated" }
+      communityCreated: { $ref: "#/components/messages/CommunityCreated" }
+      communitySessionExpired:
+        { $ref: "#/components/messages/CommunitySessionExpired" }
+      communityMessageDeliveredBroadcast:
+        { $ref: "#/components/messages/CommunityMessageDeliveredBroadcast" }
 
   # -------------------------------------------------------------- /notify
   notify:
@@ -290,6 +333,7 @@ channels:
       mediaScanResult: { $ref: "#/components/messages/MediaScanResult" }
       communityJoinRequestUpdate:
         { $ref: "#/components/messages/CommunityJoinRequestUpdate" }
+      communityJoined: { $ref: "#/components/messages/CommunityJoined" }
 
 operations:
   # =================================================== /chat client -> server
@@ -541,16 +585,6 @@ operations:
     channel: { $ref: "#/channels/chat" }
     summary: "conv:updated — chat list bump-to-top (to user:<id>)"
     messages: [{ $ref: "#/channels/chat/messages/convUpdated" }]
-  chat.onCommunityUpdated:
-    action: receive
-    channel: { $ref: "#/channels/chat" }
-    summary: "community:updated — community list bump-to-top (delivered on /chat)"
-    messages: [{ $ref: "#/channels/chat/messages/communityUpdated" }]
-  chat.onCommunityCreated:
-    action: receive
-    channel: { $ref: "#/channels/chat" }
-    summary: "community:created — new community inserted into creator's list (delivered on /chat to user:<creatorId>)"
-    messages: [{ $ref: "#/channels/chat/messages/communityCreated" }]
   chat.onCatchupResult:
     action: receive
     channel: { $ref: "#/channels/chat" }
@@ -792,11 +826,16 @@ operations:
       Two cursor modes (mutually exclusive per room; `sinceTs` takes precedence):
 
       **sinceId mode** — pass `sinceId` (last known message ObjectId). Returns new messages in
-      insertion order (tombstones included). Store `lastId` as the next `sinceId`.
+      insertion order (tombstones included). Store `lastId` as the next `sinceId`. ⚠️ This mode
+      surfaces **new + deleted only** — edits and reaction changes to already-seen messages are
+      **NOT** returned. Clients that need full reconciliation (edits/reactions) must use sinceTs mode.
 
       **sinceTs mode** — pass `sinceTs` (epoch-ms of last known `updatedAt`). Returns ALL
       mutations (new, edited, reacted, deleted tombstones) since that timestamp. Use after
-      returning from background for a full mutation sweep. Store `nextTs` as the next `sinceTs`.
+      returning from background for a full mutation sweep. **You must store `nextTs` from each
+      result and pass it as the next `sinceTs` to page forward** — `lastId`/`sinceId` cannot
+      drive forward paging in this mode. Boundary semantics match REST community `after_ts`
+      (over `updatedAt`).
 
       Server emits one `community:catchup:result` per room, then acks the full batch.
       Every event includes `syncEventType` and `reactions` regardless of mode.
@@ -1011,6 +1050,41 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community.deleted — the community was deleted (broadcast to all members)"
     messages: [{ $ref: "#/channels/community/messages/communityDeleted" }]
+  community.onClosed:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:closed — the owner closed the community (status → CLOSED)"
+    description: |
+      Broadcast to the `community:<id>` room AND to every (now ex-)member's
+      `user:<id>` room when the community ADMIN/owner closes the community. All
+      members have been auto-removed and the community is read-only. Clients
+      should disable all community actions immediately — no refresh, no polling.
+    messages: [{ $ref: "#/channels/community/messages/communityClosed" }]
+  community.onReopened:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:reopened — the owner reopened a closed community (status → ACTIVE)"
+    description: |
+      Emitted when the owner reopens a previously CLOSED community. Delivered to
+      the `community:<id>` room AND to the owner's `user:<id>` channel — the room
+      is empty post-close (every member was evicted) and reopen does not restore
+      the former roster, so a room-only emit would reach nobody; the owner's user
+      channel flips their other tabs/devices back to ACTIVE live. Former members
+      are NOT auto-restored — they re-join via the normal flow.
+    messages: [{ $ref: "#/channels/community/messages/communityReopened" }]
+  community.onAdded:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:added — the recipient just became a member (onboarding)"
+    description: |
+      Delivered ONLY to the new member's `user:<id>` room when they become an
+      ACTIVE member (admin add, join-request approval, invite-link redeem, or
+      self-join). They are not yet in the `community:<id>` room, so the room-scoped
+      `community:member:joined` never reaches them. Carries a full list-row
+      snapshot so the client inserts the community into the sidebar / "mine" list
+      INSTANTLY — no GET /communities/mine round-trip, no page refresh. Idempotent:
+      the client upserts by `communityId`.
+    messages: [{ $ref: "#/channels/community/messages/communityAdded" }]
   community.onStatsUpdated:
     action: receive
     channel: { $ref: "#/channels/community" }
@@ -1027,6 +1101,150 @@ operations:
     summary: "community:member:unbanned — admin lifted a member's ban"
     messages:
       [{ $ref: "#/channels/community/messages/communityMemberUnbanned" }]
+
+  # ======================================= /community parity (client -> server)
+  community.messageRead:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:read — mark community messages as read"
+    description: |
+      Marks all messages in the community room up to `upToMessageId` as read for
+      the authenticated user. Side-effects:
+      1. Broadcasts `community:message:read` to all members of `community:<communityId>` room.
+      2. Emits `community:read_sync` to the reader's own `user:<readerId>` room (multi-device HWM).
+      Ack `data` on success is `{}`.
+    messages: [{ $ref: "#/channels/community/messages/communityMessageRead" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.messageReactionsGet:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:reactions:get — get full reaction user list for a community message"
+    description: |
+      Returns the grouped reaction list (emoji / count / users) for a specific message.
+      Ack `data` on success:
+      ```json
+      { "reactions": [{ "emoji": "👍", "count": 2, "users": [{ "userId": "user_abc", "displayName": "Alice", "avatar": "" }] }] }
+      ```
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMessageReactionsGet" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.messageForward:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:forward — forward a message to another community"
+    description: |
+      Forwards an existing community message to a target community room. The forwarded
+      message is broadcast as `community:message:new` with `isForwarded: true` to the
+      target community room. Ack `data` on success:
+      ```json
+      { "messageId": "683abc...", "communityId": "...", "sentAt": 1749465231234 }
+      ```
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMessageForward" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.messageDelivered:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:delivered — client signals delivery of messages up to upToMessageId"
+    description: |
+      Client emits this immediately after receiving `community:message:new` (like
+      `message:delivered` on the /chat namespace). The server validates active membership
+      and broadcasts `community:message:delivered` to the entire `community:<id>` room so
+      the sender's client can show a ✓✓ delivery indicator.
+
+      Unlike private/group chat, community delivery state is NOT persisted to the database
+      (GeneralRoomMessage has no deliveredTo column — delivery is inferred from membership).
+      This is a broadcast signal only. Ack `data` on success:
+      ```json
+      { "ok": true, "communityId": "...", "deliveredAt": 1749465900000 }
+      ```
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMessageDelivered" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  community.onMessageDelivered:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:delivered — broadcast to community room when a member receives messages"
+    description: |
+      Broadcast to all members in `community:<communityId>` room when any member signals
+      delivery. Clients use this to update the delivery indicator (✓ → ✓✓) next to messages.
+      Only fires if the recipient is an active member.
+    messages:
+      [
+        {
+          $ref: "#/channels/community/messages/communityMessageDeliveredBroadcast",
+        },
+      ]
+
+  community.authRefresh:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "auth:refresh — refresh the access token on /community (same as /chat)"
+    description: |
+      Send the refresh token to obtain a new access token in-band without a transport
+      reconnect; resets the `session:expired` warning + grace timers. Ack `data` is
+      `{ accessToken, expiresIn }`. `SERVICE_ERROR` if the refresh token is
+      invalid/expired (re-authenticate via REST and reconnect).
+    messages: [{ $ref: "#/channels/community/messages/communityAuthRefresh" }]
+    reply:
+      channel: { $ref: "#/channels/community" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+
+  # ======================================= /community parity (server -> client)
+  community.onMessageRead:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:message:read — a member marked messages as read (broadcast to community room)"
+    description: |
+      Broadcast to all members in `community:<communityId>` room when any member
+      marks messages as read. Clients can use this to show read indicators.
+    messages:
+      [{ $ref: "#/channels/community/messages/communityMessageReadBroadcast" }]
+  community.onReadSync:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:read_sync — multi-device read sync (delivered to user:<readerId>)"
+    description: |
+      Sent to `user:<readerId>` so the reader's OTHER connected devices clear
+      unread counts for the community. Mirrors the `/chat` `read_sync` event for
+      cross-device consistency.
+    messages: [{ $ref: "#/channels/community/messages/communityReadSync" }]
+  community.onCommunityUpdated:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:updated — community list bump-to-top (delivered to user:<id> on /community)"
+    description: |
+      Sent to each active member's `user:<id>` room on the /community namespace on
+      every new community message, so a client on the community LIST can splice that
+      community to the top and update its preview + unread without refetching.
+      (Mirror of the /chat `conv:updated` bump for private/group inboxes.)
+    messages: [{ $ref: "#/channels/community/messages/communityUpdated" }]
+  community.onCommunityCreated:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:created — new community inserted into creator's list (delivered to user:<creatorId> on /community)"
+    description: |
+      Sent to the creator's `user:<creatorId>` room on the /community namespace when
+      they create a community, so it appears in their community list immediately.
+    messages: [{ $ref: "#/channels/community/messages/communityCreated" }]
+  community.onSessionExpired:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "session:expired — access token about to expire (same contract as /chat)"
+    description: |
+      Emitted ~5 min before the handshake token expires. The client should call
+      `auth:refresh` (or re-authenticate over REST and reconnect) within the
+      `gracePeriod` (60 s) — after that the server force-disconnects the socket.
+    messages:
+      [{ $ref: "#/channels/community/messages/communitySessionExpired" }]
 
   # ================================================= /notify client -> server
   notify.fetch:
@@ -1143,6 +1361,18 @@ operations:
       delivered alongside it.
     messages:
       [{ $ref: "#/channels/notify/messages/communityJoinRequestUpdate" }]
+  notify.onCommunityJoined:
+    action: receive
+    channel: { $ref: "#/channels/notify" }
+    summary: "community:joined — the user became an ACTIVE member (multi-device reconcile)"
+    description: |
+      Forwarded verbatim from `notify:<userId>` when the user becomes an ACTIVE
+      member of a community via any path (public self-join, invite-link redeem
+      with autoApprove, or a moderator approving their join request). Primary use:
+      reconcile the user's OTHER connected devices — flip the community's "Join"
+      button to "Open" and add it to the community list without a refresh. An
+      in-app `notification:new` (`community.member_joined`) is delivered alongside.
+    messages: [{ $ref: "#/channels/notify/messages/communityJoined" }]
 
 components:
   securitySchemes:
@@ -1649,7 +1879,7 @@ components:
             unread: false
     CommunityUpdated:
       name: "community:updated"
-      title: "community:updated (on /chat)"
+      title: "community:updated (on /community)"
       payload: { $ref: "#/components/schemas/CommunityUpdatedPayload" }
       examples:
         - name: Community bumped to top with new message
@@ -1666,9 +1896,9 @@ components:
             unread: true
     CommunityCreated:
       name: "community:created"
-      title: "community:created (on /chat)"
+      title: "community:created (on /community)"
       summary: >
-        Delivered on /chat to room user:<creatorId> immediately after a community
+        Delivered on /community to room user:<creatorId> immediately after a community
         is successfully created. Payload is the full CommunityData object — identical
         to the POST /communities 201 response body.data. Frontend: prepend this item
         to the joined-communities list; no extra API call or page reload is needed.
@@ -2250,74 +2480,101 @@ components:
             serverTs: 1749465233000
             sentAt: 1749465233000
         - name: community_system_created
-          summary: Community lifecycle system message — community created
+          summary: "Community lifecycle system message — community created (SENDER-LESS)"
           payload:
             id: "684abc123def456789012345"
             messageId: "684abc123def456789012345"
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             roomId: "6843e1a2b5c3d4e5f6a7b8c9"
-            senderId: "user_xyz"
-            senderName: "Jane Doe"
+            senderId: ""
+            senderName: ""
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "Jane Doe created the community"
+              text: "Community created"
               files: []
-            message: "Jane Doe created the community"
+            message: "Community created"
             clientMessageId: ""
             reactions: []
             serverTs: 1750000000000
             sentAt: 1750000000000
             systemMessageType: COMMUNITY_CREATED
+            isPersonal: false
+            # ACTOR-LESS event: systemMetadata carries ONLY communityName — no
+            # actorUserId/actorName — so no client can render "{name} created the
+            # community". Always render "Community created" for every viewer.
             systemMetadata:
               communityName: Tech Enthusiasts
+        - name: community_system_name_updated
+          summary: "Community lifecycle system message — community renamed (SENDER-LESS)"
+          payload:
+            id: "684abc123def456789012349"
+            messageId: "684abc123def456789012349"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: ""
+            senderName: ""
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: 'Community renamed to "Tech Enthusiasts Pro"'
+              files: []
+            message: 'Community renamed to "Tech Enthusiasts Pro"'
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000050000
+            sentAt: 1750000050000
+            systemMessageType: COMMUNITY_NAME_UPDATED
+            isPersonal: false
+            systemMetadata:
+              newName: Tech Enthusiasts Pro
               actorUserId: user_xyz
               actorName: Jane Doe
-        - name: community_system_updated
-          summary: Community lifecycle system message — community updated (one message per changed field)
+        - name: community_system_avatar_updated
+          summary: "Community lifecycle system message — community photo updated (SENDER-LESS)"
           payload:
             id: "684abc123def456789012346"
             messageId: "684abc123def456789012346"
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             roomId: "6843e1a2b5c3d4e5f6a7b8c9"
-            senderId: "user_xyz"
-            senderName: "Jane Doe"
+            senderId: ""
+            senderName: ""
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "Jane Doe changed the community photo"
+              text: "Community photo updated"
               files: []
-            message: "Jane Doe changed the community photo"
+            message: "Community photo updated"
             clientMessageId: ""
             reactions: []
             serverTs: 1750000100000
             sentAt: 1750000100000
-            systemMessageType: COMMUNITY_UPDATED
+            systemMessageType: COMMUNITY_AVATAR_UPDATED
+            isPersonal: false
             systemMetadata:
               actorUserId: user_xyz
               actorName: Jane Doe
-              changedFields:
-                - avatar
         - name: community_system_role_changed
-          summary: Community lifecycle system message — member role changed
+          summary: "Community lifecycle system message — member promoted to moderator (SENDER-LESS)"
           payload:
             id: "684abc123def456789012347"
             messageId: "684abc123def456789012347"
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             roomId: "6843e1a2b5c3d4e5f6a7b8c9"
-            senderId: "user_xyz"
-            senderName: "Jane Doe"
+            senderId: ""
+            senderName: ""
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "Jane Doe promoted Bob Smith to Moderator"
+              text: "Bob Smith is now a moderator"
               files: []
-            message: "Jane Doe promoted Bob Smith to Moderator"
+            message: "Bob Smith is now a moderator"
             clientMessageId: ""
             reactions: []
             serverTs: 1750000200000
             sentAt: 1750000200000
-            systemMessageType: MEMBER_ROLE_CHANGED
+            systemMessageType: ROLE_CHANGED
+            isPersonal: false
             systemMetadata:
               actorUserId: user_xyz
               actorName: Jane Doe
@@ -2325,6 +2582,83 @@ components:
               targetName: Bob Smith
               oldRole: MEMBER
               newRole: MODERATOR
+        - name: community_system_live_started
+          summary: "Community lifecycle system message — live stream started (SENDER-LESS)"
+          payload:
+            id: "684abc123def456789012350"
+            messageId: "684abc123def456789012350"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: ""
+            senderName: ""
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Live stream started"
+              files: []
+            message: "Live stream started"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000400000
+            sentAt: 1750000400000
+            systemMessageType: LIVE_STREAM_STARTED
+            isPersonal: false
+            systemMetadata:
+              actorUserId: user_xyz
+              actorName: Jane Doe
+        - name: community_system_live_ended
+          summary: "Community lifecycle system message — live stream ended with duration (SENDER-LESS)"
+          payload:
+            id: "684abc123def456789012351"
+            messageId: "684abc123def456789012351"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: ""
+            senderName: ""
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "Live stream ended (2 hours 15 minutes)"
+              files: []
+            message: "Live stream ended (2 hours 15 minutes)"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750008500000
+            sentAt: 1750008500000
+            systemMessageType: LIVE_STREAM_ENDED
+            isPersonal: false
+            systemMetadata:
+              actorUserId: user_xyz
+              actorName: Jane Doe
+              duration: "2 hours 15 minutes"
+        - name: community_system_joined
+          summary: >-
+            PERSONAL system message — the joining user joined the community.
+            Published ONLY to the joiner's `user:<id>` channel (never the
+            community room); isPersonal=true. Other members, moderators, and
+            admins never receive or see it.
+          payload:
+            id: "684abc123def456789012348"
+            messageId: "684abc123def456789012348"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            senderId: ""
+            senderName: ""
+            senderAvatar: ""
+            contentType: SYSTEM
+            content:
+              text: "You joined the community"
+              files: []
+            message: "You joined the community"
+            clientMessageId: ""
+            reactions: []
+            serverTs: 1750000300000
+            sentAt: 1750000300000
+            systemMessageType: COMMUNITY_JOINED
+            isPersonal: true
+            systemMetadata:
+              actorUserId: user_joiner
+              actorName: Bob Smith
     CommunityMemberJoined:
       name: "community:member:joined"
       title: "community:member:joined"
@@ -2338,6 +2672,33 @@ components:
             avatarUrl: ""
             role: MEMBER
             joinedAt: 1749465800000
+    CommunityAdded:
+      name: "community:added"
+      title: "community:added"
+      summary: >-
+        Delivered to the new member's user:<id> channel when they become a member
+        (admin add / join-request approval / invite-link redeem / self-join).
+        Carries a full list-row snapshot so the client inserts the community into
+        the sidebar / "mine" list instantly — no refetch, no refresh. Idempotent
+        on communityId.
+      payload: { $ref: "#/components/schemas/CommunityAddedPayload" }
+      examples:
+        - name: Added by an admin
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            name: "Nature Lovers"
+            handle: "nature"
+            description: "All things nature."
+            avatarUrl: "https://cdn.example.com/community/avatar/abc.jpg?X-Amz-..."
+            type: PUBLIC
+            categoryId: "6843c0c0c0c0c0c0c0c0c0c0"
+            categoryName: "Hobbies"
+            memberCount: 2
+            role: MEMBER
+            status: ACTIVE
+            via: add_members
+            joinedAt: 1749465800000
+            addedAt: 1749465800000
     CommunityStatsUpdated:
       name: "community:stats:updated"
       title: "community:stats:updated"
@@ -2381,6 +2742,78 @@ components:
             userId: "user_def456"
             actorId: "user_admin001"
             updatedAt: 1749465800000
+    CommunityMetaUpdated:
+      name: "community:meta:updated"
+      title: "community:meta:updated"
+      summary: >-
+        Community metadata changed (name / avatar / description / category /
+        visibility / handle). Delivered to the community:<id> room (detail /
+        header / chat viewers) AND to every active member's user:<id> channel
+        (list rows). Distinct from community:updated (the list bump-to-top, which
+        carries a last-message preview and reorders) — community:meta:updated is
+        a metadata patch and does NOT reorder. Idempotent on updatedAt.
+      payload: { $ref: "#/components/schemas/CommunityMetaUpdatedPayload" }
+      examples:
+        - name: Name changed
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            changes:
+              name: true
+            community:
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              name: "AI Community"
+              handle: "ai-community"
+              description: "All things AI"
+              avatar: "https://cdn.example.com/community/avatar.png?sig=abc"
+              type: PUBLIC
+              categoryId: "cat_tech"
+              categoryName: "Technology"
+              memberCount: 142
+              updatedAt: 1749465800000
+            updatedAt: 1749465800000
+        - name: Avatar + description changed together
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            changes:
+              avatar: true
+              description: true
+            community:
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              name: "Photography Club"
+              handle: "photography-club"
+              description: "Share your best shots"
+              avatar: "https://cdn.example.com/community/new.png?sig=def"
+              type: PRIVATE
+              categoryId: "cat_arts"
+              categoryName: "Arts"
+              memberCount: 88
+              updatedAt: 1749465900000
+            updatedAt: 1749465900000
+    CommunityMemberUpdated:
+      name: "community:member:updated"
+      title: "community:member:updated"
+      summary: >-
+        A single member's roster row changed — role promotion/demotion, admin
+        transfer (emitted once per affected member), or a profile name/avatar
+        sync. Broadcast to community:<id>; the client patches the Members page
+        badge + chat header without a refetch.
+      payload: { $ref: "#/components/schemas/CommunityMemberUpdatedPayload" }
+      examples:
+        - name: Member promoted to moderator
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            role: MODERATOR
+            updatedAt: 1749465800000
+        - name: Profile name/avatar synced
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userId: "user_def456"
+            username: "newhandle"
+            displayName: "New Name"
+            avatarUrl: "https://cdn.example.com/avatar.png?sig=ghi"
+            role: MEMBER
+            updatedAt: 1749465800000
     CommunityJoinRequestUpdate:
       name: "community:join_request:update"
       title: "community:join_request:update"
@@ -2414,6 +2847,18 @@ components:
               communityAvatarUrl: null
               communityHandle: "photography-club"
               requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+    CommunityJoined:
+      name: "community:joined"
+      title: "community:joined"
+      payload: { $ref: "#/components/schemas/CommunityJoinedDTO" }
+      examples:
+        - name: Public/direct join reconcile (self-join or invite auto-approve)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            communityName: "Photography Club"
+            communityHandle: "photography_club"
+            communityAvatarUrl: "https://cdn.example.com/avatar.png?sig=abc"
+            reactivated: false
     CommunityCatchup:
       name: "community:catchup"
       title: "community:catchup"
@@ -2679,6 +3124,127 @@ components:
             pinnedCount: 0
             unpinnedBy: "user_mod001"
 
+    # -------- /community parity events (client -> server) --------
+    CommunityMessageReadRequest:
+      name: "community:message:read"
+      title: "community:message:read (request)"
+      summary: Mark community messages as read up to a given message id.
+      payload: { $ref: "#/components/schemas/CommunityMarkReadPayload" }
+      examples:
+        - name: Mark all messages up to a given id as read
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            upToMessageId: "683abc123def456789012345"
+        - name: Mark read with optional roomId
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            upToMessageId: "683abc123def456789012399"
+    CommunityMessageReactionsGet:
+      name: "community:message:reactions:get"
+      title: "community:message:reactions:get"
+      summary: Get the full reaction user list for a community message.
+      payload: { $ref: "#/components/schemas/CommunityReactionsGetPayload" }
+      examples:
+        - name: Get reactions for a message
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+    CommunityMessageForward:
+      name: "community:message:forward"
+      title: "community:message:forward"
+      summary: Forward a community message to another community.
+      payload: { $ref: "#/components/schemas/CommunityForwardPayload" }
+      examples:
+        - name: Forward to a different community's general room
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            targetCommunityId: "6843e1a2b5c3d4e5f6a7b8d0"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440099"
+        - name: Forward to a specific room in another community
+          payload:
+            messageId: "683abc123def456789012345"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            targetCommunityId: "6843e1a2b5c3d4e5f6a7b8d0"
+            targetRoomId: "6843e1a2b5c3d4e5f6a7b8d1"
+            clientMessageId: "550e8400-e29b-41d4-a716-446655440100"
+    CommunityMessageDelivered:
+      name: "community:message:delivered"
+      title: "community:message:delivered"
+      summary: Client signals delivery of community messages up to upToMessageId.
+      payload: { $ref: "#/components/schemas/CommunityMarkReadPayload" }
+      examples:
+        - name: Mark messages delivered up to the latest received
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            upToMessageId: "683abc123def456789012345"
+    CommunityAuthRefresh:
+      name: "auth:refresh"
+      title: "auth:refresh (on /community)"
+      summary: "Refresh the access token in-band on /community. Ack data is { accessToken, expiresIn }."
+      payload: { $ref: "#/components/schemas/AuthRefreshPayload" }
+      examples:
+        - name: Refresh with a valid refresh token
+          payload:
+            refreshToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyX2FiYzEyMyJ9.s1gNaTuRe"
+
+    # -------- /community parity events (server -> client) --------
+    CommunityMessageReadBroadcast:
+      name: "community:message:read"
+      title: "community:message:read (broadcast)"
+      summary: Broadcast to community:<id> room when a member marks messages as read.
+      payload: { $ref: "#/components/schemas/CommunityMarkReadBroadcast" }
+      examples:
+        - name: A member read up to the latest message
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            readerId: "user_abc123"
+            upToMessageId: "683abc123def456789012345"
+            readAt: 1749465900000
+    CommunityReadSync:
+      name: "community:read_sync"
+      title: "community:read_sync"
+      summary: Multi-device read sync for community chat — delivered to user:<readerId>.
+      payload: { $ref: "#/components/schemas/CommunityReadSyncPayload" }
+      examples:
+        - name: Other devices clear unread for this community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            upToMessageId: "683abc123def456789012345"
+            readAt: 1749465900000
+    CommunityMessageDeliveredBroadcast:
+      name: "community:message:delivered"
+      title: "community:message:delivered (broadcast)"
+      summary: Broadcast to community:<id> room when a member signals delivery.
+      payload:
+        type: object
+        required: [communityId, recipientId, upToMessageId, deliveredAt]
+        properties:
+          communityId: { type: string }
+          recipientId: { type: string }
+          upToMessageId: { type: string }
+          deliveredAt: { type: integer, description: "epoch ms" }
+      examples:
+        - name: Recipient received messages up to the latest
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            recipientId: "user_abc123"
+            upToMessageId: "683abc123def456789012345"
+            deliveredAt: 1749465900000
+    CommunitySessionExpired:
+      name: "session:expired"
+      title: "session:expired (on /community)"
+      summary: "Access-token expiry warning — same shape as /chat session:expired."
+      payload: { $ref: "#/components/schemas/SessionExpiredPayload" }
+      examples:
+        - name: Token expiring — refresh within grace period
+          payload:
+            reason: TOKEN_EXPIRED
+            expiresAt: 1749465900000
+            reconnect: true
+            gracePeriod: 60
+
     # -------- /community moderation --------
     CommunityMemberKick:
       name: "community.member.kick"
@@ -2775,6 +3341,36 @@ components:
           payload:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             deletedBy: "user_admin_001"
+
+    # -------- /community owner lifecycle (server -> client) --------
+    CommunityClosed:
+      name: "community:closed"
+      title: "community:closed"
+      summary: "Broadcast to community:<id> AND each ex-member's user:<id> when the owner closes the community (status → CLOSED). All members are auto-removed; clients disable all community actions immediately."
+      payload: { $ref: "#/components/schemas/CommunityClosedPayload" }
+      examples:
+        - name: Owner closed the community with a reason
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "CLOSED"
+            closedAt: 1749983445000
+            reason: "Archiving for the season"
+        - name: Owner closed the community (no reason)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "CLOSED"
+            closedAt: 1749983445000
+    CommunityReopened:
+      name: "community:reopened"
+      title: "community:reopened"
+      summary: "Broadcast to community:<id> when the owner reopens a closed community (status → ACTIVE). Former members re-join via the normal flow."
+      payload: { $ref: "#/components/schemas/CommunityReopenedPayload" }
+      examples:
+        - name: Owner reopened the community
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            status: "ACTIVE"
+            reopenedAt: 1749990000000
 
     # -------- /notify --------
     NotificationsFetch:
@@ -3283,10 +3879,25 @@ components:
       required: [messageId, targetConversationId, clientMessageId]
     MessagesFetchPayload:
       type: object
+      description: |
+        Cursor-paged message history (backward only — newest → oldest), private/group.
+        Omit `cursor` for the newest page; `hasMore: false` in the result means the
+        beginning of history was reached. Sort key is `createdAt`, newest-first.
       properties:
         conversationId: { type: string }
-        cursor: { type: string }
-        limit: { type: integer, maximum: 100 }
+        cursor:
+          type: string
+          description: |
+            Opaque scroll cursor — an **ISO-8601 string** (the last returned message's
+            `createdAt`, e.g. `"2025-06-09T10:30:00.000Z"`). Boundary is **EXCLUSIVE**:
+            the cursor item is not re-returned. NOTE: this differs from the REST
+            `before_ts` cursor (epoch-ms integer, inclusive) — do not feed a REST
+            cursor here verbatim.
+        limit:
+          type: integer
+          maximum: 100
+          default: 30
+          description: "Page size. Defaults to 30 when omitted; capped at 100."
         conversationType: { $ref: "#/components/schemas/ConversationType" }
       required: [conversationId]
     ChatCatchupPayload:
@@ -3826,6 +4437,12 @@ components:
       required: [communityId]
     CommunityMessageSendPayload:
       type: object
+      description: |
+        Payload for `community:message:send`. The gateway accepts two convenience aliases:
+        - `contentText` is accepted as an alias for `message` (both refer to the body text).
+        - Top-level `files[]` is accepted as an alias for `media.files[]` — you may send
+          `files: [{…}]` at the top level instead of nesting inside `media`.
+        New clients are encouraged to use the canonical `message` and `media.files[]` fields.
       properties:
         communityId: { type: string, minLength: 1, maxLength: 200 }
         roomId: { type: string, minLength: 1, maxLength: 200 }
@@ -3834,8 +4451,17 @@ components:
           type: string
           default: ""
           maxLength: 4000
-          description: "Message text. May be empty for non-text types (location, contact, sticker, gif, etc.)."
+          description: "Message text. May be empty for non-text types (location, contact, sticker, gif, etc.). Alias: `contentText`."
+        contentText:
+          type: string
+          maxLength: 4000
+          description: "Alias for `message`. Accepted for cross-namespace parity with the /chat namespace."
         contentType: { $ref: "#/components/schemas/ContentType" }
+        files:
+          type: array
+          maxItems: 30
+          items: { $ref: "#/components/schemas/FileAttachment" }
+          description: "Top-level alias for `media.files[]`. Use either this or `media.files[]`, not both."
         media:
           type: object
           description: "Gallery / files attachment. One files[] array holds images, videos, documents, audio, voice notes, and GIFs."
@@ -3869,6 +4495,10 @@ components:
       required: [communityId, contentType]
     CommunityMessagesFetchPayload:
       type: object
+      description: |
+        Cursor-paged community message history (backward only — newest → oldest).
+        Sort key is `createdAt`, newest-first. For incremental sync of edits,
+        reactions, and deletions use `community:catchup` with `sinceTs`, not this event.
       properties:
         roomId: { type: string }
         cursor:
@@ -3879,7 +4509,9 @@ components:
             Must not be in the future (a 5 s clock-skew grace window is
             applied server-side). Omit for the most recent page.
             Pass the `nextCursor` from the previous response to page
-            backwards.
+            backwards. Boundary is **EXCLUSIVE** — the cursor item is not
+            re-returned. NOTE: this is an ISO-8601 string, unlike the REST
+            `before_ts` cursor (epoch-ms integer, inclusive).
         limit:
           type: integer
           minimum: 1
@@ -3943,29 +4575,119 @@ components:
           type: string
           nullable: true
           enum:
+            # Community lifecycle
             - COMMUNITY_CREATED
+            - COMMUNITY_NAME_UPDATED
+            - COMMUNITY_DESCRIPTION_UPDATED
+            - COMMUNITY_AVATAR_UPDATED
+            - COMMUNITY_BANNER_UPDATED
             - COMMUNITY_UPDATED
+            # Live streaming
+            - LIVE_STREAM_STARTED
+            - LIVE_STREAM_ENDED
+            # Membership / moderation (COMMUNITY-visible)
+            - ROLE_CHANGED
+            - MEMBER_JOINED
+            - MEMBER_LEFT
+            - MEMBER_REMOVED
+            - MEMBER_BANNED
+            - MEMBER_UNBANNED
+            - MEMBER_MUTED
+            - MEMBER_UNMUTED
+            # Message actions
+            - PINNED_MESSAGE
+            - UNPINNED_MESSAGE
+            - COMMUNITY_INVITE_CREATED
+            # Personal (visible only to the affected user)
+            - COMMUNITY_JOINED
+            - JOIN_REQUEST_APPROVED
+            - JOIN_REQUEST_REJECTED
+            - ROLE_CHANGED_SELF
+            # Legacy alias — old persisted rows only
             - MEMBER_ROLE_CHANGED
           description: >-
-            Present when contentType is SYSTEM. Identifies the lifecycle event.
-            Null/absent for normal messages.
+            Present when contentType is SYSTEM. SYSTEM messages are SENDER-LESS
+            (senderId/senderName/senderAvatar are empty strings) — the actor is
+            in systemMetadata.actorUserId/actorName only. The `message` / `content.text`
+            field carries the canonical English fallback; render it verbatim or
+            localize from systemMessageType + systemMetadata.
+
+            Canonical fallback texts:
+              COMMUNITY_CREATED             → "Community created"
+              COMMUNITY_NAME_UPDATED        → 'Community renamed to "{{metadata.newName}}"'
+              COMMUNITY_AVATAR_UPDATED      → "Community photo updated"
+              COMMUNITY_DESCRIPTION_UPDATED → "Community description updated"
+              COMMUNITY_BANNER_UPDATED      → "Community banner updated"
+              COMMUNITY_UPDATED             → "Community details updated"
+              LIVE_STREAM_STARTED           → "Live stream started"
+              LIVE_STREAM_ENDED             → "Live stream ended ({{metadata.duration}})"
+                                              or "Live stream ended" when duration absent
+              ROLE_CHANGED (bystander)      → "{{targetName}} is now a moderator/admin/member"
+              ROLE_CHANGED (viewer=target)  → "You are now a moderator/admin/member"
+              MEMBER_REMOVED                → "{{targetName}} was removed"
+              MEMBER_BANNED                 → "{{targetName}} was banned"
+              MEMBER_UNBANNED               → "{{targetName}} was unbanned"
+              MEMBER_MUTED                  → "{{targetName}} was muted"
+              MEMBER_UNMUTED                → "{{targetName}} was unmuted"
+              PINNED_MESSAGE (actor)        → "You pinned a message"
+              PINNED_MESSAGE (bystander)    → "{{actorName}} pinned a message"
+              COMMUNITY_JOINED              → "You joined the community" (PERSONAL)
+              JOIN_REQUEST_APPROVED         → "Your request to join was approved" (PERSONAL)
+              JOIN_REQUEST_REJECTED         → "Your request to join was declined" (PERSONAL)
+
+            Hidden in chat timeline (never returned in history): MEMBER_LEFT, MEMBER_JOINED.
+            MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are visible to all members.
+            PERSONAL types (isPersonal=true): COMMUNITY_JOINED, JOIN_REQUEST_APPROVED,
+            JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF.
+            MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED (old persisted rows only).
+        isPersonal:
+          type: boolean
+          description: >-
+            True for user-scoped (PERSONAL) SYSTEM messages — visible ONLY to the
+            target user, never broadcast to the community room and never returned
+            to other members in history. COMMUNITY_JOINED ("You joined the
+            community") is PERSONAL: delivered to the joiner's `user:<id>` channel
+            only. All other system types are COMMUNITY-visible (isPersonal=false /
+            absent). Null/absent for normal messages.
         systemMetadata:
           type: object
           nullable: true
           additionalProperties: true
           description: >-
-            Structured payload for system message rendering. Null/absent for
-            normal messages. All three types share `actorUserId` (the userId
+            Structured payload for SYSTEM message rendering. Null/absent for
+            normal messages. ACTOR-BEARING types share `actorUserId` (the userId
             who triggered the event) and `actorName` (their resolved display
-            name). Frontend renders "You" when `actorUserId === currentUserId`,
-            otherwise uses `actorName`. Shape by systemMessageType:
-            COMMUNITY_CREATED: { actorUserId, actorName, communityName }.
-            COMMUNITY_UPDATED: { actorUserId, actorName, changedFields[1] }
-              — exactly one item in changedFields; one message emitted per
-              changed field (avatar→photo, name→title, description, etc.).
-            MEMBER_ROLE_CHANGED: { actorUserId, actorName, targetUserId,
-              targetName, oldRole, newRole } — frontend derives "promoted" vs
-              "demoted" from role ranks (ADMIN>MODERATOR>MEMBER).
+            name) — render "You" when `actorUserId === currentUserId`, otherwise
+            use `actorName`.
+
+            ACTOR-LESS lifecycle types — COMMUNITY_CREATED, COMMUNITY_NAME_UPDATED,
+            COMMUNITY_DESCRIPTION_UPDATED, COMMUNITY_AVATAR_UPDATED,
+            COMMUNITY_BANNER_UPDATED, COMMUNITY_UPDATED, LIVE_STREAM_STARTED,
+            LIVE_STREAM_ENDED — describe the EVENT, not the actor. They carry NO
+            `actorUserId`/`actorName` (and never `creatorId`/`creatorName`); the
+            actor must NOT be rendered. Show the canonical text for every viewer
+            (e.g. "Community created" — NEVER "{name} created the community").
+
+            Per-type extra fields:
+
+            COMMUNITY_CREATED:       { communityName }
+            COMMUNITY_NAME_UPDATED:  { newName } — the rename target (NOT newCommunityName)
+            LIVE_STREAM_ENDED:       { duration? } — human-readable runtime,
+                                     e.g. "2 hours 15 minutes"; absent if unknown
+            ROLE_CHANGED /
+             MEMBER_ROLE_CHANGED:    { targetUserId, targetName, oldRole, newRole }
+                                     — derive "promoted" vs "demoted" from role ranks
+                                       (ADMIN>MODERATOR>MEMBER)
+            MEMBER_REMOVED /
+             MEMBER_BANNED /
+             MEMBER_UNBANNED /
+             MEMBER_MUTED /
+             MEMBER_UNMUTED:         { targetUserId, targetName }
+            PINNED_MESSAGE /
+             UNPINNED_MESSAGE:       { messageId, messagePreview }
+            COMMUNITY_JOINED /
+             JOIN_REQUEST_APPROVED /
+             JOIN_REQUEST_REJECTED:  no extra fields (PERSONAL; actor == target user)
     CommunityMemberDTO:
       type: object
       additionalProperties: true
@@ -4008,6 +4730,29 @@ components:
             - $ref: "#/components/schemas/NotificationNavigation"
           description: "Deep-link navigation included in the realtime status-flip event."
       required: [communityId, requestId, status]
+    CommunityJoinedDTO:
+      type: object
+      description: |
+        Server → client (`/notify`, room `user:<userId>`). Real-time confirmation
+        to the JOINER that they are now an ACTIVE member of a community — fired on
+        every path that turns the caller active (public self-join, invite-link
+        redeem with autoApprove, join-request approval). Primary use is to
+        reconcile the user's OTHER connected devices (flip "Join" → "Open" and
+        insert the community into the list without a refresh). Published by
+        notifications-service to `notify:<userId>` on the `community.member_joined`
+        domain event and forwarded verbatim by the gateway. An in-app
+        `notification:new` (type `community.member_joined`) is delivered alongside.
+      properties:
+        communityId: { type: string }
+        communityName: { type: string }
+        communityHandle: { type: string }
+        communityAvatarUrl: { type: string, nullable: true }
+        reactivated:
+          {
+            type: boolean,
+            description: "True when a previously-LEFT membership was reactivated rather than freshly created.",
+          }
+      required: [communityId, communityName, communityHandle, reactivated]
     CommunityCatchupPayload:
       type: object
       properties:
@@ -4523,6 +5268,100 @@ components:
         deletedBy:
           { type: string, description: "userId of the admin who deleted it." }
       required: [communityId, deletedBy]
+    CommunityClosedPayload:
+      type: object
+      description: |
+        Server → client. Broadcast to community:<id> AND to every (now ex-)member's
+        user:<id> room when the owner closes the community (status → CLOSED). All
+        members are auto-removed; the community is read-only until reopened.
+      properties:
+        communityId: { type: string }
+        status: { type: string, enum: [CLOSED] }
+        closedAt:
+          {
+            type: integer,
+            description: "Epoch ms when the community was closed.",
+          }
+        reason:
+          {
+            type: string,
+            description: "Optional owner-supplied reason. Absent when none given.",
+          }
+      required: [communityId, status, closedAt]
+    CommunityReopenedPayload:
+      type: object
+      description: |
+        Server → client. Broadcast to community:<id> when the owner reopens a
+        previously CLOSED community (status → ACTIVE). Former members are NOT
+        auto-restored — they re-join via the normal flow.
+      properties:
+        communityId: { type: string }
+        status: { type: string, enum: [ACTIVE] }
+        reopenedAt:
+          {
+            type: integer,
+            description: "Epoch ms when the community was reopened.",
+          }
+      required: [communityId, status, reopenedAt]
+    CommunityAddedPayload:
+      type: object
+      description: >-
+        Server → client. Delivered to the new member's user:<id> channel on
+        membership creation. Full list-row snapshot — apply verbatim to insert the
+        community into the sidebar / "mine" list. `avatarUrl` is a resolved
+        presigned URL (render as-is, never persist). Idempotent on communityId.
+      properties:
+        communityId: { type: string }
+        name: { type: string }
+        handle: { type: string }
+        description: { type: string, nullable: true }
+        avatarUrl:
+          type: string
+          nullable: true
+          description: "Resolved presigned URL — render as-is, never persist."
+        type:
+          type: string
+          enum: [PUBLIC, PRIVATE]
+        categoryId: { type: string, nullable: true }
+        categoryName: { type: string, nullable: true }
+        memberCount: { type: integer }
+        role:
+          type: string
+          enum: [ADMIN, MODERATOR, MEMBER]
+          description: "The recipient's role in the community."
+        status:
+          type: string
+          enum: [ACTIVE, CLOSED]
+        via:
+          type: string
+          enum:
+            [
+              add_members,
+              join_request_approved,
+              join_request_auto_accept,
+              invite_auto_approve,
+              invite_link_redeem,
+              self_join,
+            ]
+        joinedAt: { type: integer, description: "Epoch ms." }
+        addedAt: { type: integer, description: "Epoch ms — idempotency key." }
+      required:
+        [
+          communityId,
+          name,
+          handle,
+          description,
+          avatarUrl,
+          type,
+          categoryId,
+          categoryName,
+          memberCount,
+          role,
+          status,
+          via,
+          joinedAt,
+          addedAt,
+        ]
     CommunityStatsUpdatedPayload:
       type: object
       description: "Server → client. Broadcast to community:<id> when active memberCount changes."
@@ -4556,3 +5395,157 @@ components:
         actorId: { type: string, description: "The admin who lifted the ban." }
         updatedAt: { type: integer, description: "Epoch ms." }
       required: [communityId, userId, actorId, updatedAt]
+    CommunityMetaDto:
+      type: object
+      description: "Canonical post-update community metadata snapshot. Apply verbatim to the detail/header; patch the list row from it. `avatar` is a resolved presigned URL."
+      properties:
+        communityId: { type: string }
+        name: { type: string }
+        handle: { type: string }
+        description: { type: string, nullable: true }
+        avatar:
+          type: string
+          nullable: true
+          description: "Resolved presigned URL — render as-is, never persist."
+        type:
+          type: string
+          enum: [PUBLIC, PRIVATE]
+        categoryId: { type: string, nullable: true }
+        categoryName: { type: string, nullable: true }
+        memberCount: { type: integer }
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required:
+        [
+          communityId,
+          name,
+          handle,
+          description,
+          avatar,
+          type,
+          categoryId,
+          categoryName,
+          memberCount,
+          updatedAt,
+        ]
+    CommunityMetaUpdatedPayload:
+      type: object
+      description: >-
+        Server → client. Community metadata changed. Delivered to community:<id>
+        (detail/header/chat) AND each active member's user:<id> (list row).
+        Distinct from community:updated (list bump) — a metadata patch, no reorder.
+      properties:
+        communityId: { type: string }
+        changes:
+          type: object
+          description: "Only the keys that genuinely changed are present and true."
+          properties:
+            name: { type: boolean }
+            avatar: { type: boolean }
+            description: { type: boolean }
+            category: { type: boolean }
+            visibility: { type: boolean }
+            handle: { type: boolean }
+        community: { $ref: "#/components/schemas/CommunityMetaDto" }
+        updatedAt: { type: integer, description: "Epoch ms — idempotency key." }
+      required: [communityId, changes, community, updatedAt]
+    CommunityMemberUpdatedPayload:
+      type: object
+      description: >-
+        Server → client. A single member's roster row changed (role change, admin
+        transfer, or profile sync). Broadcast to community:<id>.
+      properties:
+        communityId: { type: string }
+        userId: { type: string }
+        username: { type: string }
+        displayName: { type: string }
+        avatarUrl: { type: string, nullable: true }
+        role:
+          type: string
+          enum: [ADMIN, MODERATOR, MEMBER]
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required: [communityId, userId, updatedAt]
+
+    # -------- /community parity schemas --------
+    CommunityMarkReadPayload:
+      type: object
+      description: "Client → server. Mark community messages as read up to a given message id."
+      properties:
+        communityId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        roomId:
+          type: string
+          maxLength: 200
+          description: "Optional — defaults to the community general room when omitted."
+        upToMessageId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "Server will mark all messages up to and including this id as read for the caller."
+      required: [communityId, upToMessageId]
+    CommunityMarkReadBroadcast:
+      type: object
+      description: "Server → client. Broadcast to community:<communityId> room after a member marks messages read."
+      properties:
+        communityId: { type: string }
+        readerId:
+          { type: string, description: "userId of the member who read." }
+        upToMessageId: { type: string }
+        readAt:
+          { type: integer, description: "Epoch ms when the read was recorded." }
+      required: [communityId, readerId, upToMessageId, readAt]
+    CommunityReadSyncPayload:
+      type: object
+      description: |
+        Server → client. Multi-device read high-water mark for community chat.
+        Delivered to the reader's OWN other devices via `user:<readerId>` room
+        so every screen clears unread counts together.
+      properties:
+        communityId: { type: string }
+        upToMessageId: { type: string }
+        readAt:
+          { type: integer, description: "Epoch ms when the read was recorded." }
+      required: [communityId, upToMessageId, readAt]
+    CommunityReactionsGetPayload:
+      type: object
+      description: "Client → server. Request the full reaction user list for a community message."
+      properties:
+        messageId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        communityId:
+          type: string
+          minLength: 1
+          maxLength: 200
+      required: [messageId, communityId]
+    CommunityForwardPayload:
+      type: object
+      description: "Client → server. Forward an existing community message to another community room."
+      properties:
+        messageId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "Id of the message to forward."
+        communityId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "Source community id."
+        targetCommunityId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "Destination community id."
+        targetRoomId:
+          type: string
+          maxLength: 200
+          description: "Optional destination room id — defaults to the target community's general room."
+        clientMessageId:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: "Client-generated idempotency key (UUID recommended)."
+      required: [messageId, communityId, targetCommunityId, clientMessageId]

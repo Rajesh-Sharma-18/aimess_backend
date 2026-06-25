@@ -7,6 +7,7 @@ import { isAppError } from "@aimess/errors";
 
 import {
   CommunityMemberRole,
+  CommunityMemberStatus,
   CommunityModerationStatus,
   CommunityType,
 } from "../generated/prisma/index.js";
@@ -93,6 +94,7 @@ const communityImpl: grpc.UntypedServiceImplementation = {
             adminId: c.adminId,
             avatarUrl: c.avatarUrl ?? "",
             deleted: c.deletedAt != null,
+            communityType: String(c.type),
             members: c.members.map((m) => ({
               userId: m.userId,
               status: String(m.status),
@@ -113,6 +115,85 @@ const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // Membership oracle for the gateway socket ban gate. Returns the caller's
+  // membership status so the /community namespace can reject BANNED users at
+  // community:join. Read-only single-row lookup; never throws on "no row".
+  checkCommunityMembership: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          userId?: string;
+        };
+        if (!req.communityId || !req.userId) {
+          callback(null, {
+            isMember: false,
+            isBanned: false,
+            status: "",
+            role: "",
+          });
+          return;
+        }
+        const membership = await communityRepository.findMembership(
+          req.communityId,
+          req.userId
+        );
+        const status = membership ? String(membership.status) : "";
+        callback(null, {
+          isMember: status === "ACTIVE",
+          isBanned: status === "BANNED",
+          status,
+          role: membership ? String(membership.role) : "",
+        });
+      } catch (err) {
+        logger.error("checkCommunityMembership gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "checkCommunityMembership failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Moderation-mute oracle for notifications-service's eligibility gate. Returns
+  // whether the user has an effective (non-expired) moderation mute in the
+  // community. Read-only single-row lookup; never throws on "no row".
+  checkCommunityMute: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          userId?: string;
+        };
+        if (!req.communityId || !req.userId) {
+          callback(null, { isMuted: false, mutedUntil: 0 });
+          return;
+        }
+        const row = await communityRepository.findActiveMemberMute(
+          req.communityId,
+          req.userId
+        );
+        callback(null, {
+          isMuted: row != null,
+          mutedUntil:
+            row?.mutedUntil instanceof Date ? row.mutedUntil.getTime() : 0,
+        });
+      } catch (err) {
+        logger.error("checkCommunityMute gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "checkCommunityMute failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   // Admin dashboard: count of active (non-soft-deleted) communities.
   getCommunityCount: (
     _call: grpc.ServerUnaryCall<unknown, unknown>,
@@ -128,6 +209,41 @@ const communityImpl: grpc.UntypedServiceImplementation = {
           code: grpc.status.INTERNAL,
           message: "getCommunityCount failed",
         } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Membership gate for stream-service ("who can go live"): is_member is true
+  // ONLY for an ACTIVE member. role/status are the raw membership enum strings
+  // ("" when there is no membership row). Fail-safe: any error → not-a-member
+  // (never throw to the gRPC layer, so a transient DB blip can't grant access).
+  validateMembership: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { communityId?: string; userId?: string };
+        const communityId = (req.communityId ?? "").trim();
+        const userId = (req.userId ?? "").trim();
+
+        if (!communityId || !userId) {
+          callback(null, { isMember: false, role: "", status: "" });
+          return;
+        }
+
+        const row = await communityRepository.findMembership(
+          communityId,
+          userId
+        );
+        callback(null, {
+          isMember: row?.status === CommunityMemberStatus.ACTIVE,
+          role: row?.role ?? "",
+          status: row?.status ?? "",
+        });
+      } catch (err) {
+        logger.error("validateMembership gRPC handler failed", err);
+        callback(null, { isMember: false, role: "", status: "" });
       }
     })();
   },
@@ -217,6 +333,46 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "adminListCommunities failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Batch community enrichment for the backoffice Livestream Management list.
+  // Returns name + presigned avatar + category + memberCount per id. Unknown or
+  // malformed ids are silently omitted (caller treats them as "unknown community").
+  adminGetCommunitiesByIds: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { communityIds?: string[] };
+        const ids = Array.isArray(req.communityIds)
+          ? req.communityIds.filter((id) => /^[0-9a-f]{24}$/i.test(id))
+          : [];
+        const rows = await communityRepository.adminGetCommunitiesByIds(ids);
+        const communities = await Promise.all(
+          rows.map(async (r) => {
+            const avatarView =
+              await communityImageService.resolveViewUrlForClient(r.avatarUrl);
+            return {
+              communityId: r.id,
+              name: r.name,
+              avatarUrl: avatarView?.url ?? "",
+              categoryId: r.categoryId,
+              categoryName: r.category?.name ?? r.categoryName ?? "",
+              categorySlug: r.category?.slug ?? "",
+              memberCount: r.memberCount,
+            };
+          })
+        );
+        callback(null, { communities });
+      } catch (err) {
+        logger.error("adminGetCommunitiesByIds gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminGetCommunitiesByIds failed",
         } as grpc.ServiceError);
       }
     })();

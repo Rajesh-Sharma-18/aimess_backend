@@ -157,6 +157,13 @@ export function buildApp(): BuiltApp {
   const groupMessagePinRepo = repoMock();
   const communityMessagePinRepo = repoMock();
   const generalRoomRepo = repoMock();
+  // Default: community general rooms are open/active. The community write gate
+  // (`assertCommunityRoomWritable`) loads the room on send/edit/delete/react/pin;
+  // a spec that exercises a closed/suspended community overrides this.
+  generalRoomRepo.findRoomById.mockResolvedValue({
+    id: "room",
+    status: "active",
+  });
   const generalRoomMessageRepo = repoMock();
   const roomMemberRepo = repoMock();
   const notificationRepo = repoMock();

@@ -1,18 +1,23 @@
-import { NotFoundError } from "@aimess/errors";
+import { NotFoundError, BadRequestError } from "@aimess/errors";
+import { StorageValidationError } from "@aimess/storage";
 import type { RequestHandler } from "express";
 
 import { getRequestContext } from "../../lib/request-context.js";
-import { livestreamService } from "../../services/index.js";
+import { livestreamService, thumbnailService } from "../../services/index.js";
 import type {
   ListLivestreamsQuery,
   ListLivestreamReportsQuery,
+  ListLivestreamUsersQuery,
 } from "../../types/livestream.types.js";
 import type {
   BulkEndInput,
   BulkReviewReportsInput,
   EndLivestreamInput,
   ListLivestreamReportsQueryInput,
+  ListLivestreamUsersQueryInput,
   ListLivestreamsQueryInput,
+  ThumbnailPresignInput,
+  ThumbnailSaveInput,
 } from "../validators/index.js";
 import { HTTP_STATUS } from "@aimess/constants";
 
@@ -75,6 +80,28 @@ export const listLivestreamReports: RequestHandler = (req, res, next) => {
   })();
 };
 
+/** GET /v1/livestreams/:livestreamId/users — paginated community members. */
+export const listLivestreamUsers: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by livestreamIdParamSchema on the route.
+      const livestreamId = req.params.livestreamId as string;
+      const query = req.query as unknown as ListLivestreamUsersQueryInput;
+      const result = await livestreamService.listLivestreamUsers(
+        livestreamId,
+        query as ListLivestreamUsersQuery
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result.data,
+        pagination: result.pagination,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
 /** POST /v1/livestreams/:livestreamId/end. */
 export const endLivestream: RequestHandler = (req, res, next) => {
   void (async () => {
@@ -112,6 +139,67 @@ export const bulkEndLivestreams: RequestHandler = (req, res, next) => {
       res.status(207).json({
         success: true,
         data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * POST /v1/livestreams/:livestreamId/thumbnail/presign
+ *
+ * Returns a presigned PUT URL + objectKey. The admin client PUTs the image
+ * directly to MinIO, then calls PATCH .../thumbnail to commit the key.
+ */
+export const presignThumbnailUpload: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const livestreamId = req.params.livestreamId as string;
+      const body = req.body as ThumbnailPresignInput;
+      const result = await thumbnailService.presignUpload(livestreamId, {
+        contentType: body.contentType,
+        contentLength: body.contentLength,
+      });
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: {
+          uploadUrl: result.uploadUrl,
+          objectKey: result.objectKey,
+          expiresIn: result.expiresIn,
+          maxBytes: result.maxBytes,
+          headers: result.headers,
+        },
+      });
+    } catch (error) {
+      if (error instanceof StorageValidationError) {
+        return next(new BadRequestError(error.code));
+      }
+      next(error);
+    }
+  })();
+};
+
+/**
+ * PATCH /v1/livestreams/:livestreamId/thumbnail
+ *
+ * Commits an already-uploaded objectKey to the stream record via gRPC.
+ * Audited as LIVESTREAM_THUMBNAIL_UPDATED.
+ */
+export const saveThumbnail: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const livestreamId = req.params.livestreamId as string;
+      const body = req.body as ThumbnailSaveInput;
+      await thumbnailService.saveThumbnail(
+        livestreamId,
+        body.objectKey,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: { livestreamId, thumbnail: body.objectKey },
       });
     } catch (error) {
       next(error);

@@ -126,7 +126,12 @@ export class GeneralRoomRepository {
    */
   async provisionForCommunity(
     communityId: string,
-    data: { name: string; owner?: string | null; logo?: string | null }
+    data: {
+      name: string;
+      owner?: string | null;
+      logo?: string | null;
+      communityType?: "PUBLIC" | "PRIVATE" | null;
+    }
   ): Promise<void> {
     await this.prisma.generalRoom.upsert({
       where: { id: communityId },
@@ -136,13 +141,35 @@ export class GeneralRoomRepository {
         owner: data.owner ?? null,
         logo: data.logo ?? null,
         status: "active",
+        communityType: data.communityType ?? null,
       },
       update: {
         // Keep room metadata in sync, and re-activate if it was soft-removed.
         name: data.name,
         logo: data.logo ?? null,
         status: "active",
+        // Only overwrite the type when the caller actually knows it (avoid
+        // clobbering a known type with null from a metadata-only provision).
+        ...(data.communityType != null
+          ? { communityType: data.communityType }
+          : {}),
       },
+    });
+  }
+
+  /**
+   * Persist the parent community's visibility (PUBLIC/PRIVATE) on the room so the
+   * read-access guard can let non-members browse PUBLIC history. Driven by the
+   * `community.visibility_changed` event and the boot reconciler. Tolerates a
+   * missing room (a not-yet-provisioned community) — updateMany is a no-op then.
+   */
+  async setCommunityType(
+    communityId: string,
+    communityType: "PUBLIC" | "PRIVATE"
+  ): Promise<void> {
+    await this.prisma.generalRoom.updateMany({
+      where: { id: communityId },
+      data: { communityType },
     });
   }
 

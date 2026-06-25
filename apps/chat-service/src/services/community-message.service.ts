@@ -5,12 +5,18 @@ import {
   GoneError,
   NotFoundError,
 } from "@aimess/errors";
+import { redis } from "../config/redis.js";
 
 import {
   CHAT_EDIT_WINDOW_MS,
   CHAT_TEXT_MAX_CHARS,
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
+import {
+  buildCommunitySystemFallbackText,
+  sanitizeCommunitySystemMetadata,
+  type CommunitySystemMessageType,
+} from "@aimess/constants";
 import { env } from "../config/env.js";
 
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
@@ -27,8 +33,13 @@ import {
   toggleStoredReaction,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
-import { buildMessagePreview } from "../events/publish-message-sent.js";
-import { assertCommunityMember } from "../lib/access-guard.js";
+import { convertMessageToPreview } from "./message-preview.service.js";
+import type { CommunitySystemMessageService } from "./community-system-message.service.js";
+import {
+  assertCommunityMember,
+  assertCommunityReadAccess,
+  assertCommunityRoomWritable,
+} from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
@@ -51,12 +62,17 @@ type MemberReadStatus = {
   joinedAt: Date;
 };
 
-type CommunityMessageWire = Omit<GeneralRoomMessage, "messageType"> & {
+type CommunityMessageWire = Omit<
+  GeneralRoomMessage,
+  "messageType" | "visibleToUserId"
+> & {
   contentType: string;
   /** Members whose read cursor is at or past this message's createdAt. */
   readBy: Array<{ userId: string; readAt: number }>;
   /** Members who were active in the room when this message was sent. */
   deliveredTo: Array<{ userId: string; deliveredAt: number }>;
+  /** True for user-scoped SYSTEM messages (e.g. "You joined the community"). */
+  isPersonal?: boolean;
 };
 
 /** Per-community chat summary for the GET /communities/mine enrichment. */
@@ -71,6 +87,27 @@ export interface CommunityChatSummary {
     /** epoch ms */
     dateTime: number;
   };
+  /**
+   * The viewer's latest PERSONAL system line (e.g. "You joined the community"),
+   * visible only to this user. community-service overlays it onto the per-viewer
+   * /communities/mine lastActivity when it is newer than the community-wide
+   * activity, so the joiner sees their own join line while others do not. Absent
+   * when the viewer has no personal line in that community.
+   */
+  personalLastMessage?: {
+    message: string;
+    /** epoch ms */
+    dateTime: number;
+  };
+}
+
+/** A viewer is an active member when their loaded RoomMember row is "active".
+ *  Drives the membership-session read guard (`viewerIsActiveMember`) — a left /
+ *  non-member (PUBLIC) reader must not see their own prior-session join line. */
+function isActiveMember(
+  member: { status?: string | null } | null | undefined
+): boolean {
+  return member?.status === "active";
 }
 
 /** Denormalized last-message JSON stored on a GeneralRoom. */
@@ -88,7 +125,13 @@ export class CommunityMessageService {
     private readonly roomRepo: GeneralRoomRepository,
     private readonly memberRepo: RoomMemberRepository,
     private readonly cacheRepo: CacheRepository,
-    private readonly userSnapshotService: UserSnapshotService
+    private readonly userSnapshotService: UserSnapshotService,
+    /**
+     * Optional — when provided, pin/unpin emit PINNED_MESSAGE / UNPINNED_MESSAGE
+     * SYSTEM lines. Optional so the many 5-arg construction sites (tests,
+     * app-factory) keep working untouched; production wires it in server.ts.
+     */
+    private readonly systemMessageService?: CommunitySystemMessageService
   ) {}
 
   /**
@@ -112,6 +155,67 @@ export class CommunityMessageService {
     });
   }
 
+  /**
+   * Moderation snapshot of a single community message — for the report card.
+   * Reads the RAW row (no URL resolution) so the caller persists RAW object
+   * keys and resolves them to presigned URLs on read. Scoped by roomId as an
+   * IDOR guard; `found:false` for a missing / cross-room / deleted-for-all id.
+   */
+  async getModerationSnapshot(params: {
+    roomId: string;
+    messageId: string;
+  }): Promise<{
+    found: boolean;
+    message: string;
+    contentType: string;
+    sentAt: number;
+    senderId: string;
+    media: {
+      objectKey: string;
+      contentType: string;
+      fileName: string;
+      size: number;
+    }[];
+  }> {
+    const empty = {
+      found: false,
+      message: "",
+      contentType: "",
+      sentAt: 0,
+      senderId: "",
+      media: [] as {
+        objectKey: string;
+        contentType: string;
+        fileName: string;
+        size: number;
+      }[],
+    };
+    const msg = await this.messageRepo.findById(params.messageId);
+    if (!msg || msg.roomId !== params.roomId || msg.deletedForAll) {
+      return empty;
+    }
+    const atts = Array.isArray(msg.attachments)
+      ? (msg.attachments as Record<string, unknown>[])
+      : [];
+    const media = atts
+      .map((a) => ({
+        objectKey: String(a.objectKey ?? ""),
+        contentType: String(a.contentType ?? a.mimeType ?? ""),
+        fileName: String(a.fileName ?? a.name ?? ""),
+        size: typeof a.size === "number" ? a.size : 0,
+      }))
+      .filter((m) => m.objectKey);
+    return {
+      found: true,
+      message: msg.message ?? "",
+      contentType: normalizeMessageType(msg.messageType),
+      sentAt:
+        msg.createdAt instanceof Date ? msg.createdAt.getTime() : Date.now(),
+      senderId: msg.sentBy,
+      media,
+    };
+  }
+
   async sendMessage(params: {
     roomId: string;
     sentBy: string;
@@ -130,16 +234,18 @@ export class CommunityMessageService {
     assertAttachmentsValid(params.messageType, params.attachments);
 
     // Guard: block sends to suspended or deactivated rooms. "suspended" means
-    // the community was closed by an admin; "inactive" means it was deleted.
-    // This check runs before idempotency so a suspended-community retry never
-    // returns a previously-cached message as if the send succeeded.
+    // the community was closed (owner status=CLOSED or platform SUSPENDED);
+    // "inactive" means it was deleted. This check runs before idempotency so a
+    // closed-community retry never returns a previously-cached message as if the
+    // send succeeded. Single source of truth for community write-ability.
     const room = await this.roomRepo.findRoomById(params.roomId);
-    if (!room || room.status !== "active") {
-      if (room?.status === "suspended") {
-        throw new ForbiddenError("COMMUNITY_SUSPENDED");
-      }
-      throw new ForbiddenError("COMMUNITY_CHAT_DISABLED");
-    }
+    assertCommunityRoomWritable(room);
+
+    // Sender must be an ACTIVE community member. A BANNED (or LEFT) member's
+    // RoomMember row is mirrored as non-"active" by the community sync consumer,
+    // so this rejects banned users with CHAT_NOT_A_MEMBER. Read/edit/delete/
+    // react/pin paths already guard this way; send is the write chokepoint.
+    await assertCommunityMember(this.memberRepo, params.roomId, params.sentBy);
 
     // Check idempotency
     if (params.clientMessageId) {
@@ -358,8 +464,9 @@ export class CommunityMessageService {
     );
     const memberRoomIds = members.map((m) => m.roomId);
 
-    // 2/3. In parallel: member rooms (lastMessage JSON) + bulk unread counts.
-    const [rooms, unreadMap] = await Promise.all([
+    // 2/3/4. In parallel: member rooms (lastMessage JSON) + bulk unread counts +
+    // the viewer's latest PERSONAL line per room (e.g. "You joined the community").
+    const [rooms, unreadMap, personalMap] = await Promise.all([
       this.roomRepo.findManyByIds(memberRoomIds),
       memberRoomIds.length
         ? this.messageRepo.countUnreadBulk({
@@ -370,6 +477,14 @@ export class CommunityMessageService {
             })),
           })
         : Promise.resolve<Record<string, number>>({}),
+      memberRoomIds.length
+        ? this.messageRepo.findLatestPersonalByRooms({
+            userId: params.userId,
+            roomIds: memberRoomIds,
+          })
+        : Promise.resolve(
+            new Map<string, { message: string; createdAt: Date }>()
+          ),
     ]);
     const roomById = new Map(rooms.map((r) => [r.id, r]));
 
@@ -388,8 +503,25 @@ export class CommunityMessageService {
       const last = (room?.lastMessage ?? null) as RoomLastMessageJson | null;
       const unreadMessageCount = unreadMap[communityId] ?? 0;
 
+      // The viewer's own personal line (e.g. "You joined the community"). Carried
+      // separately so community-service can overlay it per-viewer without
+      // disturbing the community-wide preview/ordering for anyone else.
+      const personal = personalMap.get(communityId);
+      const personalLastMessage =
+        personal && personal.message
+          ? {
+              message: personal.message,
+              dateTime: personal.createdAt.getTime(),
+            }
+          : undefined;
+
       if (!last || !last.createdAt) {
-        return { communityId, unreadMessageCount, hasLastMessage: false };
+        return {
+          communityId,
+          unreadMessageCount,
+          hasLastMessage: false,
+          ...(personalLastMessage ? { personalLastMessage } : {}),
+        };
       }
 
       const createdAt =
@@ -397,15 +529,23 @@ export class CommunityMessageService {
           ? last.createdAt
           : new Date(last.createdAt);
 
+      // SYSTEM messages are sender-less: the preview is a complete sentence
+      // (e.g. "John joined the community"), so the community list must NEVER
+      // prefix it with a sender name. Force username empty for SYSTEM, mirroring
+      // the REST `lastActivity` rule in community-service's buildLastActivity.
+      const messageType = last.messageType ?? "";
+      const isSystem = messageType.toUpperCase() === "SYSTEM";
+
       return {
         communityId,
         unreadMessageCount,
         hasLastMessage: true,
         lastMessage: {
-          username: last.senderName ?? "",
-          message: buildMessagePreview(last.messageType ?? "", last.content),
+          username: isSystem ? "" : (last.senderName ?? ""),
+          message: convertMessageToPreview(messageType, last.content),
           dateTime: Number.isNaN(createdAt.getTime()) ? 0 : createdAt.getTime(),
         },
+        ...(personalLastMessage ? { personalLastMessage } : {}),
       };
     });
   }
@@ -467,13 +607,56 @@ export class CommunityMessageService {
     return [...ids];
   }
 
+  /**
+   * Personalize a SYSTEM line's third-person text for one viewer ("You joined
+   * the community", "You are now a moderator"), or return it unchanged. Single
+   * source of truth shared by the history wire (`toWire`) and the sync mapper
+   * (`getMessagesSince`) so the metadata extraction isn't duplicated. Returns the
+   * input text untouched when there is no viewer or no system subtype.
+   */
+  private personalizeSystemText(
+    systemMessageType: string | null | undefined,
+    systemMetadata: unknown,
+    storedText: string,
+    viewerUserId: string | undefined
+  ): string {
+    if (!systemMessageType) return storedText;
+    const metadata = (systemMetadata ?? {}) as Record<string, unknown>;
+
+    // Always rebuild from the canonical builder. This achieves three things:
+    //
+    //  1. CANONICAL UPGRADE — stale stored rows written by old code (e.g.
+    //     "Jim Methews created the community") are transparently upgraded to the
+    //     current text ("Community created") with no DB migration required.
+    //
+    //  2. PERSONALIZATION — when the viewer is the actor or target of the
+    //     event, the builder switches to the "You …" first-person form
+    //     ("You are now a moderator" vs "John Doe is now a moderator").
+    //
+    //  3. SSoT — Chat Room / Sync / Socket read paths all produce the same
+    //     text because they all run through this single rebuild gate.
+    //
+    // storedText is only used as a final fallback in the impossible case that
+    // the builder returns empty (the default case in the switch never fires,
+    // so this guard is purely defensive).
+    const rebuilt = buildCommunitySystemFallbackText(
+      systemMessageType as CommunitySystemMessageType,
+      metadata,
+      String(metadata.actorName ?? ""),
+      String(metadata.targetName ?? ""),
+      viewerUserId ?? ""
+    );
+    return rebuilt || storedText;
+  }
+
   private toWire(
     m: GeneralRoomMessage,
     members?: MemberReadStatus[],
     urlMap?: Map<string, string>,
     resolveReactionUser?: (
       userId: string
-    ) => { displayName: string; avatarUrl: string } | undefined
+    ) => { displayName: string; avatarUrl: string } | undefined,
+    viewerUserId?: string
   ): CommunityMessageWire {
     const wire = toWireMessage(m) as Record<string, unknown>;
 
@@ -541,6 +724,51 @@ export class CommunityMessageService {
           }))
       : [];
 
+    // Surface a clean `isPersonal` flag for the client (e.g. "You joined this
+    // community") and DROP the raw `visibleToUserId` targeting column from the
+    // wire — it is an internal access-control field, not a client contract.
+    const isPersonal = Boolean(
+      (wire as Record<string, unknown>).visibleToUserId
+    );
+    delete (wire as Record<string, unknown>).visibleToUserId;
+    wire.isPersonal = isPersonal;
+
+    // SYSTEM messages are SENDER-LESS (Telegram-style): never expose
+    // senderId/senderName/senderAvatar — the actor lives in systemMetadata only.
+    // Also blank the internal idempotency token we stash in `clientMessageId`
+    // (the system-event dedup key); it is not part of the client contract.
+    if (String(wire.contentType).toUpperCase() === "SYSTEM") {
+      wire.senderId = "";
+      wire.sentBy = "";
+      wire.senderName = "";
+      wire.senderAvatar = "";
+      wire.clientMessageId = "";
+
+      const thirdPersonText = String(wire.message ?? "");
+      const personalized = this.personalizeSystemText(
+        m.systemMessageType,
+        m.systemMetadata,
+        thirdPersonText,
+        viewerUserId
+      );
+      if (personalized !== thirdPersonText) {
+        wire.message = personalized;
+        const content = wire.content as Record<string, unknown> | null;
+        if (content && typeof content === "object") {
+          wire.content = { ...content, text: personalized };
+        }
+      }
+
+      // ACTOR-LESS lifecycle lines must not leak actor identity to the client
+      // (which localizes from systemMetadata). Strip actor/target keys so a
+      // legacy row that stored creatorName/actorName can never render
+      // "{name} created the community". No-op for actor-bearing types.
+      wire.systemMetadata = sanitizeCommunitySystemMetadata(
+        m.systemMessageType,
+        wire.systemMetadata as Record<string, unknown> | null | undefined
+      );
+    }
+
     return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
   }
 
@@ -550,7 +778,16 @@ export class CommunityMessageService {
     cursor?: string | null;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
-    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
+    // For community messages, allow reads if:
+    // 1. User is an active member, OR
+    // 2. The community is PUBLIC (non-members can read history)
+    const { member } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
+    const viewerIsActiveMember = isActiveMember(member);
     const beforeTimestamp = params.cursor || new Date().toISOString();
     const [rows, members] = await Promise.all([
       this.messageRepo.findByRoomIdWithTime(
@@ -558,51 +795,81 @@ export class CommunityMessageService {
         beforeTimestamp,
         "older",
         params.limit,
-        params.userId
+        params.userId,
+        viewerIsActiveMember
       ),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) => this.toWire(m, members, urlMap));
+    return rows.map((m) =>
+      this.toWire(m, members, urlMap, undefined, params.userId)
+    );
   }
 
   /**
-   * Timestamp-keyset page (before_ts / after_ts). Over-fetches one extra row so
-   * `hasMore` is exact; `nextCursor` is the boundary createdAt as epoch-ms.
+   * Keyset history page (before_ts scroll). The repo filters hidden/personal/
+   * deleted rows in the DB and returns exactly `limit` visible rows plus an exact
+   * `hasMore`, so a hidden row in the window can no longer make pagination
+   * terminate early. `nextCursor` is a COMPOUND `"<createdAtMs>_<id>"` keyset
+   * cursor (not a bare millisecond): the `_id` tiebreaker is what keeps messages
+   * sharing one millisecond reachable. The client feeds it back verbatim as the
+   * next `before_ts`.
    */
   async getMessagesTimeline(params: {
     roomId: string;
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** Keyset tiebreaker parsed from a compound before_ts ("<ms>_<id>"). */
+    boundaryId?: string | null;
+    /** True for the first page (no cursor) so the newest message is included. */
+    inclusive?: boolean;
     limit: number;
   }): Promise<{
     items: CommunityMessageWire[];
     hasMore: boolean;
     nextCursor: string | null;
+    total: number;
   }> {
-    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
-    const [rows, members] = await Promise.all([
-      this.messageRepo.findByRoomIdTimeline({
-        roomId: params.roomId,
-        userId: params.userId,
-        direction: params.direction,
-        ts: params.ts,
-        limit: params.limit,
-      }),
-      this.memberRepo.findReadStatusByRoom(params.roomId),
-    ]);
+    // For community messages, allow reads if:
+    // 1. User is an active member, OR
+    // 2. The community is PUBLIC (non-members can read history)
+    const { member } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
+    const viewerIsActiveMember = isActiveMember(member);
+    const [{ messages: pageRows, hasMore }, members, total] = await Promise.all(
+      [
+        this.messageRepo.findByRoomIdTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          direction: params.direction,
+          ts: params.ts,
+          boundaryId: params.boundaryId ?? null,
+          inclusive: params.inclusive ?? false,
+          limit: params.limit,
+          viewerIsActiveMember,
+        }),
+        this.memberRepo.findReadStatusByRoom(params.roomId),
+        this.messageRepo.countTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          viewerIsActiveMember,
+        }),
+      ]
+    );
 
-    const hasMore = rows.length > params.limit;
-    const pageRows = rows.slice(0, params.limit);
-
-    // For "before" direction the DB fetches newest-first so LIMIT correctly
-    // selects the closest-to-cursor window. The boundary for the next page is
-    // the oldest item in that window (pageRows tail). Reverse before returning
-    // so every response surface is oldest→newest (ascending chronological order).
+    // For "before" the DB returns newest-first, so the boundary for the next
+    // (older) page is the oldest item in the window — the tail. Reverse before
+    // returning so every response surface is oldest→newest (ascending order).
     const boundary = pageRows[pageRows.length - 1];
     const nextCursor =
-      hasMore && boundary ? String(boundary.createdAt.getTime()) : null;
+      hasMore && boundary
+        ? `${boundary.createdAt.getTime()}_${boundary.id}`
+        : null;
 
     const orderedItems =
       params.direction === "before" ? [...pageRows].reverse() : pageRows;
@@ -639,10 +906,11 @@ export class CommunityMessageService {
 
     return {
       items: orderedItems.map((m) =>
-        this.toWire(m, members, urlMap, resolveReactionUser)
+        this.toWire(m, members, urlMap, resolveReactionUser, params.userId)
       ),
       hasMore,
       nextCursor,
+      total,
     };
   }
 
@@ -693,14 +961,17 @@ export class CommunityMessageService {
     hasMore: boolean;
     nextCursor: string | null;
   }> {
-    // Enforce active membership — banned/left members cannot read.
-    const member = await this.memberRepo.findByRoomAndUser(
+    // For community messages, allow reads if:
+    // 1. User is an active member, OR
+    // 2. The community is PUBLIC (non-members can read history)
+    // Note: sync path is typically members-only (offline-first mobile), but we enforce
+    // the same rules for consistency.
+    const { member } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
       params.roomId,
       params.userId
     );
-    if (!member || member.status !== "active") {
-      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
-    }
 
     if (Number.isNaN(params.fromTs.getTime())) {
       throw new BadRequestError("CHAT_INVALID_SINCE_TS");
@@ -710,6 +981,7 @@ export class CommunityMessageService {
       userId: params.userId,
       fromTs: params.fromTs,
       limit: params.limit,
+      viewerIsActiveMember: member?.status === "active",
     });
 
     const last = messages[messages.length - 1];
@@ -782,14 +1054,28 @@ export class CommunityMessageService {
         }
       }
 
+      let messageText = msg.message ?? null;
+      const contentType = normalizeMessageType(msg.messageType);
+      if (contentType === "SYSTEM") {
+        messageText = this.personalizeSystemText(
+          msg.systemMessageType,
+          msg.systemMetadata,
+          messageText ?? "",
+          params.userId
+        );
+      }
+
       return {
         id: msg.id,
         roomId: msg.roomId,
-        sentBy: msg.sentBy,
-        senderName: msg.senderName ?? null,
-        senderAvatar: urlFromMap(urlMap, msg.senderAvatar) || null,
-        message: msg.message ?? null,
-        contentType: normalizeMessageType(msg.messageType),
+        sentBy: contentType === "SYSTEM" ? "" : msg.sentBy,
+        senderName: contentType === "SYSTEM" ? null : (msg.senderName ?? null),
+        senderAvatar:
+          contentType === "SYSTEM"
+            ? null
+            : urlFromMap(urlMap, msg.senderAvatar) || null,
+        message: messageText,
+        contentType,
         attachments: Array.isArray(msg.attachments)
           ? applyUrlMapToFiles(msg.attachments as MediaFileLike[], urlMap)
           : msg.attachments,
@@ -812,7 +1098,14 @@ export class CommunityMessageService {
         syncEventType,
         systemMessageType:
           (msg as Record<string, unknown>).systemMessageType ?? null,
-        systemMetadata: (msg as Record<string, unknown>).systemMetadata ?? null,
+        systemMetadata:
+          sanitizeCommunitySystemMetadata(
+            msg.systemMessageType,
+            (msg as Record<string, unknown>).systemMetadata as
+              | Record<string, unknown>
+              | null
+              | undefined
+          ) ?? null,
       };
     });
 
@@ -828,23 +1121,43 @@ export class CommunityMessageService {
     userId: string;
     messageId: string;
     limit: number;
-  }): Promise<{ items: CommunityMessageWire[] }> {
-    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
+  }): Promise<{ items: CommunityMessageWire[]; total: number }> {
+    const { member } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
+    const viewerIsActiveMember = isActiveMember(member);
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
-      return { items: [] };
+      return { items: [], total: 0 };
     }
-    const [rows, members] = await Promise.all([
+    const [rows, members, total] = await Promise.all([
       this.messageRepo.findAroundDate({
         roomId: params.roomId,
         userId: params.userId,
         anchorDate: anchor.createdAt,
         limit: params.limit,
+        viewerIsActiveMember,
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
+      // Use the history-visible count (same filter as the timeline) so `total`
+      // matches what the client can actually page through — not countByRoom's
+      // raw total (which includes hidden/personal/deleted-for-me rows).
+      this.messageRepo.countTimeline({
+        roomId: params.roomId,
+        userId: params.userId,
+        viewerIsActiveMember,
+      }),
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
-    return { items: rows.map((m) => this.toWire(m, members, urlMap)) };
+    return {
+      items: rows.map((m) =>
+        this.toWire(m, members, urlMap, undefined, params.userId)
+      ),
+      total,
+    };
   }
 
   /**
@@ -909,7 +1222,9 @@ export class CommunityMessageService {
 
     const urlMap = await this.resolveRowsMedia(messages);
     return {
-      messages: messages.map((m) => this.toWire(m, undefined, urlMap)),
+      messages: messages.map((m) =>
+        this.toWire(m, undefined, urlMap, undefined, params.userId)
+      ),
       total,
     };
   }
@@ -920,15 +1235,23 @@ export class CommunityMessageService {
     query: string;
     limit: number;
   }): Promise<CommunityMessageWire[]> {
-    await assertCommunityMember(this.memberRepo, params.roomId, params.userId);
+    const { member } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
     const rows = await this.messageRepo.searchByText(
       params.roomId,
       params.query,
       params.limit,
-      params.userId
+      params.userId,
+      isActiveMember(member)
     );
     const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) => this.toWire(m, undefined, urlMap));
+    return rows.map((m) =>
+      this.toWire(m, undefined, urlMap, undefined, params.userId)
+    );
   }
 
   async countMessages(roomId: string): Promise<number> {
@@ -962,7 +1285,9 @@ export class CommunityMessageService {
       limit: params.limit,
     });
     const urlMap = await this.resolveRowsMedia(rows);
-    return rows.map((m) => this.toWire(m, undefined, urlMap));
+    return rows.map((m) =>
+      this.toWire(m, undefined, urlMap, undefined, params.userId)
+    );
   }
 
   /** Bind a loaded message to its OWN room (never a body-supplied communityId)
@@ -978,8 +1303,14 @@ export class CommunityMessageService {
       message.roomId,
       userId
     );
+    // Membership check FIRST so non-members get NotFound (no foreign-message
+    // existence leak), THEN the write-ability gate so only real members learn a
+    // room is closed/suspended.
     if (!member || member.status !== "active")
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    assertCommunityRoomWritable(
+      await this.roomRepo.findRoomById(message.roomId)
+    );
     return member;
   }
 
@@ -1040,6 +1371,10 @@ export class CommunityMessageService {
     if (!member || member.status !== "active") {
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
     }
+    // ...and only when the community room is open (closed/suspended → read-only).
+    assertCommunityRoomWritable(
+      await this.roomRepo.findRoomById(message.roomId)
+    );
 
     // Toggle the reactor in/out of the emoji bucket (shared with private/group);
     // non-atomic read-modify-write, acceptable at current scale.
@@ -1205,6 +1540,7 @@ export class CommunityMessageService {
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    assertCommunityRoomWritable(room);
     const pinnedIds: string[] = Array.isArray(room.listPinedMessage)
       ? (room.listPinedMessage as string[])
       : [];
@@ -1218,11 +1554,294 @@ export class CommunityMessageService {
 
     const newPinnedIds = [...pinnedIds, params.messageId];
     await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);
+
+    // Telegram-style "{actor} pinned a message" SYSTEM line (best-effort).
+    void this.systemMessageService?.post({
+      communityId: params.communityId,
+      systemMessageType: "PINNED_MESSAGE",
+      metadata: { pinnedMessageId: params.messageId },
+      triggeredByUserId: params.userId,
+    });
+
     return {
       pinnedIds: newPinnedIds,
       pinnedCount: newPinnedIds.length,
       pinnedAt: Date.now(),
     };
+  }
+
+  /**
+   * Per-message read receipt: advance the reader's read pointer to
+   * `upToMessageId` and publish two Redis events:
+   *   1. `community:<communityId>` → `community:message:read`  (room broadcast)
+   *   2. `user:<readerId>`         → `community:read_sync`      (own-device sync)
+   */
+  async markMessageRead(params: {
+    communityId: string;
+    roomId: string;
+    readerId: string;
+    upToMessageId: string;
+  }): Promise<{ ok: boolean; communityId: string; readAt: number }> {
+    // Validate active membership.
+    const member = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.readerId
+    );
+    if (!member || member.status !== "active") {
+      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    }
+
+    // Fetch the message to get its createdAt (advanceReadPointer is forward-only).
+    const message = await this.messageRepo.findById(params.upToMessageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const now = new Date();
+    // Advance read pointer (forward-only — noop if already at/past this message).
+    await this.memberRepo
+      .advanceReadPointer(
+        params.roomId,
+        params.readerId,
+        params.upToMessageId,
+        now
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `CommunityMessageService|markMessageRead|advanceReadPointer failed: ${String(err)}`
+        );
+      });
+
+    const readAt = now.getTime();
+    const readPayload = {
+      communityId: params.communityId,
+      readerId: params.readerId,
+      upToMessageId: params.upToMessageId,
+      readAt,
+    };
+
+    // Broadcast to all community room members.
+    redis
+      .publish(
+        `community:${params.communityId}`,
+        JSON.stringify({ event: "community:message:read", data: readPayload })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `CommunityMessageService|markMessageRead|redis publish community failed: ${String(err)}`
+        );
+      });
+
+    // Sync to reader's own other devices.
+    redis
+      .publish(
+        `user:${params.readerId}`,
+        JSON.stringify({
+          event: "community:read_sync",
+          data: {
+            communityId: params.communityId,
+            upToMessageId: params.upToMessageId,
+            readAt,
+          },
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `CommunityMessageService|markMessageRead|redis publish user failed: ${String(err)}`
+        );
+      });
+
+    return { ok: true, communityId: params.communityId, readAt };
+  }
+
+  /**
+   * Delivery receipt: validates that the recipient is an active member, then
+   * broadcasts `community:message:delivered` on the community Redis channel so
+   * connected clients (especially the sender) can update their delivery indicator.
+   *
+   * Community delivery state is inferred from RoomMember.joinedAt (no per-message
+   * DB write — the GeneralRoomMessage schema has no deliveredTo column), so this
+   * handler is purely a signal: "recipient has received up to this message".
+   */
+  async markMessageDelivered(params: {
+    communityId: string;
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<{ ok: boolean; communityId: string; deliveredAt: number }> {
+    const member = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.recipientId
+    );
+    if (!member || member.status !== "active") {
+      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    }
+
+    const deliveredAt = Date.now();
+
+    redis
+      .publish(
+        `community:${params.communityId}`,
+        JSON.stringify({
+          event: "community:message:delivered",
+          data: {
+            communityId: params.communityId,
+            recipientId: params.recipientId,
+            upToMessageId: params.upToMessageId,
+            deliveredAt,
+          },
+        })
+      )
+      .catch((err: unknown) => {
+        logger.warn(
+          `CommunityMessageService|markMessageDelivered|redis publish failed: ${String(err)}`
+        );
+      });
+
+    return { ok: true, communityId: params.communityId, deliveredAt };
+  }
+
+  /**
+   * Return the full grouped reaction list for a message. Validates active
+   * membership and resolves avatar object-keys to presigned URLs.
+   */
+  async getMessageReactions(params: {
+    messageId: string;
+    communityId: string;
+    requesterId: string;
+  }): Promise<{
+    messageId: string;
+    communityId: string;
+    reactions: Array<{
+      emoji: string;
+      count: number;
+      users: Array<{ userId: string; displayName: string; avatar: string }>;
+    }>;
+  }> {
+    const message = await this.messageRepo.findById(params.messageId);
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    // Validate active membership.
+    const member = await this.memberRepo.findByRoomAndUser(
+      message.roomId,
+      params.requesterId
+    );
+    if (!member || member.status !== "active") {
+      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    }
+
+    const raw = (message.reactions ?? {}) as Record<string, unknown>;
+    const allAvatarKeys: string[] = [];
+    const grouped: Array<{
+      emoji: string;
+      count: number;
+      users: Array<{ userId: string; displayName: string; avatar: string }>;
+    }> = [];
+
+    for (const [emoji, list] of Object.entries(raw)) {
+      if (!Array.isArray(list) || list.length === 0) continue;
+      const users = list.map((r) => {
+        const reactor = (r ?? {}) as Record<string, unknown>;
+        const avatar = (reactor.avatar as string) || "";
+        if (avatar) allAvatarKeys.push(avatar);
+        return {
+          userId: (reactor.userId as string) || "",
+          displayName:
+            (reactor.userName as string) ||
+            (reactor.displayName as string) ||
+            "",
+          avatar,
+        };
+      });
+      grouped.push({ emoji, count: users.length, users });
+    }
+
+    // Refresh displayNames from live snapshots so renames are reflected.
+    const allUserIds = [
+      ...new Set(
+        grouped.flatMap((g) => g.users.map((u) => u.userId).filter(Boolean))
+      ),
+    ];
+    const snaps =
+      allUserIds.length > 0
+        ? await this.userSnapshotService.getUserSnapshotsMap(
+            allUserIds,
+            this.cacheRepo
+          )
+        : new Map<string, Record<string, unknown>>();
+
+    const urlMap = await resolveMediaUrlMap(allAvatarKeys);
+    const resolved = grouped.map((g) => ({
+      ...g,
+      users: g.users.map((u) => {
+        const snap = snaps.get(u.userId);
+        return {
+          ...u,
+          displayName: (snap?.displayName as string) || u.displayName,
+          avatar: urlFromMap(urlMap, u.avatar) || u.avatar,
+        };
+      }),
+    }));
+
+    return {
+      messageId: params.messageId,
+      communityId: params.communityId,
+      reactions: resolved,
+    };
+  }
+
+  /**
+   * Forward a community message to another community room. Fetches the source
+   * message, verifies the sender is an ACTIVE member of the target room, then
+   * delegates to `sendMessage` so all live effects (broadcast, push, bump-to-top)
+   * run automatically via the existing send path.
+   */
+  async forwardMessage(params: {
+    sourceMessageId: string;
+    sourceCommunityId: string;
+    targetCommunityId: string;
+    targetRoomId: string;
+    senderId: string;
+    clientMessageId: string;
+  }): Promise<{ messageId: string; roomId: string; sentAt: number }> {
+    const source = await this.messageRepo.findById(params.sourceMessageId);
+    if (!source) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    if (source.deletedForAll)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+
+    // Validate sender is ACTIVE member of the target room.
+    const targetMember = await this.memberRepo.findByRoomAndUser(
+      params.targetRoomId,
+      params.senderId
+    );
+    if (!targetMember || targetMember.status !== "active") {
+      throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+    }
+
+    // Fetch sender snapshot for display name + avatar.
+    const snaps = await this.userSnapshotService.getUserSnapshotsMap(
+      [params.senderId],
+      this.cacheRepo
+    );
+    const snap = snaps.get(params.senderId);
+    const senderName = (snap?.displayName as string) || "";
+    const senderAvatar = (snap?.avatar as string) || "";
+
+    const saved = await this.sendMessage({
+      roomId: params.targetRoomId,
+      sentBy: params.senderId,
+      senderName,
+      senderAvatar,
+      message: source.message ?? "",
+      messageType: normalizeMessageType(source.messageType),
+      clientMessageId: params.clientMessageId,
+      attachments: Array.isArray(source.attachments)
+        ? (source.attachments as Array<Record<string, unknown>>)
+        : undefined,
+    });
+
+    const sentAt =
+      saved.createdAt instanceof Date ? saved.createdAt.getTime() : Date.now();
+
+    return { messageId: saved.id, roomId: saved.roomId, sentAt };
   }
 
   async unpinMessage(params: {
@@ -1242,6 +1861,7 @@ export class CommunityMessageService {
 
     const room = await this.roomRepo.findRoomById(params.roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+    assertCommunityRoomWritable(room);
     const pinnedIds: string[] = Array.isArray(room.listPinedMessage)
       ? (room.listPinedMessage as string[])
       : [];
@@ -1255,6 +1875,15 @@ export class CommunityMessageService {
 
     const newPinnedIds = pinnedIds.filter((id) => id !== params.messageId);
     await this.roomRepo.updatePinnedMessages(params.roomId, newPinnedIds);
+
+    // Telegram-style "{actor} unpinned a message" SYSTEM line (best-effort).
+    void this.systemMessageService?.post({
+      communityId: params.communityId,
+      systemMessageType: "UNPINNED_MESSAGE",
+      metadata: { pinnedMessageId: params.messageId },
+      triggeredByUserId: params.userId,
+    });
+
     return { pinnedIds: newPinnedIds, pinnedCount: newPinnedIds.length };
   }
 }

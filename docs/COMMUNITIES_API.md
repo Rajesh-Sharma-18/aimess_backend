@@ -723,6 +723,7 @@ DTO:
 ```ts
 interface CommunityReportData {
   reportId: string;
+  displayId: string; // short, deterministic id for the card (render as "#<displayId>", e.g. "#99421")
   communityId: string;
   reporterId: string;
   targetUserId: string | null;
@@ -731,15 +732,49 @@ interface CommunityReportData {
   reviewedBy: string | null;
   reviewedAt: string | null;
   resolution: string | null;
-  createdAt: string;
+
+  // --- Reported-content snapshot (all null/[] for user-level reports) ---
+  reportedMessageId: string | null; // the reported chat message id (if any)
+  reportedContentType: string | null; // CONTENT_TYPES (UPPER): TEXT | IMAGE | VIDEO | ...
+  reportedContentText: string | null; // text / caption snapshot ("Reported Content")
+  reportedContentPostedAt: string | null; // ISO — "Posted on" date of the content
+  reportedContentMedia: MediaObject[]; // attachments, presigned on read ([] when none)
+
+  createdAt: string; // "Reported on" date
   updatedAt: string;
 }
 // Moderator list adds `reporter: {...}` and `target: {...} | null`; "mine" list adds `community: {...}`.
+// Card field mapping: reported user = target.displayName/avatar · "Reported by" = reporter.username
+// · Reason = reason · "Reported ID" = displayId · "Posted on" = reportedContentPostedAt
+// · "Reported Content" = reportedContentText + reportedContentMedia.
 ```
 
 #### `POST /:id/reports` — Create report
 
 Body: `{ "targetUserId"?: "<uuid>", "reason": "..." }` (`reason` 3–1000 chars). `201` → `CommunityReportData`.
+
+**Message-level report (shows "Reported Content" on the moderator card):** the
+client sends just `reportedMessageId` — the **backend resolves** the message's
+text, media, and posted-at from chat-service (gRPC `GetCommunityMessageById`)
+and snapshots them onto the report. RAW object keys are stored and resolved to
+presigned URLs on read; the FE sends **no** content fields.
+
+```jsonc
+{
+  "targetUserId": "<uuid>", // optional — the reported member
+  "reason": "Spam Messages", // required, 3–1000 chars
+  "reportedMessageId": "6a3a737f236c483508914d0c", // optional — the reported message
+}
+```
+
+- Resolution is **best-effort**: if the message is missing / deleted-for-all /
+  in another room, or chat-service is unavailable, the report is still created
+  with `reportedMessageId` set and the content fields `null`/`[]`.
+- Omit `reportedMessageId` for a plain **user-level** report (content stays null;
+  the card hides the "Reported Content" section).
+- A legacy client MAY still send `reportedContentText` / `reportedContentType` /
+  `reportedContentPostedAt` / `reportedContentMedia[{objectKey}]` directly; these
+  are used only as a fallback when `reportedMessageId` is absent or unresolved.
 
 #### `GET /:id/reports` — List _(MODERATOR+)_
 

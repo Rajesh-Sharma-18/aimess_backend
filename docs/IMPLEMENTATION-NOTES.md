@@ -8,6 +8,70 @@
 
 ---
 
+## Community Sharing & Deep Linking (shipped 2026-06-23)
+
+### What shipped
+
+- **NEW `GET /communities/by-handle/:handle`** (community-service) — public deep-link resolver for `https://aimess.me/<handle>`. **PUBLIC-only**: private/suspended/missing → 404 (never reveals a private community), banned caller → 403, malformed → 400 (`INVALID_HANDLE`). Returns `PublicCommunityResponse`. Reuses `findByHandleFull` (new repo method), `assertNotBanned`, `community-access-policy`. Route registered before `/:id` (static-before-param).
+- **URL/deep-link alignment** — `buildInviteUrl` now emits `https://aimess.me/+<code>` (the `+` private marker); `buildInviteDeepLink` emits `aimess://join?code=<code>` (was `aimess://invite/<code>`). `INVITE_LINK_BASE_URL` defaults to `https://aimess.me`.
+- **Invite preview** — `InviteLinkPreviewData` gained `joinRequestId` + `joinRequestStatus` so the client can render `PRIVATE_REQUESTED` (F5/E5).
+- **Private links default to request-to-join** — `createInviteLink` now defaults `autoApprove=false` for **both** types (was `true` for PRIVATE). Moderators opt into instant-join explicitly. ⚠️ behavior change vs prior "PRIVATE auto-joins".
+- **`aimess.me` link host on the api-gateway** — host-gated layer (`LINK_HOSTS`) serving `/.well-known/assetlinks.json` + `apple-app-site-association` (App/Universal-Link proofs) and a server-rendered "Open in app" preview (OG tags + platform-aware deferred-deep-link handoff via `detectLink` parity). Non-link hosts pass straight through to the API. `apps/api-gateway/src/linkhost/*` + `routes/linkhost.routes.ts`.
+- **Unauthenticated internal card lookup** — community-service `/internal/communities/by-handle/:handle/card` (shared-secret guarded, PUBLIC-only) feeds the gateway preview's OG card without exposing a public route.
+
+### FE guide / contract
+
+- **`docs/DEEP_LINKING.md`** (backend), client spec `AIMESS_Community_Sharing_and_Deeplinking_Guide.md`. OpenAPI updated (`by-handle` path, `PublicCommunityResponse`, preview fields). Real-time events (`community:joined`, `community:join_request:update`, `community:member:joined`) were already live — no socket changes.
+
+### Deferred / notes
+
+- Web preview is served from the gateway (Express SSR); could instead live in the Next.js frontend per spec §7.3 (then the gateway shrinks to just `.well-known`). Handle resolver keeps 3-char min (existing handles) vs spec's 5-char min.
+
+---
+
+## Community report cards — reported-content snapshot (shipped 2026-06-23)
+
+The moderator report card (`GET /communities/:id/reports`) needed "Reported Content", "Posted on", and a short "Reported ID" that the user-level report DTO didn't carry. Added **optional, backward-compatible** fields.
+
+### What shipped
+
+- **`CommunityReport` model** gained optional `reportedMessageId`, `reportedContentType`, `reportedContentText`, `reportedContentMedia` (Json — RAW object keys), `reportedContentPostedAt`. MongoDB is schemaless → no migration/`db push` required for optional fields.
+- **Message-level resolution (2026-06-23, follow-up)** — the report card was coming back with empty content because the FE filed user-level reports with no message reference. Reporting is now **message-level**: the client sends only `reportedMessageId`, and `createReport` resolves the message's text/media(raw keys)/postedAt from chat-service via a **new gRPC `GetCommunityMessageById`** (`community.proto`; chat-service `CommunityMessageService.getModerationSnapshot` reads the RAW row — IDOR-scoped on roomId, skips deleted-for-all — and returns RAW object keys + UPPER contentType + epoch-ms sentAt). community-service calls it through `chat.client.ts` (`getCommunityMessageById`, opossum breaker, fallback `found:false`). Best-effort: a missing/deleted message or chat-service outage stores the id with null content (report still created). proto is loaded from source at runtime — no `build:packages` needed.
+- **Snapshot-at-report-time (legacy fallback)** — the client MAY still pass the content in the create-report body; `createReportSchema` validates it (≤10 media, each `{ objectKey, contentType?, fileName?, size? }`; `reportedContentPostedAt` coerced ISO→Date). Used only when `reportedMessageId` is absent/unresolved. The server **never stores presigned URLs** — only raw keys.
+- **Resolve-on-read** — `toReportData` is now **async**: resolves each `reportedContentMedia` object key → presigned `MediaObject` via `toMediaObject` against `MINIO_BUCKET_COMMUNITY` (community chat attachments share that bucket). All 6 call sites updated; the two object-spread sites now `await`.
+- **`displayId`** — short, deterministic, display-only id derived from the report ObjectId (`deriveReportDisplayId`: last 6 hex → int → mod 100000 → 5-digit pad). Render as `#<displayId>`. No counter collection.
+- **Card field mapping** documented in `docs/COMMUNITIES_API.md` §3.9.
+
+### Tests
+
+- `tests/reports/reports.test.ts` (+3: snapshot forwarding, media-missing-objectKey 400, >10 media 400) and new `tests/reports/report-content-snapshot.test.ts` (service-level read path: `displayId`, snapshot fields, media resolved from raw key, user-level report → `[]`/null). Suite 467 green.
+
+### Notes
+
+- User-level reports keep working unchanged (all snapshot fields null/`[]`). Idempotent dedup returns the first report (does not merge a later tap's content).
+- Source = client snapshot (chosen over a chat-service gRPC resolve) so the card survives later edit/delete of the original message and needs no cross-service read.
+
+---
+
+## Community Status (ACTIVE / CLOSED) + realtime close/reopen (shipped 2026-06-22)
+
+### What shipped
+
+- New **owner-controlled** `Community.status` (`ACTIVE | CLOSED`, default ACTIVE) — a third lifecycle axis alongside platform `moderationStatus` (`SUSPENDED`) and `deletedAt`. Absent ⇒ ACTIVE (backfill: `pnpm --filter @aimess/community-service db:backfill:status`).
+- **Close** (`POST /communities/:id/close`, ADMIN) sets `status=CLOSED`, auto-removes **all** members (incl. admin, `memberCount→0`), suspends the chat room, broadcasts `community:closed`, and pushes to ex-members. **Reopen** (`POST /communities/:id/reopen`, owner by `adminId`) sets ACTIVE, re-adds the owner as sole ADMIN; former members re-join normally. Both idempotent.
+- **Centralized policy** `apps/community-service/src/lib/community-access-policy.ts` (`assertWritable`/`assertJoinable`/`deriveStatus`/`isEffectivelyClosed`) is the single chokepoint — replaced the scattered `assertCommunityNotSuspended` (12 sites). Either CLOSED or SUSPENDED ⇒ non-writable. chat-service mirrors this with `assertCommunityRoomWritable` (access-guard) wired into send/edit/delete/react/pin.
+- `status` added to every community response (details/mine/discover/invites/join-requests/reports) + OpenAPI `CommunityData`. Realtime `community:closed` / `community:reopened` added to AsyncAPI + SOCKET_EVENTS §5.2. No gateway/proto changes (generic Redis relay + reused `community.chat.sync.queue` `community.status.changed`).
+
+### FE guide
+
+- Full frontend integration contract: **`docs/COMMUNITY_STATUS_FLOW.md`** (the `status` field, `community:closed` / `community:reopened` events, close/reopen endpoints, error codes, UI checklist).
+
+### Deferred
+
+- close/reopen SYSTEM chat messages (no audience after eject); auto-restore of members on reopen; exposing `status` to backoffice (platform stays on `moderationStatus`).
+
+---
+
 ## Real-time Notification Spine (shipped 2026-06-17)
 
 End-to-end inbox delivery with real-time socket notifications to all connected devices. **The platform-wide notification flow is now complete and working.**
@@ -99,6 +163,66 @@ End-to-end inbox delivery with real-time socket notifications to all connected d
 - Notification expiration (cleanup old dismissed rows)
 
 ---
+
+## stream-service V2 — gap-fill: edit/delete, DASH, YouTube, canView gate, session tracking, backoffice stats (shipped 2026-06-16)
+
+Eight previously-missing capabilities implemented. All three touched services typecheck clean (`stream-service`, `api-gateway`, `backoffice-service`). Run `pnpm --filter stream-service exec prisma generate` once after this (the stream-service process must be stopped first on Windows — the DLL gets file-locked while running).
+
+- **PATCH /api/v1/streams/:id** — owner updates `title`, `description`, `thumbnail` (URL). Zod `updateStreamSchema` with at-least-one-field refine. Returns the updated `StreamView`.
+- **DELETE /api/v1/streams/:id** — owner deletes the stream record. Rejects with `STREAM_IS_LIVE` (409) if the stream is currently LIVE — must be stopped first.
+- **Thumbnail** — `thumbnail` (URL string) exposed in both `createStreamSchema` and `updateStreamSchema`; stored in the existing `thumbnail String?` Prisma field; propagated through `toView`.
+- **canView HTTP gate** — `GET /api/v1/streams/:id` now passes `req.auth.userId` to `LivestreamService.getStream()`. If the requesting user is banned from that stream a `STREAM_BANNED` (403) is returned before any stream data is served.
+- **Session tracking** — api-gateway `/stream` namespace maintains a Redis set `stream:session:users:<streamId>` (same 2h TTL as the viewer counter): `SADD` on `stream:join`, `SREM` on `stream:leave`, ban-kick, and disconnect. **GET /api/v1/streams/:id/viewers** (owner-only) reads `SMEMBERS` from stream-service and returns `{ items: userId[] }`.
+- **YouTube sourceType** — `YOUTUBE` added to `createStreamSchema` enum. When selected, `sourceUrl` is required (the YouTube embed URL), and all SRS playback/ingest steps are skipped (hlsUrl / flvUrl / dashUrl all null). The stream key is still generated for internal tracking.
+- **DASH playback URL** — `dashUrl String?` added to the Prisma schema (MongoDB, no migration needed — just `prisma generate`). `SrsService.buildPlaybackUrls` now returns `dashUrl = ${SRS_HLS_BASE}/live/${streamKey}.mpd`. Propagated through `StreamView`, `toView`, `create`, and `handlePublish`.
+- **Backoffice stats** — `GetStreamStats` RPC added to `packages/grpc-contracts/proto/stream.proto` + implemented in stream-service gRPC server (reads DB + merges live Redis count). New `apps/backoffice-service/src/grpc/stream.client.ts` calls it. `livestreamService.getLivestream()` overlays `viewerStats.currentViewers`, `.peakViewers`, `.chatMessageCount` from real stream-service data (fail-open: mock row served unchanged if stream-service is down). `STREAM_GRPC_URL` added to backoffice env (default `0.0.0.0:4007`).
+
+---
+
+## stream-service V1 — livestream lifecycle, comments & SRS hooks (shipped 2026-06-15)
+
+New service (port **3007** HTTP / **4007** gRPC, MongoDB `stream_db`). First livestream wave: stream lifecycle, viewer comments (now owned here), SRS media-server integration, and the go-live gate. Built/reviewed via the agent team.
+
+- **Lifecycle REST** — `POST /api/v1/streams` (create / schedule), `GET /api/v1/streams` (list, e.g. active by community), `GET /api/v1/streams/:id` (detail), `POST /api/v1/streams/:id/stop` (end), `GET /api/v1/streams/:id/comments` (cursor-paged comment history).
+- **SRS `http_hooks`** — stream-service exposes `POST /internal/srs/hooks`; SRS calls back on publish/unpublish/play/stop. The endpoint is **key-based** (validates `SRS_HOOK_SECRET`) and **protocol-agnostic** — the same hook handles WHIP (WebRTC) and RTMP ingest, so switching/adding an ingest mode is an env swap (`STREAM_INGEST_MODES=whip,rtmp`), not a code change. SRS API/HLS/WHIP bases are env-driven (`SRS_API_URL`, `SRS_RTMP_HOST`, `SRS_HLS_BASE`, `SRS_WHIP_BASE`).
+- **gRPC** — `PostComment`, `GetComments`, `GetActiveStreamsByCommunityIds` (the last lets other services resolve which communities are currently live in one round-trip).
+- **Comment ownership moved to stream-service** — livestream comments are now canonically owned here (`stream_comments` collection). chat-service's duplicate was **dead code** (orphaned, zero live references) and was removed this wave: deleted `apps/chat-service/src/repositories/livestream-comment.repository.ts` + `apps/chat-service/src/services/livestream-comment.service.ts`, dropped the `LivestreamComment` model (`chat_livestream_comments`) from `apps/chat-service/prisma/schema.prisma`, and removed the orphaned compiled `apps/chat-service/dist/sockets/handlers/livestream.handler.{js,d.ts}` (chat-service no longer holds sockets — there is no `src/sockets/`). Pre-GA, so no data migration. chat-service `tsc --noEmit` is clean of all livestream errors after the cleanup (the cleanup removed 5 stale type errors; the only remaining 2 errors are a pre-existing, unrelated `private-room.controller.ts` `archiveRoom`/`unarchiveRoom` gap).
+- **Go-live gate** — `community.ValidateMembership` is the authorization gate for going live: a creator must be an ACTIVE member of the target community (`STREAM_REQUIRE_MEMBERSHIP`), with `STREAM_MAX_CONCURRENT_PER_COMMUNITY` capping simultaneous PENDING+LIVE streams.
+- **Real-time** — new SOCKET_EVENTS `/stream` namespace (room `stream:<streamId>`): client `stream:join` (ack `{ viewerCount, recentComments }`) / `stream:leave` / `stream:comment` (rate-limited) / `stream:react` (ephemeral); server `stream:comment:new` / `stream:viewer_count` / `stream:react:new` / `stream:status`. Comments persisted; reactions fan-out only.
+- **docker-compose** — added a `stream-service` block (container `aimess-stream-service`, `3007:3007` + `4007:4007`, `depends_on` mongodb/redis/srs, `host.docker.internal` extra_hosts) + a multi-stage `apps/stream-service/Dockerfile` (mirrors chat-service). Root `.env`/`.env.example` gained `NODE_ENV` / `JWT_ACCESS_SECRET` / `SRS_HOOK_SECRET` for compose substitution; `docker compose config` validates clean.
+
+## Telegram-style Community System Message Framework (shipped 2026-06-19)
+
+Redesigned the community SYSTEM message system around a single central registry so visibility, templates, and list-bump behaviour can't drift across API / socket / history / preview.
+
+- **Central registry** (`packages/constants/src/community/system-message.ts`): the full subtype set + `SYSTEM_MESSAGE_VISIBILITY` (PERSONAL vs COMMUNITY) + `SYSTEM_MESSAGE_BUMPS_ACTIVITY` (does it reorder the community list). 18 subtypes: COMMUNITY_CREATED, COMMUNITY_NAME_UPDATED, COMMUNITY_AVATAR_UPDATED, COMMUNITY_UPDATED, ROLE_CHANGED, MEMBER_JOINED/LEFT/REMOVED/BANNED/UNBANNED/MUTED/UNMUTED, PINNED_MESSAGE, UNPINNED_MESSAGE, COMMUNITY_INVITE_CREATED, COMMUNITY_JOINED, JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED (+ MEMBER_ROLE_CHANGED legacy alias).
+- **Visibility is derived, not passed.** `CommunitySystemMessageService` reads visibility from the registry; publishers only pass `visibleToUserId` for PERSONAL subtypes. PERSONAL (COMMUNITY*JOINED, JOIN_REQUEST*\*) → `user:<id>` channel + persisted `visibleToUserId`; COMMUNITY → `community:<id>` room.
+- **Deterministic templates** (`buildFallbackText`): "Community created", "Community photo updated", "{name} became an admin", "{name} joined the community", "{name} was banned", "You joined this community", etc. Never composed dynamically. Client renders localized text from `systemMessageType` + `systemMetadata`; the stored `text` is the English fallback (also the community-list preview).
+- **SENDER-LESS** (Telegram parity): SYSTEM messages emit empty `senderId`/`senderName`/`senderAvatar` on both the real-time wire and history reads (`toWire` strips them when contentType==SYSTEM). The actor lives in `systemMetadata.actorUserId`/`actorName` only.
+- **Lifecycle hooks wired** in `community.service.ts` via a small `emitMemberSystemMessage` helper: kick→MEMBER_REMOVED, ban→MEMBER_BANNED, unban→MEMBER_UNBANNED, mute→MEMBER_MUTED, unmute→MEMBER_UNMUTED, leave→MEMBER_LEFT, role→ROLE_CHANGED, update split into COMMUNITY_NAME_UPDATED / COMMUNITY_AVATAR_UPDATED / COMMUNITY_UPDATED. Every join path emits BOTH a personal line (COMMUNITY_JOINED / JOIN_REQUEST_APPROVED) AND community-wide MEMBER_JOINED; reject → personal JOIN_REQUEST_REJECTED.
+- **PIN/UNPIN wired (2026-06-19):** `CommunitySystemMessageService` is now injected as an OPTIONAL 6th constructor arg into BOTH community pin paths — `CommunityMessageService.pinMessage`/`unpinMessage` (gRPC/socket path) and `CommunityPinService.pin`/`unpin` (REST path). Optional so the 5-arg test/app-factory call sites stay untouched; production wires it in `server.ts`. Emits PINNED_MESSAGE / UNPINNED_MESSAGE best-effort (`void …?.post(...)`). roomId === communityId for general rooms.
+- **DEFERRED:** COMMUNITY_INVITE_CREATED is intentionally not auto-emitted (Telegram doesn't post it). Bulk reject doesn't emit per-user JOIN_REQUEST_REJECTED yet (single reject does).
+- Docs: AsyncAPI + OpenAPI `systemMessageType` enums expanded + sender-less note. Tests: `community-read-access.test.ts` (registry visibility, sender-less wire, deterministic templates per subtype) + `join-community.test.ts` (dual join lines). 94 chat-service + 104 community-service tests green.
+
+## Personal Join System Message + PUBLIC Community History (shipped 2026-06-18)
+
+Telegram-style behaviour for community joins and history visibility. Two changes:
+
+1. **`COMMUNITY_JOINED` personal system message.** When a user joins a community (PUBLIC self-join, invite-link redeem with autoApprove, or PRIVATE join-request approval), a SYSTEM message "You joined this community" is created and delivered **only to the joining user**. It is NOT broadcast to the community room and is NOT visible to other members/moderators/admins — in real time or in history.
+   - New enum value `COMMUNITY_JOINED` + `CommunitySystemMessageVisibility` (`PERSONAL` | `COMMUNITY`) in `packages/constants/src/community/system-message.ts`.
+   - `publishCommunitySystemMessageForChatSafe` gained `visibilityType` + `visibleToUserId`; the 3 join paths in `community.service.ts` (`joinCommunity`, `redeemInviteLink`, `approveJoinRequest`) emit `PERSONAL` / `COMMUNITY_JOINED`.
+   - `CommunitySystemMessageService` publishes PERSONAL messages to `user:<id>` (not `community:<id>`), skips the room last-message bump + community-activity event, and persists `visibleToUserId`.
+   - **Persistence + filtering:** `GeneralRoomMessage` gained a nullable `visibleToUserId` (+ index). **Every** community read path filters `visibleToUserId ∈ {null, requester}` — `findByRoomIdWithTime`, `findByRoomIdTimeline`, `findAroundDate`, `conversationMatch` (raw), `findSinceId` (raw), `findUpdatedAtSince`, `searchByText`, `listMedia`, and `countUnreadBulk` — so a personal message can never leak to another member via history, sync, search, jump-to, or unread counts. The wire shape exposes a clean `isPersonal` boolean and drops the raw `visibleToUserId`.
+
+2. **PUBLIC community history is readable by non-members.** `assertCommunityReadAccess` (new, in `chat-service/src/lib/access-guard.ts`) replaces the strict `assertCommunityMember` on **all 5 read paths** (`getMessages`/timeline, `getMessagesSince`, `getMessagesAround` (jump-to), `searchMessages`). Rule: ACTIVE member → allow; banned → 403; otherwise allow only if the community is **PUBLIC**. PRIVATE communities still require membership (non-members → `403 CHAT_NOT_A_MEMBER`). The room is only loaded for non-members (members short-circuit).
+   - **Community type source = `GeneralRoom.communityType`** (chat-service's own DB, nullable, **fail-closed to PRIVATE** when null/unsynced). Persistent — **no TTL, no cross-service call on the read hot path** (this replaced an earlier Redis-`community:type:<id>`-with-24h-TTL design that had a recurring cold-cache hole: existing PUBLIC communities returned 403 until a chat-service restart and again after the TTL expired). Synced 3 ways: `community.created` event (carries `communityType` → `provisionForCommunity`), `community.visibility_changed` event (new; emitted by `updateCommunity` on PUBLIC↔PRIVATE change → `roomRepo.setCommunityType`), and the boot reconciler (proto `ReconcileCommunityDto.community_type` added → provisions new rooms with the type AND backfills `setCommunityType` on existing rooms). The boot reconciler is what backfills pre-existing communities after deploy.
+   - Write paths (`sendMessage`) are unchanged — still members-only.
+
+**gRPC/contract:** `CommunityMessageDto` proto gained `system_message_type`, `system_metadata` (JSON string), `is_personal`; chat-service handler + gateway client forward them. AsyncAPI (`community_system_joined` example + `isPersonal` + `COMMUNITY_JOINED` enum) and OpenAPI (`ChatCommunityMessage` system fields + PUBLIC-access note on the history path) updated.
+
+**Tests:** `apps/chat-service/tests/community/community-read-access.test.ts` (guard PUBLIC/PRIVATE/banned/fail-closed + getMessages access + PERSONAL targeting). `join-community.test.ts` asserts the PERSONAL `COMMUNITY_JOINED` emission. 89 chat-service + 134 community-service community/join/invite tests green.
+
+**⚠️ Deploy note:** chat-service Prisma client must be regenerated (`prisma generate`) for the new `visibleToUserId` field — Windows dev hit EPERM (running watcher locks the engine DLL); the TS types regenerated but the engine DLL did not. Restart the watcher / run a clean generate before deploy.
 
 ## Community System Messages (shipped 2026-06-16)
 
@@ -1598,3 +1722,87 @@ New endpoint allowing a caller to leave up to 50 communities in a single authent
 #### Verification (2026-06-11)
 
 - `tsc --noEmit` on `community-service` — **0 errors**
+
+---
+
+### Private Community Invitation & Discovery System (2026-06-18)
+
+#### What was shipped
+
+Discord/Telegram-style invite links for **PRIVATE** communities. Previously, invite links were restricted to PUBLIC communities only (`COMMUNITY_INVITE_LINK_ONLY_FOR_PUBLIC` guard). The guard was removed and the full invite-link flow now works for both PUBLIC and PRIVATE communities. A new read-only **preview endpoint** lets authenticated users see community details before deciding to join.
+
+#### Files changed
+
+| File                                                                          | Change                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/community-service/src/services/community.service.ts`                    | Removed PUBLIC-only guard from `createInviteLink` + `redeemInviteLink`; added `autoApprove` smart default (true for PRIVATE, false for PUBLIC); added `lookupInviteLink` method; extracted `assertInviteLinkActive` helper; upgraded `generateInviteCode` from `randomBytes(6)` → `randomBytes(16)` (128-bit entropy) |
+| `apps/community-service/src/types/community.types.ts`                         | Added `InviteLinkPreviewData` type; added `appDeepLink: string` to `CommunityInviteLinkData`; narrowed `communityType` to `CommunityType` enum                                                                                                                                                                        |
+| `apps/community-service/src/api/controllers/community.controller.ts`          | Added `lookupCommunityInviteLink` handler                                                                                                                                                                                                                                                                             |
+| `apps/community-service/src/api/routes/community.routes.ts`                   | Registered `GET /invite-links/:code` inside `communityRoutes` (before `/:id` wildcard); removed redundant `inviteLinkPublicRoutes` separate router                                                                                                                                                                    |
+| `apps/community-service/src/middleware/optional-authenticate-access-token.ts` | New file — created during optional-auth phase, retained for future optional-auth routes                                                                                                                                                                                                                               |
+| `packages/constants/src/messages/community.messages.ts`                       | Added `COMMUNITY_INVITE_LINK_PREVIEW_FETCHED` (EN + VI)                                                                                                                                                                                                                                                               |
+| `apps/api-gateway/src/middleware/rate-limit.ts`                               | Added `inviteLinkPreviewRateLimiter` (30 req / 15 min per IP)                                                                                                                                                                                                                                                         |
+| `apps/api-gateway/src/routes/v1/index.ts`                                     | Registered `inviteLinkPreviewRateLimiter` on `/communities/invite-links` before the service proxy                                                                                                                                                                                                                     |
+| `apps/api-gateway/src/docs/openapi/paths/community.paths.ts`                  | Added `GET /communities/invite-links/{code}` path (200/401/403/404/410); updated `POST /{id}/invite-links` description to document `autoApprove` default for PRIVATE                                                                                                                                                  |
+| `apps/api-gateway/src/docs/openapi/components/schemas.ts`                     | Added `InviteLinkPreviewData` schema; added `appDeepLink` to `CommunityInviteLinkData`                                                                                                                                                                                                                                |
+| `apps/community-service/tests/invite-links/invite-links.test.ts`              | Added 12 new test cases (30 total)                                                                                                                                                                                                                                                                                    |
+
+#### New endpoint
+
+`GET /api/v1/communities/invite-links/:code` — **requires authentication**.
+
+Returns `InviteLinkPreviewData`:
+
+```
+communityId, communityName, description, avatarUrl, bannerUrl,
+memberCount, communityType, isJoined, invitationCode,
+inviteUrl, appDeepLink, expiresAt (epoch ms | null), creatorId
+```
+
+Validates: link exists, not revoked, not expired, not exhausted. Banned callers → 403.
+
+#### Join flow decisions
+
+| `autoApprove` value          | Community type | Result on redeem                             |
+| ---------------------------- | -------------- | -------------------------------------------- |
+| `true` (default for PRIVATE) | PRIVATE        | Caller becomes ACTIVE member immediately     |
+| `false` (explicit)           | PRIVATE        | Join request created — requires mod approval |
+| `false` (default for PUBLIC) | PUBLIC         | Join request created                         |
+| `true` (explicit)            | PUBLIC         | Caller becomes ACTIVE member immediately     |
+
+`autoApprove` defaults to `true` for PRIVATE communities (Discord/Telegram model — the link issuer is granting access). Set `autoApprove: false` explicitly to keep the approval gate.
+
+#### Frontend flow
+
+```
+https://aimess.com/invite/CODE  or  aimess://invite/CODE (mobile deep link)
+  ↓
+GET /api/v1/communities/invite-links/:code   (preview — auth required)
+  ↓
+Community Home Screen rendered (name, avatar, banner, member count)
+  ↓
+User clicks Join
+  ↓
+POST /api/v1/communities/invite-links/:code/redeem   (auth required)
+  ↓
+autoApprove:true → ACTIVE member  |  autoApprove:false → join request
+```
+
+#### Security decisions
+
+- **Code entropy**: `randomBytes(16)` → 128 bits (22 base64url chars). Previous 6-byte (48-bit) codes were susceptible to enumeration against the public endpoint.
+- **Rate limiting**: `inviteLinkPreviewRateLimiter` (30/15 min per IP) at the gateway, registered before the service proxy.
+- **communityId in response body**: Intentional — frontend needs it for navigation. Not exposed in URLs (invite code only).
+- **Banned users**: 403 with no community data in the error body.
+- **Suspended communities**: Previewable (read-only path). Redeem is blocked by `assertCommunityNotSuspended`.
+- **Private communities remain non-searchable**: Only discovery mechanism is an invite link.
+
+#### `appDeepLink` field
+
+All `CommunityInviteLinkData` responses now include `appDeepLink: "aimess://invite/${code}"` for mobile universal-link handling, in addition to the existing `url` field (web URL).
+
+#### Verification (2026-06-18)
+
+- `tsc --noEmit` on `community-service` — **0 errors**
+- `tsc --noEmit` on `api-gateway` — **0 errors**
+- `tests/invite-links/invite-links.test.ts` — **30/30 passing**

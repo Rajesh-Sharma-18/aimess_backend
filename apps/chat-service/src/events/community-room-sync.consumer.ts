@@ -84,6 +84,8 @@ interface CommunityRoomSyncEvent {
     name?: string;
     avatarUrl?: string | null;
     ownerId?: string | null;
+    // community.created + community.visibility_changed — community visibility
+    communityType?: "PUBLIC" | "PRIVATE";
     // member.synced
     userId?: string;
     status?: string;
@@ -100,6 +102,8 @@ interface CommunityRoomSyncEvent {
     systemMessageType?: string;
     metadata?: Record<string, unknown>;
     triggeredByUserId?: string;
+    visibilityType?: "PERSONAL" | "COMMUNITY";
+    visibleToUserId?: string;
   };
 }
 
@@ -107,6 +111,7 @@ export class CommunityRoomSyncConsumer {
   private channel: Channel | null = null;
   private roomRepo = new GeneralRoomRepository(prisma);
   private memberRepo = new RoomMemberRepository(prisma);
+  private messageRepo = new GeneralRoomMessageRepository(prisma);
   private privateRoomRepo = new PrivateRoomRepository(prisma);
   private privateMessageRepo = new PrivateMessageRepository(prisma);
   private communitySystemMessageService = new CommunitySystemMessageService(
@@ -114,7 +119,10 @@ export class CommunityRoomSyncConsumer {
     new GeneralRoomRepository(prisma),
     new CacheRepository(redis),
     new UserSnapshotService(),
-    redis
+    redis,
+    // Drives the real-time `community:updated` list bump for COMMUNITY-visible
+    // system lines (role change, community-info update, joins, …).
+    this.memberRepo
   );
 
   async start(connection: ChannelModel): Promise<void> {
@@ -147,10 +155,14 @@ export class CommunityRoomSyncConsumer {
 
       switch (event.type) {
         case "community.created":
+          // Persist the community visibility on the room so read paths
+          // (getMessages/timeline/around/search/sync) can let non-members browse
+          // PUBLIC history. Stored on the GeneralRoom — authoritative, no TTL.
           await this.roomRepo.provisionForCommunity(communityId, {
             name: event.data.name ?? "",
             owner: event.data.ownerId ?? null,
             logo: event.data.avatarUrl ?? null,
+            communityType: event.data.communityType ?? null,
           });
           logger.debug(`Provisioned chat room for community ${communityId}`);
           break;
@@ -178,6 +190,24 @@ export class CommunityRoomSyncConsumer {
           break;
         }
 
+        case "community.visibility_changed": {
+          const communityType = event.data.communityType;
+          if (communityType === "PUBLIC" || communityType === "PRIVATE") {
+            // Persist the new visibility on the room so the read-access guard
+            // reflects the policy immediately (PUBLIC→PRIVATE stops leaking
+            // history to non-members, and vice-versa).
+            await this.roomRepo.setCommunityType(communityId, communityType);
+            logger.debug(
+              `community.visibility_changed: set type=${communityType} for ${communityId}`
+            );
+          } else {
+            logger.warn(
+              `community.visibility_changed: invalid communityType="${String(communityType)}" for ${communityId}`
+            );
+          }
+          break;
+        }
+
         case "community.member.synced": {
           const userId = event.data.userId;
           if (!userId) break;
@@ -192,6 +222,44 @@ export class CommunityRoomSyncConsumer {
           logger.debug(
             `Synced RoomMember community=${communityId} user=${userId} status=${String(data.status ?? "-")} role=${String(data.role ?? "-")}`
           );
+
+          // Membership-lifecycle cleanup (Telegram parity): when a membership
+          // goes INACTIVE (left / removed / banned), hard-delete the user's
+          // PERSONAL join-session onboarding lines ("You joined the community",
+          // "Your request to join was approved") so they never accumulate across
+          // join→leave→rejoin cycles. INTERNAL — no community-wide socket emit.
+          // Bounded by the leave-event timestamp so a redelivered stale "left"
+          // can't delete a FRESH rejoin line (which is strictly newer).
+          //
+          // Gate on the RAW event status (LEFT / BANNED), not the mapped
+          // `data.status`: mapMemberStatus collapses PENDING (and unknowns) into
+          // "left", and a PENDING join-request sync must NOT purge a join line.
+          const rawStatus = (event.data.status ?? "").toUpperCase();
+          if (rawStatus === "LEFT" || rawStatus === "BANNED") {
+            const boundary = event.data.eventAt
+              ? new Date(event.data.eventAt)
+              : undefined;
+            const deleted = await this.messageRepo
+              .deletePersonalJoinMessages({
+                roomId: communityId,
+                userId,
+                beforeOrAt:
+                  boundary && !Number.isNaN(boundary.getTime())
+                    ? boundary
+                    : undefined,
+              })
+              .catch((err: unknown) => {
+                logger.warn(
+                  `member.synced join-cleanup failed community=${communityId} user=${userId}: ${String(err)}`
+                );
+                return 0;
+              });
+            if (deleted > 0) {
+              logger.debug(
+                `member.synced join-cleanup: removed ${deleted} personal join line(s) community=${communityId} user=${userId}`
+              );
+            }
+          }
           break;
         }
 
@@ -220,7 +288,13 @@ export class CommunityRoomSyncConsumer {
         }
 
         case "community.system_message": {
-          const { systemMessageType, metadata, triggeredByUserId } = event.data;
+          const {
+            systemMessageType,
+            metadata,
+            triggeredByUserId,
+            visibleToUserId,
+            eventAt,
+          } = event.data;
           if (!systemMessageType || !triggeredByUserId) {
             logger.warn(
               "community.system_message: missing systemMessageType or triggeredByUserId — skipping"
@@ -238,11 +312,18 @@ export class CommunityRoomSyncConsumer {
             );
             break;
           }
+          // Visibility is derived from the central registry inside the service —
+          // the publisher no longer dictates it. visibleToUserId is still passed
+          // so PERSONAL subtypes know their target.
           await this.communitySystemMessageService.post({
             communityId,
             systemMessageType: systemMessageType as CommunitySystemMessageType,
             metadata: (metadata ?? {}) as Record<string, unknown>,
             triggeredByUserId,
+            visibleToUserId,
+            // Anchors the idempotency key so a redelivered event can't post a
+            // duplicate system line.
+            eventAt,
           });
           logger.debug(
             `community.system_message: posted type=${systemMessageType} communityId=${communityId}`

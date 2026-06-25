@@ -7,11 +7,13 @@ import { createGatewayRedisClients } from "./redis.js";
 import { registerChatNamespace } from "./namespaces/chat.ns.js";
 import { registerCommunityNamespace } from "./namespaces/community.ns.js";
 import { registerNotifyNamespace } from "./namespaces/notify.ns.js";
+import { registerStreamNamespace } from "./namespaces/stream.ns.js";
 import type { MessagingClient } from "../grpc/clients/messaging.client.js";
 import { createCommunityClient } from "../grpc/clients/community.client.js";
 import { createNotificationClient } from "../grpc/clients/notification.client.js";
 import { createUserClient } from "../grpc/clients/user.client.js";
 import type { MediaClient } from "../grpc/clients/media.client.js";
+import { createStreamClient } from "../grpc/clients/stream.client.js";
 
 export async function setupSockets(
   httpServer: HttpServer,
@@ -44,15 +46,18 @@ export async function setupSockets(
   const { sub: chatSub } = createGatewayRedisClients();
   const { sub: communitySub } = createGatewayRedisClients();
   const { sub: notifySub } = createGatewayRedisClients();
+  const { sub: streamSub } = createGatewayRedisClients();
   await Promise.all([
     chatSub.connect(),
     communitySub.connect(),
     notifySub.connect(),
+    streamSub.connect(),
   ]);
 
   const communityClient = createCommunityClient();
   const notificationClient = createNotificationClient();
   const userClient = createUserClient();
+  const streamClient = createStreamClient();
 
   registerChatNamespace(
     io,
@@ -66,10 +71,12 @@ export async function setupSockets(
     io,
     communityClient,
     communitySub,
+    pub,
     userClient,
     mediaClient
   );
   registerNotifyNamespace(io, notificationClient, notifySub);
+  registerStreamNamespace(io, streamClient, streamSub, pub);
 
   io.engine.on(
     "connection_error",
@@ -80,5 +87,7 @@ export async function setupSockets(
     }
   );
 
-  logger.info("Socket.IO namespaces registered: /chat, /community, /notify");
+  logger.info(
+    "Socket.IO namespaces registered: /chat, /community, /notify, /stream"
+  );
 }

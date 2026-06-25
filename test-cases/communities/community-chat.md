@@ -204,19 +204,19 @@ REST base (chat-service): `/api/v1/.../community` (router from `createCommunityR
 
 ### TC-COMM-129 — New message bump-to-top (community:updated)
 
-| Field                     | Value                                                                                                                                              |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Feature/Module**        | Community Chat / Realtime                                                                                                                          |
-| **API/Event Name**        | event `community:updated` (socket)                                                                                                                 |
-| **Test Scenario**         | A new community message bumps the community list for members                                                                                       |
-| **Category**              | DB State / Realtime                                                                                                                                |
-| **Priority**              | Medium                                                                                                                                             |
-| **Preconditions**         | Members listening on `/chat`                                                                                                                       |
-| **Request Payload**       | (driven by `community:message:send`)                                                                                                               |
-| **Expected Response**     | n/a (socket)                                                                                                                                       |
-| **Expected DB Changes**   | room lastMessage/lastMessageAt updated                                                                                                             |
-| **Expected Socket/Event** | `community:updated` to `user:<id>` on **`/chat`** namespace `{ communityId, roomId, lastMessageId, lastMessage, lastMessageAt, senderId, unread }` |
-| **Notes**                 | Intentionally on `/chat` (not `/community`) — see SOCKET_EVENTS §4. `community:message:new` is on `/community`.                                    |
+| Field                     | Value                                                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Feature/Module**        | Community Chat / Realtime                                                                                                                               |
+| **API/Event Name**        | event `community:updated` (socket)                                                                                                                      |
+| **Test Scenario**         | A new community message bumps the community list for members                                                                                            |
+| **Category**              | DB State / Realtime                                                                                                                                     |
+| **Priority**              | Medium                                                                                                                                                  |
+| **Preconditions**         | Members listening on `/community`                                                                                                                       |
+| **Request Payload**       | (driven by `community:message:send`)                                                                                                                    |
+| **Expected Response**     | n/a (socket)                                                                                                                                            |
+| **Expected DB Changes**   | room lastMessage/lastMessageAt updated                                                                                                                  |
+| **Expected Socket/Event** | `community:updated` to `user:<id>` on **`/community`** namespace `{ communityId, roomId, lastMessageId, lastMessage, lastMessageAt, senderId, unread }` |
+| **Notes**                 | Delivered on `/community` (not `/chat`) — see SOCKET_EVENTS §4. `community:message:new` is also on `/community`.                                        |
 
 ### TC-COMM-130 — Send message rate limit
 

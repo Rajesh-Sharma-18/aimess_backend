@@ -110,67 +110,15 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
 }
 
 /**
- * Canonical list/preview string for a message, honoring the documented
- * `ListBumpLastMessage` convention (asyncapi `ListBumpLastMessage` + SOCKET_EVENTS
- * §4.2): TEXT/SYSTEM show the body; media & structured types show a labelled
- * placeholder with the filename / place / contact name interpolated when known.
- * `content` may be the structured content object (`{ text, files[], location,
- * contact }`) or a plain text string (community stores the body as a string), so
- * a non-text message never yields an empty list preview.
+ * Preview helpers now live in the centralized MessagePreviewService (the single
+ * source of truth for all list/community/push previews). Re-exported here so the
+ * many existing `buildMessagePreview` / `buildPushPreview` imports from this file
+ * keep working without duplicating the logic. Prefer importing
+ * `convertMessageToPreview` from `../services/message-preview.service.js` in new
+ * code.
  */
-export function buildMessagePreview(
-  contentType: string,
-  content: unknown
-): string {
-  const type = String(contentType ?? "").toUpperCase();
-  const c: Record<string, unknown> =
-    content && typeof content === "object"
-      ? (content as Record<string, unknown>)
-      : { text: typeof content === "string" ? content : "" };
-  const text = typeof c.text === "string" ? c.text : "";
-  const files = Array.isArray(c.files)
-    ? (c.files as Array<Record<string, unknown>>)
-    : [];
-  const fileName = (files[0]?.name as string) || "";
-  const placeName =
-    ((c.location as Record<string, unknown> | undefined)
-      ?.placeName as string) || "";
-  const contactName =
-    ((c.contact as Record<string, unknown> | undefined)?.name as string) || "";
-
-  switch (type) {
-    case "TEXT":
-      return text ? text.slice(0, 200) : "Sent a message";
-    case "IMAGE":
-      return "📷 Photo";
-    case "VIDEO":
-      return "🎥 Video";
-    case "GIF":
-      return "🎞 GIF";
-    case "VOICE":
-      return "🎤 Voice message";
-    case "AUDIO":
-      return "🎵 Audio";
-    case "DOCUMENT":
-      return fileName ? `📎 ${fileName}` : "📎 Document";
-    case "STICKER":
-      return "🌟 Sticker";
-    case "LOCATION":
-      return placeName ? `📍 ${placeName}` : "📍 Location";
-    case "CONTACT":
-      return contactName ? `👤 ${contactName}` : "👤 Contact";
-    case "SYSTEM":
-      return text || "";
-    default:
-      return text ? text.slice(0, 200) : "New message";
-  }
-}
-
-/**
- * Short, notification-ready preview from message type + body text. Thin wrapper
- * over {@link buildMessagePreview} for the push path (which has only the body
- * text in hand, not the structured content object).
- */
-export function buildPushPreview(messageType: string, text: string): string {
-  return buildMessagePreview(messageType, { text });
-}
+export {
+  buildMessagePreview,
+  buildPushPreview,
+  convertMessageToPreview,
+} from "../services/message-preview.service.js";

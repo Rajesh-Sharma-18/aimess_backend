@@ -724,6 +724,88 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  apps/stream-service:
+    dependencies:
+      "@aimess/auth-jwt":
+        specifier: workspace:*
+        version: link:../../packages/auth-jwt
+      "@aimess/constants":
+        specifier: workspace:*
+        version: link:../../packages/constants
+      "@aimess/errors":
+        specifier: workspace:*
+        version: link:../../packages/errors
+      "@aimess/grpc-utils":
+        specifier: workspace:*
+        version: link:../../packages/grpc-utils
+      "@aimess/logger":
+        specifier: workspace:*
+        version: link:../../packages/logger
+      "@aimess/redis":
+        specifier: workspace:*
+        version: link:../../packages/redis
+      "@aimess/shared-types":
+        specifier: workspace:*
+        version: link:../../packages/shared-types
+      "@aimess/storage":
+        specifier: workspace:*
+        version: link:../../packages/storage
+      "@aimess/utils":
+        specifier: workspace:*
+        version: link:../../packages/utils
+      "@grpc/grpc-js":
+        specifier: ^1.14.3
+        version: 1.14.3
+      "@grpc/proto-loader":
+        specifier: ^0.8.1
+        version: 0.8.1
+      "@prisma/client":
+        specifier: ^6.19.0
+        version: 6.19.3(prisma@6.19.3(typescript@6.0.3))(typescript@6.0.3)
+      amqplib:
+        specifier: ^2.0.1
+        version: 2.0.1
+      cors:
+        specifier: ^2.8.6
+        version: 2.8.6
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
+      express:
+        specifier: ^5.2.1
+        version: 5.2.1
+      helmet:
+        specifier: ^8.1.0
+        version: 8.1.0
+      ioredis:
+        specifier: ^5.10.1
+        version: 5.10.1
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      "@types/amqplib":
+        specifier: ^0.10.7
+        version: 0.10.8
+      "@types/cors":
+        specifier: ^2.8.19
+        version: 2.8.19
+      "@types/express":
+        specifier: ^5.0.6
+        version: 5.0.6
+      "@types/node":
+        specifier: ^25.6.2
+        version: 25.6.2
+      prisma:
+        specifier: ^6.19.0
+        version: 6.19.3(typescript@6.0.3)
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   apps/user-service:
     dependencies:
       "@aimess/auth-jwt":
