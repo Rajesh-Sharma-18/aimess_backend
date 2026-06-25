@@ -129,6 +129,25 @@ export async function publishCommunityUpdated(
   const memberIds = [...new Set(p.memberIds)];
   if (memberIds.length === 0) return;
 
+  // Exclude members who just joined and haven't yet received their
+  // `community:added` personal event. Including them here causes the FE to
+  // trigger a clobbering refetch for a community it doesn't have in state yet.
+  // Chat-service sets a short-lived key on `community.member.synced(ACTIVE)`;
+  // the key expires after 60 s, well past any realistic delivery window.
+  let eligibleIds = memberIds;
+  try {
+    const flags = await p.redis.mget(
+      ...memberIds.map((id) => `community:fresh-join:${p.communityId}:${id}`)
+    );
+    eligibleIds = memberIds.filter((_, i) => flags[i] === null);
+  } catch (err) {
+    logger.warn(
+      `community:updated fresh-join check failed for ${p.communityId}: ${String(err)}`
+    );
+    // Fail-open: include all members so the bump still fires.
+  }
+  if (eligibleIds.length === 0) return;
+
   // SYSTEM activity (lifecycle lines such as "John is now a moderator") is
   // sender-less: the preview is a complete sentence. Force both senderId and
   // senderName empty so the frontend never prefixes with "You:" or an actor
@@ -140,7 +159,7 @@ export async function publishCommunityUpdated(
 
   try {
     const pipeline = p.redis.pipeline();
-    for (const memberId of memberIds) {
+    for (const memberId of eligibleIds) {
       // Self-referential system line: the subject member sees "You …"; everyone
       // else gets the third-person preview as-is.
       const lastMessage =

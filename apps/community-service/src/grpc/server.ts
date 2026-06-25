@@ -931,6 +931,36 @@ const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // Lightweight membership scan for the gateway socket layer: returns all
+  // community IDs where userId is an ACTIVE member. Used on socket connect to
+  // auto-join community:<id> rooms without a per-community client:join emit.
+  getUserActiveCommunityIds: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as { userId?: string };
+      const userId = (req.userId ?? "").trim();
+      if (!userId) {
+        callback(null, { communityIds: [] });
+        return;
+      }
+      try {
+        const memberships =
+          await communityRepository.findUserMemberships(userId);
+        callback(null, {
+          communityIds: memberships.map((m) => m.communityId),
+        });
+      } catch (err) {
+        logger.error("getUserActiveCommunityIds gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "getUserActiveCommunityIds failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   deleteCommunity: (
     call: grpc.ServerUnaryCall<unknown, unknown>,
     callback: grpc.sendUnaryData<unknown>

@@ -7,6 +7,7 @@ import {
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { buildDeepLink } from "../lib/deep-link.js";
 import { pushToUser } from "../services/push.service.js";
 
 // user-service publishes friendship events to a plain durable queue (NOT a
@@ -17,6 +18,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
   switch (type) {
     case FriendshipEvents.FRIEND_REQUESTED: {
       const p = data as FriendRequestedPayload;
+      const deepLink = buildDeepLink("user", p.requesterId);
       await pushToUser({
         userId: p.addresseeId,
         category: "friendRequestEnabled",
@@ -24,9 +26,11 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.requesterId,
         title: "New friend request",
         body: "You have a new friend request.",
+        deepLink,
         data: {
           friendshipId: p.friendshipId,
           requesterId: p.requesterId,
+          deepLink,
         },
       });
       break;
@@ -34,6 +38,7 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
 
     case FriendshipEvents.FRIEND_ACCEPTED: {
       const p = data as FriendAcceptedPayload;
+      const deepLink = buildDeepLink("user", p.addresseeId);
       await pushToUser({
         userId: p.requesterId,
         category: "friendRequestEnabled",
@@ -41,9 +46,11 @@ async function handleFriendEvent(type: string, data: unknown): Promise<void> {
         actorId: p.addresseeId,
         title: "Friend request accepted",
         body: "Your friend request was accepted.",
+        deepLink,
         data: {
           friendshipId: p.friendshipId,
           addresseeId: p.addresseeId,
+          deepLink,
         },
       });
       break;

@@ -38,6 +38,7 @@ import type { CallService } from "../services/call.service.js";
 import type { WebRtcConfigService } from "../services/webrtc-config.service.js";
 import type { PresenceService } from "../services/presence.service.js";
 import type { CommunityMessageService } from "../services/community-message.service.js";
+import type { CommunityPinService } from "../services/community-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
 import {
   buildChatMessageEvent,
@@ -93,6 +94,7 @@ export interface GrpcDeps {
   webRtcConfigService: WebRtcConfigService;
   presenceService: PresenceService;
   communityMessageService: CommunityMessageService;
+  communityPinService: CommunityPinService;
   notificationRepo: NotificationRepository;
 }
 
@@ -2262,7 +2264,8 @@ export function createCommunityImpl(
             roomId: string;
             userId: string;
           };
-          const result = await deps.communityMessageService.pinMessage({
+          // Route through CommunityPinService (canonical store: CommunityMessagePin)
+          const result = await deps.communityPinService.pin({
             messageId: req.messageId,
             userId: req.userId,
             roomId: req.roomId,
@@ -2273,13 +2276,10 @@ export function createCommunityImpl(
             JSON.stringify({
               event: "community:message:pinned",
               data: {
-                messageId: req.messageId,
                 communityId: req.communityId,
                 roomId: req.roomId,
-                pinnedIds: result.pinnedIds,
+                pin: result.pin,
                 pinnedCount: result.pinnedCount,
-                pinnedAt: result.pinnedAt,
-                pinnedBy: req.userId,
               },
             })
           );
@@ -2287,18 +2287,7 @@ export function createCommunityImpl(
             messageId: req.messageId,
             communityId: req.communityId,
             roomId: req.roomId,
-            pinnedIds: JSON.stringify(result.pinnedIds),
             pinnedCount: result.pinnedCount,
-            pinnedAt: result.pinnedAt,
-          });
-          publishCommunityActivitySafe({
-            communityId: req.communityId,
-            lastMessageAt: new Date().toISOString(),
-            lastMessageId: req.messageId,
-            senderUserId: req.userId,
-            senderUsername: "",
-            messagePreview: "Message pinned",
-            type: "pinned",
           });
         } catch (err) {
           logger.error(`gRPC pinCommunityMessage error: ${String(err)}`);
@@ -2319,23 +2308,22 @@ export function createCommunityImpl(
             roomId: string;
             userId: string;
           };
-          const result = await deps.communityMessageService.unpinMessage({
+          // Route through CommunityPinService (soft-delete, no UNPINNED_MESSAGE)
+          const result = await deps.communityPinService.unpin({
             messageId: req.messageId,
             userId: req.userId,
             roomId: req.roomId,
-            communityId: req.communityId,
           });
           await redis.publish(
             `community:${req.communityId}`,
             JSON.stringify({
               event: "community:message:unpinned",
               data: {
-                messageId: req.messageId,
                 communityId: req.communityId,
                 roomId: req.roomId,
-                pinnedIds: result.pinnedIds,
+                messageId: req.messageId,
+                pin: result.pin,
                 pinnedCount: result.pinnedCount,
-                unpinnedBy: req.userId,
               },
             })
           );
@@ -2343,17 +2331,7 @@ export function createCommunityImpl(
             messageId: req.messageId,
             communityId: req.communityId,
             roomId: req.roomId,
-            pinnedIds: JSON.stringify(result.pinnedIds),
             pinnedCount: result.pinnedCount,
-          });
-          publishCommunityActivitySafe({
-            communityId: req.communityId,
-            lastMessageAt: new Date().toISOString(),
-            lastMessageId: req.messageId,
-            senderUserId: req.userId,
-            senderUsername: "",
-            messagePreview: "Message unpinned",
-            type: "unpinned",
           });
         } catch (err) {
           logger.error(`gRPC unpinCommunityMessage error: ${String(err)}`);

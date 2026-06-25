@@ -297,6 +297,7 @@ export const adminPaths = {
   "/admin/v1/auth/login": {
     post: {
       tags: [adminTags.authAccount],
+      operationId: "adminLogin",
       summary: "Admin login",
       description:
         "Public. Single-step admin login: verifies email + password and returns the admin token pair (access 8h, compact JWT signed with `JWT_ADMIN_SECRET`; opaque refresh token, 7d) plus the authenticated admin profile. Audited (login).",
@@ -317,6 +318,7 @@ export const adminPaths = {
   "/admin/v1/auth/refresh": {
     post: {
       tags: [adminTags.authAccount],
+      operationId: "adminRefreshToken",
       summary: "Rotate admin JWT",
       description:
         "Public. Rotates the admin token pair from the opaque refresh token sent in the JSON body.",
@@ -335,6 +337,7 @@ export const adminPaths = {
   "/admin/v1/auth/logout": {
     post: {
       tags: [adminTags.authAccount],
+      operationId: "adminLogout",
       summary: "Admin logout",
       description:
         "Revokes the current admin session (by session id) in Redis + DB. Audited. Requires a valid admin bearer.",
@@ -349,6 +352,7 @@ export const adminPaths = {
   "/admin/v1/auth/forgot-password": {
     post: {
       tags: [adminTags.authAccount],
+      operationId: "adminForgotPasswordRequest",
       summary: "Admin forgot password — request OTP",
       description:
         "Public. Starts the admin password-reset flow: sends a 6-digit OTP to the admin's email. " +
@@ -370,6 +374,7 @@ export const adminPaths = {
   "/admin/v1/auth/verify-otp": {
     post: {
       tags: [adminTags.authAccount],
+      operationId: "adminVerifyPasswordResetOtp",
       summary: "Admin verify password-reset OTP",
       description:
         "Public. Verifies the 6-digit OTP for the given email and, on success, returns a short-lived " +
@@ -391,6 +396,7 @@ export const adminPaths = {
   "/admin/v1/auth/resend-otp": {
     post: {
       tags: [adminTags.authAccount],
+      operationId: "adminResendPasswordResetOtp",
       summary: "Admin resend password-reset OTP",
       description:
         "Public. Resends the password-reset OTP for the given email. The response is NEUTRAL — " +
@@ -411,6 +417,7 @@ export const adminPaths = {
   "/admin/v1/auth/reset-password": {
     post: {
       tags: [adminTags.authAccount],
+      operationId: "adminResetPassword",
       summary: "Admin reset password with reset token",
       description:
         "Public. Completes the reset flow: consumes the single-use reset token from /verify-otp and " +
@@ -434,6 +441,7 @@ export const adminPaths = {
   "/admin/v1/me": {
     get: {
       tags: [adminTags.authAccount],
+      operationId: "getAdminProfile",
       summary: "Get current admin profile",
       description: "Returns the current admin profile + effective permissions.",
       security: adminSecurity,
@@ -447,6 +455,7 @@ export const adminPaths = {
   "/admin/v1/me/password": {
     patch: {
       tags: [adminTags.authAccount],
+      operationId: "changeAdminPassword",
       summary: "Change my password",
       description:
         PLANNED +
@@ -469,6 +478,7 @@ export const adminPaths = {
   "/admin/v1/dashboard/overview": {
     get: {
       tags: [adminTags.dashboard],
+      operationId: "getDashboardStats",
       summary: "Dashboard stat cards",
       description:
         "Stat-card section only. Returns `{ stats }` aggregated live over gRPC: user/active/banned counts from auth-service, communities from community-service, groups from chat-service. `totalLivestreams`, `openReports`, and `churnedUsers` are STATIC stubs (0) flagged in `stats.stale`; any unreachable service degrades its field to 0 + a `stale` flag rather than failing the call. Cached independently (10s). Requires `dashboard.read`.",
@@ -532,6 +542,7 @@ export const adminPaths = {
   "/admin/v1/dashboard/service-status": {
     get: {
       tags: [adminTags.dashboard],
+      operationId: "getDashboardServiceStatus",
       summary: "Dashboard service-status panel",
       description:
         "Service-status section. Returns `{ serviceStatus }` — per-service health derived from the backoffice opossum circuit breakers (auth/community/chat report operational/degraded/down + breaker state; media/notification/livestream have no health probe wired yet and report `degraded` with a note). Cached briefly (10s). Requires `dashboard.read`.",
@@ -554,6 +565,7 @@ export const adminPaths = {
   "/admin/v1/users": {
     get: {
       tags: [adminTags.users],
+      operationId: "adminListUsers",
       summary: "List / search users",
       description:
         PLANNED +
@@ -641,6 +653,7 @@ export const adminPaths = {
   "/admin/v1/users/{id}": {
     get: {
       tags: [adminTags.users],
+      operationId: "adminGetUser",
       summary: "Get user detail",
       description:
         PLANNED +
@@ -657,6 +670,7 @@ export const adminPaths = {
     },
     delete: {
       tags: [adminTags.users],
+      operationId: "adminDeleteUser",
       summary: "Delete user (soft)",
       description:
         PLANNED +
@@ -678,6 +692,7 @@ export const adminPaths = {
   "/admin/v1/users/{id}/sessions": {
     get: {
       tags: [adminTags.users],
+      operationId: "adminListUserSessions",
       summary: "List user device sessions",
       description:
         PLANNED +
@@ -696,6 +711,7 @@ export const adminPaths = {
   "/admin/v1/users/{id}/reports": {
     get: {
       tags: [adminTags.users],
+      operationId: "adminListUserReports",
       summary: "List reports against a user",
       description:
         PLANNED +
@@ -714,6 +730,7 @@ export const adminPaths = {
   "/admin/v1/users/{userId}/communities": {
     get: {
       tags: [adminTags.users],
+      operationId: "adminListUserCommunities",
       summary: "List the user's communities",
       description:
         "The 'Communities' grid on the User Management detail screen — the " +
@@ -789,6 +806,7 @@ export const adminPaths = {
   "/admin/v1/users/{userId}/communities/{communityId}/members": {
     get: {
       tags: [adminTags.users],
+      operationId: "adminListUserCommunityPeers",
       summary: "List the OTHER members of a community the user belongs to",
       description:
         "The co-member grid on the User Management detail screen — the other " +
@@ -882,6 +900,7 @@ export const adminPaths = {
   "/admin/v1/users/{id}/suspend": {
     post: {
       tags: [adminTags.users],
+      operationId: "adminSuspendUser",
       summary: "Suspend a user",
       description:
         PLANNED +
@@ -905,6 +924,7 @@ export const adminPaths = {
   "/admin/v1/users/{id}/ban": {
     post: {
       tags: [adminTags.users],
+      operationId: "adminBanUser",
       summary: "Ban a user",
       description:
         PLANNED +
@@ -928,6 +948,7 @@ export const adminPaths = {
   "/admin/v1/users/{id}/unban": {
     post: {
       tags: [adminTags.users],
+      operationId: "adminUnbanUser",
       summary: "Unban a user",
       description:
         PLANNED +
@@ -949,6 +970,7 @@ export const adminPaths = {
   "/admin/v1/users/{id}/force-logout": {
     post: {
       tags: [adminTags.users],
+      operationId: "adminForceLogoutUser",
       summary: "Force-logout a user",
       description:
         PLANNED +
@@ -978,6 +1000,7 @@ export const adminPaths = {
   "/admin/v1/communities": {
     get: {
       tags: [adminTags.communities],
+      operationId: "adminListCommunities",
       summary: "List communities (community management table)",
       description:
         "**(Phase 1 — mock data behind the real contract)** Paginated, filtered communities list. " +
@@ -1068,6 +1091,7 @@ export const adminPaths = {
   "/admin/v1/communities/{communityId}": {
     get: {
       tags: [adminTags.communities],
+      operationId: "adminGetCommunity",
       summary: "Get community detail",
       description:
         "**(Phase 1 — mock data behind the real contract)** Full community detail: core entity, owner " +
@@ -1098,6 +1122,7 @@ export const adminPaths = {
   "/admin/v1/communities/{communityId}/members": {
     get: {
       tags: [adminTags.communities],
+      operationId: "adminListCommunityMembers",
       summary: "List community members",
       description:
         "Paginated member roster for a community (community-service gRPC, " +
@@ -1157,6 +1182,7 @@ export const adminPaths = {
   "/admin/v1/communities/{communityId}/close": {
     post: {
       tags: [adminTags.communities],
+      operationId: "adminCloseCommunity",
       summary: "Close a community",
       description:
         "**(Phase 1 — mock data behind the real contract)** Move a community to CLOSED with a " +
@@ -1189,6 +1215,7 @@ export const adminPaths = {
   "/admin/v1/communities/{communityId}/reopen": {
     post: {
       tags: [adminTags.communities],
+      operationId: "adminReopenCommunity",
       summary: "Reopen a community",
       description:
         "**(Phase 1 — mock data behind the real contract)** Move a CLOSED community back to ACTIVE " +
@@ -1224,6 +1251,7 @@ export const adminPaths = {
   "/admin/v1/communities/bulk/close": {
     post: {
       tags: [adminTags.communities],
+      operationId: "adminBulkCloseCommunities",
       summary: "Bulk close communities",
       description:
         "**(Phase 1 — mock data behind the real contract)** Close up to 100 communities in one call. " +
@@ -1248,6 +1276,7 @@ export const adminPaths = {
   "/admin/v1/communities/bulk/reopen": {
     post: {
       tags: [adminTags.communities],
+      operationId: "adminBulkReopenCommunities",
       summary: "Bulk reopen communities",
       description:
         "**(Phase 1 — mock data behind the real contract)** Reopen up to 100 communities in one call. " +
@@ -1276,6 +1305,7 @@ export const adminPaths = {
   "/admin/v1/groups": {
     get: {
       tags: [adminTags.groups],
+      operationId: "adminListGroups",
       summary: "List groups",
       description:
         "Paginated, searchable, sortable list of chat-service groups (gRPC-live `AdminListGroups`). Search matches group name, group id, admin username, and admin email; sortable by `createdAt` or `memberCount`; filterable by created-date range. Requires `groups.read`.",
@@ -1292,6 +1322,7 @@ export const adminPaths = {
   "/admin/v1/groups/{id}": {
     get: {
       tags: [adminTags.groups],
+      operationId: "adminGetGroup",
       summary: "Get group detail",
       description:
         "Full group detail (gRPC-live, chat-service). Requires `groups.read`.",
@@ -1307,6 +1338,7 @@ export const adminPaths = {
     },
     delete: {
       tags: [adminTags.groups],
+      operationId: "adminDisbandGroup",
       summary: "Disband a group",
       description:
         PLANNED +
@@ -1328,6 +1360,7 @@ export const adminPaths = {
   "/admin/v1/groups/{id}/members": {
     get: {
       tags: [adminTags.groups],
+      operationId: "adminListGroupMembers",
       summary: "List group members",
       description:
         "Paginated, searchable members (gRPC-live, chat-service). Search matches username, user id, and email; filterable by role (OWNER/ADMIN/MODERATOR/MEMBER). Requires `groups.read`.",
@@ -1345,6 +1378,7 @@ export const adminPaths = {
   "/admin/v1/groups/{id}/suspend": {
     post: {
       tags: [adminTags.groups],
+      operationId: "adminSuspendGroup",
       summary: "Suspend a group",
       description:
         PLANNED + "🔐 step-up TOTP. Audited. Requires `groups.moderate`.",
@@ -1374,6 +1408,7 @@ export const adminPaths = {
   "/admin/v1/reports": {
     get: {
       tags: [adminTags.reports],
+      operationId: "adminListReports",
       summary: "List reports (moderation table)",
       description:
         "**(Phase 1 — mock data behind the real contract)** Paginated moderation queue " +
@@ -1503,6 +1538,7 @@ export const adminPaths = {
   "/admin/v1/reports/{reportId}": {
     get: {
       tags: [adminTags.reports],
+      operationId: "adminGetReport",
       summary: "Get report detail",
       description:
         "**(Phase 1 — mock data behind the real contract)** Core report detail: enriched " +
@@ -1535,6 +1571,7 @@ export const adminPaths = {
   "/admin/v1/reports/{reportId}/evidence": {
     get: {
       tags: [adminTags.reports],
+      operationId: "adminListReportEvidence",
       summary: "List report evidence",
       description:
         "**(Phase 1 — mock data behind the real contract)** Paginated list of evidence items " +
@@ -1577,6 +1614,7 @@ export const adminPaths = {
   "/admin/v1/reports/{reportId}/history": {
     get: {
       tags: [adminTags.reports],
+      operationId: "adminListReportHistory",
       summary: "List report action history",
       description:
         "**(Phase 1 — mock data behind the real contract)** Paginated action/event history " +
@@ -1618,6 +1656,7 @@ export const adminPaths = {
   "/admin/v1/reports/{reportId}/related": {
     get: {
       tags: [adminTags.reports],
+      operationId: "adminListRelatedReports",
       summary: "List related reports",
       description:
         "**(Phase 1 — mock data behind the real contract)** Paginated list of reports " +
@@ -1658,6 +1697,7 @@ export const adminPaths = {
   "/admin/v1/reports/bulk/resolve": {
     post: {
       tags: [adminTags.reports],
+      operationId: "adminBulkResolveReports",
       summary: "Bulk resolve reports",
       description:
         "**(Phase 1 — mock data behind the real contract)** Resolve up to 100 reports in one call. " +
@@ -1680,6 +1720,7 @@ export const adminPaths = {
   "/admin/v1/reports/bulk/dismiss": {
     post: {
       tags: [adminTags.reports],
+      operationId: "adminBulkDismissReports",
       summary: "Bulk dismiss reports",
       description:
         "**(Phase 1 — mock data behind the real contract)** Dismiss up to 100 reports in one call. " +
@@ -1702,6 +1743,7 @@ export const adminPaths = {
   "/admin/v1/reports/{reportId}/resolve": {
     post: {
       tags: [adminTags.reports],
+      operationId: "adminResolveReport",
       summary: "Resolve a report",
       description:
         "**(Phase 1 — mock data behind the real contract)** Mark a report RESOLVED with a resolution " +
@@ -1736,6 +1778,7 @@ export const adminPaths = {
   "/admin/v1/reports/{reportId}/dismiss": {
     post: {
       tags: [adminTags.reports],
+      operationId: "adminDismissReport",
       summary: "Dismiss a report",
       description:
         "**(Phase 1 — mock data behind the real contract)** Mark a report DISMISSED with a reason. " +
@@ -1768,6 +1811,7 @@ export const adminPaths = {
   "/admin/v1/reports/{reportId}/assign": {
     patch: {
       tags: [adminTags.reports],
+      operationId: "adminAssignReport",
       summary: "Assign a report",
       description:
         PLANNED +
@@ -1798,6 +1842,7 @@ export const adminPaths = {
   "/admin/v1/reports/{reportId}/notes": {
     post: {
       tags: [adminTags.reports],
+      operationId: "adminAddReportNote",
       summary: "Add an internal note",
       description:
         PLANNED + "Internal note (`ReportNote`). Requires `reports.action`.",
@@ -1831,6 +1876,7 @@ export const adminPaths = {
   "/admin/v1/livestreams": {
     get: {
       tags: [adminTags.livestreams],
+      operationId: "adminListLivestreams",
       summary: "List livestreams",
       description:
         "Paginated, filtered livestreams read LIVE from stream-service over gRPC " +
@@ -1935,6 +1981,7 @@ export const adminPaths = {
   "/admin/v1/livestreams/bulk/end": {
     post: {
       tags: [adminTags.livestreams],
+      operationId: "adminBulkEndLivestreams",
       summary: "Bulk end livestreams",
       description:
         "Force-end up to 100 livestreams in a single request. Returns a 207 Multi-Status with per-item results. Audited as `livestream.bulk_ended`. Requires `livestreams.moderate`.",
@@ -2005,6 +2052,7 @@ export const adminPaths = {
   "/admin/v1/livestreams/bulk/review-reports": {
     post: {
       tags: [adminTags.livestreams],
+      operationId: "adminBulkReviewStreamReports",
       summary: "Bulk review stream reports",
       description:
         "Transition up to 100 stream reports to REVIEWING, RESOLVED, or DISMISSED in a single request. Returns 207 Multi-Status. Audited as `livestream.reports_bulk_reviewed`. Requires `livestreams.moderate`.",
@@ -2058,6 +2106,7 @@ export const adminPaths = {
   "/admin/v1/livestreams/{livestreamId}": {
     get: {
       tags: [adminTags.livestreams],
+      operationId: "adminGetLivestream",
       summary: "Get livestream detail",
       description:
         "Full detail view including creator profile, community context, viewer stats (merged with live Redis count via gRPC), report summary, and moderation history. Requires `livestreams.read`.",
@@ -2085,6 +2134,7 @@ export const adminPaths = {
   "/admin/v1/livestreams/{livestreamId}/reports": {
     get: {
       tags: [adminTags.livestreams],
+      operationId: "adminListLivestreamReports",
       summary: "List reports for a livestream",
       description:
         "Paginated reports filed against a specific stream. Filter by `status` (OPEN/REVIEWING/RESOLVED/DISMISSED) and `reportType`. Sort on `createdAt:asc|desc`. Requires `livestreams.read`.",
@@ -2160,6 +2210,7 @@ export const adminPaths = {
   "/admin/v1/livestreams/{livestreamId}/users": {
     get: {
       tags: [adminTags.livestreams],
+      operationId: "adminListLivestreamUsers",
       summary: "List livestream users (the stream's community members)",
       description:
         "Paginated members of the stream's community — the Livestream User List " +
@@ -2217,6 +2268,7 @@ export const adminPaths = {
   "/admin/v1/livestreams/{livestreamId}/end": {
     post: {
       tags: [adminTags.livestreams],
+      operationId: "adminEndLivestream",
       summary: "End a livestream",
       description:
         "Admin force-ends a single livestream. Records a moderation action and an audit log entry (`livestream.ended`). Optionally notifies the creator and issues a strike. Requires `livestreams.moderate`.",
@@ -2276,6 +2328,7 @@ export const adminPaths = {
   "/admin/v1/livestreams/{livestreamId}/thumbnail/presign": {
     post: {
       tags: [adminTags.livestreams],
+      operationId: "adminPresignStreamThumbnail",
       summary: "Presign stream thumbnail upload URL",
       description: `Generate a short-lived presigned PUT URL so the admin client can upload a stream thumbnail directly to MinIO (bucket: \`aimess-stream\`, prefix: \`stream/thumbnail/\`).
 
@@ -2337,6 +2390,7 @@ export const adminPaths = {
   "/admin/v1/livestreams/{livestreamId}/thumbnail": {
     patch: {
       tags: [adminTags.livestreams],
+      operationId: "adminSaveStreamThumbnail",
       summary: "Save stream thumbnail",
       description:
         "Commits an already-uploaded MinIO object key to the stream's `thumbnail` field by calling stream-service over gRPC. Audited as `livestream.thumbnail_updated`. Requires `livestreams.moderate`.\n\n" +
@@ -2408,6 +2462,7 @@ export const adminPaths = {
   "/admin/v1/announcements": {
     get: {
       tags: [adminTags.announcements],
+      operationId: "adminListAnnouncements",
       summary: "List announcements",
       description:
         PLANNED +
@@ -2426,6 +2481,7 @@ export const adminPaths = {
     },
     post: {
       tags: [adminTags.announcements],
+      operationId: "adminCreateAnnouncement",
       summary: "Create an announcement",
       description:
         PLANNED +
@@ -2449,6 +2505,7 @@ export const adminPaths = {
   "/admin/v1/announcements/{id}": {
     get: {
       tags: [adminTags.announcements],
+      operationId: "adminGetAnnouncement",
       summary: "Get an announcement",
       description:
         PLANNED +
@@ -2465,6 +2522,7 @@ export const adminPaths = {
     },
     patch: {
       tags: [adminTags.announcements],
+      operationId: "adminUpdateAnnouncement",
       summary: "Update an announcement",
       description: PLANNED + "Audited. Requires `announcements.manage`.",
       security: adminSecurity,
@@ -2486,6 +2544,7 @@ export const adminPaths = {
     },
     delete: {
       tags: [adminTags.announcements],
+      operationId: "adminDeleteAnnouncement",
       summary: "Delete an announcement",
       description: PLANNED + "Audited. Requires `announcements.manage`.",
       security: adminSecurity,
@@ -2505,6 +2564,7 @@ export const adminPaths = {
   "/admin/v1/announcements/{id}/publish": {
     post: {
       tags: [adminTags.announcements],
+      operationId: "adminPublishAnnouncement",
       summary: "Publish an announcement",
       description:
         PLANNED +
@@ -2530,6 +2590,7 @@ export const adminPaths = {
   "/admin/v1/categories": {
     get: {
       tags: [adminTags.categories],
+      operationId: "adminListCategories",
       summary: "List categories",
       description:
         PLANNED +
@@ -2545,6 +2606,7 @@ export const adminPaths = {
     },
     post: {
       tags: [adminTags.categories],
+      operationId: "adminCreateCategory",
       summary: "Create a category",
       description:
         PLANNED +
@@ -2563,6 +2625,7 @@ export const adminPaths = {
   "/admin/v1/categories/{id}": {
     patch: {
       tags: [adminTags.categories],
+      operationId: "adminUpdateCategory",
       summary: "Update a category",
       description: PLANNED + "Audited. Requires `categories.manage`.",
       security: adminSecurity,
@@ -2579,6 +2642,7 @@ export const adminPaths = {
     },
     delete: {
       tags: [adminTags.categories],
+      operationId: "adminDeleteCategory",
       summary: "Delete a category",
       description:
         PLANNED +
@@ -2602,6 +2666,7 @@ export const adminPaths = {
   "/admin/v1/audit-logs": {
     get: {
       tags: [adminTags.auditLogs],
+      operationId: "adminListAuditLogs",
       summary: "List audit logs",
       description:
         PLANNED +
@@ -2651,6 +2716,7 @@ export const adminPaths = {
   "/admin/v1/audit-logs/export": {
     get: {
       tags: [adminTags.auditLogs],
+      operationId: "adminExportAuditLogs",
       summary: "Export audit logs",
       description:
         PLANNED +
@@ -2690,6 +2756,7 @@ export const adminPaths = {
   "/admin/v1/audit-logs/{id}": {
     get: {
       tags: [adminTags.auditLogs],
+      operationId: "adminGetAuditLog",
       summary: "Get audit log detail",
       description:
         PLANNED + "Full diff detail (admin_db OWN). Requires `auditlogs.read`.",
@@ -2711,6 +2778,7 @@ export const adminPaths = {
   "/admin/v1/system/health": {
     get: {
       tags: [adminTags.systemHealth],
+      operationId: "adminGetServiceHealth",
       summary: "Per-service health",
       description:
         PLANNED +
@@ -2730,6 +2798,7 @@ export const adminPaths = {
   "/admin/v1/system/queues": {
     get: {
       tags: [adminTags.systemHealth],
+      operationId: "adminGetQueueDepths",
       summary: "Queue depths",
       description:
         PLANNED +
@@ -2746,6 +2815,7 @@ export const adminPaths = {
   "/admin/v1/system/metrics": {
     get: {
       tags: [adminTags.systemHealth],
+      operationId: "adminGetPlatformMetrics",
       summary: "Platform metrics snapshot",
       description:
         PLANNED +
@@ -2769,6 +2839,7 @@ export const adminPaths = {
   "/admin/v1/admins": {
     get: {
       tags: [adminTags.adminAccounts],
+      operationId: "adminListAdminAccounts",
       summary: "List admin accounts",
       description:
         PLANNED +
@@ -2784,6 +2855,7 @@ export const adminPaths = {
     },
     post: {
       tags: [adminTags.adminAccounts],
+      operationId: "adminCreateAdminAccount",
       summary: "Create an admin account",
       description:
         PLANNED +
@@ -2803,6 +2875,7 @@ export const adminPaths = {
   "/admin/v1/admins/{id}": {
     get: {
       tags: [adminTags.adminAccounts],
+      operationId: "adminGetAdminAccount",
       summary: "Get an admin account",
       description: PLANNED + "Requires `admins.manage` (SUPER_ADMIN only).",
       security: adminSecurity,
@@ -2819,6 +2892,7 @@ export const adminPaths = {
   "/admin/v1/admins/{id}/role": {
     patch: {
       tags: [adminTags.adminAccounts],
+      operationId: "adminChangeAdminRole",
       summary: "Change an admin's role",
       description:
         PLANNED +
@@ -2839,6 +2913,7 @@ export const adminPaths = {
   "/admin/v1/admins/{id}/disable": {
     post: {
       tags: [adminTags.adminAccounts],
+      operationId: "adminDisableAdminAccount",
       summary: "Disable an admin account",
       description:
         PLANNED +
@@ -2857,6 +2932,7 @@ export const adminPaths = {
   "/admin/v1/admins/{id}/reset-totp": {
     post: {
       tags: [adminTags.adminAccounts],
+      operationId: "adminResetAdminTotp",
       summary: "Reset an admin's TOTP",
       description:
         PLANNED +
@@ -2875,6 +2951,7 @@ export const adminPaths = {
   "/admin/v1/roles": {
     get: {
       tags: [adminTags.adminAccounts],
+      operationId: "adminListRoles",
       summary: "List roles",
       description:
         PLANNED +
@@ -2895,6 +2972,7 @@ export const adminPaths = {
   "/admin/v1/health": {
     get: {
       tags: [adminTags.systemHealth],
+      operationId: "adminLivenessProbe",
       summary: "Liveness probe",
       description: "Public. Liveness (no auth — gateway/k8s probe).",
       security: [],
@@ -2917,6 +2995,7 @@ export const adminPaths = {
   "/admin/v1/health/ready": {
     get: {
       tags: [adminTags.systemHealth],
+      operationId: "adminReadinessProbe",
       summary: "Readiness probe",
       description: "Public. Readiness (DB/Redis/RMQ reachable).",
       security: [],

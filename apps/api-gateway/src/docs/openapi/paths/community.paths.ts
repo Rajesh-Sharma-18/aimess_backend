@@ -29,6 +29,7 @@ export const communityPaths = {
   "/communities": {
     post: {
       tags: ["Communities"],
+      operationId: "createCommunity",
       summary: "Create a community",
       description:
         "Creator becomes ADMIN (memberCount starts at 1). `handle` is the unique @-slug (lowercase). Optional `memberIds` (UUIDs) are added as ACTIVE members. Upload an avatar via `POST /api/v1/media/upload-url` (category: `COMMUNITY_AVATAR`) first, then pass the returned object key as `avatarObjectKey`.",
@@ -84,6 +85,7 @@ export const communityPaths = {
   "/communities/categories": {
     get: {
       tags: ["Communities"],
+      operationId: "listCommunityCategories",
       summary: "List community categories (active only)",
       description:
         "Active categories sorted by order then name. For mobile clients.",
@@ -115,6 +117,7 @@ export const communityPaths = {
     },
     post: {
       tags: ["Communities — Admin Categories"],
+      operationId: "createCommunityCategory",
       summary: "Create a community category",
       description:
         "Admin: create a new community category. The `slug` is auto-derived from `name`. Returns the created category with `visible` (mapped from `active`) flag.",
@@ -182,6 +185,7 @@ export const communityPaths = {
   "/communities/categories/admin": {
     get: {
       tags: ["Communities — Admin Categories"],
+      operationId: "adminListAllCategories",
       summary: "List all categories (admin)",
       description:
         "Admin: paginated list of all community categories including hidden ones. Filter by `status=visible|hidden|all` (default `all`). Search by name with `?search=`. Results include `visible` flag (mapped from the `active` field).",
@@ -249,6 +253,7 @@ export const communityPaths = {
   "/communities/categories/{categoryId}": {
     patch: {
       tags: ["Communities — Admin Categories"],
+      operationId: "updateCommunityCategory",
       summary: "Update a community category",
       description:
         "Admin: update a category's `name` and/or `visible` flag. At least one field must be provided. Updating `name` regenerates the `slug`.",
@@ -340,6 +345,7 @@ export const communityPaths = {
     },
     delete: {
       tags: ["Communities — Admin Categories"],
+      operationId: "deleteCommunityCategory",
       summary: "Delete a community category",
       description:
         "Admin: hard-delete a category. Returns 409 if any active community still uses this category.",
@@ -391,6 +397,7 @@ export const communityPaths = {
   "/communities/name-available": {
     get: {
       tags: ["Communities"],
+      operationId: "checkCommunityNameAvailability",
       summary: "Check community name availability",
       description: "Case-insensitive. Redis-cached.",
       security: [{ bearerAuth: [] }],
@@ -432,6 +439,7 @@ export const communityPaths = {
   "/communities/handle-available": {
     get: {
       tags: ["Communities"],
+      operationId: "checkCommunityHandleAvailability",
       summary: "Check community handle availability",
       description: "Case-insensitive. Redis-cached.",
       security: [{ bearerAuth: [] }],
@@ -473,6 +481,7 @@ export const communityPaths = {
   "/communities/by-handle/{handle}": {
     get: {
       tags: ["Communities"],
+      operationId: "resolveCommunityByHandle",
       summary: "Resolve a public community by handle (deep-link)",
       description:
         "Public deep-link resolver for `https://aimess.me/<handle>` (Community " +
@@ -542,6 +551,7 @@ export const communityPaths = {
   "/communities/mine": {
     get: {
       tags: ["Communities"],
+      operationId: "listMyCommunities",
       summary: "List my communities (joined) / search communities",
       description:
         "Unified communities list. The mode is inferred from the params — there " +
@@ -679,6 +689,7 @@ export const communityPaths = {
   "/communities/liked": {
     get: {
       tags: ["Communities"],
+      operationId: "listLikedCommunities",
       summary: "List liked (favorited) communities",
       description:
         "Returns the caller's saved/liked communities, newest-first by `likedAt`. ObjectId cursor pagination — pass `cursor` (the `nextCursor` from the previous page) on subsequent calls.",
@@ -728,6 +739,7 @@ export const communityPaths = {
   "/communities/discover": {
     get: {
       tags: ["Communities"],
+      operationId: "discoverCommunities",
       summary: "Discover / search / browse public communities (deprecated)",
       deprecated: true,
       description:
@@ -804,6 +816,7 @@ export const communityPaths = {
   "/communities/{id}": {
     get: {
       tags: ["Communities"],
+      operationId: "getCommunity",
       summary: "Get a community",
       description:
         "Returns the community with its category, member count, your role (`role`, null if not a member), and presigned avatar/cover URLs.",
@@ -850,6 +863,7 @@ export const communityPaths = {
     },
     patch: {
       tags: ["Communities"],
+      operationId: "updateCommunity",
       summary: "Update a community",
       description:
         "Admin only. Partial update; name/handle re-checked for uniqueness (excluding this community). " +
@@ -929,6 +943,7 @@ export const communityPaths = {
     },
     delete: {
       tags: ["Communities"],
+      operationId: "deleteCommunity",
       summary: "Delete a community",
       description:
         "Admin only. Soft-deletes the community (Telegram/Discord-style — works even when other ACTIVE members are still present), bulk-marks every remaining ACTIVE member as LEFT, zeros memberCount, audits `COMMUNITY_DELETED`, and invalidates the name/handle availability caches. Subsequent reads of this community return 404.",
@@ -975,6 +990,7 @@ export const communityPaths = {
   "/communities/{id}/members": {
     get: {
       tags: ["Communities"],
+      operationId: "listCommunityMembers",
       summary: "List community members",
       description:
         "Any ACTIVE member (any role) may view the roster. Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. Optional `status` filter defaults to ACTIVE.",
@@ -1054,6 +1070,7 @@ export const communityPaths = {
     },
     post: {
       tags: ["Communities"],
+      operationId: "addCommunityMembers",
       summary: "Add members",
       description:
         "Moderator or admin only. Adds 1–100 users as ACTIVE members and recomputes memberCount. Users already ACTIVE are skipped (`ALREADY_MEMBER`); BANNED users are skipped (`BANNED`, unban first); previously-LEFT users are reactivated as MEMBER; the rest are created as MEMBER. The response lists `added` and `skipped`.",
@@ -1128,6 +1145,7 @@ export const communityPaths = {
   "/communities/{id}/audit-logs": {
     get: {
       tags: ["Communities"],
+      operationId: "listCommunityAuditLogs",
       summary: "List community audit logs",
       description:
         "Moderator or admin only. Returns the moderation audit trail (promote/demote, kick, ban, unban, admin transfer), newest first. Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`.",
@@ -1199,6 +1217,7 @@ export const communityPaths = {
   "/communities/{id}/leave": {
     post: {
       tags: ["Communities"],
+      operationId: "leaveCommunity",
       summary: "Leave a community",
       description:
         "Leave a community you are an ACTIVE member of (status set to LEFT) and recompute memberCount. Optional `reason` + `reasonText` body is recorded in a `MEMBER_LEFT` audit row. If the admin leaves, ownership is auto-handed off in this order: 1) the longest-tenured ACTIVE moderator, 2) the longest-tenured ACTIVE plain member, 3) if the admin is the only active member, the community is soft-deleted (audited `COMMUNITY_DELETED`). The response is always the leaving member's DTO (status LEFT).",
@@ -1257,6 +1276,7 @@ export const communityPaths = {
   "/communities/{id}/like": {
     post: {
       tags: ["Communities"],
+      operationId: "likeCommunity",
       summary: "Like (favorite) a community",
       description:
         "Adds the community to the caller's liked list. Idempotent — liking an already-liked community returns the existing favorite row unchanged. The community must exist and must not be suspended.",
@@ -1305,6 +1325,7 @@ export const communityPaths = {
     },
     delete: {
       tags: ["Communities"],
+      operationId: "unlikeCommunity",
       summary: "Unlike (un-favorite) a community",
       description:
         "Removes the community from the caller's liked list. No-op if the community was not liked. The community must exist.",
@@ -1343,6 +1364,7 @@ export const communityPaths = {
   "/communities/{id}/join": {
     post: {
       tags: ["Communities"],
+      operationId: "joinCommunity",
       summary: "Join a community",
       description:
         "Self-join a community. For PUBLIC communities the caller becomes an ACTIVE member immediately (HTTP 201, `data.status: JOINED`). For PRIVATE communities a PENDING join request is created and admins/mods are notified (HTTP 201, `data.status: REQUEST_CREATED`). " +
@@ -1433,6 +1455,7 @@ export const communityPaths = {
   "/communities/{id}/transfer-admin": {
     post: {
       tags: ["Communities"],
+      operationId: "transferCommunityAdmin",
       summary: "Transfer community admin to another member",
       description:
         'Admin only. Promotes the target ACTIVE member to ADMIN, transfers community ownership, and demotes the caller to MEMBER (caller stays ACTIVE — Telegram-style hand-off). Audited as `ADMIN_TRANSFERRED` with `{ reason: "explicit_transfer" }`. Target must be an ACTIVE non-admin member; you cannot transfer to yourself.',
@@ -1506,6 +1529,7 @@ export const communityPaths = {
   "/communities/{id}/close": {
     post: {
       tags: ["Communities"],
+      operationId: "closeCommunity",
       summary: "Close a community (owner lifecycle)",
       description:
         "Community ADMIN (owner) only. Sets `status` to CLOSED: ALL members (including the admin) are auto-removed (`memberCount → 0`), the community chat room is suspended (read-only), and a realtime `community:closed` event is broadcast to the `community:<id>` room and to every ex-member's `user:<id>` room so connected clients disable actions immediately. Reversible via `POST /communities/{id}/reopen` — distinct from `DELETE /communities/{id}` (permanent). Idempotent: closing an already-CLOSED community is a no-op.",
@@ -1570,6 +1594,7 @@ export const communityPaths = {
   "/communities/{id}/reopen": {
     post: {
       tags: ["Communities"],
+      operationId: "reopenCommunity",
       summary: "Reopen a closed community (owner lifecycle)",
       description:
         "Community owner only (authorized by `adminId`, NOT active membership — the owner left the roster on close). Sets `status` back to ACTIVE, re-establishes the owner as the sole ACTIVE ADMIN (`memberCount → 1`), unsuspends the chat room, and broadcasts a realtime `community:reopened` event. Former members are NOT restored — they re-join via the normal join flow. Returns the updated community DTO. Idempotent: reopening an already-open community returns its current state.",
@@ -1626,6 +1651,7 @@ export const communityPaths = {
   "/communities/{id}/members/{userId}/role": {
     put: {
       tags: ["Communities"],
+      operationId: "updateCommunityMemberRole",
       summary: "Promote or demote a member",
       description:
         "Admin only. Set a member's role to MODERATOR or MEMBER (ADMIN cannot be assigned). You cannot change your own role or the community admin's role. Idempotent when the member already has the target role.",
@@ -1708,6 +1734,7 @@ export const communityPaths = {
   "/communities/{id}/members/{userId}": {
     delete: {
       tags: ["Communities"],
+      operationId: "kickCommunityMember",
       summary: "Kick a member",
       description:
         "Moderator or admin only. Removes an ACTIVE member (status set to LEFT) and recomputes memberCount. You cannot kick yourself or the community admin, and you must outrank the target (a moderator cannot kick another moderator).",
@@ -1801,6 +1828,7 @@ export const communityPaths = {
   "/communities/{id}/members/{userId}/ban": {
     post: {
       tags: ["Communities"],
+      operationId: "banCommunityMember",
       summary: "Ban a member",
       description:
         "Admin only. Sets the member's status to BANNED and recomputes memberCount. You cannot ban yourself or the community admin. Idempotent when the member is already banned.",
@@ -1891,6 +1919,7 @@ export const communityPaths = {
     },
     delete: {
       tags: ["Communities"],
+      operationId: "unbanCommunityMember",
       summary: "Unban a member",
       description:
         "Admin only. Lifts a ban: a BANNED member's status is set to LEFT (they are not auto-re-added — add them back or let them re-join) and memberCount is recomputed. Fails if the member is not currently banned.",
@@ -1964,6 +1993,7 @@ export const communityPaths = {
   "/communities/{id}/muted-members": {
     get: {
       tags: ["Communities"],
+      operationId: "listMutedCommunityMembers",
       summary: "List moderation-muted members",
       description:
         "Moderator or admin only. Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. Fully-expired mutes are excluded (lazy expiration — a row whose `mutedUntil` is in the past is treated as not muted).",
@@ -2036,6 +2066,7 @@ export const communityPaths = {
   "/communities/{id}/banned-members": {
     get: {
       tags: ["Communities"],
+      operationId: "listBannedCommunityMembers",
       summary: "List banned members",
       description:
         "Moderator or admin only. Returns the community's **currently-banned** members (status === BANNED). Lifted bans are not included here — the full ban history is in the moderation audit log (GET /communities/{id}/audit-logs). Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`. Supports free-text `search` (matches displayName / username / userId) and `sortBy` + `sortOrder` (default: bannedAt desc = newest first).",
@@ -2138,6 +2169,7 @@ export const communityPaths = {
   "/communities/{id}/banned-members/{userId}/unban": {
     post: {
       tags: ["Communities"],
+      operationId: "unbanFromBannedList",
       summary: "Unban a member (banned-members section)",
       description:
         "Admin only. Dedicated unban action for the banned-members section — functionally identical to DELETE /communities/{id}/members/{userId}/ban. Lifts a ban (BANNED → LEFT; not auto-re-added), records a MEMBER_UNBANNED audit entry, emits the `community:member:unbanned` socket event, and notifies the unbanned user. Fails if the member is not currently banned.",
@@ -2211,6 +2243,7 @@ export const communityPaths = {
   "/communities/{id}/members/{userId}/mute": {
     post: {
       tags: ["Communities"],
+      operationId: "muteCommunityMember",
       summary: "Mute a member",
       description:
         "Moderator or admin only. Upserts a moderation mute on an ACTIVE member. `durationMinutes` null/omitted → mute indefinitely; positive integer → mute for N minutes. You cannot mute yourself or the community admin, and you must outrank the target (a moderator cannot mute another moderator). Recorded in the community moderation audit log (`MEMBER_MUTED`).",
@@ -2292,6 +2325,7 @@ export const communityPaths = {
     },
     delete: {
       tags: ["Communities"],
+      operationId: "unmuteCommunityMember",
       summary: "Unmute a member",
       description:
         "Moderator or admin only. Removes an active moderation mute. Fails when the member is not currently muted (a fully-expired mute is treated as not muted). Recorded in the community moderation audit log (`MEMBER_UNMUTED`).",
@@ -2346,6 +2380,7 @@ export const communityPaths = {
   "/communities/{id}/members/{userId}/warn": {
     post: {
       tags: ["Communities"],
+      operationId: "warnCommunityMember",
       summary: "Warn a member",
       description:
         "Moderator or admin only. Appends a warning (with a required note) to an ACTIVE member. Warnings are append-only — a member may have multiple. You cannot warn yourself or the community admin, and you must outrank the target. Recorded in the community moderation audit log (`MEMBER_WARNED`).",
@@ -2429,6 +2464,7 @@ export const communityPaths = {
   "/communities/{id}/members/{userId}/warnings": {
     get: {
       tags: ["Communities"],
+      operationId: "listCommunityMemberWarnings",
       summary: "List a member's warnings",
       description:
         "Moderator or admin only. Offset/page pagination (`page` + `limit`); response carries `pagination` and `data`, newest first.",
@@ -2508,6 +2544,7 @@ export const communityPaths = {
   "/communities/join-requests/mine": {
     get: {
       tags: ["Communities"],
+      operationId: "listMyJoinRequests",
       summary: "List the caller's join requests",
       description:
         "Caller's own join requests across communities. Filter by status (PENDING/APPROVED/REJECTED/CANCELLED). Each row embeds a `community` summary; rows whose community has been soft-deleted are filtered out (totalData is best-effort).",
@@ -2562,6 +2599,7 @@ export const communityPaths = {
   "/communities/invites/mine": {
     get: {
       tags: ["Communities"],
+      operationId: "listMyInvites",
       summary: "List the caller's invites",
       description:
         "Invites where the caller is the invitee. Filter by status (PENDING/ACCEPTED/DECLINED/EXPIRED). Each row embeds a `community` summary; rows whose community has been soft-deleted are filtered out (totalData is best-effort).",
@@ -2616,6 +2654,7 @@ export const communityPaths = {
   "/communities/reports/mine": {
     get: {
       tags: ["Communities"],
+      operationId: "listMyReports",
       summary: "List the caller's reports",
       description:
         "Caller's own reports across communities. Filter by status (OPEN/REVIEWED/ACTIONED/DISMISSED/WITHDRAWN). Each row embeds a `community` summary; rows whose community has been soft-deleted are filtered out (totalData is best-effort).",
@@ -2670,6 +2709,7 @@ export const communityPaths = {
   "/communities/invites/{inviteId}/accept": {
     post: {
       tags: ["Communities"],
+      operationId: "acceptCommunityInvite",
       summary: "Accept an invite",
       description:
         "Invitee only. Adds the caller as an ACTIVE member (or reactivates a LEFT row) and marks the invite ACCEPTED. Idempotent on already-ACCEPTED.",
@@ -2736,6 +2776,7 @@ export const communityPaths = {
   "/communities/invites/{inviteId}/decline": {
     post: {
       tags: ["Communities"],
+      operationId: "declineCommunityInvite",
       summary: "Decline an invite",
       description: "Invitee only. Marks the invite DECLINED. No member write.",
       security: [{ bearerAuth: [] }],
@@ -2800,6 +2841,7 @@ export const communityPaths = {
   "/communities/{id}/join-requests": {
     post: {
       tags: ["Communities"],
+      operationId: "submitJoinRequest",
       summary: "Submit a join request",
       description:
         "PRIVATE communities only. If a PENDING invite already exists for the caller, this auto-accepts the invite (returns `InviteAcceptedData` with status 200) instead of creating a new request.",
@@ -2899,6 +2941,7 @@ export const communityPaths = {
     },
     get: {
       tags: ["Communities"],
+      operationId: "listCommunityJoinRequests",
       summary: "List a community's join requests",
       description:
         "Moderator or admin only. Default `status=PENDING`. Each row embeds a `user` snapshot.",
@@ -2977,6 +3020,7 @@ export const communityPaths = {
   "/communities/{id}/join-requests/{requestId}/approve": {
     post: {
       tags: ["Communities"],
+      operationId: "approveJoinRequest",
       summary: "Approve a join request",
       description:
         "Moderator or admin only. Creates an ACTIVE member (or reactivates a LEFT row), marks the request APPROVED. Idempotent on already-APPROVED.",
@@ -3052,6 +3096,7 @@ export const communityPaths = {
   "/communities/{id}/join-requests/{requestId}/reject": {
     post: {
       tags: ["Communities"],
+      operationId: "rejectJoinRequest",
       summary: "Reject a join request",
       description:
         "Moderator or admin only. PENDING-only — fails with 400 otherwise.",
@@ -3124,6 +3169,7 @@ export const communityPaths = {
   "/communities/{id}/join-requests/bulk-approve": {
     post: {
       tags: ["Communities"],
+      operationId: "bulkApproveJoinRequests",
       summary: "Bulk approve join requests",
       description:
         "Moderator or admin only. Accepts up to 50 request IDs. Non-PENDING, not-found, and banned-requester IDs are silently skipped and returned in `skipped`. Idempotent per request — already-ACTIVE members are not re-created.",
@@ -3204,6 +3250,7 @@ export const communityPaths = {
   "/communities/{id}/join-requests/bulk-reject": {
     post: {
       tags: ["Communities"],
+      operationId: "bulkRejectJoinRequests",
       summary: "Bulk reject join requests",
       description:
         "Moderator or admin only. Accepts up to 50 request IDs. Non-PENDING and not-found IDs are silently skipped and returned in `skipped`.",
@@ -3283,6 +3330,7 @@ export const communityPaths = {
   "/communities/{id}/join-requests/{requestId}": {
     delete: {
       tags: ["Communities"],
+      operationId: "cancelJoinRequest",
       summary: "Cancel your own join request",
       description:
         "Requester only. PENDING-only — fails with 400 otherwise. No audit recorded (user-initiated).",
@@ -3355,6 +3403,7 @@ export const communityPaths = {
   "/communities/{id}/invites": {
     post: {
       tags: ["Communities"],
+      operationId: "bulkInviteToCommunity",
       summary: "Bulk-invite users to a community",
       description:
         "Moderator or admin only. Accepts 1–50 user IDs in a single request. Invalid users (banned, self, already member, already pending) are reported in the `results` array instead of failing the entire request. Notifications and socket events are fired only for users that receive a new or recycled invite.",
@@ -3462,6 +3511,7 @@ export const communityPaths = {
     },
     get: {
       tags: ["Communities"],
+      operationId: "listCommunityInvites",
       summary: "List a community's invites",
       description:
         "Moderator or admin only. Each row embeds an `invitee` snapshot.",
@@ -3539,6 +3589,7 @@ export const communityPaths = {
   "/communities/{id}/reports": {
     post: {
       tags: ["Communities"],
+      operationId: "submitCommunityReport",
       summary: "Submit a community report",
       description:
         "Any ACTIVE member may file a report. Omit `targetUserId` to report the community itself; otherwise the targeted user must currently have a member row (any status). For a message-level report, send `reportedMessageId` — the server resolves the message's text/media/posted-at from chat-service and snapshots it onto the report (populates the moderator card's \"Reported Content\"); resolution is best-effort. An existing OPEN report from the same reporter on the same (community, target) tuple is returned idempotently (still 201).",
@@ -3609,6 +3660,7 @@ export const communityPaths = {
     },
     get: {
       tags: ["Communities"],
+      operationId: "listCommunityReports",
       summary: "List a community's reports",
       description:
         "Moderator or admin only. Defaults to status=OPEN. Each row embeds `reporter` and (optional) `target` snapshots.",
@@ -3687,6 +3739,7 @@ export const communityPaths = {
   "/communities/{id}/reports/{reportId}/review": {
     post: {
       tags: ["Communities"],
+      operationId: "markReportReviewed",
       summary: "Mark a report as REVIEWED",
       description:
         "Moderator or admin only. Records `reviewedBy` + `reviewedAt` + optional `resolution`. Allowed only from OPEN.",
@@ -3766,6 +3819,7 @@ export const communityPaths = {
   "/communities/{id}/reports/{reportId}/action": {
     post: {
       tags: ["Communities"],
+      operationId: "markReportActioned",
       summary: "Mark a report as ACTIONED",
       description:
         "Moderator or admin only. Records `reviewedBy` + `reviewedAt` + optional `resolution`. Allowed from OPEN or REVIEWED. Terminal status.",
@@ -3845,6 +3899,7 @@ export const communityPaths = {
   "/communities/{id}/reports/{reportId}/dismiss": {
     post: {
       tags: ["Communities"],
+      operationId: "markReportDismissed",
       summary: "Mark a report as DISMISSED",
       description:
         "Moderator or admin only. Records `reviewedBy` + `reviewedAt` + optional `resolution`. Allowed from OPEN or REVIEWED. Terminal status.",
@@ -3924,6 +3979,7 @@ export const communityPaths = {
   "/communities/{id}/reports/{reportId}/withdraw": {
     post: {
       tags: ["Communities"],
+      operationId: "withdrawCommunityReport",
       summary: "Withdraw your own report",
       description:
         "Reporter-only (the caller must be the original reporter). Allowed only while the report is OPEN. Terminal status WITHDRAWN with resolution `\"withdrawn_by_reporter\"`. Not audited (caller's intent didn't materialize).",
@@ -3995,6 +4051,7 @@ export const communityPaths = {
   "/communities/{id}/reports/{reportId}": {
     delete: {
       tags: ["Communities"],
+      operationId: "deleteCommunityReport",
       summary: "Hard-delete a report",
       description:
         "Moderator or admin only. Permanently deletes the report row regardless of its current status. This is a destructive moderation action (distinct from the reporter self-withdraw at POST /communities/{id}/reports/{reportId}/withdraw) and is recorded in the community moderation audit log (`COMMUNITY_REPORT_DELETED`).",
@@ -4050,6 +4107,7 @@ export const communityPaths = {
   "/communities/{id}/mute": {
     get: {
       tags: ["Communities"],
+      operationId: "getCommunityMuteSetting",
       summary: "Get the caller's mute setting for a community",
       description:
         "ACTIVE-member only. Returns 404 (`COMMUNITY_NOT_MUTED`) when no mute row exists.",
@@ -4104,6 +4162,7 @@ export const communityPaths = {
     },
     put: {
       tags: ["Communities"],
+      operationId: "setCommunityMuteSetting",
       summary: "Set or update the caller's mute setting",
       description:
         "Upsert. ACTIVE-member only. `durationMinutes` null/omitted → mute indefinitely; positive integer → mute for N minutes.",
@@ -4166,6 +4225,7 @@ export const communityPaths = {
     },
     delete: {
       tags: ["Communities"],
+      operationId: "clearCommunityMuteSetting",
       summary: "Clear the caller's mute setting",
       description: "Idempotent. ACTIVE-member only.",
       security: [{ bearerAuth: [] }],
@@ -4213,6 +4273,7 @@ export const communityPaths = {
   "/communities/leave/bulk": {
     post: {
       tags: ["Communities"],
+      operationId: "bulkLeaveCommunities",
       summary: "Bulk leave communities",
       description:
         "Leave multiple communities in a single call. Each community is processed independently — a failure for one does not block the others.\n\n" +
@@ -4298,6 +4359,7 @@ export const communityPaths = {
   "/communities/mute/bulk": {
     post: {
       tags: ["Communities"],
+      operationId: "bulkMuteCommunities",
       summary: "Bulk mute or unmute communities",
       description:
         'Mute or unmute multiple communities at once. Set `action` to `"mute"` or `"unmute"`. For mute: communities already muted or where the caller is not an ACTIVE member are silently skipped; `durationMinutes` null/omitted → indefinite mute. For unmute: communities not currently muted are silently skipped.',
@@ -4339,6 +4401,7 @@ export const communityPaths = {
   "/communities/read/bulk": {
     post: {
       tags: ["Communities"],
+      operationId: "bulkMarkCommunityChatsRead",
       summary: "Bulk mark community chats as read",
       description:
         "Zero the unread count for multiple communities at once. Updates `lastReadAt` on the caller's room-member rows in chat-service. Communities not joined or where chat is not enabled are silently skipped (updatedCount reflects only rows actually updated).",
@@ -4381,6 +4444,7 @@ export const communityPaths = {
   "/communities/{id}/notification-preferences": {
     get: {
       tags: ["Communities"],
+      operationId: "getCommunityNotificationPreferences",
       summary: "Get the caller's notification preferences",
       description:
         "ACTIVE-member only. Returns the caller's per-community notification toggles. When no preference row exists, defaults are returned (all toggles true; `createdAt`/`updatedAt` null).",
@@ -4437,6 +4501,7 @@ export const communityPaths = {
     },
     put: {
       tags: ["Communities"],
+      operationId: "setCommunityNotificationPreferences",
       summary: "Set or update the caller's notification preferences",
       description:
         "Upsert. ACTIVE-member only. At least one of `streamEnabled`, `chatEnabled`, `announcementEnabled` must be present; omitted fields are left unchanged.",
@@ -4516,6 +4581,7 @@ export const communityPaths = {
   "/communities/invite-links/{code}": {
     get: {
       tags: ["Communities"],
+      operationId: "previewCommunityInviteLink",
       summary: "Preview a community via its invite link",
       description:
         "Returns limited community information for display before the user decides to join. " +
@@ -4593,6 +4659,7 @@ export const communityPaths = {
   "/communities/{id}/invite-links": {
     post: {
       tags: ["Communities"],
+      operationId: "createCommunityInviteLink",
       summary: "Create a shareable invite link",
       description:
         "**Authorization: any active community member** (MEMBER, MODERATOR, or ADMIN). " +
@@ -4736,6 +4803,7 @@ export const communityPaths = {
     },
     get: {
       tags: ["Communities"],
+      operationId: "listCommunityInviteLinks",
       summary: "List invite links for a community",
       description:
         "Any active member (MEMBER, MODERATOR, or ADMIN). Filter by status: active/expired/revoked.",
@@ -4809,6 +4877,7 @@ export const communityPaths = {
   "/communities/{id}/invite-links/{linkId}": {
     delete: {
       tags: ["Communities"],
+      operationId: "revokeCommunityInviteLink",
       summary: "Revoke a community invite link",
       description: "MODERATOR/ADMIN only. Idempotent on already-revoked links.",
       security: [{ bearerAuth: [] }],
@@ -4874,6 +4943,7 @@ export const communityPaths = {
   "/communities/{id}/invite-links/bulk-send": {
     post: {
       tags: ["Communities"],
+      operationId: "bulkShareCommunityInviteLink",
       summary: "Bulk-share an invite link via system DMs",
       description:
         "**Authorization: any active community member** (MEMBER, MODERATOR, or ADMIN). " +
@@ -4939,7 +5009,13 @@ export const communityPaths = {
                         type: "object",
                         properties: {
                           link: {
-                            $ref: "#/components/schemas/CommunityInviteLinkData",
+                            allOf: [
+                              {
+                                $ref: "#/components/schemas/CommunityInviteLinkData",
+                              },
+                            ],
+                            description:
+                              "The invite link used for this bulk-send (may be auto-created if none existed).",
                           },
                           summary: {
                             type: "object",
@@ -4947,39 +5023,54 @@ export const communityPaths = {
                             properties: {
                               requested: {
                                 type: "integer",
-                                description: "Unique userIds received.",
+                                description:
+                                  "Unique userIds received (after dedup, before self-skip).",
                               },
                               sent: {
                                 type: "integer",
                                 description:
-                                  "Recipients the invite DM was enqueued for.",
+                                  "Recipients the invite DM was successfully enqueued for.",
                               },
                               failed: {
                                 type: "integer",
                                 description:
-                                  "Recipients rejected (see failures).",
+                                  "Recipients rejected for a per-user reason (see failures array).",
                               },
                               skipped: {
                                 type: "integer",
                                 description:
-                                  "Recipients excluded without being a failure (the caller themselves).",
+                                  "Recipients excluded without counting as a failure (the caller themselves).",
                               },
                             },
+                            required: [
+                              "requested",
+                              "sent",
+                              "failed",
+                              "skipped",
+                            ],
                           },
                           sentUserIds: {
                             type: "array",
                             items: { type: "string", format: "uuid" },
                             description:
-                              "UUIDs the invite DM was enqueued for (events emitted ONLY for these).",
+                              "Exact UUIDs the invite DM was enqueued for. " +
+                              "Socket/push events are emitted ONLY for IDs in this list.",
                           },
                           failures: {
                             type: "array",
                             description:
-                              "Per-user rejections, each with an exact code.",
+                              "Per-user rejections. One entry per ineligible recipient. " +
+                              "Ineligible recipients are always reported — they never silently drop valid sends.",
                             items: {
                               type: "object",
+                              required: ["userId", "code", "message"],
                               properties: {
-                                userId: { type: "string", format: "uuid" },
+                                userId: {
+                                  type: "string",
+                                  format: "uuid",
+                                  description:
+                                    "The rejected recipient's AuthUser UUID.",
+                                },
                                 code: {
                                   type: "string",
                                   enum: [
@@ -4988,27 +5079,125 @@ export const communityPaths = {
                                     "USER_BANNED",
                                   ],
                                   description:
-                                    "USER_NOT_FOUND = no such user; ALREADY_MEMBER = already an active member; USER_BANNED = banned from this community.",
+                                    "USER_NOT_FOUND = platform user does not exist; " +
+                                    "ALREADY_MEMBER = already an ACTIVE member of this community; " +
+                                    "USER_BANNED = banned from this community.",
                                 },
-                                message: { type: "string" },
+                                message: {
+                                  type: "string",
+                                  description:
+                                    "Human-readable reason (localised).",
+                                },
                               },
                             },
                           },
                           queued: {
                             type: "integer",
                             description:
-                              "Back-compat alias of summary.sent (number of DMs enqueued).",
+                              "Back-compat alias of `summary.sent` — number of DMs enqueued.",
                           },
                           skipped: {
                             type: "integer",
                             description:
-                              "Back-compat alias of summary.skipped (caller excluded).",
+                              "Back-compat alias of `summary.skipped` — caller excluded from recipient list.",
                           },
                         },
+                        required: [
+                          "link",
+                          "summary",
+                          "sentUserIds",
+                          "failures",
+                        ],
                       },
                     },
                   },
                 ],
+              },
+              examples: {
+                partialSuccess: {
+                  summary:
+                    "3 requested — 1 sent, 1 already-member, 1 caller-self-skipped",
+                  description:
+                    "The most common mixed-outcome response. `sentUserIds` contains only the " +
+                    "recipients the DM was enqueued for; failures lists the rejected recipient " +
+                    "with a precise code. The caller is automatically excluded (skipped=1).",
+                  value: {
+                    success: true,
+                    message: "Invites sent",
+                    data: {
+                      link: {
+                        linkId: "6843e1a2b5c3d4e5f6a7b8c9",
+                        code: "Zk9Qw2Lp7",
+                        url: "https://aimess.me/+Zk9Qw2Lp7",
+                        appDeepLink: "aimess://join?code=Zk9Qw2Lp7",
+                        linkType: "PRIVATE_INVITE",
+                        communityId: "6843d0f1a4b2c3d4e5f60719",
+                        createdBy: "99999999-9999-4999-8999-999999999999",
+                        maxUses: null,
+                        usedCount: 1,
+                        autoApprove: false,
+                        expiresAt: null,
+                        revokedAt: null,
+                        createdAt: "2026-06-24T10:00:00.000Z",
+                        isActive: true,
+                      },
+                      summary: {
+                        requested: 3,
+                        sent: 1,
+                        failed: 1,
+                        skipped: 1,
+                      },
+                      sentUserIds: ["885ad4e0-e238-4f9a-9773-e215321885b4"],
+                      failures: [
+                        {
+                          userId: "33333333-3333-4333-8333-333333333333",
+                          code: "ALREADY_MEMBER",
+                          message: "User is already a member of this community",
+                        },
+                      ],
+                      queued: 1,
+                      skipped: 1,
+                    },
+                  },
+                },
+                allSent: {
+                  summary: "2 requested — 2 sent (all eligible)",
+                  value: {
+                    success: true,
+                    message: "Invites sent",
+                    data: {
+                      link: {
+                        linkId: "6843e1a2b5c3d4e5f6a7b8c9",
+                        code: "Zk9Qw2Lp7",
+                        url: "https://aimess.me/+Zk9Qw2Lp7",
+                        appDeepLink: "aimess://join?code=Zk9Qw2Lp7",
+                        linkType: "PRIVATE_INVITE",
+                        communityId: "6843d0f1a4b2c3d4e5f60719",
+                        createdBy: "99999999-9999-4999-8999-999999999999",
+                        maxUses: null,
+                        usedCount: 2,
+                        autoApprove: false,
+                        expiresAt: null,
+                        revokedAt: null,
+                        createdAt: "2026-06-24T10:00:00.000Z",
+                        isActive: true,
+                      },
+                      summary: {
+                        requested: 2,
+                        sent: 2,
+                        failed: 0,
+                        skipped: 0,
+                      },
+                      sentUserIds: [
+                        "885ad4e0-e238-4f9a-9773-e215321885b4",
+                        "22222222-2222-4222-8222-222222222222",
+                      ],
+                      failures: [],
+                      queued: 2,
+                      skipped: 0,
+                    },
+                  },
+                },
               },
             },
           },
@@ -5056,6 +5245,7 @@ export const communityPaths = {
   "/communities/invite-links/{code}/redeem": {
     post: {
       tags: ["Communities"],
+      operationId: "redeemCommunityInviteLink",
       summary: "Redeem a community invite link",
       description:
         "Adds (or reactivates) the caller as an ACTIVE MEMBER and atomically increments the link's usedCount. Idempotent for already-ACTIVE members (usedCount NOT incremented). BANNED users cannot redeem.",

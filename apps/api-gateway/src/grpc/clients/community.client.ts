@@ -336,7 +336,14 @@ export interface CheckCommunityMembershipResult {
   role: string;
 }
 
+export interface GetUserActiveCommunityIdsResult {
+  communityIds: string[];
+}
+
 export interface CommunityClient {
+  getUserActiveCommunityIds(p: {
+    userId: string;
+  }): Promise<GetUserActiveCommunityIdsResult>;
   checkCommunityMembership(
     p: CheckCommunityMembershipParams
   ): Promise<CheckCommunityMembershipResult>;
@@ -627,6 +634,15 @@ export function createCommunityClient(): CommunityClient {
       )
   );
 
+  const getUserActiveCommunityIdsBreaker = makeBreaker(
+    "community.getUserActiveCommunityIds",
+    (p: { userId: string }) =>
+      call<unknown, GetUserActiveCommunityIdsResult>(
+        "getUserActiveCommunityIds",
+        { userId: p.userId }
+      )
+  );
+
   const markDeliveredBreaker = makeBreaker(
     "community.markCommunityMessageDelivered",
     (p: MarkCommunityMessageDeliveredParams) =>
@@ -642,6 +658,7 @@ export function createCommunityClient(): CommunityClient {
   );
 
   return {
+    getUserActiveCommunityIds: (p) => getUserActiveCommunityIdsBreaker.fire(p),
     checkCommunityMembership: (p) => checkMembershipBreaker.fire(p),
     markCommunityMessageRead: (p) => markReadBreaker.fire(p),
     getCommunityMessageReactions: (p) => getReactionsBreaker.fire(p),

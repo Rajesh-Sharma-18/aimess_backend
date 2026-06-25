@@ -137,6 +137,7 @@ import {
   publishCommunityMemberUnmutedSafe,
   publishCommunityMemberWarnedSafe,
   publishCommunityMemberRoleChangedSafe,
+  publishCommunityReopenedSafe,
   publishCommunityReportActionedSafe,
   publishCommunityReportCreatedSafe,
 } from "../messaging/publish-community.js";
@@ -1600,15 +1601,40 @@ export const communityService = {
     );
 
     // Notify the creator via /chat socket so their community list updates
-    // immediately without a page reload or extra API call.
+    // immediately without a page reload or extra API call. Uses community:added
+    // (same event as join/add flows) so the FE has one unified insert path —
+    // branch on `via: "created"` if the creation flow needs different UI.
+    const createdAddedPayload: CommunityAddedPayload = {
+      communityId: community.id,
+      name: community.name,
+      handle: community.handle,
+      description: community.description ?? null,
+      avatarUrl: communityData.avatarUrl,
+      type: community.type as "PUBLIC" | "PRIVATE",
+      categoryId: communityData.category.id,
+      categoryName: communityData.category.name,
+      memberCount: community.memberCount,
+      role: "ADMIN",
+      status: communityAccessPolicy.deriveStatus(community),
+      via: "created",
+      joinedAt: community.createdAt.getTime(),
+      addedAt: Date.now(),
+      lastActivity: {
+        type: "created",
+        userId: null,
+        username: null,
+        preview: "Community created",
+        dateTime: community.createdAt.getTime(),
+      },
+    };
     void publishChatUserEvent(
       redis,
       creatorId,
-      "community:created",
-      communityData
+      "community:added",
+      createdAddedPayload
     ).catch((err: unknown) => {
       logger.warn(
-        `community:created socket publish failed for ${community.id}: ${String(err)}`
+        `community:added (created) socket publish failed for ${community.id}: ${String(err)}`
       );
     });
 
@@ -2330,7 +2356,7 @@ export const communityService = {
     targetUserId: string,
     reason?: string
   ): Promise<CommunityMemberData> {
-    const { target } = await this._assertCanModerateMember(
+    const { target: _target } = await this._assertCanModerateMember(
       communityId,
       callerId,
       targetUserId
@@ -2376,6 +2402,10 @@ export const communityService = {
     try {
       const now = Date.now();
       await Promise.all([
+        // Room broadcast: roster update for remaining members + gateway eviction
+        // (the evict-on-removal handler in community.ns.ts forces the removed
+        // user's sockets out of the community room on all their devices that are
+        // currently in the room).
         publishCommunityRoomEvent(
           redis,
           communityId,
@@ -2398,22 +2428,32 @@ export const communityService = {
             updatedAt: now,
           } satisfies CommunityStatsUpdatedPayload
         ),
+        // Personal channel: delivers to ALL devices of the removed user,
+        // including those not currently in the community room. The gateway's
+        // user:* bridge forwards any community:* event from user:{id} to every
+        // connected socket of that user. FE must remove the community from the
+        // local store and close the community screen if open.
+        publishChatUserEvent(
+          redis,
+          targetUserId,
+          "community:membership:removed",
+          {
+            communityId,
+            membershipStatus: "REMOVED",
+            reason: "kicked",
+            removedAt: now,
+          }
+        ),
       ]);
     } catch (err) {
       logger.warn(
         `community realtime broadcast failed kick community=${communityId}: ${String(err)}`
       );
     }
-
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_REMOVED",
-      actorId: callerId,
-      targetUserId,
-      extra: {
-        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
-      },
-    });
+    // NOTE: emitMemberSystemMessage("MEMBER_REMOVED") is NOT called here.
+    // Product rule: removal must be silent from the chat-message perspective.
+    // MEMBER_REMOVED is in HIDDEN_SYSTEM_MESSAGE_TYPES (packages/constants) as
+    // the authoritative policy. Moderation history lives in the audit log only.
 
     return toMemberData(updated);
   },
@@ -2527,22 +2567,29 @@ export const communityService = {
             updatedAt: now,
           } satisfies CommunityStatsUpdatedPayload
         ),
+        // Personal channel: reaches ALL devices of the banned user regardless
+        // of which screen they're currently on (same mechanism as community:added).
+        publishChatUserEvent(
+          redis,
+          targetUserId,
+          "community:membership:removed",
+          {
+            communityId,
+            membershipStatus: "REMOVED",
+            reason: "banned",
+            removedAt: now,
+          }
+        ),
       ]);
     } catch (err) {
       logger.warn(
         `community realtime broadcast failed ban community=${communityId}: ${String(err)}`
       );
     }
-
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_BANNED",
-      actorId: callerId,
-      targetUserId,
-      extra: {
-        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
-      },
-    });
+    // NOTE: emitMemberSystemMessage("MEMBER_BANNED") is NOT called here.
+    // Product rule: ban is silent from the chat-message perspective (same policy
+    // as removal). MEMBER_BANNED is in HIDDEN_SYSTEM_MESSAGE_TYPES. The banned
+    // user receives a push notification via notifications-service.
 
     return toMemberData(updated);
   },
@@ -2602,7 +2649,17 @@ export const communityService = {
     memberCount: number;
     actorId: string;
     via: CommunityMemberAddedPayload["via"];
+    /** Stable ISO-8601 timestamp captured at membership activation time.
+     *  Used as the idempotency seed for the COMMUNITY_JOINED chat system
+     *  message — the chat-service dedup key is `sys:COMMUNITY_JOINED:{eventAt}:u:{userId}`.
+     *  Must be stable across retries so RabbitMQ redeliveries are no-ops. */
+    eventAt: string;
     requestId?: string;
+    /** When true, suppresses the cross-service community.member_added event.
+     *  Use for invite acceptance, which already fires community.invite_accepted
+     *  through its own notification path — emitting member_added too would send
+     *  a duplicate "You've been added" push to the joiner. */
+    skipCrossServiceNotification?: boolean;
     /**
      * Optional pre-resolved ADMIN/MODERATOR roster. Bulk callers (addMembers,
      * bulkApproveJoinRequests) hoist it once and pass it in to avoid an N+1 of
@@ -2620,16 +2677,18 @@ export const communityService = {
         CommunityMemberRole.MODERATOR,
       ]));
 
-    publishCommunityMemberAddedSafe({
-      communityId: community.id,
-      eventAt: new Date().toISOString(),
-      actorId,
-      targetUserId: member.userId,
-      via,
-      requestId,
-      communityName: community.name,
-      moderatorRecipientIds,
-    });
+    if (!args.skipCrossServiceNotification) {
+      publishCommunityMemberAddedSafe({
+        communityId: community.id,
+        eventAt: new Date().toISOString(),
+        actorId,
+        targetUserId: member.userId,
+        via,
+        requestId,
+        communityName: community.name,
+        moderatorRecipientIds,
+      });
+    }
 
     // Roster broadcast — client-facing socket DTO (joinedAt is epoch ms here,
     // matching the reserved AsyncAPI CommunityMemberDTO). Reuse the avatar
@@ -2681,6 +2740,18 @@ export const communityService = {
         await communityImageService.resolveViewUrlForClient(
           community.avatarUrl
         );
+      // Build lastActivity deterministically — the COMMUNITY_JOINED system message
+      // (published to chat-service via RabbitMQ below) will persist with this same
+      // timestamp as its createdAt. Using args.eventAt (not Date.now()) ensures
+      // the socket payload's dateTime matches what the Mine API returns once the
+      // async write lands, keeping both values bit-for-bit identical.
+      const joinLastActivity = {
+        type: "system" as const,
+        userId: null,
+        username: null,
+        preview: SELF_JOIN_ACTIVITY_PREVIEW,
+        dateTime: new Date(args.eventAt).getTime(),
+      };
       const addedPayload: CommunityAddedPayload = {
         communityId: community.id,
         name: community.name,
@@ -2696,6 +2767,7 @@ export const communityService = {
         via,
         joinedAt: member.joinedAt.getTime(),
         addedAt: Date.now(),
+        lastActivity: joinLastActivity,
       };
       await publishChatUserEvent(
         redis,
@@ -2709,6 +2781,19 @@ export const communityService = {
       );
       logger.warn(error);
     }
+
+    // Single shared activation side-effect: personal "You joined the community"
+    // system message, visible only to the joining user. Idempotent — the
+    // chat-service dedup key is `sys:COMMUNITY_JOINED:{eventAt}:u:{userId}`;
+    // RabbitMQ redeliveries and API retries with the same eventAt are no-ops.
+    publishCommunitySystemMessageForChatSafe({
+      communityId: community.id,
+      systemMessageType: "COMMUNITY_JOINED",
+      metadata: {},
+      triggeredByUserId: member.userId,
+      eventAt: args.eventAt,
+      visibleToUserId: member.userId,
+    });
   },
 
   async addMembers(
@@ -2884,6 +2969,7 @@ export const communityService = {
           memberCount: count,
           actorId: callerId,
           via: "add_members",
+          eventAt: new Date().toISOString(),
           moderatorRecipientIds,
         });
       }
@@ -2894,6 +2980,7 @@ export const communityService = {
           memberCount: count,
           actorId: callerId,
           via: "add_members",
+          eventAt: new Date().toISOString(),
           moderatorRecipientIds,
         });
       }
@@ -3814,12 +3901,14 @@ export const communityService = {
       // events + publish community.member_added (for mod notification).
       // Fire-and-forget: the member row is already committed — do not fail the
       // HTTP request if the roster lookup or socket publish fails.
+      const memberActivatedAt = new Date().toISOString();
       void this.notifyMemberJoined({
         community,
         member: newRow,
         memberCount: count,
         actorId: callerId,
         via: "self_join",
+        eventAt: memberActivatedAt,
       }).catch((err) =>
         logger.warn(
           `notifyMemberJoined failed for community=${communityId}: ${String(err)}`
@@ -3849,16 +3938,8 @@ export const communityService = {
         metadata: { reactivated },
       });
 
-      // STEP 5h2: Personal "You joined the community" to the joiner only.
-      // No community-wide join announcement — only the joiner sees it.
-      publishCommunitySystemMessageForChatSafe({
-        communityId,
-        systemMessageType: "COMMUNITY_JOINED",
-        metadata: {},
-        triggeredByUserId: callerId,
-        eventAt: new Date().toISOString(),
-        visibleToUserId: callerId,
-      });
+      // STEP 5h2: COMMUNITY_JOINED system message is now emitted inside
+      // notifyMemberJoined() using the eventAt captured above — no separate call.
 
       logger.info(
         `Community self-join (PUBLIC): community=${communityId} user=${callerId} reactivated=${reactivated}`
@@ -4319,6 +4400,16 @@ export const communityService = {
       );
     }
 
+    // Cross-service event: lets notifications-service perform cross-device
+    // sync for the owner. No push is sent to former members (they were evicted
+    // on close and there is no roster to fan out to).
+    publishCommunityReopenedSafe({
+      communityId,
+      actorId: callerId,
+      communityName: updated.name,
+      eventAt: reopenedAt.toISOString(),
+    });
+
     // Chat-sync: unsuspend the general room so community chat writes resume.
     publishCommunityStatusChangedForChatSafe({
       communityId,
@@ -4666,7 +4757,8 @@ export const communityService = {
       request.userId
     );
 
-    // Enriched member_added (moderator awareness) + roster broadcast.
+    // Enriched member_added (moderator awareness) + roster broadcast +
+    // COMMUNITY_JOINED personal system message (via notifyMemberJoined).
     await this.notifyMemberJoined({
       community,
       member: row!,
@@ -4674,6 +4766,7 @@ export const communityService = {
       actorId: callerId,
       via: "join_request_approved",
       requestId: request.id,
+      eventAt: new Date().toISOString(),
     });
 
     // Dedicated approved event → notifies the requester (in-app/push) and drives
@@ -4701,16 +4794,8 @@ export const communityService = {
       decidedAt: new Date().toISOString(),
     });
 
-    // PERSONAL "Your request to join was approved" to the approved user only.
-    // No community-wide join announcement — only the approved user sees it.
-    publishCommunitySystemMessageForChatSafe({
-      communityId: community.id,
-      systemMessageType: "JOIN_REQUEST_APPROVED",
-      metadata: {},
-      triggeredByUserId: request.userId,
-      eventAt: new Date().toISOString(),
-      visibleToUserId: request.userId,
-    });
+    // COMMUNITY_JOINED personal system message is now emitted inside
+    // notifyMemberJoined() above — no separate call needed here.
 
     return {
       request: toJoinRequestData(updatedRequest),
@@ -4927,6 +5012,7 @@ export const communityService = {
             actorId: callerId,
             via: "join_request_approved",
             requestId,
+            eventAt: new Date().toISOString(),
             moderatorRecipientIds,
           });
         }
@@ -5430,6 +5516,11 @@ export const communityService = {
     const snapshotMap = await fetchUserSnapshots([callerId]);
     const snap = snapshotMap.get(callerId)!;
 
+    // Capture a stable timestamp BEFORE the DB write so the idempotency key
+    // `sys:COMMUNITY_JOINED:{activatedAt}:u:{callerId}` is stable across
+    // RabbitMQ redeliveries (same publish → same dedup key → chat-service no-ops).
+    const activatedAt = new Date().toISOString();
+
     if (targetMember?.status === CommunityMemberStatus.LEFT) {
       await communityRepository.reactivateMemberWithSnapshot(
         invite.communityId,
@@ -5473,9 +5564,9 @@ export const communityService = {
       `Community invite accepted: community=${invite.communityId} invite=${inviteId} by=${callerId}`
     );
 
-    // Per E5 / spec note: explicit accept emits ONLY INVITE_ACCEPTED (the
-    // consumer treats this as "X accepted your invite", not "X was added").
-    // Do NOT also publish MEMBER_ADDED here.
+    // Per E5 / spec note: INVITE_ACCEPTED notifies the inviter ("X accepted
+    // your invite"). Do NOT publish MEMBER_ADDED — that would send a duplicate
+    // "You've been added" push to the joiner on top of the invite notification.
     publishCommunityInviteAcceptedSafe({
       communityId: invite.communityId,
       eventAt: new Date().toISOString(),
@@ -5488,6 +5579,24 @@ export const communityService = {
       invite.communityId,
       callerId
     );
+
+    // Emit socket roster broadcast + personal community:added onboarding +
+    // COMMUNITY_JOINED personal system message. skipCrossServiceNotification
+    // suppresses MEMBER_ADDED (handled by INVITE_ACCEPTED above).
+    void this.notifyMemberJoined({
+      community: community!,
+      member: row!,
+      memberCount: count,
+      actorId: callerId,
+      via: "self_join",
+      eventAt: activatedAt,
+      skipCrossServiceNotification: true,
+    }).catch((err) =>
+      logger.warn(
+        `notifyMemberJoined (invite) failed for community=${invite.communityId}: ${String(err)}`
+      )
+    );
+
     return {
       invite: toInviteData(updatedInvite),
       member: await toMemberData(row!),
@@ -6743,8 +6852,9 @@ export const communityService = {
       await communityRepository.setMemberCount(community.id, count);
 
       // Self-join via invite link: enriched member_added (moderator awareness) +
-      // roster broadcast. actor === target, so the notifications consumer still
-      // welcomes the joiner (the welcome is skipped only for join_request_approved).
+      // roster broadcast + COMMUNITY_JOINED personal system message.
+      // actor === target, so the notifications consumer still welcomes the
+      // joiner (welcome is skipped only for join_request_approved).
       await this.notifyMemberJoined({
         community,
         member,
@@ -6752,18 +6862,10 @@ export const communityService = {
         actorId: member.userId,
         via: "invite_link_redeem",
         requestId: undefined,
-      });
-
-      // PERSONAL "You joined the community" to the joiner only.
-      // No community-wide join announcement — only the joiner sees it.
-      publishCommunitySystemMessageForChatSafe({
-        communityId: community.id,
-        systemMessageType: "COMMUNITY_JOINED",
-        metadata: {},
-        triggeredByUserId: callerId,
         eventAt: new Date().toISOString(),
-        visibleToUserId: callerId,
       });
+      // COMMUNITY_JOINED personal system message is now emitted inside
+      // notifyMemberJoined() above — no separate call needed here.
 
       return {
         link: toInviteLinkData(updatedLink!, community),

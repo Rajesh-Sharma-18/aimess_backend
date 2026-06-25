@@ -150,5 +150,12 @@ export function createCommunityRoutes(
   // List pinned messages (any authenticated user)
   router.get("/rooms/:roomId/pins", authenticate, messageCtrl.getPins);
 
+  // Navigation anchor for a community message (used by pin banner tap → jump-to-message)
+  router.get(
+    "/rooms/:roomId/messages/:messageId/context",
+    authenticate,
+    messageCtrl.getMessageContext
+  );
+
   return router;
 }

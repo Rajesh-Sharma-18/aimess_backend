@@ -212,20 +212,40 @@ export function isPersonalJoinSessionType(
  * messages, and chat-service hides any already-persisted rows on every read path.
  *
  * Why each is here:
- *  - MEMBER_LEFT: high-churn noise; a voluntary leave must not pollute chat.
- *  - MEMBER_JOINED: the legacy COMMUNITY-WIDE join line duplicates the personal
- *    COMMUNITY_JOINED line (current flow emits only COMMUNITY_JOINED; this hides
- *    vestigial rows from before that change).
+ *  - MEMBER_LEFT:    High-churn noise; a voluntary leave must not pollute chat.
+ *  - MEMBER_JOINED:  Legacy COMMUNITY-WIDE join line; duplicates the personal
+ *                    COMMUNITY_JOINED line. Hidden to suppress vestigial rows.
+ *  - MEMBER_REMOVED: Product rule — removal must be SILENT from the chat-message
+ *                    perspective. The removed user learns via the dedicated
+ *                    `community:membership:removed` socket event on their personal
+ *                    channel (all devices); other members see a roster update via
+ *                    `community:member:removed`. No "{name} was removed" text must
+ *                    appear in chat history, sync, lastActivity, or any API surface.
+ *                    Moderation history lives in the audit log and backoffice panel.
+ *  - MEMBER_BANNED:  Same policy as MEMBER_REMOVED — ban is also a silent
+ *                    moderation action from the chat perspective. The banned user
+ *                    receives a push notification (via notifications-service) and
+ *                    the `community:membership:removed` socket event.
  *
- * MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are intentionally NOT hidden:
- * moderation actions should be visible to all members (Telegram parity). The
- * community-service emits each at most once per action, so pile-up cannot occur.
- *
+ * MEMBER_UNBANNED / MEMBER_MUTED / MEMBER_UNMUTED are NOT hidden: they are
+ * informational actions that members may legitimately see in context.
  * Membership history also lives in the backoffice/audit log.
+ *
+ * SYSTEM-EVENT POLICY TABLE
+ * | Membership event        | Chat system msg | Recipient-scoped msg | Bumps lastActivity |
+ * |-------------------------|-----------------|----------------------|--------------------|
+ * | Member joined           | No (HIDDEN)     | Yes (COMMUNITY_JOINED PERSONAL) | No    |
+ * | Member removed by admin | No (HIDDEN)     | No (socket only)     | No                 |
+ * | Member banned           | No (HIDDEN)     | No (socket only)     | No                 |
+ * | Member left voluntarily | No (HIDDEN)     | No                   | No                 |
+ * | Member role changed     | Yes (COMMUNITY) | Yes (ROLE_CHANGED_SELF PERSONAL) | Yes  |
+ * | Member muted/unmuted    | Yes (COMMUNITY) | No                   | No                 |
  */
 export const HIDDEN_SYSTEM_MESSAGE_TYPES = [
   "MEMBER_LEFT",
   "MEMBER_JOINED",
+  "MEMBER_REMOVED",
+  "MEMBER_BANNED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** True when the subtype must never appear in the chat timeline (see above). */

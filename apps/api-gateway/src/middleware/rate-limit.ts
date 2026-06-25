@@ -132,3 +132,22 @@ export const forgotPasswordRateLimiter = rateLimit({
     message: "Too many password reset attempts, please try again later.",
   },
 });
+
+/**
+ * Per-IP limiter for FCM/APNs device-token registration.
+ * Token registration should happen at most once per login or token rotation event.
+ * 10 per minute per IP caps token-flooding attacks.
+ */
+export const deviceTokenRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: {
+    trustProxy: env.TRUST_PROXY_HOPS > 0,
+  },
+  message: {
+    success: false,
+    message: "Too many device token registrations, please try again later.",
+  },
+});

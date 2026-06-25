@@ -1,8 +1,63 @@
+// ---------------------------------------------------------------------------
+// Shared error responses
+// ---------------------------------------------------------------------------
+const unauthorized = {
+  description: "Missing or invalid access token",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: {
+        success: false,
+        message: "Unauthorized: missing or invalid access token",
+      },
+    },
+  },
+};
+
+const _badRequest = {
+  description: "Validation failed — invalid query parameters or request body",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: { success: false, message: "Validation error", errors: {} },
+    },
+  },
+};
+
+const notFound = {
+  description: "Resource not found",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: {
+        success: false,
+        message: "User not found",
+        code: "USER_NOT_FOUND",
+      },
+    },
+  },
+};
+
+const tooManyRequests = {
+  description: "Rate limit exceeded",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: {
+        success: false,
+        message: "Too many requests. Please slow down.",
+        code: "RATE_LIMIT_EXCEEDED",
+      },
+    },
+  },
+};
+
 export const userPaths = {
   "/users": {
     get: {
       tags: ["Users", "Communities"],
       summary: "Discover / search users",
+      operationId: "discoverUsers",
       description:
         "Returns a paginated list of users filtered by `section`.\n\n" +
         "- **`others`** (default) — everyone except yourself, accepted friends, and blocked users. Includes `relationshipStatus` (NONE / PENDING_IN / PENDING_OUT) and `friendshipId`.\n" +
@@ -31,6 +86,7 @@ export const userPaths = {
           schema: { type: "string", maxLength: 100 },
           description:
             "Search term matched against username, firstName, lastName.",
+          example: "john",
         },
         {
           name: "page",
@@ -63,25 +119,46 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Users retrieved",
+                data: {
+                  users: [
+                    {
+                      userId: "660e8400-e29b-41d4-a716-446655440001",
+                      username: "janedoe",
+                      firstName: "Jane",
+                      lastName: "Doe",
+                      avatarUrl: "https://storage.example.com/avatars/jane.jpg",
+                      bio: "Product designer at AIMess",
+                      relationshipStatus: "NONE",
+                      friendshipId: null,
+                    },
+                  ],
+                  total: 1,
+                  page: 1,
+                  limit: 20,
+                  totalPages: 1,
+                  hasNext: false,
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Invalid query params",
+          description: "Invalid query parameters",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message:
+                  "Invalid section value. Must be 'others', 'friends', or 'all'",
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
   },
@@ -89,8 +166,10 @@ export const userPaths = {
     post: {
       tags: ["Users"],
       summary: "Generate available username from account",
+      operationId: "generateUsername",
       description:
-        "Requires access token. Call with the same `account` from auth (uniqueness already enforced at registration). Derives a unique username (normalized, numeric suffix if taken).",
+        "Requires access token. Call with the same `account` from auth (uniqueness already enforced at registration). Derives a unique username (normalized, numeric suffix if taken).\n\n" +
+        "**Example:** `account=John_Doe` → `username=john_doe` or `john_doe_2` if taken.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -98,12 +177,13 @@ export const userPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/GenerateUsernameRequest" },
+            example: { account: "john_doe" },
           },
         },
       },
       responses: {
         "200": {
-          description: "Suggested username",
+          description: "Suggested available username",
           content: {
             "application/json": {
               schema: {
@@ -119,25 +199,28 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Username generated",
+                data: { username: "john_doe" },
+              },
             },
           },
         },
         "400": {
-          description: "Invalid account or username format",
+          description: "Invalid account or resulting username fails validation",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message:
+                  "Cannot derive a valid username from the provided account",
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
   },
@@ -145,8 +228,10 @@ export const userPaths = {
     post: {
       tags: ["Users"],
       summary: "Check username availability",
+      operationId: "validateUsername",
       description:
-        "Requires access token. Returns whether the username is available (your current username counts as available). Usernames are stored lowercase; checks are case-insensitive.",
+        "Requires access token. Returns whether the username is available (your current username counts as available). Usernames are stored lowercase; checks are case-insensitive.\n\n" +
+        "**Validation rules:** 3–32 characters, alphanumeric + underscore only (`^[a-zA-Z0-9_]+$`).",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -154,6 +239,7 @@ export const userPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ValidateUsernameRequest" },
+            example: { username: "john_doe_99" },
           },
         },
       },
@@ -175,6 +261,24 @@ export const userPaths = {
                   },
                 ],
               },
+              examples: {
+                available: {
+                  summary: "Username available",
+                  value: {
+                    success: true,
+                    message: "Username available",
+                    data: { username: "john_doe_99", available: true },
+                  },
+                },
+                taken: {
+                  summary: "Username taken",
+                  value: {
+                    success: true,
+                    message: "Username taken",
+                    data: { username: "john_doe_99", available: false },
+                  },
+                },
+              },
             },
           },
         },
@@ -183,17 +287,15 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message:
+                  "Username must be 3–32 characters (letters, digits, underscores only)",
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
   },
@@ -201,6 +303,7 @@ export const userPaths = {
     get: {
       tags: ["Users"],
       summary: "List my friends",
+      operationId: "listFriends",
       description:
         "Accepted friends only, alphabetical (firstName, lastName). Optional `search` (case-insensitive on first/last name + username). Cursor pagination on userId; returns `nextCursor` (null when no more). Empty list when you have no accepted friends. `avatarUrl` is a presigned GET URL.",
       security: [{ bearerAuth: [] }],
@@ -212,6 +315,7 @@ export const userPaths = {
           required: false,
           schema: { type: "string", minLength: 1, maxLength: 100 },
           description: "Filter by first/last name or username.",
+          example: "jane",
         },
         {
           name: "cursor",
@@ -234,7 +338,7 @@ export const userPaths = {
       ],
       responses: {
         "200": {
-          description: "Friends list",
+          description: "Friends list (cursor-paginated)",
           content: {
             "application/json": {
               schema: {
@@ -250,24 +354,36 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Friends retrieved",
+                data: {
+                  friends: [
+                    {
+                      userId: "660e8400-e29b-41d4-a716-446655440001",
+                      username: "janedoe",
+                      firstName: "Jane",
+                      lastName: "Doe",
+                      avatarUrl: "https://storage.example.com/avatars/jane.jpg",
+                      friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                    },
+                  ],
+                  nextCursor: null,
+                  hasMore: false,
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
   },
   "/users/friends/requests": {
     get: {
       tags: ["Users"],
-      summary: "List my pending friend requests",
+      summary: "List pending friend requests",
+      operationId: "listFriendRequests",
       description:
         "Returns the authenticated user's **PENDING** friend requests, newest first, offset-paginated.\n\n" +
         "- **`incoming`** (default) — requests addressed **to you** (awaiting your accept/reject).\n" +
@@ -320,6 +436,32 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Friend requests retrieved",
+                data: {
+                  requests: [
+                    {
+                      friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                      direction: "incoming",
+                      user: {
+                        userId: "660e8400-e29b-41d4-a716-446655440001",
+                        username: "janedoe",
+                        firstName: "Jane",
+                        lastName: "Doe",
+                        avatarUrl:
+                          "https://storage.example.com/avatars/jane.jpg",
+                      },
+                      createdAt: "2026-06-24T10:00:00.000Z",
+                    },
+                  ],
+                  total: 1,
+                  page: 1,
+                  limit: 20,
+                  totalPages: 1,
+                  hasNext: false,
+                },
+              },
             },
           },
         },
@@ -328,33 +470,28 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: { success: false, message: "Invalid direction value" },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
     post: {
       tags: ["Users"],
       summary: "Send a friend request",
+      operationId: "sendFriendRequest",
       description:
         "Sends a friend request from the authenticated user to `addresseeId`.\n\n" +
-        "**Business rules**\n" +
-        "- You cannot befriend yourself (400).\n" +
+        "**Business rules:**\n" +
+        "- You cannot befriend yourself (400 SELF_FRIEND_REQUEST).\n" +
         "- Both profiles must exist and be active (404 otherwise).\n" +
-        "- Blocked in either direction → request refused (400).\n" +
+        "- Blocked in either direction → request refused (400 BLOCKED).\n" +
         "- An existing **ACCEPTED** friendship → 409 (already friends).\n" +
         "- A **PENDING** request you already sent → 409 (already sent).\n" +
         "- A **PENDING** request the other user sent **to you** → the call **auto-accepts** it and returns the friendship with `status: ACCEPTED`.\n" +
         "- A prior **REJECTED / CANCELLED / UNFRIENDED** row is recycled into a fresh PENDING request.\n\n" +
-        "Always responds **201** on success.",
+        "Always responds **201** on success (even on auto-accept).",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -362,6 +499,7 @@ export const userPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/SendFriendRequestRequest" },
+            example: { addresseeId: "660e8400-e29b-41d4-a716-446655440001" },
           },
         },
       },
@@ -386,31 +524,77 @@ export const userPaths = {
                   },
                 ],
               },
+              examples: {
+                sent: {
+                  summary: "Request sent successfully",
+                  value: {
+                    success: true,
+                    message: "Friend request sent.",
+                    data: {
+                      friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                      status: "PENDING",
+                      requesterId: "550e8400-e29b-41d4-a716-446655440000",
+                      addresseeId: "660e8400-e29b-41d4-a716-446655440001",
+                      createdAt: "2026-06-25T10:00:00.000Z",
+                    },
+                  },
+                },
+                autoAccepted: {
+                  summary: "Auto-accepted (mutual pending request existed)",
+                  value: {
+                    success: true,
+                    message: "Friend request accepted.",
+                    data: {
+                      friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                      status: "ACCEPTED",
+                      requesterId: "660e8400-e29b-41d4-a716-446655440001",
+                      addresseeId: "550e8400-e29b-41d4-a716-446655440000",
+                      acceptedAt: "2026-06-25T10:00:00.000Z",
+                    },
+                  },
+                },
+              },
             },
           },
         },
         "400": {
           description:
-            "Validation failed, befriending yourself, or blocked in either direction.",
+            "Validation failed, self-request, or blocked in either direction",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                self: {
+                  summary: "Cannot befriend yourself",
+                  value: {
+                    success: false,
+                    message: "You cannot send a friend request to yourself",
+                    code: "SELF_FRIEND_REQUEST",
+                  },
+                },
+                blocked: {
+                  summary: "User is blocked",
+                  value: {
+                    success: false,
+                    message: "You cannot send a friend request to this user",
+                    code: "USER_BLOCKED",
+                  },
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
           description: "Requester or addressee profile not found",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "User not found",
+                code: "USER_NOT_FOUND",
+              },
             },
           },
         },
@@ -419,9 +603,28 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                alreadyFriends: {
+                  summary: "Already friends",
+                  value: {
+                    success: false,
+                    message: "You are already friends with this user",
+                    code: "ALREADY_FRIENDS",
+                  },
+                },
+                alreadySent: {
+                  summary: "Request already sent",
+                  value: {
+                    success: false,
+                    message: "Friend request already sent",
+                    code: "REQUEST_ALREADY_SENT",
+                  },
+                },
+              },
             },
           },
         },
+        "429": tooManyRequests,
       },
     },
   },
@@ -429,6 +632,7 @@ export const userPaths = {
     post: {
       tags: ["Users"],
       summary: "Accept a friend request",
+      operationId: "acceptFriendRequest",
       description:
         "Accepts a PENDING friend request addressed to the authenticated user. Only the **addressee** of a still-PENDING request may accept; otherwise 404. Bumps both users' friend counts and returns the friendship with `status: ACCEPTED` and `acceptedAt` set.",
       security: [{ bearerAuth: [] }],
@@ -441,6 +645,7 @@ export const userPaths = {
           schema: { type: "string", format: "uuid" },
           description:
             "Friendship id from the request payload / discovery list.",
+          example: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
         },
       ],
       responses: {
@@ -463,6 +668,17 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Friend request accepted.",
+                data: {
+                  friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                  status: "ACCEPTED",
+                  requesterId: "660e8400-e29b-41d4-a716-446655440001",
+                  addresseeId: "550e8400-e29b-41d4-a716-446655440000",
+                  acceptedAt: "2026-06-25T10:05:00.000Z",
+                },
+              },
             },
           },
         },
@@ -471,23 +687,25 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid friendship id format",
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
           description:
             "No matching PENDING request addressed to you (wrong id, not the addressee, or already resolved).",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Pending friend request not found",
+                code: "FRIEND_REQUEST_NOT_FOUND",
+              },
             },
           },
         },
@@ -498,6 +716,7 @@ export const userPaths = {
     post: {
       tags: ["Users"],
       summary: "Reject a friend request",
+      operationId: "rejectFriendRequest",
       description:
         "Declines a PENDING friend request addressed to the authenticated user. Only the **addressee** of a still-PENDING request may reject; otherwise 404. Returns the friendship with `status: REJECTED` and `rejectedAt` set. The row can later be recycled if either party re-sends.",
       security: [{ bearerAuth: [] }],
@@ -509,6 +728,7 @@ export const userPaths = {
           required: true,
           schema: { type: "string", format: "uuid" },
           description: "Friendship id of the pending request to decline.",
+          example: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
         },
       ],
       responses: {
@@ -531,6 +751,17 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Friend request declined.",
+                data: {
+                  friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                  status: "REJECTED",
+                  requesterId: "660e8400-e29b-41d4-a716-446655440001",
+                  addresseeId: "550e8400-e29b-41d4-a716-446655440000",
+                  rejectedAt: "2026-06-25T10:10:00.000Z",
+                },
+              },
             },
           },
         },
@@ -539,23 +770,24 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid friendship id format",
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
-          description:
-            "No matching PENDING request addressed to you (wrong id, not the addressee, or already resolved).",
+          description: "No matching PENDING request addressed to you.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Pending friend request not found",
+                code: "FRIEND_REQUEST_NOT_FOUND",
+              },
             },
           },
         },
@@ -566,6 +798,7 @@ export const userPaths = {
     delete: {
       tags: ["Users"],
       summary: "Cancel a friend request you sent",
+      operationId: "cancelFriendRequest",
       description:
         "Withdraws a PENDING friend request that the authenticated user **sent**. Only the **requester** of a still-PENDING request may cancel; otherwise 404. Returns the friendship with `status: CANCELLED` and `cancelledAt` set.",
       security: [{ bearerAuth: [] }],
@@ -577,6 +810,7 @@ export const userPaths = {
           required: true,
           schema: { type: "string", format: "uuid" },
           description: "Friendship id of the pending request you sent.",
+          example: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
         },
       ],
       responses: {
@@ -599,6 +833,17 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Friend request cancelled.",
+                data: {
+                  friendshipId: "f1a2b3c4-d5e6-7890-abcd-ef1234567890",
+                  status: "CANCELLED",
+                  requesterId: "550e8400-e29b-41d4-a716-446655440000",
+                  addresseeId: "660e8400-e29b-41d4-a716-446655440001",
+                  cancelledAt: "2026-06-25T10:15:00.000Z",
+                },
+              },
             },
           },
         },
@@ -607,23 +852,24 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid friendship id format",
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
-          description:
-            "No matching PENDING request that you sent (wrong id, not the requester, or already resolved).",
+          description: "No matching PENDING request that you sent.",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Pending friend request not found",
+                code: "FRIEND_REQUEST_NOT_FOUND",
+              },
             },
           },
         },
@@ -634,16 +880,11 @@ export const userPaths = {
     post: {
       tags: ["Users"],
       summary: "Auto-connect caller with all eligible users",
+      operationId: "autoConnectFriends",
       description:
         "Creates ACCEPTED friendships between the authenticated user and every active user who has no existing friendship row with them.\n\n" +
         "**Idempotency**: calling this endpoint a second time returns `friendsCreated: 0` and counts previously-created friendships in `alreadyFriends` — it is safe to call repeatedly.\n\n" +
-        "**Side effects**: a `friend.accepted` event is published via RabbitMQ for every new friendship created; `friendsCount` is incremented on both user profiles per pair.\n\n" +
-        "**Classification rules** (applied per active user, in order):\n" +
-        "1. Either party has a block → `blockedUsers`\n" +
-        "2. Existing ACCEPTED row → `alreadyFriends`\n" +
-        "3. Existing PENDING row (either direction) → `pendingRequests`\n" +
-        "4. Any other existing row (REJECTED / CANCELLED / UNFRIENDED) → `skippedUsers`\n" +
-        "5. No row → eligible; included in `friendsCreated`",
+        "**Side effects**: a `friend.accepted` event is published via RabbitMQ for every new friendship created; `friendsCount` is incremented on both user profiles per pair.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
@@ -717,17 +958,23 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Auto-connect complete",
+                data: {
+                  totalUsersScanned: 42,
+                  eligibleUsers: 38,
+                  friendsCreated: 38,
+                  alreadyFriends: 2,
+                  blockedUsers: 1,
+                  pendingRequests: 1,
+                  skippedUsers: 0,
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
   },
@@ -735,6 +982,7 @@ export const userPaths = {
     delete: {
       tags: ["Users"],
       summary: "Unfriend (remove an accepted friend)",
+      operationId: "unfriendUser",
       description:
         "Removes an existing **ACCEPTED** friendship between the authenticated user and `userId`, regardless of who originally sent the request. Decrements both users' friend counts. You cannot unfriend yourself (400). Returns a success envelope with **no `data` payload**.",
       security: [{ bearerAuth: [] }],
@@ -746,6 +994,7 @@ export const userPaths = {
           required: true,
           schema: { type: "string", format: "uuid" },
           description: "userId of the friend to remove.",
+          example: "660e8400-e29b-41d4-a716-446655440001",
         },
       ],
       responses: {
@@ -774,6 +1023,11 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Friend removed successfully.",
+                data: null,
+              },
             },
           },
         },
@@ -782,22 +1036,25 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "You cannot unfriend yourself",
+                code: "SELF_UNFRIEND",
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
           description: "No active friendship exists between you and this user",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "No friendship found with this user",
+                code: "FRIENDSHIP_NOT_FOUND",
+              },
             },
           },
         },
@@ -808,6 +1065,7 @@ export const userPaths = {
     get: {
       tags: ["Users"],
       summary: "Get my settings",
+      operationId: "getUserSettings",
       description:
         "Returns privacy, chat, app, notification, and livestream preferences (find/friend-request/online/profile/call visibility, message auto-delete, read receipts, theme, language, per-category notification toggles + quiet hours, and default livestream quality).",
       security: [{ bearerAuth: [] }],
@@ -830,22 +1088,50 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Settings retrieved",
+                data: {
+                  privacy: {
+                    whoCanFindMe: "EVERYONE",
+                    whoCanSendFriendRequest: "EVERYONE",
+                    showOnlineStatus: true,
+                    profileVisibility: "PUBLIC",
+                  },
+                  chat: {
+                    autoDeleteMessages: false,
+                    readReceipts: true,
+                  },
+                  app: {
+                    theme: "SYSTEM",
+                    language: "en",
+                  },
+                  notifications: {
+                    messages: true,
+                    friendRequests: true,
+                    communityUpdates: true,
+                    quietHoursStart: null,
+                    quietHoursEnd: null,
+                  },
+                  livestream: {
+                    defaultQuality: "AUTO",
+                  },
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
           description: "Profile or settings not found",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "User profile not found",
+                code: "USER_NOT_FOUND",
+              },
             },
           },
         },
@@ -854,6 +1140,7 @@ export const userPaths = {
     patch: {
       tags: ["Users"],
       summary: "Update my settings",
+      operationId: "updateUserSettings",
       description:
         "Partial update of privacy, chat, app, notification, and/or livestream settings. Send only the groups and fields you want to change.",
       security: [{ bearerAuth: [] }],
@@ -863,6 +1150,28 @@ export const userPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/UpdateUserSettingsRequest" },
+            examples: {
+              privacyUpdate: {
+                summary: "Update privacy settings",
+                value: {
+                  privacy: {
+                    whoCanFindMe: "FRIENDS_ONLY",
+                    showOnlineStatus: false,
+                  },
+                },
+              },
+              notificationsUpdate: {
+                summary: "Update notification settings",
+                value: {
+                  notifications: {
+                    messages: true,
+                    communityUpdates: false,
+                    quietHoursStart: "22:00",
+                    quietHoursEnd: "08:00",
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -884,6 +1193,28 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Settings updated",
+                data: {
+                  privacy: {
+                    whoCanFindMe: "FRIENDS_ONLY",
+                    whoCanSendFriendRequest: "EVERYONE",
+                    showOnlineStatus: false,
+                    profileVisibility: "PUBLIC",
+                  },
+                  chat: { autoDeleteMessages: false, readReceipts: true },
+                  app: { theme: "SYSTEM", language: "en" },
+                  notifications: {
+                    messages: true,
+                    friendRequests: true,
+                    communityUpdates: false,
+                    quietHoursStart: "22:00",
+                    quietHoursEnd: "08:00",
+                  },
+                  livestream: { defaultQuality: "AUTO" },
+                },
+              },
             },
           },
         },
@@ -892,22 +1223,24 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid settings value",
+                errors: {
+                  "privacy.whoCanFindMe":
+                    "Must be one of: EVERYONE, FRIENDS_ONLY, NOBODY",
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
           description: "Profile or settings not found",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: { success: false, message: "User profile not found" },
             },
           },
         },
@@ -918,13 +1251,14 @@ export const userPaths = {
     get: {
       tags: ["Users"],
       summary: "Get my linked sign-in providers",
+      operationId: "getConnectedAccounts",
       description:
         "Returns linked sign-in providers (EMAIL, GOOGLE, APPLE) with connection status. When auth-service is unavailable, may return a cached copy or omit providers (`accountStatus`).",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
         "200": {
-          description: "Connected accounts",
+          description: "Connected accounts / linked providers",
           content: {
             "application/json": {
               schema: {
@@ -940,17 +1274,40 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Connected accounts retrieved",
+                data: {
+                  providers: [
+                    {
+                      provider: "EMAIL",
+                      connected: true,
+                      providerUserId: "john@example.com",
+                      providerEmail: "john@example.com",
+                      linkedAt: "2026-06-20T10:00:00.000Z",
+                    },
+                    {
+                      provider: "GOOGLE",
+                      connected: true,
+                      providerUserId: "1234567890",
+                      providerEmail: "john@gmail.com",
+                      linkedAt: "2026-06-21T10:00:00.000Z",
+                    },
+                    {
+                      provider: "APPLE",
+                      connected: false,
+                      providerUserId: null,
+                      providerEmail: null,
+                      linkedAt: null,
+                    },
+                  ],
+                  primaryAccount: "EMAIL",
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
   },
@@ -958,13 +1315,14 @@ export const userPaths = {
     get: {
       tags: ["Users"],
       summary: "Get my profile",
+      operationId: "getMyProfile",
       description:
         "Returns profile fields (bio, avatar, username, …). `avatarUrl` is a presigned GET URL — refresh via this endpoint before `avatarUrlExpiresIn` expires. For linked sign-in providers, use GET /users/accounts/me.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
         "200": {
-          description: "Profile",
+          description: "My profile",
           content: {
             "application/json": {
               schema: {
@@ -980,22 +1338,39 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Profile retrieved",
+                data: {
+                  userId: "550e8400-e29b-41d4-a716-446655440000",
+                  username: "johndoe",
+                  firstName: "John",
+                  lastName: "Doe",
+                  bio: "Hello world!",
+                  gender: "MALE",
+                  dateOfBirth: "1995-03-15",
+                  avatarUrl: "https://storage.example.com/avatars/john.jpg",
+                  avatarUrlExpiresIn: 3600,
+                  friendsCount: 42,
+                  communitiesCount: 5,
+                  isProfileCompleted: true,
+                  createdAt: "2026-06-20T10:00:00.000Z",
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
           description: "Profile not found",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Profile not found",
+                code: "PROFILE_NOT_FOUND",
+              },
             },
           },
         },
@@ -1004,8 +1379,11 @@ export const userPaths = {
     patch: {
       tags: ["Users"],
       summary: "Update my profile",
+      operationId: "updateMyProfile",
       description:
-        "Updates the authenticated user's profile (user id from access token). Username can only be changed once every 30 days. For avatars, upload via presigned URL first, then send `avatarObjectKey`.",
+        "Updates the authenticated user's profile (user id from access token). Username can only be changed once every 30 days. For avatars, upload via presigned URL first, then send `avatarObjectKey`.\n\n" +
+        "**Username cooldown:** If the 30-day cooldown has not expired, the request returns 400 with `code: USERNAME_COOLDOWN`.\n\n" +
+        "**Avatar flow:** Call `POST /api/v1/media/upload-url` with `category: USER_AVATAR`, PUT the file to the returned URL, then pass `objectKey` as `avatarObjectKey` here.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -1013,6 +1391,27 @@ export const userPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/UpdateProfileRequest" },
+            examples: {
+              basicUpdate: {
+                summary: "Update name and bio",
+                value: {
+                  firstName: "Jonathan",
+                  lastName: "Doe",
+                  bio: "Senior developer at AIMess",
+                },
+              },
+              withAvatar: {
+                summary: "Update avatar",
+                value: {
+                  avatarObjectKey:
+                    "avatars/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.jpg",
+                },
+              },
+              changeUsername: {
+                summary: "Change username (30-day cooldown applies)",
+                value: { username: "john_new_handle" },
+              },
+            },
           },
         },
       },
@@ -1034,6 +1433,25 @@ export const userPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Profile updated",
+                data: {
+                  userId: "550e8400-e29b-41d4-a716-446655440000",
+                  username: "johndoe",
+                  firstName: "Jonathan",
+                  lastName: "Doe",
+                  bio: "Senior developer at AIMess",
+                  gender: "MALE",
+                  dateOfBirth: "1995-03-15",
+                  avatarUrl: "https://storage.example.com/avatars/john.jpg",
+                  avatarUrlExpiresIn: 3600,
+                  friendsCount: 42,
+                  communitiesCount: 5,
+                  isProfileCompleted: true,
+                  createdAt: "2026-06-20T10:00:00.000Z",
+                },
+              },
             },
           },
         },
@@ -1043,30 +1461,41 @@ export const userPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                usernameCooldown: {
+                  summary: "Username change cooldown active",
+                  value: {
+                    success: false,
+                    message:
+                      "Username can only be changed once every 30 days. Next change available in 18 days.",
+                    code: "USERNAME_COOLDOWN",
+                  },
+                },
+                avatarNotUploaded: {
+                  summary: "Avatar object key not found in storage",
+                  value: {
+                    success: false,
+                    message:
+                      "Avatar file not found. Upload it first via POST /media/upload-url.",
+                    code: "AVATAR_NOT_UPLOADED",
+                  },
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
-        "404": {
-          description: "Profile not found",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
+        "404": notFound,
         "409": {
           description: "Username already taken",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Username already taken",
+                code: "USERNAME_TAKEN",
+              },
             },
           },
         },

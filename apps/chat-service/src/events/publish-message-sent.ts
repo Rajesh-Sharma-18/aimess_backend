@@ -21,6 +21,8 @@ export interface MessageSentPayload {
   conversationType: "PRIVATE" | "GROUP" | "COMMUNITY";
   /** Present when conversationType === "COMMUNITY" */
   communityId?: string;
+  /** Display name of the community — used as the push notification title. */
+  communityName?: string;
   messageId: string;
   clientMessageId: string;
   senderId: string;
@@ -86,6 +88,8 @@ export function publishMessageSentSafe(p: PublishMessageSentParams): void {
       const data: MessageSentPayload = {
         conversationId: p.conversationId,
         conversationType: p.conversationType,
+        ...(p.communityId ? { communityId: p.communityId } : {}),
+        ...(p.communityName ? { communityName: p.communityName } : {}),
         messageId: p.messageId,
         clientMessageId: p.clientMessageId,
         senderId: p.senderId,

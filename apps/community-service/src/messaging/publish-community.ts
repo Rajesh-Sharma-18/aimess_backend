@@ -23,6 +23,7 @@ import {
   type CommunityMemberUnmutedPayload,
   type CommunityMemberWarnedPayload,
   type CommunityMemberRoleChangedPayload,
+  type CommunityReopenedNotifyPayload,
   type CommunityReportActionedPayload,
   type CommunityReportCreatedPayload,
 } from "@aimess/shared-types";
@@ -144,6 +145,18 @@ export function publishCommunityClosedSafe(
   data: CommunityClosedNotifyPayload
 ): void {
   publishSafe(CommunityEvents.CLOSED, data, "community.closed");
+}
+
+/**
+ * Published when the owner REOPENs a CLOSED community (status → ACTIVE).
+ * The community was empty during closure (members evicted on close). The
+ * notifications-service consumer handles only cross-device socket sync for the
+ * owner — there is no former-member roster to push to.
+ */
+export function publishCommunityReopenedSafe(
+  data: CommunityReopenedNotifyPayload
+): void {
+  publishSafe(CommunityEvents.REOPENED, data, "community.reopened");
 }
 
 export function publishCommunityMemberLeftSafe(

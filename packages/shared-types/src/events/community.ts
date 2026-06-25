@@ -253,6 +253,18 @@ export type CommunityMemberLeftPayload = CommunityEventBase & {
 };
 
 /**
+ * Published when the owner REOPENs a previously-CLOSED community
+ * (community-service → notifications-service). The community was empty during
+ * the CLOSED period (all members were evicted on close), so there is no former-
+ * member roster to fan push out to — the consumer is socket-only.
+ */
+export type CommunityReopenedNotifyPayload = CommunityEventBase & {
+  /** Owner who triggered the reopen. */
+  actorId: string;
+  communityName: string;
+};
+
+/**
  * Fired once per recipient when an ADMIN/MODERATOR bulk-shares an invite link.
  * Consumed by chat-service → sends a system DM containing the invite link.
  * Routed via `community.chat.sync.queue` (chat-service dedicated queue).

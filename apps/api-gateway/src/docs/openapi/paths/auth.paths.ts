@@ -1,17 +1,87 @@
 /** Paths are relative to server URL `…/api/v1` (see openapi-document). */
+
+// ---------------------------------------------------------------------------
+// Shared error responses
+// ---------------------------------------------------------------------------
+const unauthorized = {
+  description: "Missing or invalid access token",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: {
+        success: false,
+        message: "Unauthorized: missing or invalid access token",
+      },
+    },
+  },
+};
+
+const _badRequest = {
+  description: "Validation failed",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: {
+        success: false,
+        message: "Validation error",
+        errors: {
+          account:
+            "Account must be 3–32 characters, lowercase letters, digits, underscores only",
+        },
+      },
+    },
+  },
+};
+
+const serviceUnavailable = {
+  description:
+    "Auth service unavailable (circuit breaker open or service down)",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: {
+        success: false,
+        message: "Auth service is temporarily unavailable. Please try again.",
+      },
+    },
+  },
+};
+
+const tooManyRequests = {
+  description: "Rate limit exceeded — too many OTP requests",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: {
+        success: false,
+        message:
+          "Too many requests. Please wait before requesting another OTP.",
+        code: "RATE_LIMIT_EXCEEDED",
+      },
+    },
+  },
+};
+
 export const authPaths = {
   "/auth/accounts/validate": {
     post: {
       tags: ["Auth"],
       summary: "Check account name availability",
+      operationId: "validateAccount",
       description:
-        "Validates account format and returns whether the name is free (for registration). No authentication required.",
+        "Validates account format and returns whether the name is free (for registration). No authentication required.\n\n" +
+        "**Validation rules:** 3–32 characters, only lowercase letters (`a-z`), digits (`0-9`), and underscores (`_`). Reserved words (admin, support, system, etc.) are rejected.\n\n" +
+        "**Business scenarios:**\n" +
+        "- `available: true` — the account handle is free and valid; safe to proceed with registration.\n" +
+        "- `available: false` — already taken; prompt the user to choose a different one.\n" +
+        "- `400` — the format itself is invalid (length, characters, or reserved word).",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ValidateAccountRequest" },
+            example: { account: "johndoe" },
           },
         },
       },
@@ -33,14 +103,52 @@ export const authPaths = {
                   },
                 ],
               },
+              examples: {
+                available: {
+                  summary: "Account is available",
+                  value: {
+                    success: true,
+                    message: "Account available",
+                    data: { account: "johndoe", available: true },
+                  },
+                },
+                taken: {
+                  summary: "Account already taken",
+                  value: {
+                    success: true,
+                    message: "Account taken",
+                    data: { account: "johndoe", available: false },
+                  },
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Invalid account format",
+          description:
+            "Invalid account format (too short, invalid characters, or reserved word)",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                tooShort: {
+                  summary: "Account too short",
+                  value: {
+                    success: false,
+                    message: "Account must be at least 3 characters",
+                    errors: { account: "minLength" },
+                  },
+                },
+                invalidChars: {
+                  summary: "Invalid characters",
+                  value: {
+                    success: false,
+                    message:
+                      "Account may only contain lowercase letters, digits, and underscores",
+                    errors: { account: "pattern" },
+                  },
+                },
+              },
             },
           },
         },
@@ -51,14 +159,25 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Register a new account",
+      operationId: "registerUser",
       description:
-        "Creates an auth user, issues access/refresh tokens, and publishes a profile creation event.",
+        "Creates an auth user, issues access/refresh tokens, and publishes a profile creation event.\n\n" +
+        "**Side effects:** A `user.registered` event is published to RabbitMQ, which triggers user-service to create the user profile. The access token is immediately valid for all authenticated endpoints.\n\n" +
+        "**Business scenarios:**\n" +
+        "- Success (201) — user created; store both tokens; call `GET /users/profiles/me` to check `isProfileCompleted`.\n" +
+        "- 400 Validation — `account` format invalid or `password` too short.\n" +
+        "- 409 Conflict — the `account` handle is already taken.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/RegisterRequest" },
+            example: {
+              account: "johndoe",
+              password: "Str0ng!Pass",
+              fcmTokens: ["fcm_token_abc123"],
+            },
           },
         },
       },
@@ -80,32 +199,56 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Registration successful",
+                data: {
+                  user: {
+                    userId: "550e8400-e29b-41d4-a716-446655440000",
+                    account: "johndoe",
+                    createdAt: "2026-06-25T10:00:00.000Z",
+                  },
+                  tokens: {
+                    accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    refreshToken: "hOY0NnBT5NzlJuC9iWpXW16Eh1RLJY2pi...",
+                    accessTokenExpiresIn: 3600,
+                    refreshTokenExpiresIn: 604800,
+                  },
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed",
+          description:
+            "Validation failed — account format invalid or password too short",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Validation error",
+                errors: { password: "Password must be at least 8 characters" },
+              },
             },
           },
         },
         "409": {
-          description: "Email or account already exists",
+          description: "Account already taken",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "This account name is already taken",
+                code: "ACCOUNT_ALREADY_EXISTS",
+              },
             },
           },
         },
         "502": {
+          ...serviceUnavailable,
           description: "Auth service unavailable",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
         },
       },
     },
@@ -114,20 +257,31 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Sign in with Google",
+      operationId: "googleSignIn",
       description:
-        "Verify the Google ID token from the client's Google Sign-In flow (validated against the configured Google OAuth client id), then create or link the user and return AIMess tokens.",
+        "Verify the Google ID token from the client's Google Sign-In flow (validated against the configured Google OAuth client id), then create or link the user and return AIMess tokens.\n\n" +
+        "**Business scenarios:**\n" +
+        "- `isNewUser: true` — first time; the user profile doesn't exist yet; prompt profile setup.\n" +
+        "- `isNewUser: false, isProfileCompleted: false` — returning user who never finished setup.\n" +
+        "- `isNewUser: false, isProfileCompleted: true` — normal returning login.\n" +
+        "- 401 — the Google token is expired, revoked, or from a different client_id.\n" +
+        "- 409 — the Google account email is already linked to another AIMess account.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/GoogleLoginRequest" },
+            example: {
+              idToken: "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE3MTY5YzM0ZTNlMTg...",
+              fcmTokens: ["fcm_token_abc123"],
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "Signed in",
+          description: "Signed in (or registered) successfully",
           content: {
             "application/json": {
               schema: {
@@ -143,30 +297,91 @@ export const authPaths = {
                   },
                 ],
               },
+              examples: {
+                newUser: {
+                  summary: "First-time Google sign-in (new user)",
+                  value: {
+                    success: true,
+                    message: "Signed in successfully",
+                    data: {
+                      isNewUser: true,
+                      isProfileCompleted: false,
+                      user: {
+                        userId: "550e8400-e29b-41d4-a716-446655440000",
+                        account: "johndoe_g",
+                        email: "john@gmail.com",
+                        provider: "GOOGLE",
+                      },
+                      tokens: {
+                        accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                        refreshToken: "hOY0NnBT5NzlJuC9iWpXW16Eh1RLJY2pi...",
+                        accessTokenExpiresIn: 3600,
+                        refreshTokenExpiresIn: 604800,
+                      },
+                    },
+                  },
+                },
+                returningUser: {
+                  summary: "Returning Google user (profile complete)",
+                  value: {
+                    success: true,
+                    message: "Signed in successfully",
+                    data: {
+                      isNewUser: false,
+                      isProfileCompleted: true,
+                      user: {
+                        userId: "550e8400-e29b-41d4-a716-446655440000",
+                        account: "johndoe",
+                        email: "john@gmail.com",
+                        provider: "GOOGLE",
+                      },
+                      tokens: {
+                        accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                        refreshToken: "hOY0NnBT5NzlJuC9iWpXW16Eh1RLJY2pi...",
+                        accessTokenExpiresIn: 3600,
+                        refreshTokenExpiresIn: 604800,
+                      },
+                    },
+                  },
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed",
+          description: "Validation failed — missing or malformed idToken",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: { success: false, message: "idToken is required" },
             },
           },
         },
         "401": {
-          description: "Invalid Google token",
+          description:
+            "Invalid Google token — expired, revoked, or wrong client_id",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid Google ID token",
+                code: "GOOGLE_TOKEN_INVALID",
+              },
             },
           },
         },
         "409": {
-          description: "Email required (first-time Apple) or conflict",
+          description: "Email already linked to a different AIMess account",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message:
+                  "This Google account is already linked to another user",
+                code: "SOCIAL_ACCOUNT_CONFLICT",
+              },
             },
           },
         },
@@ -177,20 +392,31 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Sign in with Apple",
+      operationId: "appleSignIn",
       description:
-        "Verify the Apple identity token (from ASAuthorizationAppleIDCredential on iOS / Sign in with Apple JS on web) directly against Apple's JWKS, then create or link the user and return AIMess tokens.",
+        "Verify the Apple identity token (from ASAuthorizationAppleIDCredential on iOS / Sign in with Apple JS on web) directly against Apple's JWKS, then create or link the user and return AIMess tokens.\n\n" +
+        "**Apple specifics:** `email` and `fullName` are only returned by Apple on the FIRST sign-in. Subsequent sign-ins must rely on the stored email. Always pass them when available.\n\n" +
+        "**Business scenarios:**\n" +
+        "- Same flow as Google sign-in: `isNewUser` / `isProfileCompleted` flags guide the client's post-auth routing.\n" +
+        "- 401 — identity token invalid, expired (Apple tokens expire in 10 min), or wrong app bundle ID.\n" +
+        "- 409 — Apple sub already linked to another AIMess account.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/AppleLoginRequest" },
+            example: {
+              identityToken: "eyJraWQiOiJZdXlYb1kiLCJhbGciOiJSUzI1NiJ9...",
+              email: "user@privaterelay.appleid.com",
+              fullName: "John Doe",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "Signed in",
+          description: "Signed in (or registered) successfully",
           content: {
             "application/json": {
               schema: {
@@ -206,30 +432,62 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Signed in successfully",
+                data: {
+                  isNewUser: true,
+                  isProfileCompleted: false,
+                  user: {
+                    userId: "660e8400-e29b-41d4-a716-446655440001",
+                    account: "john_a",
+                    email: "user@privaterelay.appleid.com",
+                    provider: "APPLE",
+                  },
+                  tokens: {
+                    accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    refreshToken: "dPQm2pTkRh3mLwX9jVpXX28Fi2SMNY4qjdsb...",
+                    accessTokenExpiresIn: 3600,
+                    refreshTokenExpiresIn: 604800,
+                  },
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed",
+          description: "Validation failed — missing or malformed identityToken",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: { success: false, message: "identityToken is required" },
             },
           },
         },
         "401": {
-          description: "Invalid Apple token",
+          description:
+            "Invalid Apple identity token — expired or wrong bundle ID",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid Apple identity token",
+                code: "APPLE_TOKEN_INVALID",
+              },
             },
           },
         },
         "409": {
-          description: "Email required for first-time sign-in",
+          description: "Apple account already linked to another AIMess account",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "This Apple account is already linked to another user",
+                code: "SOCIAL_ACCOUNT_CONFLICT",
+              },
             },
           },
         },
@@ -240,14 +498,40 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Login with account or email and password",
+      operationId: "loginUser",
       description:
-        "Send username in `account`, or the user's verified linked email. Password is always required.",
+        "Send username in `account`, or the user's verified linked email. Password is always required.\n\n" +
+        "**Business scenarios:**\n" +
+        "- `isProfileCompleted: false` — first login after registration; route to profile-setup screen.\n" +
+        "- `isProfileCompleted: true` — normal login; route to home.\n" +
+        "- 401 CREDENTIALS_INVALID — wrong password.\n" +
+        "- 401 ACCOUNT_BANNED — the account has been platform-banned.\n" +
+        "- 401 ACCOUNT_SUSPENDED — temporary suspension.\n" +
+        "- 401 ACCOUNT_DELETED — soft-deleted (30-day grace period active).",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/LoginRequest" },
+            examples: {
+              byUsername: {
+                summary: "Login with username",
+                value: {
+                  account: "johndoe",
+                  password: "Str0ng!Pass",
+                  rememberMe: false,
+                },
+              },
+              byEmail: {
+                summary: "Login with linked email",
+                value: {
+                  account: "john@example.com",
+                  password: "Str0ng!Pass",
+                  rememberMe: true,
+                },
+              },
+            },
           },
         },
       },
@@ -267,32 +551,72 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Login successful",
+                data: {
+                  tokens: {
+                    accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    refreshToken: "hOY0NnBT5NzlJuC9iWpXW16Eh1RLJY2pi...",
+                    accessTokenExpiresIn: 3600,
+                    refreshTokenExpiresIn: 604800,
+                  },
+                  isProfileCompleted: true,
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed",
+          description: "Validation failed — missing account or password",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Validation error",
+                errors: { account: "account is required" },
+              },
             },
           },
         },
         "401": {
-          description: "Invalid credentials or account not allowed to login",
+          description: "Invalid credentials or account not permitted to login",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                wrongPassword: {
+                  summary: "Wrong password",
+                  value: {
+                    success: false,
+                    message: "Invalid credentials",
+                    code: "CREDENTIALS_INVALID",
+                  },
+                },
+                banned: {
+                  summary: "Account banned",
+                  value: {
+                    success: false,
+                    message: "Your account has been banned",
+                    code: "ACCOUNT_BANNED",
+                  },
+                },
+                deleted: {
+                  summary: "Account pending deletion",
+                  value: {
+                    success: false,
+                    message: "This account has been deleted",
+                    code: "ACCOUNT_DELETED",
+                  },
+                },
+              },
             },
           },
         },
         "502": {
+          ...serviceUnavailable,
           description: "Auth service unavailable",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
         },
       },
     },
@@ -301,20 +625,26 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Refresh access token",
+      operationId: "refreshAccessToken",
       description:
-        "Exchange a valid refresh token for a new access/refresh token pair. The old refresh token is invalidated (rotation). If a revoked refresh token is reused, all sessions for that user are revoked.",
+        "Exchange a valid refresh token for a new access/refresh token pair. The old refresh token is invalidated (rotation). If a revoked refresh token is reused, all sessions for that user are revoked.\n\n" +
+        "**Security note:** Reuse of a revoked refresh token triggers a full session revocation (security event). The client must detect this and re-authenticate.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/RefreshTokenRequest" },
+            example: {
+              refreshToken:
+                "hOY0NnBT5NzlJuC9iWpXW16Eh1RLJY2piemrzYfPh7VeMeSJm9sr_IiNilQb7PI6",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "New tokens issued",
+          description: "New token pair issued — old refresh token invalidated",
           content: {
             "application/json": {
               schema: {
@@ -328,14 +658,28 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Token refreshed",
+                data: {
+                  tokens: {
+                    accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                    refreshToken: "newRefreshToken_abc123...",
+                    accessTokenExpiresIn: 3600,
+                    refreshTokenExpiresIn: 604800,
+                  },
+                  isProfileCompleted: true,
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed",
+          description: "Validation failed — missing refreshToken field",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: { success: false, message: "refreshToken is required" },
             },
           },
         },
@@ -344,16 +688,30 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                expired: {
+                  summary: "Token expired",
+                  value: {
+                    success: false,
+                    message: "Refresh token expired",
+                    code: "TOKEN_EXPIRED",
+                  },
+                },
+                revoked: {
+                  summary: "Token reused (session revocation triggered)",
+                  value: {
+                    success: false,
+                    message: "Refresh token has been revoked",
+                    code: "TOKEN_REVOKED",
+                  },
+                },
+              },
             },
           },
         },
         "502": {
+          ...serviceUnavailable,
           description: "Auth service unavailable",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
         },
       },
     },
@@ -361,21 +719,25 @@ export const authPaths = {
   "/auth/token": {
     post: {
       tags: ["Auth"],
-      summary: "Get a new access token",
+      summary: "Get a new access token (silent renewal)",
+      operationId: "getAccessToken",
       description:
-        "Issues a fresh access token using a valid refresh token. The refresh token is **not** rotated — use this for silent access-token renewal. Use `POST /auth/refresh` when you also want to rotate the refresh token.",
+        "Issues a fresh access token using a valid refresh token. The refresh token is **not** rotated — use this for silent access-token renewal without disturbing the refresh token. Use `POST /auth/refresh` when you also want to rotate the refresh token.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/RefreshTokenRequest" },
+            example: {
+              refreshToken: "hOY0NnBT5NzlJuC9iWpXW16Eh1RLJY2piemrzYfPh7Ve...",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "New access token issued",
+          description: "New access token issued (refresh token unchanged)",
           content: {
             "application/json": {
               schema: {
@@ -391,6 +753,14 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Access token issued",
+                data: {
+                  accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                  accessTokenExpiresIn: 900,
+                },
+              },
             },
           },
         },
@@ -399,6 +769,7 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: { success: false, message: "refreshToken is required" },
             },
           },
         },
@@ -407,16 +778,17 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Refresh token expired",
+                code: "TOKEN_EXPIRED",
+              },
             },
           },
         },
         "502": {
+          ...serviceUnavailable,
           description: "Auth service unavailable",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
         },
       },
     },
@@ -425,16 +797,19 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Sign out",
+      operationId: "logoutUser",
       description:
-        "Revokes the current session and its refresh tokens. Requires a valid (non-expired) access token.",
+        "Revokes the current session and its refresh tokens. Requires a valid (non-expired) access token.\n\n" +
+        "After logout, the access token is still technically valid until it naturally expires, but the session is marked ENDED on the server. The refresh token cannot be used to generate new access tokens.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
         "200": {
-          description: "Signed out",
+          description: "Signed out successfully",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Signed out successfully" },
             },
           },
         },
@@ -443,16 +818,13 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: { success: false, message: "Unauthorized" },
             },
           },
         },
         "502": {
+          ...serviceUnavailable,
           description: "Auth service unavailable",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
         },
       },
     },
@@ -461,13 +833,14 @@ export const authPaths = {
     get: {
       tags: ["Auth"],
       summary: "List active sessions (devices)",
+      operationId: "listUserSessions",
       description:
         "Returns **all** active devices/sessions for the user. The current device is marked `isCurrent: true`. Revoke one device with DELETE /sessions/{sessionId}, or all other devices with POST /sessions/revoke-all.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
         "200": {
-          description: "Active sessions",
+          description: "Active sessions list",
           content: {
             "application/json": {
               schema: {
@@ -483,24 +856,47 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Sessions retrieved",
+                data: {
+                  sessions: [
+                    {
+                      sessionId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                      deviceId: "device-pixel8-001",
+                      deviceName: "Pixel 8 — Hanoi",
+                      deviceType: "ANDROID",
+                      osVersion: "14",
+                      appVersion: "1.2.3",
+                      ipAddress: "203.0.113.1",
+                      countryCode: "VN",
+                      lastActiveAt: "2026-06-25T09:00:00.000Z",
+                      createdAt: "2026-06-20T08:00:00.000Z",
+                      isCurrent: true,
+                    },
+                    {
+                      sessionId: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                      deviceId: "device-iphone15-001",
+                      deviceName: "iPhone 15 Pro",
+                      deviceType: "IOS",
+                      osVersion: "17",
+                      appVersion: "1.2.3",
+                      ipAddress: "198.51.100.5",
+                      countryCode: "US",
+                      lastActiveAt: "2026-06-24T20:00:00.000Z",
+                      createdAt: "2026-06-01T10:00:00.000Z",
+                      isCurrent: false,
+                    },
+                  ],
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "502": {
+          ...serviceUnavailable,
           description: "Auth service unavailable",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
         },
       },
     },
@@ -509,13 +905,14 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Sign out from all other devices",
+      operationId: "revokeAllSessions",
       description:
         "Revokes every active session EXCEPT the caller's current one (the device making this call stays signed in). `revokedCount` is the number of other devices signed out.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       responses: {
         "200": {
-          description: "All sessions revoked",
+          description: "All other sessions revoked",
           content: {
             "application/json": {
               schema: {
@@ -531,17 +928,15 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Signed out from all other devices",
+                data: { revokedCount: 2 },
+              },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
   },
@@ -549,6 +944,7 @@ export const authPaths = {
     delete: {
       tags: ["Auth"],
       summary: "Revoke one device",
+      operationId: "revokeSession",
       description:
         "Revokes the given session and its refresh tokens. Pass any `sessionId` from GET /sessions (including the row with `isCurrent: true` to sign out only this device).",
       security: [{ bearerAuth: [] }],
@@ -560,40 +956,36 @@ export const authPaths = {
           required: true,
           description: "Session ID (sessionId) from GET /auth/sessions.",
           schema: { type: "string", format: "uuid" },
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
         },
       ],
       responses: {
         "200": {
-          description: "Session revoked",
+          description: "Session revoked successfully",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Session revoked" },
             },
           },
         },
-        "401": {
-          description: "Missing or invalid access token",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
           description: "Session not found or already ended",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Session not found or already ended",
+                code: "SESSION_NOT_FOUND",
+              },
             },
           },
         },
         "502": {
+          ...serviceUnavailable,
           description: "Auth service unavailable",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
         },
       },
     },
@@ -602,34 +994,50 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Request password reset OTP",
+      operationId: "requestPasswordReset",
       description:
-        "Sends a 6-digit OTP to the email if an account exists. In development, OTP is logged to the auth-service console (fixed code via OTP_DEV_FIXED_CODE).",
+        "Sends a 6-digit OTP to the email if an account exists. In development, OTP is logged to the auth-service console (fixed code via OTP_DEV_FIXED_CODE).\n\n" +
+        "**Security:** The response is identical whether or not an account exists for the email. This prevents account enumeration attacks.\n\n" +
+        "**Rate limiting:** Maximum 5 OTP requests per 15 minutes per email address.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ForgotPasswordRequest" },
+            example: { email: "john@example.com" },
           },
         },
       },
       responses: {
         "200": {
-          description: "Generic success (does not reveal whether email exists)",
+          description:
+            "Generic success response (identical whether or not account exists — prevents account enumeration)",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: {
+                success: true,
+                message:
+                  "If an account exists for that email, a reset code has been sent.",
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed",
+          description: "Invalid email format",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Validation error",
+                errors: { email: "Must be a valid email address" },
+              },
             },
           },
         },
+        "429": tooManyRequests,
       },
     },
   },
@@ -637,6 +1045,12 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Verify password reset OTP",
+      operationId: "verifyPasswordResetOtp",
+      description:
+        "Verifies the 6-digit OTP sent to the email. Returns a short-lived `resetToken` to use in the next step.\n\n" +
+        "**Business rules:**\n" +
+        "- OTP expires after 10 minutes.\n" +
+        "- Maximum 5 failed attempts; the OTP is invalidated after the limit.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
@@ -645,12 +1059,17 @@ export const authPaths = {
             schema: {
               $ref: "#/components/schemas/ForgotPasswordVerifyRequest",
             },
+            example: {
+              email: "john@example.com",
+              code: "482915",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "OTP verified; use resetToken in the reset step",
+          description:
+            "OTP verified — use the returned `resetToken` in POST /auth/forgot-password/reset",
           content: {
             "application/json": {
               schema: {
@@ -666,14 +1085,40 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "OTP verified",
+                data: {
+                  resetToken: "rst_3f9c1a2b8d4e7f0a6b5c9d2e...",
+                  resetTokenExpiresIn: 600,
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed or max OTP attempts",
+          description: "Validation failed or max OTP attempts exceeded",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                validation: {
+                  summary: "Missing or malformed code",
+                  value: {
+                    success: false,
+                    message: "code must be a 6-digit number",
+                  },
+                },
+                maxAttempts: {
+                  summary: "Too many wrong attempts",
+                  value: {
+                    success: false,
+                    message:
+                      "Maximum OTP attempts exceeded. Request a new code.",
+                    code: "OTP_MAX_ATTEMPTS",
+                  },
+                },
+              },
             },
           },
         },
@@ -682,9 +1127,15 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid or expired OTP",
+                code: "OTP_INVALID",
+              },
             },
           },
         },
+        "429": tooManyRequests,
       },
     },
   },
@@ -692,6 +1143,10 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Set new password after OTP verification",
+      operationId: "resetPassword",
+      description:
+        "Sets a new password using the `resetToken` obtained from POST /auth/forgot-password/verify. The reset token is single-use and expires after 10 minutes.\n\n" +
+        "**Side effect:** All existing sessions for the account are revoked after a successful password reset.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
@@ -700,24 +1155,52 @@ export const authPaths = {
             schema: {
               $ref: "#/components/schemas/ForgotPasswordResetRequest",
             },
+            example: {
+              email: "john@example.com",
+              resetToken: "rst_3f9c1a2b8d4e7f0a6b5c9d2e...",
+              newPassword: "N3w$trongPass!",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "Password updated; existing sessions are revoked",
+          description: "Password updated — all existing sessions revoked",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: {
+                success: true,
+                message:
+                  "Password reset successful. Please log in with your new password.",
+              },
             },
           },
         },
         "400": {
           description:
-            "Validation failed or new password matches current password",
+            "Validation failed or new password is the same as the current one",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                weakPassword: {
+                  summary: "Password too weak",
+                  value: {
+                    success: false,
+                    message: "Password must be at least 8 characters",
+                  },
+                },
+                samePassword: {
+                  summary: "Same as current",
+                  value: {
+                    success: false,
+                    message:
+                      "New password must be different from the current password",
+                    code: "PASSWORD_SAME",
+                  },
+                },
+              },
             },
           },
         },
@@ -726,6 +1209,11 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Reset token is invalid or has expired",
+                code: "RESET_TOKEN_INVALID",
+              },
             },
           },
         },
@@ -736,8 +1224,11 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Request OTP to link email",
+      operationId: "requestEmailLink",
       description:
-        "Requires access token. Sends OTP to the given email (logged in dev console until email delivery is configured).",
+        "Requires access token. Sends OTP to the given email (logged in dev console until email delivery is configured).\n\n" +
+        "**Use case:** Social-only accounts (Google/Apple) that don't have an email address want to link one so they can also log in with password.\n\n" +
+        "**Rate limiting:** Maximum 5 OTP requests per 15 minutes.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -745,42 +1236,62 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/LinkEmailRequest" },
+            example: { email: "john@example.com" },
           },
         },
       },
       responses: {
         "200": {
-          description: "OTP sent",
+          description: "OTP sent to the specified email",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Verification code sent" },
             },
           },
         },
         "400": {
-          description: "Validation failed or email already linked",
+          description:
+            "Validation failed or email already linked to this account",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                alreadyLinked: {
+                  summary: "Email already linked",
+                  value: {
+                    success: false,
+                    message: "An email is already linked to this account",
+                    code: "EMAIL_ALREADY_LINKED",
+                  },
+                },
+                invalid: {
+                  summary: "Invalid email",
+                  value: {
+                    success: false,
+                    message: "Must be a valid email address",
+                  },
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "409": {
-          description: "Email already used by another account",
+          description: "Email address already used by another account",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message:
+                  "This email is already associated with another account",
+                code: "EMAIL_CONFLICT",
+              },
             },
           },
         },
+        "429": tooManyRequests,
       },
     },
   },
@@ -788,6 +1299,7 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Verify OTP and link email",
+      operationId: "verifyEmailLink",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -795,6 +1307,10 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/LinkEmailVerifyRequest" },
+            example: {
+              email: "john@example.com",
+              code: "391842",
+            },
           },
         },
       },
@@ -816,22 +1332,40 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Email linked successfully",
+                data: {
+                  userId: "550e8400-e29b-41d4-a716-446655440000",
+                  emailVerified: true,
+                  primaryAccount: "EMAIL",
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed or max OTP attempts",
+          description: "Validation failed or max OTP attempts exceeded",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Maximum verification attempts exceeded",
+              },
             },
           },
         },
         "401": {
-          description: "Invalid or expired OTP",
+          description: "Invalid or expired OTP / missing access token",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid or expired verification code",
+                code: "OTP_INVALID",
+              },
             },
           },
         },
@@ -840,6 +1374,11 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Email already used by another account",
+                code: "EMAIL_CONFLICT",
+              },
             },
           },
         },
@@ -850,8 +1389,10 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Request OTP to change email",
+      operationId: "requestEmailChange",
       description:
-        "Requires access token. Validates current email, then sends OTP to the new email.",
+        "Requires access token. Validates the current email, then sends an OTP to the new email address.\n\n" +
+        "**Rate limiting:** Maximum 5 OTP requests per 15 minutes.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -859,42 +1400,55 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ChangeEmailRequest" },
+            example: {
+              oldEmail: "john@example.com",
+              newEmail: "john.new@example.com",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "OTP sent to new email",
+          description: "OTP sent to the new email address",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: {
+                success: true,
+                message: "Verification code sent to new email",
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed or email mismatch",
+          description:
+            "Validation failed or `oldEmail` does not match the account",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Current email does not match the account",
+                code: "EMAIL_MISMATCH",
+              },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "409": {
-          description: "New email already in use",
+          description: "New email already in use by another account",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Email already in use",
+                code: "EMAIL_CONFLICT",
+              },
             },
           },
         },
+        "429": tooManyRequests,
       },
     },
   },
@@ -902,6 +1456,7 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Verify OTP and change email",
+      operationId: "verifyEmailChange",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -909,12 +1464,17 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ChangeEmailVerifyRequest" },
+            example: {
+              oldEmail: "john@example.com",
+              newEmail: "john.new@example.com",
+              code: "182734",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "Email changed",
+          description: "Email changed successfully",
           content: {
             "application/json": {
               schema: {
@@ -930,14 +1490,26 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Email changed successfully",
+                data: {
+                  userId: "550e8400-e29b-41d4-a716-446655440000",
+                  emailVerified: true,
+                },
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed or max OTP attempts",
+          description: "Validation failed or max OTP attempts exceeded",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Maximum verification attempts exceeded",
+              },
             },
           },
         },
@@ -946,6 +1518,11 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid or expired verification code",
+                code: "OTP_INVALID",
+              },
             },
           },
         },
@@ -954,6 +1531,11 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Email already in use",
+                code: "EMAIL_CONFLICT",
+              },
             },
           },
         },
@@ -964,8 +1546,9 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Change password",
+      operationId: "changePassword",
       description:
-        "Requires access token and current password. Revokes other sessions after a successful change.",
+        "Requires access token and current password. Revokes all other sessions (except current) after a successful change.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -973,23 +1556,49 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ChangePasswordRequest" },
+            example: {
+              currentPassword: "OldPass123!",
+              newPassword: "N3wStr0ng!Pass",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "Password changed",
+          description: "Password changed — all other sessions revoked",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: {
+                success: true,
+                message: "Password changed successfully",
+              },
             },
           },
         },
         "400": {
-          description: "Validation failed or same password",
+          description: "Validation failed or new password same as current",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                samePassword: {
+                  summary: "Same password",
+                  value: {
+                    success: false,
+                    message:
+                      "New password must be different from the current password",
+                    code: "PASSWORD_SAME",
+                  },
+                },
+                tooShort: {
+                  summary: "New password too short",
+                  value: {
+                    success: false,
+                    message: "Password must be at least 8 characters",
+                  },
+                },
+              },
             },
           },
         },
@@ -998,6 +1607,20 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                noToken: {
+                  summary: "Missing token",
+                  value: { success: false, message: "Unauthorized" },
+                },
+                wrongPassword: {
+                  summary: "Wrong current password",
+                  value: {
+                    success: false,
+                    message: "Current password is incorrect",
+                    code: "PASSWORD_INCORRECT",
+                  },
+                },
+              },
             },
           },
         },
@@ -1008,6 +1631,12 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Link Google to account",
+      operationId: "linkGoogleAccount",
+      description:
+        "Links a Google account to the authenticated user. The Google ID token is verified server-side. Once linked, the user can sign in with Google.\n\n" +
+        "**Business rules:**\n" +
+        "- Cannot link if Google is already linked to this account (400).\n" +
+        "- Cannot link if the Google sub is already linked to a different AIMess account (409).",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -1015,12 +1644,15 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/LinkGoogleRequest" },
+            example: {
+              idToken: "eyJhbGciOiJSUzI1NiIsImtpZCI6IjE3MTY5YzM0ZTNlMTg...",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "Google linked",
+          description: "Google account linked",
           content: {
             "application/json": {
               schema: {
@@ -1036,30 +1668,51 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Google account linked",
+                data: { provider: "GOOGLE", primaryAccount: "GOOGLE" },
+              },
             },
           },
         },
         "400": {
-          description: "Already linked",
+          description: "Google already linked to this account",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Google is already linked to your account",
+                code: "SOCIAL_ALREADY_LINKED",
+              },
             },
           },
         },
         "401": {
-          description: "Unauthorized or invalid token",
+          description: "Unauthorized or invalid Google token",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid Google ID token",
+                code: "GOOGLE_TOKEN_INVALID",
+              },
             },
           },
         },
         "409": {
-          description: "Social account linked to another user",
+          description: "Google account already linked to another AIMess user",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message:
+                  "This Google account is already linked to another user",
+                code: "SOCIAL_ACCOUNT_CONFLICT",
+              },
             },
           },
         },
@@ -1070,6 +1723,9 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Link Apple to account",
+      operationId: "linkAppleAccount",
+      description:
+        "Links an Apple account to the authenticated user. The Apple identity token is verified directly against Apple's JWKS.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -1077,12 +1733,17 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/LinkAppleRequest" },
+            example: {
+              identityToken: "eyJraWQiOiJZdXlYb1kiLCJhbGciOiJSUzI1NiJ9...",
+              email: "user@privaterelay.appleid.com",
+              fullName: "John Doe",
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "Apple linked",
+          description: "Apple account linked",
           content: {
             "application/json": {
               schema: {
@@ -1098,30 +1759,50 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Apple account linked",
+                data: { provider: "APPLE", primaryAccount: "EMAIL" },
+              },
             },
           },
         },
         "400": {
-          description: "Already linked",
+          description: "Apple already linked to this account",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Apple is already linked to your account",
+                code: "SOCIAL_ALREADY_LINKED",
+              },
             },
           },
         },
         "401": {
-          description: "Unauthorized or invalid token",
+          description: "Unauthorized or invalid Apple identity token",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Invalid Apple identity token",
+                code: "APPLE_TOKEN_INVALID",
+              },
             },
           },
         },
         "409": {
-          description: "Social account linked to another user",
+          description: "Apple account already linked to another AIMess user",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "This Apple account is already linked to another user",
+                code: "SOCIAL_ACCOUNT_CONFLICT",
+              },
             },
           },
         },
@@ -1132,8 +1813,10 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Unlink Google or Apple",
+      operationId: "unlinkSocialAccount",
       description:
-        "Cannot unlink if it would leave the account with no sign-in method (password or another provider).",
+        "Cannot unlink if it would leave the account with no sign-in method (password or another provider).\n\n" +
+        "**Business rule:** If the account has only one sign-in method (e.g., Google only, no password), unlinking it would lock the user out permanently. The backend rejects this with 400 `LAST_SIGNIN_METHOD`.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -1141,6 +1824,7 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/UnlinkSocialRequest" },
+            example: { provider: "GOOGLE" },
           },
         },
       },
@@ -1162,25 +1846,43 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Google account unlinked",
+                data: { provider: "GOOGLE" },
+              },
             },
           },
         },
         "400": {
-          description: "Not linked or last sign-in method",
+          description:
+            "Provider not linked, or unlinking would remove last sign-in method",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                notLinked: {
+                  summary: "Provider not linked",
+                  value: {
+                    success: false,
+                    message: "Google is not linked to your account",
+                    code: "SOCIAL_NOT_LINKED",
+                  },
+                },
+                lastMethod: {
+                  summary: "Last sign-in method",
+                  value: {
+                    success: false,
+                    message:
+                      "Cannot unlink your only sign-in method. Add a password or link another provider first.",
+                    code: "LAST_SIGNIN_METHOD",
+                  },
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
       },
     },
   },
@@ -1188,6 +1890,7 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Start a QR device-link session",
+      operationId: "initiateDeviceLink",
       description:
         "Called by a new, unauthenticated device (web/desktop). Returns a `linkToken` and a `pollSecret`; the session expires in 120s.\n\n" +
         "**Client responsibilities (QR is entirely client-side — the backend never generates or scans it):**\n" +
@@ -1201,12 +1904,16 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/DeviceLinkInitiateRequest" },
+            example: {
+              deviceId: "web-browser-abc123",
+              deviceType: "WEB",
+            },
           },
         },
       },
       responses: {
         "201": {
-          description: "Link session created",
+          description: "Link session created — display QR with `linkToken`",
           content: {
             "application/json": {
               schema: {
@@ -1222,6 +1929,15 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Link session created",
+                data: {
+                  linkToken: "lt_abc123xyz...",
+                  pollSecret: "ps_secret_abc123...",
+                  expiresIn: 120,
+                },
+              },
             },
           },
         },
@@ -1232,6 +1948,7 @@ export const authPaths = {
     get: {
       tags: ["Auth"],
       summary: "Poll a QR device-link session",
+      operationId: "getDeviceLinkStatus",
       description:
         "Called by the new device with its linkToken + pollSecret. Returns PENDING until approved, then APPROVED with tokens exactly once (subsequent polls return CONSUMED). A missing session or wrong pollSecret returns EXPIRED.",
       parameters: [
@@ -1241,12 +1958,14 @@ export const authPaths = {
           in: "query",
           required: true,
           schema: { type: "string" },
+          example: "lt_abc123xyz...",
         },
         {
           name: "pollSecret",
           in: "query",
           required: true,
           schema: { type: "string" },
+          example: "ps_secret_abc123...",
         },
       ],
       responses: {
@@ -1267,6 +1986,40 @@ export const authPaths = {
                   },
                 ],
               },
+              examples: {
+                pending: {
+                  summary: "Waiting for approval",
+                  value: {
+                    success: true,
+                    message: "Waiting for approval",
+                    data: { status: "PENDING" },
+                  },
+                },
+                approved: {
+                  summary: "Approved — tokens delivered once",
+                  value: {
+                    success: true,
+                    message: "Device linked",
+                    data: {
+                      status: "APPROVED",
+                      tokens: {
+                        accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                        refreshToken: "newDeviceRefreshToken...",
+                        accessTokenExpiresIn: 3600,
+                        refreshTokenExpiresIn: 604800,
+                      },
+                    },
+                  },
+                },
+                expired: {
+                  summary: "Session expired or wrong pollSecret",
+                  value: {
+                    success: true,
+                    message: "Link session expired",
+                    data: { status: "EXPIRED" },
+                  },
+                },
+              },
             },
           },
         },
@@ -1277,6 +2030,7 @@ export const authPaths = {
     post: {
       tags: ["Auth"],
       summary: "Approve a QR device-link",
+      operationId: "approveDeviceLink",
       description:
         "Called by an already-signed-in device after scanning the QR. The client decodes the QR locally and sends the extracted `linkToken` here. Issues a fresh session for the new device and marks the link approved. Returns the new device's `sessionId` so this device can immediately undo the link via DELETE /auth/sessions/{sessionId}.",
       security: [{ bearerAuth: [] }],
@@ -1286,12 +2040,14 @@ export const authPaths = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/DeviceLinkApproveRequest" },
+            example: { linkToken: "lt_abc123xyz..." },
           },
         },
       },
       responses: {
         "200": {
-          description: "Device linked",
+          description:
+            "New device linked — tokens now available for the new device to collect",
           content: {
             "application/json": {
               schema: {
@@ -1307,22 +2063,28 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Device linked",
+                data: {
+                  sessionId: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                  linkedAt: "2026-06-25T10:30:00.000Z",
+                },
+              },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-            },
-          },
-        },
+        "401": unauthorized,
         "404": {
           description: "Link session not found or expired",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Link session not found or expired",
+                code: "LINK_SESSION_NOT_FOUND",
+              },
             },
           },
         },
@@ -1331,6 +2093,11 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "This link session has already been approved",
+                code: "LINK_SESSION_ALREADY_APPROVED",
+              },
             },
           },
         },
@@ -1341,8 +2108,14 @@ export const authPaths = {
     delete: {
       tags: ["Auth"],
       summary: "Delete my account (soft delete)",
+      operationId: "deleteAccount",
       description:
-        "Soft-deletes the authenticated user's account: marks it PENDING_DELETION with a 30-day grace window, revokes all sessions/refresh tokens, and emits a user.deleted event. Afterwards neither password login nor any linked Google/Apple provider can authenticate. Password confirmation is required ONLY when the account has a password; social-only accounts may omit it.",
+        "Soft-deletes the authenticated user's account: marks it PENDING_DELETION with a 30-day grace window, revokes all sessions/refresh tokens, and emits a user.deleted event. Afterwards neither password login nor any linked Google/Apple provider can authenticate. Password confirmation is required ONLY when the account has a password; social-only accounts may omit it.\n\n" +
+        "**Business rules:**\n" +
+        "- 30-day grace window: the account is not immediately destroyed; a future reactivation flow can restore it.\n" +
+        "- All FCM device tokens are unregistered.\n" +
+        "- `400 AUTH_PASSWORD_REQUIRED` — if the account has a password hash but the request body omits `password`.\n" +
+        "- `401 AUTH_PASSWORD_INCORRECT` — wrong password supplied.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
@@ -1360,12 +2133,22 @@ export const authPaths = {
                 },
               },
             },
+            examples: {
+              withPassword: {
+                summary: "Account with password",
+                value: { password: "MyCurrentPass123!" },
+              },
+              socialOnly: {
+                summary: "Social-only account (no password)",
+                value: {},
+              },
+            },
           },
         },
       },
       responses: {
         "200": {
-          description: "Account soft-deleted",
+          description: "Account soft-deleted — 30-day grace window started",
           content: {
             "application/json": {
               schema: {
@@ -1381,6 +2164,14 @@ export const authPaths = {
                   },
                 ],
               },
+              example: {
+                success: true,
+                message: "Account scheduled for deletion",
+                data: {
+                  deletedAt: "2026-06-25T10:00:00.000Z",
+                  permanentDeletionDate: "2026-07-25T10:00:00.000Z",
+                },
+              },
             },
           },
         },
@@ -1389,6 +2180,11 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Password is required to delete this account",
+                code: "AUTH_PASSWORD_REQUIRED",
+              },
             },
           },
         },
@@ -1397,6 +2193,20 @@ export const authPaths = {
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              examples: {
+                noToken: {
+                  summary: "Missing token",
+                  value: { success: false, message: "Unauthorized" },
+                },
+                wrongPassword: {
+                  summary: "Wrong password",
+                  value: {
+                    success: false,
+                    message: "Incorrect password",
+                    code: "AUTH_PASSWORD_INCORRECT",
+                  },
+                },
+              },
             },
           },
         },

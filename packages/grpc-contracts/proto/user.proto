@@ -38,6 +38,7 @@ message NotificationSettings {
   string quiet_hours_end        = 9;
   // ISO weekday numbers the quiet-hours window applies to (1=Mon … 7=Sun).
   repeated int32 quiet_hours_days = 10;
+  bool   show_preview           = 11;
 }
 
 // Admin Panel: enrich a user list with display profile data.

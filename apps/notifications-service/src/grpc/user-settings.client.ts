@@ -20,6 +20,7 @@ export interface NotificationSettings {
   systemEnabled: boolean;
   communityEnabled: boolean;
   liveStreamEnabled: boolean;
+  showPreview: boolean;
   quietHoursEnabled: boolean;
   quietHoursStart: string;
   quietHoursEnd: string;

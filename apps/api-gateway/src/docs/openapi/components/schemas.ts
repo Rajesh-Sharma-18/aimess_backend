@@ -4652,8 +4652,11 @@ export const openApiSchemas = {
         nullable: true,
         description:
           "Cursor for the next page. For offset/page pagination this is null (use page param). " +
-          "For timeline/cursor-paginated endpoints this is an epoch-ms string — parse it to an " +
-          "integer and feed it back as the same before_ts/after_ts you used. Null when hasMore is false.",
+          'For chat timeline (before_ts) endpoints this is a compound `"<epochMs>_<messageId>"` ' +
+          "string — echo it **verbatim** as before_ts; do NOT parse to a number (the `_<id>` " +
+          "tiebreaker prevents skipping messages that share the same millisecond at a page boundary). " +
+          "For incremental-sync (after_ts) endpoints this is a plain epoch-ms string. " +
+          "Null when hasMore is false.",
       },
       hasMore: {
         type: "boolean",
@@ -6143,8 +6146,17 @@ export const openApiSchemas = {
   CommunityInviteLinkData: {
     type: "object",
     properties: {
-      linkId: { type: "string" },
-      code: { type: "string" },
+      linkId: {
+        type: "string",
+        description: "MongoDB ObjectId of the invite-link record.",
+        example: "6843e1a2b5c3d4e5f6a7b8c9",
+      },
+      code: {
+        type: "string",
+        description:
+          "Alphanumeric invite code embedded in PRIVATE_INVITE URLs.",
+        example: "Zk9Qw2Lp7",
+      },
       url: {
         type: "string",
         description:
@@ -6153,12 +6165,14 @@ export const openApiSchemas = {
           "independent of code/expiry/usage. " +
           "PRIVATE → invite-code-based & revocable (`<base>/+<code>`, e.g. https://aimess.me/+AbCdEf123). " +
           "Falls back to the bare handle/code when INVITE_LINK_BASE_URL is unset.",
+        example: "https://aimess.me/+Zk9Qw2Lp7",
       },
       appDeepLink: {
         type: "string",
         description:
           "App deep-link matching `url`. PUBLIC → aimess://resolve?handle=<handle>; " +
           "PRIVATE → aimess://join?code=<code>.",
+        example: "aimess://join?code=Zk9Qw2Lp7",
       },
       linkType: {
         type: "string",
@@ -6166,22 +6180,60 @@ export const openApiSchemas = {
         description:
           "Which mechanism produced `url`/`appDeepLink`: PUBLIC_HANDLE (handle-based, PUBLIC community) " +
           "or PRIVATE_INVITE (invite-code-based, PRIVATE community). Lets clients branch without parsing the URL.",
+        example: "PRIVATE_INVITE",
       },
-      communityId: { type: "string" },
-      createdBy: { type: "string", format: "uuid" },
-      maxUses: { type: "integer", nullable: true },
-      usedCount: { type: "integer" },
+      communityId: {
+        type: "string",
+        description: "MongoDB ObjectId of the community this link belongs to.",
+        example: "6843d0f1a4b2c3d4e5f60719",
+      },
+      createdBy: {
+        type: "string",
+        format: "uuid",
+        description: "AuthUser UUID of the member who created this link.",
+        example: "22222222-2222-4222-8222-222222222222",
+      },
+      maxUses: {
+        type: "integer",
+        nullable: true,
+        description: "Maximum number of redemptions; null = unlimited.",
+        example: 100,
+      },
+      usedCount: {
+        type: "integer",
+        description: "Total redemptions so far.",
+        example: 7,
+      },
       autoApprove: {
         type: "boolean",
         description:
           "When true, redeeming this link adds the member directly (no join-request flow).",
+        example: false,
       },
-      expiresAt: { type: "string", format: "date-time", nullable: true },
-      revokedAt: { type: "string", format: "date-time", nullable: true },
-      createdAt: { type: "string", format: "date-time" },
+      expiresAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "ISO-8601 expiry timestamp; null = never expires.",
+        example: "2026-07-24T10:00:00.000Z",
+      },
+      revokedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "ISO-8601 revocation timestamp; null = not revoked.",
+        example: null,
+      },
+      createdAt: {
+        type: "string",
+        format: "date-time",
+        description: "ISO-8601 creation timestamp.",
+        example: "2026-06-24T10:00:00.000Z",
+      },
       isActive: {
         type: "boolean",
         description: "Computed: not revoked, not expired, not exhausted.",
+        example: true,
       },
     },
     required: [
@@ -6200,40 +6252,120 @@ export const openApiSchemas = {
       "createdAt",
       "isActive",
     ],
+    example: {
+      linkId: "6843e1a2b5c3d4e5f6a7b8c9",
+      code: "Zk9Qw2Lp7",
+      url: "https://aimess.me/+Zk9Qw2Lp7",
+      appDeepLink: "aimess://join?code=Zk9Qw2Lp7",
+      linkType: "PRIVATE_INVITE",
+      communityId: "6843d0f1a4b2c3d4e5f60719",
+      createdBy: "22222222-2222-4222-8222-222222222222",
+      maxUses: 100,
+      usedCount: 7,
+      autoApprove: false,
+      expiresAt: "2026-07-24T10:00:00.000Z",
+      revokedAt: null,
+      createdAt: "2026-06-24T10:00:00.000Z",
+      isActive: true,
+    },
   },
   InviteLinkPreviewData: {
     type: "object",
+    description:
+      "Community preview returned when a user scans/taps an invite link before deciding to join. " +
+      "Renders the community card UI (name, avatar, member count, join/request CTA) without requiring membership.",
     properties: {
-      communityId: { type: "string" },
-      communityName: { type: "string" },
-      description: { type: "string", nullable: true },
-      avatarUrl: { type: "string", nullable: true },
-      bannerUrl: { type: "string", nullable: true },
-      memberCount: { type: "integer" },
-      communityType: { type: "string", enum: ["PUBLIC", "PRIVATE"] },
-      isJoined: { type: "boolean" },
+      communityId: {
+        type: "string",
+        description: "MongoDB ObjectId of the community.",
+        example: "6843d0f1a4b2c3d4e5f60719",
+      },
+      communityName: {
+        type: "string",
+        example: "Tech Enthusiasts",
+      },
+      description: {
+        type: "string",
+        nullable: true,
+        example: "A place for tech lovers to share and discuss.",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Presigned download URL for the community avatar; null if no avatar set.",
+        example:
+          "https://storage.example.com/community/avatars/abc.webp?X-Amz-Expires=3600&...",
+      },
+      bannerUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Presigned download URL for the community banner; null if no banner set.",
+        example: null,
+      },
+      memberCount: {
+        type: "integer",
+        example: 42,
+      },
+      communityType: {
+        type: "string",
+        enum: ["PUBLIC", "PRIVATE"],
+        description:
+          "PUBLIC = anyone can join instantly; PRIVATE = join request or invite required.",
+        example: "PRIVATE",
+      },
+      isJoined: {
+        type: "boolean",
+        description:
+          "True when the caller is already an ACTIVE member of this community.",
+        example: false,
+      },
       joinRequestId: {
         type: "string",
         nullable: true,
         description:
-          "Caller's PENDING join-request id, or null. Non-null → render PRIVATE_REQUESTED (+Cancel).",
+          "Caller's PENDING join-request ObjectId, or null. Non-null → render a 'Cancel request' CTA instead of 'Request to join'.",
+        example: null,
       },
       joinRequestStatus: {
         type: "string",
         enum: ["PENDING"],
         nullable: true,
+        description:
+          "Status of the caller's pending join request; null when no pending request exists.",
+        example: null,
       },
-      invitationCode: { type: "string" },
+      invitationCode: {
+        type: "string",
+        description: "The alphanumeric invite code from the link URL.",
+        example: "Zk9Qw2Lp7",
+      },
       inviteUrl: {
         type: "string",
         description: "Shareable HTTPS link: https://aimess.me/+<code>",
+        example: "https://aimess.me/+Zk9Qw2Lp7",
       },
       appDeepLink: {
         type: "string",
         description: "App deep link: aimess://join?code=<code>",
+        example: "aimess://join?code=Zk9Qw2Lp7",
       },
-      expiresAt: { type: "integer", nullable: true },
-      creatorId: { type: "string" },
+      expiresAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description:
+          "Invite-link expiry as epoch milliseconds; null = no expiry.",
+        example: 1785000000000,
+      },
+      creatorId: {
+        type: "string",
+        format: "uuid",
+        description:
+          "AuthUser UUID of the member who created this invite link.",
+        example: "22222222-2222-4222-8222-222222222222",
+      },
     },
     required: [
       "communityId",
@@ -6252,6 +6384,24 @@ export const openApiSchemas = {
       "expiresAt",
       "creatorId",
     ],
+    example: {
+      communityId: "6843d0f1a4b2c3d4e5f60719",
+      communityName: "Tech Enthusiasts",
+      description: "A place for tech lovers to share and discuss.",
+      avatarUrl:
+        "https://storage.example.com/community/avatars/abc.webp?X-Amz-Expires=3600",
+      bannerUrl: null,
+      memberCount: 42,
+      communityType: "PRIVATE",
+      isJoined: false,
+      joinRequestId: null,
+      joinRequestStatus: null,
+      invitationCode: "Zk9Qw2Lp7",
+      inviteUrl: "https://aimess.me/+Zk9Qw2Lp7",
+      appDeepLink: "aimess://join?code=Zk9Qw2Lp7",
+      expiresAt: 1785000000000,
+      creatorId: "22222222-2222-4222-8222-222222222222",
+    },
   },
   PublicCommunityResponse: {
     type: "object",
@@ -6303,14 +6453,37 @@ export const openApiSchemas = {
   },
   CreateInviteLinkRequest: {
     type: "object",
+    description:
+      "All fields are optional. Omit a field to use its default: unlimited uses, never expires, requires moderator approval (autoApprove: false).",
     properties: {
-      maxUses: { type: "integer", minimum: 1, maximum: 1000 },
-      expiresInMinutes: { type: "integer", minimum: 1, maximum: 525600 },
+      maxUses: {
+        type: "integer",
+        minimum: 1,
+        maximum: 1000,
+        description:
+          "Maximum number of times this link can be redeemed. Omit for unlimited.",
+        example: 50,
+      },
+      expiresInMinutes: {
+        type: "integer",
+        minimum: 1,
+        maximum: 525600,
+        description:
+          "Minutes from now until the link expires. 525600 = 1 year. Omit for no expiry.",
+        example: 10080,
+      },
       autoApprove: {
         type: "boolean",
+        default: false,
         description:
-          "When true, anyone redeeming this link is added as a member directly. Default false (creates a join request instead).",
+          "When true, anyone redeeming this link is added as an ACTIVE member directly (no join-request flow). Default false: a PENDING join request is created for moderator review.",
+        example: false,
       },
+    },
+    example: {
+      maxUses: 50,
+      expiresInMinutes: 10080,
+      autoApprove: false,
     },
   },
   InviteLinkListResponseData: {
@@ -6327,11 +6500,26 @@ export const openApiSchemas = {
   RedeemInviteLinkResponseData: {
     type: "object",
     description:
-      "link is always present. member is set when autoApprove=true (direct add); request is set when autoApprove=false (join-request flow).",
+      "`link` is always present. `member` is set when `autoApprove: true` (caller added directly as ACTIVE); " +
+      "`request` is set when `autoApprove: false` (a PENDING join request was created for moderator review). " +
+      "Exactly one of `member` / `request` is non-null on success; both are null for an already-joined caller (idempotent).",
     properties: {
-      link: { $ref: "#/components/schemas/CommunityInviteLinkData" },
-      member: { $ref: "#/components/schemas/CommunityMemberData" },
-      request: { $ref: "#/components/schemas/JoinRequestData" },
+      link: {
+        allOf: [{ $ref: "#/components/schemas/CommunityInviteLinkData" }],
+        description: "The invite-link that was redeemed (always present).",
+      },
+      member: {
+        allOf: [{ $ref: "#/components/schemas/CommunityMemberData" }],
+        nullable: true,
+        description:
+          "Populated when the caller was added directly as an ACTIVE member (`autoApprove: true` or already-joined idempotent case).",
+      },
+      request: {
+        allOf: [{ $ref: "#/components/schemas/JoinRequestData" }],
+        nullable: true,
+        description:
+          "Populated when a PENDING join request was created (`autoApprove: false`). The caller must wait for moderator approval.",
+      },
     },
     required: ["link"],
   },
@@ -7449,7 +7637,11 @@ export const openApiSchemas = {
         type: "string",
         nullable: true,
         description:
-          "Top-level shortcut — epoch-ms string; feed back as before_ts for the next page.",
+          'Compound `"<epochMs>_<messageObjectId>"` string. Echo **verbatim** as the next ' +
+          "`before_ts` — do NOT parse to a number. The `_<id>` tiebreaker is required to " +
+          "avoid skipping messages that share the same millisecond at a page boundary. " +
+          "Null when hasMore is false.",
+        example: "1782133107521_664f1a2b3c4d5e6f7a8b9c0d",
       },
     },
     required: ["pagination", "data", "hasMore", "nextCursor"],

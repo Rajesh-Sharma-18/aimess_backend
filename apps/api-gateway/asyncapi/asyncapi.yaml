@@ -299,6 +299,14 @@ channels:
         { $ref: "#/components/messages/CommunitySessionExpired" }
       communityMessageDeliveredBroadcast:
         { $ref: "#/components/messages/CommunityMessageDeliveredBroadcast" }
+      # typing indicators (client -> server + server -> client)
+      communityTypingStart:
+        { $ref: "#/components/messages/CommunityTypingStart" }
+      communityTypingStop: { $ref: "#/components/messages/CommunityTypingStop" }
+      communityTypingStartBroadcast:
+        { $ref: "#/components/messages/CommunityTypingStartBroadcast" }
+      communityTypingStopBroadcast:
+        { $ref: "#/components/messages/CommunityTypingStopBroadcast" }
 
   # -------------------------------------------------------------- /notify
   notify:
@@ -931,13 +939,11 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community:message:pin — pin a message (moderator / admin only)"
     description: |
-      Moderator or admin role required. Enforces PIN_LIMIT_PER_ROOM (default 50).
-      Idempotent if the message is already pinned.
-      Ack `data` on success:
-      ```json
-      { "pinnedIds": ["683abc..."], "pinnedCount": 1, "pinnedAt": 1749466100000 }
-      ```
-      Side-effect — broadcasts `community:message:pinned` to all members.
+      Moderator or admin role required. Enforces PIN_LIMIT_PER_ROOM = 1 (one active pin at a time).
+      Throws ACTIVE_PIN_ALREADY_EXISTS if another pin is already active.
+      Ack `data` on success: `{ pin: CommunityMessagePin, pinnedCount }`.
+      Side-effect — broadcasts `community:message:pinned` to all members and posts a
+      "{CommunityName} pinned a message" SYSTEM line in the chat timeline.
     messages: [{ $ref: "#/channels/community/messages/communityMessagePin" }]
     reply:
       channel: { $ref: "#/channels/community" }
@@ -947,20 +953,21 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community:message:pinned — pin broadcast to all room members"
     description: |
-      Clients should display / update the pinned-message banner with `pinnedIds`.
-      `pinnedIds` is the COMPLETE current list — replace, do not merge.
+      Emitted in two scenarios:
+      1. A message is pinned — replace the entire pin banner with `data.pin`.
+      2. The pinned original message was deleted — `data.pin.originalMessage.isAvailable = false`;
+         show "Message doesn't exist" in the banner and disable tap-to-navigate.
+      `data.pinnedCount` is null on scenario 2 (count unchanged).
     messages: [{ $ref: "#/channels/community/messages/communityMessagePinned" }]
   community.messageUnpin:
     action: send
     channel: { $ref: "#/channels/community" }
     summary: "community:message:unpin — unpin a message (moderator / admin only)"
     description: |
-      Moderator or admin role required. Throws 404 if the message is not currently pinned.
-      Ack `data` on success:
-      ```json
-      { "pinnedIds": [], "pinnedCount": 0 }
-      ```
+      Moderator or admin role required. Throws 404 if no active pin for the message.
+      Ack `data` on success: `{ pin, pinnedCount }`.
       Side-effect — broadcasts `community:message:unpinned` to all members.
+      No UNPINNED_MESSAGE system line is posted (product decision).
     messages: [{ $ref: "#/channels/community/messages/communityMessageUnpin" }]
     reply:
       channel: { $ref: "#/channels/community" }
@@ -970,8 +977,8 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community:message:unpinned — unpin broadcast to all room members"
     description: |
-      Clients should remove the message from the pinned banner.
-      `pinnedIds` is the COMPLETE remaining list after this unpin — replace, do not merge.
+      Hide the pin banner. The `data.pin` entity is the soft-deleted record
+      (unpinnedAt is set, for client-side cache invalidation if needed).
     messages:
       [{ $ref: "#/channels/community/messages/communityMessageUnpinned" }]
 
@@ -1245,6 +1252,58 @@ operations:
       `gracePeriod` (60 s) — after that the server force-disconnects the socket.
     messages:
       [{ $ref: "#/channels/community/messages/communitySessionExpired" }]
+
+  # ================================================ /community typing (fire-and-forget)
+  community.typingStart:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:start — local user started typing in a community"
+    description: |
+      Fire-and-forget (no ack). Sent by the client after debounce when the user
+      starts typing in a community chat room. The server validates membership,
+      excludes the sender, and broadcasts `typing:start` to all eligible members
+      in both `community:<communityId>` (open-chat room) and
+      `community-typing:<communityId>` (always-on membership room).
+
+      New canonical alias `community:typing:start` is also accepted.
+
+      A 6 s server-side TTL auto-broadcasts `typing:stop` if the stop event is
+      never received (crash / network drop).
+    messages: [{ $ref: "#/channels/community/messages/communityTypingStart" }]
+  community.typingStop:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:stop — local user stopped typing in a community"
+    description: |
+      Fire-and-forget (no ack). Sent on idle timeout, message send, input clear,
+      or component unmount. New canonical alias `community:typing:stop` also accepted.
+    messages: [{ $ref: "#/channels/community/messages/communityTypingStop" }]
+  community.onTypingStart:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:start — a peer started typing in a community"
+    description: |
+      Broadcast to all ACTIVE, non-banned members in `community:<communityId>` AND
+      `community-typing:<communityId>`, sender excluded. Socket.IO de-dupes recipients
+      so members in both rooms receive the event exactly once.
+
+      Delivered regardless of which community the recipient currently has open —
+      the gateway auto-joins all member `community-typing:<id>` rooms at connect.
+
+      **Key**: `typingState[communityId][userDetails.userId]`
+      Use `userDetails.userId` as the unique identity — never `senderName` alone.
+    messages:
+      [{ $ref: "#/channels/community/messages/communityTypingStartBroadcast" }]
+  community.onTypingStop:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:stop — a peer stopped typing in a community"
+    description: |
+      Broadcast on explicit stop, 6 s TTL expiry, sender disconnect, or sender
+      removal/ban. Targets both `community:<id>` and `community-typing:<id>`.
+      Clear `typingState[communityId][userDetails.userId]`.
+    messages:
+      [{ $ref: "#/channels/community/messages/communityTypingStopBroadcast" }]
 
   # ================================================= /notify client -> server
   notify.fetch:
@@ -2684,6 +2743,10 @@ components:
       payload: { $ref: "#/components/schemas/CommunityAddedPayload" }
       examples:
         - name: Added by an admin
+          summary: >-
+            Admin adds User B. The community:added event carries a full list-row
+            snapshot including lastActivity ("You joined the community"). The
+            client upserts this into the community sidebar without calling Mine API.
           payload:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             name: "Nature Lovers"
@@ -2697,8 +2760,66 @@ components:
             role: MEMBER
             status: ACTIVE
             via: add_members
-            joinedAt: 1749465800000
-            addedAt: 1749465800000
+            joinedAt: 1750000000000
+            addedAt: 1750000000000
+            lastActivity:
+              type: system
+              userId: null
+              username: null
+              preview: "You joined the community"
+              dateTime: 1750000000000
+        - name: Self-join (public community)
+          summary: >-
+            User joins a PUBLIC community themselves. lastActivity is identical
+            in shape and semantics to the admin-add case.
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            name: "Tech Talk"
+            handle: "techtalk"
+            description: null
+            avatarUrl: null
+            type: PUBLIC
+            categoryId: "6843c0c0c0c0c0c0c0c0c0c1"
+            categoryName: "Technology"
+            memberCount: 52
+            role: MEMBER
+            status: ACTIVE
+            via: self_join
+            joinedAt: 1750000200000
+            addedAt: 1750000200000
+            lastActivity:
+              type: system
+              userId: null
+              username: null
+              preview: "You joined the community"
+              dateTime: 1750000200000
+        - name: Creator just created the community
+          summary: >-
+            The creator receives community:added with via="created" immediately
+            after POST /communities succeeds. Unified insert path — same event
+            as all other join flows. Branch on via==="created" for any
+            creation-specific UI. lastActivity.type is "created".
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            name: "Nature Lovers"
+            handle: "nature"
+            description: "All things nature."
+            avatarUrl: null
+            type: PUBLIC
+            categoryId: "6843c0c0c0c0c0c0c0c0c0c0"
+            categoryName: "Hobbies"
+            memberCount: 1
+            role: ADMIN
+            status: ACTIVE
+            via: created
+            joinedAt: 1750000000000
+            addedAt: 1750000000000
+            lastActivity:
+              type: created
+              userId: null
+              username: null
+              preview: "Community created"
+              dateTime: 1750000000000
     CommunityStatsUpdated:
       name: "community:stats:updated"
       title: "community:stats:updated"
@@ -3086,18 +3207,56 @@ components:
     CommunityMessagePinned:
       name: "community:message:pinned"
       title: "community:message:pinned"
-      summary: Broadcast to all room members when a message is pinned. Clients update the pinned banner.
+      summary: Broadcast to all room members when a message is pinned, or when the pinned original is deleted.
       payload: { $ref: "#/components/schemas/CommunityMessagePinnedPayload" }
       examples:
         - name: Message pinned broadcast
           payload:
-            messageId: "683abc123def456789012345"
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             roomId: "6843e1a2b5c3d4e5f6a7b8c9"
-            pinnedIds: ["683abc123def456789012345"]
             pinnedCount: 1
-            pinnedAt: 1749466100000
-            pinnedBy: "user_mod001"
+            pin:
+              id: "683pin123def456789012345"
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+              messageId: "683abc123def456789012345"
+              pinnedBy: "user_mod001"
+              pinnedAt: 1749466100000
+              unpinnedAt: null
+              originalMessageDeletedAt: null
+              pinSystemMessageId: "683sys123def456789012345"
+              messageCreatedAt: 1749460000000
+              senderId: "user_sender01"
+              senderDisplayName: "Alice"
+              senderAvatar: "https://cdn.aimess.app/avatars/alice.jpg"
+              contentPinned:
+                { text: "Meeting at 3pm tomorrow", urls: [], files: [] }
+              createdAt: 1749466100000
+              updatedAt: 1749466100000
+        - name: Pin banner update — original message deleted
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            pinnedCount: null
+            pin:
+              id: "683pin123def456789012345"
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+              messageId: "683abc123def456789012345"
+              pinnedBy: "user_mod001"
+              pinnedAt: 1749466100000
+              unpinnedAt: null
+              originalMessageDeletedAt: 1749480000000
+              pinSystemMessageId: "683sys123def456789012345"
+              messageCreatedAt: 1749460000000
+              senderId: "user_sender01"
+              senderDisplayName: "Alice"
+              senderAvatar: "https://cdn.aimess.app/avatars/alice.jpg"
+              contentPinned:
+                { text: "Meeting at 3pm tomorrow", urls: [], files: [] }
+              createdAt: 1749466100000
+              updatedAt: 1749480000000
+              originalMessage: { isAvailable: false }
     CommunityMessageUnpin:
       name: "community:message:unpin"
       title: "community:message:unpin"
@@ -3117,12 +3276,29 @@ components:
       examples:
         - name: Message unpinned broadcast
           payload:
-            messageId: "683abc123def456789012345"
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             roomId: "6843e1a2b5c3d4e5f6a7b8c9"
-            pinnedIds: []
+            messageId: "683abc123def456789012345"
             pinnedCount: 0
-            unpinnedBy: "user_mod001"
+            pin:
+              id: "683pin123def456789012345"
+              communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+              roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+              messageId: "683abc123def456789012345"
+              pinnedBy: "user_mod001"
+              pinnedAt: 1749466100000
+              unpinnedAt: 1749480000000
+              unpinnedByUserId: "user_mod001"
+              originalMessageDeletedAt: null
+              pinSystemMessageId: "683sys123def456789012345"
+              messageCreatedAt: 1749460000000
+              senderId: "user_sender01"
+              senderDisplayName: "Alice"
+              senderAvatar: "https://cdn.aimess.app/avatars/alice.jpg"
+              contentPinned:
+                { text: "Meeting at 3pm tomorrow", urls: [], files: [] }
+              createdAt: 1749466100000
+              updatedAt: 1749480000000
 
     # -------- /community parity events (client -> server) --------
     CommunityMessageReadRequest:
@@ -3371,6 +3547,134 @@ components:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             status: "ACTIVE"
             reopenedAt: 1749990000000
+
+    # -------- /community typing (fire-and-forget) --------
+    CommunityTypingStart:
+      name: "typing:start"
+      title: "typing:start (request)"
+      summary: >-
+        Client emits after debounce when the user starts typing in a community
+        chat room. No ack. New canonical alias `community:typing:start` also accepted.
+      payload:
+        type: object
+        required: [communityId]
+        properties:
+          communityId: { type: string, minLength: 1 }
+          roomId:
+            { type: string, description: "Optional; forward-compat only." }
+      examples:
+        - name: Start typing in Community B
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+    CommunityTypingStop:
+      name: "typing:stop"
+      title: "typing:stop (request)"
+      summary: >-
+        Client emits on idle timeout, message send, input clear, or unmount.
+        No ack. New canonical alias `community:typing:stop` also accepted.
+      payload:
+        type: object
+        required: [communityId]
+        properties:
+          communityId: { type: string, minLength: 1 }
+          roomId:
+            { type: string, description: "Optional; forward-compat only." }
+      examples:
+        - name: Stop typing in Community B
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+    CommunityTypingStartBroadcast:
+      name: "typing:start"
+      title: "typing:start (broadcast)"
+      summary: >-
+        Broadcast to all eligible members in community:<communityId> AND
+        community-typing:<communityId>, sender excluded. Socket.IO de-dupes so
+        members in both rooms receive it exactly once. Delivered regardless of
+        which community is open — gateway auto-joins community-typing:<id> at connect.
+      payload:
+        type: object
+        required: [eventId, communityId, roomId, userDetails, timestamp]
+        properties:
+          eventId:
+            type: string
+            format: uuid
+            description: "Unique per broadcast; use for dedup if needed."
+          communityId: { type: string }
+          roomId:
+            type: string
+            description: "GeneralRoom id (=== communityId for community chats)."
+          userDetails:
+            type: object
+            required: [userId, username, displayName]
+            properties:
+              userId: { type: string }
+              username: { type: string }
+              displayName: { type: string }
+              avatarUrl: { type: [string, "null"] }
+          timestamp: { type: integer, description: "Epoch milliseconds." }
+          userId:
+            type: string
+            description: "Deprecated: use userDetails.userId. Kept for backward compat."
+          senderName:
+            type: string
+            description: "Deprecated: use userDetails.displayName."
+      examples:
+        - name: User B typing in Community B (received by User A)
+          payload:
+            eventId: "550e8400-e29b-41d4-a716-446655440000"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userDetails:
+              userId: "user_b_abc123"
+              username: "user_b"
+              displayName: "User B"
+              avatarUrl: "https://cdn.example.com/avatars/user_b.jpg"
+            timestamp: 1750000000000
+            userId: "user_b_abc123"
+            senderName: "User B"
+    CommunityTypingStopBroadcast:
+      name: "typing:stop"
+      title: "typing:stop (broadcast)"
+      summary: >-
+        Broadcast to all eligible members in community:<communityId> AND
+        community-typing:<communityId>, sender excluded. Also emitted on 6 s TTL
+        expiry, sender disconnect, or sender removal/ban.
+        Clear typingState[communityId][userDetails.userId].
+      payload:
+        type: object
+        required: [eventId, communityId, roomId, userDetails, timestamp]
+        properties:
+          eventId:
+            type: string
+            format: uuid
+          communityId: { type: string }
+          roomId: { type: string }
+          userDetails:
+            type: object
+            required: [userId, username, displayName]
+            properties:
+              userId: { type: string }
+              username: { type: string }
+              displayName: { type: string }
+              avatarUrl: { type: [string, "null"] }
+          timestamp: { type: integer, description: "Epoch milliseconds." }
+          userId:
+            { type: string, description: "Deprecated: use userDetails.userId." }
+          senderName: { type: string, description: "Deprecated." }
+      examples:
+        - name: User B stopped typing in Community B
+          payload:
+            eventId: "550e8400-e29b-41d4-a716-446655440001"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userDetails:
+              userId: "user_b_abc123"
+              username: "user_b"
+              displayName: "User B"
+              avatarUrl: "https://cdn.example.com/avatars/user_b.jpg"
+            timestamp: 1750000006000
+            userId: "user_b_abc123"
+            senderName: "User B"
 
     # -------- /notify --------
     NotificationsFetch:
@@ -4925,36 +5229,79 @@ components:
         roomId: { type: string }
       # roomId is OPTIONAL in the validator (community.ns.ts:128).
       required: [messageId, communityId]
+    CommunityMessagePinRecord:
+      type: object
+      description: A CommunityMessagePin record (canonical pin entity).
+      properties:
+        id: { type: string }
+        communityId: { type: string }
+        roomId: { type: string }
+        messageId: { type: string }
+        pinnedBy: { type: string, description: "userId who pinned." }
+        pinnedAt: { type: integer, description: "Epoch ms." }
+        unpinnedAt:
+          {
+            type: [integer, "null"],
+            description: "Epoch ms; null = active pin.",
+          }
+        unpinnedByUserId: { type: [string, "null"] }
+        originalMessageDeletedAt:
+          {
+            type: [integer, "null"],
+            description: "Set when pinned message was deleted for all.",
+          }
+        pinSystemMessageId:
+          {
+            type: [string, "null"],
+            description: "ID of the PINNED_MESSAGE GeneralRoomMessage.",
+          }
+        messageCreatedAt:
+          {
+            type: integer,
+            description: "Epoch ms — original message createdAt.",
+          }
+        senderId: { type: string }
+        senderDisplayName: { type: string }
+        senderAvatar: { type: string }
+        contentPinned:
+          type: object
+          description: "Snapshot of the pinned message content at pin time."
+          properties:
+            text: { type: string }
+            urls: { type: array, items: { type: string } }
+            files: { type: array, items: { type: object } }
+        createdAt: { type: integer, description: "Epoch ms." }
+        updatedAt: { type: integer, description: "Epoch ms." }
+        originalMessage:
+          type: object
+          description: "Present only on deleted-original events."
+          properties:
+            isAvailable: { type: boolean }
+      required:
+        [
+          id,
+          communityId,
+          roomId,
+          messageId,
+          pinnedBy,
+          pinnedAt,
+          messageCreatedAt,
+          senderId,
+          contentPinned,
+        ]
     CommunityMessagePinnedPayload:
       type: object
       description: |
-        Server → client broadcast to `community:<communityId>` after a pin.
-        Clients show / update the pinned-message banner.
+        Server → client broadcast to `community:<communityId>` after a pin, or when
+        the pinned original is deleted (originalMessage.isAvailable = false).
+        Clients replace the entire pin banner with the `pin` entity.
+        `pinnedCount` may be null on deleted-original events (count is unchanged).
       properties:
-        messageId: { type: string }
         communityId: { type: string }
         roomId: { type: string }
-        pinnedIds:
-          type: array
-          items: { type: string }
-          description: "Complete list of pinned message IDs in this room after this pin."
-        pinnedCount: { type: integer }
-        pinnedAt: { type: integer, description: "Epoch ms when pinned." }
-        pinnedBy:
-          {
-            type: string,
-            description: "userId of the moderator/admin who pinned.",
-          }
-      required:
-        [
-          messageId,
-          communityId,
-          roomId,
-          pinnedIds,
-          pinnedCount,
-          pinnedAt,
-          pinnedBy,
-        ]
+        pin: { $ref: "#/components/schemas/CommunityMessagePinRecord" }
+        pinnedCount: { type: [integer, "null"] }
+      required: [communityId, roomId, pin]
     CommunityMessageUnpinPayload:
       type: object
       description: "Client → server. Unpin a message (moderator / admin only)."
@@ -4968,23 +5315,15 @@ components:
       type: object
       description: |
         Server → client broadcast to `community:<communityId>` after an unpin.
-        Clients hide / update the pinned-message banner.
+        Clients hide the pin banner. The soft-deleted `pin` record is included for reference.
       properties:
-        messageId: { type: string }
         communityId: { type: string }
         roomId: { type: string }
-        pinnedIds:
-          type: array
-          items: { type: string }
-          description: "Complete list of remaining pinned message IDs after this unpin."
+        messageId:
+          { type: string, description: "The message that was unpinned." }
+        pin: { $ref: "#/components/schemas/CommunityMessagePinRecord" }
         pinnedCount: { type: integer }
-        unpinnedBy:
-          {
-            type: string,
-            description: "userId of the moderator/admin who unpinned.",
-          }
-      required:
-        [messageId, communityId, roomId, pinnedIds, pinnedCount, unpinnedBy]
+      required: [communityId, roomId, messageId, pinnedCount]
 
     # -------- notify payloads --------
     NotificationsFetchPayload:
@@ -5310,6 +5649,11 @@ components:
         membership creation. Full list-row snapshot — apply verbatim to insert the
         community into the sidebar / "mine" list. `avatarUrl` is a resolved
         presigned URL (render as-is, never persist). Idempotent on communityId.
+
+        **`lastActivity`** is structurally identical to `CommunityListItem.lastActivity`
+        from `GET /communities/mine`. For a newly-added member it is always the
+        personal "You joined the community" system message. The client MUST use it
+        directly and MUST NOT call Mine API to back-fill a missing last activity.
       properties:
         communityId: { type: string }
         name: { type: string }
@@ -5336,6 +5680,7 @@ components:
           type: string
           enum:
             [
+              created,
               add_members,
               join_request_approved,
               join_request_auto_accept,
@@ -5343,8 +5688,55 @@ components:
               invite_link_redeem,
               self_join,
             ]
+          description: >-
+            How the recipient became a member. "created" means the recipient
+            IS the creator — they created this community. All other values mean
+            they joined an existing community. Branch on this to show
+            creation-specific UI (e.g. "Community created" banner).
         joinedAt: { type: integer, description: "Epoch ms." }
         addedAt: { type: integer, description: "Epoch ms — idempotency key." }
+        lastActivity:
+          type: object
+          description: >-
+            The recipient's personal last-activity preview — always the private
+            "You joined the community" system message at join time.
+            Structurally identical to CommunityListItem.lastActivity from
+            GET /communities/mine. Upsert it into the community-list row as-is;
+            never rebuild it on the client.
+          properties:
+            type:
+              type: string
+              enum:
+                [
+                  message,
+                  reaction,
+                  edited,
+                  deleted,
+                  system,
+                  created,
+                  join,
+                  removal,
+                  pinned,
+                  unpinned,
+                ]
+              description: >-
+                "system" means username is null and preview is a standalone
+                sentence — never prefix it with a sender name.
+            userId:
+              type: string
+              nullable: true
+              description: "null for system/lifecycle types — always null in this event."
+            username:
+              type: string
+              nullable: true
+              description: "null for system/lifecycle types — always null in this event."
+            preview:
+              type: string
+              description: "Display text. For join: 'You joined the community'."
+            dateTime:
+              type: integer
+              description: "Epoch ms — matches the system message createdAt."
+          required: [type, userId, username, preview, dateTime]
       required:
         [
           communityId,
@@ -5361,6 +5753,7 @@ components:
           via,
           joinedAt,
           addedAt,
+          lastActivity,
         ]
     CommunityStatsUpdatedPayload:
       type: object

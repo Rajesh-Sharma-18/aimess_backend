@@ -18,6 +18,10 @@ import {
 import { env } from "../config/env.js";
 import { refreshTokenRepository } from "../repositories/refresh-token.repository.js";
 import { sessionRepository } from "../repositories/session.repository.js";
+import {
+  publishSessionDeviceRevokedSafe,
+  publishAllSessionsRevokedSafe,
+} from "../messaging/publish-session-revoked.js";
 import type {
   AccessTokenResponse,
   AuthTokensResponse,
@@ -177,6 +181,9 @@ export const sessionService = {
   },
 
   async logout(userId: string, sessionId: string): Promise<void> {
+    // Fetch deviceId before revoking so we can clear the FCM token.
+    const deviceId = await sessionRepository.getDeviceId(sessionId, userId);
+
     const result = await sessionRepository.revokeForUser(
       userId,
       sessionId,
@@ -185,6 +192,9 @@ export const sessionService = {
 
     if (result.revoked) {
       await markSessionRevoked(sessionId);
+      if (deviceId) {
+        publishSessionDeviceRevokedSafe({ userId, deviceId });
+      }
     }
   },
 
@@ -225,6 +235,12 @@ export const sessionService = {
       throw new NotFoundError("AUTH_SESSION_NOT_FOUND");
     }
 
+    // Fetch deviceId before revoking so we can clear the FCM token.
+    const deviceId = await sessionRepository.getDeviceId(
+      targetSessionId,
+      userId
+    );
+
     const reason =
       targetSessionId === currentSessionId
         ? SessionRevokeReason.USER_SIGNED_OUT
@@ -241,6 +257,10 @@ export const sessionService = {
     }
 
     await markSessionRevoked(targetSessionId);
+
+    if (deviceId) {
+      publishSessionDeviceRevokedSafe({ userId, deviceId });
+    }
   },
 
   /** "Sign out from all other devices" — keeps the caller's current session active. */
@@ -260,6 +280,10 @@ export const sessionService = {
     );
 
     await markSessionsRevoked(otherSessionIds);
+
+    if (result.revokedCount > 0) {
+      publishAllSessionsRevokedSafe({ userId });
+    }
 
     return result;
   },

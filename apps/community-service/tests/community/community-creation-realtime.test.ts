@@ -1,14 +1,18 @@
 /**
  * Suite: community-creation-realtime
  *
- * Verifies that communityService.create() fires a `community:created`
- * socket event to the creator's /chat room immediately after the community
- * is saved, so the creator's list updates without a page reload.
+ * Verifies that communityService.create() fires a `community:added` socket
+ * event (with via: "created") to the creator's /chat room immediately after
+ * the community is saved, so the creator's list updates without a page reload.
+ *
+ * This is the same event as join/add flows — the FE has one unified insert
+ * path and branches on `via === "created"` for any creation-specific UI.
  *
  * Assertion target: publishChatUserEvent from @aimess/redis
  *   channel:  user:<creatorId>
- *   event:    "community:created"
- *   payload:  CommunityData (same shape as POST /communities 201 body.data)
+ *   event:    "community:added"
+ *   payload:  CommunityAddedPayload (via: "created", role: "ADMIN",
+ *             lastActivity.type: "created")
  */
 
 // ---------------------------------------------------------------------------
@@ -175,54 +179,76 @@ beforeEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Suite — community:created socket event
+// Suite — community:added (via: "created") socket event
 // ---------------------------------------------------------------------------
 
-describe("communityService.create — community:created socket event", () => {
-  it("publishes community:created to the creator's user room on /chat", async () => {
+describe("communityService.create — community:added socket event (via: created)", () => {
+  it("publishes community:added to the creator's user channel", async () => {
     await communityService.create(CREATOR, validInput);
 
-    const calls = pubChatUser.mock.calls;
-    const createdCall = calls.find(([, , evt]) => evt === "community:created");
-    expect(createdCall).toBeDefined();
-
-    const [, userId, event] = createdCall!;
-    expect(userId).toBe(CREATOR);
-    expect(event).toBe("community:created");
+    const call = pubChatUser.mock.calls.find(
+      ([, , evt]) => evt === "community:added"
+    );
+    expect(call).toBeDefined();
+    expect(call![1]).toBe(CREATOR);
   });
 
-  it("payload matches CommunityData shape: id, name, role ADMIN, isJoined true", async () => {
+  it("payload.via is 'created' (distinguishes creation from join/add flows)", async () => {
     await communityService.create(CREATOR, validInput);
 
-    const createdCall = pubChatUser.mock.calls.find(
-      ([, , evt]) => evt === "community:created"
+    const call = pubChatUser.mock.calls.find(
+      ([, , evt]) => evt === "community:added"
     );
-    expect(createdCall).toBeDefined();
+    const payload = call![3] as Record<string, unknown>;
+    expect(payload.via).toBe("created");
+  });
 
-    const payload = createdCall![3] as Record<string, unknown>;
-    expect(payload.id).toBe(CID);
+  it("payload matches CommunityAddedPayload shape: communityId, name, role ADMIN", async () => {
+    await communityService.create(CREATOR, validInput);
+
+    const call = pubChatUser.mock.calls.find(
+      ([, , evt]) => evt === "community:added"
+    );
+    const payload = call![3] as Record<string, unknown>;
+    expect(payload.communityId).toBe(CID);
     expect(payload.name).toBe("Tech Enthusiasts");
     expect(payload.handle).toBe("tech-enthusiasts");
     expect(payload.role).toBe("ADMIN");
-    expect(payload.isJoined).toBe(true);
     expect(payload.memberCount).toBe(1);
-    expect(payload.isMuted).toBe(false);
+    expect(payload.status).toBe("ACTIVE");
+  });
+
+  it("lastActivity.type is 'created' with correct preview", async () => {
+    await communityService.create(CREATOR, validInput);
+
+    const call = pubChatUser.mock.calls.find(
+      ([, , evt]) => evt === "community:added"
+    );
+    const payload = call![3] as Record<string, unknown>;
+    const lastActivity = payload.lastActivity as Record<string, unknown>;
+    expect(lastActivity).toBeDefined();
+    expect(lastActivity.type).toBe("created");
+    expect(lastActivity.userId).toBeNull();
+    expect(lastActivity.username).toBeNull();
+    expect(lastActivity.preview).toBe("Community created");
+    expect(typeof lastActivity.dateTime).toBe("number");
+    expect(lastActivity.dateTime).toBe(NOW.getTime());
   });
 
   it("emits exactly once per create call", async () => {
     await communityService.create(CREATOR, validInput);
 
-    const createdCalls = pubChatUser.mock.calls.filter(
-      ([, , evt]) => evt === "community:created"
+    const calls = pubChatUser.mock.calls.filter(
+      ([, , evt]) => evt === "community:added"
     );
-    expect(createdCalls).toHaveLength(1);
+    expect(calls).toHaveLength(1);
   });
 
-  it("does NOT emit community:created on a different user's channel", async () => {
+  it("does NOT emit on a different user's channel", async () => {
     await communityService.create(CREATOR, validInput);
 
     const wrongUserCall = pubChatUser.mock.calls.find(
-      ([, userId, evt]) => evt === "community:created" && userId !== CREATOR
+      ([, userId, evt]) => evt === "community:added" && userId !== CREATOR
     );
     expect(wrongUserCall).toBeUndefined();
   });
@@ -235,7 +261,7 @@ describe("communityService.create — community:created socket event", () => {
     ).resolves.not.toThrow();
   });
 
-  it("still returns CommunityData even when Redis publish fails", async () => {
+  it("still returns CommunityData from HTTP response even when Redis publish fails", async () => {
     pubChatUser.mockRejectedValueOnce(new Error("Redis unavailable"));
 
     const result = await communityService.create(CREATOR, validInput);
@@ -246,12 +272,21 @@ describe("communityService.create — community:created socket event", () => {
     });
   });
 
-  it("does NOT broadcast to a community room (community:created is user-targeted only)", async () => {
+  it("does NOT broadcast community:added to the community room (user-targeted only)", async () => {
     await communityService.create(CREATOR, validInput);
 
-    const communityRoomCall = pubRoomEvent.mock.calls.find(
+    const roomCall = pubRoomEvent.mock.calls.find(
+      ([, , evt]) => evt === "community:added"
+    );
+    expect(roomCall).toBeUndefined();
+  });
+
+  it("does NOT emit community:created (deprecated event)", async () => {
+    await communityService.create(CREATOR, validInput);
+
+    const oldEvent = pubChatUser.mock.calls.find(
       ([, , evt]) => evt === "community:created"
     );
-    expect(communityRoomCall).toBeUndefined();
+    expect(oldEvent).toBeUndefined();
   });
 });

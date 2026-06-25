@@ -1,121 +1,218 @@
 /**
- * Global I/O-boundary mocks for community-service, applied to every test file
- * (Jest `setupFilesAfterEnv`). These are the seams that must NEVER touch real
- * infrastructure or pull in ESM-only / native libs that CommonJS-mode Jest
- * cannot `require` (gRPC proto loading via `import.meta`, MinIO/S3 client, ioredis).
- * Per-test files may re-`jest.mock()` any of these to inject richer behaviour
- * for a specific scenario (a test-file mock overrides this one).
+ * Global I/O-boundary mocks for community-service (Jest setupFilesAfterEnv).
  *
- * `jest` is the Jest-injected global (typed by @types/jest); not importing it
- * keeps `jest.mock` hoisting maximally reliable under ts-jest.
+ * Only the I/O boundary is mocked:
+ *   - Redis client + Redis event publishers (@aimess/redis)
+ *   - RabbitMQ publishers (publish-community, publish-community-chat)
+ *   - Prisma repository layer
+ *   - gRPC clients (chat, stream, user-client)
+ *   - MinIO / storage (community-image-service, member-avatar-service)
+ *   - Winston logger (silence suite stdout)
+ *
+ * The real service logic, validators, and @aimess/* package code execute for real.
+ * `jest` is the Jest-injected global (typed by @types/jest).
  */
 
-// --- Datastore: never open a real Mongo/Prisma connection -----------------
-jest.mock("../../src/config/prisma.js", () => ({
-  prisma: {},
-}));
-
-// --- Redis: never open a real connection. Cache treated as not-ready so the
-//     cache-first read paths fall straight through to the (mocked) repos. ----
-jest.mock("../../src/config/redis.js", () => ({
-  redis: { status: "ready" },
-  isCommunityCacheReady: jest.fn(() => false),
-  connectCommunityRedis: jest.fn(async () => undefined),
-  disableCommunityCache: jest.fn(),
-}));
-
-// --- MinIO / S3 storage clients: avoid constructing the AWS SDK S3 client and
-//     the media-URL strategy at import. Presign/head/delete are never hit by
-//     the smoke route; per-test specs re-mock with real fns when needed. ------
-jest.mock("../../src/config/storage.js", () => ({
-  storageClient: {},
-  presignClient: {},
-  mediaUrlStrategy: {
-    toViewUrl: jest.fn(async () => null),
-    buildMediaObject: jest.fn(async () => null),
-  },
-}));
-
-// --- user-service gRPC client: the real module runs `protoLoader.loadSync`
-//     against a path derived from `import.meta.url` AND constructs a gRPC
-//     client at import time (breaks under CJS-mode Jest, pulls native
-//     @grpc/grpc-js). Stub the wrapper object. --------------------------------
-jest.mock("../../src/grpc/user.client.js", () => ({
-  userGrpcClient: {
-    bulkGetUserSnapshots: jest.fn(async () => []),
-    checkFriendships: jest.fn(async () => []),
-  },
-}));
-
-// --- chat-service gRPC client: created lazily, but stub it so no proto load /
-//     gRPC channel is ever attempted under test. -----------------------------
-const chatClientStub = () => ({
-  getCommunityChatSummaries: jest.fn(async () => []),
-  bulkMarkCommunityRead: jest.fn(async () => 0),
-  ensureCommunityRoom: jest.fn(async () => true),
-  getCommunityMessageById: jest.fn(async () => ({
-    found: false,
-    message: "",
-    contentType: "",
-    postedAt: 0,
-    senderId: "",
-    media: [],
-  })),
+// --- Logger: swallow output so test stdout stays clean ---------------------
+jest.mock("@aimess/logger", () => {
+  const noop = () => undefined;
+  const logger = {
+    error: noop,
+    warn: noop,
+    info: noop,
+    http: noop,
+    verbose: noop,
+    debug: noop,
+    silly: noop,
+    log: noop,
+    child: () => logger,
+  };
+  return { logger, createChildLogger: () => logger };
 });
-jest.mock("../../src/grpc/chat.client.js", () => ({
-  getChatClient: jest.fn(() => chatClientStub()),
-  createChatClient: jest.fn(() => chatClientStub()),
+
+// --- Redis client: prevent real ioredis connection ------------------------
+jest.mock("../../src/config/redis.js", () => ({
+  redis: {
+    get: jest.fn(),
+    set: jest.fn(),
+    setex: jest.fn(),
+    del: jest.fn(),
+    incr: jest.fn(),
+    expire: jest.fn(),
+    exists: jest.fn(),
+    keys: jest.fn(),
+    mget: jest.fn(),
+    pipeline: jest.fn(() => ({
+      exec: jest.fn(),
+      set: jest.fn(),
+      setex: jest.fn(),
+    })),
+  },
 }));
 
-// --- stream-service gRPC client: created lazily, but stub it so no proto load
-//     (path derived from `import.meta.url`) / gRPC channel is ever attempted
-//     under test. Without this, the real module is transpiled to CJS and its
-//     top-level `const __dirname` collides with the wrapper-provided binding. --
-jest.mock("../../src/grpc/stream.client.js", () => ({
-  getStreamClient: jest.fn(() => ({
-    getActiveCommunityIds: jest.fn(async () => new Set()),
-    getLiveStreamsByCommunity: jest.fn(async () => []),
-  })),
-  createStreamClient: jest.fn(() => ({
-    getActiveCommunityIds: jest.fn(async () => new Set()),
-    getLiveStreamsByCommunity: jest.fn(async () => []),
-  })),
+// --- @aimess/redis: socket event publishers --------------------------------
+jest.mock("@aimess/redis", () => ({
+  publishChatUserEvent: jest.fn().mockResolvedValue(undefined),
+  publishCommunityRoomEvent: jest.fn().mockResolvedValue(undefined),
 }));
 
-// --- RabbitMQ publishers: fire-and-forget no-ops. The real modules import
-//     amqplib and connect lazily; stub the *-Safe publishers so nothing is
-//     ever queued or connected under test. ------------------------------------
-jest.mock("../../src/messaging/publish-community-chat.js", () => ({
-  publishCommunityCreatedForChatSafe: jest.fn(),
-  publishCommunityMemberSyncedForChatSafe: jest.fn(),
-  publishCommunityStatusChangedForChatSafe: jest.fn(),
-  publishCommunityInviteLinkSharedForChatSafe: jest.fn(),
-  publishCommunitySystemMessageForChatSafe: jest.fn(),
-  publishCommunityVisibilityChangedForChatSafe: jest.fn(),
-  publishCommunityDeletedForChatSafe: jest.fn(),
+// --- Storage strategy: prevent real MinIO connections ---------------------
+jest.mock("../../src/config/storage.js", () => ({
+  mediaUrlStrategy: {
+    presignGet: jest.fn().mockResolvedValue({ url: null, expiresAt: null }),
+  },
 }));
+
+// --- Community repository: mock all DB calls ------------------------------
+jest.mock("../../src/repositories/community.repository.js", () => ({
+  communityRepository: {
+    create: jest.fn(),
+    findById: jest.fn(),
+    findByHandle: jest.fn(),
+    findByHandleFull: jest.fn(),
+    update: jest.fn(),
+    delete: jest.fn(),
+    findMany: jest.fn().mockResolvedValue([]),
+    count: jest.fn().mockResolvedValue(0),
+    findMembership: jest.fn(),
+    findMemberships: jest.fn().mockResolvedValue([]),
+    findMemberByUserId: jest.fn(),
+    findActiveMemberIdsByRoles: jest.fn().mockResolvedValue([]),
+    countActiveMembers: jest.fn().mockResolvedValue(1),
+    setMemberCount: jest.fn().mockResolvedValue(undefined),
+    createMember: jest.fn(),
+    reactivateMemberWithSnapshot: jest.fn(),
+    updateMember: jest.fn(),
+    updateMemberStatus: jest.fn(),
+    deleteMember: jest.fn(),
+    findActiveMembers: jest.fn().mockResolvedValue([]),
+    findPendingJoinRequest: jest.fn(),
+    updateJoinRequest: jest.fn(),
+    createJoinRequest: jest.fn(),
+    findInvite: jest.fn(),
+    updateInvite: jest.fn(),
+    findInviteLink: jest.fn(),
+    updateInviteLink: jest.fn(),
+    createInviteLink: jest.fn(),
+    findReport: jest.fn(),
+    createReport: jest.fn(),
+    updateReport: jest.fn(),
+    findAuditLogs: jest.fn().mockResolvedValue([]),
+    createAuditLog: jest.fn().mockResolvedValue(undefined),
+    findCategories: jest.fn().mockResolvedValue([]),
+    findCategory: jest.fn(),
+    createCategory: jest.fn(),
+    updateCategory: jest.fn(),
+    deleteCategory: jest.fn(),
+  },
+}));
+
+// --- RabbitMQ: community domain event publishers --------------------------
 jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityMemberAddedSafe: jest.fn(),
+  publishCommunityMemberJoinedSafe: jest.fn(),
   publishCommunityMemberKickedSafe: jest.fn(),
   publishCommunityMemberBannedSafe: jest.fn(),
+  publishCommunityMemberUnbannedSafe: jest.fn(),
   publishCommunityMemberMutedSafe: jest.fn(),
   publishCommunityMemberUnmutedSafe: jest.fn(),
   publishCommunityMemberWarnedSafe: jest.fn(),
   publishCommunityMemberRoleChangedSafe: jest.fn(),
-  publishCommunityAdminTransferredSafe: jest.fn(),
-  publishCommunityDeletedSafe: jest.fn(),
-  publishCommunityClosedSafe: jest.fn(),
   publishCommunityMemberLeftSafe: jest.fn(),
-  publishCommunityJoinRequestedSafe: jest.fn(),
-  publishCommunityJoinRequestApprovedSafe: jest.fn(),
-  publishCommunityJoinRequestRejectedSafe: jest.fn(),
-  publishCommunityInviteSentSafe: jest.fn(),
+  publishCommunityAdminTransferredSafe: jest.fn(),
+  publishCommunityClosedSafe: jest.fn(),
+  publishCommunityDeletedSafe: jest.fn(),
   publishCommunityInviteAcceptedSafe: jest.fn(),
-  publishCommunityReportCreatedSafe: jest.fn(),
+  publishCommunityInviteSentSafe: jest.fn(),
+  publishCommunityJoinRequestApprovedSafe: jest.fn(),
+  publishCommunityJoinRequestCancelledSafe: jest.fn(),
+  publishCommunityJoinRequestedSafe: jest.fn(),
+  publishCommunityJoinRequestRejectedSafe: jest.fn(),
   publishCommunityReportActionedSafe: jest.fn(),
+  publishCommunityReportCreatedSafe: jest.fn(),
 }));
+
+// --- RabbitMQ: community chat publishers (key for system-message tests) ---
+jest.mock("../../src/messaging/publish-community-chat.js", () => ({
+  publishCommunitySystemMessageForChatSafe: jest.fn(),
+  publishCommunityCreatedForChatSafe: jest.fn(),
+  publishCommunityDeletedForChatSafe: jest.fn(),
+  publishCommunityInviteLinkSharedForChatSafe: jest.fn(),
+  publishCommunityStatusChangedForChatSafe: jest.fn(),
+  publishCommunityVisibilityChangedForChatSafe: jest.fn(),
+}));
+
+// --- RabbitMQ: admin report publisher -------------------------------------
 jest.mock("../../src/messaging/publish-admin-report.js", () => ({
   publishAdminReportIngestSafe: jest.fn(),
+}));
+
+// --- Community cache: no-op ------------------------------------------------
+jest.mock("../../src/lib/community-cache.js", () => ({
+  communityCache: {
+    get: jest.fn().mockResolvedValue(null),
+    set: jest.fn().mockResolvedValue(undefined),
+    del: jest.fn().mockResolvedValue(undefined),
+    getType: jest.fn().mockResolvedValue(null),
+    setType: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+// --- Community access policy: deterministic default -----------------------
+jest.mock("../../src/lib/community-access-policy.js", () => ({
+  communityAccessPolicy: {
+    deriveStatus: jest.fn().mockReturnValue("ACTIVE"),
+    assertWritable: jest.fn(),
+    assertReadable: jest.fn(),
+  },
+  assertCommunityReadAccess: jest.fn().mockResolvedValue(undefined),
+}));
+
+// --- Invite rate limits: always pass in tests -----------------------------
+jest.mock("../../src/lib/invite-rate-limit.js", () => ({
+  assertInviteCreateRateLimit: jest.fn().mockResolvedValue(undefined),
+  assertInviteBulkSendRateLimit: jest.fn().mockResolvedValue(undefined),
+}));
+
+// --- User gRPC client: mock user-service calls ----------------------------
+jest.mock("../../src/lib/user-client.js", () => ({
+  fetchUserSnapshots: jest.fn().mockResolvedValue(new Map()),
+  fetchUserSnapshotHits: jest.fn().mockResolvedValue(new Map()),
+  fetchAcceptedFriendIds: jest.fn().mockResolvedValue([]),
+  fetchExistingUserIds: jest.fn().mockResolvedValue([]),
+}));
+
+// --- gRPC clients: prevent real channel creation --------------------------
+jest.mock("../../src/grpc/chat.client.js", () => ({
+  getChatClient: jest.fn().mockReturnValue({
+    GetCommunityLastMessages: jest.fn(),
+    GetCommunityMemberLastMessages: jest.fn(),
+  }),
+}));
+
+jest.mock("../../src/grpc/stream.client.js", () => ({
+  getStreamClient: jest.fn().mockReturnValue({
+    GetLiveStreamsByCommunityIds: jest.fn(),
+  }),
+}));
+
+// --- MinIO image/avatar services: return null presign URLs ----------------
+jest.mock("../../src/services/community-image.service.js", () => ({
+  communityImageService: {
+    resolveViewUrlForClient: jest.fn().mockResolvedValue(null),
+    generateUploadUrl: jest
+      .fn()
+      .mockResolvedValue({
+        uploadUrl: "http://minio/test",
+        objectKey: "test/key",
+      }),
+  },
+}));
+
+jest.mock("../../src/services/member-avatar.service.js", () => ({
+  memberAvatarService: {
+    resolveViewUrl: jest.fn().mockResolvedValue(null),
+  },
 }));
 
 export {};

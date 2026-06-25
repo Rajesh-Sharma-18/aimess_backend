@@ -85,10 +85,12 @@ function messageTimelineParams(opts?: { incrementalSyncAfterTs?: boolean }) {
       required: false,
       schema: { type: "integer" as const, minimum: 1 },
       description:
-        "Epoch ms. Returns messages with createdAt <= before_ts (newest-first). " +
-        "Mutually exclusive with after_ts; omit both for the newest page. " +
-        "`nextCursor` comes back as an epoch-ms string — parse it to an integer " +
-        "before feeding it back as before_ts.",
+        'Epoch-ms value **or** a compound `"<epochMs>_<messageId>"` string returned as ' +
+        "`nextCursor` from a previous response. Returns messages with createdAt <= before_ts " +
+        "(newest-first). Mutually exclusive with after_ts; omit both for the newest page. " +
+        "**Pass `nextCursor` verbatim** — do NOT parse it to a number. Community history " +
+        'returns a compound `"<ms>_<objectId>"` cursor; stripping the `_<id>` part causes ' +
+        "messages that share the same millisecond to be skipped silently.",
     },
     {
       name: "after_ts",
@@ -250,6 +252,7 @@ const communityConversation = conversationPath(
 const groupMessageEdit = {
   patch: {
     tags: ["Chat — Groups"],
+    operationId: "editGroupMessage",
     summary: "Edit a group message (text only)",
     description:
       "Edits the caller's own TEXT message within the 15-minute edit window. Expired edits return 410 (CHAT_EDIT_WINDOW_EXPIRED).",
@@ -284,6 +287,7 @@ const groupMessageEdit = {
 const communityMessageEdit = {
   patch: {
     tags: ["Chat — Community"],
+    operationId: "editCommunityMessage",
     summary: "Edit a community message (text only)",
     description:
       "Edits the caller's own TEXT community message within the 15-minute edit window. The body must include `communityId` so the edit broadcast reaches the right community room. Expired edits return 410 (CHAT_EDIT_WINDOW_EXPIRED).",
@@ -320,6 +324,7 @@ const communityMessageEdit = {
 const communityMessageReact = {
   post: {
     tags: ["Chat — Community"],
+    operationId: "reactToCommunityMessage",
     summary: "React to a community message",
     description:
       "Toggle an emoji reaction on a community message. Sending the same emoji again **removes** the reaction (toggle semantics — no separate un-react call needed). " +
@@ -349,6 +354,7 @@ const communityMessageReact = {
 const privateConversations = {
   get: {
     tags: ["Chat — Private"],
+    operationId: "listConversations",
     summary: "List conversations",
     description:
       "Cursor-paginated list of the authenticated user's private rooms, ordered by last message.",
@@ -364,6 +370,7 @@ const privateConversations = {
 const chatInbox = {
   get: {
     tags: ["Chat — Inbox"],
+    operationId: "getUnifiedInbox",
     summary: "Unified inbox (private + group)",
     description:
       "Merged, timestamp-ordered list of the authenticated user's private rooms and group chats. " +
@@ -401,6 +408,7 @@ const chatInbox = {
 const privateRoomByPeer = {
   post: {
     tags: ["Chat — Private"],
+    operationId: "getOrCreatePrivateRoom",
     summary: "Get or create private room",
     description:
       "Returns the existing private room with `peerId`, or creates one. Requires friendship.",
@@ -425,6 +433,7 @@ const privateRoomByPeer = {
 const privateRoomDelete = {
   delete: {
     tags: ["Chat — Private"],
+    operationId: "deleteConversation",
     summary: "Delete conversation for me",
     description:
       "Soft-deletes the conversation for the authenticated user. The peer's view is unaffected.",
@@ -448,6 +457,7 @@ const privateRoomDelete = {
 const privateMessages = {
   get: {
     tags: ["Chat — Private"],
+    operationId: "getPrivateMessages",
     summary: "Get private messages",
     description:
       "Timestamp-paginated message history for a private room. Timestamps are epoch " +
@@ -479,6 +489,7 @@ const privateMessages = {
 const privateMessageDelete = {
   patch: {
     tags: ["Chat — Private"],
+    operationId: "editPrivateMessage",
     summary: "Edit a private message (text only)",
     description:
       "Edits the caller's own TEXT message. Prior content is kept in editHistory.",
@@ -517,6 +528,7 @@ const privateMessageDelete = {
   },
   delete: {
     tags: ["Chat — Private"],
+    operationId: "deletePrivateMessage",
     summary: "Delete private message",
     description:
       "`type=forMe` soft-deletes for the caller; `type=forEveryone` deletes for both participants.",
@@ -547,6 +559,7 @@ const privateMessageDelete = {
 const privateMessageReport = {
   post: {
     tags: ["Chat — Private"],
+    operationId: "reportPrivateMessage",
     summary: "Report a private message",
     description:
       "Reports another participant's message. One report per user per message.",
@@ -580,6 +593,7 @@ const privateMessageReport = {
 const privateRoomMute = {
   post: {
     tags: ["Chat — Private"],
+    operationId: "mutePrivateChat",
     summary: "Mute a private chat",
     description:
       "Mutes the room for the caller. Omit or null `muteUntil` to mute indefinitely.",
@@ -612,6 +626,7 @@ const privateRoomMute = {
 const privateRoomUnmute = {
   post: {
     tags: ["Chat — Private"],
+    operationId: "unmutePrivateChat",
     summary: "Unmute a private chat",
     description: "Removes the caller's mute on the room.",
     security: [{ bearerAuth: [] }],
@@ -634,6 +649,7 @@ const privateRoomUnmute = {
 const privatePresence = {
   get: {
     tags: ["Chat — Private"],
+    operationId: "getUserPresence",
     summary: "Get a user's presence",
     description: "Returns online/offline state and last-seen for a user.",
     security: [{ bearerAuth: [] }],
@@ -655,6 +671,7 @@ const privatePresence = {
 const privatePins = {
   get: {
     tags: ["Chat — Private"],
+    operationId: "getPrivatePinnedMessages",
     summary: "Get pinned messages (private)",
     description: "Cursor-paginated pinned messages for a private room.",
     security: [{ bearerAuth: [] }],
@@ -681,6 +698,7 @@ const privatePins = {
 const groupCreate = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "createGroup",
     summary: "Create a group",
     description: "Creator becomes OWNER. Rate limited to 10 creations per day.",
     security: [{ bearerAuth: [] }],
@@ -711,6 +729,7 @@ const groupCreate = {
 const groupMyGroups = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "listMyGroups",
     summary: "List my groups",
     description:
       "Cursor-paginated list of groups the authenticated user belongs to.",
@@ -726,6 +745,7 @@ const groupMyGroups = {
 const groupById = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "getGroupDetails",
     summary: "Get group details",
     security: [{ bearerAuth: [] }],
     parameters: [
@@ -744,6 +764,7 @@ const groupById = {
   },
   patch: {
     tags: ["Chat — Groups"],
+    operationId: "updateGroup",
     summary: "Update group",
     description: "Partial update — admin/owner only.",
     security: [{ bearerAuth: [] }],
@@ -775,6 +796,7 @@ const groupById = {
 const groupDisband = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "disbandGroup",
     summary: "Disband group",
     description: "Owner-only. Soft-deletes the group and removes all members.",
     security: [{ bearerAuth: [] }],
@@ -800,6 +822,7 @@ const groupDisband = {
 const groupMessages = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "getGroupMessages",
     summary: "Get group messages",
     description:
       "Timestamp-paginated message history for a group room. Timestamps are epoch " +
@@ -831,6 +854,7 @@ const groupMessages = {
 const groupMessageDelete = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "deleteGroupMessage",
     summary: "Delete group message",
     security: [{ bearerAuth: [] }],
     requestBody: {
@@ -855,6 +879,7 @@ const groupMessageDelete = {
 const groupPins = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "getGroupPinnedMessages",
     summary: "Get pinned messages (group)",
     description: "Cursor-paginated pinned messages for a group room.",
     security: [{ bearerAuth: [] }],
@@ -881,6 +906,7 @@ const groupPins = {
 const groupMemberAdd = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "addGroupMember",
     summary: "Add member to group",
     security: [{ bearerAuth: [] }],
     requestBody: {
@@ -912,6 +938,7 @@ const groupMemberAdd = {
 const groupMemberLeave = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "leaveGroup",
     summary: "Leave group",
     security: [{ bearerAuth: [] }],
     parameters: [
@@ -933,6 +960,7 @@ const groupMemberLeave = {
 const groupMemberKick = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "kickGroupMember",
     summary: "Kick member from group",
     description: "Admin/owner only.",
     security: [{ bearerAuth: [] }],
@@ -956,6 +984,7 @@ const groupMemberKick = {
 const groupMemberRole = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "updateGroupMemberRole",
     summary: "Update member role",
     description: "Admin/owner only.",
     security: [{ bearerAuth: [] }],
@@ -979,6 +1008,7 @@ const groupMemberRole = {
 const groupMembers = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "listGroupMembers",
     summary: "List group members",
     security: [{ bearerAuth: [] }],
     parameters: [
@@ -1009,6 +1039,7 @@ const groupMembers = {
 const inviteLinkCreate = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "createGroupInviteLink",
     summary: "Create group invite link",
     security: [{ bearerAuth: [] }],
     requestBody: {
@@ -1031,6 +1062,7 @@ const inviteLinkCreate = {
 const inviteLinkRevoke = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "revokeGroupInviteLink",
     summary: "Revoke group invite link",
     security: [{ bearerAuth: [] }],
     requestBody: {
@@ -1053,6 +1085,7 @@ const inviteLinkRevoke = {
 const inviteLinkPreview = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "previewGroupInviteLink",
     summary: "Preview invite link",
     description: "Public endpoint — no auth required.",
     parameters: [
@@ -1073,6 +1106,7 @@ const inviteLinkPreview = {
 const inviteLinkJoin = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "joinGroupViaInviteLink",
     summary: "Join group via invite link",
     security: [{ bearerAuth: [] }],
     requestBody: {
@@ -1095,6 +1129,7 @@ const inviteLinkJoin = {
 const inviteLinksByRoom = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "listGroupInviteLinks",
     summary: "List active invite links for a group",
     security: [{ bearerAuth: [] }],
     parameters: [
@@ -1126,6 +1161,7 @@ const inviteLinksByRoom = {
 const notifications = {
   get: {
     tags: ["Chat — Notifications"],
+    operationId: "listNotifications",
     summary: "List notifications",
     description:
       "Fetch the user's in-app notification inbox. Real-time updates arrive via Socket.IO /notify namespace; use this endpoint for initial load and pagination.",
@@ -1141,6 +1177,7 @@ const notifications = {
 const notificationRead = {
   post: {
     tags: ["Chat — Notifications"],
+    operationId: "markNotificationRead",
     summary: "Mark notification as read",
     security: [{ bearerAuth: [] }],
     requestBody: {
@@ -1162,6 +1199,7 @@ const notificationRead = {
 const notificationReadAll = {
   post: {
     tags: ["Chat — Notifications"],
+    operationId: "markAllNotificationsRead",
     summary: "Mark all notifications as read",
     security: [{ bearerAuth: [] }],
     responses: {
@@ -1174,6 +1212,7 @@ const notificationReadAll = {
 const notificationUnreadCount = {
   get: {
     tags: ["Chat — Notifications"],
+    operationId: "getUnreadNotificationCount",
     summary: "Get unread notification count",
     security: [{ bearerAuth: [] }],
     responses: {
@@ -1189,6 +1228,7 @@ const notificationUnreadCount = {
 const communityRooms = {
   get: {
     tags: ["Chat — Community"],
+    operationId: "listCommunityRooms",
     summary: "List community rooms",
     description: "Public endpoint — no auth required.",
     responses: {
@@ -1200,6 +1240,7 @@ const communityRooms = {
 const communitySearch = {
   get: {
     tags: ["Chat — Community"],
+    operationId: "searchCommunityRooms",
     summary: "Search community rooms",
     description: "Public endpoint — no auth required.",
     parameters: [
@@ -1220,6 +1261,7 @@ const communitySearch = {
 const communityJoin = {
   post: {
     tags: ["Chat — Community"],
+    operationId: "joinCommunityRoom",
     summary: "Join a community room",
     security: [{ bearerAuth: [] }],
     parameters: [
@@ -1241,6 +1283,7 @@ const communityJoin = {
 const communityLeave = {
   post: {
     tags: ["Chat — Community"],
+    operationId: "leaveCommunityRoom",
     summary: "Leave a community room",
     security: [{ bearerAuth: [] }],
     parameters: [
@@ -1290,6 +1333,7 @@ const communitySendResponseSchema = {
 const communityMessages = {
   get: {
     tags: ["Chat — Community"],
+    operationId: "getCommunityRoomMessages",
     summary: "Get community room messages",
     description:
       "Dual-mode message endpoint. The query param determines which mode is active — **provide only one of before_ts / after_ts**.\n\n" +
@@ -1376,6 +1420,7 @@ const communityMessages = {
   },
   post: {
     tags: ["Chat — Community"],
+    operationId: "sendCommunityMessage",
     summary: "Send a community message",
     description:
       "Sends a message into the community room. `roomId` (the chat room id) comes from the path; `communityId` (used for the broadcast + activity bump) is required in the body. The server broadcasts `community:message:new` to the `community:<communityId>` Socket.IO room, denormalizes community activity (orders GET /communities/mine), and bumps the room for every member. Requires active membership; the room must not be suspended. Idempotent via `clientMessageId` (a replay answers 200 with `idempotent: true`), matching the private/group send contract.",
@@ -1470,6 +1515,7 @@ const communityMessages = {
 const communityRoomSync = {
   get: {
     tags: ["Chat — Community"],
+    operationId: "syncCommunityMessages",
     summary: "Community incremental sync (REST)",
     description: [
       "Returns every message in the room whose `updatedAt >= since_ts` — new",
@@ -1534,6 +1580,7 @@ const communityRoomSync = {
 const communityMessageDelete = {
   delete: {
     tags: ["Chat — Community"],
+    operationId: "deleteCommunityMessage",
     summary: "Delete community message for all",
     security: [{ bearerAuth: [] }],
     parameters: [
@@ -1558,6 +1605,7 @@ const communityMessageDelete = {
 const communityPinMessage = {
   post: {
     tags: ["Chat — Community"],
+    operationId: "pinCommunityMessageMod",
     summary: "Pin a community message (MODERATOR+)",
     description:
       "Pins a message in a community room. Requires MODERATOR or ADMIN role.",
@@ -1619,6 +1667,7 @@ const communityPinMessage = {
 const communityUnpinMessage = {
   delete: {
     tags: ["Chat — Community"],
+    operationId: "unpinCommunityMessageMod",
     summary: "Unpin a community message (MODERATOR+)",
     description:
       "Unpins a message from a community room. Requires MODERATOR or ADMIN role. Pass `communityId` as a query parameter.",
@@ -1670,6 +1719,7 @@ const communityUnpinMessage = {
 const communityGetPins = {
   get: {
     tags: ["Chat — Community"],
+    operationId: "listCommunityPinnedMessages",
     summary: "List pinned messages in a community room",
     description:
       "Cursor-paginated list of pinned messages for a community room.",
@@ -1744,6 +1794,7 @@ const communitySearch2 = searchPath(
 const privateMessageForward = {
   post: {
     tags: ["Chat — Private"],
+    operationId: "forwardPrivateMessage",
     summary: "Forward private message",
     description:
       "Forwards a message to another private room. Idempotent via `clientMessageId`.",
@@ -1791,6 +1842,7 @@ const privateMessageForward = {
 const privateMessageReactions = {
   get: {
     tags: ["Chat — Private"],
+    operationId: "getPrivateMessageReactions",
     summary: "Get reactions on a private message",
     description:
       "Returns reactions grouped by emoji with user details and a `selfReacted` flag.",
@@ -1817,6 +1869,7 @@ const privateMessageReactions = {
   },
   post: {
     tags: ["Chat — Private"],
+    operationId: "addPrivateMessageReaction",
     summary: "Add a reaction to a private message",
     description:
       "Adds the caller's `emoji` reaction. **Idempotent**: re-adding an emoji the caller already reacted with is a no-op (no duplicate). The caller must be a participant of the room. " +
@@ -1844,6 +1897,7 @@ const privateMessageReactions = {
 const privateMessageRemoveReaction = {
   delete: {
     tags: ["Chat — Private"],
+    operationId: "removePrivateMessageReaction",
     summary: "Remove a reaction from a private message",
     description:
       "Removes the caller's `emoji` reaction. **Idempotent**: removing an emoji the caller has not reacted with is a no-op. The caller must be a participant of the room. " +
@@ -1876,6 +1930,7 @@ const privateMessageRemoveReaction = {
 const groupMessageForward = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "forwardGroupMessage",
     summary: "Forward group message",
     description:
       "Forwards a message to another room. Idempotent via `clientMessageId`.",
@@ -1924,6 +1979,7 @@ const groupMessageForward = {
 const groupMessageReactions = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "getGroupMessageReactions",
     summary: "Get reactions on a group message",
     description:
       "Returns reactions grouped by emoji with user details and a `selfReacted` flag.",
@@ -1950,6 +2006,7 @@ const groupMessageReactions = {
   },
   post: {
     tags: ["Chat — Groups"],
+    operationId: "addGroupMessageReaction",
     summary: "Add a reaction to a group message",
     description:
       "Adds the caller's `emoji` reaction. **Idempotent**: re-adding an emoji the caller already reacted with is a no-op (no duplicate). The caller must be an active member of the group. " +
@@ -1977,6 +2034,7 @@ const groupMessageReactions = {
 const groupMessageRemoveReaction = {
   delete: {
     tags: ["Chat — Groups"],
+    operationId: "removeGroupMessageReaction",
     summary: "Remove a reaction from a group message",
     description:
       "Removes the caller's `emoji` reaction. **Idempotent**: removing an emoji the caller has not reacted with is a no-op. The caller must be an active member of the group. " +
@@ -2009,6 +2067,7 @@ const groupMessageRemoveReaction = {
 const callHistory = {
   get: {
     tags: ["Chat — Calls"],
+    operationId: "getCallHistory",
     summary: "Get call history",
     description:
       "Cursor-paginated list of calls the authenticated user participated in, ordered by `initiatedAt` descending.",
@@ -2024,6 +2083,7 @@ const callHistory = {
 const callById = {
   get: {
     tags: ["Chat — Calls"],
+    operationId: "getCallDetails",
     summary: "Get call details",
     security: [{ bearerAuth: [] }],
     parameters: [
@@ -2057,6 +2117,7 @@ const callById = {
 const rtcConfig = {
   get: {
     tags: ["Chat — WebRTC"],
+    operationId: "getIceServers",
     summary: "Get WebRTC ICE server configuration",
     description:
       "Returns STUN/TURN ICE server configuration for establishing WebRTC peer connections. Fetch at app startup or on `call:initiate`. Falls back to 503 if the config service is unavailable.",
@@ -2082,6 +2143,7 @@ const rtcConfig = {
 const communityMessagePin = {
   post: {
     tags: ["Chat — Community"],
+    operationId: "pinCommunityMessageAdmin",
     summary: "Pin a community message (moderator/admin only)",
     description:
       "Pins a message in the community room. Moderator or admin role required. Limit enforced by PIN_LIMIT_PER_ROOM.",
@@ -2112,6 +2174,7 @@ const communityMessagePin = {
   },
   delete: {
     tags: ["Chat — Community"],
+    operationId: "unpinCommunityMessageAdmin",
     summary: "Unpin a community message (moderator/admin only)",
     description:
       "Unpins a previously pinned message. Moderator or admin role required.",

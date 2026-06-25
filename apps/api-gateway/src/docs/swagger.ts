@@ -1,4 +1,4 @@
-import type { Express, Request, Response } from "express";
+import type { Express, Response } from "express";
 import swaggerUi from "swagger-ui-express";
 
 import { resolveSwaggerServerUrls } from "../config/env.js";
@@ -28,24 +28,25 @@ const swaggerUiOptions: swaggerUi.SwaggerUiOptions = {
   },
 };
 
-function documentForRequest(req: Request, version: ApiVersion) {
-  return buildOpenApiDocument(version, resolveSwaggerServerUrls(req));
-}
-
 function setupVersionedSwagger(app: Express, version: ApiVersion): void {
   const base = `/docs/${version}`;
 
+  // Serve the spec JSON — Swagger UI fetches this separately (URL mode), which
+  // keeps swagger-ui-init.js tiny (~2 KB) instead of embedding the full 400 KB
+  // spec inline and producing a 1.3 MB JS file that can time-out over tunnels.
   app.get(`${base}/openapi.json`, (req, res) => {
-    res.json(documentForRequest(req, version));
+    res.json(buildOpenApiDocument(version, resolveSwaggerServerUrls(req)));
   });
 
   app.use(base, swaggerUi.serve);
   app.get([base, `${base}/`], (req, res, next) => {
-    swaggerUi.setup(documentForRequest(req, version), swaggerUiOptions)(
-      req,
-      res,
-      next
-    );
+    swaggerUi.setup(undefined, {
+      ...swaggerUiOptions,
+      swaggerOptions: {
+        ...swaggerUiOptions.swaggerOptions,
+        url: `${base}/openapi.json`,
+      },
+    })(req, res, next);
   });
 }
 
