@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import {
   BadRequestError,
@@ -1604,7 +1604,10 @@ export const communityService = {
     // immediately without a page reload or extra API call. Uses community:added
     // (same event as join/add flows) so the FE has one unified insert path —
     // branch on `via: "created"` if the creation flow needs different UI.
+    const createdAt = Date.now();
     const createdAddedPayload: CommunityAddedPayload = {
+      eventId: randomUUID(),
+      occurredAt: createdAt,
       communityId: community.id,
       name: community.name,
       handle: community.handle,
@@ -1618,7 +1621,7 @@ export const communityService = {
       status: communityAccessPolicy.deriveStatus(community),
       via: "created",
       joinedAt: community.createdAt.getTime(),
-      addedAt: Date.now(),
+      addedAt: createdAt,
       lastActivity: {
         type: "created",
         userId: null,
@@ -1637,6 +1640,63 @@ export const communityService = {
         `community:added (created) socket publish failed for ${community.id}: ${String(err)}`
       );
     });
+
+    // Onboard every member added DURING creation (User B, User C, …) with the
+    // SAME realtime treatment members added later via POST /:id/members already
+    // get: a personal `community:added` (full list-row → sidebar insert on ALL
+    // their devices), the cross-service `community.member_added` notification, and
+    // their private "You joined the community" system message. Historically
+    // create() emitted ONLY the creator's `community:added`, so a member chosen at
+    // creation time never saw the community until a hard reload — the root cause
+    // of "User B/C don't see the new community without refresh". This closes that
+    // gap for EVERY client (web, iOS, Android) that passes memberIds to create.
+    //
+    // Post-commit + fire-and-forget: the membership rows are already persisted and
+    // GET /communities/mine returns them immediately, so a socket/publish failure
+    // must NEVER fail the create (REST + Mine API remain the source of truth).
+    if (memberIds.length > 0) {
+      try {
+        const createdMemberRows =
+          await communityRepository.findMembersByUserIds(
+            community.id,
+            memberIds
+          );
+        // The only ADMIN/MODERATOR at creation time is the creator — pass the
+        // roster explicitly so notifyMemberJoined skips a per-member roster read
+        // (avoids an N+1 of identical lookups, one per added member).
+        const moderatorRecipientIds = [creatorId];
+        const joinedEventAt = new Date().toISOString();
+        await Promise.allSettled(
+          createdMemberRows.map((row) =>
+            this.notifyMemberJoined({
+              community,
+              member: row,
+              memberCount: community.memberCount,
+              actorId: creatorId,
+              via: "add_members",
+              eventAt: joinedEventAt,
+              moderatorRecipientIds,
+            })
+          )
+        );
+        // Observability: one structured line per create fan-out (no PII) so the
+        // recipient count is greppable in prod when diagnosing a "didn't appear"
+        // report. intendedRecipients = creator + every added member.
+        logger.info(
+          `community create realtime fan-out: community=${community.id} ` +
+            `eventId=${createdAddedPayload.eventId} actor=${creatorId} ` +
+            `intendedRecipients=${1 + createdMemberRows.length} ` +
+            `onboardedMembers=${createdMemberRows.length}`
+        );
+      } catch (err) {
+        // A failure here only loses the realtime convenience for the added
+        // members this call; they remain ACTIVE members and GET /communities/mine
+        // returns the community on their next list read / reload.
+        logger.warn(
+          `community create member onboarding fan-out failed for community=${community.id}: ${String(err)}`
+        );
+      }
+    }
 
     return communityData;
   },
@@ -2752,7 +2812,10 @@ export const communityService = {
         preview: SELF_JOIN_ACTIVITY_PREVIEW,
         dateTime: new Date(args.eventAt).getTime(),
       };
+      const addedAt = Date.now();
       const addedPayload: CommunityAddedPayload = {
+        eventId: randomUUID(),
+        occurredAt: addedAt,
         communityId: community.id,
         name: community.name,
         handle: community.handle,
@@ -2766,7 +2829,7 @@ export const communityService = {
         status: communityAccessPolicy.deriveStatus(community),
         via,
         joinedAt: member.joinedAt.getTime(),
-        addedAt: Date.now(),
+        addedAt,
         lastActivity: joinLastActivity,
       };
       await publishChatUserEvent(
@@ -3088,6 +3151,17 @@ export const communityService = {
             updatedAt: now,
           } satisfies CommunityStatsUpdatedPayload
         ),
+        // Personal channel — reaches ALL of the leaver's devices, including those
+        // NOT inside the community room. Mirrors kick/ban so a voluntary leave
+        // drops the community from the list on the user's OTHER tabs/devices in
+        // real time (the acting tab already removed it optimistically). Without
+        // this, a leave on one device left the row visible elsewhere until reload.
+        publishChatUserEvent(redis, callerId, "community:membership:removed", {
+          communityId,
+          membershipStatus: "REMOVED",
+          reason: "left",
+          removedAt: now,
+        }),
       ]);
     } catch (err) {
       logger.warn(
@@ -3239,6 +3313,19 @@ export const communityService = {
               memberCount: count,
               updatedAt: now,
             } satisfies CommunityStatsUpdatedPayload
+          ),
+          // Personal channel — drop the community from the leaver's OTHER devices
+          // live (parity with single leaveCommunity + kick/ban).
+          publishChatUserEvent(
+            redis,
+            callerId,
+            "community:membership:removed",
+            {
+              communityId,
+              membershipStatus: "REMOVED",
+              reason: "left",
+              removedAt: now,
+            }
           ),
         ]);
       } catch (err) {
@@ -4179,6 +4266,37 @@ export const communityService = {
       memberIds,
     });
     publishCommunityDeletedForChatSafe(communityId);
+
+    // Real-time list eviction: fan out a personal `community:membership:removed`
+    // to EVERY ex-member's `user:<id>` channel so the deleted community vanishes
+    // from their list live, on every device — without depending on the async
+    // `notification:new` delivery path. Same personal event kick/ban/leave use, so
+    // a single FE listener (`community:membership:removed` → drop the row) covers
+    // every "you are no longer a member" case. Fire-and-forget: the community is
+    // already soft-deleted (GET /communities/mine no longer returns it), so a
+    // socket failure can never resurrect it — a reload/next read is authoritative.
+    try {
+      const removedAt = Date.now();
+      await Promise.allSettled(
+        memberIds.map((memberId) =>
+          publishChatUserEvent(
+            redis,
+            memberId,
+            "community:membership:removed",
+            {
+              communityId,
+              membershipStatus: "REMOVED",
+              reason: "deleted",
+              removedAt,
+            }
+          )
+        )
+      );
+    } catch (err) {
+      logger.warn(
+        `community:membership:removed (deleted) fan-out failed for community=${communityId}: ${String(err)}`
+      );
+    }
   },
 
   /**
