@@ -49,9 +49,22 @@ export const setCommentStatusSchema = z.object({
   enabled: z.boolean(),
 });
 
+/** POST /streams/:id/comments/:commentId/report body — user reports a comment. */
+export const reportCommentSchema = z.object({
+  reason: z.enum([
+    "SPAM",
+    "HATE_SPEECH",
+    "HARASSMENT",
+    "INAPPROPRIATE",
+    "OTHER",
+  ]),
+  details: z.string().max(500).optional(),
+});
+
 export type CreateStreamInput = z.infer<typeof createStreamSchema>;
 export type ListStreamsQuery = z.infer<typeof listStreamsQuerySchema>;
 export type UpdateStreamInput = z.infer<typeof updateStreamSchema>;
 export type CommentsQuery = z.infer<typeof commentsQuerySchema>;
 export type BanUserInput = z.infer<typeof banUserSchema>;
 export type SetCommentStatusInput = z.infer<typeof setCommentStatusSchema>;
+export type ReportCommentInput = z.infer<typeof reportCommentSchema>;

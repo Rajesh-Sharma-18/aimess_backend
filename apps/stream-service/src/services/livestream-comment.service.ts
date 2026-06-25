@@ -4,10 +4,30 @@ import type { communityGrpcClient as CommunityGrpcClient } from "../grpc/communi
 
 import type { LivestreamComment } from "../generated/prisma/index.js";
 import type { LivestreamCommentRepository } from "../repositories/livestream-comment.repository.js";
+import type { LivestreamCommentReportRepository } from "../repositories/livestream-comment-report.repository.js";
 import type { LivestreamRepository } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { redis as RedisClient } from "../config/redis.js";
 import type { userGrpcClient as UserGrpcClient } from "../grpc/user.client.js";
+
+export const COMMENT_REPORT_REASONS = [
+  "SPAM",
+  "HATE_SPEECH",
+  "HARASSMENT",
+  "INAPPROPRIATE",
+  "OTHER",
+] as const;
+export type CommentReportReason = (typeof COMMENT_REPORT_REASONS)[number];
+
+export interface CommentReportDto {
+  id: string;
+  commentId: string;
+  livestreamId: string;
+  reportedBy: string;
+  reason: string;
+  details: string | null;
+  createdAt: Date;
+}
 
 /** Public comment shape (REST + gRPC + Redis broadcast share this). */
 export interface CommentDto {
@@ -43,7 +63,8 @@ export class LivestreamCommentService {
     private readonly userClient: typeof UserGrpcClient,
     private readonly redis: typeof RedisClient,
     private readonly banRepo: LivestreamBanRepository,
-    private readonly communityClient: typeof CommunityGrpcClient
+    private readonly communityClient: typeof CommunityGrpcClient,
+    private readonly reportRepo: LivestreamCommentReportRepository
   ) {}
 
   /**
@@ -198,6 +219,43 @@ export class LivestreamCommentService {
     }
 
     return { commentId: comment.id, livestreamId: comment.livestreamId };
+  }
+
+  /**
+   * Submit a report on a live chat comment. Idempotent — a second report from
+   * the same user on the same comment returns the original row unchanged.
+   * The comment must belong to the given `livestreamId` (path param guard).
+   */
+  async reportComment(params: {
+    commentId: string;
+    livestreamId: string;
+    reportedBy: string;
+    reason: CommentReportReason;
+    details?: string;
+  }): Promise<CommentReportDto> {
+    const comment = await this.commentRepo.findById(params.commentId);
+    if (!comment) throw new NotFoundError("COMMENT_NOT_FOUND");
+    if (comment.livestreamId !== params.livestreamId) {
+      throw new NotFoundError("COMMENT_NOT_FOUND");
+    }
+
+    const report = await this.reportRepo.upsert({
+      commentId: params.commentId,
+      livestreamId: params.livestreamId,
+      reportedBy: params.reportedBy,
+      reason: params.reason,
+      details: params.details ?? null,
+    });
+
+    return {
+      id: report.id,
+      commentId: report.commentId,
+      livestreamId: report.livestreamId,
+      reportedBy: report.reportedBy,
+      reason: report.reason,
+      details: report.details ?? null,
+      createdAt: report.createdAt,
+    };
   }
 
   /**

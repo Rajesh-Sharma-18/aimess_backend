@@ -91,3 +91,24 @@ model LivestreamBan {
   @@index([livestreamId, bannedUserId])
   @@map("stream_bans")
 }
+
+// -----------------------------------------------------------------------------
+// LivestreamCommentReport — user-submitted report on a live chat comment.
+//   reason: SPAM | HATE_SPEECH | HARASSMENT | INAPPROPRIATE | OTHER
+//   details: optional free-text up to 500 chars
+//   Unique on (commentId, reportedBy) — one report per user per comment.
+// -----------------------------------------------------------------------------
+model LivestreamCommentReport {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  commentId    String
+  livestreamId String
+  reportedBy   String // userId who submitted the report
+  reason       String // enum: SPAM | HATE_SPEECH | HARASSMENT | INAPPROPRIATE | OTHER
+  details      String? // optional free-text context
+  createdAt    DateTime @default(now())
+
+  @@unique([commentId, reportedBy])
+  @@index([livestreamId])
+  @@index([commentId])
+  @@map("stream_comment_reports")
+}

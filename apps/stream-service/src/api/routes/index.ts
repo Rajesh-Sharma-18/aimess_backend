@@ -61,5 +61,12 @@ export function createServiceRoutes(controller: StreamController): IRouter {
   );
   router.get("/streams/:id/bans", authenticateAccessToken, controller.listBans);
 
+  // Comment reporting — any authenticated user.
+  router.post(
+    "/streams/:id/comments/:commentId/report",
+    authenticateAccessToken,
+    controller.reportComment
+  );
+
   return router;
 }

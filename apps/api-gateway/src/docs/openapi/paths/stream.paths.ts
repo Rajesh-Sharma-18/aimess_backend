@@ -180,7 +180,7 @@ const listStreams = {
     tags: ["Streams"],
     summary: "List livestreams",
     description:
-      "Paginated cursor list of streams. Filter by community and/or status. Results are ordered newest-first.",
+      "Paginated cursor list of streams. Filter by community and/or status. Results are ordered newest-first.\n\n**Live stream sidebar:** To populate the 'other live streams' sidebar while watching, call `GET /streams?status=LIVE&limit=5` (omit `communityId` to get global results across all communities).",
     security: streamAuth,
     parameters: [
       {
@@ -716,6 +716,76 @@ const listBans = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// POST /streams/{id}/comments/{commentId}/report — Report a comment
+// ---------------------------------------------------------------------------
+const reportComment = {
+  post: {
+    tags: ["Streams"],
+    summary: "Report a chat comment",
+    description: `Any authenticated viewer can report a live chat comment for moderation review. Idempotent — submitting a second report on the same comment returns the original report unchanged.
+
+**Reason codes:**
+- \`SPAM\` — Repeated or off-topic messages
+- \`HATE_SPEECH\` — Hate or discriminatory language
+- \`HARASSMENT\` — Targeting or threatening another user
+- \`INAPPROPRIATE\` — Violates community guidelines
+- \`OTHER\` — Anything else (add context in \`details\`)
+
+\`details\` is optional free-text context (max 500 characters).`,
+    security: streamAuth,
+    parameters: [
+      streamIdParam,
+      {
+        name: "commentId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description: "MongoDB ObjectId of the comment to report.",
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["reason"],
+            properties: {
+              reason: {
+                type: "string" as const,
+                enum: [
+                  "SPAM",
+                  "HATE_SPEECH",
+                  "HARASSMENT",
+                  "INAPPROPRIATE",
+                  "OTHER",
+                ],
+                example: "SPAM",
+              },
+              details: {
+                type: "string" as const,
+                maxLength: 500,
+                example: "This user is flooding the chat with the same link.",
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "201": streamOk(
+        "Report submitted (or existing report returned)",
+        "#/components/schemas/StreamCommentReport"
+      ),
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
 export const streamPaths = {
   "/streams": { ...createStream, ...listStreams },
   "/streams/{id}": { ...getStream, ...updateStream, ...deleteStream },
@@ -727,4 +797,5 @@ export const streamPaths = {
   "/streams/{id}/ban": banUser,
   "/streams/{id}/ban/{userId}": unbanUser,
   "/streams/{id}/bans": listBans,
+  "/streams/{id}/comments/{commentId}/report": reportComment,
 };
