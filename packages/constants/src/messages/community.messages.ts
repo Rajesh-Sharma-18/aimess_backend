@@ -46,6 +46,14 @@ export const COMMUNITY_MESSAGES = {
     vi: "Định danh cộng đồng này đã được sử dụng",
     en: "This community handle is already taken",
   },
+  INVALID_HANDLE: {
+    vi: "Định danh cộng đồng không hợp lệ",
+    en: "Invalid community handle format",
+  },
+  COMMUNITY_HANDLE_REQUIRED: {
+    vi: "Cộng đồng công khai cần có định danh hợp lệ để tạo liên kết chia sẻ",
+    en: "A public community requires a valid handle to build its share link",
+  },
   COMMUNITY_NOT_FOUND: {
     vi: "Không tìm thấy cộng đồng",
     en: "Community not found",
@@ -228,6 +236,10 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_INVITE_CREATED: {
     vi: "Đã gửi lời mời",
     en: "Invite sent",
+  },
+  COMMUNITY_INVITES_SENT: {
+    vi: "Đã xử lý lời mời",
+    en: "Invites processed",
   },
   COMMUNITY_INVITES_FETCHED: {
     vi: "Lấy danh sách lời mời thành công",
@@ -416,6 +428,14 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_INVITE_LINK_INACTIVE: {
     vi: "Liên kết mời này không còn hoạt động",
     en: "Invite link is no longer active",
+  },
+  COMMUNITY_INVITE_LINK_RATE_LIMITED: {
+    vi: "Bạn đang tạo hoặc gửi liên kết mời quá nhanh. Vui lòng thử lại sau.",
+    en: "You are creating or sending invite links too quickly. Please try again later.",
+  },
+  COMMUNITY_INVITE_LINK_LIMIT_REACHED: {
+    vi: "Bạn đã đạt số lượng liên kết mời đang hoạt động tối đa cho cộng đồng này. Hãy thu hồi bớt liên kết cũ.",
+    en: "You have reached the maximum number of active invite links for this community. Revoke an existing link first.",
   },
   COMMUNITY_INVITE_LINK_PREVIEW_FETCHED: {
     vi: "Đã lấy thông tin cộng đồng qua liên kết mời",

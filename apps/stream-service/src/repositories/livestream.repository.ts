@@ -129,4 +129,114 @@ export class LivestreamRepository {
     });
     return rows.map((r) => r.communityId);
   }
+
+  // ---------------------------------------------------------------------------
+  // Backoffice admin read model (gRPC live-read source of truth).
+  // The admin Livestream Management screen reads streams directly here over
+  // gRPC (AdminListStreams / AdminGetStream) — there is NO event-fed read-model
+  // to drift out of sync.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Offset-paginated admin list with combined filters. The `search` /
+   * `communityIds` / `creatorIds` triplet is OR-ed together (title contains the
+   * term, OR the stream belongs to one of the search-resolved communities/
+   * creators) and AND-ed with the hard filters (status, exact community/creator,
+   * date range). Sorting is whitelisted to fields the table exposes.
+   */
+  async adminList(
+    filter: AdminStreamFilter,
+    sortField: "createdAt" | "viewerCount" | "durationSeconds",
+    sortDir: "asc" | "desc",
+    skip: number,
+    take: number
+  ): Promise<Livestream[]> {
+    // duration is not a stored column — approximate ordering with peakViewers'
+    // sibling is not meaningful, so we order by livedAt for duration requests
+    // (longer-running LIVE streams started earlier) and re-confirm in the
+    // service layer where the exact duration is computed. For ENDED streams the
+    // service value is exact; createdAt/viewerCount map to stored columns.
+    const orderBy =
+      sortField === "durationSeconds"
+        ? [{ livedAt: sortDir }, { id: "desc" as const }]
+        : [{ [sortField]: sortDir }, { id: "desc" as const }];
+    return this.prisma.livestream.findMany({
+      where: buildAdminWhere(filter),
+      orderBy: orderBy as Prisma.LivestreamOrderByWithRelationInput[],
+      skip,
+      take,
+    });
+  }
+
+  /** Total rows matching the same filter (drives pagination metadata). */
+  async adminCount(filter: AdminStreamFilter): Promise<number> {
+    return this.prisma.livestream.count({ where: buildAdminWhere(filter) });
+  }
+}
+
+/** Combined filter accepted by the admin list/count queries. */
+export interface AdminStreamFilter {
+  /** Case-insensitive title substring; OR-ed with communityIds/creatorIds. */
+  search?: string;
+  /** Search-resolved community ids (community-name match); OR-ed with search. */
+  communityIds?: string[];
+  /** Search-resolved creator ids (creator-name match); OR-ed with search. */
+  creatorIds?: string[];
+  /** Exact status (PENDING|LIVE|ENDED|CANCELLED); undefined = all. */
+  status?: string;
+  /** Exact community filter (AND). */
+  communityId?: string;
+  /** Exact creator filter (AND). */
+  creatorId?: string;
+  /** AND-restrict to these communities (category filter). Empty/undefined = no restriction. */
+  restrictCommunityIds?: string[];
+  /** AND-restrict to these stream ids (report filter). Empty/undefined = no restriction. */
+  restrictStreamIds?: string[];
+  /** createdAt lower bound (inclusive). */
+  dateFrom?: Date;
+  /** createdAt upper bound (inclusive). */
+  dateTo?: Date;
+}
+
+/** Translate an {@link AdminStreamFilter} into a Prisma where clause. */
+function buildAdminWhere(f: AdminStreamFilter): Prisma.LivestreamWhereInput {
+  const and: Prisma.LivestreamWhereInput[] = [];
+
+  if (f.status) and.push({ status: f.status });
+  if (f.communityId) and.push({ communityId: f.communityId });
+  if (f.creatorId) and.push({ creatorId: f.creatorId });
+  if (f.restrictCommunityIds?.length) {
+    and.push({ communityId: { in: f.restrictCommunityIds } });
+  }
+  if (f.restrictStreamIds?.length) {
+    and.push({ id: { in: f.restrictStreamIds } });
+  }
+  if (f.dateFrom || f.dateTo) {
+    and.push({
+      createdAt: {
+        ...(f.dateFrom ? { gte: f.dateFrom } : {}),
+        ...(f.dateTo ? { lte: f.dateTo } : {}),
+      },
+    });
+  }
+
+  // Search OR-group: title contains the term OR the stream's community/creator
+  // matched the term by name (resolved upstream to ids). Only applied when a
+  // search term is present.
+  const hasSearch =
+    !!f.search ||
+    (f.communityIds?.length ?? 0) > 0 ||
+    (f.creatorIds?.length ?? 0) > 0;
+  if (hasSearch) {
+    const or: Prisma.LivestreamWhereInput[] = [];
+    if (f.search) {
+      or.push({ title: { contains: f.search, mode: "insensitive" } });
+    }
+    if (f.communityIds?.length)
+      or.push({ communityId: { in: f.communityIds } });
+    if (f.creatorIds?.length) or.push({ creatorId: { in: f.creatorIds } });
+    if (or.length) and.push({ OR: or });
+  }
+
+  return and.length ? { AND: and } : {};
 }

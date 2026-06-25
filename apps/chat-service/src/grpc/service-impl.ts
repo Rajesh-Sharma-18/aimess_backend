@@ -1879,6 +1879,35 @@ export function createCommunityImpl(
       })();
     },
 
+    getCommunityMessageById: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { roomId: string; messageId: string };
+          const snap = await deps.communityMessageService.getModerationSnapshot(
+            {
+              roomId: req.roomId,
+              messageId: req.messageId,
+            }
+          );
+          // camelCase keys (proto-loader keepCase:false maps object_key→objectKey …).
+          callback(null, {
+            found: snap.found,
+            message: snap.message,
+            contentType: snap.contentType,
+            sentAt: snap.sentAt,
+            senderId: snap.senderId,
+            media: snap.media,
+          });
+        } catch (err) {
+          logger.error(`gRPC getCommunityMessageById error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     getCommunityChatSummaries: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -2503,7 +2532,14 @@ export function createNotificationImpl(
           }
           // referenceId/entityId carried in data (if present) populate `entity`
           // so existing inbox queries that filter on entity.id keep working.
-          const entityId = data.entityId ?? data.referenceId ?? "";
+          // Fall back to communityId last so community notifications that carry
+          // only `data.communityId` (e.g. member_kicked / member_banned /
+          // community_deleted) still expose the id as `referenceId` on the
+          // notification:new socket DTO — the client uses it to drop the
+          // community from the sidebar without a hard refresh. Lowest priority,
+          // so an explicit entityId/referenceId always wins.
+          const entityId =
+            data.entityId ?? data.referenceId ?? data.communityId ?? "";
 
           const created = await deps.notificationRepo.create({
             userId: req.userId,

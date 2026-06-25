@@ -55,6 +55,7 @@ jest.mock("../../src/services/community-image.service.js", () => ({
 import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
+import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
 
 // ---------------------------------------------------------------------------
 // Typed aliases
@@ -236,6 +237,21 @@ describe("updateMemberRole() — community:member:updated", () => {
     });
     expect(typeof payload.updatedAt).toBe("number");
   });
+
+  it("posts exactly ONE community-wide ROLE_CHANGED line and no personal ROLE_CHANGED_SELF (no duplicate for the target)", async () => {
+    const sysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
+    await communityService.updateMemberRole(
+      CID,
+      ADMIN,
+      TARGET,
+      "MODERATOR" as never
+    );
+
+    const types = sysMsg.mock.calls.map((c) => c[0]?.systemMessageType);
+    expect(types).toContain("ROLE_CHANGED");
+    expect(types).not.toContain("ROLE_CHANGED_SELF");
+    expect(types.filter((t: string) => t === "ROLE_CHANGED")).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -265,5 +281,33 @@ describe("transferAdmin() — dual community:member:updated", () => {
     );
     expect(byUser.get(TARGET)).toBe("ADMIN");
     expect(byUser.get(ADMIN)).toBe("MEMBER");
+  });
+
+  it("posts exactly ONE community-wide ROLE_CHANGED line and no personal ROLE_CHANGED_SELF (no duplicate bubbles for new/outgoing admin)", async () => {
+    const sysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
+    sysMsg.mockClear();
+    await communityService.transferAdmin(CID, ADMIN, TARGET);
+
+    const calls = sysMsg.mock.calls.map(([arg]) => arg);
+
+    // ONE community-wide promotion line ("X is now the community admin"), bumps
+    // the list, personalized per-viewer at read time. oldRole is the SNAPSHOT
+    // taken before the flip. It carries NO visibleToUserId (community-visible).
+    const community = calls.find((c) => c.systemMessageType === "ROLE_CHANGED");
+    expect(community).toBeDefined();
+    expect(community).toMatchObject({
+      communityId: CID,
+      systemMessageType: "ROLE_CHANGED",
+      triggeredByUserId: ADMIN,
+      metadata: { targetUserId: TARGET, oldRole: "MEMBER", newRole: "ADMIN" },
+    });
+    expect(community.visibleToUserId).toBeUndefined();
+
+    // NO personal self-lines: both the new admin and the outgoing admin are in
+    // the room and receive the single community line (personalized to "You …"),
+    // so a personal ROLE_CHANGED_SELF would duplicate the bubble for them.
+    const types = calls.map((c) => c.systemMessageType);
+    expect(types).not.toContain("ROLE_CHANGED_SELF");
+    expect(calls).toHaveLength(1);
   });
 });

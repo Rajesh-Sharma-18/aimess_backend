@@ -45,6 +45,8 @@ const envSchema = z.object({
   MINIO_BUCKET_AVATARS: z.string().min(1).default("aimess-avatars"),
   MINIO_BUCKET_COMMUNITY: z.string().min(1).default("aimess-community"),
   MINIO_REGION: z.string(),
+  /** Presigned PUT lifetime for upload URLs (seconds). */
+  MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(300),
   MINIO_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
   CHAT_UPLOAD_MAX_BYTES: z.coerce.number().positive().default(52_428_800), // 50 MB (generic cap)
   CHAT_VIDEO_MAX_BYTES: z.coerce.number().positive().default(104_857_600), // 100 MB (video cap)
@@ -57,6 +59,11 @@ const envSchema = z.object({
   USER_SERVICE_GRPC_URL: z.string().default("0.0.0.0:4002"),
   AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),
   COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
+  NOTIFICATION_GRPC_URL: z.string().default("0.0.0.0:4006"),
+  /** user-service REST URL — snapshot fetching fallback. */
+  USER_SERVICE_URL: z.string().url().optional(),
+  /** auth-service REST URL — fallback account-name resolution. */
+  AUTH_SERVICE_URL: z.string().url().optional(),
   // Boot-time reconciliation of community chat rooms (pull from community-service
   // over gRPC). Disable to skip the reconciler entirely.
   COMMUNITY_ROOM_RECONCILE_ENABLED: z

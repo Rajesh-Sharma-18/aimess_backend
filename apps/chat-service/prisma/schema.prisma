@@ -85,7 +85,9 @@ model PrivateMessage {
   deliveredAt      Json      @default("{}")
 
   @@index([roomId, createdAt(sort: Desc)])
-  @@index([roomId, isDeleted, createdAt(sort: Desc)])
+  // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
+  // get a deterministic, index-backed total order with early-termination preserved.
+  @@index([roomId, isDeleted, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
@@ -186,7 +188,9 @@ model GroupMessage {
   editedAt           DateTime?
   editHistory        Json      @default("[]")
 
-  @@index([roomId, createdAt(sort: Desc)])
+  // sequenceNumber trails createdAt so timestamp-paginated reads (findByRoomIdTimeline)
+  // get a deterministic, index-backed total order with early-termination preserved.
+  @@index([roomId, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
   @@index([roomId, isDeleted, createdAt(sort: Desc)])
   @@index([roomId, parentMessageId, createdAt(sort: Desc)])
   @@index([roomId, messageType, createdAt(sort: Desc)])
@@ -345,9 +349,21 @@ model GeneralRoomMessage {
   @@index([roomId, sentBy])
   @@index([deletedForAll])
   @@index([roomId, messageType, createdAt(sort: Desc)])
+  // Backs the (createdAt, _id) keyset history page + countTimeline. Mongo uses
+  // _id as the implicit trailing sort key, so this covers the timeline scan.
+  @@index([roomId, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
   @@index([roomId, systemMessageType, createdAt(sort: Desc)])
   @@index([roomId, visibleToUserId, createdAt(sort: Desc)])
+  // Covering index for findByRoomIdTimeline (scroll/history): equality roomId +
+  // deletedForAll, range+sort createdAt, sequenceNumber tiebreak. Desc/Desc serves
+  // both before (desc) and after (asc, reverse scan) directions — index-backed sort
+  // with early termination instead of a full-room blocking sort.
+  @@index([roomId, deletedForAll, createdAt(sort: Desc), sequenceNumber(sort: Desc)])
+  // Covering index for findUpdatedAtSince (incremental sync): roomId + updatedAt ASC,
+  // sequenceNumber tiebreak. Tombstones are intentionally not filtered, so deletedForAll
+  // is excluded here.
+  @@index([roomId, updatedAt(sort: Asc), sequenceNumber(sort: Asc)])
   @@map("general_room_messages")
 }
 

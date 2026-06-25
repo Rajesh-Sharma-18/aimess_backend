@@ -8,6 +8,51 @@
 
 ---
 
+## Community Sharing & Deep Linking (shipped 2026-06-23)
+
+### What shipped
+
+- **NEW `GET /communities/by-handle/:handle`** (community-service) — public deep-link resolver for `https://aimess.me/<handle>`. **PUBLIC-only**: private/suspended/missing → 404 (never reveals a private community), banned caller → 403, malformed → 400 (`INVALID_HANDLE`). Returns `PublicCommunityResponse`. Reuses `findByHandleFull` (new repo method), `assertNotBanned`, `community-access-policy`. Route registered before `/:id` (static-before-param).
+- **URL/deep-link alignment** — `buildInviteUrl` now emits `https://aimess.me/+<code>` (the `+` private marker); `buildInviteDeepLink` emits `aimess://join?code=<code>` (was `aimess://invite/<code>`). `INVITE_LINK_BASE_URL` defaults to `https://aimess.me`.
+- **Invite preview** — `InviteLinkPreviewData` gained `joinRequestId` + `joinRequestStatus` so the client can render `PRIVATE_REQUESTED` (F5/E5).
+- **Private links default to request-to-join** — `createInviteLink` now defaults `autoApprove=false` for **both** types (was `true` for PRIVATE). Moderators opt into instant-join explicitly. ⚠️ behavior change vs prior "PRIVATE auto-joins".
+- **`aimess.me` link host on the api-gateway** — host-gated layer (`LINK_HOSTS`) serving `/.well-known/assetlinks.json` + `apple-app-site-association` (App/Universal-Link proofs) and a server-rendered "Open in app" preview (OG tags + platform-aware deferred-deep-link handoff via `detectLink` parity). Non-link hosts pass straight through to the API. `apps/api-gateway/src/linkhost/*` + `routes/linkhost.routes.ts`.
+- **Unauthenticated internal card lookup** — community-service `/internal/communities/by-handle/:handle/card` (shared-secret guarded, PUBLIC-only) feeds the gateway preview's OG card without exposing a public route.
+
+### FE guide / contract
+
+- **`docs/DEEP_LINKING.md`** (backend), client spec `AIMESS_Community_Sharing_and_Deeplinking_Guide.md`. OpenAPI updated (`by-handle` path, `PublicCommunityResponse`, preview fields). Real-time events (`community:joined`, `community:join_request:update`, `community:member:joined`) were already live — no socket changes.
+
+### Deferred / notes
+
+- Web preview is served from the gateway (Express SSR); could instead live in the Next.js frontend per spec §7.3 (then the gateway shrinks to just `.well-known`). Handle resolver keeps 3-char min (existing handles) vs spec's 5-char min.
+
+---
+
+## Community report cards — reported-content snapshot (shipped 2026-06-23)
+
+The moderator report card (`GET /communities/:id/reports`) needed "Reported Content", "Posted on", and a short "Reported ID" that the user-level report DTO didn't carry. Added **optional, backward-compatible** fields.
+
+### What shipped
+
+- **`CommunityReport` model** gained optional `reportedMessageId`, `reportedContentType`, `reportedContentText`, `reportedContentMedia` (Json — RAW object keys), `reportedContentPostedAt`. MongoDB is schemaless → no migration/`db push` required for optional fields.
+- **Message-level resolution (2026-06-23, follow-up)** — the report card was coming back with empty content because the FE filed user-level reports with no message reference. Reporting is now **message-level**: the client sends only `reportedMessageId`, and `createReport` resolves the message's text/media(raw keys)/postedAt from chat-service via a **new gRPC `GetCommunityMessageById`** (`community.proto`; chat-service `CommunityMessageService.getModerationSnapshot` reads the RAW row — IDOR-scoped on roomId, skips deleted-for-all — and returns RAW object keys + UPPER contentType + epoch-ms sentAt). community-service calls it through `chat.client.ts` (`getCommunityMessageById`, opossum breaker, fallback `found:false`). Best-effort: a missing/deleted message or chat-service outage stores the id with null content (report still created). proto is loaded from source at runtime — no `build:packages` needed.
+- **Snapshot-at-report-time (legacy fallback)** — the client MAY still pass the content in the create-report body; `createReportSchema` validates it (≤10 media, each `{ objectKey, contentType?, fileName?, size? }`; `reportedContentPostedAt` coerced ISO→Date). Used only when `reportedMessageId` is absent/unresolved. The server **never stores presigned URLs** — only raw keys.
+- **Resolve-on-read** — `toReportData` is now **async**: resolves each `reportedContentMedia` object key → presigned `MediaObject` via `toMediaObject` against `MINIO_BUCKET_COMMUNITY` (community chat attachments share that bucket). All 6 call sites updated; the two object-spread sites now `await`.
+- **`displayId`** — short, deterministic, display-only id derived from the report ObjectId (`deriveReportDisplayId`: last 6 hex → int → mod 100000 → 5-digit pad). Render as `#<displayId>`. No counter collection.
+- **Card field mapping** documented in `docs/COMMUNITIES_API.md` §3.9.
+
+### Tests
+
+- `tests/reports/reports.test.ts` (+3: snapshot forwarding, media-missing-objectKey 400, >10 media 400) and new `tests/reports/report-content-snapshot.test.ts` (service-level read path: `displayId`, snapshot fields, media resolved from raw key, user-level report → `[]`/null). Suite 467 green.
+
+### Notes
+
+- User-level reports keep working unchanged (all snapshot fields null/`[]`). Idempotent dedup returns the first report (does not merge a later tap's content).
+- Source = client snapshot (chosen over a chat-service gRPC resolve) so the card survives later edit/delete of the original message and needs no cross-service read.
+
+---
+
 ## Community Status (ACTIVE / CLOSED) + realtime close/reopen (shipped 2026-06-22)
 
 ### What shipped
@@ -16,6 +61,10 @@
 - **Close** (`POST /communities/:id/close`, ADMIN) sets `status=CLOSED`, auto-removes **all** members (incl. admin, `memberCount→0`), suspends the chat room, broadcasts `community:closed`, and pushes to ex-members. **Reopen** (`POST /communities/:id/reopen`, owner by `adminId`) sets ACTIVE, re-adds the owner as sole ADMIN; former members re-join normally. Both idempotent.
 - **Centralized policy** `apps/community-service/src/lib/community-access-policy.ts` (`assertWritable`/`assertJoinable`/`deriveStatus`/`isEffectivelyClosed`) is the single chokepoint — replaced the scattered `assertCommunityNotSuspended` (12 sites). Either CLOSED or SUSPENDED ⇒ non-writable. chat-service mirrors this with `assertCommunityRoomWritable` (access-guard) wired into send/edit/delete/react/pin.
 - `status` added to every community response (details/mine/discover/invites/join-requests/reports) + OpenAPI `CommunityData`. Realtime `community:closed` / `community:reopened` added to AsyncAPI + SOCKET_EVENTS §5.2. No gateway/proto changes (generic Redis relay + reused `community.chat.sync.queue` `community.status.changed`).
+
+### FE guide
+
+- Full frontend integration contract: **`docs/COMMUNITY_STATUS_FLOW.md`** (the `status` field, `community:closed` / `community:reopened` events, close/reopen endpoints, error codes, UI checklist).
 
 ### Deferred
 

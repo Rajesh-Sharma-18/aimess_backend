@@ -34,15 +34,18 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue([
-      {
-        id: "g1",
-        senderId: "u",
-        content: { text: "hi" },
-        createdAt: new Date(1),
-      },
-    ]);
-    mocks.groupMessageRepo.countByRoom.mockResolvedValue(1);
+    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "g1",
+          senderId: "u",
+          content: { text: "hi" },
+          createdAt: new Date(1),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.groupMessageRepo.countTimeline.mockResolvedValue(1);
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/messages`)
@@ -61,20 +64,23 @@ describe("GET /:roomId/messages (timeline, membership-gated)", () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
       role: "MEMBER",
     });
-    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue([
-      {
-        id: "g1",
-        senderId: "u",
-        senderAvatar: "avatars/u/a.png",
-        messageType: "IMAGE",
-        content: {
-          text: "",
-          files: [{ objectKey: "group-chat-uploads/grp/clip.mp4" }],
+    mocks.groupMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "g1",
+          senderId: "u",
+          senderAvatar: "avatars/u/a.png",
+          messageType: "IMAGE",
+          content: {
+            text: "",
+            files: [{ objectKey: "group-chat-uploads/grp/clip.mp4" }],
+          },
+          createdAt: new Date(1),
         },
-        createdAt: new Date(1),
-      },
-    ]);
-    mocks.groupMessageRepo.countByRoom.mockResolvedValue(1);
+      ],
+      hasMore: false,
+    });
+    mocks.groupMessageRepo.countTimeline.mockResolvedValue(1);
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/messages`)

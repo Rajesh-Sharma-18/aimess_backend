@@ -243,6 +243,20 @@ describe("reopenCommunity", () => {
     );
   });
 
+  it("also fans out community:reopened to the owner's user:<id> channel (room is empty post-close)", async () => {
+    await communityService.reopenCommunity(CID, ADMIN);
+
+    // The community:<id> room was emptied on close and reopen does not restore
+    // members, so a room-only emit reaches nobody. The owner's user channel must
+    // get it so their other tabs/devices flip back to ACTIVE without a refresh.
+    expect(pubUser).toHaveBeenCalledWith(
+      expect.anything(),
+      ADMIN,
+      "community:reopened",
+      expect.objectContaining({ communityId: CID, status: "ACTIVE" })
+    );
+  });
+
   it("authorizes by adminId, NOT active membership — rejects a non-owner", async () => {
     await expect(
       communityService.reopenCommunity(CID, NON_ADMIN)

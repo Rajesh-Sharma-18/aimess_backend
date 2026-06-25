@@ -98,6 +98,41 @@ export interface CommunityReopenedPayload {
 }
 
 /**
+ * `community:added` — the recipient just became an ACTIVE member of a community
+ * (admin add, join-request approval, invite-link redeem, or self-join). Delivered
+ * ONLY to the new member's `user:<id>` channel — they are not yet in the
+ * `community:<id>` room, so the room-scoped `community:member:joined` never
+ * reaches them. Carries a full list-row snapshot so the client inserts the
+ * community into the sidebar / "mine" list INSTANTLY with no GET /communities/mine
+ * round-trip and no page refresh. Idempotent: the client upserts by `communityId`.
+ */
+export interface CommunityAddedPayload {
+  communityId: string;
+  name: string;
+  handle: string;
+  description: string | null;
+  avatarUrl: string | null; // resolved presigned URL — render as-is, never persist
+  type: "PUBLIC" | "PRIVATE";
+  categoryId: string | null;
+  categoryName: string | null;
+  memberCount: number;
+  /** The recipient's role in the community. */
+  role: "ADMIN" | "MODERATOR" | "MEMBER";
+  /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
+  status: "ACTIVE" | "CLOSED";
+  /** How the recipient became a member. */
+  via:
+    | "add_members"
+    | "join_request_approved"
+    | "join_request_auto_accept"
+    | "invite_auto_approve"
+    | "invite_link_redeem"
+    | "self_join";
+  joinedAt: number; // epoch ms
+  addedAt: number; // epoch ms — idempotency key
+}
+
+/**
  * `community:member:updated` — a single member's roster row changed (role
  * promotion/demotion, admin transfer, or profile name/avatar sync). Room-scoped
  * to `community:<id>`; the client patches the Members page badge + chat header.

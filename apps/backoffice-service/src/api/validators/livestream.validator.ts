@@ -11,7 +11,13 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 // Enums (reused across schemas).
 // ---------------------------------------------------------------------------
-export const livestreamStatusEnum = z.enum(["LIVE", "ENDED", "CANCELLED"]);
+// SCHEDULED maps to a stream-service PENDING stream (created, not yet live).
+export const livestreamStatusEnum = z.enum([
+  "LIVE",
+  "ENDED",
+  "SCHEDULED",
+  "CANCELLED",
+]);
 
 export const endReasonCodeEnum = z.enum([
   "POLICY_VIOLATION",
@@ -125,6 +131,21 @@ export const listLivestreamReportsQuerySchema = z.object({
 });
 export type ListLivestreamReportsQueryInput = z.infer<
   typeof listLivestreamReportsQuerySchema
+>;
+
+// ---------------------------------------------------------------------------
+// Per-stream users (community members) list query.
+// ---------------------------------------------------------------------------
+export const livestreamUserTypeEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
+
+export const listLivestreamUsersQuerySchema = z.object({
+  search: z.string().trim().min(1).optional(),
+  type: livestreamUserTypeEnum.optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type ListLivestreamUsersQueryInput = z.infer<
+  typeof listLivestreamUsersQuerySchema
 >;
 
 // ---------------------------------------------------------------------------

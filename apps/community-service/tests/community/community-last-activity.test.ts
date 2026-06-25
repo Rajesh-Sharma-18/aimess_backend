@@ -103,7 +103,7 @@ describe("buildLastActivity — SYSTEM activities are NEVER sender-prefixed", ()
     expect(result.type).toBe("created");
     expect(result.userId).toBeNull();
     expect(result.username).toBeNull();
-    expect(result.preview).toBe("Community created successfully");
+    expect(result.preview).toBe("Community created");
   });
 
   it("null lastActivityType defaults to the sender-less 'created' shape", () => {
@@ -159,7 +159,7 @@ describe("buildLastActivity — ineligible lifecycle activity is suppressed", ()
     // The exact screenshot bug: "Jim Methews was removed from the community" must
     // NOT be the lastActivity. We can't recover the prior eligible message from
     // the single column, so Case 4 fallback = the sender-less "created" baseline.
-    expect(result.preview).toBe("Community created successfully");
+    expect(result.preview).toBe("Community created");
     expect(result.type).toBe("created");
     expect(result.username).toBeNull();
     expect(result.dateTime).toBe(CREATED_AT.getTime());

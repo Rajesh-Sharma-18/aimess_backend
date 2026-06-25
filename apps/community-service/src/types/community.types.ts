@@ -92,6 +92,54 @@ export type CommunityData = {
   lastActivity: CommunityLastActivity;
 };
 
+/**
+ * Public community resolver response — `GET /communities/by-handle/:handle`.
+ * Returned ONLY for PUBLIC communities (a private community's handle yields 404,
+ * so this surface never reveals private metadata). Drives the deep-link
+ * "Join" preview screen on all clients (Sharing & Deep-Linking spec §3/§9.1).
+ */
+export type PublicCommunityResponse = {
+  communityId: string;
+  handle: string;
+  name: string;
+  description: string | null;
+  /** Presigned GET URL (private bucket); null if no avatar. */
+  avatarUrl: string | null;
+  /** Presigned GET URL for the cover image; null if none. */
+  bannerUrl: string | null;
+  memberCount: number;
+  /** by-handle only ever resolves PUBLIC communities. */
+  type: "PUBLIC";
+  /**
+   * Canonical HTTPS share URL for this public community: `https://aimess.me/<handle>`
+   * (Sharing & Deep-Linking spec §9.5). Server-owned — clients MUST use this
+   * verbatim and never reconstruct it. No `+` marker (that prefix is reserved
+   * for code-based PRIVATE invite links).
+   */
+  shareUrl: string;
+  /** App deep-link: `aimess://resolve?handle=<handle>` (spec §4.1/§9.5). */
+  appDeepLink: string;
+  /** True when the caller is an ACTIVE member. */
+  isJoined: boolean;
+  /** Caller's role, or null if not an ACTIVE member. */
+  role: CommunityMemberRole | null;
+  /** Always false here — a banned caller gets 403, never a body. */
+  isBanned: boolean;
+};
+
+/**
+ * Minimal PUBLIC community metadata for the gateway's unauthenticated link
+ * preview (OG card). Internal-only — never returned to end clients.
+ */
+export type PublicCommunityCard = {
+  communityId: string;
+  name: string;
+  description: string | null;
+  avatarUrl: string | null;
+  bannerUrl: string | null;
+  memberCount: number;
+};
+
 /** Per-user mute config for a community. Returned by `GET /:id/mute`. */
 export type CommunityMuteData = {
   communityId: string;
@@ -287,12 +335,26 @@ export type CommunityMemberData = {
   snapshotAvatarUrlExpiresIn: number | null;
   /** Nested media object for the snapshot avatar (additive; mirrors snapshotAvatarUrl). */
   snapshotAvatar: MediaObject;
+  /**
+   * True only when the member's user profile genuinely could not be resolved
+   * (deleted user with no usable stored snapshot). When false (the default),
+   * snapshotUsername/snapshotDisplayName carry the live profile if user-service
+   * resolved it, otherwise the last-known-good stored snapshot — never a
+   * synthetic "Unknown" placeholder for a valid user.
+   */
+  profileUnavailable?: boolean;
   /** ISO-8601 timestamp of when the member was banned; null when not banned. */
   bannedAt: string | null;
   /** AuthUser.id of the admin who banned the member; null when not banned. */
   bannedBy: string | null;
   /** Operator-supplied ban reason; null when not banned or no reason given. */
   banReason: string | null;
+  /** ISO-8601 timestamp of when the active mute was applied; null if not muted. */
+  mutedAt: string | null;
+  /** AuthUser.id of the moderator who muted the member; null if not muted. */
+  mutedBy: string | null;
+  /** ISO-8601 timestamp when the mute expires; null = indefinite or not muted. */
+  mutedUntil: string | null;
 };
 
 /**
@@ -408,6 +470,7 @@ export type CommunityAuditAction =
   | "INVITE_LINK_CREATED"
   | "INVITE_LINK_REVOKED"
   | "INVITE_LINK_REDEEMED"
+  | "INVITE_LINK_BULK_SENT"
   // Backoffice (admin panel) moderation: close/reopen a community.
   | "ADMIN_SUSPEND_COMMUNITY"
   | "ADMIN_REOPEN_COMMUNITY";
@@ -416,10 +479,26 @@ export type CommunityAuditAction =
 export type CommunityInviteLinkData = {
   linkId: string;
   code: string;
-  /** Built from INVITE_LINK_BASE_URL when set, else just the code. */
+  /**
+   * Primary shareable HTTPS link, generated from the community's privacy:
+   *  • PUBLIC  → handle-based, deterministic, code-independent: `<base>/<handle>`
+   *  • PRIVATE → invite-code-based, revocable: `<base>/+<code>`
+   * Falls back to the bare handle/code when no base URL is configured (local/dev).
+   */
   url: string;
-  /** Deep-link for mobile: aimess://invite/<code> */
+  /**
+   * App deep-link matching `url`'s privacy mechanism:
+   *  • PUBLIC  → `aimess://resolve?handle=<handle>`
+   *  • PRIVATE → `aimess://join?code=<code>`
+   */
   appDeepLink: string;
+  /**
+   * Which mechanism produced `url`/`appDeepLink`. Lets clients branch without
+   * re-deriving privacy from the URL shape:
+   *  • "PUBLIC_HANDLE"  → handle-based (PUBLIC community)
+   *  • "PRIVATE_INVITE" → invite-code-based (PRIVATE community)
+   */
+  linkType: "PUBLIC_HANDLE" | "PRIVATE_INVITE";
   communityId: string;
   createdBy: string;
   maxUses: number | null;
@@ -447,6 +526,13 @@ export type InviteLinkPreviewData = {
   memberCount: number;
   communityType: CommunityType;
   isJoined: boolean;
+  /**
+   * Caller's PENDING join-request id for this community, or null. Non-null →
+   * the client renders PRIVATE_REQUESTED (+Cancel) instead of "Request to Join"
+   * (Sharing & Deep-Linking spec §3/§6, flow F5/E5).
+   */
+  joinRequestId: string | null;
+  joinRequestStatus: "PENDING" | null;
   invitationCode: string;
   inviteUrl: string;
   appDeepLink: string;
@@ -530,6 +616,29 @@ export type MyJoinRequestData = CommunityJoinRequestData & {
   };
 };
 
+export type BulkInviteOutcome =
+  | "INVITED"
+  | "ALREADY_INVITED"
+  | "ALREADY_MEMBER"
+  | "FAILED";
+
+export type BulkInviteUserResult = {
+  userId: string;
+  outcome: BulkInviteOutcome;
+  inviteId?: string;
+  reason?: string;
+};
+
+/** Summary returned by the bulk-invite endpoint. */
+export type BulkInviteResult = {
+  totalRequested: number;
+  invited: number;
+  alreadyInvited: number;
+  alreadyMembers: number;
+  failed: number;
+  results: BulkInviteUserResult[];
+};
+
 /** Plain invite DTO (accept/decline responses, create response). */
 export type CommunityInviteData = {
   inviteId: string;
@@ -576,6 +685,11 @@ export type MyInviteData = CommunityInviteData & {
 /** Plain report DTO (create / resolve responses, mine list base). */
 export type CommunityReportData = {
   reportId: string;
+  /**
+   * Short, human-friendly id derived deterministically from `reportId`
+   * (clients render it as e.g. "#99421"). Stable per report; display-only.
+   */
+  displayId: string;
   communityId: string;
   reporterId: string;
   targetUserId: string | null;
@@ -585,6 +699,19 @@ export type CommunityReportData = {
   /** ISO-8601 */
   reviewedAt: string | null;
   resolution: string | null;
+  /**
+   * Reported-content snapshot — all null/empty when the report is user-level
+   * only (no specific message referenced).
+   */
+  reportedMessageId: string | null;
+  /** CONTENT_TYPES (UPPER): TEXT, IMAGE, VIDEO, … */
+  reportedContentType: string | null;
+  /** Text / caption snapshot of the reported content. */
+  reportedContentText: string | null;
+  /** ISO-8601 — when the reported content was originally posted. */
+  reportedContentPostedAt: string | null;
+  /** Reported attachments, resolved to presigned media on read ([] when none). */
+  reportedContentMedia: MediaObject[];
   createdAt: string;
   updatedAt: string;
 };

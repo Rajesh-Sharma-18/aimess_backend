@@ -5,7 +5,34 @@ import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
 
 import type { LivestreamCommentService } from "../services/livestream-comment.service.js";
-import type { LivestreamService } from "../services/livestream.service.js";
+import type {
+  AdminStreamRow,
+  LivestreamService,
+} from "../services/livestream.service.js";
+
+/** Map an admin stream row → the gRPC wire shape (Date→epoch ms, null→""). */
+function toAdminStreamWire(r: AdminStreamRow): Record<string, unknown> {
+  return {
+    id: r.id,
+    communityId: r.communityId,
+    creatorId: r.creatorId,
+    title: r.title,
+    description: r.description,
+    thumbnail: r.thumbnail ?? "",
+    sourceType: r.sourceType,
+    status: r.status,
+    hlsUrl: r.hlsUrl ?? "",
+    flvUrl: r.flvUrl ?? "",
+    viewerCount: r.viewerCount,
+    peakViewers: r.peakViewers,
+    totalViews: r.totalViews,
+    totalComments: r.totalComments,
+    durationSeconds: r.durationSeconds,
+    livedAt: r.livedAt ? r.livedAt.getTime() : 0,
+    endedAt: r.endedAt ? r.endedAt.getTime() : 0,
+    createdAt: r.createdAt.getTime(),
+  };
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -206,6 +233,98 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
           callback(null, { success: result.success, status: result.status });
         } catch (err) {
           logger.error(`gRPC adminForceEnd error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // AdminListStreams — backoffice Livestream Management list (source of truth).
+    adminListStreams: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            search?: string;
+            status?: string;
+            communityId?: string;
+            creatorId?: string;
+            communityIds?: string[];
+            creatorIds?: string[];
+            restrictCommunityIds?: string[];
+            restrictStreamIds?: string[];
+            dateFrom?: string | number;
+            dateTo?: string | number;
+            sortField?: string;
+            sortDir?: string;
+            page?: number;
+            limit?: number;
+          };
+          const sortField: "createdAt" | "viewerCount" | "durationSeconds" =
+            req.sortField === "viewerCount"
+              ? "viewerCount"
+              : req.sortField === "duration"
+                ? "durationSeconds"
+                : "createdAt";
+          const dateFrom = Number(req.dateFrom ?? 0);
+          const dateTo = Number(req.dateTo ?? 0);
+          const { items, total } =
+            await deps.livestreamService.adminListStreams({
+              search: req.search || undefined,
+              status: req.status || undefined,
+              communityId: req.communityId || undefined,
+              creatorId: req.creatorId || undefined,
+              communityIds:
+                req.communityIds && req.communityIds.length > 0
+                  ? req.communityIds
+                  : undefined,
+              creatorIds:
+                req.creatorIds && req.creatorIds.length > 0
+                  ? req.creatorIds
+                  : undefined,
+              restrictCommunityIds:
+                req.restrictCommunityIds && req.restrictCommunityIds.length > 0
+                  ? req.restrictCommunityIds
+                  : undefined,
+              restrictStreamIds:
+                req.restrictStreamIds && req.restrictStreamIds.length > 0
+                  ? req.restrictStreamIds
+                  : undefined,
+              dateFrom: dateFrom > 0 ? new Date(dateFrom) : undefined,
+              dateTo: dateTo > 0 ? new Date(dateTo) : undefined,
+              sortField,
+              sortDir: req.sortDir === "asc" ? "asc" : "desc",
+              page: req.page && req.page > 0 ? req.page : 1,
+              limit: req.limit && req.limit > 0 ? req.limit : 20,
+            });
+          callback(null, {
+            streams: items.map(toAdminStreamWire),
+            total,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminListStreams error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // AdminGetStream — backoffice Livestream Management detail (source of truth).
+    adminGetStream: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string };
+          const row = await deps.livestreamService.adminGetStream(req.streamId);
+          if (!row) {
+            callback(null, { found: false });
+            return;
+          }
+          callback(null, { found: true, stream: toAdminStreamWire(row) });
+        } catch (err) {
+          logger.error(`gRPC adminGetStream error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

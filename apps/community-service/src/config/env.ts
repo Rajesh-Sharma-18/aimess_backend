@@ -30,8 +30,19 @@ const envSchema = z.object({
   /** Reserved for future community events (publish/consume). */
   RABBITMQ_URL: z.string().min(1),
 
-  /** Optional base URL used to build shareable community invite links. */
-  INVITE_LINK_BASE_URL: z.string().url().optional(),
+  /**
+   * Shared secret for unauthenticated internal (service-to-service) routes such
+   * as the gateway's public-card lookup for the link preview. When unset, the
+   * internal routes are disabled (return 404) — they are never public.
+   */
+  INTERNAL_SHARED_SECRET: z.string().optional(),
+
+  /**
+   * Dedicated link host for shareable community links (Telegram's `t.me`
+   * equivalent). Private invite links render as `<base>/+<code>`. Defaults to
+   * the production link domain; override per-env (e.g. a staging host).
+   */
+  INVITE_LINK_BASE_URL: z.string().url().default("https://aimess.me"),
 
   USER_GRPC_URL: z.string().default("0.0.0.0:4002"),
 
@@ -53,6 +64,8 @@ const envSchema = z.object({
   /** user-service's avatars bucket (shared MinIO) — used to presign member avatar GET URLs. */
   MINIO_BUCKET_AVATARS: z.string().min(1).default("aimess-avatars"),
   MINIO_REGION: z.string().default("us-east-1"),
+  /** Presigned PUT lifetime for upload URLs (seconds). */
+  MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(900),
   /** Presigned GET lifetime for community image display URLs (seconds). */
   MINIO_IMAGE_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
   /** Presigned GET lifetime for member avatar display URLs (seconds). */
@@ -63,6 +76,42 @@ const envSchema = z.object({
     .positive()
     .max(20 * 1024 * 1024)
     .default(5 * 1024 * 1024),
+
+  // --- Invite-link abuse protection (per-user, applies to ALL active members) ---
+  // Now that any active member (not just MODERATOR/ADMIN) can create + share
+  // invite links, these per-user caps bound the new abuse surface. All are
+  // optional with safe defaults so existing .env files keep working.
+
+  /** Max invite-link CREATE calls per user inside the rolling window. */
+  COMMUNITY_INVITE_CREATE_RATE_MAX: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(20),
+  /** Rolling window (seconds) for the invite-link CREATE rate limit. */
+  COMMUNITY_INVITE_CREATE_RATE_WINDOW_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3600),
+  /** Max invite-link BULK-SEND calls per user inside the rolling window. */
+  COMMUNITY_INVITE_BULK_RATE_MAX: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(10),
+  /** Rolling window (seconds) for the invite-link BULK-SEND rate limit. */
+  COMMUNITY_INVITE_BULK_RATE_WINDOW_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3600),
+  /** Max simultaneously-ACTIVE invite links one member may own per community. */
+  COMMUNITY_INVITE_MAX_ACTIVE_LINKS_PER_MEMBER: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(20),
 });
 
 const parsed = envSchema.safeParse(process.env);

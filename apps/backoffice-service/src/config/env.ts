@@ -16,6 +16,8 @@ const envSchema = z.object({
 
   // Admin JWT — separate secret/lifetime from the user-facing access token.
   JWT_ADMIN_SECRET: z.string().min(1),
+  /** Signing secret for admin refresh tokens. Falls back to JWT_ADMIN_SECRET when unset. */
+  JWT_ADMIN_REFRESH_SECRET: z.string().min(1).optional(),
   /** Admin access-token lifetime in seconds (default 8h). */
   JWT_ADMIN_EXPIRES_IN: z.string().default("28800"),
   /** Admin opaque refresh-token lifetime in seconds (default 7d). */

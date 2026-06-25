@@ -13,7 +13,8 @@ import {
   assertAttachmentsValid,
 } from "../constants/media-limits.js";
 import {
-  personalizeCommunitySystemMessageForViewer,
+  buildCommunitySystemFallbackText,
+  sanitizeCommunitySystemMetadata,
   type CommunitySystemMessageType,
 } from "@aimess/constants";
 import { env } from "../config/env.js";
@@ -152,6 +153,67 @@ export class CommunityMessageService {
       owner: params.owner ?? null,
       logo: params.logo ?? null,
     });
+  }
+
+  /**
+   * Moderation snapshot of a single community message — for the report card.
+   * Reads the RAW row (no URL resolution) so the caller persists RAW object
+   * keys and resolves them to presigned URLs on read. Scoped by roomId as an
+   * IDOR guard; `found:false` for a missing / cross-room / deleted-for-all id.
+   */
+  async getModerationSnapshot(params: {
+    roomId: string;
+    messageId: string;
+  }): Promise<{
+    found: boolean;
+    message: string;
+    contentType: string;
+    sentAt: number;
+    senderId: string;
+    media: {
+      objectKey: string;
+      contentType: string;
+      fileName: string;
+      size: number;
+    }[];
+  }> {
+    const empty = {
+      found: false,
+      message: "",
+      contentType: "",
+      sentAt: 0,
+      senderId: "",
+      media: [] as {
+        objectKey: string;
+        contentType: string;
+        fileName: string;
+        size: number;
+      }[],
+    };
+    const msg = await this.messageRepo.findById(params.messageId);
+    if (!msg || msg.roomId !== params.roomId || msg.deletedForAll) {
+      return empty;
+    }
+    const atts = Array.isArray(msg.attachments)
+      ? (msg.attachments as Record<string, unknown>[])
+      : [];
+    const media = atts
+      .map((a) => ({
+        objectKey: String(a.objectKey ?? ""),
+        contentType: String(a.contentType ?? a.mimeType ?? ""),
+        fileName: String(a.fileName ?? a.name ?? ""),
+        size: typeof a.size === "number" ? a.size : 0,
+      }))
+      .filter((m) => m.objectKey);
+    return {
+      found: true,
+      message: msg.message ?? "",
+      contentType: normalizeMessageType(msg.messageType),
+      sentAt:
+        msg.createdAt instanceof Date ? msg.createdAt.getTime() : Date.now(),
+      senderId: msg.sentBy,
+      media,
+    };
   }
 
   async sendMessage(params: {
@@ -555,19 +617,36 @@ export class CommunityMessageService {
   private personalizeSystemText(
     systemMessageType: string | null | undefined,
     systemMetadata: unknown,
-    thirdPersonText: string,
+    storedText: string,
     viewerUserId: string | undefined
   ): string {
-    if (!viewerUserId || !systemMessageType) return thirdPersonText;
+    if (!systemMessageType) return storedText;
     const metadata = (systemMetadata ?? {}) as Record<string, unknown>;
-    return personalizeCommunitySystemMessageForViewer(
+
+    // Always rebuild from the canonical builder. This achieves three things:
+    //
+    //  1. CANONICAL UPGRADE — stale stored rows written by old code (e.g.
+    //     "Jim Methews created the community") are transparently upgraded to the
+    //     current text ("Community created") with no DB migration required.
+    //
+    //  2. PERSONALIZATION — when the viewer is the actor or target of the
+    //     event, the builder switches to the "You …" first-person form
+    //     ("You are now a moderator" vs "John Doe is now a moderator").
+    //
+    //  3. SSoT — Chat Room / Sync / Socket read paths all produce the same
+    //     text because they all run through this single rebuild gate.
+    //
+    // storedText is only used as a final fallback in the impossible case that
+    // the builder returns empty (the default case in the switch never fires,
+    // so this guard is purely defensive).
+    const rebuilt = buildCommunitySystemFallbackText(
       systemMessageType as CommunitySystemMessageType,
       metadata,
-      thirdPersonText,
       String(metadata.actorName ?? ""),
       String(metadata.targetName ?? ""),
-      viewerUserId
+      viewerUserId ?? ""
     );
+    return rebuilt || storedText;
   }
 
   private toWire(
@@ -679,6 +758,15 @@ export class CommunityMessageService {
           wire.content = { ...content, text: personalized };
         }
       }
+
+      // ACTOR-LESS lifecycle lines must not leak actor identity to the client
+      // (which localizes from systemMetadata). Strip actor/target keys so a
+      // legacy row that stored creatorName/actorName can never render
+      // "{name} created the community". No-op for actor-bearing types.
+      wire.systemMetadata = sanitizeCommunitySystemMetadata(
+        m.systemMessageType,
+        wire.systemMetadata as Record<string, unknown> | null | undefined
+      );
     }
 
     return { ...wire, readBy, deliveredTo } as CommunityMessageWire;
@@ -719,19 +807,29 @@ export class CommunityMessageService {
   }
 
   /**
-   * Timestamp-keyset page (before_ts / after_ts). Over-fetches one extra row so
-   * `hasMore` is exact; `nextCursor` is the boundary createdAt as epoch-ms.
+   * Keyset history page (before_ts scroll). The repo filters hidden/personal/
+   * deleted rows in the DB and returns exactly `limit` visible rows plus an exact
+   * `hasMore`, so a hidden row in the window can no longer make pagination
+   * terminate early. `nextCursor` is a COMPOUND `"<createdAtMs>_<id>"` keyset
+   * cursor (not a bare millisecond): the `_id` tiebreaker is what keeps messages
+   * sharing one millisecond reachable. The client feeds it back verbatim as the
+   * next `before_ts`.
    */
   async getMessagesTimeline(params: {
     roomId: string;
     userId: string;
     direction: "before" | "after";
     ts: Date;
+    /** Keyset tiebreaker parsed from a compound before_ts ("<ms>_<id>"). */
+    boundaryId?: string | null;
+    /** True for the first page (no cursor) so the newest message is included. */
+    inclusive?: boolean;
     limit: number;
   }): Promise<{
     items: CommunityMessageWire[];
     hasMore: boolean;
     nextCursor: string | null;
+    total: number;
   }> {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
@@ -742,28 +840,36 @@ export class CommunityMessageService {
       params.roomId,
       params.userId
     );
-    const [rows, members] = await Promise.all([
-      this.messageRepo.findByRoomIdTimeline({
-        roomId: params.roomId,
-        userId: params.userId,
-        direction: params.direction,
-        ts: params.ts,
-        limit: params.limit,
-        viewerIsActiveMember: isActiveMember(member),
-      }),
-      this.memberRepo.findReadStatusByRoom(params.roomId),
-    ]);
+    const viewerIsActiveMember = isActiveMember(member);
+    const [{ messages: pageRows, hasMore }, members, total] = await Promise.all(
+      [
+        this.messageRepo.findByRoomIdTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          direction: params.direction,
+          ts: params.ts,
+          boundaryId: params.boundaryId ?? null,
+          inclusive: params.inclusive ?? false,
+          limit: params.limit,
+          viewerIsActiveMember,
+        }),
+        this.memberRepo.findReadStatusByRoom(params.roomId),
+        this.messageRepo.countTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          viewerIsActiveMember,
+        }),
+      ]
+    );
 
-    const hasMore = rows.length > params.limit;
-    const pageRows = rows.slice(0, params.limit);
-
-    // For "before" direction the DB fetches newest-first so LIMIT correctly
-    // selects the closest-to-cursor window. The boundary for the next page is
-    // the oldest item in that window (pageRows tail). Reverse before returning
-    // so every response surface is oldest→newest (ascending chronological order).
+    // For "before" the DB returns newest-first, so the boundary for the next
+    // (older) page is the oldest item in the window — the tail. Reverse before
+    // returning so every response surface is oldest→newest (ascending order).
     const boundary = pageRows[pageRows.length - 1];
     const nextCursor =
-      hasMore && boundary ? String(boundary.createdAt.getTime()) : null;
+      hasMore && boundary
+        ? `${boundary.createdAt.getTime()}_${boundary.id}`
+        : null;
 
     const orderedItems =
       params.direction === "before" ? [...pageRows].reverse() : pageRows;
@@ -804,6 +910,7 @@ export class CommunityMessageService {
       ),
       hasMore,
       nextCursor,
+      total,
     };
   }
 
@@ -991,7 +1098,14 @@ export class CommunityMessageService {
         syncEventType,
         systemMessageType:
           (msg as Record<string, unknown>).systemMessageType ?? null,
-        systemMetadata: (msg as Record<string, unknown>).systemMetadata ?? null,
+        systemMetadata:
+          sanitizeCommunitySystemMetadata(
+            msg.systemMessageType,
+            (msg as Record<string, unknown>).systemMetadata as
+              | Record<string, unknown>
+              | null
+              | undefined
+          ) ?? null,
       };
     });
 
@@ -1007,32 +1121,42 @@ export class CommunityMessageService {
     userId: string;
     messageId: string;
     limit: number;
-  }): Promise<{ items: CommunityMessageWire[] }> {
+  }): Promise<{ items: CommunityMessageWire[]; total: number }> {
     const { member } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
       params.userId
     );
+    const viewerIsActiveMember = isActiveMember(member);
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
-      return { items: [] };
+      return { items: [], total: 0 };
     }
-    const [rows, members] = await Promise.all([
+    const [rows, members, total] = await Promise.all([
       this.messageRepo.findAroundDate({
         roomId: params.roomId,
         userId: params.userId,
         anchorDate: anchor.createdAt,
         limit: params.limit,
-        viewerIsActiveMember: isActiveMember(member),
+        viewerIsActiveMember,
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
+      // Use the history-visible count (same filter as the timeline) so `total`
+      // matches what the client can actually page through — not countByRoom's
+      // raw total (which includes hidden/personal/deleted-for-me rows).
+      this.messageRepo.countTimeline({
+        roomId: params.roomId,
+        userId: params.userId,
+        viewerIsActiveMember,
+      }),
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
     return {
       items: rows.map((m) =>
         this.toWire(m, members, urlMap, undefined, params.userId)
       ),
+      total,
     };
   }
 

@@ -7,6 +7,7 @@ import {
   endLivestream,
   getLivestreamDetails,
   listLivestreamReports,
+  listLivestreamUsers,
   listLivestreams,
   presignThumbnailUpload,
   saveThumbnail,
@@ -23,6 +24,7 @@ import {
   bulkReviewReportsSchema,
   endLivestreamSchema,
   listLivestreamReportsQuerySchema,
+  listLivestreamUsersQuerySchema,
   listLivestreamsQuerySchema,
   livestreamIdParamSchema,
   thumbnailPresignSchema,
@@ -71,6 +73,13 @@ livestreamRoutes.get(
   validateParams(livestreamIdParamSchema),
   validateQuery(listLivestreamReportsQuerySchema),
   listLivestreamReports
+);
+livestreamRoutes.get(
+  "/livestreams/:livestreamId/users",
+  requirePermission(PERMISSIONS.LIVESTREAMS_READ),
+  validateParams(livestreamIdParamSchema),
+  validateQuery(listLivestreamUsersQuerySchema),
+  listLivestreamUsers
 );
 livestreamRoutes.post(
   "/livestreams/:livestreamId/end",

@@ -34,17 +34,20 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "active",
     });
-    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue([
-      {
-        id: "m1",
-        roomId: ROOM,
-        sentBy: "u",
-        message: "hi",
-        messageType: "text",
-        createdAt: new Date(1),
-      },
-    ]);
-    mocks.generalRoomMessageRepo.countByRoom.mockResolvedValue(1);
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m1",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "hi",
+          messageType: "text",
+          createdAt: new Date(1),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(1);
     mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
 
     const res = await request(app)
@@ -60,38 +63,41 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "active",
     });
-    // Repository returns newest-first (DESC) as the DB would for a before-direction
-    // keyset page. The service must reverse this before responding.
-    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue([
-      {
-        id: "m3",
-        roomId: ROOM,
-        sentBy: "u",
-        message: "newest",
-        messageType: "text",
-        createdAt: new Date(3000),
-        deletedBy: [],
-      },
-      {
-        id: "m2",
-        roomId: ROOM,
-        sentBy: "u",
-        message: "middle",
-        messageType: "text",
-        createdAt: new Date(2000),
-        deletedBy: [],
-      },
-      {
-        id: "m1",
-        roomId: ROOM,
-        sentBy: "u",
-        message: "oldest",
-        messageType: "text",
-        createdAt: new Date(1000),
-        deletedBy: [],
-      },
-    ]);
-    mocks.generalRoomMessageRepo.countByRoom.mockResolvedValue(3);
+    // Repository returns the page newest-first (DESC) as the DB would for a
+    // before-direction keyset page. The service must reverse this before responding.
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m3",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "newest",
+          messageType: "text",
+          createdAt: new Date(3000),
+          deletedBy: [],
+        },
+        {
+          id: "m2",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "middle",
+          messageType: "text",
+          createdAt: new Date(2000),
+          deletedBy: [],
+        },
+        {
+          id: "m1",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "oldest",
+          messageType: "text",
+          createdAt: new Date(1000),
+          deletedBy: [],
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(3);
     mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
 
     const res = await request(app)
@@ -111,38 +117,32 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "active",
     });
-    // Simulate limit=2 with hasMore: repository over-fetches limit+1=3 rows DESC.
-    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue([
-      {
-        id: "m3",
-        roomId: ROOM,
-        sentBy: "u",
-        message: "newest",
-        messageType: "text",
-        createdAt: new Date(3000),
-        deletedBy: [],
-      },
-      {
-        id: "m2",
-        roomId: ROOM,
-        sentBy: "u",
-        message: "second",
-        messageType: "text",
-        createdAt: new Date(2000),
-        deletedBy: [],
-      },
-      // Third row triggers hasMore — service slices it off before responding.
-      {
-        id: "m1",
-        roomId: ROOM,
-        sentBy: "u",
-        message: "older",
-        messageType: "text",
-        createdAt: new Date(1000),
-        deletedBy: [],
-      },
-    ]);
-    mocks.generalRoomMessageRepo.countByRoom.mockResolvedValue(10);
+    // Repo returns the page (limit=2) newest-first plus an exact hasMore flag.
+    // The DB now computes hasMore via over-fetch, so the service no longer slices.
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m3",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "newest",
+          messageType: "text",
+          createdAt: new Date(3000),
+          deletedBy: [],
+        },
+        {
+          id: "m2",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "second",
+          messageType: "text",
+          createdAt: new Date(2000),
+          deletedBy: [],
+        },
+      ],
+      hasMore: true,
+    });
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(10);
     mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
 
     const res = await request(app)
@@ -155,13 +155,40 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
       hasMore: boolean;
       nextCursor: string;
     };
-    // Page returns [m2, m3] in ASC order (m1 was the over-fetched hasMore sentinel).
+    // Page returns [m2, m3] in ASC order.
     expect(body.data).toHaveLength(2);
     expect(body.data[0].id).toBe("m2");
     expect(body.data[1].id).toBe("m3");
     expect(body.hasMore).toBe(true);
-    // nextCursor = m2.createdAt (oldest in page) — send as before_ts to load older msgs.
-    expect(body.nextCursor).toBe("2000");
+    // nextCursor is a COMPOUND keyset "<oldest-in-page ms>_<id>" — fed back as
+    // before_ts. The _id tiebreaker keeps same-millisecond messages reachable.
+    expect(body.nextCursor).toBe("2000_m2");
+  });
+
+  it("POSITIVE: a compound before_ts ('<ms>_<id>') is parsed into the (ts, boundaryId) keyset", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [],
+      hasMore: false,
+    });
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(0);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
+
+    const boundaryId = "a".repeat(24);
+    const res = await request(app)
+      .get(
+        `${BASE}/rooms/${ROOM}/messages?before_ts=2000_${boundaryId}&limit=5`
+      )
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    const call =
+      mocks.generalRoomMessageRepo.findByRoomIdTimeline.mock.calls[0][0];
+    expect(call.boundaryId).toBe(boundaryId);
+    expect(call.ts.getTime()).toBe(2000);
+    expect(call.inclusive).toBe(false); // a cursor page is exclusive
   });
 
   // AUDIT H2 — the before_ts/latest history list must be gated on membership.

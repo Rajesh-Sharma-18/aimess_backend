@@ -70,6 +70,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
 
 jest.mock("@aimess/redis", () => ({
   publishCommunityRoomEvent: jest.fn(async () => 1),
+  publishChatUserEvent: jest.fn(async () => 1),
 }));
 
 jest.mock("../../src/repositories/community.repository.js", () => ({

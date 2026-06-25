@@ -40,8 +40,7 @@ export function buildCommunitySystemFallbackText(
   viewerUserId?: string | null
 ): string {
   const actor = actorName || "Someone";
-  const target =
-    (metadata.targetName as string) || targetName || actorName || "A member";
+  const target = (metadata.targetName as string) || targetName || "A member";
 
   const actorId = actorUserIdOf(metadata);
   const targetId = targetUserIdOf(metadata);
@@ -52,8 +51,12 @@ export function buildCommunitySystemFallbackText(
   switch (type) {
     case "COMMUNITY_CREATED":
       return "Community created";
-    case "COMMUNITY_NAME_UPDATED":
-      return "Community name updated";
+    case "COMMUNITY_NAME_UPDATED": {
+      const newName = ((metadata.newName as string) || "").trim();
+      return newName
+        ? `Community renamed to "${newName}"`
+        : "Community name updated";
+    }
     case "COMMUNITY_DESCRIPTION_UPDATED":
       return "Community description updated";
     case "COMMUNITY_AVATAR_UPDATED":
@@ -62,6 +65,12 @@ export function buildCommunitySystemFallbackText(
       return "Community banner updated";
     case "COMMUNITY_UPDATED":
       return "Community details updated";
+    case "LIVE_STREAM_STARTED":
+      return "Live stream started";
+    case "LIVE_STREAM_ENDED": {
+      const duration = ((metadata.duration as string) || "").trim();
+      return duration ? `Live stream ended (${duration})` : "Live stream ended";
+    }
 
     case "ROLE_CHANGED":
     case "MEMBER_ROLE_CHANGED": {
@@ -76,6 +85,11 @@ export function buildCommunitySystemFallbackText(
       }
       const newRole = ((metadata.newRole as string) || "").toUpperCase();
       const oldRole = ((metadata.oldRole as string) || "").toUpperCase();
+      // Admin promotion is an ownership hand-off — there is exactly ONE admin, so
+      // phrase it as "the community admin" (Telegram-style) rather than "an admin".
+      if (newRole === "ADMIN") {
+        return `${target} is now the community admin`;
+      }
       if (
         newRole === "MEMBER" &&
         (oldRole === "ADMIN" || oldRole === "MODERATOR")
@@ -88,6 +102,9 @@ export function buildCommunitySystemFallbackText(
     case "ROLE_CHANGED_SELF": {
       const newRole = ((metadata.newRole as string) || "").toUpperCase();
       const oldRole = ((metadata.oldRole as string) || "").toUpperCase();
+      if (newRole === "ADMIN") {
+        return "You are now the community admin";
+      }
       if (
         newRole === "MEMBER" &&
         (oldRole === "ADMIN" || oldRole === "MODERATOR")

@@ -49,14 +49,36 @@ jest.mock("../../src/grpc/user.client.js", () => ({
 
 // --- chat-service gRPC client: created lazily, but stub it so no proto load /
 //     gRPC channel is ever attempted under test. -----------------------------
-jest.mock("../../src/grpc/chat.client.js", () => ({
-  getChatClient: jest.fn(() => ({
-    getCommunityChatSummaries: jest.fn(async () => []),
-    bulkMarkCommunityRead: jest.fn(async () => 0),
+const chatClientStub = () => ({
+  getCommunityChatSummaries: jest.fn(async () => []),
+  bulkMarkCommunityRead: jest.fn(async () => 0),
+  ensureCommunityRoom: jest.fn(async () => true),
+  getCommunityMessageById: jest.fn(async () => ({
+    found: false,
+    message: "",
+    contentType: "",
+    postedAt: 0,
+    senderId: "",
+    media: [],
   })),
-  createChatClient: jest.fn(() => ({
-    getCommunityChatSummaries: jest.fn(async () => []),
-    bulkMarkCommunityRead: jest.fn(async () => 0),
+});
+jest.mock("../../src/grpc/chat.client.js", () => ({
+  getChatClient: jest.fn(() => chatClientStub()),
+  createChatClient: jest.fn(() => chatClientStub()),
+}));
+
+// --- stream-service gRPC client: created lazily, but stub it so no proto load
+//     (path derived from `import.meta.url`) / gRPC channel is ever attempted
+//     under test. Without this, the real module is transpiled to CJS and its
+//     top-level `const __dirname` collides with the wrapper-provided binding. --
+jest.mock("../../src/grpc/stream.client.js", () => ({
+  getStreamClient: jest.fn(() => ({
+    getActiveCommunityIds: jest.fn(async () => new Set()),
+    getLiveStreamsByCommunity: jest.fn(async () => []),
+  })),
+  createStreamClient: jest.fn(() => ({
+    getActiveCommunityIds: jest.fn(async () => new Set()),
+    getLiveStreamsByCommunity: jest.fn(async () => []),
   })),
 }));
 

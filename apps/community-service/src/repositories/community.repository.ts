@@ -33,6 +33,30 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * Batch fetch of communities by id for backoffice enrichment (the Livestream
+   * Management list/detail joins community name + avatar + category onto each
+   * stream in a single round-trip). Returns the RAW avatar object key — the
+   * caller resolves it to a presigned URL. Soft-deleted communities are still
+   * returned (admin context can surface streams from removed communities).
+   * Callers must pre-filter to valid ObjectId strings.
+   */
+  async adminGetCommunitiesByIds(ids: string[]) {
+    if (ids.length === 0) return [];
+    return prisma.community.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        name: true,
+        avatarUrl: true,
+        categoryId: true,
+        categoryName: true,
+        memberCount: true,
+        category: { select: { slug: true, name: true } },
+      },
+    });
+  },
+
   // ---------------------------------------------------------------------------
   // Admin category CRUD
   // ---------------------------------------------------------------------------
@@ -197,6 +221,22 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * Full-row, case-insensitive handle lookup (with category) for the public
+   * by-handle resolver. Unlike `findByHandle` (id-only uniqueness probe), this
+   * returns the whole community so the service can apply PUBLIC/suspended gates
+   * and serialize the preview.
+   */
+  findByHandleFull(handle: string) {
+    return prisma.community.findFirst({
+      where: {
+        deletedAt: { isSet: false },
+        handle: { equals: handle, mode: "insensitive" },
+      },
+      include: { category: { select: { id: true, name: true } } },
+    });
+  },
+
   createCommunity(data: {
     name: string;
     handle: string;
@@ -216,7 +256,11 @@ export const communityRepository = {
         ...data,
         memberCount: 1,
         lastActivityType: "created",
-        lastActivityPreview: "Community created successfully",
+        // Canonical SYSTEM text — MUST match buildCommunitySystemFallbackText(
+        // "COMMUNITY_CREATED") and buildLastActivity's "created" fallback so the
+        // Mine / List / Sync APIs show the same string as the chat room from the
+        // instant of creation (before the async community.activity event lands).
+        lastActivityPreview: "Community created",
         lastActivityUsername: null,
       },
       include: { category: { select: { id: true, name: true } } },
@@ -971,6 +1015,15 @@ export const communityRepository = {
           ],
         },
       },
+      select: { communityId: true },
+    });
+    return rows.map((r) => r.communityId);
+  },
+
+  /** Community ids where the user has an active ban. */
+  async findBannedCommunityIds(userId: string): Promise<string[]> {
+    const rows = await prisma.communityMember.findMany({
+      where: { userId, status: CommunityMemberStatus.BANNED },
       select: { communityId: true },
     });
     return rows.map((r) => r.communityId);
@@ -1885,8 +1938,10 @@ export const communityRepository = {
     page: number;
     limit: number;
   }) {
+    const bannedIds = await this.findBannedCommunityIds(params.userId);
     const where: Prisma.CommunityJoinRequestWhereInput = {
       userId: params.userId,
+      ...(bannedIds.length > 0 && { communityId: { notIn: bannedIds } }),
     };
     if (params.status) where.status = params.status;
 
@@ -1930,6 +1985,23 @@ export const communityRepository = {
   findInviteByCommunityAndInvitee(communityId: string, inviteeId: string) {
     return prisma.communityInvite.findUnique({
       where: { communityId_inviteeId: { communityId, inviteeId } },
+    });
+  },
+
+  /** Batch fetch existing invite rows for multiple invitees in one query. */
+  findInvitesByUserIds(communityId: string, userIds: string[]) {
+    if (userIds.length === 0) return Promise.resolve([]);
+    return prisma.communityInvite.findMany({
+      where: { communityId, inviteeId: { in: userIds } },
+    });
+  },
+
+  /** Bulk-recycle multiple non-PENDING invites back to PENDING with a new inviter. */
+  recycleManyPendingInvites(ids: string[], inviterId: string) {
+    if (ids.length === 0) return Promise.resolve({ count: 0 });
+    return prisma.communityInvite.updateMany({
+      where: { id: { in: ids } },
+      data: { status: CommunityInviteStatus.PENDING, inviterId },
     });
   },
 
@@ -1984,8 +2056,10 @@ export const communityRepository = {
     page: number;
     limit: number;
   }) {
+    const bannedIds = await this.findBannedCommunityIds(params.inviteeId);
     const where: Prisma.CommunityInviteWhereInput = {
       inviteeId: params.inviteeId,
+      ...(bannedIds.length > 0 && { communityId: { notIn: bannedIds } }),
     };
     if (params.status) where.status = params.status;
 
@@ -2031,6 +2105,18 @@ export const communityRepository = {
     reporterId: string;
     targetUserId: string | null;
     reason: string;
+    reportedMessageId?: string | null;
+    reportedContentType?: string | null;
+    reportedContentText?: string | null;
+    reportedContentPostedAt?: Date | null;
+    reportedContentMedia?:
+      | {
+          objectKey: string;
+          contentType?: string | null;
+          fileName?: string | null;
+          size?: number | null;
+        }[]
+      | null;
   }) {
     return prisma.communityReport.create({
       data: {
@@ -2039,6 +2125,11 @@ export const communityRepository = {
         targetUserId: data.targetUserId,
         reason: data.reason,
         status: CommunityReportStatus.OPEN,
+        reportedMessageId: data.reportedMessageId ?? null,
+        reportedContentType: data.reportedContentType ?? null,
+        reportedContentText: data.reportedContentText ?? null,
+        reportedContentPostedAt: data.reportedContentPostedAt ?? null,
+        reportedContentMedia: data.reportedContentMedia ?? undefined,
       },
     });
   },
@@ -2234,6 +2325,30 @@ export const communityRepository = {
     return null;
   },
 
+  /** Batch-fetch active mutes for a set of userIds in one community page. */
+  async findActiveMemberMutesByUserIds(communityId: string, userIds: string[]) {
+    if (userIds.length === 0)
+      return new Map<
+        string,
+        { mutedBy: string; mutedUntil: Date | null; createdAt: Date }
+      >();
+    const now = new Date();
+    const rows = await prisma.communityMemberMute.findMany({
+      where: {
+        communityId,
+        userId: { in: userIds },
+        OR: [{ mutedUntil: null }, { mutedUntil: { gt: now } }],
+      },
+      select: {
+        userId: true,
+        mutedBy: true,
+        mutedUntil: true,
+        createdAt: true,
+      },
+    });
+    return new Map(rows.map((r) => [r.userId, r]));
+  },
+
   /** Idempotent re-mute: updates mutedBy/reason/mutedUntil on conflict. */
   upsertMemberMute(data: {
     communityId: string;
@@ -2343,6 +2458,25 @@ export const communityRepository = {
 
   findInviteLinkById(linkId: string) {
     return prisma.communityInviteLink.findUnique({ where: { id: linkId } });
+  },
+
+  /**
+   * Count a member's currently-ACTIVE invite links in a community: not revoked
+   * and not past their expiry. Exhausted links (usedCount >= maxUses) are NOT
+   * filtered out here — that requires a field-to-field comparison Mongo can't do
+   * in a `count` predicate — so the cap is a slight over-count, which is the safe
+   * direction for an abuse guard.
+   */
+  countActiveInviteLinksByCreator(communityId: string, createdBy: string) {
+    const now = new Date();
+    return prisma.communityInviteLink.count({
+      where: {
+        communityId,
+        createdBy,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+    });
   },
 
   findInviteLinkByCode(code: string) {

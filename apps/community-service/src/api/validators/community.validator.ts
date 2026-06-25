@@ -100,6 +100,16 @@ export const handleAvailableQuerySchema = z.object({
 
 export type HandleAvailableQuery = z.infer<typeof handleAvailableQuerySchema>;
 
+/**
+ * `GET /communities/by-handle/:handle` path param. Reuses `handleSchema` so a
+ * malformed handle is rejected (400 INVALID_HANDLE) before hitting the service.
+ */
+export const handleParamsSchema = z.object({
+  handle: handleSchema,
+});
+
+export type HandleParams = z.infer<typeof handleParamsSchema>;
+
 /** Reusable discovery search query field (`q`). */
 const discoverSearchSchema = z
   .string()
@@ -221,9 +231,11 @@ export type TransferAdminInput = z.infer<typeof transferAdminSchema>;
  * Body for POST /communities/:id/close. `reason` is an optional free-text note
  * surfaced to evicted members. Empty/omitted body is accepted.
  */
-export const closeCommunitySchema = z.object({
-  reason: z.string().trim().max(500).optional(),
-});
+export const closeCommunitySchema = z
+  .object({
+    reason: z.string().trim().max(500).optional(),
+  })
+  .default({});
 
 export type CloseCommunityInput = z.infer<typeof closeCommunitySchema>;
 
@@ -296,7 +308,11 @@ export type BulkRejectJoinRequestsInput = z.infer<
 // --- Invites --------------------------------------------------------------
 
 export const createInviteSchema = z.object({
-  inviteeId: z.string().trim().uuid("Invitee ID is invalid"),
+  userIds: z
+    .array(z.string().trim().uuid("Each user ID must be a valid UUID"))
+    .min(1, "Provide at least one user ID")
+    .max(50, "You can invite at most 50 users at once")
+    .transform((ids) => [...new Set(ids)]),
 });
 export type CreateInviteInput = z.infer<typeof createInviteSchema>;
 
@@ -339,6 +355,24 @@ export const createReportSchema = z.object({
     .trim()
     .min(3, "Reason must be at least 3 characters")
     .max(1000, "Reason must be at most 1000 characters"),
+  // --- Optional reported-content snapshot (client-captured at report time) ---
+  reportedMessageId: z.string().trim().min(1).max(100).optional(),
+  reportedContentType: z.string().trim().min(1).max(40).optional(),
+  reportedContentText: z.string().trim().max(4000).optional(),
+  /** ISO-8601 string → Date; when the reported content was posted. */
+  reportedContentPostedAt: z.coerce.date().optional(),
+  /** RAW object keys only — server resolves to presigned URLs on read. */
+  reportedContentMedia: z
+    .array(
+      z.object({
+        objectKey: z.string().trim().min(1).max(512),
+        contentType: z.string().trim().max(100).nullish(),
+        fileName: z.string().trim().max(255).nullish(),
+        size: z.number().int().nonnegative().nullish(),
+      })
+    )
+    .max(10, "At most 10 attachments may be reported")
+    .optional(),
 });
 export type CreateReportInput = z.infer<typeof createReportSchema>;
 
@@ -578,10 +612,11 @@ export const bulkSendInviteLinkSchema = z.object({
    */
   userIds: z
     .array(
-      z
-        .string()
-        .trim()
-        .regex(OBJECT_ID_REGEX, "One or more user IDs are invalid")
+      // Recipients are platform users, identified by their canonical UUID
+      // (AuthUser.id), NOT a Mongo ObjectId. This previously used OBJECT_ID_REGEX,
+      // so every real userId (a UUID) failed DTO validation with "One or more user
+      // IDs are invalid" before the request ever reached the service.
+      z.string().trim().uuid("One or more user IDs are invalid")
     )
     .min(1, "Select at least one user")
     .max(50, "You can select at most 50 users"),

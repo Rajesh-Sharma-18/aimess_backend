@@ -9,19 +9,35 @@ export const messageListQuerySchema = z.object({
 
 /**
  * Query schema for the timestamp-paginated message-list endpoints
- * (private room + group). Timestamps are epoch milliseconds.
+ * (private room + group).
  *
- * - `before_ts`: return messages with createdAt <= before_ts (newest-first).
- * - `after_ts` : return messages with createdAt >= after_ts (oldest-first).
+ * - `before_ts`: older page, newest-first.
+ * - `after_ts` : newer page, oldest-first.
  *
- * The two are mutually exclusive; omit both for the newest page. Boundaries are
- * inclusive, so consecutive pages may share the boundary message when timestamps
- * tie — clients should de-duplicate by message id.
+ * Each is a (createdAt, _id) KEYSET cursor: send a plain epoch-ms for the first
+ * page / a coarse jump, then feed the returned compound `nextCursor`
+ * ("<ms>_<objectId>") back verbatim to page on. The `_id` tiebreaker makes
+ * continuation EXCLUSIVE and keeps same-millisecond messages reachable exactly
+ * once — so consecutive pages no longer share a boundary message (no client-side
+ * de-dupe needed). V2 clients should prefer the gap-safe before_seq/after_seq
+ * cursors; these *_ts params are the V1 fallback. The two are mutually exclusive;
+ * omit both for the newest page.
  */
+// Timestamp cursors: EITHER a plain epoch-ms ("1782133107521") OR the opaque
+// COMPOUND keyset cursor "<ms>_<objectId>" handed back as `nextCursor`. Kept as a
+// string so the `_id` tiebreaker survives — coercing to a number would drop it and
+// reintroduce same-millisecond message skipping at page boundaries.
+const compoundTsCursor = z
+  .string()
+  .regex(
+    /^\d+(_[a-fA-F0-9]{24})?$/,
+    "must be epoch-ms or the compound cursor '<ms>_<objectId>'"
+  );
+
 export const messageTimelineQuerySchema = z
   .object({
-    before_ts: z.coerce.number().int().positive().optional(),
-    after_ts: z.coerce.number().int().positive().optional(),
+    before_ts: compoundTsCursor.optional(),
+    after_ts: compoundTsCursor.optional(),
     // V2 §3.2: gap-safe seq cursors. before_seq → sequenceNumber < seq
     // (newest-first); after_seq → > seq (oldest-first). `around` anchors a
     // jump-to-message window on a messageId. Seq cursors take precedence over
@@ -88,7 +104,17 @@ export const mediaListQuerySchema = z.object({
  */
 export const communityTimelineQuerySchema = z
   .object({
-    before_ts: z.coerce.number().int().positive().optional(),
+    // EITHER a plain epoch-ms ("1782133107521") OR the opaque compound keyset
+    // cursor "<ms>_<objectId>" handed back as `nextCursor`. Kept as a string so
+    // the `_id` tiebreaker survives — coercing to a number would drop it and
+    // reintroduce same-millisecond message skipping.
+    before_ts: z
+      .string()
+      .regex(
+        /^\d+(_[a-fA-F0-9]{24})?$/,
+        "before_ts must be epoch-ms or '<ms>_<objectId>'"
+      )
+      .optional(),
     after_ts: z.coerce.number().int().positive().optional(),
     around: z.string().min(1).max(100).optional(),
     limit: z.coerce.number().int().min(1).max(100).default(30),

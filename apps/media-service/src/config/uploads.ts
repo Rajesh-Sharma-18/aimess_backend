@@ -157,6 +157,26 @@ export const UPLOAD_CATEGORIES: Record<MediaCategoryKey, UploadTypeDef> = {
 };
 
 /**
+ * Resolve the upload category from a stored object key by matching its prefix.
+ * The object key is the ground truth for where a file physically lives (bucket +
+ * keyPrefix), so storage operations should trust it over a client-supplied
+ * category that may disagree — e.g. a `community-chat-uploads/…` key sent with
+ * `category: "CHAT_ATTACHMENT"`. The category prefixes are mutually exclusive
+ * (none is a path-segment prefix of another), so at most one matches. Returns
+ * null when no known prefix matches (caller falls back to the client category).
+ */
+export function resolveCategoryFromObjectKey(
+  objectKey: string
+): MediaCategoryKey | null {
+  for (const key of Object.keys(UPLOAD_CATEGORIES) as MediaCategoryKey[]) {
+    if (objectKey.startsWith(`${UPLOAD_CATEGORIES[key].keyPrefix}/`)) {
+      return key;
+    }
+  }
+  return null;
+}
+
+/**
  * Extensions safe to render inline in a browser (the media kinds). Any other
  * stored object (documents, text, data) is served as a forced download so an
  * uploaded HTML/SVG/XML payload can never execute inline from our origin.

@@ -7,12 +7,14 @@ import { livestreamService, thumbnailService } from "../../services/index.js";
 import type {
   ListLivestreamsQuery,
   ListLivestreamReportsQuery,
+  ListLivestreamUsersQuery,
 } from "../../types/livestream.types.js";
 import type {
   BulkEndInput,
   BulkReviewReportsInput,
   EndLivestreamInput,
   ListLivestreamReportsQueryInput,
+  ListLivestreamUsersQueryInput,
   ListLivestreamsQueryInput,
   ThumbnailPresignInput,
   ThumbnailSaveInput,
@@ -66,6 +68,28 @@ export const listLivestreamReports: RequestHandler = (req, res, next) => {
       const result = await livestreamService.listLivestreamReports(
         livestreamId,
         query as ListLivestreamReportsQuery
+      );
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        data: result.data,
+        pagination: result.pagination,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** GET /v1/livestreams/:livestreamId/users — paginated community members. */
+export const listLivestreamUsers: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by livestreamIdParamSchema on the route.
+      const livestreamId = req.params.livestreamId as string;
+      const query = req.query as unknown as ListLivestreamUsersQueryInput;
+      const result = await livestreamService.listLivestreamUsers(
+        livestreamId,
+        query as ListLivestreamUsersQuery
       );
       res.status(HTTP_STATUS.OK).json({
         success: true,

@@ -101,6 +101,9 @@ describe("POST /api/v1/users/friends/auto-connect", () => {
     fRepo.findAllBlocks.mockResolvedValue([]);
     fRepo.autoAcceptBatch.mockResolvedValue([]);
     pRepo.findAllActiveExcept.mockResolvedValue([]);
+    // The caller's profile exists by default (provisioned). The missing-profile
+    // race is exercised explicitly in its own test.
+    pRepo.findByUserId.mockResolvedValue({ userId: ME });
   });
 
   // --- Auth ---
@@ -429,5 +432,22 @@ describe("POST /api/v1/users/friends/auto-connect", () => {
     const [secondChunk] = fRepo.autoAcceptBatch.mock.calls[1] as [unknown[]];
     expect(firstChunk).toHaveLength(500);
     expect(secondChunk).toHaveLength(1);
+  });
+
+  // --- Caller profile not yet provisioned (onboarding race) ---
+
+  it("16. Caller's UserProfile not provisioned yet → 404, FK-violating insert never runs", async () => {
+    // Reproduces the production 500: the user-created consumer (auth `user.created`)
+    // hasn't created the caller's UserProfile when /auto-connect fires from the
+    // "Complete profile" step. requesterId would have no referent and the batch
+    // insert would die on `friendships_requesterId_fkey`. The guard turns this into
+    // a clean, retryable 404 BEFORE touching the DB.
+    pRepo.findByUserId.mockResolvedValue(null);
+    pRepo.findAllActiveExcept.mockResolvedValue([activeUser(PEER_A)]);
+
+    const res = await request(app).post(URL).set(auth());
+
+    expect(res.status).toBe(404);
+    expect(fRepo.autoAcceptBatch).not.toHaveBeenCalled();
   });
 });

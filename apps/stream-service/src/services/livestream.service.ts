@@ -10,7 +10,10 @@ import {
 
 import { env } from "../config/env.js";
 import type { Livestream } from "../generated/prisma/index.js";
-import type { LivestreamRepository } from "../repositories/livestream.repository.js";
+import type {
+  AdminStreamFilter,
+  LivestreamRepository,
+} from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { SrsService, IngestEndpoints } from "./srs.service.js";
 import type { CommunityGrpcClient } from "../grpc/community.client.js";
@@ -78,6 +81,73 @@ export interface StreamStats {
   peakViewers: number;
   totalViews: number;
   totalComments: number;
+}
+
+/**
+ * A stream row as exposed to the backoffice admin Livestream Management screen
+ * over gRPC. Carries the RAW thumbnail object key (the backoffice resolves it to
+ * a presigned URL on read) plus a server-computed durationSeconds.
+ */
+export interface AdminStreamRow {
+  id: string;
+  communityId: string;
+  creatorId: string;
+  title: string;
+  description: string;
+  thumbnail: string | null;
+  sourceType: string;
+  status: string;
+  hlsUrl: string | null;
+  flvUrl: string | null;
+  viewerCount: number;
+  peakViewers: number;
+  totalViews: number;
+  totalComments: number;
+  durationSeconds: number;
+  livedAt: Date | null;
+  endedAt: Date | null;
+  createdAt: Date;
+}
+
+/**
+ * Stream duration in seconds.
+ *  - never went live (no livedAt) → 0
+ *  - LIVE → now − livedAt
+ *  - ENDED/CANCELLED → endedAt − livedAt (0 if it ended before going live)
+ */
+function computeDurationSeconds(s: Livestream): number {
+  if (!s.livedAt) return 0;
+  const start = s.livedAt.getTime();
+  const end = s.endedAt
+    ? s.endedAt.getTime()
+    : s.status === "LIVE"
+      ? Date.now()
+      : start;
+  return Math.max(0, Math.round((end - start) / 1000));
+}
+
+/** Project a stream record to the backoffice admin row (raw keys preserved). */
+function toAdminRow(s: Livestream): AdminStreamRow {
+  return {
+    id: s.id,
+    communityId: s.communityId,
+    creatorId: s.creatorId,
+    title: s.title,
+    description: s.description,
+    thumbnail: s.thumbnail,
+    sourceType: s.sourceType,
+    status: s.status,
+    hlsUrl: s.hlsUrl,
+    flvUrl: s.flvUrl,
+    viewerCount: s.viewerCount,
+    peakViewers: s.peakViewers,
+    totalViews: s.totalViews,
+    totalComments: s.totalComments,
+    durationSeconds: computeDurationSeconds(s),
+    livedAt: s.livedAt,
+    endedAt: s.endedAt,
+    createdAt: s.createdAt,
+  };
 }
 
 function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
@@ -548,6 +618,75 @@ export class LivestreamService {
     communityIds: string[]
   ): Promise<string[]> {
     return this.streamRepo.findLiveCommunityIds(communityIds);
+  }
+
+  /**
+   * Backoffice admin list — the source of truth for the Livestream Management
+   * screen (read live over gRPC, no event-fed read-model). Returns a page of
+   * rows + the total match count for offset pagination. The caller (backoffice)
+   * enriches community/creator/category/avatars and resolves the thumbnail key.
+   */
+  async adminListStreams(params: {
+    search?: string;
+    communityIds?: string[];
+    creatorIds?: string[];
+    status?: string;
+    communityId?: string;
+    creatorId?: string;
+    restrictCommunityIds?: string[];
+    restrictStreamIds?: string[];
+    dateFrom?: Date;
+    dateTo?: Date;
+    sortField: "createdAt" | "viewerCount" | "durationSeconds";
+    sortDir: "asc" | "desc";
+    page: number;
+    limit: number;
+  }): Promise<{ items: AdminStreamRow[]; total: number }> {
+    const filter: AdminStreamFilter = {
+      search: params.search,
+      communityIds: params.communityIds,
+      creatorIds: params.creatorIds,
+      status: params.status,
+      communityId: params.communityId,
+      creatorId: params.creatorId,
+      restrictCommunityIds: params.restrictCommunityIds,
+      restrictStreamIds: params.restrictStreamIds,
+      dateFrom: params.dateFrom,
+      dateTo: params.dateTo,
+    };
+    const skip = (params.page - 1) * params.limit;
+    const [rows, total] = await Promise.all([
+      this.streamRepo.adminList(
+        filter,
+        params.sortField,
+        params.sortDir,
+        skip,
+        params.limit
+      ),
+      this.streamRepo.adminCount(filter),
+    ]);
+    return { items: rows.map(toAdminRow), total };
+  }
+
+  /**
+   * Backoffice admin single-stream fetch (source of truth). Returns null when
+   * the id is unknown. Overlays the live Redis viewer count for LIVE streams so
+   * the detail page matches the realtime count.
+   */
+  async adminGetStream(streamId: string): Promise<AdminStreamRow | null> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) return null;
+    const row = toAdminRow(stream);
+    if (stream.status === "LIVE") {
+      try {
+        row.viewerCount = await this.redis.scard(sessionKey(streamId));
+      } catch (error) {
+        logger.warn(
+          `admin live viewer count read failed for stream=${streamId}: ${String(error)}`
+        );
+      }
+    }
+    return row;
   }
 
   /**

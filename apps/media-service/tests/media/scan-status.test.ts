@@ -89,7 +89,26 @@ describe("GET /api/v1/media/scan-status", () => {
     expect(res.body.success).toBe(false);
   });
 
-  it("400: COMMUNITY_CHAT_ATTACHMENT with wrong prefix", async () => {
+  it("200: declared category mismatch self-heals from the objectKey prefix", async () => {
+    // Mirror of the download-url fix: a community-chat key polled with the wrong
+    // declared category resolves by its own prefix instead of erroring.
+    mockedGet.mockResolvedValueOnce("CLEAN");
+
+    const res = await request(app)
+      .get("/api/v1/media/scan-status")
+      .query({
+        objectKey: `community-chat-uploads/${TEST_USER_ID}/file.png`,
+        category: "CHAT_ATTACHMENT",
+      })
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.scanStatus).toBe("CLEAN");
+  });
+
+  it("403: objectKey prefix governs over a mismatched declared category (IDOR)", async () => {
+    // chat-uploads key owned by another user, declared as COMMUNITY/GROUP →
+    // resolved as CHAT_ATTACHMENT and rejected by the owner check.
     const res = await request(app)
       .get("/api/v1/media/scan-status")
       .query({
@@ -98,20 +117,7 @@ describe("GET /api/v1/media/scan-status", () => {
       })
       .set(auth());
 
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
-  });
-
-  it("400: GROUP_CHAT_ATTACHMENT with wrong prefix", async () => {
-    const res = await request(app)
-      .get("/api/v1/media/scan-status")
-      .query({
-        objectKey: "chat-uploads/some-user/file.png",
-        category: "GROUP_CHAT_ATTACHMENT",
-      })
-      .set(auth());
-
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(403);
     expect(res.body.success).toBe(false);
   });
 

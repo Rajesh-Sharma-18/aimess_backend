@@ -282,11 +282,23 @@ export const friendshipService = {
   },
 
   async autoConnectAll(callerId: string): Promise<AutoConnectResult> {
-    const [allUsers, existingRows, blocks] = await Promise.all([
+    const [callerProfile, allUsers, existingRows, blocks] = await Promise.all([
+      userProfileRepository.findByUserId(callerId),
       userProfileRepository.findAllActiveExcept(callerId),
       friendshipRepository.findAllForUser(callerId),
       friendshipRepository.findAllBlocks(callerId),
     ]);
+
+    // The caller's UserProfile is provisioned ASYNCHRONOUSLY by the user-created
+    // consumer (off the auth `user.created` event). During onboarding the client
+    // can POST /auto-connect from the "Complete profile" step before that row has
+    // committed — and since every pair below uses `requesterId: callerId`, the
+    // batch insert would die on the `friendships_requesterId_fkey` foreign key and
+    // surface as an opaque 500. Fail fast with a clear, retryable domain error so
+    // the precondition violation never reaches the DB layer.
+    if (!callerProfile) {
+      throw new NotFoundError("USER_PROFILE_NOT_FOUND");
+    }
 
     // Build classification sets from caller's perspective
     const blockedUserIds = new Set<string>(

@@ -1833,10 +1833,15 @@ export const adminPaths = {
       tags: [adminTags.livestreams],
       summary: "List livestreams",
       description:
-        "Paginated, filtered list of livestreams from the stream-service read-model. " +
-        "Filters: `search`, `category`, `status` (LIVE/ENDED/CANCELLED), `hasReports`, `minReports`, `communityId`, `creatorId`, `dateFrom`/`dateTo`. " +
-        "Sort whitelist: `createdAt|viewerCount|reportCount|duration` with `:asc|:desc` (default `createdAt:desc`). " +
-        "Requires `livestreams.read`.",
+        "Paginated, filtered livestreams read LIVE from stream-service over gRPC " +
+        "(source of truth — no event-fed read-model). Each row is enriched with " +
+        "community/creator/category/avatars and a report count (admin_db `Report`, " +
+        "type=stream). `search` matches livestream title, community name, OR creator " +
+        "name. Filters: `category` (slug/id), `status` (LIVE/ENDED/SCHEDULED/CANCELLED — " +
+        "SCHEDULED⇄PENDING), `hasReports`, `minReports`, `communityId`, `creatorId`, " +
+        "`dateFrom`/`dateTo`. Sort whitelist: `createdAt|viewerCount|reportCount|duration` " +
+        "with `:asc|:desc` (default `createdAt:desc`). All media fields are full " +
+        "presigned URLs (never object keys). Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -1856,13 +1861,17 @@ export const adminPaths = {
           in: "query",
           required: false,
           schema: { type: "string" },
-          description: "Stream title / creator username search.",
+          description:
+            "Matches livestream title, community name, OR creator name (case-insensitive).",
         },
         {
           name: "status",
           in: "query",
           required: false,
-          schema: { type: "string", enum: ["LIVE", "ENDED", "CANCELLED"] },
+          schema: {
+            type: "string",
+            enum: ["LIVE", "ENDED", "SCHEDULED", "CANCELLED"],
+          },
         },
         {
           name: "communityId",
@@ -2145,6 +2154,63 @@ export const adminPaths = {
         "403": errRes("Missing livestreams.read"),
         "404": errRes("Livestream not found"),
       },
+    },
+  },
+
+  "/admin/v1/livestreams/{livestreamId}/users": {
+    get: {
+      tags: [adminTags.livestreams],
+      summary: "List livestream users (the stream's community members)",
+      description:
+        "Paginated members of the stream's community — the Livestream User List " +
+        "(Username, User ID, Joined Date, Type). `type` filters by community role " +
+        "ADMIN|MODERATOR|MEMBER; `search` matches username/handle. Read through the " +
+        "community-members gRPC. Avatars are full presigned URLs. Requires " +
+        "`livestreams.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "livestreamId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string", minLength: 1 },
+        },
+        {
+          name: "type",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": listRes(
+          "Livestream users (community members) page",
+          "#/components/schemas/AdminLivestreamUserItem"
+        ),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing livestreams.read"),
+        "404": errRes("Livestream not found"),
+      },
+      "x-implementation-status": "implemented",
     },
   },
 

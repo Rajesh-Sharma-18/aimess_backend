@@ -5,6 +5,8 @@ import {
   SYSTEM_MESSAGE_VISIBILITY,
   isEligibleForLastActivity,
   isHiddenSystemMessage,
+  isActorLessSystemMessage,
+  sanitizeCommunitySystemMetadata,
   buildCommunitySystemFallbackText,
   buildCommunitySystemSelfPreview,
   resolveCommunitySystemSubjectUserId,
@@ -136,7 +138,11 @@ export class CommunitySystemMessageService {
         ...metadata,
         actorUserId: triggeredByUserId,
         actorName,
-        ...(targetUserId ? { targetName } : {}),
+        // Prefer the publisher-provided targetName (DB snapshot) over the
+        // re-fetched value, which may be "" when user-service has no profile yet.
+        ...(targetUserId
+          ? { targetName: (metadata.targetName as string) || targetName }
+          : {}),
       };
 
       const fallbackText = buildCommunitySystemFallbackText(
@@ -146,16 +152,41 @@ export class CommunitySystemMessageService {
         targetName
       );
 
+      // ACTOR-LESS lifecycle types ("Community created", "Community photo
+      // updated") must never expose actor identity — a client that localizes
+      // from systemMetadata would otherwise render "{name} created the
+      // community". Strip actor/target keys from what we PERSIST and BROADCAST
+      // (enrichedMetadata is kept locally for the activity/self-preview logic,
+      // which is a no-op for these types anyway). actor-bearing types pass
+      // through unchanged.
+      const wireMetadata = sanitizeCommunitySystemMetadata(
+        systemMessageType,
+        enrichedMetadata
+      );
+      // Sender-less in the timeline AND in the stored row for actor-less types,
+      // so no surface (including non-wire readers) can fall back to a name.
+      const wireSenderName = isActorLessSystemMessage(systemMessageType)
+        ? ""
+        : actorName;
+
       // Idempotency: a `community.system_message` event can be REDELIVERED
       // (at-least-once queue; broker redelivers on ack-loss). Each event carries
       // a producer `eventAt`, stable across redeliveries, so derive a
       // deterministic dedup key — one logical event ⇒ one timeline line, no
       // duplicate "Community info was updated" / "X joined" bubbles. Two genuinely
       // distinct events differ in (type, eventAt, target) so both persist.
+      //
+      // The recipient (`visibleToUserId`) is part of the key for PERSONAL lines so
+      // that a single logical event which fans out a personal line to MORE THAN ONE
+      // user — e.g. an admin TRANSFER posts "You are now the community admin" to the
+      // new admin AND "You are now a member" to the outgoing admin under one shared
+      // `eventAt` — keeps both lines instead of the second colliding with the first
+      // and being dropped as a "replay". The key only ever grows MORE specific, so a
+      // real redelivery (same type+eventAt+recipient) still dedupes correctly.
       const dedupeKey = params.eventAt
         ? `sys:${systemMessageType}:${params.eventAt}${
             targetUserId ? `:${targetUserId}` : ""
-          }`
+          }${isPersonal && visibleToUserId ? `:u:${visibleToUserId}` : ""}`
         : null;
 
       // Cheap pre-check skips the sequence allocation + bump + publish on a
@@ -180,11 +211,12 @@ export class CommunitySystemMessageService {
         .createSystemMessage({
           roomId: communityId,
           systemMessageType,
-          metadata: enrichedMetadata,
+          metadata: wireMetadata,
           // sentBy is retained internally for audit, but is NEVER surfaced on the
-          // wire for SYSTEM messages (toWire strips it).
+          // wire for SYSTEM messages (toWire strips it). senderName is blanked for
+          // actor-less types so even a non-wire reader can't surface a name.
           triggeredByUserId,
-          triggeredByName: actorName,
+          triggeredByName: wireSenderName,
           sequenceNumber: seq,
           fallbackText,
           visibleToUserId,
@@ -259,7 +291,7 @@ export class CommunitySystemMessageService {
               sequenceNumber: seq,
               systemMessageType,
               isPersonal,
-              systemMetadata: enrichedMetadata,
+              systemMetadata: wireMetadata,
             },
           })
         )

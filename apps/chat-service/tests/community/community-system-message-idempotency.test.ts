@@ -169,6 +169,70 @@ describe("CommunitySystemMessageService — idempotent post", () => {
     expect(pubActivity).not.toHaveBeenCalled();
   });
 
+  it("PERSONAL lines from ONE event but to DIFFERENT users get DISTINCT dedup keys (both persist)", async () => {
+    // Any flow that fans a PERSONAL line out to MORE THAN ONE recipient under a
+    // single shared eventAt (two ROLE_CHANGED_SELF here) must keep both lines.
+    // Before the fix the dedup key was (type, eventAt) only — so the second personal
+    // line collided with the first and was dropped as a "replay", silently losing
+    // one recipient's notice. The recipient must be part of the key so both survive.
+    const newAdmin = makeService({ findOneResult: null });
+    await newAdmin.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "ROLE_CHANGED_SELF",
+      metadata: { oldRole: "MODERATOR", newRole: "ADMIN" },
+      triggeredByUserId: "new-admin",
+      eventAt: EVENT_AT,
+      visibleToUserId: "new-admin",
+    });
+
+    const prevAdmin = makeService({ findOneResult: null });
+    await prevAdmin.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "ROLE_CHANGED_SELF",
+      metadata: { oldRole: "ADMIN", newRole: "MEMBER" },
+      triggeredByUserId: "prev-admin",
+      eventAt: EVENT_AT,
+      visibleToUserId: "prev-admin",
+    });
+
+    const keyNew = (
+      newAdmin.createSystemMessage.mock.calls[0][0] as {
+        clientMessageId?: string;
+      }
+    ).clientMessageId;
+    const keyPrev = (
+      prevAdmin.createSystemMessage.mock.calls[0][0] as {
+        clientMessageId?: string;
+      }
+    ).clientMessageId;
+
+    expect(keyNew).toBe(`sys:ROLE_CHANGED_SELF:${EVENT_AT}:u:new-admin`);
+    expect(keyPrev).toBe(`sys:ROLE_CHANGED_SELF:${EVENT_AT}:u:prev-admin`);
+    expect(keyNew).not.toBe(keyPrev);
+    // Both were actually persisted (neither dropped as a duplicate).
+    expect(newAdmin.createSystemMessage).toHaveBeenCalledTimes(1);
+    expect(prevAdmin.createSystemMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("a genuine redelivery of the SAME personal line (same recipient) still dedupes", async () => {
+    // The key only grows MORE specific, so a real redelivery (same type + eventAt +
+    // recipient) is still collapsed to a no-op.
+    const h = makeService({ findOneResult: { id: "existing" } });
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "ROLE_CHANGED_SELF",
+      metadata: { oldRole: "MODERATOR", newRole: "ADMIN" },
+      triggeredByUserId: "new-admin",
+      eventAt: EVENT_AT,
+      visibleToUserId: "new-admin",
+    });
+    expect(h.findOne).toHaveBeenCalledWith({
+      roomId: COMMUNITY_ID,
+      clientMessageId: `sys:ROLE_CHANGED_SELF:${EVENT_AT}:u:new-admin`,
+    });
+    expect(h.createSystemMessage).not.toHaveBeenCalled();
+  });
+
   it("dedup key includes the target user for membership events", async () => {
     const h = makeService({ findOneResult: null });
 

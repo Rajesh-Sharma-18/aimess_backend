@@ -97,7 +97,7 @@ describe("POST /:id/invite-links (create)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 403 for a non-moderator", async () => {
+  it("returns 403 when the service rejects (non-member / non-active member)", async () => {
     svc.createInviteLink.mockRejectedValue(
       new ForbiddenError("COMMUNITY_FORBIDDEN")
     );
@@ -154,14 +154,53 @@ describe("GET + DELETE invite-links", () => {
 });
 
 describe("POST /:id/invite-links/bulk-send", () => {
-  it("bulk-sends to users → 200", async () => {
-    svc.bulkSendInviteLink.mockResolvedValue({ sent: 1, skipped: [] });
+  // Recipients are canonical platform UUIDs (AuthUser.id).
+  const UID_A = "885ad4e0-e238-4f9a-9773-e215321885b4";
+  const UID_B = "22222222-2222-4222-8222-222222222222";
+
+  it("bulk-sends to a single UUID user → 200 (regression: UUID must NOT be rejected)", async () => {
+    // Reproduces the reported bug: a valid UUID userId previously failed DTO
+    // validation with "One or more user IDs are invalid" because userIds were
+    // checked against the Mongo ObjectId regex instead of UUID.
+    svc.bulkSendInviteLink.mockResolvedValue({
+      link: linkDto(),
+      summary: { requested: 1, sent: 1, failed: 0, skipped: 0 },
+      sentUserIds: [UID_A],
+      failures: [],
+      queued: 1,
+      skipped: 0,
+    });
     const res = await request(app)
       .post(`/api/v1/communities/${CID}/invite-links/bulk-send`)
       .set(auth())
-      .send({ userIds: ["c".repeat(24)] });
+      .send({ userIds: [UID_A], linkId: LINK });
     expect(res.status).toBe(200);
     expect(svc.bulkSendInviteLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("bulk-sends to multiple UUID users → 200", async () => {
+    svc.bulkSendInviteLink.mockResolvedValue({
+      link: linkDto(),
+      summary: { requested: 2, sent: 2, failed: 0, skipped: 0 },
+      sentUserIds: [UID_A, UID_B],
+      failures: [],
+      queued: 2,
+      skipped: 0,
+    });
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/invite-links/bulk-send`)
+      .set(auth())
+      .send({ userIds: [UID_A, UID_B] });
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 400 for a malformed (non-UUID) user id", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/invite-links/bulk-send`)
+      .set(auth())
+      .send({ userIds: ["not-a-uuid"] });
+    expect(res.status).toBe(400);
+    expect(svc.bulkSendInviteLink).not.toHaveBeenCalled();
   });
 
   it("returns 400 with an empty userIds list", async () => {
@@ -173,7 +212,10 @@ describe("POST /:id/invite-links/bulk-send", () => {
   });
 
   it("returns 400 when more than 50 userIds are sent", async () => {
-    const ids = Array.from({ length: 51 }, () => "c".repeat(24));
+    const ids = Array.from(
+      { length: 51 },
+      (_, i) => `${i.toString(16).padStart(8, "0")}-2222-4222-8222-222222222222`
+    );
     const res = await request(app)
       .post(`/api/v1/communities/${CID}/invite-links/bulk-send`)
       .set(auth())
