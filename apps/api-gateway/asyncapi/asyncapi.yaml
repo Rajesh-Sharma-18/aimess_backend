@@ -299,6 +299,14 @@ channels:
         { $ref: "#/components/messages/CommunitySessionExpired" }
       communityMessageDeliveredBroadcast:
         { $ref: "#/components/messages/CommunityMessageDeliveredBroadcast" }
+      # typing indicators (client -> server + server -> client)
+      communityTypingStart:
+        { $ref: "#/components/messages/CommunityTypingStart" }
+      communityTypingStop: { $ref: "#/components/messages/CommunityTypingStop" }
+      communityTypingStartBroadcast:
+        { $ref: "#/components/messages/CommunityTypingStartBroadcast" }
+      communityTypingStopBroadcast:
+        { $ref: "#/components/messages/CommunityTypingStopBroadcast" }
 
   # -------------------------------------------------------------- /notify
   notify:
@@ -1245,6 +1253,58 @@ operations:
       `gracePeriod` (60 s) — after that the server force-disconnects the socket.
     messages:
       [{ $ref: "#/channels/community/messages/communitySessionExpired" }]
+
+  # ================================================ /community typing (fire-and-forget)
+  community.typingStart:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:start — local user started typing in a community"
+    description: |
+      Fire-and-forget (no ack). Sent by the client after debounce when the user
+      starts typing in a community chat room. The server validates membership,
+      excludes the sender, and broadcasts `typing:start` to all eligible members
+      in both `community:<communityId>` (open-chat room) and
+      `community-typing:<communityId>` (always-on membership room).
+
+      New canonical alias `community:typing:start` is also accepted.
+
+      A 6 s server-side TTL auto-broadcasts `typing:stop` if the stop event is
+      never received (crash / network drop).
+    messages: [{ $ref: "#/channels/community/messages/communityTypingStart" }]
+  community.typingStop:
+    action: send
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:stop — local user stopped typing in a community"
+    description: |
+      Fire-and-forget (no ack). Sent on idle timeout, message send, input clear,
+      or component unmount. New canonical alias `community:typing:stop` also accepted.
+    messages: [{ $ref: "#/channels/community/messages/communityTypingStop" }]
+  community.onTypingStart:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:start — a peer started typing in a community"
+    description: |
+      Broadcast to all ACTIVE, non-banned members in `community:<communityId>` AND
+      `community-typing:<communityId>`, sender excluded. Socket.IO de-dupes recipients
+      so members in both rooms receive the event exactly once.
+
+      Delivered regardless of which community the recipient currently has open —
+      the gateway auto-joins all member `community-typing:<id>` rooms at connect.
+
+      **Key**: `typingState[communityId][userDetails.userId]`
+      Use `userDetails.userId` as the unique identity — never `senderName` alone.
+    messages:
+      [{ $ref: "#/channels/community/messages/communityTypingStartBroadcast" }]
+  community.onTypingStop:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "typing:stop — a peer stopped typing in a community"
+    description: |
+      Broadcast on explicit stop, 6 s TTL expiry, sender disconnect, or sender
+      removal/ban. Targets both `community:<id>` and `community-typing:<id>`.
+      Clear `typingState[communityId][userDetails.userId]`.
+    messages:
+      [{ $ref: "#/channels/community/messages/communityTypingStopBroadcast" }]
 
   # ================================================= /notify client -> server
   notify.fetch:
@@ -3371,6 +3431,134 @@ components:
             communityId: "6843e1a2b5c3d4e5f6a7b8c9"
             status: "ACTIVE"
             reopenedAt: 1749990000000
+
+    # -------- /community typing (fire-and-forget) --------
+    CommunityTypingStart:
+      name: "typing:start"
+      title: "typing:start (request)"
+      summary: >-
+        Client emits after debounce when the user starts typing in a community
+        chat room. No ack. New canonical alias `community:typing:start` also accepted.
+      payload:
+        type: object
+        required: [communityId]
+        properties:
+          communityId: { type: string, minLength: 1 }
+          roomId:
+            { type: string, description: "Optional; forward-compat only." }
+      examples:
+        - name: Start typing in Community B
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+    CommunityTypingStop:
+      name: "typing:stop"
+      title: "typing:stop (request)"
+      summary: >-
+        Client emits on idle timeout, message send, input clear, or unmount.
+        No ack. New canonical alias `community:typing:stop` also accepted.
+      payload:
+        type: object
+        required: [communityId]
+        properties:
+          communityId: { type: string, minLength: 1 }
+          roomId:
+            { type: string, description: "Optional; forward-compat only." }
+      examples:
+        - name: Stop typing in Community B
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+    CommunityTypingStartBroadcast:
+      name: "typing:start"
+      title: "typing:start (broadcast)"
+      summary: >-
+        Broadcast to all eligible members in community:<communityId> AND
+        community-typing:<communityId>, sender excluded. Socket.IO de-dupes so
+        members in both rooms receive it exactly once. Delivered regardless of
+        which community is open — gateway auto-joins community-typing:<id> at connect.
+      payload:
+        type: object
+        required: [eventId, communityId, roomId, userDetails, timestamp]
+        properties:
+          eventId:
+            type: string
+            format: uuid
+            description: "Unique per broadcast; use for dedup if needed."
+          communityId: { type: string }
+          roomId:
+            type: string
+            description: "GeneralRoom id (=== communityId for community chats)."
+          userDetails:
+            type: object
+            required: [userId, username, displayName]
+            properties:
+              userId: { type: string }
+              username: { type: string }
+              displayName: { type: string }
+              avatarUrl: { type: [string, "null"] }
+          timestamp: { type: integer, description: "Epoch milliseconds." }
+          userId:
+            type: string
+            description: "Deprecated: use userDetails.userId. Kept for backward compat."
+          senderName:
+            type: string
+            description: "Deprecated: use userDetails.displayName."
+      examples:
+        - name: User B typing in Community B (received by User A)
+          payload:
+            eventId: "550e8400-e29b-41d4-a716-446655440000"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userDetails:
+              userId: "user_b_abc123"
+              username: "user_b"
+              displayName: "User B"
+              avatarUrl: "https://cdn.example.com/avatars/user_b.jpg"
+            timestamp: 1750000000000
+            userId: "user_b_abc123"
+            senderName: "User B"
+    CommunityTypingStopBroadcast:
+      name: "typing:stop"
+      title: "typing:stop (broadcast)"
+      summary: >-
+        Broadcast to all eligible members in community:<communityId> AND
+        community-typing:<communityId>, sender excluded. Also emitted on 6 s TTL
+        expiry, sender disconnect, or sender removal/ban.
+        Clear typingState[communityId][userDetails.userId].
+      payload:
+        type: object
+        required: [eventId, communityId, roomId, userDetails, timestamp]
+        properties:
+          eventId:
+            type: string
+            format: uuid
+          communityId: { type: string }
+          roomId: { type: string }
+          userDetails:
+            type: object
+            required: [userId, username, displayName]
+            properties:
+              userId: { type: string }
+              username: { type: string }
+              displayName: { type: string }
+              avatarUrl: { type: [string, "null"] }
+          timestamp: { type: integer, description: "Epoch milliseconds." }
+          userId:
+            { type: string, description: "Deprecated: use userDetails.userId." }
+          senderName: { type: string, description: "Deprecated." }
+      examples:
+        - name: User B stopped typing in Community B
+          payload:
+            eventId: "550e8400-e29b-41d4-a716-446655440001"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            userDetails:
+              userId: "user_b_abc123"
+              username: "user_b"
+              displayName: "User B"
+              avatarUrl: "https://cdn.example.com/avatars/user_b.jpg"
+            timestamp: 1750000006000
+            userId: "user_b_abc123"
+            senderName: "User B"
 
     # -------- /notify --------
     NotificationsFetch:

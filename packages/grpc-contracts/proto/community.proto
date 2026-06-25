@@ -55,6 +55,14 @@ service CommunityService {
   // before they enter the broadcast room. Read-only, single-row lookup.
   rpc CheckCommunityMembership (CheckCommunityMembershipRequest) returns (CheckCommunityMembershipResponse);
 
+  // Socket auto-room subscription: on socket connect the gateway fetches all
+  // community IDs where userId is an ACTIVE member so it can join
+  // community:<id> rooms immediately — without requiring a client-emitted
+  // community:join for each community. Enables typing indicators and other
+  // community events to reach users regardless of which community is open.
+  // Read-only, lightweight single-user membership scan.
+  rpc GetUserActiveCommunityIds (GetUserActiveCommunityIdsRequest) returns (GetUserActiveCommunityIdsResponse);
+
   // Moderation-mute oracle for notifications-service: lets the notification
   // eligibility gate suppress community-action notifications from a member who
   // has been muted by a moderator. Read-only, single-row lookup; never throws.
@@ -670,4 +678,12 @@ message UnpinCommunityMessageResponse {
   string room_id      = 3;
   string pinned_ids   = 4;  // JSON string of string[]
   int32  pinned_count = 5;
+}
+
+// ---- GetUserActiveCommunityIds ----
+message GetUserActiveCommunityIdsRequest {
+  string user_id = 1;
+}
+message GetUserActiveCommunityIdsResponse {
+  repeated string community_ids = 1;
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
@@ -7,10 +8,7 @@ import { ackOk, ackError } from "../ack.js";
 import type { CommunityClient } from "../../grpc/clients/community.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
-import {
-  resolveSocketUserDetails,
-  buildTypingBroadcast,
-} from "../user-details.js";
+import { resolveSocketUserDetails } from "../user-details.js";
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
@@ -249,6 +247,38 @@ export function registerCommunityNamespace(
                 ? personalizeCommunitySocketMessage(parsed.data, viewerUserId)
                 : parsed.data;
             community.to(channel).emit(parsed.event, payload);
+
+            // Auto-join the typing room when the user is added to a new community
+            // while their socket is connected, so they immediately receive
+            // typing:start / typing:stop for that community without a reconnect.
+            if (parsed.event === "community:added") {
+              const addedData = parsed.data as
+                | { communityId?: string }
+                | null
+                | undefined;
+              const newCommunityId = addedData?.communityId;
+              if (newCommunityId) {
+                void (async () => {
+                  try {
+                    const sockets = await community
+                      .in(`user:${viewerUserId}`)
+                      .fetchSockets();
+                    await Promise.all(
+                      sockets.map((s) =>
+                        s.join(`community-typing:${newCommunityId}`)
+                      )
+                    );
+                    logger.debug(
+                      `/community auto-joined community-typing:${newCommunityId} for ${sockets.length} socket(s) of userId=${viewerUserId}`
+                    );
+                  } catch (joinErr) {
+                    logger.warn(
+                      `/community auto-join typing room on community:added failed userId=${viewerUserId} communityId=${newCommunityId}: ${String(joinErr)}`
+                    );
+                  }
+                })();
+              }
+            }
           }
         } catch (err) {
           logger.warn(
@@ -286,9 +316,16 @@ export function registerCommunityNamespace(
         // their live sockets out of the broadcast room in real time so a BANNED
         // user stops receiving community events immediately — defense-in-depth
         // alongside the community:join ban gate (which stops them on reconnect).
+        // Also broadcast a typing:stop for the removed user so stale indicators
+        // are cleared from all peers' UIs.
         if (parsed.event === "community:member:removed") {
-          const removedUserId = (parsed.data as { userId?: string } | null)
-            ?.userId;
+          const removedData = parsed.data as {
+            userId?: string;
+            communityId?: string;
+          } | null;
+          const removedUserId = removedData?.userId;
+          const removedCommunityId =
+            removedData?.communityId ?? channel.slice("community:".length);
           if (removedUserId) {
             void (async () => {
               try {
@@ -296,6 +333,26 @@ export function registerCommunityNamespace(
                 for (const s of sockets) {
                   if (s.data.userId === removedUserId) {
                     void s.leave(channel);
+                    // Also leave the lightweight typing room.
+                    void s.leave(`community-typing:${removedCommunityId}`);
+                    // Broadcast stop so peers clear any stale typing indicator.
+                    community
+                      .to(`community:${removedCommunityId}`)
+                      .to(`community-typing:${removedCommunityId}`)
+                      .emit("typing:stop", {
+                        eventId: randomUUID(),
+                        communityId: removedCommunityId,
+                        roomId: removedCommunityId,
+                        userDetails: s.data.userDetails ?? {
+                          userId: removedUserId,
+                          username: "",
+                          displayName: "",
+                          avatarUrl: null,
+                        },
+                        userId: removedUserId,
+                        senderName: "",
+                        timestamp: Date.now(),
+                      });
                   }
                 }
               } catch (evictErr) {
@@ -335,10 +392,48 @@ export function registerCommunityNamespace(
       }
     );
 
-    // ── Typing indicator (mirrors /chat) ────────────────────────────────────
-    // Fire-and-forget (no ack). Server holds a 6 s countdown per communityId;
-    // if typing:stop is never received the timer fires the stop automatically.
-    // On disconnect all pending timers are flushed and stops are broadcast.
+    // ── Auto-join all typing rooms on connect ───────────────────────────────
+    // Join community-typing:<id> for every community the user is an ACTIVE
+    // member of. These lightweight rooms receive only typing:start / typing:stop,
+    // so members see sidebar typing indicators for ALL their communities without
+    // opening each one. De-coupled from community:<id> so closing a chat (which
+    // leaves community:<id> on community:leave) does not break sidebar typing.
+    // Fail-open: a gRPC failure here only means the socket misses the auto-join
+    // for this connection; the client can still emit community:join manually.
+    void (async () => {
+      try {
+        const { communityIds } =
+          await communityClient.getUserActiveCommunityIds({ userId });
+        if (communityIds.length > 0) {
+          await Promise.all(
+            communityIds.map((id) => socket.join(`community-typing:${id}`))
+          );
+          logger.debug(
+            `/community auto-joined ${communityIds.length} typing rooms userId=${userId}`
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          `/community auto-join typing rooms failed (fail-open) userId=${userId}: ${String(err)}`
+        );
+      }
+    })();
+
+    // ── Typing indicator ────────────────────────────────────────────────────
+    // Fire-and-forget (no ack). A 6 s server-side TTL auto-stops stale
+    // indicators if typing:stop is never received (crash / network drop).
+    // On disconnect all pending timers are flushed and stop events broadcast.
+    //
+    // Events:
+    //   client→server: typing:start | community:typing:start (new canonical alias)
+    //   client→server: typing:stop  | community:typing:stop  (new canonical alias)
+    //   server→client: typing:start (broadcast to both rooms, sender excluded)
+    //   server→client: typing:stop  (broadcast to both rooms, sender excluded)
+    //
+    // Broadcast targets both community:<id> (open-chat room) AND
+    // community-typing:<id> (always-on membership room) so members see
+    // sidebar indicators regardless of which community they currently have open.
+    // Socket.IO de-duplicates recipients, so no double delivery.
     const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const clearTyping = (communityId: string): void => {
       const t = typingTimers.get(communityId);
@@ -347,47 +442,63 @@ export function registerCommunityNamespace(
         typingTimers.delete(communityId);
       }
     };
-    const communityTypingPayload = (communityId: string, senderName?: string) =>
-      buildTypingBroadcast(
-        userId,
-        socket.data.userDetails,
-        communityId,
-        Date.now(),
-        { senderName, communityId }
-      );
 
-    // ── FIRE-AND-FORGET (NO ACK) — FE must not pass a callback ──────────────────
-    // These events have NO ack callback. If FE waits for ack, the typing indicator
-    // will never appear. Emit without callback: socket.emit("typing:start", payload)
-    socket.on("typing:start", (payload: unknown) => {
+    // Build the canonical community typing payload for server→client broadcasts.
+    // userId is always server-authoritative (from the verified JWT, not the payload).
+    const communityTypingPayload = (communityId: string) => ({
+      eventId: randomUUID(),
+      communityId,
+      roomId: communityId, // GeneralRoom id === communityId
+      userDetails: socket.data.userDetails,
+      // Legacy field kept for backward-compat (FE may still render senderName).
+      userId,
+      senderName: socket.data.userDetails.displayName || "",
+      timestamp: Date.now(),
+    });
+
+    // Shared handler for both the new canonical name and the legacy alias.
+    // Uses socket.to() (NOT community.to()) so the sender's own socket is
+    // excluded from the broadcast — FE never sees its own typing indicator.
+    const handleTypingStart = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
-      if (!r.success) return; // Invalid payload is silently dropped (no ack to send)
-      const { communityId, senderName } = r.data;
+      if (!r.success) return;
+      const { communityId } = r.data;
       clearTyping(communityId);
-      community
+      // socket.to() excludes the sender; chain both rooms — Socket.IO de-dupes.
+      socket
         .to(`community:${communityId}`)
-        .emit("typing:start", communityTypingPayload(communityId, senderName));
+        .to(`community-typing:${communityId}`)
+        .emit("typing:start", communityTypingPayload(communityId));
       typingTimers.set(
         communityId,
         setTimeout(() => {
           typingTimers.delete(communityId);
+          // TTL expiry: use community.to() — timer fires outside socket context.
           community
             .to(`community:${communityId}`)
+            .to(`community-typing:${communityId}`)
             .emit("typing:stop", communityTypingPayload(communityId));
         }, 6000)
       );
-    });
+    };
 
-    // ── FIRE-AND-FORGET (NO ACK) ──────────────────────────────────────────────
-    socket.on("typing:stop", (payload: unknown) => {
+    const handleTypingStop = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
-      if (!r.success) return; // Invalid payload is silently dropped
-      const { communityId, senderName } = r.data;
+      if (!r.success) return;
+      const { communityId } = r.data;
       clearTyping(communityId);
-      community
+      socket
         .to(`community:${communityId}`)
-        .emit("typing:stop", communityTypingPayload(communityId, senderName));
-    });
+        .to(`community-typing:${communityId}`)
+        .emit("typing:stop", communityTypingPayload(communityId));
+    };
+
+    // ── FIRE-AND-FORGET (NO ACK) — canonical names ──────────────────────────
+    socket.on("community:typing:start", handleTypingStart);
+    socket.on("community:typing:stop", handleTypingStop);
+    // ── FIRE-AND-FORGET — legacy aliases (backward compat) ──────────────────
+    socket.on("typing:start", handleTypingStart);
+    socket.on("typing:stop", handleTypingStop);
 
     socket.on(
       "community:join",
@@ -420,6 +531,10 @@ export function registerCommunityNamespace(
             );
           }
           void socket.join(`community:${communityId}`);
+          // Also join the typing room (idempotent — safe even if auto-joined
+          // at connect; does NOT get left on community:leave so sidebar typing
+          // keeps working after the user closes the chat view).
+          void socket.join(`community-typing:${communityId}`);
           ackOk(callback, "SOCKET_COMMUNITY_JOINED", locale);
         })();
       }
@@ -1096,10 +1211,12 @@ export function registerCommunityNamespace(
 
       // Flush all pending typing-expiry timers and broadcast stop so members are
       // never stuck with a "typing…" indicator after the socket closes.
+      // Use community.to() (not socket.to()) — the socket has already left rooms.
       for (const [communityId, timer] of typingTimers) {
         clearTimeout(timer);
         community
           .to(`community:${communityId}`)
+          .to(`community-typing:${communityId}`)
           .emit("typing:stop", communityTypingPayload(communityId));
       }
       typingTimers.clear();
