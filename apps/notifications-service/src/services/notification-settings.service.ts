@@ -20,6 +20,7 @@ const ALLOW_ALL: NotificationSettings = {
   systemEnabled: true,
   communityEnabled: true,
   liveStreamEnabled: true,
+  showPreview: true,
   quietHoursEnabled: false,
   quietHoursStart: "",
   quietHoursEnd: "",
@@ -101,6 +102,14 @@ export function isDeliveryAllowed(
   if (!settings[category]) return false;
   if (isInQuietHours(settings)) return false;
   return true;
+}
+
+/**
+ * Whether the notification payload should include message content in the
+ * preview. Defaults to true when the setting is absent.
+ */
+export function shouldShowPreview(settings: NotificationSettings): boolean {
+  return settings.showPreview !== false;
 }
 
 /**

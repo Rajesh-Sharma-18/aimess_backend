@@ -4,6 +4,7 @@ import { createServiceProxy } from "../../proxy/create-service-proxy.js";
 import {
   sensitiveAuthRateLimiter,
   inviteLinkPreviewRateLimiter,
+  deviceTokenRateLimiter,
 } from "../../middleware/rate-limit.js";
 import { getServicesForVersion } from "../../versioning/registry.js";
 import { env } from "../../config/env.js";
@@ -29,6 +30,11 @@ export function createV1Router(messagingClient: MessagingClient): IRouter {
   // Dedicated limiter for the public invite-link preview endpoint (unauthenticated,
   // enumeration risk). Must be registered before the generic service proxy.
   v1Router.use("/communities/invite-links", inviteLinkPreviewRateLimiter);
+
+  // Rate-limit device-token registration (POST /api/v1/devices).
+  // Token floods are cheap to send but expensive to prune; 10/min per IP
+  // is enough for all legitimate rotation scenarios.
+  v1Router.use("/devices", deviceTokenRateLimiter);
 
   // Stricter throttle on sensitive auth endpoints, applied before the generic
   // service proxy below. Must be registered ahead of the proxy mount so it runs

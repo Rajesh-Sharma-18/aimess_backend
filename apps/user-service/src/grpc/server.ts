@@ -93,6 +93,7 @@ export function startUserGrpcServer(): grpc.Server {
             systemEnabled: row?.systemEnabled ?? true,
             communityEnabled: row?.communityEnabled ?? true,
             liveStreamEnabled: row?.liveStreamEnabled ?? true,
+            showPreview: row?.showPreview ?? true,
             quietHoursEnabled: row?.quietHoursEnabled ?? false,
             quietHoursStart: row?.quietHoursStart ?? "",
             quietHoursEnd: row?.quietHoursEnd ?? "",

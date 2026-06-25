@@ -21,12 +21,14 @@ import {
   type CommunityMemberUnbannedNotifyPayload,
   type CommunityMemberUnmutedPayload,
   type CommunityMemberWarnedPayload,
+  type CommunityReopenedNotifyPayload,
   type CommunityReportActionedPayload,
   type CommunityReportCreatedPayload,
   type NotificationNavigation,
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
+import { buildDeepLink } from "../lib/deep-link.js";
 import { redis } from "../config/redis.js";
 import {
   pushToUser,
@@ -41,13 +43,15 @@ function base(
   type: string,
   communityId: string,
   actorId: string | undefined,
-  extra: Record<string, string>
-): Pick<PushInput, "category" | "type" | "actorId" | "data"> {
+  extra: Record<string, string>,
+  deepLink?: string
+): Pick<PushInput, "category" | "type" | "actorId" | "deepLink" | "data"> {
   return {
     category: "communityEnabled",
     type,
     actorId,
-    data: { communityId, ...extra },
+    deepLink,
+    data: { communityId, deepLink: deepLink ?? "", ...extra },
   };
 }
 
@@ -80,17 +84,23 @@ async function handleCommunityEvent(
         userId,
         title: "New join request",
         body: `${p.requesterDisplayName} requested to join ${p.communityName}.`,
-        ...base(type, p.communityId, p.userId, {
-          requestId: p.requestId,
-          requesterId: p.userId,
-          communityName: p.communityName,
-          communityHandle: p.communityHandle,
-          communityAvatarUrl: p.communityAvatarUrl ?? "",
-          requesterDisplayName: p.requesterDisplayName,
-          requesterAvatarUrl: p.requesterAvatarUrl ?? "",
-          navigation: JSON.stringify(navigation),
-          actorSnapshot: JSON.stringify(actorSnapshot),
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.userId,
+          {
+            requestId: p.requestId,
+            requesterId: p.userId,
+            communityName: p.communityName,
+            communityHandle: p.communityHandle,
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
+            requesterDisplayName: p.requesterDisplayName,
+            requesterAvatarUrl: p.requesterAvatarUrl ?? "",
+            navigation: JSON.stringify(navigation),
+            actorSnapshot: JSON.stringify(actorSnapshot),
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       }));
       break;
     }
@@ -113,16 +123,22 @@ async function handleCommunityEvent(
         userId: p.userId,
         title: "Join request approved",
         body: `Your request to join ${p.communityName} was approved by ${p.decidedBy.displayName}.`,
-        ...base(type, p.communityId, p.decidedBy.userId, {
-          requestId: p.requestId,
-          status: "APPROVED",
-          communityName: p.communityName,
-          communityHandle: p.communityHandle,
-          communityAvatarUrl: p.communityAvatarUrl ?? "",
-          decidedByDisplayName: p.decidedBy.displayName,
-          navigation: JSON.stringify(navigation),
-          actorSnapshot: JSON.stringify(actorSnapshot),
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.decidedBy.userId,
+          {
+            requestId: p.requestId,
+            status: "APPROVED",
+            communityName: p.communityName,
+            communityHandle: p.communityHandle,
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
+            decidedByDisplayName: p.decidedBy.displayName,
+            navigation: JSON.stringify(navigation),
+            actorSnapshot: JSON.stringify(actorSnapshot),
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       await publishUserSocketEvent(
         redis,
@@ -158,16 +174,22 @@ async function handleCommunityEvent(
         userId: p.userId,
         title: "Join request declined",
         body: `Your request to join ${p.communityName} was declined.`,
-        ...base(type, p.communityId, p.decidedBy.userId, {
-          requestId: p.requestId,
-          status: "REJECTED",
-          communityName: p.communityName,
-          communityHandle: p.communityHandle,
-          communityAvatarUrl: p.communityAvatarUrl ?? "",
-          decidedByDisplayName: p.decidedBy.displayName,
-          navigation: JSON.stringify(navigation),
-          actorSnapshot: JSON.stringify(actorSnapshot),
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.decidedBy.userId,
+          {
+            requestId: p.requestId,
+            status: "REJECTED",
+            communityName: p.communityName,
+            communityHandle: p.communityHandle,
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
+            decidedByDisplayName: p.decidedBy.displayName,
+            navigation: JSON.stringify(navigation),
+            actorSnapshot: JSON.stringify(actorSnapshot),
+          },
+          buildDeepLink("communities")
+        ),
       });
       await publishUserSocketEvent(
         redis,
@@ -226,12 +248,18 @@ async function handleCommunityEvent(
         userId: p.userId,
         title: "Joined a community",
         body: `You have joined ${p.communityName}.`,
-        ...base(type, p.communityId, p.userId, {
-          communityName: p.communityName,
-          communityHandle: p.communityHandle,
-          communityAvatarUrl: p.communityAvatarUrl ?? "",
-          navigation: JSON.stringify(navigation),
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.userId,
+          {
+            communityName: p.communityName,
+            communityHandle: p.communityHandle,
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
+            navigation: JSON.stringify(navigation),
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       // Real-time UI flip: "Join" button → "Joined" without a page refresh.
       await publishUserSocketEvent(redis, p.userId, "community:joined", {
@@ -249,11 +277,18 @@ async function handleCommunityEvent(
       // Welcome the joiner — UNLESS they will get the dedicated "approved" or
       // "self_join" (MEMBER_JOINED) notification.
       if (p.via !== "join_request_approved" && p.via !== "self_join") {
+        const communityLabel = p.communityName ?? "a community";
         await pushToUser({
           userId: p.targetUserId,
           title: "Welcome to the community",
-          body: "You were added to a community.",
-          ...base(type, p.communityId, p.actorId, { via: p.via }),
+          body: `You were added to ${communityLabel}.`,
+          ...base(
+            type,
+            p.communityId,
+            p.actorId,
+            { via: p.via },
+            buildDeepLink("community", p.communityId)
+          ),
         });
       }
       // Admin/moderator awareness: a member joined.
@@ -265,10 +300,16 @@ async function handleCommunityEvent(
           userId,
           title: "New member joined",
           body: "A new member joined your community.",
-          ...base(type, p.communityId, p.actorId, {
-            via: p.via,
-            joinedUserId: p.targetUserId,
-          }),
+          ...base(
+            type,
+            p.communityId,
+            p.actorId,
+            {
+              via: p.via,
+              joinedUserId: p.targetUserId,
+            },
+            buildDeepLink("community", p.communityId)
+          ),
         }));
       }
       break;
@@ -280,7 +321,13 @@ async function handleCommunityEvent(
         userId: p.targetUserId,
         title: "You are now an admin",
         body: "Community administration was transferred to you.",
-        ...base(type, p.communityId, p.actorId, { reason: p.reason }),
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          { reason: p.reason },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       break;
     }
@@ -291,10 +338,16 @@ async function handleCommunityEvent(
         userId: p.targetUserId,
         title: "Your role changed",
         body: `Your role is now ${p.newRole}.`,
-        ...base(type, p.communityId, p.actorId, {
-          oldRole: p.oldRole,
-          newRole: p.newRole,
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {
+            oldRole: p.oldRole,
+            newRole: p.newRole,
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       break;
     }
@@ -305,9 +358,16 @@ async function handleCommunityEvent(
         userId: p.targetUserId,
         title: "Removed from community",
         body: "You were removed from a community.",
-        ...base(type, p.communityId, p.actorId, {
-          reason: p.reason ?? "",
-        }),
+        bypassSettings: true,
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {
+            reason: p.reason ?? "",
+          },
+          buildDeepLink("communities")
+        ),
       });
       break;
     }
@@ -318,9 +378,16 @@ async function handleCommunityEvent(
         userId: p.targetUserId,
         title: "Banned from community",
         body: "You were banned from a community.",
-        ...base(type, p.communityId, p.actorId, {
-          reason: p.reason ?? "",
-        }),
+        bypassSettings: true,
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {
+            reason: p.reason ?? "",
+          },
+          buildDeepLink("communities")
+        ),
       });
       break;
     }
@@ -331,7 +398,13 @@ async function handleCommunityEvent(
         userId: p.targetUserId,
         title: "Ban lifted",
         body: "Your ban from a community has been lifted.",
-        ...base(type, p.communityId, p.actorId, {}),
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {},
+          buildDeepLink("communities")
+        ),
       });
       break;
     }
@@ -344,10 +417,16 @@ async function handleCommunityEvent(
         body: p.mutedUntil
           ? "You were muted in a community for a limited time."
           : "You were muted in a community.",
-        ...base(type, p.communityId, p.actorId, {
-          reason: p.reason ?? "",
-          mutedUntil: p.mutedUntil ?? "",
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {
+            reason: p.reason ?? "",
+            mutedUntil: p.mutedUntil ?? "",
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       break;
     }
@@ -358,7 +437,13 @@ async function handleCommunityEvent(
         userId: p.targetUserId,
         title: "You have been unmuted",
         body: "You can post in the community again.",
-        ...base(type, p.communityId, p.actorId, {}),
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {},
+          buildDeepLink("community", p.communityId)
+        ),
       });
       break;
     }
@@ -369,7 +454,13 @@ async function handleCommunityEvent(
         userId: p.targetUserId,
         title: "You received a warning",
         body: p.note || "A moderator issued you a warning in a community.",
-        ...base(type, p.communityId, p.actorId, { note: p.note }),
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          { note: p.note },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       break;
     }
@@ -385,10 +476,16 @@ async function handleCommunityEvent(
         userId: p.inviteeId,
         title: "Community invite",
         body: "You were invited to join a community.",
-        ...base(type, p.communityId, p.inviterId, {
-          inviteId: p.inviteId,
-          inviterId: p.inviterId,
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.inviterId,
+          {
+            inviteId: p.inviteId,
+            inviterId: p.inviterId,
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       break;
     }
@@ -400,10 +497,16 @@ async function handleCommunityEvent(
         userId: p.inviterId,
         title: "Invite accepted",
         body: "Your community invite was accepted.",
-        ...base(type, p.communityId, p.userId, {
-          inviteId: p.inviteId,
-          acceptedById: p.userId,
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.userId,
+          {
+            inviteId: p.inviteId,
+            acceptedById: p.userId,
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       break;
     }
@@ -415,11 +518,17 @@ async function handleCommunityEvent(
         userId,
         title: "New community report",
         body: "A new report needs review.",
-        ...base(type, p.communityId, p.reporterId, {
-          reportId: p.reportId,
-          reporterId: p.reporterId,
-          targetUserId: p.targetUserId ?? "",
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.reporterId,
+          {
+            reportId: p.reportId,
+            reporterId: p.reporterId,
+            targetUserId: p.targetUserId ?? "",
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       }));
       break;
     }
@@ -430,10 +539,16 @@ async function handleCommunityEvent(
         userId: p.reporterId,
         title: "Report reviewed",
         body: "Your report was reviewed by a moderator.",
-        ...base(type, p.communityId, p.actorId, {
-          reportId: p.reportId,
-          targetUserId: p.targetUserId ?? "",
-        }),
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {
+            reportId: p.reportId,
+            targetUserId: p.targetUserId ?? "",
+          },
+          buildDeepLink("community", p.communityId)
+        ),
       });
       break;
     }
@@ -444,7 +559,14 @@ async function handleCommunityEvent(
         userId,
         title: "Community deleted",
         body: "A community you were in was deleted.",
-        ...base(type, p.communityId, p.actorId, { reason: p.reason }),
+        bypassSettings: true,
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          { reason: p.reason },
+          buildDeepLink("communities")
+        ),
       }));
       break;
     }
@@ -455,8 +577,38 @@ async function handleCommunityEvent(
         userId,
         title: "Community closed",
         body: "A community you were in has been closed.",
-        ...base(type, p.communityId, p.actorId, { reason: p.reason ?? "" }),
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          { reason: p.reason ?? "" },
+          buildDeepLink("communities")
+        ),
       }));
+      break;
+    }
+
+    case CommunityEvents.REOPENED: {
+      // The community was CLOSED (all members evicted); on reopen only the
+      // owner is reinstated — there is no former-member roster to push to.
+      // The socket broadcast in community.service.ts already notifies the
+      // owner's other connected devices via their `user:<id>` channel.
+      // A push to the owner is emitted so fully-offline devices also sync.
+      const p = data as CommunityReopenedNotifyPayload;
+      await pushToUser({
+        userId: p.actorId,
+        title: "Community reopened",
+        body: `${p.communityName} is open again.`,
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {
+            communityName: p.communityName,
+          },
+          buildDeepLink("community", p.communityId)
+        ),
+      });
       break;
     }
 

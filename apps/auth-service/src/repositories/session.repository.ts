@@ -105,6 +105,16 @@ export const sessionRepository = {
     });
   },
 
+  /** Return the deviceId for a session that belongs to the given user, or null if not found. */
+  getDeviceId(sessionId: string, userId: string): Promise<string | null> {
+    return prisma.session
+      .findFirst({
+        where: { id: sessionId, userId },
+        select: { deviceId: true },
+      })
+      .then((row) => row?.deviceId ?? null);
+  },
+
   /** Revoke every active session EXCEPT the caller's current one ("sign out all other devices"). */
   revokeOthersForUser(
     userId: string,

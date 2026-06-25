@@ -177,6 +177,7 @@ model NotificationSettings {
   systemEnabled        Boolean     @default(true)
   communityEnabled     Boolean     @default(true)
   liveStreamEnabled    Boolean     @default(true)
+  showPreview          Boolean     @default(true)
   // Quiet Hours
   quietHoursEnabled    Boolean     @default(false)
   quietHoursStart      String? // "HH:mm" 24h, e.g. "22:00"

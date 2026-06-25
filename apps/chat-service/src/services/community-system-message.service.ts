@@ -85,9 +85,16 @@ export class CommunitySystemMessageService {
     await this.postOne(params);
   }
 
+  /** Like post() but returns the created system message ID (or null on dedup/skip). */
+  async postReturnId(
+    params: PostCommunitySystemMessageParams
+  ): Promise<string | null> {
+    return this.postOne(params);
+  }
+
   private async postOne(
     params: PostCommunitySystemMessageParams
-  ): Promise<void> {
+  ): Promise<string | null> {
     const { communityId, systemMessageType, metadata, triggeredByUserId } =
       params;
 
@@ -100,7 +107,7 @@ export class CommunitySystemMessageService {
       logger.debug(
         `CommunitySystemMessageService|skip hidden type=${systemMessageType}`
       );
-      return;
+      return null;
     }
 
     const visibility =
@@ -201,7 +208,7 @@ export class CommunitySystemMessageService {
           logger.debug(
             `CommunitySystemMessageService|skip duplicate (replay) type=${systemMessageType} key=${dedupeKey}`
           );
-          return;
+          return null;
         }
       }
 
@@ -231,7 +238,7 @@ export class CommunitySystemMessageService {
 
       // Duplicate replay — the line (and its bump/publish) already happened on
       // the first delivery; do nothing further.
-      if (!message) return;
+      if (!message) return null;
 
       // Bump the community-list ordering only for subtypes that should reorder
       // the chat list (registry-driven). No unread increment — system messages
@@ -379,10 +386,13 @@ export class CommunitySystemMessageService {
           });
         }
       }
+
+      return message.id;
     } catch (err) {
       logger.warn(
         `CommunitySystemMessageService|postOne failed type=${systemMessageType} communityId=${communityId}: ${String(err)}`
       );
+      return null;
     }
   }
 

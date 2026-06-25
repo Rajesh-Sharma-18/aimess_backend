@@ -43,6 +43,7 @@ export class CommunityMessageController {
     const roomId = req.params.roomId as string;
     const body = req.body as {
       communityId: string;
+      communityName?: string;
       message: string;
       messageType: string;
       parentMessageId?: string | null;
@@ -70,6 +71,7 @@ export class CommunityMessageController {
 
     const result = await this.orchestrator.sendCommunity({
       communityId: body.communityId,
+      communityName: body.communityName,
       roomId,
       senderId: userId,
       message: body.message,
@@ -359,8 +361,6 @@ export class CommunityMessageController {
     }
 
     // Emit real-time deletion event to the community room.
-    // Client rule: hide for everyone on "forEveryone"; hide only if deletedBy===myId on "forMe".
-    // §2.3: canonical tombstone — REST body == socket payload byte-for-byte.
     const tombstone = buildDeletePayload({
       conversationType: "COMMUNITY",
       messageId: result.id,
@@ -374,6 +374,37 @@ export class CommunityMessageController {
         JSON.stringify({ event: "community:message:deleted", data: tombstone })
       );
     }
+
+    // When deleted for everyone, check if the message was actively pinned.
+    // If so: mark the pin unavailable and emit community:message:pinned update.
+    if (type === "forEveryone" && result.roomId) {
+      void this.pinService
+        .handleMessageDeleted(messageId)
+        .then((affectedPin) => {
+          if (!affectedPin) return;
+          return this.redis.publish(
+            `community:${result.roomId}`,
+            JSON.stringify({
+              event: "community:message:pinned",
+              data: {
+                communityId: result.roomId,
+                roomId: result.roomId,
+                pin: {
+                  ...affectedPin,
+                  originalMessage: { isAvailable: false },
+                },
+                pinnedCount: null, // unchanged; client uses cached count
+              },
+            })
+          );
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `deleteMessage|pin hook failed messageId=${messageId}: ${String(err)}`
+          );
+        });
+    }
+
     res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
   });
 
@@ -495,6 +526,7 @@ export class CommunityMessageController {
           roomId,
           communityId,
           messageId,
+          pin: result.pin,
           pinnedCount: result.pinnedCount,
         },
       })
@@ -506,16 +538,90 @@ export class CommunityMessageController {
 
   getPins = asyncHandler(async (req: Request, res: Response) => {
     const roomId = req.params.roomId as string;
+    // cursor = "<ms>_<id>" compound format (ISO datetime accepted for backward compat)
     const cursor = req.query.cursor as string | undefined;
     const limit = Number(req.query.limit) || 20;
     const pins = await this.pinService.list(roomId, { limit, cursor });
-    const paginated = buildCursorResponse(
-      pins as unknown as Record<string, unknown>[],
-      limit,
-      "pinnedAt"
-    );
+    const hasMore = pins.length === limit;
+    const nextCursor =
+      hasMore && pins.length > 0
+        ? `${(pins[pins.length - 1]!.pinnedAt as Date).getTime()}_${pins[pins.length - 1]!.id}`
+        : null;
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(paginated, t("CHAT_PINS_FETCHED", req.locale)));
+      .json(
+        new ApiResponse(
+          { data: pins, hasMore, nextCursor },
+          t("CHAT_PINS_FETCHED", req.locale)
+        )
+      );
+  });
+
+  /**
+   * GET /rooms/:roomId/messages/:messageId/context
+   *
+   * Returns navigation anchor for a message (e.g. from pin banner tap).
+   * FE uses the returned cursor to call GET /rooms/:roomId/messages?around=<messageId>.
+   *
+   * Response:
+   *   200 { messageId, roomId, isAvailable: true, anchor: { beforeCursor, afterCursor } }
+   *   200 { messageId, roomId, isAvailable: false, error: { code, message } }
+   */
+  getMessageContext = asyncHandler(async (req: Request, res: Response) => {
+    const roomId = req.params.roomId as string;
+    const messageId = req.params.messageId as string;
+    const { userId } = req.auth;
+
+    // Require community membership to navigate to a message
+    await this.service.assertMember(roomId, userId);
+
+    const message = await this.service.findMessageById(messageId, roomId);
+    if (!message || message.roomId !== roomId) {
+      // Message doesn't exist at all
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse({
+          messageId,
+          roomId,
+          isAvailable: false,
+          error: {
+            code: "MESSAGE_NOT_FOUND",
+            message: "Message doesn't exist",
+          },
+        })
+      );
+      return;
+    }
+
+    if (message.deletedForAll) {
+      res.status(HTTP_STATUS.OK).json(
+        new ApiResponse({
+          messageId,
+          roomId,
+          isAvailable: false,
+          error: {
+            code: "MESSAGE_NOT_FOUND",
+            message: "Message doesn't exist",
+          },
+        })
+      );
+      return;
+    }
+
+    // Build compound cursor anchor so the FE can call ?around=<messageId>
+    const ms =
+      message.createdAt instanceof Date
+        ? message.createdAt.getTime()
+        : Number(message.createdAt);
+    const beforeCursor = `${ms}_${messageId}`;
+    const afterCursor = `${ms}_${messageId}`;
+
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse({
+        messageId,
+        roomId,
+        isAvailable: true,
+        anchor: { beforeCursor, afterCursor },
+      })
+    );
   });
 }

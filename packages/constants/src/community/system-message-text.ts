@@ -142,9 +142,12 @@ export function buildCommunitySystemFallbackText(
       if (isTarget) return "You were unmuted";
       return `${target} was unmuted`;
 
-    case "PINNED_MESSAGE":
-      if (isActor) return "You pinned a message";
-      return `${actor} pinned a message`;
+    case "PINNED_MESSAGE": {
+      // Use communityName from metadata (product requirement: "{CommunityName} pinned a message").
+      const communityName =
+        (metadata.communityName as string) || actor || "Community";
+      return `${communityName} pinned a message`;
+    }
 
     case "UNPINNED_MESSAGE":
       if (isActor) return "You unpinned a message";

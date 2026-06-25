@@ -65,6 +65,8 @@ export const sendCommunityMessageSchema = z
 export const sendCommunityMessageBodySchema = z
   .object({
     communityId: z.string().min(1),
+    /** Display name of the community — forwarded to the push notification title. */
+    communityName: z.string().max(150).optional(),
     message: z.string().max(CHAT_TEXT_MAX_CHARS).default(""),
     messageType: z
       .string()

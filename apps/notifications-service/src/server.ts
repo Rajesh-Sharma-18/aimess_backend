@@ -11,6 +11,7 @@ import { startGroupConsumer } from "./consumers/group.consumer.js";
 import { startConsumer } from "./consumers/notification.consumer.js";
 import { startFriendConsumer } from "./consumers/friend.consumer.js";
 import { startSettingsConsumer } from "./consumers/settings.consumer.js";
+import { startSessionConsumer } from "./consumers/session.consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
 
 /** Start a consumer without letting RabbitMQ outages crash the service. */
@@ -56,6 +57,7 @@ async function start() {
     await startConsumerSafe("friend consumer", startFriendConsumer);
     await startConsumerSafe("admin-user consumer", startAdminUserConsumer);
     await startConsumerSafe("settings consumer", startSettingsConsumer);
+    await startConsumerSafe("session consumer", startSessionConsumer);
 
     // Start gRPC server (stub implementations — real logic wired in later)
     startGrpcServer(env.NOTIFICATIONS_GRPC_PORT);

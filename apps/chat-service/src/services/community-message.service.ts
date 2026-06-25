@@ -1886,4 +1886,22 @@ export class CommunityMessageService {
 
     return { pinnedIds: newPinnedIds, pinnedCount: newPinnedIds.length };
   }
+
+  /** Fetch a single message by ID, checking it belongs to the given room. */
+  async findMessageById(
+    messageId: string,
+    roomId: string
+  ): Promise<GeneralRoomMessage | null> {
+    const msg = await this.messageRepo.findById(messageId);
+    if (!msg || msg.roomId !== roomId) return null;
+    return msg;
+  }
+
+  /**
+   * Assert the caller is an active member of this community room.
+   * Used by REST endpoints that don't need write access (e.g. context navigation).
+   */
+  async assertMember(roomId: string, userId: string): Promise<void> {
+    await assertCommunityMember(this.memberRepo, roomId, userId);
+  }
 }

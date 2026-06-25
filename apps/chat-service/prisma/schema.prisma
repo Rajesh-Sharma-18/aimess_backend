@@ -505,18 +505,28 @@ model PrivateMessageReport {
 // CommunityMessagePin
 // -----------------------------------------------------------------------------
 model CommunityMessagePin {
-  id                String   @id @default(auto()) @map("_id") @db.ObjectId
-  roomId            String
-  messageId         String   @db.ObjectId
-  pinnedBy          String
-  pinnedAt          DateTime @default(now())
-  messageCreatedAt  DateTime
-  senderId          String
-  senderDisplayName String   @default("")
-  senderAvatar      String   @default("")
-  contentPinned     Json     @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+  id                       String    @id @default(auto()) @map("_id") @db.ObjectId
+  communityId              String    @default("") // = roomId for general rooms (explicit for clarity)
+  roomId                   String
+  messageId                String    @db.ObjectId
+  pinnedBy                 String
+  pinnedAt                 DateTime  @default(now())
+  unpinnedAt               DateTime? // null = ACTIVE; set = soft-deleted (unpinned)
+  unpinnedByUserId         String?
+  originalMessageDeletedAt DateTime? // set when the pinned message is deleted for all
+  pinSystemMessageId       String?   // ID of the PINNED_MESSAGE GeneralRoomMessage
+  messageCreatedAt         DateTime
+  senderId                 String
+  senderDisplayName        String    @default("")
+  senderAvatar             String    @default("")
+  contentPinned            Json      @default("{\"text\": \"\", \"urls\": [], \"files\": []}")
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
-  @@unique([roomId, messageId])
+  // No @@unique([roomId, messageId]) — same message can be pinned/unpinned/repinned (soft-delete history)
+  @@index([roomId, messageId])
+  @@index([roomId, unpinnedAt])       // active-pin lookup: WHERE roomId=X AND unpinnedAt IS NULL
+  @@index([messageId])                // delete-message hook: find pins referencing a message
   @@index([roomId, pinnedAt(sort: Desc)])
   @@map("community_message_pins")
 }

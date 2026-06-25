@@ -7,6 +7,17 @@ interface SendPushParams {
   body: string;
   /** Optional string→string data payload delivered alongside the notification. */
   data?: Record<string, string>;
+  /** Canonical deep-link for click-to-navigate (web + native). */
+  deepLink?: string;
+  /**
+   * FCM collapse key — multiple pending notifications with the same key are
+   * collapsed into one on the device. Useful for chat threads.
+   */
+  collapseKey?: string;
+  /** Message TTL in seconds. Default: 86 400 (24 h). */
+  ttl?: number;
+  /** FCM delivery priority. Use 'high' for calls/time-sensitive events. */
+  priority?: "high" | "normal";
 }
 
 /** FCM error codes that mean the token is permanently dead → prune it. */
@@ -28,15 +39,65 @@ export async function sendPush({
   title,
   body,
   data,
+  deepLink,
+  collapseKey,
+  ttl = 86_400,
+  priority = "normal",
 }: SendPushParams): Promise<SendPushResult> {
+  // Merge deepLink into the data map so native clients can read it.
+  const enrichedData: Record<string, string> = {
+    ...(data ?? {}),
+    ...(deepLink ? { deepLink } : {}),
+  };
+
+  const apnsPriority = priority === "high" ? "10" : "5";
+  const webUrgency = priority === "high" ? "high" : "normal";
+
   try {
     const messageId = await messaging.send({
       token,
       notification: { title, body },
-      ...(data ? { data } : {}),
+
+      // ── Android ──────────────────────────────────────────────────────────
+      android: {
+        priority: priority === "high" ? "high" : "normal",
+        ...(collapseKey ? { collapseKey } : {}),
+      },
+
+      // ── APNs (iOS) ───────────────────────────────────────────────────────
+      apns: {
+        headers: {
+          "apns-priority": apnsPriority,
+        },
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+
+      // ── Web push ─────────────────────────────────────────────────────────
+      webpush: {
+        notification: {
+          icon: "/icons/icon-192.png",
+          badge: "/icons/badge-72.png",
+          // requireInteraction keeps the notification visible for calls.
+          requireInteraction: priority === "high",
+        },
+        fcmOptions: {
+          ...(deepLink ? { link: deepLink } : {}),
+        },
+        headers: {
+          Urgency: webUrgency,
+          TTL: String(ttl),
+        },
+      },
+
+      // ── Data payload ─────────────────────────────────────────────────────
+      ...(Object.keys(enrichedData).length > 0 ? { data: enrichedData } : {}),
     });
 
-    logger.info("Push sent:", messageId);
+    logger.info("Push delivered:", messageId);
     return { messageId, invalidToken: false };
   } catch (error) {
     const code =
@@ -44,7 +105,8 @@ export async function sendPush({
         ? String((error as { code?: unknown }).code)
         : "";
     const invalidToken = INVALID_TOKEN_CODES.has(code);
-    logger.error("FCM Error:", error);
+    logger.error("FCM send failed — invalidToken:", invalidToken);
+    logger.error(error);
     return { messageId: null, invalidToken };
   }
 }

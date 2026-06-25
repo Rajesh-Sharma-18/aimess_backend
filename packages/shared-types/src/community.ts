@@ -1,5 +1,35 @@
 /** Socket-level DTOs for community real-time events (community-service → gateway → clients). */
 
+/**
+ * Community-list "last activity" preview. Shared across:
+ *  - `GET /communities/mine` → `CommunityListItem.lastActivity`
+ *  - `community:added` socket event → `CommunityAddedPayload.lastActivity`
+ *  - `community:updated` socket list-bump → carries the same shape
+ *
+ * Two discriminated variants:
+ *  - **USER MESSAGE** (`message`/`reaction`/`edited`/`deleted`): `username` is the
+ *    sender — the client renders `"<username>: <preview>"`.
+ *  - **SYSTEM / lifecycle** (`system`/`created`/`join`/`removal`/`pinned`/`unpinned`):
+ *    `username` is always `null` — the client renders `preview` standalone with no prefix.
+ */
+export type CommunityLastActivity =
+  | {
+      type: "message" | "reaction" | "edited" | "deleted";
+      userId: string | null;
+      username: string;
+      preview: string;
+      /** Epoch milliseconds. */
+      dateTime: number;
+    }
+  | {
+      type: "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
+      userId: null;
+      username: null;
+      preview: string;
+      /** Epoch milliseconds. */
+      dateTime: number;
+    };
+
 export interface CommunitySummaryDto {
   communityId: string;
   name: string;
@@ -122,6 +152,7 @@ export interface CommunityAddedPayload {
   status: "ACTIVE" | "CLOSED";
   /** How the recipient became a member. */
   via:
+    | "created"
     | "add_members"
     | "join_request_approved"
     | "join_request_auto_accept"
@@ -130,6 +161,15 @@ export interface CommunityAddedPayload {
     | "self_join";
   joinedAt: number; // epoch ms
   addedAt: number; // epoch ms — idempotency key
+  /**
+   * The recipient's personal last-activity preview — always their private
+   * "You joined the community" system message at join time.
+   *
+   * Structurally identical to `CommunityListItem.lastActivity` from
+   * `GET /communities/mine`. The client must upsert this directly into the
+   * community-list row and MUST NOT call Mine API to back-fill it.
+   */
+  lastActivity: CommunityLastActivity;
 }
 
 /**

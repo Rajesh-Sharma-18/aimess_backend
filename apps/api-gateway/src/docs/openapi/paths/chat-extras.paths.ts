@@ -334,6 +334,7 @@ function seqPaginationParams() {
 const privateMessages = {
   get: {
     tags: ["Chat — Private"],
+    operationId: "listPrivateMessages",
     summary: "List private messages (seq pagination)",
     description: [
       "Returns a page of messages for a 1-to-1 conversation.",
@@ -382,6 +383,7 @@ const privateMessages = {
   },
   post: {
     tags: ["Chat — Private"],
+    operationId: "sendPrivateMessage",
     summary: "Send a private message",
     description:
       "Sends a message into the private room. The server broadcasts `message:new` to the `conv:<roomId>` Socket.IO room, bumps the conversation to the top of both inboxes, and triggers an FCM/APNs push to the peer. Requires friendship. Idempotent via `clientMessageId` (a replay answers 200 with `idempotent: true`).",
@@ -404,6 +406,7 @@ const privateMessages = {
 const privateMarkRead = {
   post: {
     tags: ["Chat — Private"],
+    operationId: "markPrivateRead",
     summary: "Mark private conversation read",
     description:
       "Advances the caller's read pointer up to `upToMessageId`. Emits a `message:read` receipt to the `conv:<roomId>` Socket.IO room (the peer) and a `read_sync` to the caller's other devices. Returns the `readToSeq` high-water mark.",
@@ -426,6 +429,7 @@ const privateMarkRead = {
 const privatePinMessage = {
   post: {
     tags: ["Chat — Private"],
+    operationId: "pinPrivateMessage",
     summary: "Pin a private message",
     description:
       "Pins `messageId` in the conversation. Broadcasts `pin:updated` (action: `pinned`) to the `conv:<roomId>` Socket.IO room. Returns 409 if already pinned.",
@@ -441,6 +445,7 @@ const privatePinMessage = {
   },
   delete: {
     tags: ["Chat — Private"],
+    operationId: "unpinPrivateMessage",
     summary: "Unpin a private message",
     description:
       "Unpins `messageId`. Broadcasts `pin:updated` (action: `unpinned`) to the `conv:<roomId>` Socket.IO room.",
@@ -461,6 +466,7 @@ const privatePinMessage = {
 const groupMessages = {
   get: {
     tags: ["Chat — Groups"],
+    operationId: "listGroupMessages",
     summary: "List group messages (seq pagination)",
     description: [
       "Returns a page of messages for a group room.",
@@ -507,6 +513,7 @@ const groupMessages = {
   },
   post: {
     tags: ["Chat — Groups"],
+    operationId: "sendGroupMessage",
     summary: "Send a group message",
     description:
       "Sends a message into the group room. The server broadcasts `message:new` to `conv:<roomId>`, bumps the conversation for every member's inbox, and fans out an FCM/APNs push to active members. Requires active membership. Idempotent via `clientMessageId` (a replay answers 200 with `idempotent: true`).",
@@ -529,6 +536,7 @@ const groupMessages = {
 const groupMarkRead = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "markGroupRead",
     summary: "Mark group read",
     description:
       "Advances the caller's group-member read pointer up to `upToMessageId`. Emits a `message:read` receipt to `conv:<roomId>` and a `read_sync` to the caller's other devices. Returns the `readToSeq` high-water mark.",
@@ -551,6 +559,7 @@ const groupMarkRead = {
 const communityMarkRead = {
   post: {
     tags: ["Chat — Community"],
+    operationId: "markCommunityRead",
     summary: "Mark community room read",
     description:
       "Marks the community room read for the caller. Community read is **coarser** than private/group: it advances the member's read pointer to *now* (read-to-now) rather than to a specific message, and emits **no** socket receipt. The body's `upToMessageId` is accepted for request parity but is not used as a per-message high-water mark.",
@@ -573,6 +582,7 @@ const communityMarkRead = {
 const groupPinMessage = {
   post: {
     tags: ["Chat — Groups"],
+    operationId: "pinGroupMessage",
     summary: "Pin a group message",
     description:
       "Pins `messageId` in the group room. Broadcasts `pin:updated` (action: `pinned`) to `conv:<roomId>`. Only members with sufficient role may pin. Returns 409 if already pinned.",
@@ -588,6 +598,7 @@ const groupPinMessage = {
   },
   delete: {
     tags: ["Chat — Groups"],
+    operationId: "unpinGroupMessage",
     summary: "Unpin a group message",
     description:
       "Unpins `messageId`. Broadcasts `pin:updated` (action: `unpinned`) to `conv:<roomId>`.",
@@ -608,6 +619,7 @@ const groupPinMessage = {
 const chatSync = {
   get: {
     tags: ["Chat — Private", "Chat — Groups"],
+    operationId: "syncConversation",
     summary: "Incremental conversation sync",
     description: [
       "Returns all events (sent messages, edits, deletes, reactions, pins) for a **single conversation** with `sequenceNumber > from_seq`.",

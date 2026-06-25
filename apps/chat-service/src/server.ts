@@ -460,6 +460,7 @@ const startServer = async () => {
       webRtcConfigService,
       presenceService,
       communityMessageService,
+      communityPinService,
       notificationRepo,
     });
 

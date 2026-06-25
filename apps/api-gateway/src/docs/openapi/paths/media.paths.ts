@@ -87,9 +87,24 @@ const UPLOAD_CATEGORIES = [
   "GROUP_CHAT_ATTACHMENT",
 ] as const;
 
+const tooManyRequests = {
+  description: "Rate limit exceeded",
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+      example: {
+        success: false,
+        message: "Too many requests. Please slow down.",
+        code: "RATE_LIMIT_EXCEEDED",
+      },
+    },
+  },
+};
+
 const mediaUploadUrl = {
   post: {
     tags: ["Media"],
+    operationId: "generateUploadUrl",
     summary: "Generate presigned upload URL",
     description: `Returns a short-lived presigned PUT URL for direct-to-storage upload.
 
@@ -172,11 +187,50 @@ Without \`resourceId\`, media-service would have no way to know which room each 
                 data: { $ref: "#/components/schemas/MediaUploadUrlResponse" },
               },
             },
+            example: {
+              success: true,
+              data: {
+                uploadUrl:
+                  "https://storage.example.com/chat-uploads/user-uuid/file-uuid.docx?X-Amz-Signature=abc123&X-Amz-Expires=300",
+                objectKey:
+                  "chat-uploads/550e8400-e29b-41d4-a716-446655440000/a1b2c3d4.docx",
+                expiresIn: 300,
+                category: "CHAT_ATTACHMENT",
+              },
+            },
           },
         },
       },
-      "400": badRequest,
+      "400": {
+        description:
+          "Validation failed — missing required fields, unsupported contentType for category, or file too large",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+            examples: {
+              unsupportedType: {
+                summary: "contentType not allowed for category",
+                value: {
+                  success: false,
+                  message:
+                    "Avatar uploads only support image/jpeg, image/png, image/webp",
+                  code: "UNSUPPORTED_CONTENT_TYPE",
+                },
+              },
+              fileTooLarge: {
+                summary: "File exceeds size cap",
+                value: {
+                  success: false,
+                  message: "File exceeds the 25 MB limit for image/jpeg",
+                  code: "FILE_TOO_LARGE",
+                },
+              },
+            },
+          },
+        },
+      },
       "401": unauthorized,
+      "429": tooManyRequests,
       "415": {
         description: "Unsupported or mismatched content type",
         content: {
@@ -197,6 +251,7 @@ Without \`resourceId\`, media-service would have no way to know which room each 
 const mediaConfirm = {
   post: {
     tags: ["Media"],
+    operationId: "confirmUpload",
     summary: "Confirm upload + run security scan",
     description: `Called after the client has successfully PUT the file to the presigned MinIO URL. Validates the file immediately so errors surface during the upload flow — not at download time.
 
@@ -313,6 +368,7 @@ The AV scan is enqueued as a Bull job and this endpoint returns \`scanStatus: "P
 const mediaDownloadUrl = {
   post: {
     tags: ["Media"],
+    operationId: "generateDownloadUrl",
     summary: "Generate presigned download URL",
     description: `Returns a short-lived presigned GET URL for downloading a stored media object.
 
@@ -418,6 +474,7 @@ If the file has never been confirmed, this endpoint automatically runs the secur
 const mediaScanStatus = {
   get: {
     tags: ["Media"],
+    operationId: "pollScanStatus",
     summary: "Poll async media scan status",
     description:
       "Returns the current AV scan status for an uploaded object. Poll until CLEAN. PENDING = scan still running or no status yet; QUARANTINED/INFECTED = rejected and deleted.",
@@ -483,6 +540,7 @@ const mediaScanStatus = {
 const mediaCancelUpload = {
   delete: {
     tags: ["Media"],
+    operationId: "cancelUpload",
     summary: "Cancel an upload (delete the object)",
     description:
       "Deletes an uploaded object from storage — used to cancel an in-progress upload or discard an object the client decided not to reference. Ownership is enforced (the objectKey must be owned by the caller). Idempotent: deleting an already-absent object still returns 200.\n\n" +

@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 import amqp from "amqplib";
 
 import { env } from "../config/env.js";
+import { buildDeepLink } from "../lib/deep-link.js";
 import { pushToUsers } from "../services/push.service.js";
 import { isCommunityActorMuted } from "../services/notification-eligibility.service.js";
 
@@ -23,6 +24,8 @@ interface MessageSentPayload {
   conversationType: "PRIVATE" | "GROUP" | "COMMUNITY";
   /** Present when conversationType === "COMMUNITY" */
   communityId?: string;
+  /** Community display name — used as the FCM push title for community messages. */
+  communityName?: string;
   messageId: string;
   clientMessageId: string;
   senderId: string;
@@ -55,10 +58,30 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
   );
   if (recipients.length === 0) return;
 
-  const title = data.senderName || "New message";
-  const body = data.preview || "New message";
-  const category =
-    data.conversationType === "COMMUNITY" ? "communityEnabled" : "chatEnabled";
+  const isCommunity = data.conversationType === "COMMUNITY";
+  const category = isCommunity ? "communityEnabled" : "chatEnabled";
+
+  // For community messages: title = community name (if known), body = "Sender: preview".
+  // For private/group: title = sender name, body = preview text.
+  const title = isCommunity
+    ? data.communityName || data.senderName || "Community"
+    : data.senderName || "New message";
+  const body = isCommunity
+    ? `${data.senderName || "Someone"}: ${data.preview || "New message"}`
+    : data.preview || "New message";
+
+  // Include messageId in the community deep link so the client can scroll to
+  // the specific message after navigating to the community chat room.
+  const communityTarget = data.communityId ?? data.conversationId;
+  const deepLink = isCommunity
+    ? buildDeepLink("community", communityTarget, data.messageId)
+    : buildDeepLink("conversation", data.conversationId);
+
+  // showPreviewOverride hides sender name and message content when the user
+  // has "show preview" disabled — the title (community/sender name) is safe.
+  const showPreviewOverride = isCommunity
+    ? `New message in ${data.communityName || "community"}`
+    : "New message";
 
   await pushToUsers(recipients, (userId) => ({
     userId,
@@ -67,12 +90,16 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
     title,
     body,
     actorId: data.senderId,
-    // FCM data map — all values MUST be strings. Mirrors PUSH_NOTIFICATIONS_V2.md.
+    deepLink,
+    collapseKey: `conv:${data.conversationId}`,
+    showPreviewOverride,
+    // FCM data map — all values MUST be strings.
     data: {
       type: "MESSAGE",
       conversationId: data.conversationId,
       conversationType: data.conversationType,
       ...(data.communityId ? { communityId: data.communityId } : {}),
+      ...(data.communityName ? { communityName: data.communityName } : {}),
       messageId: data.messageId,
       clientMessageId: data.clientMessageId ?? "",
       senderId: data.senderId,
@@ -82,6 +109,7 @@ async function handleMessageSent(data: MessageSentPayload): Promise<void> {
       preview: data.preview ?? "",
       sentAt: String(data.sentAt ?? ""),
       idempotencyKey: data.messageId,
+      deepLink,
     },
   }));
 }

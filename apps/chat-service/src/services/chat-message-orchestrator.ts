@@ -93,6 +93,8 @@ export interface SendCommunityParams {
   senderName?: string;
   /** Sender avatar object-key/URL; resolved from the user snapshot when omitted. */
   senderAvatar?: string;
+  /** Community display name — used as the FCM push notification title. */
+  communityName?: string;
   message: string;
   messageType: string;
   parentMessageId?: string | null;
@@ -456,6 +458,27 @@ export class ChatMessageOrchestrator {
             ...(contact ? { contact } : {}),
           }),
         },
+      });
+
+      // FCM push — community messages need the same offline-wake push as
+      // private/group. fetchRecipients is lazy so the DB call only runs when
+      // RabbitMQ is configured. communityName is forwarded when the REST caller
+      // supplies it so the consumer can set it as the push title.
+      publishMessageSentSafe({
+        conversationId: params.communityId,
+        conversationType: "COMMUNITY",
+        communityId: params.communityId,
+        communityName: params.communityName,
+        messageId: saved.id,
+        clientMessageId,
+        senderId: params.senderId,
+        senderName: senderName || "",
+        senderAvatar: senderAvatar || "",
+        preview: buildPushPreview(saved.messageType, saved.message ?? ""),
+        messageType: normalizeMessageType(saved.messageType),
+        sentAt,
+        fetchRecipients: () =>
+          this.communityMessageService.getActiveMemberIds(params.roomId),
       });
     }
 

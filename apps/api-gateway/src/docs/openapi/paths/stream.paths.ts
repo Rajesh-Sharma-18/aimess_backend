@@ -94,6 +94,7 @@ function streamOk(description: string, dataRef: string) {
 const createStream = {
   post: {
     tags: ["Streams"],
+    operationId: "createStream",
     summary: "Create a livestream",
     description: `Start the go-live flow for a community. Returns the stream record plus owner-only \`streamKey\` and \`ingest\` endpoints.
 
@@ -178,6 +179,7 @@ const createStream = {
 const listStreams = {
   get: {
     tags: ["Streams"],
+    operationId: "listStreams",
     summary: "List livestreams",
     description:
       "Paginated cursor list of streams. Filter by community and/or status. Results are ordered newest-first.",
@@ -254,6 +256,7 @@ const listStreams = {
 const getStream = {
   get: {
     tags: ["Streams"],
+    operationId: "getStream",
     summary: "Get stream details",
     description:
       "Returns the full stream record. `viewerCount` is merged from Redis (authoritative live value) when the stream is LIVE. Banned users receive 403.",
@@ -275,6 +278,7 @@ const getStream = {
 const updateStream = {
   patch: {
     tags: ["Streams"],
+    operationId: "updateStream",
     summary: "Update stream metadata",
     description:
       "Owner-only. Updates `title`, `description`, and/or `thumbnail`. Broadcasts a `stream:info_updated` socket event to all viewers in real time. Only the provided fields are changed.",
@@ -316,6 +320,7 @@ const updateStream = {
 const deleteStream = {
   delete: {
     tags: ["Streams"],
+    operationId: "deleteStream",
     summary: "Delete a stream",
     description:
       "Owner-only. Deletes PENDING, ENDED, or CANCELLED streams. Returns 409 if the stream is LIVE (stop it first).",
@@ -366,6 +371,7 @@ const deleteStream = {
 const stopStream = {
   post: {
     tags: ["Streams"],
+    operationId: "stopStream",
     summary: "Stop a livestream",
     description: `Owner-only. Ends the stream, kicks the SRS publisher (best-effort), and broadcasts \`stream:status → ENDED\` to all viewers.
 
@@ -388,6 +394,7 @@ SRS will also fire \`on_unpublish\`, which is handled idempotently (no-op if alr
 const goLive = {
   post: {
     tags: ["Streams"],
+    operationId: "goLive",
     summary: "Mark stream as live",
     description: `Owner-only. Manually transitions a PENDING stream to LIVE and stamps FLV/HLS/DASH playback URLs.
 
@@ -411,6 +418,7 @@ Use this when SRS has no \`on_publish\` hook configured (e.g. hosted SRS). Call 
 const getComments = {
   get: {
     tags: ["Streams"],
+    operationId: "getStreamComments",
     summary: "Get stream comments",
     description:
       "Cursor-paginated comment history for a stream. Returns comments **oldest-first** (the list is reversed from DB order). `before` is a comment ObjectId — pass `nextCursor` from a previous page to load older comments.",
@@ -476,6 +484,7 @@ const getComments = {
 const setCommentStatus = {
   patch: {
     tags: ["Streams"],
+    operationId: "setStreamCommentStatus",
     summary: "Toggle live chat",
     description:
       "Owner-only. Enables or disables the live chat for the stream. Broadcasts `stream:comment_status` via Redis so all connected viewers update their `canComment` state in real time.",
@@ -516,6 +525,7 @@ const setCommentStatus = {
 const getViewers = {
   get: {
     tags: ["Streams"],
+    operationId: "getStreamViewers",
     summary: "Get current viewers",
     description:
       "Owner-only. Returns the set of userIds currently watching the stream, sourced from the Redis session set `stream:session:users:<id>`. Returns an empty array if Redis is unavailable.",
@@ -562,6 +572,7 @@ const getViewers = {
 const banUser = {
   post: {
     tags: ["Streams"],
+    operationId: "banStreamUser",
     summary: "Ban a user from the stream",
     description: `Owner-only. Bans a viewer from the stream. Idempotent — re-banning an already-banned user is a no-op.
 
@@ -629,6 +640,7 @@ const banUser = {
 const unbanUser = {
   delete: {
     tags: ["Streams"],
+    operationId: "unbanStreamUser",
     summary: "Unban a user from the stream",
     description:
       "Owner-only. Lifts a ban. Idempotent — unbanning a non-banned user is a no-op.",
@@ -680,6 +692,7 @@ const unbanUser = {
 const listBans = {
   get: {
     tags: ["Streams"],
+    operationId: "listStreamBans",
     summary: "List stream bans",
     description:
       "Owner-only. Returns all users currently banned from the stream.",

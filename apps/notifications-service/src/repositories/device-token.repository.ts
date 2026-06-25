@@ -53,4 +53,17 @@ export const deviceTokenRepository = {
     });
     return res.count;
   },
+
+  /** Remove ALL tokens for a user (logout-all-devices). */
+  async deleteAllByUserId(userId: string): Promise<void> {
+    await prisma.deviceToken.deleteMany({ where: { userId } });
+  },
+
+  /** Remove tokens for a specific device (single-device logout). */
+  async deleteByUserIdAndDeviceId(
+    userId: string,
+    deviceId: string
+  ): Promise<void> {
+    await prisma.deviceToken.deleteMany({ where: { userId, deviceId } });
+  },
 };

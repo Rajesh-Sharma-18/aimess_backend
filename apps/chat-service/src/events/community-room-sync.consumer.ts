@@ -235,6 +235,25 @@ export class CommunityRoomSyncConsumer {
           // `data.status`: mapMemberStatus collapses PENDING (and unknowns) into
           // "left", and a PENDING join-request sync must NOT purge a join line.
           const rawStatus = (event.data.status ?? "").toUpperCase();
+
+          // Mark the member as a fresh join so community:updated bumps are
+          // suppressed until community:added arrives at the client. The key
+          // expires after 60 s — well past any realistic socket delivery window.
+          if (rawStatus === "ACTIVE") {
+            await redis
+              .set(
+                `community:fresh-join:${communityId}:${userId}`,
+                "1",
+                "EX",
+                60
+              )
+              .catch((err: unknown) => {
+                logger.warn(
+                  `fresh-join key set failed community=${communityId} user=${userId}: ${String(err)}`
+                );
+              });
+          }
+
           if (rawStatus === "LEFT" || rawStatus === "BANNED") {
             const boundary = event.data.eventAt
               ? new Date(event.data.eventAt)

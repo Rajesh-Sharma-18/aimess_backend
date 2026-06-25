@@ -8,6 +8,145 @@
 
 ---
 
+## Push Notification Architecture — Full Multi-Device Implementation (shipped 2026-06-25)
+
+### What shipped
+
+**notifications-service**
+
+- **`src/lib/deep-link.ts`** — centralized `buildDeepLink()` builder for all `aimess://` navigation URLs. Overloaded for `conversation | community | communities | group | call | user`. No throws, no imports — safe to call in any consumer.
+- **`src/providers/firebase/sendPush.ts`** — extended with `deepLink?`, `collapseKey?`, `ttl?` (default 86400 s), `priority?` (default `"normal"`). Platform-specific FCM sections: `android.priority`, `apns.headers['apns-priority']` + `apns.payload.aps.sound: "default"`, `webpush.notification` (icon, badge, `requireInteraction`), `webpush.fcmOptions.link`. FCM tokens are **never logged** (only messageId or invalidToken flag).
+- **`src/services/push.service.ts`** — extended `PushInput` with `deepLink?`, `collapseKey?`, `ttl?`, `priority?`, `bypassSettings?`, `showPreviewOverride?`. Key behaviors: `bypassSettings=true` skips settings gate (inbox + FCM still sent); `showPreview=false` replaces body with `showPreviewOverride ?? "New message"` (title unchanged); tokens deduplicated via `new Set(rawTokens)` before FCM fan-out.
+- **`src/consumers/chat.consumer.ts`** — computes `deepLink` (community → `aimess://community/<id>`, private/group → `aimess://conversation/<id>`) + `collapseKey: conv:<conversationId>` + `showPreviewOverride: "New message"` passed to `pushToUsers`.
+- **`src/consumers/community.consumer.ts`** — all 17 push cases pass `buildDeepLink(...)`. Kick/ban/delete → `aimess://communities` (user lost access). All others → `aimess://community/<id>`. `MEMBER_KICKED`, `MEMBER_BANNED`, `DELETED` use `bypassSettings: true`.
+- **`src/consumers/friend.consumer.ts`** — `FRIEND_REQUESTED` → `aimess://user/<requesterId>`, `FRIEND_ACCEPTED` → `aimess://user/<addresseeId>`.
+- **`src/consumers/session.consumer.ts`** — NEW. Consumes `session.queue` (mirrors auth-service DLX topology). `session.device_revoked` → `deleteByUserIdAndDeviceId`, `session.all_revoked` → `deleteAllByUserId`. Clears FCM tokens on logout without logging userId/deviceId.
+- **`src/repositories/device-token.repository.ts`** — added `deleteAllByUserId` and `deleteByUserIdAndDeviceId` for logout-triggered cleanup.
+- **`src/server.ts`** — wires `startSessionConsumer` via `startConsumerSafe`.
+
+**auth-service**
+
+- **`src/messaging/publish-session-revoked.ts`** — NEW. Publishes `session.device_revoked` (single logout) and `session.all_revoked` (logout-all) to `session.queue` with DLX. Fire-and-forget safe.
+- **`src/repositories/session.repository.ts`** — added lean `getDeviceId(sessionId, userId)`.
+- **`src/services/session.service.ts`** — `logout` and `revokeSession` publish `session.device_revoked`; `revokeAllSessions` publishes `session.all_revoked`. Publishing never throws to the caller.
+
+**user-service**
+
+- **`prisma/schema.prisma`** — `NotificationSettings` gained `showPreview Boolean @default(true)`.
+- **`prisma/migrations/20260625000001_add_notification_show_preview/migration.sql`** — `ALTER TABLE "notification_settings" ADD COLUMN "showPreview" BOOLEAN NOT NULL DEFAULT true;`
+- **`src/grpc/server.ts`** — `getNotificationSettings` returns `showPreview: row?.showPreview ?? true`.
+
+**packages/grpc-contracts**
+
+- **`proto/user.proto`** — `NotificationSettings` message gained `bool show_preview = 11;`.
+
+**notifications-service (settings)**
+
+- **`src/grpc/user-settings.client.ts`** — `NotificationSettings` interface gained `showPreview: boolean`.
+- **`src/services/notification-settings.service.ts`** — `ALLOW_ALL` default includes `showPreview: true`; exported `shouldShowPreview(settings)` helper.
+
+**api-gateway**
+
+- **`src/middleware/rate-limit.ts`** — `deviceTokenRateLimiter` (10 req/min/IP, 429 on excess).
+- **`src/routes/v1/index.ts`** — `v1Router.use("/devices", deviceTokenRateLimiter)`.
+- **`src/docs/openapi/paths/devices.paths.ts`** — updated with multi-device fan-out description, FCM payload shape, showPreview privacy note, rate-limit note, and 429 response.
+
+### Key architectural decisions
+
+| Decision                                                               | Rationale                                                       |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------- |
+| FCM tokens stored in notifications-service (MongoDB), not auth-service | Single responsibility; avoids cross-DB reads                    |
+| Session-to-token cleanup via RabbitMQ events                           | Decoupled; auth-service logout cannot fail due to broker issues |
+| `bypassSettings=true` for kick/ban/delete                              | These are non-negotiable critical events users must receive     |
+| Token dedup via `new Set()` before FCM send                            | Prevents double pushes from stale duplicate rows                |
+| `showPreview` gate on body only, not title                             | Title ("New message") reveals nothing sensitive                 |
+| Rate-limit at gateway, not notifications-service                       | Gateway is the single ingress for all external requests         |
+
+### Non-negotiable multi-device rules (all satisfied)
+
+1. FCM tokens belong to device/session records, not User model ✓
+2. One user → many active sessions → all receive pushes ✓
+3. Token rotation updates correct session's token ✓
+4. Single logout revokes only current device token ✓
+5. Logout-all revokes all sessions + tokens ✓
+6. Stale FCM tokens pruned without affecting other devices ✓
+7. Community mute suppresses pushes on all devices ✓ (pre-existing `CheckCommunityMute` gate)
+8. Push jobs idempotent (FCM dedup + collapseKey + deduplicated token set) ✓
+9. FCM tokens never logged ✓
+
+### Known gaps / deferred
+
+- **Call notifications** (missed call FCM): call-service uses socket-only; FCM for calls not yet implemented.
+- **Mention override for community mute**: `@mention` in muted communities should bypass the mute gate — not yet implemented.
+- **Phase 3 scenario tests**: 14 multi-device test scenarios in the spec are not yet automated.
+- **Redis store for rate limiter**: current in-memory store is per-process (not shared across gateway replicas). Move to `rate-limit-redis` when the gateway scales horizontally.
+
+---
+
+## Community Member Removal — Silent-Chat Policy (2026-06-25)
+
+**Issue:** When an admin/mod kicked (`kickMember`) or banned (`banMember`) a member, `emitMemberSystemMessage` published a `MEMBER_REMOVED` / `MEMBER_BANNED` system message to chat. All community members saw `"{name} was removed"` in the timeline and the removed user saw `"You were removed"`. This violates the product rule that removal must be **silent from the chat-message perspective**.
+
+**Root cause:** `MEMBER_REMOVED` and `MEMBER_BANNED` were not in `HIDDEN_SYSTEM_MESSAGE_TYPES`. The guard in `emitMemberSystemMessage()` (`isHiddenSystemMessage`) correctly short-circuits when a type is hidden — the policy list simply hadn't been updated.
+
+**Fix (3 files):**
+
+1. **`packages/constants/src/community/system-message.ts`** — Added `"MEMBER_REMOVED"` and `"MEMBER_BANNED"` to `HIDDEN_SYSTEM_MESSAGE_TYPES`. This propagates end-to-end: `emitMemberSystemMessage()` guard (skips RabbitMQ publish) → chat-service consumer backstop (drops any queued messages) → every read path filters already-persisted rows.
+
+2. **`apps/community-service/src/services/community.service.ts`** — `kickMember()` and `banMember()`: Removed the `emitMemberSystemMessage()` calls. Added `publishChatUserEvent(redis, targetUserId, "community:membership:removed", {...})` so ALL devices of the removed user are notified via their personal `user:{id}` Redis channel (the gateway's `user:*` bridge already forwards any `community:*` event from this channel to every connected socket of that user).
+
+**What still happens:** Membership status change, member count recount, audit log, `publishCommunityMemberKickedSafe`/`BannedSafe` → push notification, `community:member:removed` room broadcast (roster update + gateway room eviction), `community:stats:updated`.
+
+**New personal event — `community:membership:removed`:**
+
+```json
+{
+  "communityId": "...",
+  "membershipStatus": "REMOVED",
+  "reason": "kicked|banned",
+  "removedAt": 1750000000000
+}
+```
+
+Delivered to `user:{userId}` → all devices/tabs. FE must: remove community from store, close community screen, clear typing/draft/permission cache.
+
+**Multi-device:** Room-level `community:member:removed` evicts sockets currently in the room. Personal `community:membership:removed` reaches every socket of the user regardless of which screen they're on.
+
+**Policy table (authoritative in `HIDDEN_SYSTEM_MESSAGE_TYPES`):**
+| Event | Chat msg | Bumps lastActivity |
+|---|---|---|
+| Member removed | No (HIDDEN) | No |
+| Member banned | No (HIDDEN) | No |
+| Member left | No (HIDDEN) | No |
+| Member joined | No (HIDDEN) | No |
+| Role changed | Yes (COMMUNITY) | Yes |
+
+**Tests:** `apps/community-service/tests/member-removal.test.ts` (16/16 green). Verifies: no system message on kick or ban, personal event fires with correct payload, RabbitMQ domain events still fire, idempotent ban no-ops.
+
+---
+
+## Community Join System Message — Architectural Refactor (2026-06-25)
+
+**Issue:** Only `joinCommunity` (self-join via JOIN button) emitted the `COMMUNITY_JOINED` "You joined the community" personal system message. Five other membership activation paths — admin/mod `addMembers`, `approveJoinRequest`, `bulkApproveJoinRequests`, `acceptInvite` (direct invite), and `redeemInviteLink` (invite link) — were silent. A re-join (LEFT → ACTIVE) also had no system message.
+
+**Fix:** Centralized all membership activation side-effects into the single `notifyMemberJoined()` helper in `community.service.ts`. Every activation path now calls it; the system message is emitted at the END of `notifyMemberJoined`, not duplicated per caller. Key changes:
+
+- `notifyMemberJoined()` gained two new params: `eventAt: string` (stable ISO-8601 idempotency seed — the chat-service dedup key is `sys:COMMUNITY_JOINED:{eventAt}:u:{userId}`) and `skipCrossServiceNotification?: boolean` (used by invite acceptance to suppress duplicate push via `publishCommunityMemberAddedSafe`, which is already handled by `publishCommunityInviteAcceptedSafe`).
+- `addMembers()` both loops (reactivate + create) now pass `eventAt: new Date().toISOString()` and rely on `notifyMemberJoined()`. Duplicate inline calls removed.
+- `joinCommunity()`: captures `memberActivatedAt` before the write, passes it; inline `COMMUNITY_JOINED` call removed.
+- `approveJoinRequest()`: added `eventAt`; removed stale `JOIN_REQUEST_APPROVED` system message block (wrong type, wrong text "Your request to join was approved" vs "You joined the community").
+- `bulkApproveJoinRequests()`: added `eventAt` to existing `notifyMemberJoined()` call. This path had no system message before.
+- `acceptInvite()`: added `activatedAt` + `notifyMemberJoined({ ..., skipCrossServiceNotification: true })`. This path had no system message before.
+- `redeemInviteLink()`: merged inline `publishCommunitySystemMessageForChatSafe` into `notifyMemberJoined()`; added `eventAt`.
+
+**Idempotency:** RabbitMQ redeliveries on the same `eventAt` → same chat-service dedup key → no-op insert. Two separate HTTP requests for the same user (e.g., admin clicks Add twice) hit the membership ACTIVE guard first (second call → skipped at the DB level), so no system message is published the second time.
+
+**Tests:** `apps/community-service/tests/membership-activation.test.ts` (7 tests green) — verifies COMMUNITY_JOINED is emitted with `visibleToUserId: member.userId`, `eventAt` is stable, `skipCrossServiceNotification` suppresses `publishCommunityMemberAddedSafe` without suppressing the system message, and `visibleToUserId` is the joiner, not the actor.
+
+**FE note:** The join-request approval path previously sent no system message. It now sends "You joined the community" (same as self-join). There is no "Your request to join was approved" system message — that wording is retired; the joiner sees the universal join message.
+
+---
+
 ## Community Sharing & Deep Linking (shipped 2026-06-23)
 
 ### What shipped
@@ -201,6 +340,7 @@ Redesigned the community SYSTEM message system around a single central registry 
 - **SENDER-LESS** (Telegram parity): SYSTEM messages emit empty `senderId`/`senderName`/`senderAvatar` on both the real-time wire and history reads (`toWire` strips them when contentType==SYSTEM). The actor lives in `systemMetadata.actorUserId`/`actorName` only.
 - **Lifecycle hooks wired** in `community.service.ts` via a small `emitMemberSystemMessage` helper: kick→MEMBER_REMOVED, ban→MEMBER_BANNED, unban→MEMBER_UNBANNED, mute→MEMBER_MUTED, unmute→MEMBER_UNMUTED, leave→MEMBER_LEFT, role→ROLE_CHANGED, update split into COMMUNITY_NAME_UPDATED / COMMUNITY_AVATAR_UPDATED / COMMUNITY_UPDATED. Every join path emits BOTH a personal line (COMMUNITY_JOINED / JOIN_REQUEST_APPROVED) AND community-wide MEMBER_JOINED; reject → personal JOIN_REQUEST_REJECTED.
 - **PIN/UNPIN wired (2026-06-19):** `CommunitySystemMessageService` is now injected as an OPTIONAL 6th constructor arg into BOTH community pin paths — `CommunityMessageService.pinMessage`/`unpinMessage` (gRPC/socket path) and `CommunityPinService.pin`/`unpin` (REST path). Optional so the 5-arg test/app-factory call sites stay untouched; production wires it in `server.ts`. Emits PINNED_MESSAGE / UNPINNED_MESSAGE best-effort (`void …?.post(...)`). roomId === communityId for general rooms.
+- **Community pin overhaul (2026-06-25 rajesh-dev):** Full redesign of `CommunityPinService` + `CommunityMessagePinRepository`. Key changes: (1) **Canonical store** — gRPC path now routes through `CommunityPinService` (was writing to stale `GeneralRoom.listPinedMessage` array). (2) **Soft-delete unpin** — `unpinnedAt`/`unpinnedByUserId` set instead of hard-delete so pin history is preserved. (3) **No UNPINNED_MESSAGE system message** (product decision). (4) **One active pin enforced** at service layer via `countActivePinsByRoom`. (5) **System message text** = `"{CommunityName} pinned a message"` (uses `metadata.communityName`, not actor name). (6) **Pin→system message back-ref** (`pinSystemMessageId`) stored after creation. (7) **Deleted-message hook** in `deleteMessage` controller: if pinned message is deleted for all, `pin.originalMessageDeletedAt` is set and `community:message:pinned` is re-emitted with `originalMessage.isAvailable: false`. (8) **New endpoint** `GET /rooms/:roomId/messages/:messageId/context` for pin-banner tap → scroll navigation (returns `isAvailable` + compound cursor anchor). (9) **Broadcast shape** changed from `{pinnedIds[], pinnedAt, pinnedBy}` to canonical `{pin: CommunityMessagePin, pinnedCount}`. (10) Schema: added `communityId`, `unpinnedAt`, `unpinnedByUserId`, `originalMessageDeletedAt`, `pinSystemMessageId`, `updatedAt` to `CommunityMessagePin`; dropped `@@unique([roomId,messageId])` (now just an index for soft-delete history). DB migration: `db.community_message_pins.dropIndex("roomId_1_messageId_1")` before deploy. FE guide: `docs/community-chat/message-pinning.md`.
 - **DEFERRED:** COMMUNITY_INVITE_CREATED is intentionally not auto-emitted (Telegram doesn't post it). Bulk reject doesn't emit per-user JOIN_REQUEST_REJECTED yet (single reject does).
 - Docs: AsyncAPI + OpenAPI `systemMessageType` enums expanded + sender-less note. Tests: `community-read-access.test.ts` (registry visibility, sender-less wire, deterministic templates per subtype) + `join-community.test.ts` (dual join lines). 94 chat-service + 104 community-service tests green.
 
