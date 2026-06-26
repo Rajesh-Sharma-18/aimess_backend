@@ -2483,6 +2483,40 @@ export const communityRepository = {
     return prisma.communityInviteLink.findUnique({ where: { code } });
   },
 
+  /**
+   * Look up a community by its permanent invitation code.
+   * Uses `findFirst` (not `findUnique`) because `invitationCode` is not declared
+   * `@unique` in the Prisma schema — uniqueness is enforced by the sparse index
+   * created at startup. Returns null when no community owns this code.
+   */
+  findCommunityByInvitationCode(code: string) {
+    return prisma.community.findFirst({ where: { invitationCode: code } });
+  },
+
+  /**
+   * Atomically set the community's permanent invitation code IFF it has not been
+   * set yet. Returns the number of documents updated: 1 means the code was written,
+   * 0 means another concurrent request beat us (the field is already populated).
+   * Callers should re-read the community after a 0 return to get the winning code.
+   * No transaction needed: the `updateMany` filter is the atomic guard (standalone
+   * Mongo, no $transaction available).
+   *
+   * IMPORTANT — the guard is `invitationCode: { isSet: false }`, NOT `: null`.
+   * Prisma translates `{ invitationCode: null }` on MongoDB into
+   * `$eq null AND $ne $$REMOVE`, which REQUIRES the field to exist — so it matches
+   * ZERO documents that simply lack the field (every legacy community, and every
+   * freshly-created one, since Prisma omits unset optional fields on insert).
+   * `{ isSet: false }` is the correct "field absent" guard (the same idiom used
+   * for `deletedAt` elsewhere in this repository). After the first write the field
+   * is set, so concurrent callers match 0 and fall back to re-reading the winner.
+   */
+  setInvitationCodeOnce(communityId: string, code: string) {
+    return prisma.community.updateMany({
+      where: { id: communityId, invitationCode: { isSet: false } },
+      data: { invitationCode: code, invitationCodeCreatedAt: new Date() },
+    });
+  },
+
   async listInviteLinks(params: {
     communityId: string;
     status?: "active" | "expired" | "revoked";

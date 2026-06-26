@@ -4639,14 +4639,27 @@ export const openApiSchemas = {
       "(before_ts/after_ts) rely on `hasMore`/`nextCursor`; `currentPage` is " +
       "reported as 1 and `totalPage`/`totalData` are best-effort counts, not page anchors.",
     properties: {
-      totalData: { type: "integer", description: "Total matching records." },
-      totalPage: { type: "integer", description: "Total number of pages." },
+      totalData: {
+        type: "integer",
+        description: "Total matching records.",
+        example: 142,
+      },
+      totalPage: {
+        type: "integer",
+        description: "Total number of pages.",
+        example: 5,
+      },
       currentPage: {
         type: "integer",
         description:
           "The requested page (1-based) in offset mode; always 1 in cursor mode.",
+        example: 1,
       },
-      limit: { type: "integer", description: "Page size." },
+      limit: {
+        type: "integer",
+        description: "Page size used for this response.",
+        example: 30,
+      },
       nextCursor: {
         type: "string",
         nullable: true,
@@ -4657,12 +4670,14 @@ export const openApiSchemas = {
           "tiebreaker prevents skipping messages that share the same millisecond at a page boundary). " +
           "For incremental-sync (after_ts) endpoints this is a plain epoch-ms string. " +
           "Null when hasMore is false.",
+        example: "1782133107521_668f1a2b3c4d5e6f7a8b9c02",
       },
       hasMore: {
         type: "boolean",
         description:
-          "True when more pages may exist. In cursor mode this is computed as " +
-          "(returned == limit) — use it (not currentPage/totalPage) to decide whether to keep paging.",
+          "True when more pages exist. In cursor mode this is computed as (returned == limit). " +
+          "Use this field (not currentPage/totalPage) to decide whether to keep paginating.",
+        example: true,
       },
     },
     required: [
@@ -4673,6 +4688,14 @@ export const openApiSchemas = {
       "nextCursor",
       "hasMore",
     ],
+    example: {
+      totalData: 142,
+      totalPage: 5,
+      currentPage: 1,
+      limit: 30,
+      nextCursor: "1782133107521_668f1a2b3c4d5e6f7a8b9c02",
+      hasMore: true,
+    },
   },
   MyCommunitiesResponseData: {
     type: "object",
@@ -6932,52 +6955,104 @@ export const openApiSchemas = {
    */
   ChatCommunityDeleteTombstone: {
     type: "object",
+    description:
+      "Returned by `DELETE /chat/community/messages/{messageId}` on success. " +
+      "Byte-identical to the `community:message:deleted` Socket.IO event. " +
+      "Community message deletes are always `forEveryone` — no per-user soft-delete option. " +
+      "When the client receives this (via REST response or socket event), remove the message from the local list " +
+      "or replace it with a 'Message deleted' placeholder.",
     properties: {
-      messageId: { type: "string" },
-      communityId: { type: "string" },
-      roomId: { type: "string" },
+      messageId: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c02" },
+      communityId: { type: "string", example: "comm_01j9x8vb2f3g4h5k6m7n8p9q" },
+      roomId: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c0d" },
       deleteType: {
         type: "string",
         enum: ["forMe", "forEveryone"],
-        description: "Delete scope.",
+        description:
+          "Delete scope. Always `forEveryone` for community messages. " +
+          "`forMe` is reserved and not currently used in community chat.",
+        example: "forEveryone",
       },
-      deletedBy: { type: "string" },
+      deletedBy: {
+        type: "string",
+        description:
+          "UserId of the member or moderator who deleted the message.",
+        example: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+      },
     },
     required: ["messageId", "communityId", "roomId", "deleteType", "deletedBy"],
+    example: {
+      messageId: "668f1a2b3c4d5e6f7a8b9c02",
+      communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+      roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+      deleteType: "forEveryone",
+      deletedBy: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+    },
   },
   /**
    * REST body for community message EDIT — matches the socket `community:message:edited` payload.
    */
   ChatCommunityEditResponse: {
     type: "object",
+    description:
+      "Returned by `PATCH /chat/community/messages/{messageId}` on success. " +
+      "Byte-identical to the `community:message:edited` Socket.IO event payload. " +
+      "Only TEXT messages can be edited. The edit window is 15 minutes from `serverTs`. " +
+      "A 410 response (`CHAT_EDIT_WINDOW_EXPIRED`) is returned after the window closes.",
     properties: {
-      messageId: { type: "string" },
-      communityId: { type: "string" },
-      roomId: { type: "string" },
+      messageId: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c02" },
+      communityId: { type: "string", example: "comm_01j9x8vb2f3g4h5k6m7n8p9q" },
+      roomId: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c0d" },
       content: {
         type: "object",
         nullable: true,
-        description: "Updated message body.",
+        description:
+          "Updated message body. For TEXT messages contains `{ text }`. " +
+          "Replace the stored `message` / `content.text` with this value when reconciling client state.",
+        properties: {
+          text: {
+            type: "string",
+            description: "Edited plain-text content (max 4000 chars).",
+            example: "Updated: Hey everyone! 👋 Thanks for joining.",
+          },
+        },
+        example: { text: "Updated: Hey everyone! 👋 Thanks for joining." },
       },
       contentType: {
         type: "string",
-        description: "UPPER-CASE message kind (TEXT, IMAGE, …).",
+        description:
+          "UPPER-CASE message kind (always TEXT for editable messages).",
+        example: "TEXT",
       },
       isEdited: {
         type: "boolean",
-        description: "Always true on an edit response.",
+        description: "Always `true` on an edit response.",
+        example: true,
       },
       editedAt: {
         type: "integer",
         format: "int64",
         description: "Epoch ms when the message was last edited.",
+        example: 1782133215000,
       },
       sequenceNumber: {
         type: "integer",
-        description: "Per-room sequence number.",
+        description:
+          "Per-room sequence number (unchanged from the original send).",
+        example: 142,
       },
     },
     required: ["messageId", "communityId", "roomId", "isEdited", "editedAt"],
+    example: {
+      messageId: "668f1a2b3c4d5e6f7a8b9c02",
+      communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+      roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+      content: { text: "Updated: Hey everyone! 👋 Thanks for joining." },
+      contentType: "TEXT",
+      isEdited: true,
+      editedAt: 1782133215000,
+      sequenceNumber: 142,
+    },
   },
   ChatDeletePrivateMessageRequest: {
     type: "object",
@@ -7353,20 +7428,89 @@ export const openApiSchemas = {
   },
   ChatCommunityMessage: {
     type: "object",
+    description:
+      "Community message as returned by the history endpoint (`GET /chat/community/rooms/{roomId}/messages`). " +
+      "Shape differs from the send-response (`ChatCommunityWireMessage`): uses `sentBy` (not `senderId`), " +
+      "flat `attachments[]` (not structured `content`), and `createdAt` epoch-ms (not `serverTs`). " +
+      "SYSTEM messages have `contentType: SYSTEM` and a null `sentBy`/`senderName`/`senderAvatar`; " +
+      "the actor is in `systemMetadata` only.",
     properties: {
-      id: { type: "string" },
-      roomId: { type: "string" },
-      sentBy: { type: "string" },
-      senderName: { type: "string", nullable: true },
+      id: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c02" },
+      roomId: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c0d" },
+      sentBy: {
+        type: "string",
+        description: "UserId of the sender. Null/empty for SYSTEM messages.",
+        example: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+      },
+      senderName: {
+        type: "string",
+        nullable: true,
+        description: "Display name at send time. Null for SYSTEM messages.",
+        example: "Rajesh Sharma",
+      },
       senderAvatar: {
         type: "string",
         nullable: true,
         description:
-          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). Render it directly — do not build it from a key or call a separate download endpoint.",
+          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). " +
+          "Render it directly — do not build it from a key or call a separate download endpoint. " +
+          "Null for SYSTEM messages.",
+        example:
+          "https://cdn.aimess.me/avatars/usr_01j8r5t2q3w4e5r6t7y8u9i0.jpg?X-Amz-Expires=3600",
       },
-      message: { type: "string", nullable: true },
-      reactions: { type: "object" },
-      parentMessageId: { type: "string", nullable: true },
+      message: {
+        type: "string",
+        nullable: true,
+        description:
+          "Plain text body. For SYSTEM messages this is the canonical English fallback string " +
+          "(e.g. 'Rajesh Sharma is now a moderator'). Null for media-only messages.",
+        example: "Hey everyone! 👋 Welcome to the community.",
+      },
+      reactions: {
+        type: "object",
+        description:
+          'Emoji reactions dictionary: `{ "<emoji>": [{ userId, displayName, avatar }] }`. ' +
+          "Each key is a Unicode emoji; each value is an array of users who used that emoji. " +
+          "An empty object `{}` means no reactions. " +
+          "To add/toggle a reaction use `POST /chat/community/messages/{messageId}/react`.",
+        additionalProperties: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              userId: { type: "string" },
+              displayName: { type: "string" },
+              avatar: { type: "string", nullable: true },
+            },
+            required: ["userId", "displayName"],
+          },
+        },
+        example: {
+          "👍": [
+            {
+              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+              displayName: "Priya Nair",
+              avatar:
+                "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+            },
+          ],
+          "❤️": [
+            {
+              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
+              displayName: "Arjun Mehta",
+              avatar: null,
+            },
+          ],
+        },
+      },
+      parentMessageId: {
+        type: "string",
+        nullable: true,
+        description:
+          "ObjectId of the message being replied to. Null for top-level messages. " +
+          "When non-null render the quoteData snapshot above the message bubble.",
+        example: "668f1a2b3c4d5e6f7a8b9c01",
+      },
       contentType: {
         type: "string",
         description:
@@ -7453,50 +7597,225 @@ export const openApiSchemas = {
           "PERSONAL messages are only ever returned to the target user — other members never see them in history. " +
           "Absent/false for normal and community-wide system messages.",
       },
+      quoteData: {
+        type: "object",
+        nullable: true,
+        description:
+          "Reply snapshot of the parent message (present when `parentMessageId` is non-null). " +
+          "Frozen at send time — never mutated even if the parent is later edited or deleted. " +
+          "Render this as the quoted-message preview above the bubble.",
+        properties: {
+          id: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c01" },
+          senderId: { type: "string", example: "usr_01j8r5t2q3w4e5r6t7y8u9i1" },
+          senderName: { type: "string", example: "Priya Nair" },
+          contentType: { type: "string", example: "TEXT" },
+          message: {
+            type: "string",
+            description: "Truncated preview text (≤200 chars).",
+            example: "Can everyone share their availability for next week?",
+          },
+          attachments: {
+            type: "array",
+            description:
+              "Parent attachments when the parent was a media message.",
+            items: {
+              type: "object",
+              properties: {
+                url: { type: "string" },
+                mime: { type: "string" },
+                name: { type: "string" },
+              },
+            },
+          },
+        },
+        example: {
+          id: "668f1a2b3c4d5e6f7a8b9c01",
+          senderId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+          senderName: "Priya Nair",
+          contentType: "TEXT",
+          message: "Can everyone share their availability for next week?",
+          attachments: [],
+        },
+      },
       attachments: {
         type: "array",
         description:
-          "Media / sticker / location / contact attachments. Sticker entries follow ChatSticker. Send-time caps: text ≤4000 chars; ≤10 images; video ≤100MB/180000ms; voice ≤300000ms; other files ≤50MB.",
-        items: { type: "object" },
+          "Media / sticker / location / contact attachments. " +
+          "Each attachment carries a resolved `url` (presigned, time-limited, ~1h) — render directly. " +
+          "Send-time caps: text ≤4000 chars; ≤10 images; video ≤100 MB / 180 000 ms; voice ≤300 000 ms; other files ≤50 MB.",
+        items: {
+          type: "object",
+          description:
+            "One attachment. The `contentType` field (UPPER-CASE, e.g. IMAGE, VIDEO, VOICE, GIF, DOCUMENT, STICKER, LOCATION, CONTACT) " +
+            "tells the client how to render it. All media types share `url`, `mime`, `size`, `name`. " +
+            "Images/videos add `width`/`height`/`blurhash`. Audio/voice add `durationMs`/`waveform`. " +
+            "Stickers follow the ChatSticker shape. Location follows ChatLocationAttachment. Contact follows ChatContactAttachment.",
+          properties: {
+            url: {
+              type: "string",
+              description:
+                "Presigned GET URL (time-limited, ~1h). Render directly; do NOT persist.",
+              example:
+                "https://cdn.aimess.me/media/images/comm_01j9x8vb/668f1a2b.jpg?X-Amz-Expires=3600",
+            },
+            objectKey: {
+              type: "string",
+              nullable: true,
+              description:
+                "Raw storage key (stored in DB; use `url` for display).",
+              example: "media/images/comm_01j9x8vb/668f1a2b.jpg",
+            },
+            mime: { type: "string", example: "image/jpeg" },
+            size: { type: "integer", description: "Bytes.", example: 204800 },
+            name: { type: "string", example: "photo.jpg" },
+            contentType: {
+              type: "string",
+              description:
+                "UPPER-CASE media kind of this attachment (IMAGE, VIDEO, AUDIO, GIF, VOICE, DOCUMENT, STICKER, LOCATION, CONTACT).",
+              example: "IMAGE",
+            },
+            width: { type: "integer", nullable: true, example: 1920 },
+            height: { type: "integer", nullable: true, example: 1080 },
+            durationMs: {
+              type: "integer",
+              nullable: true,
+              description: "Duration ms (AUDIO / VIDEO / VOICE).",
+              example: 34500,
+            },
+            blurhash: {
+              type: "string",
+              nullable: true,
+              description: "BlurHash placeholder for images.",
+              example: "LqKk3+%NIXxu~qxt%MWBt7WBNGjY",
+            },
+            waveform: {
+              type: "array",
+              nullable: true,
+              items: { type: "number", minimum: 0, maximum: 1 },
+              description:
+                "Amplitude samples [0,1] × 100. Present on VOICE messages.",
+            },
+            // Sticker fields
+            packId: {
+              type: "string",
+              nullable: true,
+              description: "Sticker pack id (STICKER attachments).",
+              example: "sticker_pack_celebrations_v1",
+            },
+            stickerId: {
+              type: "string",
+              nullable: true,
+              description: "Sticker id within the pack (STICKER attachments).",
+              example: "sticker_party_01",
+            },
+            // Location fields
+            lat: {
+              type: "number",
+              nullable: true,
+              description: "Latitude (LOCATION).",
+              example: 28.6139,
+            },
+            lng: {
+              type: "number",
+              nullable: true,
+              description: "Longitude (LOCATION).",
+              example: 77.209,
+            },
+            placeName: {
+              type: "string",
+              nullable: true,
+              description: "Human-readable place name (LOCATION).",
+              example: "India Gate",
+            },
+            placeAddress: {
+              type: "string",
+              nullable: true,
+              description: "Full address (LOCATION).",
+              example: "Rajpath, New Delhi, India",
+            },
+            // Contact fields
+            phone: {
+              type: "string",
+              nullable: true,
+              description: "Phone number (CONTACT).",
+              example: "+91 98765 43210",
+            },
+            userId: {
+              type: "string",
+              nullable: true,
+              description:
+                "App userId (CONTACT — if the contact is an aimess user).",
+            },
+          },
+        },
+        example: [
+          {
+            url: "https://cdn.aimess.me/media/images/comm_01j9x8vb/668f1a2b.jpg?X-Amz-Expires=3600",
+            objectKey: "media/images/comm_01j9x8vb/668f1a2b.jpg",
+            mime: "image/jpeg",
+            size: 204800,
+            name: "photo.jpg",
+            contentType: "IMAGE",
+            width: 1920,
+            height: 1080,
+            blurhash: "LqKk3+%NIXxu~qxt%MWBt7WBNGjY",
+          },
+        ],
       },
-      deletedForAll: { type: "boolean" },
+      deletedForAll: {
+        type: "boolean",
+        description:
+          "True when the message was deleted for all members. " +
+          "In incremental-sync mode (`after_ts`) deleted messages are included as tombstones so clients can purge them locally.",
+        example: false,
+      },
       isEdited: {
         type: "boolean",
         description: "true when the message has been edited at least once.",
+        example: false,
       },
       editedAt: {
         type: "integer",
         format: "int64",
         nullable: true,
         description:
-          "Epoch ms. Non-null when the message has been edited; 0 otherwise.",
+          "Epoch ms of the last edit. Non-null (may be 0) when the message has been edited.",
+        example: null,
       },
-      createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
+      createdAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when the message was first sent.",
+        example: 1782133107521,
+      },
       updatedAt: {
         type: "integer",
         description:
-          "Epoch-ms of the last mutation (edit, reaction, delete). Present in incremental-sync (after_ts) responses only.",
+          "Epoch-ms of the last mutation (edit, reaction, delete). Present in incremental-sync (`after_ts`) responses only.",
         nullable: true,
+        example: 1782133108000,
       },
       syncEventType: {
         type: "string",
         enum: ["new", "edited", "deleted", "reacted"],
         nullable: true,
         description:
-          "Only present in after_ts (incremental-sync) responses. Tells the client what reconciliation action to take: 'new'=insert, 'edited'=update text, 'deleted'=remove (tombstone), 'reacted'=refresh reaction counts.",
+          "Only present in `after_ts` (incremental-sync) responses. " +
+          "Client reconciliation: `new` → insert; `edited` → update text; `deleted` → remove (tombstone); `reacted` → refresh reactions.",
+        example: null,
       },
       readBy: {
         type: "array",
         description:
-          "Users who have read this message (lastReadAt >= message.createdAt). Excludes the sender. Each entry carries an epoch-ms timestamp.",
+          "Users who have read this message (lastReadAt >= message.createdAt). Excludes the sender.",
         items: {
           type: "object",
           properties: {
-            userId: { type: "string" },
+            userId: { type: "string", example: "usr_01j8r5t2q3w4e5r6t7y8u9i1" },
             readAt: {
               type: "integer",
-              description:
-                "Epoch milliseconds when the user read up to this message.",
+              description: "Epoch ms when the user read up to this message.",
+              example: 1782133110000,
             },
           },
           required: ["userId", "readAt"],
@@ -7505,15 +7824,16 @@ export const openApiSchemas = {
       deliveredTo: {
         type: "array",
         description:
-          "Users who were active members of this room at the time the message was sent (joinedAt <= message.createdAt). Excludes the sender.",
+          "Users who were active members of this room when the message was sent (joinedAt <= message.createdAt). Excludes the sender.",
         items: {
           type: "object",
           properties: {
-            userId: { type: "string" },
+            userId: { type: "string", example: "usr_01j8r5t2q3w4e5r6t7y8u9i2" },
             deliveredAt: {
               type: "integer",
               description:
-                "Epoch milliseconds — equals the message createdAt timestamp.",
+                "Epoch ms — equals the message `createdAt` timestamp.",
+              example: 1782133107521,
             },
           },
           required: ["userId", "deliveredAt"],
@@ -7521,6 +7841,40 @@ export const openApiSchemas = {
       },
     },
     required: ["id", "roomId", "sentBy", "createdAt", "isEdited"],
+    example: {
+      id: "668f1a2b3c4d5e6f7a8b9c02",
+      roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+      sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+      senderName: "Rajesh Sharma",
+      senderAvatar:
+        "https://cdn.aimess.me/avatars/usr_01j8r5t2q3w4e5r6t7y8u9i0.jpg?X-Amz-Expires=3600",
+      message: "Hey everyone! 👋 Welcome to the community.",
+      reactions: {
+        "👍": [
+          {
+            userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+            displayName: "Priya Nair",
+            avatar:
+              "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+          },
+        ],
+      },
+      parentMessageId: null,
+      quoteData: null,
+      contentType: "TEXT",
+      systemMessageType: null,
+      systemMetadata: null,
+      isPersonal: false,
+      attachments: [],
+      deletedForAll: false,
+      isEdited: false,
+      editedAt: null,
+      createdAt: 1782133107521,
+      updatedAt: null,
+      syncEventType: null,
+      readBy: [],
+      deliveredTo: [],
+    },
   },
   ChatCommunityMessageList: {
     type: "array",
@@ -7537,37 +7891,160 @@ export const openApiSchemas = {
    */
   ChatCommunityWireMessage: {
     type: "object",
+    description:
+      "Canonical wire message returned by the REST community SEND endpoint. " +
+      "Byte-identical to the Socket.IO `community:message:new` payload. " +
+      "Shape differs from the history `ChatCommunityMessage`: uses `senderId` (not `sentBy`), " +
+      "structured `content` (not flat `attachments[]`), epoch-ms timestamps `serverTs`/`sentAt` (not `createdAt`), " +
+      "and `reactions` is always `[]` on a fresh send.",
     properties: {
-      id: { type: "string" },
-      messageId: { type: "string", description: "Alias of id." },
+      id: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c02" },
+      messageId: {
+        type: "string",
+        description: "Alias of `id`.",
+        example: "668f1a2b3c4d5e6f7a8b9c02",
+      },
       communityId: {
         type: "string",
         description: "community-service Community.id (broadcast channel key).",
+        example: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
       },
-      roomId: { type: "string", description: "chat-service GeneralRoom.id." },
-      senderId: { type: "string" },
-      senderName: { type: "string" },
+      roomId: {
+        type: "string",
+        description: "chat-service GeneralRoom.id (equals communityId).",
+        example: "668f1a2b3c4d5e6f7a8b9c0d",
+      },
+      senderId: {
+        type: "string",
+        example: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+      },
+      senderName: { type: "string", example: "Rajesh Sharma" },
       senderAvatar: {
         type: "string",
         description:
-          "Fully-qualified presigned GET URL (resolved on read), or empty string.",
+          "Fully-qualified, time-limited presigned GET URL (resolved on read). " +
+          "Render directly — do NOT persist this URL; it expires in ~1 hour.",
+        example:
+          "https://cdn.aimess.me/avatars/usr_01j8r5t2q3w4e5r6t7y8u9i0.jpg?X-Amz-Expires=3600",
       },
       parentMessageId: {
         type: "string",
-        description: "Replied-to message id, or empty string.",
+        description:
+          'ObjectId of the message being replied to, or empty string `""` for top-level messages. ' +
+          "When non-empty, `quoteData` carries a snapshot of the parent message.",
+        example: "668f1a2b3c4d5e6f7a8b9c01",
       },
       quoteData: {
         type: "object",
         nullable: true,
-        description: "Canonical reply snapshot, or null.",
+        description:
+          "Canonical snapshot of the parent message (populated when `parentMessageId` is set). " +
+          "Frozen at send time — never mutated even if the parent is later edited or deleted.",
+        properties: {
+          id: {
+            type: "string",
+            description: "Replied-to message ObjectId.",
+            example: "668f1a2b3c4d5e6f7a8b9c01",
+          },
+          senderId: { type: "string", example: "usr_01j8r5t2q3w4e5r6t7y8u9i1" },
+          senderName: { type: "string", example: "Priya Nair" },
+          contentType: {
+            type: "string",
+            description: "UPPER-CASE message kind of the parent.",
+            example: "TEXT",
+          },
+          message: {
+            type: "string",
+            description:
+              "Truncated preview of the parent message text (≤200 chars).",
+            example: "Can everyone share their availability for next week?",
+          },
+          attachments: {
+            type: "array",
+            description:
+              "Parent attachments (images, files, etc.) when the parent was a media message.",
+            items: {
+              type: "object",
+              properties: {
+                url: { type: "string" },
+                mime: { type: "string" },
+                name: { type: "string" },
+              },
+            },
+          },
+        },
+        example: {
+          id: "668f1a2b3c4d5e6f7a8b9c01",
+          senderId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+          senderName: "Priya Nair",
+          contentType: "TEXT",
+          message: "Can everyone share their availability for next week?",
+          attachments: [],
+        },
       },
       content: {
         type: "object",
         description:
-          "Structured body. `content.files[]` carry resolved presigned download URLs.",
+          "Structured message body. `content.files[]` carry fully-resolved presigned download URLs. " +
+          "For non-media messages `files` is `[]`. Location/contact/sticker appear in their dedicated fields.",
         properties: {
-          text: { type: "string" },
-          files: { type: "array", items: { type: "object" } },
+          text: {
+            type: "string",
+            description:
+              "Plain-text body (empty string for non-TEXT messages).",
+            example: "Hey everyone! 👋 Welcome to the community.",
+          },
+          files: {
+            type: "array",
+            description:
+              "Resolved media attachments. Each file has a ready-to-use presigned `url`.",
+            items: {
+              type: "object",
+              properties: {
+                url: {
+                  type: "string",
+                  description:
+                    "Presigned GET URL (time-limited, ~1 h). Render directly.",
+                  example:
+                    "https://cdn.aimess.me/media/images/comm_01j9x8vb/668f1a2b.jpg?X-Amz-Expires=3600",
+                },
+                objectKey: {
+                  type: "string",
+                  description:
+                    "Raw storage key (stored in DB; use url for display).",
+                  example: "media/images/comm_01j9x8vb/668f1a2b.jpg",
+                },
+                mime: { type: "string", example: "image/jpeg" },
+                size: {
+                  type: "integer",
+                  description: "Bytes.",
+                  example: 204800,
+                },
+                name: { type: "string", example: "photo.jpg" },
+                width: { type: "integer", nullable: true, example: 1920 },
+                height: { type: "integer", nullable: true, example: 1080 },
+                durationMs: {
+                  type: "integer",
+                  nullable: true,
+                  description: "Duration in ms (audio/video/voice).",
+                  example: 34500,
+                },
+                blurhash: {
+                  type: "string",
+                  nullable: true,
+                  description: "BlurHash placeholder for images.",
+                  example: "LqKk3+%NIXxu~qxt%MWBt7WBNGjY",
+                },
+                waveform: {
+                  type: "array",
+                  nullable: true,
+                  items: { type: "number" },
+                  description:
+                    "Amplitude samples [0,1] × 100. Present on VOICE messages.",
+                },
+              },
+            },
+          },
           location: { $ref: "#/components/schemas/ChatLocationAttachment" },
           contact: { $ref: "#/components/schemas/ChatContactAttachment" },
           sticker: { $ref: "#/components/schemas/ChatSticker" },
@@ -7576,34 +8053,56 @@ export const openApiSchemas = {
       },
       reactions: {
         type: "array",
-        description: "Always [] on a fresh send.",
-        items: { type: "object" },
+        description:
+          "Always `[]` on a fresh send. Populated after users react; see `ChatCommunityReactResponse` for the full grouped shape.",
+        items: { $ref: "#/components/schemas/ChatCommunityReactionGroup" },
       },
       message: {
         type: "string",
-        description: "Plain-text body (mirrors content.text).",
+        description: "Plain-text body (mirrors `content.text`).",
+        example: "Hey everyone! 👋 Welcome to the community.",
       },
       contentType: {
         type: "string",
+        enum: [
+          "TEXT",
+          "IMAGE",
+          "VIDEO",
+          "AUDIO",
+          "GIF",
+          "VOICE",
+          "DOCUMENT",
+          "STICKER",
+          "LOCATION",
+          "CONTACT",
+          "SYSTEM",
+        ],
         description: "Canonical UPPER-CASE message kind.",
+        example: "TEXT",
       },
       clientMessageId: {
         type: "string",
-        description: "Echo of the idempotency key (empty string if none).",
+        description:
+          "Echo of the idempotency key (empty string if none was provided).",
+        example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
       },
       serverTs: {
         type: "integer",
         format: "int64",
         description: "Server-authoritative send time (epoch ms).",
+        example: 1782133107521,
       },
       sentAt: {
         type: "integer",
         format: "int64",
-        description: "Alias of serverTs (epoch ms).",
+        description: "Alias of `serverTs` (epoch ms).",
+        example: 1782133107521,
       },
       sequenceNumber: {
         type: "integer",
-        description: "Per-room monotonic sequence number.",
+        description:
+          "Per-room monotonic sequence number. Use for detecting gaps and ordering messages without relying on timestamps.",
+        example: 142,
       },
     },
     required: [
@@ -7617,12 +8116,38 @@ export const openApiSchemas = {
       "serverTs",
       "sequenceNumber",
     ],
+    example: {
+      id: "668f1a2b3c4d5e6f7a8b9c02",
+      messageId: "668f1a2b3c4d5e6f7a8b9c02",
+      communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+      roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+      senderId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+      senderName: "Rajesh Sharma",
+      senderAvatar:
+        "https://cdn.aimess.me/avatars/usr_01j8r5t2q3w4e5r6t7y8u9i0.jpg?X-Amz-Expires=3600",
+      parentMessageId: "",
+      quoteData: null,
+      content: {
+        text: "Hey everyone! 👋 Welcome to the community.",
+        files: [],
+      },
+      reactions: [],
+      message: "Hey everyone! 👋 Welcome to the community.",
+      contentType: "TEXT",
+      clientMessageId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      serverTs: 1782133107521,
+      sentAt: 1782133107521,
+      sequenceNumber: 142,
+      idempotent: false,
+    },
   },
   /** Scroll / history mode — before_ts (default). Includes top-level hasMore + nextCursor shortcuts. */
   ChatCommunityMessagePage: {
     type: "object",
     description:
-      "Timestamp-paginated community messages (scroll/history mode). Use before_ts to scroll backwards; omit for the newest page.",
+      "Timestamp-paginated community messages (scroll/history mode). " +
+      "Use `before_ts` to scroll backwards; omit for the newest page. " +
+      "Feed `nextCursor` verbatim back as the next `before_ts` — do NOT parse it to a number.",
     properties: {
       pagination: { $ref: "#/components/schemas/PaginationMeta" },
       data: {
@@ -7631,7 +8156,10 @@ export const openApiSchemas = {
       },
       hasMore: {
         type: "boolean",
-        description: "Top-level shortcut — same value as pagination.hasMore.",
+        description:
+          "Top-level shortcut — same value as `pagination.hasMore`. " +
+          "Use this to decide whether to fetch more pages.",
+        example: true,
       },
       nextCursor: {
         type: "string",
@@ -7640,57 +8168,544 @@ export const openApiSchemas = {
           'Compound `"<epochMs>_<messageObjectId>"` string. Echo **verbatim** as the next ' +
           "`before_ts` — do NOT parse to a number. The `_<id>` tiebreaker is required to " +
           "avoid skipping messages that share the same millisecond at a page boundary. " +
-          "Null when hasMore is false.",
-        example: "1782133107521_664f1a2b3c4d5e6f7a8b9c0d",
+          "Null when `hasMore` is false (last page reached).",
+        example: "1782133100000_668f1a2b3c4d5e6f7a8b9c00",
       },
     },
     required: ["pagination", "data", "hasMore", "nextCursor"],
+    example: {
+      pagination: {
+        totalData: 142,
+        totalPage: 5,
+        currentPage: 1,
+        limit: 30,
+        nextCursor: "1782133100000_668f1a2b3c4d5e6f7a8b9c00",
+        hasMore: true,
+      },
+      hasMore: true,
+      nextCursor: "1782133100000_668f1a2b3c4d5e6f7a8b9c00",
+      data: [
+        // ── Scenario 1: plain TEXT message ──────────────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c06",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+          senderName: "Rajesh Sharma",
+          senderAvatar:
+            "https://cdn.aimess.me/avatars/usr_rajesh.jpg?X-Amz-Expires=3600",
+          message: "Hey everyone! 👋 Welcome to the community.",
+          reactions: {
+            "👍": [
+              {
+                userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+                displayName: "Priya Nair",
+                avatar:
+                  "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+              },
+            ],
+            "❤️": [
+              {
+                userId: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
+                displayName: "Arjun Mehta",
+                avatar: null,
+              },
+            ],
+          },
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "TEXT",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [],
+          deletedForAll: false,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133107521,
+          updatedAt: null,
+          syncEventType: null,
+          readBy: [
+            { userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1", readAt: 1782133110000 },
+          ],
+          deliveredTo: [
+            {
+              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+              deliveredAt: 1782133107521,
+            },
+            {
+              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
+              deliveredAt: 1782133107521,
+            },
+          ],
+        },
+        // ── Scenario 2: TEXT reply (parentMessageId + quoteData) ────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c07",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+          senderName: "Priya Nair",
+          senderAvatar:
+            "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+          message: "Totally agree! 🙌",
+          reactions: {},
+          parentMessageId: "668f1a2b3c4d5e6f7a8b9c06",
+          quoteData: {
+            id: "668f1a2b3c4d5e6f7a8b9c06",
+            senderId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+            senderName: "Rajesh Sharma",
+            contentType: "TEXT",
+            message: "Hey everyone! 👋 Welcome to the community.",
+            attachments: [],
+          },
+          contentType: "TEXT",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [],
+          deletedForAll: false,
+          isEdited: true,
+          editedAt: 1782133215000,
+          createdAt: 1782133200000,
+          updatedAt: 1782133215000,
+          syncEventType: null,
+          readBy: [],
+          deliveredTo: [
+            {
+              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+              deliveredAt: 1782133200000,
+            },
+          ],
+        },
+        // ── Scenario 3: IMAGE message with attachment ────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c08",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
+          senderName: "Arjun Mehta",
+          senderAvatar: null,
+          message: "Check out this view 🌅",
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "IMAGE",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [
+            {
+              url: "https://cdn.aimess.me/media/images/comm_01j9x8vb/668f8a.jpg?X-Amz-Expires=3600",
+              objectKey: "media/images/comm_01j9x8vb/668f8a.jpg",
+              mime: "image/jpeg",
+              size: 512000,
+              name: "sunset.jpg",
+              contentType: "IMAGE",
+              width: 1920,
+              height: 1080,
+              blurhash: "LqKk3+%NIXxu~qxt%MWBt7WBNGjY",
+              durationMs: null,
+              waveform: null,
+            },
+          ],
+          deletedForAll: false,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133300000,
+          updatedAt: null,
+          syncEventType: null,
+          readBy: [],
+          deliveredTo: [],
+        },
+        // ── Scenario 4: VOICE note with waveform ─────────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c09",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i3",
+          senderName: "Sneha Kulkarni",
+          senderAvatar:
+            "https://cdn.aimess.me/avatars/usr_sneha.jpg?X-Amz-Expires=3600",
+          message: null,
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "VOICE",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [
+            {
+              url: "https://cdn.aimess.me/media/voice/comm_01j9x8vb/668f9b.ogg?X-Amz-Expires=3600",
+              objectKey: "media/voice/comm_01j9x8vb/668f9b.ogg",
+              mime: "audio/ogg",
+              size: 98304,
+              name: "voice_note.ogg",
+              contentType: "VOICE",
+              width: null,
+              height: null,
+              durationMs: 34500,
+              blurhash: null,
+              waveform: [
+                0.1, 0.3, 0.6, 0.9, 0.7, 0.4, 0.2, 0.5, 0.8, 0.6, 0.3, 0.2, 0.4,
+                0.7, 0.9, 0.8, 0.5, 0.3, 0.1, 0.2, 0.4, 0.6, 0.8, 0.7, 0.5, 0.3,
+                0.1, 0.4, 0.6, 0.9, 0.8, 0.7, 0.5, 0.3, 0.2, 0.4, 0.6, 0.8, 0.7,
+                0.5, 0.3, 0.2, 0.4, 0.7, 0.9, 0.8, 0.6, 0.4, 0.2, 0.3, 0.5, 0.7,
+                0.9, 0.8, 0.6, 0.4, 0.2, 0.1, 0.3, 0.5, 0.7, 0.6, 0.4, 0.2, 0.1,
+                0.3, 0.5, 0.7, 0.8, 0.9, 0.7, 0.5, 0.3, 0.1, 0.2, 0.4, 0.6, 0.8,
+                0.9, 0.7, 0.5, 0.3, 0.2, 0.4, 0.6, 0.7, 0.8, 0.6, 0.4, 0.2, 0.1,
+                0.3, 0.5, 0.6, 0.7, 0.5, 0.3, 0.2, 0.1, 0.2,
+              ],
+            },
+          ],
+          deletedForAll: false,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133400000,
+          updatedAt: null,
+          syncEventType: null,
+          readBy: [],
+          deliveredTo: [],
+        },
+        // ── Scenario 5: LOCATION share ───────────────────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c0a",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+          senderName: "Rajesh Sharma",
+          senderAvatar:
+            "https://cdn.aimess.me/avatars/usr_rajesh.jpg?X-Amz-Expires=3600",
+          message: "Meeting point 📍",
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "LOCATION",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [
+            {
+              contentType: "LOCATION",
+              lat: 28.6139,
+              lng: 77.209,
+              placeName: "India Gate",
+              placeAddress: "Rajpath, New Delhi, India 110001",
+            },
+          ],
+          deletedForAll: false,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133500000,
+          updatedAt: null,
+          syncEventType: null,
+          readBy: [],
+          deliveredTo: [],
+        },
+        // ── Scenario 6: deleted message (tombstone) ──────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c0b",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
+          senderName: "Arjun Mehta",
+          senderAvatar: null,
+          message: null,
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "TEXT",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [],
+          deletedForAll: true,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133600000,
+          updatedAt: 1782133650000,
+          syncEventType: null,
+          readBy: [],
+          deliveredTo: [],
+        },
+        // ── Scenario 7: SYSTEM message — role change (visible to all) ────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c0c",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: null,
+          senderName: null,
+          senderAvatar: null,
+          message: "Priya Nair is now a moderator",
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "SYSTEM",
+          systemMessageType: "ROLE_CHANGED",
+          systemMetadata: {
+            actorUserId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+            actorName: "Rajesh Sharma",
+            targetUserId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+            targetName: "Priya Nair",
+            oldRole: "MEMBER",
+            newRole: "MODERATOR",
+          },
+          isPersonal: false,
+          attachments: [],
+          deletedForAll: false,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133700000,
+          updatedAt: null,
+          syncEventType: null,
+          readBy: [],
+          deliveredTo: [],
+        },
+        // ── Scenario 8: SYSTEM message — personal join (only viewer sees this)
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c0e",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: null,
+          senderName: null,
+          senderAvatar: null,
+          message: "You joined this community",
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "SYSTEM",
+          systemMessageType: "COMMUNITY_JOINED",
+          systemMetadata: {
+            actorUserId: "usr_01j8r5t2q3w4e5r6t7y8u9i4",
+            actorName: "New Member",
+          },
+          isPersonal: true,
+          attachments: [],
+          deletedForAll: false,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133800000,
+          updatedAt: null,
+          syncEventType: null,
+          readBy: [],
+          deliveredTo: [],
+        },
+      ],
+    },
   },
   /** Incremental-sync mode — after_ts. No pagination wrapper. */
   ChatCommunityIncrementalSync: {
     type: "object",
     description:
-      "Incremental-sync envelope returned when after_ts is provided. Contains every community message whose updatedAt >= after_ts, sorted updatedAt ASC. Includes edits, reaction updates, and deletions (tombstones with deletedForAll=true). Store nextCursor as the next after_ts to page forward or re-sync.",
+      "Incremental-sync envelope returned when `after_ts` is provided. " +
+      "Contains every community message whose `updatedAt >= after_ts`, sorted updatedAt ASC. " +
+      "Includes new messages, edits, reaction changes, and deletions (tombstones with `deletedForAll: true`). " +
+      "Store `nextCursor` as the next `after_ts` to page forward or re-sync.",
     properties: {
       data: {
         type: "array",
         items: { $ref: "#/components/schemas/ChatCommunityMessage" },
         description:
-          "Each item has a non-null syncEventType indicating what reconciliation action to take.",
+          "Each item has a non-null `syncEventType` indicating what reconciliation action to take: " +
+          "`new` → insert; `edited` → update text; `deleted` → remove/tombstone; `reacted` → refresh reactions.",
       },
-      hasMore: { type: "boolean" },
+      hasMore: {
+        type: "boolean",
+        description: "True when more sync events exist beyond this page.",
+        example: false,
+      },
       nextCursor: {
         type: "string",
         nullable: true,
         description:
-          "Epoch-ms of the last item's updatedAt. Feed back as the next after_ts. Null when no items returned.",
+          "Epoch-ms string of the last item's `updatedAt`. Feed back as the next `after_ts`. " +
+          "Null when no items were returned.",
+        example: "1782133650000",
       },
     },
     required: ["data", "hasMore", "nextCursor"],
+    example: {
+      hasMore: false,
+      nextCursor: "1782133650000",
+      data: [
+        // ── new message received while offline ──────────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c06",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+          senderName: "Rajesh Sharma",
+          senderAvatar:
+            "https://cdn.aimess.me/avatars/usr_rajesh.jpg?X-Amz-Expires=3600",
+          message: "Don't miss the event tonight!",
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "TEXT",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [],
+          deletedForAll: false,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133500000,
+          updatedAt: 1782133500000,
+          syncEventType: "new",
+          readBy: [],
+          deliveredTo: [],
+        },
+        // ── edited message ───────────────────────────────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c07",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+          senderName: "Priya Nair",
+          senderAvatar:
+            "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+          message: "Updated: see you all at 7pm! (edited)",
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "TEXT",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [],
+          deletedForAll: false,
+          isEdited: true,
+          editedAt: 1782133600000,
+          createdAt: 1782133400000,
+          updatedAt: 1782133600000,
+          syncEventType: "edited",
+          readBy: [],
+          deliveredTo: [],
+        },
+        // ── deleted message (tombstone) ──────────────────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c08",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
+          senderName: "Arjun Mehta",
+          senderAvatar: null,
+          message: null,
+          reactions: {},
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "TEXT",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [],
+          deletedForAll: true,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133300000,
+          updatedAt: 1782133650000,
+          syncEventType: "deleted",
+          readBy: [],
+          deliveredTo: [],
+        },
+        // ── reaction update ──────────────────────────────────────────────────
+        {
+          id: "668f1a2b3c4d5e6f7a8b9c05",
+          roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+          sentBy: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+          senderName: "Rajesh Sharma",
+          senderAvatar:
+            "https://cdn.aimess.me/avatars/usr_rajesh.jpg?X-Amz-Expires=3600",
+          message: "Welcome everyone!",
+          reactions: {
+            "🔥": [
+              {
+                userId: "usr_01j8r5t2q3w4e5r6t7y8u9i3",
+                displayName: "Sneha Kulkarni",
+                avatar:
+                  "https://cdn.aimess.me/avatars/usr_sneha.jpg?X-Amz-Expires=3600",
+              },
+            ],
+          },
+          parentMessageId: null,
+          quoteData: null,
+          contentType: "TEXT",
+          systemMessageType: null,
+          systemMetadata: null,
+          isPersonal: false,
+          attachments: [],
+          deletedForAll: false,
+          isEdited: false,
+          editedAt: null,
+          createdAt: 1782133200000,
+          updatedAt: 1782133640000,
+          syncEventType: "reacted",
+          readBy: [],
+          deliveredTo: [],
+        },
+      ],
+    },
   },
   /** Per-user entry inside a community reaction group. */
   ChatCommunityReactionUser: {
     type: "object",
     properties: {
-      userId: { type: "string" },
-      displayName: { type: "string" },
-      avatar: { type: "string", nullable: true },
+      userId: { type: "string", example: "usr_01j8r5t2q3w4e5r6t7y8u9i1" },
+      displayName: { type: "string", example: "Priya Nair" },
+      avatar: {
+        type: "string",
+        nullable: true,
+        description: "Presigned avatar URL, or null if the user has no avatar.",
+        example:
+          "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+      },
     },
     required: ["userId", "displayName"],
+    example: {
+      userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+      displayName: "Priya Nair",
+      avatar: "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+    },
   },
-  /** Grouped emoji reaction. */
+  /** Grouped emoji reaction (used in ChatCommunityReactResponse and community:message:reaction socket event). */
   ChatCommunityReactionGroup: {
     type: "object",
+    description:
+      "All reactions for one emoji, grouped. " +
+      "Used in the REST react response and the `community:message:reaction` socket event. " +
+      "Not the same as the `reactions` dictionary in `ChatCommunityMessage` (history format).",
     properties: {
-      emoji: { type: "string", description: "Unicode emoji." },
-      count: { type: "integer", description: "Number of users who reacted." },
+      emoji: {
+        type: "string",
+        description: "Unicode emoji.",
+        example: "👍",
+      },
+      count: {
+        type: "integer",
+        description: "Total number of users who reacted with this emoji.",
+        example: 3,
+      },
       users: {
         type: "array",
         items: { $ref: "#/components/schemas/ChatCommunityReactionUser" },
-        description: "Up to N users who used this emoji.",
+        description:
+          "List of users who used this emoji (may be capped server-side).",
       },
     },
     required: ["emoji", "count", "users"],
+    example: {
+      emoji: "👍",
+      count: 3,
+      users: [
+        {
+          userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+          displayName: "Priya Nair",
+          avatar:
+            "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+        },
+        {
+          userId: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
+          displayName: "Arjun Mehta",
+          avatar: null,
+        },
+        {
+          userId: "usr_01j8r5t2q3w4e5r6t7y8u9i3",
+          displayName: "Sneha Kulkarni",
+          avatar:
+            "https://cdn.aimess.me/avatars/usr_sneha.jpg?X-Amz-Expires=3600",
+        },
+      ],
+    },
   },
   /** Body for POST /chat/community/messages/{messageId}/react */
   ChatCommunityReactRequest: {
@@ -7700,31 +8715,79 @@ export const openApiSchemas = {
       communityId: {
         type: "string",
         description: "Community the message belongs to.",
+        example: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
       },
       emoji: {
         type: "string",
         minLength: 1,
         maxLength: 10,
         description:
-          "Unicode emoji. Sending the same emoji again removes it (toggle).",
+          'Unicode emoji (e.g. `"👍"`, `"❤️"`, `"😂"`). ' +
+          "Sending the same emoji a second time removes the reaction (toggle — no separate un-react endpoint needed).",
+        example: "👍",
       },
+    },
+    example: {
+      communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+      emoji: "👍",
     },
   },
   /** Response for POST /chat/community/messages/{messageId}/react */
   ChatCommunityReactResponse: {
     type: "object",
     description:
-      "Current reaction state after the toggle. The community:message:reaction Socket.IO event carries the same shape.",
+      "Current reaction state after the toggle. " +
+      "The `community:message:reaction` Socket.IO event carries the same shape. " +
+      "Sending the same emoji again removes it (toggle semantics). " +
+      "Note: the history endpoint (`ChatCommunityMessage.reactions`) uses a dictionary format " +
+      '`{ "👍": [users] }`; this endpoint uses the grouped-array format below.',
     properties: {
-      messageId: { type: "string" },
-      communityId: { type: "string" },
+      messageId: { type: "string", example: "668f1a2b3c4d5e6f7a8b9c02" },
+      communityId: { type: "string", example: "comm_01j9x8vb2f3g4h5k6m7n8p9q" },
       reactions: {
         type: "array",
         items: { $ref: "#/components/schemas/ChatCommunityReactionGroup" },
-        description: "Full grouped reaction state for the message.",
+        description:
+          "Full grouped reaction state for the message, ordered by first reaction time. " +
+          "An empty array means all reactions were toggled off.",
       },
     },
     required: ["messageId", "communityId", "reactions"],
+    example: {
+      messageId: "668f1a2b3c4d5e6f7a8b9c02",
+      communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+      reactions: [
+        {
+          emoji: "👍",
+          count: 2,
+          users: [
+            {
+              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+              displayName: "Priya Nair",
+              avatar:
+                "https://cdn.aimess.me/avatars/usr_priya.jpg?X-Amz-Expires=3600",
+            },
+            {
+              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i2",
+              displayName: "Arjun Mehta",
+              avatar: null,
+            },
+          ],
+        },
+        {
+          emoji: "❤️",
+          count: 1,
+          users: [
+            {
+              userId: "usr_01j8r5t2q3w4e5r6t7y8u9i3",
+              displayName: "Sneha Kulkarni",
+              avatar:
+                "https://cdn.aimess.me/avatars/usr_sneha.jpg?X-Amz-Expires=3600",
+            },
+          ],
+        },
+      ],
+    },
   },
 
   // --- Attachments: location & contact ---
@@ -8009,20 +9072,36 @@ export const openApiSchemas = {
   ChatEditCommunityMessageRequest: {
     type: "object",
     required: ["communityId", "content"],
+    description:
+      "Body for `PATCH /chat/community/messages/{messageId}`. " +
+      "Only TEXT messages can be edited. The edit window is 15 minutes from original send time. " +
+      "After the window closes the server returns 410 `CHAT_EDIT_WINDOW_EXPIRED`.",
     properties: {
       communityId: {
         type: "string",
         minLength: 1,
         description:
           "Community the message belongs to — required so the edit broadcast reaches the right community room.",
+        example: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
       },
       content: {
         type: "object",
         required: ["text"],
         properties: {
-          text: { type: "string", minLength: 1, maxLength: 4000 },
+          text: {
+            type: "string",
+            minLength: 1,
+            maxLength: 4000,
+            description:
+              "New plain-text body (replaces the original text in-place).",
+            example: "Updated: Hey everyone! 👋 Thanks for joining.",
+          },
         },
       },
+    },
+    example: {
+      communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+      content: { text: "Updated: Hey everyone! 👋 Thanks for joining." },
     },
   },
   ChatConversationPage: {

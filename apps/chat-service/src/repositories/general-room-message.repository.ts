@@ -618,6 +618,8 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             createdAt: { $gt: { $date: params.afterDate.toISOString() } },
             deletedBy: { $ne: params.userId },
+            // Personal system messages (e.g. "You joined") are informational only.
+            visibleToUserId: null,
             // Hidden membership lines never count toward unread (consistency with
             // countUnreadBulk / conversationMatch).
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
@@ -660,8 +662,10 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             deletedBy: { $ne: params.userId },
             sentBy: { $ne: params.userId },
-            // PERSONAL messages targeted at another user never count as unread here.
-            visibleToUserId: { $in: [null, params.userId] },
+            // PERSONAL system messages (visibleToUserId != null) are informational
+            // events (e.g. "You joined the community") and must never inflate unread.
+            // Only community-wide messages (visibleToUserId === null) count.
+            visibleToUserId: null,
             // Suppressed moderation lines never count toward unread either.
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
           },

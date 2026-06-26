@@ -1,225 +1,160 @@
-import type { Community } from "../src/generated/prisma/index.js";
 import { prisma } from "../src/config/prisma.js";
 
-interface CommunityComparison {
-  field: string;
-  newValue: unknown;
-  oldValue: unknown;
-  different: boolean;
-}
-
-async function analyzeAndFixCommunities() {
-  console.log("🔍 Starting community search issue diagnosis and fix...\n");
+async function fixCommunitySearch() {
+  console.log("🔍 Diagnosing community search issue...\n");
 
   try {
-    // Step 1: Find the newest community (likely created recently and working)
-    const newestCommunity = await prisma.community.findFirst({
-      orderBy: { createdAt: "desc" },
-      take: 1,
+    // Step 1: Verify the exact search query returns nothing for old communities
+    const totalCommunities = await prisma.community.count({
+      where: { deletedAt: { isSet: false }, status: { not: "CLOSED" } },
     });
-
-    if (!newestCommunity) {
-      console.error("❌ No communities found in database");
-      return;
-    }
-
-    console.log(`✅ Reference (newest) community found:`);
-    console.log(`   ID: ${newestCommunity.id}`);
-    console.log(`   Name: ${newestCommunity.name}`);
-    console.log(`   Created: ${newestCommunity.createdAt}\n`);
-
-    // Step 2: Get all other communities
-    const allCommunities = await prisma.community.findMany({
-      where: { id: { not: newestCommunity.id } },
-      orderBy: { createdAt: "desc" },
-    });
-
     console.log(
-      `📊 Found ${allCommunities.length} other communities to check\n`
+      `📊 Total non-deleted/non-closed communities: ${totalCommunities}`
     );
 
-    // Step 3: Compare schema
-    const fieldsToCheck = [
-      "status",
-      "moderationStatus",
-      "type",
-      "deletedAt",
-      "lastActivityAt",
-      "lastActivityType",
-      "lastActivityPreview",
-      "lastActivityUsername",
-      "lastActivityUserId",
-      "lastActivitySelfPreview",
-    ];
-
-    const differences: Map<string, CommunityComparison[]> = new Map();
-
-    for (const oldCommunity of allCommunities) {
-      const diffs: CommunityComparison[] = [];
-
-      for (const field of fieldsToCheck) {
-        const newValue = (newestCommunity as Record<string, unknown>)[field];
-        const oldValue = (oldCommunity as Record<string, unknown>)[field];
-
-        if (JSON.stringify(newValue) !== JSON.stringify(oldValue)) {
-          diffs.push({
-            field,
-            newValue,
-            oldValue,
-            different: true,
-          });
-        }
-      }
-
-      if (diffs.length > 0) {
-        differences.set(oldCommunity.id, diffs);
-      }
-    }
-
-    // Step 4: Identify which fields need fixing
-    const fieldsNeedingFix = new Set<string>();
-    for (const diffs of differences.values()) {
-      for (const diff of diffs) {
-        fieldsNeedingFix.add(diff.field);
-      }
-    }
-
-    console.log(`🔧 Fields that differ between old and new communities:`);
-    for (const field of fieldsNeedingFix) {
-      console.log(`   - ${field}`);
-    }
-    console.log("");
-
-    // Step 5: Show sample differences
-    if (differences.size > 0) {
-      const firstDiff = Array.from(differences.entries())[0];
-      console.log(
-        `📋 Sample differences for community ${firstDiff[0].substring(0, 8)}...:`
-      );
-      for (const diff of firstDiff[1]) {
-        console.log(`   ${diff.field}:`);
-        console.log(`     Old: ${JSON.stringify(diff.oldValue)}`);
-        console.log(`     New: ${JSON.stringify(diff.newValue)}`);
-      }
-      console.log("");
-    }
-
-    // Step 6: Fix critical fields that affect searching
-    console.log(`🛠️  Fixing communities...\n`);
-
-    let fixedCount = 0;
-    const updatePromises: Promise<Community>[] = [];
-
-    for (const oldCommunity of allCommunities) {
-      const updateData: Record<string, string | null | Date> = {};
-      let needsUpdate = false;
-
-      // Fix status field if missing or wrong
-      if (
-        !oldCommunity.status ||
-        oldCommunity.status === null ||
-        oldCommunity.status === undefined
-      ) {
-        updateData.status = newestCommunity.status || "ACTIVE";
-        needsUpdate = true;
-      }
-
-      // Fix moderationStatus if missing
-      if (
-        !oldCommunity.moderationStatus ||
-        oldCommunity.moderationStatus === null
-      ) {
-        updateData.moderationStatus =
-          newestCommunity.moderationStatus || "ACTIVE";
-        needsUpdate = true;
-      }
-
-      // Ensure type is set
-      if (!oldCommunity.type) {
-        updateData.type = newestCommunity.type || "PUBLIC";
-        needsUpdate = true;
-      }
-
-      // Ensure deletedAt is properly set (should be unset/null)
-      if (oldCommunity.deletedAt && newestCommunity.deletedAt === null) {
-        updateData.deletedAt = null;
-        needsUpdate = true;
-      }
-
-      if (needsUpdate) {
-        updatePromises.push(
-          prisma.community.update({
-            where: { id: oldCommunity.id },
-            data: updateData,
-          })
-        );
-        fixedCount++;
-      }
-    }
-
-    // Execute all updates in parallel
-    if (updatePromises.length > 0) {
-      await Promise.all(updatePromises);
-      console.log(`✅ Fixed ${fixedCount} communities\n`);
-    } else {
-      console.log(`✅ All communities already have correct schema\n`);
-    }
-
-    // Step 7: Verify fixes
-    console.log(`🔐 Verifying fixes...\n`);
-
-    const brokenCommunities = await prisma.community.findMany({
-      where: {
-        AND: [{ deletedAt: { isSet: false } }, { status: { not: "CLOSED" } }],
-      },
-    });
-
-    console.log(
-      `✅ Communities matching search criteria (not deleted, not closed): ${brokenCommunities.length}`
-    );
-
-    // Step 8: Check member relationships
-    console.log(`\n📋 Checking community member relationships...\n`);
-
-    const communitiesWithoutMembers = await prisma.community.findMany({
+    const searchResults = await prisma.community.findMany({
       where: {
         deletedAt: { isSet: false },
         status: { not: "CLOSED" },
       },
-      include: {
-        _count: {
-          select: {
-            members: {
-              where: { status: "ACTIVE" },
-            },
-          },
-        },
+      select: {
+        id: true,
+        name: true,
+        categoryId: true,
+        category: { select: { id: true, name: true } },
       },
     });
 
-    let orphanCount = 0;
-    for (const community of communitiesWithoutMembers) {
-      if (community._count.members === 0) {
-        orphanCount++;
-        console.log(`⚠️  Community "${community.name}" has no ACTIVE members`);
+    console.log(
+      `📊 Communities returned WITH category select: ${searchResults.length}`
+    );
+
+    const missingCategory = searchResults.filter((c) => !c.category);
+
+    console.log(
+      `⚠️  Communities with null/missing category relation: ${missingCategory.length}`
+    );
+
+    if (missingCategory.length > 0) {
+      console.log(
+        "\n🚨 ROOT CAUSE CONFIRMED: category join is filtering out communities"
+      );
+      console.log("   These communities are missing a valid categoryId:\n");
+      for (const c of missingCategory.slice(0, 5)) {
+        console.log(
+          `   - "${c.name}" (id: ${c.id}, categoryId: ${String(c.categoryId)})`
+        );
       }
+      if (missingCategory.length > 5) {
+        console.log(`   ... and ${missingCategory.length - 5} more`);
+      }
+    } else {
+      console.log("\n✅ Category joins are fine.");
     }
 
-    if (orphanCount === 0) {
-      console.log(`✅ All communities have at least one ACTIVE member\n`);
+    // Step 2: Fix — backfill missing categoryIds with "General" category
+    console.log(
+      "\n🛠️  Fixing: backfilling missing categoryIds with 'General' category...\n"
+    );
+
+    const generalCategory = await prisma.communityCategory.findFirst({
+      where: { slug: "general" },
+      select: { id: true, name: true },
+    });
+
+    if (!generalCategory) {
+      console.error("❌ 'General' category not found. Run: pnpm db:seed first");
+      console.error("   Then re-run: pnpm fix:search");
+      process.exit(1);
     }
 
-    console.log(`\n🎉 Fix complete! Your search issue should be resolved.`);
-    console.log(`\nNext steps:`);
-    console.log(`  1. Test searching for old communities`);
-    console.log(`  2. Verify they now appear in results`);
-    console.log(`  3. Check that pagination still works`);
+    console.log(`✅ Found 'General' category: ${generalCategory.id}`);
+
+    // Find communities whose category relation resolves to null
+    const allCommunities = await prisma.community.findMany({
+      where: { deletedAt: { isSet: false } },
+      select: {
+        id: true,
+        name: true,
+        categoryId: true,
+        category: { select: { id: true } },
+      },
+    });
+
+    const toFix = allCommunities.filter((c) => !c.category);
+
+    if (toFix.length === 0) {
+      console.log(
+        "✅ All communities already have valid categoryIds — no fix needed\n"
+      );
+      console.log("🔎 Search issue may be caused by something else.");
+      console.log(
+        "   Try running: pnpm db:push  (to ensure Prisma indexes are up to date)"
+      );
+    } else {
+      console.log(
+        `🔧 Backfilling ${toFix.length} communities with 'General' category...`
+      );
+
+      const ids = toFix.map((c) => c.id);
+
+      const batchSize = 50;
+      let fixed = 0;
+      for (let i = 0; i < ids.length; i += batchSize) {
+        const batch = ids.slice(i, i + batchSize);
+        await prisma.community.updateMany({
+          where: { id: { in: batch } },
+          data: {
+            categoryId: generalCategory.id,
+            categoryName: generalCategory.name,
+          },
+        });
+        fixed += batch.length;
+        console.log(`   Fixed ${fixed}/${toFix.length}...`);
+      }
+
+      console.log(
+        `\n✅ Backfilled ${toFix.length} communities with 'General' category`
+      );
+    }
+
+    // Step 3: Verify fix
+    console.log("\n🔐 Verifying fix...\n");
+
+    const afterFix = await prisma.community.count({
+      where: {
+        deletedAt: { isSet: false },
+        status: { not: "CLOSED" },
+      },
+      // Re-run the same query as listDiscoverable to confirm all resolve
+    });
+
+    const verifyAll = await prisma.community.findMany({
+      where: { deletedAt: { isSet: false }, status: { not: "CLOSED" } },
+      select: { id: true, category: { select: { id: true } } },
+    });
+
+    const stillMissing = verifyAll.filter((c) => !c.category).length;
+
+    console.log(`✅ Total active communities: ${afterFix}`);
+    console.log(`✅ Still missing category:   ${stillMissing}`);
+
+    if (stillMissing === 0) {
+      console.log("\n🎉 All communities are now searchable!");
+      console.log("\nTest with:");
+      console.log(
+        '   curl "https://your-api/api/v1/communities/mine?q=Vasu&filter=all"'
+      );
+    } else {
+      console.log(`\n⚠️  ${stillMissing} communities still missing category.`);
+      console.log("   Run: pnpm db:seed  then re-run: pnpm fix:search");
+    }
   } catch (error) {
-    console.error("❌ Error during fix:", error);
+    console.error("❌ Error:", error);
     process.exit(1);
   } finally {
     await prisma.$disconnect();
   }
 }
 
-analyzeAndFixCommunities();
+fixCommunitySearch();

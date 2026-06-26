@@ -94,6 +94,15 @@ model Community {
   statusClosedBy    String? // community AuthUser.id (admin/owner) who closed it
   statusClosedReason String? // optional free-text reason supplied by the owner
   deletedAt   DateTime?
+  // Permanent invitation code for PRIVATE communities — generated once, never
+  // rotated unless an admin explicitly requests regeneration (future feature).
+  // Stored on the community (not in CommunityInviteLink) because it is a
+  // singleton community property, not an admin-managed expiring link.
+  // A sparse unique index is created at startup (see server.ts) because Prisma
+  // cannot express sparse indexes for MongoDB — a standard @unique on a nullable
+  // field would prevent multiple communities from having null simultaneously.
+  invitationCode          String?
+  invitationCodeCreatedAt DateTime?
   members     CommunityMember[]
 
   @@index([categoryId])
@@ -105,6 +114,10 @@ model Community {
   @@index([categoryName])
   // Backs the admin user→communities list's name sort (orderBy name, _id tiebreak).
   @@index([name])
+  // Backs fast lookup by permanent invitation code (lookupInviteLink fallback).
+  // The sparse unique variant of this index is created at startup; this entry
+  // documents intent but the actual enforcement is in server.ts.
+  @@index([invitationCode])
   @@map("communities")
 }
 

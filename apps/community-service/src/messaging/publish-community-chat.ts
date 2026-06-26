@@ -140,6 +140,24 @@ export interface CommunityInviteLinkSharedForChat {
   inviterId: string;
   recipientId: string;
   eventAt: string;
+  // ── Additive enrichment (all optional → an in-flight event published by an
+  //    older build still processes; chat-service degrades each field gracefully).
+  //    Lets chat-service render a rich invitation card + a non-blank inbox
+  //    preview + an FCM push without any extra cross-service lookup. ───────────
+  /** Raw community avatar object key (resolve-on-read; NEVER a presigned URL). */
+  communityAvatarUrl?: string | null;
+  /** Member-count snapshot at send time, for the invitation card. */
+  memberCount?: number;
+  /** Fully-built shareable URL (e.g. https://aimess.me/+CODE or a PUBLIC handle URL). */
+  inviteUrl?: string;
+  /** App deep link (aimess://join?code=CODE or aimess://resolve?handle=…). */
+  inviteDeepLink?: string;
+  /** True when the link never expires and has unlimited uses. */
+  isPermanent?: boolean;
+  /** Inviter display name — chat bubble sender + push title ("John invited you…"). */
+  inviterName?: string;
+  /** Inviter avatar object key (resolve-on-read) for the push sender avatar. */
+  inviterAvatarUrl?: string | null;
 }
 
 /**

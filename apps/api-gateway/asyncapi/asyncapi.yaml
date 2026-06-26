@@ -5002,13 +5002,18 @@ components:
         invite-link redeem); published to Redis `community:<communityId>` and
         forwarded verbatim by the gateway to room `community:<communityId>`.
       properties:
+        communityId:
+          {
+            type: string,
+            description: "Which community the member joined — needed by clients that are subscribed to multiple community rooms simultaneously.",
+          }
         userId: { type: string }
         username: { type: string }
         displayName: { type: string }
         avatarUrl: { type: string, nullable: true }
         role: { type: string, enum: [ADMIN, MODERATOR, MEMBER] }
         joinedAt: { type: integer, description: "epoch ms." }
-      required: [userId]
+      required: [communityId, userId]
     CommunityJoinRequestUpdateDTO:
       type: object
       description: |

@@ -15,6 +15,7 @@
 jest.mock("../../src/lib/user-client.js", () => ({
   fetchExistingUserIds: jest.fn(),
   fetchUserSnapshots: jest.fn(async () => new Map()),
+  fetchUserSnapshotHits: jest.fn(async () => new Map()),
   fetchAcceptedFriendIds: jest.fn(async () => new Set()),
 }));
 
@@ -48,11 +49,15 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
 
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
-import { fetchExistingUserIds } from "../../src/lib/user-client.js";
+import {
+  fetchExistingUserIds,
+  fetchUserSnapshotHits,
+} from "../../src/lib/user-client.js";
 import { publishCommunityInviteLinkSharedForChatSafe } from "../../src/messaging/publish-community-chat.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const existing = fetchExistingUserIds as unknown as jest.Mock;
+const snapshotHits = fetchUserSnapshotHits as unknown as jest.Mock;
 const publishInvite =
   publishCommunityInviteLinkSharedForChatSafe as unknown as jest.Mock;
 
@@ -112,6 +117,8 @@ beforeEach(() => {
   repo.findMembersByUserIds.mockResolvedValue([]);
   // Default: every queried user exists (overridden per negative test).
   existing.mockResolvedValue(new Set([UID_A, UID_B, UID_C]));
+  // Default: inviter snapshot resolves (overridden per enrichment test).
+  snapshotHits.mockResolvedValue(new Map());
 });
 
 describe("bulkSendInviteLink — recipient validation + fan-out", () => {
@@ -371,6 +378,108 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
       expect(publishInvite).not.toHaveBeenCalled();
     }
   );
+
+  // --- Personal-chat enrichment: the DM event carries the invitation card data ---
+
+  it("the invite event carries the enriched card payload (url, memberCount, avatar, inviter)", async () => {
+    snapshotHits.mockResolvedValue(
+      new Map([
+        [
+          CALLER,
+          {
+            userId: CALLER,
+            username: "john",
+            displayName: "John",
+            avatarObjectKey: "avatars/john.jpg",
+          },
+        ],
+      ])
+    );
+
+    const res = await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A],
+      linkId: LINK_ID,
+    });
+
+    // Inviter identity is resolved ONCE (no N+1) — single batch lookup.
+    expect(snapshotHits).toHaveBeenCalledTimes(1);
+    expect(snapshotHits).toHaveBeenCalledWith([CALLER]);
+
+    expect(publishInvite).toHaveBeenCalledTimes(1);
+    expect(publishInvite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // existing fields — UNCHANGED
+        communityId: CID,
+        communityName: "Cool Community",
+        linkCode: "abc123",
+        inviterId: CALLER,
+        recipientId: UID_A,
+        eventAt: expect.any(String),
+        // additive enrichment
+        communityAvatarUrl: null, // fixture community.avatarUrl is null
+        memberCount: 5,
+        inviteUrl: res.link.url,
+        inviteDeepLink: res.link.appDeepLink,
+        isPermanent: true, // link() has maxUses:null + expiresAt:null
+        inviterName: "John",
+        inviterAvatarUrl: "avatars/john.jpg",
+      })
+    );
+  });
+
+  it("isPermanent=false when the link has a use cap or an expiry", async () => {
+    repo.findInviteLinkById.mockResolvedValue(link({ maxUses: 10 }));
+
+    await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A],
+      linkId: LINK_ID,
+    });
+
+    expect(publishInvite).toHaveBeenCalledWith(
+      expect.objectContaining({ isPermanent: false })
+    );
+  });
+
+  it("a missing inviter snapshot degrades gracefully (name/avatar omitted, still sent)", async () => {
+    snapshotHits.mockResolvedValue(new Map()); // user-service hiccup → no hit
+
+    const res = await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A],
+      linkId: LINK_ID,
+    });
+
+    expect(res.summary).toMatchObject({ sent: 1, failed: 0 });
+    expect(publishInvite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientId: UID_A,
+        inviterName: undefined,
+        inviterAvatarUrl: null,
+      })
+    );
+  });
+
+  it("existing request/response contract is unchanged (back-compat shape intact)", async () => {
+    const res = await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A],
+      linkId: LINK_ID,
+    });
+
+    expect(res).toEqual(
+      expect.objectContaining({
+        link: expect.objectContaining({
+          linkId: LINK_ID,
+          code: "abc123",
+          url: expect.any(String),
+        }),
+        summary: { requested: 1, sent: 1, failed: 0, skipped: 0 },
+        sentUserIds: [UID_A],
+        failures: [],
+        // original { queued, skipped } aliases still present
+        queued: 1,
+        skipped: 0,
+      })
+    );
+  });
 
   // --- Audit: every bulk-send is recorded (member-accessible → must be traceable) ---
 

@@ -19,6 +19,31 @@ async function start() {
     await prisma.$connect();
     logger.info("MongoDB connected");
 
+    // Sparse unique index on Community.invitationCode — enforces global uniqueness
+    // for non-null codes while allowing multiple communities to have null (i.e. no
+    // permanent link yet). Prisma cannot express sparse indexes in the MongoDB
+    // schema, so we create it idempotently here. createIndex is a no-op when the
+    // index already exists with the same options.
+    try {
+      await prisma.$runCommandRaw({
+        createIndexes: "communities",
+        indexes: [
+          {
+            key: { invitationCode: 1 },
+            name: "communities_invitationCode_unique_sparse",
+            unique: true,
+            sparse: true,
+          },
+        ],
+      });
+      logger.info("Index ready: communities.invitationCode (sparse unique)");
+    } catch (indexErr) {
+      logger.warn(
+        "Could not create invitationCode sparse index — permanent invite links may lack uniqueness enforcement"
+      );
+      logger.warn(indexErr);
+    }
+
     if (env.REDIS_CACHE_ENABLED) {
       try {
         await connectCommunityRedis();

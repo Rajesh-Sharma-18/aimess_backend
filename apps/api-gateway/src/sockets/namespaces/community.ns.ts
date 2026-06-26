@@ -309,7 +309,26 @@ export function registerCommunityNamespace(
             }
           })();
         } else {
-          community.to(channel).emit(parsed.event, parsed.data);
+          // Roster events (join / role-update / remove) must also reach members
+          // who haven't opened the community chat yet. Those members are only in
+          // the lightweight `community-typing:<id>` room (auto-joined at connect),
+          // NOT in `community:<id>` (joined only via explicit community:join).
+          // Chaining .to() makes Socket.IO de-duplicate recipients, so members
+          // in both rooms receive exactly one delivery.
+          const ROSTER_EVENTS = new Set([
+            "community:member:joined",
+            "community:member:updated",
+            "community:member:removed",
+          ]);
+          const typingRoom = `community-typing:${channel.slice("community:".length)}`;
+          if (ROSTER_EVENTS.has(parsed.event)) {
+            community
+              .to(channel)
+              .to(typingRoom)
+              .emit(parsed.event, parsed.data);
+          } else {
+            community.to(channel).emit(parsed.event, parsed.data);
+          }
         }
 
         // Evict-on-removal: when a member is removed (banned/kicked/left), force

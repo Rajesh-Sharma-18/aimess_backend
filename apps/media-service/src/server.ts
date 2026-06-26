@@ -47,11 +47,19 @@ async function start() {
     }
 
     try {
-      await ensureBuckets(storageClient, [
-        env.MINIO_BUCKET_AVATARS,
-        env.MINIO_BUCKET_COMMUNITY,
-        env.MINIO_BUCKET,
-      ]);
+      const corsOrigins =
+        env.CORS_ALLOWED_ORIGINS === "*"
+          ? ["*"]
+          : env.CORS_ALLOWED_ORIGINS.split(",").map((o) => o.trim());
+      await ensureBuckets(
+        storageClient,
+        [
+          env.MINIO_BUCKET_AVATARS,
+          env.MINIO_BUCKET_COMMUNITY,
+          env.MINIO_BUCKET,
+        ],
+        corsOrigins
+      );
       logger.info(
         `MinIO buckets ready: ${env.MINIO_BUCKET_AVATARS}, ${env.MINIO_BUCKET_COMMUNITY}, ${env.MINIO_BUCKET}`
       );

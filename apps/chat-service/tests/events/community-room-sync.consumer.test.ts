@@ -16,9 +16,31 @@
 const deletePersonalJoinMessages = jest.fn(async () => 1);
 const upsert = jest.fn(async () => undefined);
 
+// Private-DM repo primitives used by deliverInviteLinkDm (invite-link sharing).
+const findByParticipantsKey = jest.fn();
+const createRoom = jest.fn();
+const allocateSequence = jest.fn(async () => 1);
+const updateRoomOnNewMessage = jest.fn(async () => null);
+const findByClientMessageId = jest.fn(async () => null);
+const createMessage = jest.fn();
+const publishConvUpdatedSafe = jest.fn();
+const publishMessageSentSafe = jest.fn();
+
+jest.mock("../../src/events/publish-conv-updated.js", () => ({
+  publishConvUpdatedSafe,
+}));
+jest.mock("../../src/events/publish-message-sent.js", () => ({
+  publishMessageSentSafe,
+}));
+
 jest.mock("../../src/config/prisma.js", () => ({ prisma: {} }));
 jest.mock("../../src/config/redis.js", () => ({
-  redis: { publish: jest.fn(async () => 1), on: jest.fn() },
+  redis: {
+    publish: jest.fn(async () => 1),
+    // The ACTIVE member.synced branch writes a `community:fresh-join:*` key.
+    set: jest.fn(async () => "OK"),
+    on: jest.fn(),
+  },
 }));
 jest.mock("../../src/repositories/general-room-message.repository.js", () => ({
   GeneralRoomMessageRepository: class {
@@ -38,10 +60,18 @@ jest.mock("../../src/repositories/general-room.repository.js", () => ({
   },
 }));
 jest.mock("../../src/repositories/private-room.repository.js", () => ({
-  PrivateRoomRepository: class {},
+  PrivateRoomRepository: class {
+    findByParticipantsKey = findByParticipantsKey;
+    create = createRoom;
+    allocateSequence = allocateSequence;
+    updateRoomOnNewMessage = updateRoomOnNewMessage;
+  },
 }));
 jest.mock("../../src/repositories/private-message.repository.js", () => ({
-  PrivateMessageRepository: class {},
+  PrivateMessageRepository: class {
+    findByClientMessageId = findByClientMessageId;
+    createMessage = createMessage;
+  },
 }));
 jest.mock("../../src/repositories/cache.repository.js", () => ({
   CacheRepository: class {},
@@ -56,6 +86,9 @@ jest.mock("../../src/services/user-snapshot.service.js", () => ({
 }));
 
 import { CommunityRoomSyncConsumer } from "../../src/events/community-room-sync.consumer.js";
+import { redis } from "../../src/config/redis.js";
+
+const redisPublish = redis.publish as unknown as jest.Mock;
 
 const COMMUNITY = "c".repeat(24);
 const USER = "11111111-1111-4111-8111-111111111111";
@@ -201,6 +234,190 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
         eventAt: EVENT_AT,
       })
     );
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+    expect(fake.channel.nack).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// community.invite_link_shared → 1-to-1 personal chat DM (Telegram-style).
+// The invitation must behave EXACTLY like a normal private message: stored as a
+// message, broadcast on conv:<roomId>, inbox-bumped, unread/last-activity
+// updated, and pushed for offline devices — and be idempotent.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const INVITER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const RECIPIENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const LINK_CODE = "abc123";
+const ROOM = { roomId: "prv_room1", participants: [INVITER, RECIPIENT].sort() };
+
+const inviteShared = (over: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    type: "community.invite_link_shared",
+    data: {
+      communityId: COMMUNITY,
+      communityName: "Developers",
+      linkCode: LINK_CODE,
+      inviterId: INVITER,
+      recipientId: RECIPIENT,
+      eventAt: EVENT_AT,
+      communityAvatarUrl: "community/avatars/dev.jpg",
+      memberCount: 256,
+      inviteUrl: "https://aimess.me/+abc123",
+      inviteDeepLink: "aimess://join?code=abc123",
+      isPermanent: true,
+      inviterName: "John",
+      inviterAvatarUrl: "avatars/john.jpg",
+      ...over,
+    },
+  });
+
+describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
+  beforeEach(() => {
+    findByParticipantsKey.mockReset().mockResolvedValue(ROOM);
+    createRoom.mockReset().mockResolvedValue(ROOM);
+    allocateSequence.mockReset().mockResolvedValue(7);
+    updateRoomOnNewMessage.mockReset().mockResolvedValue(null);
+    findByClientMessageId.mockReset().mockResolvedValue(null);
+    createMessage
+      .mockReset()
+      .mockResolvedValue({ id: "msg_1", createdAt: new Date(EVENT_AT) });
+    publishConvUpdatedSafe.mockReset();
+    publishMessageSentSafe.mockReset();
+    redisPublish.mockClear();
+  });
+
+  it("stores a SYSTEM invitation message with the enriched card payload + idempotency key", async () => {
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    expect(createMessage).toHaveBeenCalledTimes(1);
+    const arg = createMessage.mock.calls[0][0];
+    expect(arg).toMatchObject({
+      roomId: ROOM.roomId,
+      senderId: INVITER,
+      receiverId: RECIPIENT,
+      messageType: "SYSTEM",
+      systemEvent: "COMMUNITY_INVITE",
+      sequenceNumber: 7,
+      // deterministic dedupe key
+      clientMessageId: `cinv:${COMMUNITY}:${LINK_CODE}:${RECIPIENT}`,
+    });
+    // content.text is a non-blank human fallback (drives the inbox preview).
+    expect(arg.content.text).toBe("Invitation to join Developers");
+    // structured card data the client renders.
+    expect(arg.systemData).toMatchObject({
+      communityId: COMMUNITY,
+      communityName: "Developers",
+      communityAvatarUrl: "community/avatars/dev.jpg",
+      memberCount: 256,
+      linkCode: LINK_CODE,
+      inviteUrl: "https://aimess.me/+abc123",
+      inviteDeepLink: "aimess://join?code=abc123",
+      isPermanent: true,
+      inviterId: INVITER,
+      inviterName: "John",
+    });
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates unread + last-activity and broadcasts message:new on conv:<roomId>", async () => {
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    // last-activity / unread bump on the room (fixes the blank inbox preview).
+    expect(updateRoomOnNewMessage).toHaveBeenCalledTimes(1);
+    expect(updateRoomOnNewMessage.mock.calls[0][0]).toMatchObject({
+      roomId: ROOM.roomId,
+      receiverId: RECIPIENT,
+    });
+
+    // canonical message:new socket broadcast on the conversation channel.
+    const newMsgPublish = redisPublish.mock.calls.find(
+      (c) => c[0] === `conv:${ROOM.roomId}`
+    );
+    expect(newMsgPublish).toBeDefined();
+    const envelope = JSON.parse(newMsgPublish![1]);
+    expect(envelope.event).toBe("message:new");
+    expect(envelope.data).toMatchObject({
+      id: "msg_1",
+      conversationType: "PRIVATE",
+      senderId: INVITER,
+      receiverId: RECIPIENT,
+      contentType: "SYSTEM",
+      systemEvent: "COMMUNITY_INVITE",
+    });
+  });
+
+  it("bumps the inbox for BOTH participants and pushes the recipient (offline FCM/APNs)", async () => {
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    expect(publishConvUpdatedSafe).toHaveBeenCalledTimes(1);
+    expect(publishConvUpdatedSafe.mock.calls[0][0]).toMatchObject({
+      type: "PRIVATE",
+      roomId: ROOM.roomId,
+      recipientIds: [INVITER, RECIPIENT],
+      preview: { contentType: "SYSTEM", text: "Invitation to join Developers" },
+    });
+
+    expect(publishMessageSentSafe).toHaveBeenCalledTimes(1);
+    expect(publishMessageSentSafe.mock.calls[0][0]).toMatchObject({
+      conversationId: ROOM.roomId,
+      conversationType: "PRIVATE",
+      recipientIds: [RECIPIENT],
+      senderName: "John",
+      preview: "Invitation to join Developers",
+      communityId: COMMUNITY,
+      communityName: "Developers",
+    });
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses an existing private conversation (no room created)", async () => {
+    findByParticipantsKey.mockResolvedValue(ROOM);
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    expect(createRoom).not.toHaveBeenCalled();
+    expect(createMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates the private conversation when none exists", async () => {
+    findByParticipantsKey.mockResolvedValue(null);
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    expect(createRoom).toHaveBeenCalledTimes(1);
+    expect(createMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("is idempotent — a duplicate event is suppressed (no second message, no broadcast)", async () => {
+    findByClientMessageId.mockResolvedValue({ id: "msg_1" }); // already delivered
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    expect(createMessage).not.toHaveBeenCalled();
+    expect(updateRoomOnNewMessage).not.toHaveBeenCalled();
+    expect(publishConvUpdatedSafe).not.toHaveBeenCalled();
+    expect(publishMessageSentSafe).not.toHaveBeenCalled();
+    expect(
+      redisPublish.mock.calls.find((c) => c[0] === `conv:${ROOM.roomId}`)
+    ).toBeUndefined();
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows a unique-index create race (E11000) without broadcasting", async () => {
+    findByClientMessageId.mockResolvedValue(null);
+    createMessage.mockRejectedValue(
+      Object.assign(new Error("E11000 duplicate key"), { code: "P2002" })
+    );
+    const fake = await start();
+    await fake.deliver(inviteShared());
+
+    expect(publishConvUpdatedSafe).not.toHaveBeenCalled();
+    expect(publishMessageSentSafe).not.toHaveBeenCalled();
+    // the create race is swallowed → consumer still acks (no requeue storm).
     expect(fake.channel.ack).toHaveBeenCalledTimes(1);
     expect(fake.channel.nack).not.toHaveBeenCalled();
   });

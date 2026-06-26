@@ -44,6 +44,17 @@ export interface CommunityStatsUpdatedPayload {
   updatedAt: number; // epoch ms
 }
 
+/** Roster snapshot emitted to `community:<id>` room when a member joins. */
+export interface CommunityMemberJoinedSocketPayload {
+  communityId: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  role: "ADMIN" | "MODERATOR" | "MEMBER";
+  joinedAt: number; // epoch ms
+}
+
 export interface CommunityMemberRemovedPayload {
   communityId: string;
   userId: string; // who was removed

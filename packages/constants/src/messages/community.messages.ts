@@ -441,6 +441,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Đã lấy thông tin cộng đồng qua liên kết mời",
     en: "Community details fetched",
   },
+  COMMUNITY_PERMANENT_INVITATION_LINK_FETCHED: {
+    vi: "Đã lấy liên kết mời vĩnh viễn của cộng đồng",
+    en: "Permanent invitation link fetched",
+  },
   COMMUNITY_LIKED: {
     vi: "Đã thêm cộng đồng vào yêu thích",
     en: "Community added to liked",

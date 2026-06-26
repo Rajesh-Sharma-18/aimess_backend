@@ -15,6 +15,7 @@ import type {
   CommunityAddedPayload,
   CommunityClosedPayload,
   CommunityMemberAddedPayload,
+  CommunityMemberJoinedSocketPayload,
   CommunityMemberRemovedPayload,
   CommunityMemberUnbannedPayload,
   CommunityMemberUpdatedPayload,
@@ -96,6 +97,7 @@ import type {
   CommunityReportData,
   CommunityReportWithUsersData,
   InviteLinkPreviewData,
+  PermanentInvitationLinkData,
   MyInviteData,
   MyJoinRequestData,
   MyReportData,
@@ -1074,6 +1076,79 @@ function toInviteLinkData(
   };
 }
 
+/**
+ * Build a `PermanentInvitationLinkData` DTO from a community that already has
+ * its `invitationCode` set. Throws if called before the code is allocated
+ * (guards against logic bugs — callers in this file always check first).
+ */
+function toPermanentInvitationLinkData(community: {
+  id: string;
+  name: string;
+  invitationCode: string | null;
+  invitationCodeCreatedAt: Date | null;
+  createdAt: Date;
+}): PermanentInvitationLinkData {
+  if (!community.invitationCode) {
+    throw new Error(
+      `toPermanentInvitationLinkData called on community ${community.id} with no invitationCode`
+    );
+  }
+  return {
+    communityId: community.id,
+    communityName: community.name,
+    invitationCode: community.invitationCode,
+    invitationLink: buildInviteUrl(community.invitationCode),
+    appDeepLink: buildInviteDeepLink(community.invitationCode),
+    createdAt: (
+      community.invitationCodeCreatedAt ?? community.createdAt
+    ).getTime(),
+  };
+}
+
+/**
+ * Synthesize a `CommunityInviteLinkData`-shaped object from a community's
+ * permanent invitation code so that `redeemInviteLink` and `lookupInviteLink`
+ * can return a consistent response shape for both regular links AND the
+ * permanent community link without duplicating the rest of the join logic.
+ *
+ * Key invariants for permanent links:
+ *  - `linkId` is a sentinel `"permanent:<communityId>"` — NOT a real DB row id
+ *  - `maxUses: null` → unlimited
+ *  - `expiresAt: null` → never expires
+ *  - `revokedAt: null` → never revoked
+ *  - `autoApprove: false` → request-to-join (PRIVATE default)
+ *  - `isActive: true` → always active (lifecycle managed on the Community row)
+ */
+function toPermanentLinkAsInviteLinkData(community: {
+  id: string;
+  type: CommunityType;
+  handle: string;
+  adminId: string;
+  invitationCode: string;
+  invitationCodeCreatedAt: Date | null;
+  createdAt: Date;
+}): CommunityInviteLinkData {
+  const share = resolveCommunityShareLink(community, community.invitationCode);
+  return {
+    linkId: `permanent:${community.id}`,
+    code: community.invitationCode,
+    url: share.url,
+    appDeepLink: share.appDeepLink,
+    linkType: share.linkType,
+    communityId: community.id,
+    createdBy: community.adminId,
+    maxUses: null,
+    usedCount: 0,
+    autoApprove: false,
+    expiresAt: null,
+    revokedAt: null,
+    createdAt: (
+      community.invitationCodeCreatedAt ?? community.createdAt
+    ).toISOString(),
+    isActive: true,
+  };
+}
+
 function toAuditLogData(log: {
   id: string;
   communityId: string;
@@ -1163,6 +1238,11 @@ async function fetchCommunityLiveStreams(
 ): Promise<LiveStreamSummary[]> {
   return getStreamClient().getLiveStreamsByCommunity(communityId);
 }
+
+/** A fully-loaded Community row as returned by the repository (never null). */
+type CommunityRow = NonNullable<
+  Awaited<ReturnType<typeof communityRepository.findById>>
+>;
 
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
@@ -2758,13 +2838,14 @@ export const communityService = {
         member.snapshotAvatarKey
       );
       const memberDto = {
+        communityId: community.id,
         userId: member.userId,
         username: member.snapshotUsername,
         displayName: member.snapshotDisplayName,
         avatarUrl: avatarView?.url ?? null,
         role: member.role,
         joinedAt: member.joinedAt.getTime(),
-      };
+      } satisfies CommunityMemberJoinedSocketPayload;
       await publishCommunityRoomEvent(
         redis,
         community.id,
@@ -6515,6 +6596,196 @@ export const communityService = {
   },
 
   // ---------------------------------------------------------------------------
+  // Permanent invitation link (PRIVATE communities only)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Return — or lazily generate — the community's PERMANENT invitation code.
+   *
+   * Behaviour contract (Telegram-like):
+   *  - Code generated on the **first call** and persisted forever.
+   *  - **Every subsequent call returns the identical code** — no new code is ever
+   *    generated unless an admin explicitly calls a future "regenerate" endpoint.
+   *  - Updating the community name / avatar / description / settings does NOT
+   *    affect the code.
+   *  - Closing and reopening the community does NOT affect the code.
+   *  - 100 concurrent callers on a brand-new community collapse onto one winner
+   *    via the `setInvitationCodeOnce` atomic guard and all receive the same code.
+   *
+   * Authorization: any ACTIVE community member may retrieve the link.
+   */
+  async getOrCreatePermanentInvitationLink(
+    communityId: string,
+    callerId: string
+  ): Promise<PermanentInvitationLinkData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    // Permanent invitation links only exist for PRIVATE communities.
+    // PUBLIC communities are discoverable via their canonical handle URL.
+    if (community.type !== CommunityType.PRIVATE) {
+      throw new BadRequestError("COMMUNITY_NOT_PRIVATE");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MEMBER);
+
+    const withCode = await this.ensurePermanentInvitationCode(community);
+    return toPermanentInvitationLinkData(withCode);
+  },
+
+  /**
+   * Internal: ensure a PRIVATE community has its permanent `invitationCode`
+   * allocated, returning the community row with a guaranteed non-null code.
+   *
+   * This is the SINGLE source of the get-or-create logic — both the dedicated
+   * `GET /communities/:id/invitation-link` endpoint and the bare
+   * `POST /communities/:id/invite-links` SSOT short-circuit funnel through here,
+   * so there is exactly one place that can ever mint a permanent code.
+   *
+   *  - **Fast path:** code already set → returns the row unchanged (zero writes).
+   *  - **Slow path (first call only):** generate a 128-bit base64url candidate,
+   *    persist it via the atomic `setInvitationCodeOnce` guard
+   *    (updateMany WHERE invitationCode IS NULL — no transaction, works on
+   *    standalone Mongo), and retry up to 3× on a lost race / unique collision.
+   *    A losing concurrent caller re-reads and returns the winner's code, so
+   *    100 simultaneous first-callers all converge on ONE code.
+   */
+  async ensurePermanentInvitationCode(
+    community: CommunityRow
+  ): Promise<CommunityRow> {
+    // Fast path — already allocated. Pure read, no write.
+    if (community.invitationCode) {
+      return community;
+    }
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const candidate = generateInviteCode();
+      const result = await communityRepository.setInvitationCodeOnce(
+        community.id,
+        candidate
+      );
+
+      if (result.count === 1) {
+        // We won — re-read to return the fully populated row.
+        const updated = await communityRepository.findById(community.id);
+        return updated!;
+      }
+
+      // Another concurrent request beat us (or a DB-level collision on the
+      // sparse unique index). Re-read to pick up the winning code.
+      const refreshed = await communityRepository.findById(community.id);
+      if (refreshed?.invitationCode) {
+        return refreshed;
+      }
+      // invitationCode still null — extremely unlikely. Loop with a new candidate.
+    }
+
+    // Last-resort re-read before giving up (covers the pathological 3-collision case).
+    const final = await communityRepository.findById(community.id);
+    if (final?.invitationCode) {
+      return final;
+    }
+    throw new Error("Failed to allocate permanent invitation code");
+  },
+
+  /**
+   * Redeem the community's PERMANENT invitation code.
+   *
+   * Mirrors `redeemInviteLink` but:
+   *  - The community is looked up by its permanent `invitationCode` field (not a
+   *    `CommunityInviteLink` row), so there is no `usedCount` to increment.
+   *  - The link is always `autoApprove: false` (request-to-join for PRIVATE).
+   *  - A synthetic `CommunityInviteLinkData` is returned so the caller's response
+   *    shape is identical to a regular redeem.
+   *
+   * NOT exposed as a standalone service method on purpose — it is only called
+   * from `redeemInviteLink` as a fallback when `findInviteLinkByCode` returns null.
+   */
+  async redeemPermanentInviteCode(
+    code: string,
+    community: {
+      id: string;
+      type: CommunityType;
+      handle: string;
+      adminId: string;
+      status: CommunityStatus;
+      moderationStatus: CommunityModerationStatus;
+      deletedAt: Date | null;
+      // invitationCode is `string | null` from Prisma but the caller already
+      // verified it equals `code` (non-null) via findCommunityByInvitationCode.
+      invitationCode: string | null;
+      invitationCodeCreatedAt: Date | null;
+      createdAt: Date;
+    },
+    callerId: string
+  ): Promise<{
+    link: CommunityInviteLinkData;
+    request?: CommunityJoinRequestData;
+    member?: CommunityMemberData;
+  }> {
+    communityAccessPolicy.assertWritable(community);
+
+    const existing = await communityRepository.findMemberByUserId(
+      community.id,
+      callerId
+    );
+    if (existing?.status === CommunityMemberStatus.BANNED) {
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+    if (existing?.status === CommunityMemberStatus.ACTIVE) {
+      // Idempotent: already a member.
+      return {
+        // Pass `code` explicitly: community.invitationCode is string|null from
+        // Prisma, but we know it equals `code` (non-null) from the lookup.
+        link: toPermanentLinkAsInviteLinkData({
+          ...community,
+          invitationCode: code,
+        }),
+        member: await toMemberData(existing),
+      };
+    }
+
+    // Permanent links are always autoApprove=false (request-to-join).
+    // Only audit when this is a NEW or recycled request, not an idempotent re-tap.
+    const existingRequest =
+      await communityRepository.findJoinRequestByCommunityAndUser(
+        community.id,
+        callerId
+      );
+    const willCreateOrRecycle =
+      !existingRequest ||
+      existingRequest.status !== CommunityJoinReqStatus.PENDING;
+
+    if (willCreateOrRecycle) {
+      await this.recordAudit({
+        communityId: community.id,
+        actorId: callerId,
+        action: "INVITE_LINK_REDEEMED",
+        targetUserId: callerId,
+        metadata: { code, isPermanentLink: true },
+      });
+    }
+
+    const joinResult = await this.createJoinRequest(
+      community.id,
+      callerId,
+      null
+    );
+
+    return {
+      link: toPermanentLinkAsInviteLinkData({
+        ...community,
+        invitationCode: code,
+      }),
+      request: joinResult,
+    };
+  },
+
+  // ---------------------------------------------------------------------------
   // Invite links (shareable join links — distinct from 1:1 invites)
   // ---------------------------------------------------------------------------
   async createInviteLink(
@@ -6541,6 +6812,35 @@ export const communityService = {
     );
     assertCommunityRole(membership, CommunityMemberRole.MEMBER);
     communityAccessPolicy.assertWritable(community);
+
+    // ── SINGLE SOURCE OF TRUTH short-circuit (bare/default call) ───────────────
+    // A "Generate Invitation Link" button posts an EMPTY body. With no maxUses /
+    // expiresInMinutes / autoApprove, the caller wants THE community's canonical
+    // invite link — not a fresh throwaway link. For PRIVATE communities we return
+    // the PERMANENT, never-changing code (lazily minted once via the shared
+    // `ensurePermanentInvitationCode` helper) shaped as a `CommunityInviteLinkData`
+    // so the response contract is unchanged. This is idempotent: repeated bare
+    // calls return the identical code with NO new rows, NO rate-limit consumption,
+    // and NO active-link-cap usage.
+    //
+    // PUBLIC communities fall through to the legacy path: their share URL is
+    // handle-based and code-independent (already deterministic), so there is no
+    // "code changes every call" problem to fix for them.
+    //
+    // A PARAMETERIZED call (any of maxUses / expiresInMinutes / autoApprove
+    // present) is an explicit request for a custom temporary link and keeps the
+    // full legacy multi-link behavior below — preserving Expiring / Limited-use /
+    // Auto-approve links untouched.
+    const isDefaultCall =
+      input.maxUses == null &&
+      input.expiresInMinutes == null &&
+      input.autoApprove == null;
+    if (isDefaultCall && community.type === CommunityType.PRIVATE) {
+      const withCode = await this.ensurePermanentInvitationCode(community);
+      return toPermanentLinkAsInviteLinkData(
+        withCode as CommunityRow & { invitationCode: string }
+      );
+    }
 
     // Abuse guards (now that every member can create links):
     //  1. Per-user create rate limit (429 when exceeded).
@@ -6805,6 +7105,18 @@ export const communityService = {
     const sentUserIds: string[] = [];
     const eventAt = new Date().toISOString();
 
+    // Build the shareable link DTO ONCE (reused for the response AND each DM
+    // event), and resolve the inviter's identity ONCE (single batch gRPC, NOT
+    // per-recipient) so the invitation card + push can show "<inviter> invited
+    // you…" with no N+1. Both are best-effort: a missing snapshot leaves the
+    // name/avatar blank and the DM still delivers.
+    const linkData = toInviteLinkData(linkRow, community);
+    const inviterSnapshot = (await fetchUserSnapshotHits([callerId])).get(
+      callerId
+    );
+    const isPermanentLink =
+      linkRow.expiresAt === null && linkRow.maxUses === null;
+
     for (const recipientId of candidateIds) {
       // `existingIds === null` means the user-service lookup was UNAVAILABLE
       // (circuit open / transient gRPC error). Fail OPEN there — a verification
@@ -6839,6 +7151,8 @@ export const communityService = {
       }
 
       // Eligible (new, or a previously-LEFT member who may rejoin) → fan out.
+      // Existing fields are UNCHANGED; the enrichment fields are additive so the
+      // chat-service consumer can render a rich card + push with no extra lookup.
       publishCommunityInviteLinkSharedForChatSafe({
         communityId,
         communityName: community.name,
@@ -6846,6 +7160,13 @@ export const communityService = {
         inviterId: callerId,
         recipientId,
         eventAt,
+        communityAvatarUrl: community.avatarUrl ?? null,
+        memberCount: community.memberCount,
+        inviteUrl: linkData.url,
+        inviteDeepLink: linkData.appDeepLink,
+        isPermanent: isPermanentLink,
+        inviterName: inviterSnapshot?.displayName,
+        inviterAvatarUrl: inviterSnapshot?.avatarObjectKey ?? null,
       });
       sentUserIds.push(recipientId);
     }
@@ -6867,7 +7188,7 @@ export const communityService = {
     });
 
     return {
-      link: toInviteLinkData(linkRow, community),
+      link: linkData,
       summary: {
         requested: requestedIds.length,
         sent: sentUserIds.length,
@@ -6891,7 +7212,15 @@ export const communityService = {
     member?: CommunityMemberData;
   }> {
     const link = await communityRepository.findInviteLinkByCode(code);
-    if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+    if (!link) {
+      // Fallback: check if this is the community's permanent invitation code.
+      // Permanent codes are stored on the Community row, not in CommunityInviteLink.
+      const communityByCode =
+        await communityRepository.findCommunityByInvitationCode(code);
+      if (!communityByCode)
+        throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+      return this.redeemPermanentInviteCode(code, communityByCode, callerId);
+    }
     assertInviteLinkActive(link);
 
     const community = await communityRepository.findById(link.communityId);
@@ -7030,7 +7359,63 @@ export const communityService = {
     callerId: string
   ): Promise<InviteLinkPreviewData> {
     const link = await communityRepository.findInviteLinkByCode(code);
-    if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+
+    // Permanent-code fallback: if no CommunityInviteLink row owns this code,
+    // check whether it is the community's permanent invitation code instead.
+    // Permanent codes are never revoked/expired/exhausted, so assertInviteLinkActive
+    // is intentionally skipped.
+    if (!link) {
+      const communityByCode =
+        await communityRepository.findCommunityByInvitationCode(code);
+      if (!communityByCode)
+        throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+
+      const membership = await communityRepository.findMemberByUserId(
+        communityByCode.id,
+        callerId
+      );
+      if (membership?.status === CommunityMemberStatus.BANNED) {
+        throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+      }
+      const isJoinedPerm = membership?.status === CommunityMemberStatus.ACTIVE;
+
+      const pendingRequestPerm =
+        !isJoinedPerm && callerId
+          ? await communityRepository.findJoinRequestByCommunityAndUser(
+              communityByCode.id,
+              callerId
+            )
+          : null;
+      const pendingRowPerm =
+        pendingRequestPerm?.status === "PENDING" ? pendingRequestPerm : null;
+
+      const avatarViewPerm =
+        await communityImageService.resolveViewUrlForClient(
+          communityByCode.avatarUrl
+        );
+      const coverViewPerm = await communityImageService.resolveViewUrlForClient(
+        communityByCode.coverUrl
+      );
+
+      return {
+        communityId: communityByCode.id,
+        communityName: communityByCode.name,
+        description: communityByCode.description ?? null,
+        avatarUrl: avatarViewPerm?.url ?? null,
+        bannerUrl: coverViewPerm?.url ?? null,
+        memberCount: communityByCode.memberCount,
+        communityType: communityByCode.type,
+        isJoined: isJoinedPerm,
+        joinRequestId: pendingRowPerm?.id ?? null,
+        joinRequestStatus: pendingRowPerm ? ("PENDING" as const) : null,
+        invitationCode: code,
+        inviteUrl: buildInviteUrl(code),
+        appDeepLink: buildInviteDeepLink(code),
+        expiresAt: null, // permanent links never expire
+        creatorId: communityByCode.adminId,
+      };
+    }
+
     assertInviteLinkActive(link);
 
     const community = await communityRepository.findById(link.communityId);

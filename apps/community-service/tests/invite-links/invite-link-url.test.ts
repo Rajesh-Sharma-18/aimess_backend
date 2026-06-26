@@ -226,8 +226,14 @@ describe("bulkSendInviteLink — PUBLIC returned link is handle-based", () => {
 describe("createInviteLink — PRIVATE community keeps the invite-code URL", () => {
   beforeEach(() => repo.findById.mockResolvedValue(makeCommunity("PRIVATE")));
 
+  // These exercise the PARAMETERIZED temp-link path (pass `maxUses`). URL
+  // resolution is identical for the permanent and temp PRIVATE links (both
+  // `<base>/+<code>`); the permanent bare-call path is covered separately in
+  // permanent-invitation-link.test.ts.
   it("url/appDeepLink/linkType are code-derived with the `+` private marker", async () => {
-    const link = await communityService.createInviteLink(CID, CALLER, {});
+    const link = await communityService.createInviteLink(CID, CALLER, {
+      maxUses: 1,
+    });
 
     expect(link.linkType).toBe("PRIVATE_INVITE");
     expect(link.url).toBe(`${BASE}/+${link.code}`);
@@ -238,7 +244,9 @@ describe("createInviteLink — PRIVATE community keeps the invite-code URL", () 
   it("a PRIVATE community does NOT require a handle to build the URL", async () => {
     repo.findById.mockResolvedValue(makeCommunity("PRIVATE", { handle: "" }));
 
-    const link = await communityService.createInviteLink(CID, CALLER, {});
+    const link = await communityService.createInviteLink(CID, CALLER, {
+      maxUses: 1,
+    });
     expect(link.linkType).toBe("PRIVATE_INVITE");
     expect(link.url).toBe(`${BASE}/+${link.code}`);
   });

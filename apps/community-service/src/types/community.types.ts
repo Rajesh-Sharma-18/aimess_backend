@@ -540,6 +540,26 @@ export type InviteLinkPreviewData = {
   creatorId: string;
 };
 
+/**
+ * Response for `GET /communities/:id/invitation-link`.
+ *
+ * The permanent invitation link for a PRIVATE community — generated once during
+ * the community's lifetime and NEVER changed unless an admin explicitly requests
+ * regeneration (future `POST /communities/:id/regenerate-invitation` feature).
+ * Callers may safely cache this response indefinitely; the link is stable.
+ */
+export type PermanentInvitationLinkData = {
+  communityId: string;
+  communityName: string;
+  invitationCode: string;
+  /** HTTPS shareable link: `https://aimess.me/+<code>` */
+  invitationLink: string;
+  /** App deep-link: `aimess://join?code=<code>` */
+  appDeepLink: string;
+  /** Epoch ms — when the code was first generated. */
+  createdAt: number;
+};
+
 /** Liked/favorited community record. */
 export type CommunityFavoriteData = {
   favoriteId: string;
