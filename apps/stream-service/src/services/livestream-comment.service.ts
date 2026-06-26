@@ -11,10 +11,11 @@ import type { redis as RedisClient } from "../config/redis.js";
 import type { userGrpcClient as UserGrpcClient } from "../grpc/user.client.js";
 
 export const COMMENT_REPORT_REASONS = [
+  "OFFENSIVE_LANGUAGE",
   "SPAM",
-  "HATE_SPEECH",
-  "HARASSMENT",
-  "INAPPROPRIATE",
+  "INAPPROPRIATE_CONTENT",
+  "SCAM_OR_FRAUD",
+  "IMPERSONATION",
   "OTHER",
 ] as const;
 export type CommentReportReason = (typeof COMMENT_REPORT_REASONS)[number];
@@ -27,6 +28,29 @@ export interface CommentReportDto {
   reason: string;
   details: string | null;
   createdAt: Date;
+}
+
+export interface CommentReportView {
+  id: string;
+  commentId: string;
+  livestreamId: string;
+  reportedBy: string;
+  reason: string;
+  details: string | null;
+  createdAt: Date;
+  comment: {
+    id: string;
+    sentBy: string;
+    senderName: string;
+    message: string;
+    createdAt: Date;
+  } | null; // null when the reported comment has been deleted
+}
+
+export interface ListReportsResult {
+  items: CommentReportView[];
+  nextCursor: string | null;
+  hasMore: boolean;
 }
 
 /** Public comment shape (REST + gRPC + Redis broadcast share this). */
@@ -66,6 +90,26 @@ export class LivestreamCommentService {
     private readonly communityClient: typeof CommunityGrpcClient,
     private readonly reportRepo: LivestreamCommentReportRepository
   ) {}
+
+  /** True if requester is the stream owner or a community ADMIN/MODERATOR (fail-closed). */
+  private async hasModeratorAccess(
+    stream: { creatorId: string; communityId: string },
+    requesterId: string
+  ): Promise<boolean> {
+    if (stream.creatorId === requesterId) return true;
+    try {
+      const membership = await this.communityClient.validateMembership(
+        stream.communityId,
+        requesterId
+      );
+      return (
+        membership.isMember &&
+        (membership.role === "ADMIN" || membership.role === "MODERATOR")
+      );
+    } catch {
+      return false; // circuit-open / error = deny
+    }
+  }
 
   /**
    * Persist a comment with author enrichment + idempotency, then broadcast it on
@@ -178,23 +222,8 @@ export class LivestreamCommentService {
 
     // Authorization: author OR stream owner OR community admin/mod
     const isAuthor = comment.sentBy === requesterId;
-    const isHost = stream.creatorId === requesterId;
-
-    if (!isAuthor && !isHost) {
-      // Fail-closed: circuit-open or gRPC error = deny
-      let allowed = false;
-      try {
-        const membership = await this.communityClient.validateMembership(
-          stream.communityId,
-          requesterId
-        );
-        allowed =
-          membership.isMember &&
-          (membership.role === "ADMIN" || membership.role === "MODERATOR");
-      } catch {
-        // deliberately let circuit-open propagate as deny
-      }
-      if (!allowed) throw new ForbiddenError("COMMENT_DELETE_FORBIDDEN");
+    if (!isAuthor && !(await this.hasModeratorAccess(stream, requesterId))) {
+      throw new ForbiddenError("COMMENT_DELETE_FORBIDDEN");
     }
 
     await this.commentRepo.deleteById(commentId);
@@ -256,6 +285,60 @@ export class LivestreamCommentService {
       details: report.details ?? null,
       createdAt: report.createdAt,
     };
+  }
+
+  /**
+   * List reports for a stream (newest-first, cursor-paged), each enriched with the
+   * reported comment's current content. Owner or community ADMIN/MODERATOR only.
+   */
+  async listReports(params: {
+    livestreamId: string;
+    requesterId: string;
+    limit: number;
+    before?: string;
+  }): Promise<ListReportsResult> {
+    const stream = await this.streamRepo.findById(params.livestreamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (!(await this.hasModeratorAccess(stream, params.requesterId))) {
+      throw new ForbiddenError("REPORTS_VIEW_FORBIDDEN");
+    }
+
+    const rows = await this.reportRepo.findByLivestream(params.livestreamId, {
+      limit: params.limit + 1,
+      before: params.before,
+    });
+    const hasMore = rows.length > params.limit;
+    const page = hasMore ? rows.slice(0, params.limit) : rows;
+
+    const commentIds = [...new Set(page.map((r) => r.commentId))];
+    const comments = await this.commentRepo.findByIds(commentIds);
+    const byId = new Map(comments.map((c) => [c.id, c]));
+
+    const items: CommentReportView[] = page.map((r) => {
+      const c = byId.get(r.commentId);
+      return {
+        id: r.id,
+        commentId: r.commentId,
+        livestreamId: r.livestreamId,
+        reportedBy: r.reportedBy,
+        reason: r.reason,
+        details: r.details ?? null,
+        createdAt: r.createdAt,
+        comment: c
+          ? {
+              id: c.id,
+              sentBy: c.sentBy,
+              senderName: c.senderName ?? "",
+              message: c.message,
+              createdAt: c.createdAt,
+            }
+          : null,
+      };
+    });
+
+    const nextCursor =
+      hasMore && page.length > 0 ? page[page.length - 1]!.id : null;
+    return { items, nextCursor, hasMore };
   }
 
   /**

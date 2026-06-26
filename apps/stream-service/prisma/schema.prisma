@@ -94,7 +94,7 @@ model LivestreamBan {
 
 // -----------------------------------------------------------------------------
 // LivestreamCommentReport — user-submitted report on a live chat comment.
-//   reason: SPAM | HATE_SPEECH | HARASSMENT | INAPPROPRIATE | OTHER
+//   reason: OFFENSIVE_LANGUAGE | SPAM | INAPPROPRIATE_CONTENT | SCAM_OR_FRAUD | IMPERSONATION | OTHER
 //   details: optional free-text up to 500 chars
 //   Unique on (commentId, reportedBy) — one report per user per comment.
 // -----------------------------------------------------------------------------
@@ -103,7 +103,7 @@ model LivestreamCommentReport {
   commentId    String
   livestreamId String
   reportedBy   String // userId who submitted the report
-  reason       String // enum: SPAM | HATE_SPEECH | HARASSMENT | INAPPROPRIATE | OTHER
+  reason       String // enum: OFFENSIVE_LANGUAGE | SPAM | INAPPROPRIATE_CONTENT | SCAM_OR_FRAUD | IMPERSONATION | OTHER
   details      String? // optional free-text context
   createdAt    DateTime @default(now())
 

@@ -68,5 +68,12 @@ export function createServiceRoutes(controller: StreamController): IRouter {
     controller.reportComment
   );
 
+  // Reported comments list — owner or community admin/moderator (enforced in service).
+  router.get(
+    "/streams/:id/comments/reports",
+    authenticateAccessToken,
+    controller.listCommentReports
+  );
+
   return router;
 }

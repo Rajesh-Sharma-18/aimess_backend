@@ -726,11 +726,12 @@ const reportComment = {
     description: `Any authenticated viewer can report a live chat comment for moderation review. Idempotent — submitting a second report on the same comment returns the original report unchanged.
 
 **Reason codes:**
-- \`SPAM\` — Repeated or off-topic messages
-- \`HATE_SPEECH\` — Hate or discriminatory language
-- \`HARASSMENT\` — Targeting or threatening another user
-- \`INAPPROPRIATE\` — Violates community guidelines
-- \`OTHER\` — Anything else (add context in \`details\`)
+- \`OFFENSIVE_LANGUAGE\` — Offensive or abusive language
+- \`SPAM\` — Spam or repeated messages
+- \`INAPPROPRIATE_CONTENT\` — Inappropriate content
+- \`SCAM_OR_FRAUD\` — Scam or fraudulent links
+- \`IMPERSONATION\` — Impersonating someone
+- \`OTHER\` — Anything else (**\`details\` is required** for this reason)
 
 \`details\` is optional free-text context (max 500 characters).`,
     security: streamAuth,
@@ -755,10 +756,11 @@ const reportComment = {
               reason: {
                 type: "string" as const,
                 enum: [
+                  "OFFENSIVE_LANGUAGE",
                   "SPAM",
-                  "HATE_SPEECH",
-                  "HARASSMENT",
-                  "INAPPROPRIATE",
+                  "INAPPROPRIATE_CONTENT",
+                  "SCAM_OR_FRAUD",
+                  "IMPERSONATION",
                   "OTHER",
                 ],
                 example: "SPAM",
@@ -786,6 +788,52 @@ const reportComment = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// GET /streams/{id}/comments/reports — List reported comments (owner/mod)
+// ---------------------------------------------------------------------------
+const listCommentReports = {
+  get: {
+    tags: ["Streams"],
+    summary: "List reported comments for a stream",
+    description:
+      "Returns a newest-first, cursor-paged list of comment reports for the stream, each enriched with the reported comment's current content (`comment` is `null` if the comment was deleted). Authorized for the stream owner or a community ADMIN/MODERATOR.",
+    security: streamAuth,
+    parameters: [
+      streamIdParam,
+      {
+        name: "limit",
+        in: "query" as const,
+        required: false,
+        schema: {
+          type: "integer" as const,
+          minimum: 1,
+          maximum: 100,
+          default: 30,
+        },
+        description: "Page size (1-100, default 30).",
+      },
+      {
+        name: "before",
+        in: "query" as const,
+        required: false,
+        schema: { type: "string" as const },
+        description: "Cursor — return reports older than this report id.",
+      },
+    ],
+    responses: {
+      "200": streamOk(
+        "Paged list of reports",
+        "#/components/schemas/StreamCommentReportList"
+      ),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
 export const streamPaths = {
   "/streams": { ...createStream, ...listStreams },
   "/streams/{id}": { ...getStream, ...updateStream, ...deleteStream },
@@ -798,4 +846,5 @@ export const streamPaths = {
   "/streams/{id}/ban/{userId}": unbanUser,
   "/streams/{id}/bans": listBans,
   "/streams/{id}/comments/{commentId}/report": reportComment,
+  "/streams/{id}/comments/reports": listCommentReports,
 };

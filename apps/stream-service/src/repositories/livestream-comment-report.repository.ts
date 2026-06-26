@@ -34,4 +34,19 @@ export class LivestreamCommentReportRepository {
       update: {},
     });
   }
+
+  /** Newest-first cursor page of reports for a stream. */
+  async findByLivestream(
+    livestreamId: string,
+    options: { limit: number; before?: string }
+  ): Promise<LivestreamCommentReport[]> {
+    return this.prisma.livestreamCommentReport.findMany({
+      where: {
+        livestreamId,
+        ...(options.before ? { id: { lt: options.before } } : {}),
+      },
+      orderBy: { id: "desc" },
+      take: options.limit,
+    });
+  }
 }

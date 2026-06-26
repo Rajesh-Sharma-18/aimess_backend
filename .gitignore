@@ -38,3 +38,9 @@ demo-frontend/*.tsx
 .vscode
 .claude
 .serena
+
+stream-app/
+.pnpm-store
+*.mjs
+stream_*.json
+test-ui

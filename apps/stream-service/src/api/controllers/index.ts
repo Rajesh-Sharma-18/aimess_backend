@@ -13,6 +13,7 @@ import {
   banUserSchema,
   setCommentStatusSchema,
   reportCommentSchema,
+  reportsQuerySchema,
 } from "../validators/index.js";
 
 export class StreamController {
@@ -186,5 +187,23 @@ export class StreamController {
     });
 
     res.status(HTTP_STATUS.CREATED).json(new ApiResponse(result));
+  });
+
+  // Owner or community ADMIN/MODERATOR lists reported comments for a stream.
+  listCommentReports = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = reportsQuerySchema.safeParse(req.query);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const result = await this.commentService.listReports({
+      livestreamId: id,
+      requesterId: req.auth.userId,
+      limit: parsed.data.limit,
+      before: parsed.data.before,
+    });
+
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 }
