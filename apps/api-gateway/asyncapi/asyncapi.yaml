@@ -5654,7 +5654,21 @@ components:
         from `GET /communities/mine`. For a newly-added member it is always the
         personal "You joined the community" system message. The client MUST use it
         directly and MUST NOT call Mine API to back-fill a missing last activity.
+
+        **Idempotency / ordering.** Upsert by `communityId`; the newer `addedAt`
+        wins (primary ordering/idempotency key). `eventId` (optional, additive)
+        lets a client also suppress an EXACT duplicate delivery (a reconnect
+        replay or a multi-gateway double-publish reuses the same `eventId`).
       properties:
+        eventId:
+          type: string
+          description: >-
+            Optional stable per-emit identifier (UUID). Additive — clients MAY
+            dedupe an exact duplicate by eventId; the primary idempotency/ordering
+            key remains addedAt (newer wins) + upsert-by-communityId.
+        occurredAt:
+          type: integer
+          description: "Optional epoch ms — when the event was emitted (mirrors addedAt)."
         communityId: { type: string }
         name: { type: string }
         handle: { type: string }

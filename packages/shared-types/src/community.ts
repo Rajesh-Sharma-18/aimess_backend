@@ -137,6 +137,16 @@ export interface CommunityReopenedPayload {
  * round-trip and no page refresh. Idempotent: the client upserts by `communityId`.
  */
 export interface CommunityAddedPayload {
+  /**
+   * Stable per-emit identifier (UUID). OPTIONAL + additive: clients MAY dedupe
+   * repeated deliveries of the SAME logical event by `eventId` (a reconnect
+   * replay or a multi-gateway double-publish re-uses it). The primary ordering /
+   * idempotency key remains `addedAt` (newer wins) + upsert-by-`communityId`;
+   * `eventId` is belt-and-suspenders for exact-duplicate suppression.
+   */
+  eventId?: string;
+  /** Epoch ms — when the event was emitted (server clock). Mirrors `addedAt`. */
+  occurredAt?: number;
   communityId: string;
   name: string;
   handle: string;

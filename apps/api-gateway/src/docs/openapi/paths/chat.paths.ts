@@ -1716,6 +1716,110 @@ const communityUnpinMessage = {
   },
 };
 
+// =============================================================================
+// GET /chat/community/rooms/{roomId}/messages/{messageId}/context
+// =============================================================================
+const communityMessageContext = {
+  get: {
+    tags: ["Chat — Community"],
+    operationId: "getCommunityMessageContext",
+    summary: "Get navigation anchor for a community message",
+    description: [
+      "Returns a compound cursor anchor so the FE can scroll to the pinned message.",
+      "",
+      "**Use case:** tap the pin banner → call this endpoint → use the returned `anchor.beforeCursor` as `?cursor=` when fetching the community message history.",
+      "",
+      "Always returns HTTP 200. When `isAvailable` is `false` the original message has been deleted or does not exist; display a 'message unavailable' placeholder.",
+      "",
+      "Requires community membership.",
+    ].join("\n"),
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "roomId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+        description: "Community room ID (equals communityId).",
+      },
+      {
+        name: "messageId",
+        in: "path",
+        required: true,
+        schema: { type: "string" as const },
+        description: "The message to navigate to.",
+      },
+    ],
+    responses: {
+      "200": {
+        description: "Message context anchor",
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/ApiSuccessResponse" },
+                {
+                  type: "object" as const,
+                  properties: {
+                    data: {
+                      type: "object" as const,
+                      required: ["messageId", "roomId", "isAvailable"],
+                      properties: {
+                        messageId: { type: "string" as const },
+                        roomId: { type: "string" as const },
+                        isAvailable: {
+                          type: "boolean" as const,
+                          description:
+                            "`true` — message exists. `false` — deleted or not found.",
+                        },
+                        anchor: {
+                          type: "object" as const,
+                          nullable: true,
+                          description:
+                            "Present when `isAvailable` is true. Pass `beforeCursor` as `?cursor=` to the community history endpoint.",
+                          properties: {
+                            beforeCursor: {
+                              type: "string" as const,
+                              description:
+                                'Compound `"<createdAt_ms>_<messageId>"` cursor.',
+                            },
+                            afterCursor: {
+                              type: "string" as const,
+                              description:
+                                "Same value as `beforeCursor` (reserved).",
+                            },
+                          },
+                        },
+                        error: {
+                          type: "object" as const,
+                          nullable: true,
+                          description: "Present when `isAvailable` is false.",
+                          properties: {
+                            code: {
+                              type: "string" as const,
+                              example: "MESSAGE_NOT_FOUND",
+                            },
+                            message: {
+                              type: "string" as const,
+                              example: "Message doesn't exist",
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+      "401": unauthorized,
+      "403": forbidden,
+    },
+  },
+};
+
 const communityGetPins = {
   get: {
     tags: ["Chat — Community"],
@@ -2280,6 +2384,8 @@ export const chatPaths = {
     ...communityGetPins,
   },
   "/chat/community/rooms/{roomId}/pins/{messageId}": communityUnpinMessage,
+  "/chat/community/rooms/{roomId}/messages/{messageId}/context":
+    communityMessageContext,
 
   // Private — forward & reactions
   "/chat/private/rooms/{roomId}/messages/{messageId}/forward":
