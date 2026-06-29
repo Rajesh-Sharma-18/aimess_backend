@@ -149,7 +149,6 @@ import {
   publishCommunityCreatedForChatSafe,
   publishCommunityDeletedForChatSafe,
   publishCommunityInviteLinkSharedForChatSafe,
-  publishCommunityMemberMuteRetractedForChatSafe,
   publishCommunityMemberMuteSyncedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
@@ -3701,20 +3700,6 @@ export const communityService = {
       actorId: callerId,
     });
 
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_MUTED",
-      actorId: callerId,
-      targetUserId,
-      // PERSONAL: only the muted member sees this message in their chat timeline.
-      visibleToUserId: targetUserId,
-      extra: {
-        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
-        durationMinutes: durationMinutes ?? null,
-        mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
-      },
-    });
-
     const view = await buildUserSnapshotView(
       {
         username: target.snapshotUsername,
@@ -3794,14 +3779,6 @@ export const communityService = {
       isMuted: false,
       mutedUntil: null,
       actorId: callerId,
-    });
-
-    // Remove the PERSONAL MEMBER_MUTED chat message that appeared only to the
-    // muted member — the deletion IS the "you're unmuted" signal, alongside the
-    // community:member:unmuted socket event that re-enables the composer.
-    publishCommunityMemberMuteRetractedForChatSafe({
-      communityId,
-      userId: targetUserId,
     });
   },
 
@@ -3922,12 +3899,6 @@ export const communityService = {
           isMuted: false,
           mutedUntil: null,
           actorId: "",
-        });
-
-        // Retract the PERSONAL MEMBER_MUTED chat message for the now-unmuted member.
-        publishCommunityMemberMuteRetractedForChatSafe({
-          communityId: row.communityId,
-          userId: row.userId,
         });
       } catch (err) {
         // The row is already deleted (claim won), so the mute IS lifted and the
@@ -7246,7 +7217,26 @@ export const communityService = {
       // Caller specified a particular link — validate it.
       linkRow = await communityRepository.findInviteLinkById(input.linkId);
       if (!linkRow || linkRow.communityId !== communityId) {
-        throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+        // Permanent invitation links have no CommunityInviteLink DB row — their
+        // sentinel linkId equals communityId. Synthesize a compatible row from
+        // the community's invitationCode so downstream code can treat both paths
+        // uniformly (code, isPermanent flag, audit id, etc. all work correctly).
+        if (input.linkId === communityId && community.invitationCode) {
+          linkRow = {
+            id: communityId,
+            code: community.invitationCode,
+            communityId,
+            createdBy: community.adminId,
+            maxUses: null,
+            usedCount: 0,
+            autoApprove: false,
+            expiresAt: null,
+            revokedAt: null,
+            createdAt: community.invitationCodeCreatedAt ?? community.createdAt,
+          } as CommunityInviteLink;
+        } else {
+          throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+        }
       }
       const now = Date.now();
       const isActive =

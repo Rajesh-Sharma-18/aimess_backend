@@ -1940,6 +1940,8 @@ export function createCommunityImpl(
                     username: s.lastMessage.username,
                     message: s.lastMessage.message,
                     dateTime: s.lastMessage.dateTime,
+                    isSystem: s.lastMessage.isSystem,
+                    userId: s.lastMessage.userId,
                   }
                 : undefined,
               // Viewer-private join line ("You joined the community"); sender-less.
@@ -1948,6 +1950,8 @@ export function createCommunityImpl(
                     username: "",
                     message: s.personalLastMessage.message,
                     dateTime: s.personalLastMessage.dateTime,
+                    isSystem: true,
+                    userId: "",
                   }
                 : undefined,
             })),
@@ -2236,15 +2240,73 @@ export function createCommunityImpl(
             roomId: result?.roomId ?? "",
             deleteType: req.deleteType,
           });
-          publishCommunityActivitySafe({
-            communityId: req.communityId,
-            lastMessageAt: new Date().toISOString(),
-            lastMessageId: req.messageId,
-            senderUserId: req.userId,
-            senderUsername: "",
-            messagePreview: "Message deleted",
-            type: "deleted",
-          });
+          // delete-for-everyone: recalculate and broadcast to all members.
+          if (req.deleteType === "forEveryone" && result?.roomId) {
+            const recalc =
+              await deps.communityMessageService.recalculateLastMessageAfterDelete(
+                result.roomId,
+                req.messageId
+              );
+            if (recalc !== null) {
+              publishCommunityUpdatedSafe({
+                redis,
+                communityId: req.communityId,
+                roomId: result.roomId,
+                fetchMembers: () =>
+                  deps.communityMessageService.getActiveMemberIds(
+                    result.roomId
+                  ),
+                senderId: recalc.sentBy,
+                senderName: recalc.senderName,
+                lastMessageId: recalc.prevMessageId ?? "",
+                lastMessageAt: recalc.createdAt.getTime(),
+                preview: {
+                  contentType: normalizeMessageType(recalc.messageType),
+                  text: recalc.preview,
+                },
+              });
+              if (recalc.hasLastMessage) {
+                publishCommunityActivitySafe({
+                  communityId: req.communityId,
+                  lastMessageAt: new Date().toISOString(),
+                  lastMessageId: recalc.prevMessageId ?? "",
+                  senderUserId: recalc.sentBy,
+                  senderUsername: recalc.senderName,
+                  messagePreview: recalc.preview,
+                  type: "message",
+                });
+              }
+            }
+          }
+          // delete-for-me: send a targeted community:updated only to the
+          // deleting user so their list shows the previous visible message.
+          // Shared snapshot and community-service preview are NOT changed.
+          if (req.deleteType !== "forEveryone" && result?.roomId) {
+            const recalc =
+              await deps.communityMessageService.recalculateLastMessageAfterDeleteForMe(
+                result.roomId,
+                result.createdAt,
+                req.userId
+              );
+            // Skip unless the deleted message was the viewer's effective last
+            // visible message (matches the REST controller gate).
+            if (recalc !== null && recalc.wasEffectiveLast) {
+              publishCommunityUpdatedSafe({
+                redis,
+                communityId: req.communityId,
+                roomId: result.roomId,
+                fetchMembers: () => Promise.resolve([req.userId]),
+                senderId: recalc.sentBy,
+                senderName: recalc.senderName,
+                lastMessageId: recalc.prevMessageId ?? "",
+                lastMessageAt: recalc.createdAt.getTime(),
+                preview: {
+                  contentType: normalizeMessageType(recalc.messageType),
+                  text: recalc.preview,
+                },
+              });
+            }
+          }
         } catch (err) {
           logger.error(`gRPC deleteCommunityMessage error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

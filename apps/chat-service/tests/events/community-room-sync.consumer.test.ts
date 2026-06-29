@@ -15,6 +15,7 @@
 
 const deletePersonalJoinMessages = jest.fn(async () => 1);
 const upsert = jest.fn(async () => undefined);
+const setMute = jest.fn(async () => undefined);
 
 // Private-DM repo primitives used by deliverInviteLinkDm (invite-link sharing).
 const findByParticipantsKey = jest.fn();
@@ -50,6 +51,7 @@ jest.mock("../../src/repositories/general-room-message.repository.js", () => ({
 jest.mock("../../src/repositories/room-member.repository.js", () => ({
   RoomMemberRepository: class {
     upsert = upsert;
+    setMute = setMute;
     markAllLeft = jest.fn(async () => undefined);
     findActiveByRoom = jest.fn(async () => []);
   },
@@ -420,5 +422,77 @@ describe("CommunityRoomSyncConsumer — invite-link DM delivery", () => {
     // the create race is swallowed → consumer still acks (no requeue storm).
     expect(fake.channel.ack).toHaveBeenCalledTimes(1);
     expect(fake.channel.nack).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// community.member.mute_synced → mirror moderation mute onto RoomMember so the
+// chat write-path gate can block a muted member locally (no per-message gRPC).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const muteSynced = (data: Record<string, unknown>) =>
+  JSON.stringify({ type: "community.member.mute_synced", data });
+
+describe("CommunityRoomSyncConsumer — moderation mute mirror", () => {
+  beforeEach(() => {
+    setMute.mockClear();
+  });
+
+  it("timed mute → setMute(isMuted=true, mutedUntil=Date) and acks", async () => {
+    const until = "2026-06-21T00:00:00.000Z";
+    const fake = await start();
+    await fake.deliver(
+      muteSynced({
+        communityId: COMMUNITY,
+        userId: USER,
+        isMuted: true,
+        mutedUntil: until,
+      })
+    );
+
+    expect(setMute).toHaveBeenCalledWith(COMMUNITY, USER, {
+      isMuted: true,
+      mutedUntil: new Date(until),
+    });
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
+  });
+
+  it("indefinite mute (no mutedUntil) → setMute(isMuted=true, mutedUntil=null)", async () => {
+    const fake = await start();
+    await fake.deliver(
+      muteSynced({
+        communityId: COMMUNITY,
+        userId: USER,
+        isMuted: true,
+        mutedUntil: null,
+      })
+    );
+    expect(setMute).toHaveBeenCalledWith(COMMUNITY, USER, {
+      isMuted: true,
+      mutedUntil: null,
+    });
+  });
+
+  it("unmute → setMute(isMuted=false, mutedUntil=null)", async () => {
+    const fake = await start();
+    await fake.deliver(
+      muteSynced({
+        communityId: COMMUNITY,
+        userId: USER,
+        isMuted: false,
+        mutedUntil: null,
+      })
+    );
+    expect(setMute).toHaveBeenCalledWith(COMMUNITY, USER, {
+      isMuted: false,
+      mutedUntil: null,
+    });
+  });
+
+  it("ignores an event with no userId (no setMute, still acks)", async () => {
+    const fake = await start();
+    await fake.deliver(muteSynced({ communityId: COMMUNITY, isMuted: true }));
+    expect(setMute).not.toHaveBeenCalled();
+    expect(fake.channel.ack).toHaveBeenCalledTimes(1);
   });
 });

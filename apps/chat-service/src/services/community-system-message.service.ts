@@ -153,11 +153,15 @@ export class CommunitySystemMessageService {
           : {}),
       };
 
+      // For PERSONAL messages the stored text is always seen by the target user —
+      // pass visibleToUserId as the viewer so "You are muted until …" is persisted
+      // instead of the third-person form (which would never be read by anyone else).
       const fallbackText = buildCommunitySystemFallbackText(
         systemMessageType,
         enrichedMetadata,
         actorName,
-        targetName
+        targetName,
+        isPersonal ? (visibleToUserId ?? undefined) : undefined
       );
 
       // ACTOR-LESS lifecycle types ("Community created", "Community photo

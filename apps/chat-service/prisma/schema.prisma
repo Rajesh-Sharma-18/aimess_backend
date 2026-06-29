@@ -380,6 +380,12 @@ model RoomMember {
   leftAt   DateTime?
   bannedAt DateTime?
   banInfo  Json?
+  // Moderation mute mirrored from community-service (community.member.mute_synced).
+  // isMuted = community admin/mod silenced this member; mutedUntil = expiry (null
+  // = indefinite while isMuted). The community-chat write-path gate checks these
+  // locally — no per-message gRPC — with lazy expiry (mutedUntil <= now ⇒ lifted).
+  isMuted    Boolean   @default(false)
+  mutedUntil DateTime?
   lastReadMessageId String?   @db.ObjectId
   lastReadAt        DateTime?
   createdAt DateTime @default(now())

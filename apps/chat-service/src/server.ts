@@ -321,6 +321,7 @@ const startServer = async () => {
 
     const privateRoomService = new PrivateRoomService(
       privateRoomRepo,
+      privateMessageRepo,
       cacheRepo,
       userSnapshotService,
       userServiceClient,
@@ -359,7 +360,8 @@ const startServer = async () => {
       groupMemberRepo,
       groupInviteLinkRepo,
       groupSystemMessageService,
-      redis
+      redis,
+      groupMessageRepo
     );
     const groupMessageService = new GroupMessageService(
       groupMessageRepo,

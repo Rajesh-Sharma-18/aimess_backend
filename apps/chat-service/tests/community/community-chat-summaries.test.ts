@@ -19,8 +19,18 @@ const COMM_OTHER = "c-other";
 
 function buildService(overrides: {
   members: Array<{ roomId: string; lastReadAt: Date | null }>;
-  rooms: Array<{ id: string; lastMessage: unknown }>;
+  rooms: Array<{
+    id: string;
+    lastMessage: unknown;
+    lastMessageId?: string;
+    lastMessageAt?: Date;
+  }>;
   personal: Map<string, { message: string; createdAt: Date }>;
+  hiddenMessageIds?: Set<string>;
+  previousVisibleByRoom?: Map<
+    string,
+    { id: string; messageType: string; message: string; createdAt: Date } | null
+  >;
 }) {
   const memberRepo = {
     findActiveByUserAndRooms: jest.fn().mockResolvedValue(
@@ -36,6 +46,14 @@ function buildService(overrides: {
   const messageRepo = {
     countUnreadBulk: jest.fn().mockResolvedValue({}),
     findLatestPersonalByRooms: jest.fn().mockResolvedValue(overrides.personal),
+    filterHiddenByUser: jest
+      .fn()
+      .mockResolvedValue(overrides.hiddenMessageIds ?? new Set()),
+    findPreviousVisibleForUser: jest
+      .fn()
+      .mockImplementation((roomId: string) =>
+        Promise.resolve(overrides.previousVisibleByRoom?.get(roomId) ?? null)
+      ),
   };
 
   const service = new CommunityMessageService(

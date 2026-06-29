@@ -18,6 +18,10 @@ export interface CommunityChatLastMessage {
   message: string;
   /** epoch ms */
   dateTime: number;
+  /** true => sender-less SYSTEM line; false => "username: message" member line. */
+  isSystem?: boolean;
+  /** sender userId for the member-message shape ("" for SYSTEM / unknown). */
+  userId?: string;
 }
 
 export interface CommunityChatSummary {
@@ -190,6 +194,8 @@ export function createChatClient(): ChatClient {
                   username: s.lastMessage.username ?? "",
                   message: s.lastMessage.message ?? "",
                   dateTime: Number(s.lastMessage.dateTime ?? 0),
+                  isSystem: Boolean(s.lastMessage.isSystem),
+                  userId: s.lastMessage.userId ?? "",
                 }
               : undefined,
           // proto-loader null-fills sub-messages; a real personal line always

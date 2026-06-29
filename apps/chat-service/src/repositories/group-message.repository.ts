@@ -708,4 +708,82 @@ export class GroupMessageRepository {
       })
       .slice(0, params.limit);
   }
+
+  /**
+   * Most recent non-deleted message in a room — used to recalculate the
+   * lastMessage preview after a delete-for-everyone removes the current one.
+   */
+  async findPreviousVisible(roomId: string): Promise<GroupMessage | null> {
+    return this.prisma.groupMessage.findFirst({
+      where: { roomId, isDeleted: false },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  /**
+   * Batch visibility check for the per-user list resolver: of the supplied
+   * message ids, which are hidden from `userId` — either globally deleted
+   * (`isDeleted`) OR personally hidden via delete-for-me (`userId` is an element
+   * of the `deletedForUserIds` ARRAY). Mirrors PrivateMessageRepository
+   * `filterHiddenFromUser` (which uses the `deletedFor` MAP) against the group
+   * ARRAY shape. Single aggregateRaw so list endpoints avoid N+1 hidden-checks.
+   * `roomId` is a plain String column here; ids are matched on `_id` (ObjectId).
+   */
+  async filterHiddenFromUser(
+    messageIds: string[],
+    userId: string
+  ): Promise<Set<string>> {
+    if (!messageIds.length) return new Set();
+    const raw = (await this.prisma.groupMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            _id: { $in: messageIds.map((id) => ({ $oid: id })) },
+            // `deletedForUserIds: userId` matches docs where the ARRAY contains
+            // userId (Mongo scalar-vs-array equality), the mirror of the history
+            // `timelineMatch` filter `{ $ne: userId }`.
+            $or: [{ isDeleted: true }, { deletedForUserIds: userId }],
+          },
+        },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    return new Set(
+      raw
+        .map((d) => (typeof d._id === "string" ? d._id : (d._id?.$oid ?? "")))
+        .filter(Boolean)
+    );
+  }
+
+  /**
+   * Most recent message visible to a specific user — excludes globally-deleted
+   * messages (`isDeleted`) AND messages the user hid for themselves
+   * (`userId` in `deletedForUserIds`). The per-user mirror of `findPreviousVisible`,
+   * used to recompute a viewer's effective last-message preview after a
+   * delete-for-me. `$ne` on the ARRAY matches docs where NO element equals the
+   * user (i.e. not hidden for them) — identical predicate to the group history
+   * `timelineMatch`.
+   */
+  async findPreviousVisibleForUser(
+    roomId: string,
+    userId: string
+  ): Promise<GroupMessage | null> {
+    const raw = (await this.prisma.groupMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId,
+            isDeleted: false,
+            deletedForUserIds: { $ne: userId },
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: 1 },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    if (!raw.length) return null;
+    const id = typeof raw[0]._id === "string" ? raw[0]._id : raw[0]._id?.$oid;
+    if (!id) return null;
+    return this.prisma.groupMessage.findUnique({ where: { id } });
+  }
 }

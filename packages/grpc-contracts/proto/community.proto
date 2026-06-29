@@ -116,6 +116,13 @@ message CommunityChatLastMessage {
   string username = 1;
   string message  = 2;
   int64  dateTime = 3; // epoch ms
+  // True => render sender-less (a complete SYSTEM sentence). False => render as
+  // "username: message" (a normal member message). Lets community-service pick
+  // the correct lastActivity shape when it overlays this per-viewer message.
+  bool   isSystem = 4;
+  // Sender userId for the message shape ("" for SYSTEM / unknown). Backward
+  // compatible: omitted by older callers, defaults to "".
+  string userId   = 5;
 }
 message CommunityChatSummary {
   string communityId        = 1;

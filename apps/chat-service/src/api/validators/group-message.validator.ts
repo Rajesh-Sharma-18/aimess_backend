@@ -137,6 +137,9 @@ export const reactionParamSchema = z.object({
 export const deleteGroupMessageSchema = z.object({
   messageId: z.string().min(4).max(100),
   roomId: z.string().min(4).max(100),
+  // Optional delete scope, mirroring private/community. ABSENT === "forEveryone"
+  // so every existing client (which sends no `type`) keeps its current behavior.
+  type: z.enum(["forMe", "forEveryone"]).optional(),
 });
 
 export const pinGroupMessageSchema = z.object({

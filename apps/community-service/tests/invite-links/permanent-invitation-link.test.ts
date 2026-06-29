@@ -349,8 +349,9 @@ describe("createInviteLink — bare PRIVATE call returns the PERMANENT link (SSO
     expect(link.linkType).toBe("PRIVATE_INVITE");
     expect(link.url).toBe(`${BASE}/+${STORED_CODE}`);
     expect(link.appDeepLink).toBe(`aimess://join?code=${STORED_CODE}`);
-    // Sentinel linkId — NOT a real CommunityInviteLink row.
-    expect(link.linkId).toBe(`permanent:${CID}`);
+    // Permanent links use communityId as linkId (no real CommunityInviteLink row).
+    expect(link.linkId).toBe(CID);
+    expect(link.isPermanent).toBe(true);
     // Permanent links are unlimited, never-expiring, never-revoked, request-to-join.
     expect(link.maxUses).toBeNull();
     expect(link.expiresAt).toBeNull();
@@ -412,8 +413,8 @@ describe("createInviteLink — parameterized call still creates a TEMPORARY link
     expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
     expect(repo.setInvitationCodeOnce).not.toHaveBeenCalled();
     expect(link.maxUses).toBe(5);
-    // A real row id, not the permanent sentinel.
-    expect(link.linkId).not.toBe(`permanent:${CID}`);
+    // A real row id — not the permanent link.
+    expect(link.isPermanent).toBe(false);
     // The temporary link's code is freshly generated, not the stored permanent one.
     expect(link.code).not.toBe(STORED_CODE);
   });
@@ -425,6 +426,6 @@ describe("createInviteLink — parameterized call still creates a TEMPORARY link
 
     expect(repo.createInviteLink).toHaveBeenCalledTimes(1);
     expect(link.expiresAt).not.toBeNull();
-    expect(link.linkId).not.toBe(`permanent:${CID}`);
+    expect(link.isPermanent).toBe(false);
   });
 });

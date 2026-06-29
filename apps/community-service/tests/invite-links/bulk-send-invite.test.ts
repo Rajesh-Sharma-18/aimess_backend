@@ -315,6 +315,50 @@ describe("bulkSendInviteLink — recipient validation + fan-out", () => {
     expect(publishInvite).not.toHaveBeenCalled();
   });
 
+  it("permanent link sentinel (linkId === communityId) → synthesizes row from invitationCode, DM sent", async () => {
+    // Regression: PRIVATE community invite links return linkId === communityId.
+    // findInviteLinkById returns null (no DB row for permanent links), but the
+    // service must fall back to the community's invitationCode rather than throw.
+    const PERM_CODE = "perm_abc123";
+    repo.findById.mockResolvedValue({
+      ...community,
+      invitationCode: PERM_CODE,
+      invitationCodeCreatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      createdAt: new Date("2026-05-01T00:00:00.000Z"),
+    });
+    repo.findInviteLinkById.mockResolvedValue(null);
+
+    const res = await communityService.bulkSendInviteLink(CID, CALLER, {
+      userIds: [UID_A],
+      linkId: CID, // permanent link sentinel: linkId === communityId
+    });
+
+    expect(res.summary).toMatchObject({ sent: 1, failed: 0 });
+    expect(res.sentUserIds).toEqual([UID_A]);
+    expect(publishInvite).toHaveBeenCalledTimes(1);
+    expect(publishInvite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        linkCode: PERM_CODE,
+        communityId: CID,
+        recipientId: UID_A,
+        isPermanent: true,
+      })
+    );
+  });
+
+  it("permanent link sentinel but community has no invitationCode → COMMUNITY_INVITE_LINK_NOT_FOUND", async () => {
+    repo.findInviteLinkById.mockResolvedValue(null);
+    // community fixture has no invitationCode (default beforeEach mock)
+
+    await expect(
+      communityService.bulkSendInviteLink(CID, CALLER, {
+        userIds: [UID_A],
+        linkId: CID,
+      })
+    ).rejects.toThrow("COMMUNITY_INVITE_LINK_NOT_FOUND");
+    expect(publishInvite).not.toHaveBeenCalled();
+  });
+
   // --- Authorization: any ACTIVE member (role-agnostic, state-based) ---
 
   it("a regular ACTIVE MEMBER can bulk-send (no longer MODERATOR-gated)", async () => {

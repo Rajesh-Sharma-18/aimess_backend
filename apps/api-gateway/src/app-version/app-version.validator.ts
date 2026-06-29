@@ -4,7 +4,7 @@ import { parseAppVersion } from "./version-format.js";
 import { APP_PLATFORMS } from "./types.js";
 
 export const checkAppVersionSchema = z.object({
-  platform: z.enum(APP_PLATFORMS),
+  platform: z.string().toLowerCase().pipe(z.enum(APP_PLATFORMS)),
   version: z
     .string()
     .trim()

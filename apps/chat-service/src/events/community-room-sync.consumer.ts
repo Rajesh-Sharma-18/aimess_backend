@@ -93,6 +93,9 @@ interface CommunityRoomSyncEvent {
     userId?: string;
     status?: string;
     role?: string;
+    // member.mute_synced — moderation mute mirror (orthogonal to status/role)
+    isMuted?: boolean;
+    mutedUntil?: string | null;
     // community.status.changed
     communityStatus?: string;
     // community.invite_link_shared
@@ -290,6 +293,28 @@ export class CommunityRoomSyncConsumer {
               );
             }
           }
+          break;
+        }
+
+        case "community.member.mute_synced": {
+          // Mirror a moderation mute/unmute onto RoomMember so the community
+          // write-path gate (send/edit/react/pin) can block a muted member
+          // LOCALLY — no per-message gRPC. Lazy expiry on the read side handles
+          // timed mutes; an explicit unmute (manual or auto) clears the flag.
+          const userId = event.data.userId;
+          if (!userId) break;
+          const isMuted = event.data.isMuted === true;
+          const mutedUntil =
+            isMuted && event.data.mutedUntil
+              ? new Date(event.data.mutedUntil)
+              : null;
+          await this.memberRepo.setMute(communityId, userId, {
+            isMuted,
+            mutedUntil,
+          });
+          logger.debug(
+            `Synced RoomMember mute community=${communityId} user=${userId} isMuted=${isMuted} until=${mutedUntil?.toISOString() ?? "-"}`
+          );
           break;
         }
 

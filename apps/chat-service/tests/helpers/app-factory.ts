@@ -181,6 +181,7 @@ export function buildApp(): BuiltApp {
   // -- Real services wired to mocks --
   const privateRoomService = new PrivateRoomService(
     privateRoomRepo,
+    privateMessageRepo,
     cacheRepo,
     userSnapshotService,
     userServiceClient,
@@ -219,7 +220,8 @@ export function buildApp(): BuiltApp {
     groupMemberRepo,
     groupInviteLinkRepo,
     groupSystemMessageService,
-    redis
+    redis,
+    groupMessageRepo
   );
   const groupMessageService = new GroupMessageService(
     groupMessageRepo,
