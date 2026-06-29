@@ -7,7 +7,7 @@ export const createStreamSchema = z.object({
   description: z.string().max(1000).optional(),
   thumbnail: z.string().url().optional(),
   sourceType: z
-    .enum(["PHONE_CAMERA", "URL", "YOUTUBE"])
+    .enum(["PHONE_CAMERA", "OBS_RTMP", "URL", "YOUTUBE"])
     .default("PHONE_CAMERA"),
   sourceUrl: z.string().min(1).optional(),
 });

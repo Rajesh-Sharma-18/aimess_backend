@@ -13,6 +13,7 @@ import {
 import { startUserProfileUpdatedConsumer } from "./consumers/user-profile-updated.consumer.js";
 import { startCommunityActivityConsumer } from "./consumers/community-activity.consumer.js";
 import { startStreamLifecycleConsumer } from "./consumers/stream-lifecycle.consumer.js";
+import { startStreamLiveConsumer } from "./consumers/stream-live.consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
 import {
   startMuteSweeper,
@@ -98,6 +99,16 @@ async function start() {
     } catch (error) {
       logger.warn(
         "RabbitMQ unavailable on boot — livestream system messages + push will not run until reconnected"
+      );
+      logger.warn(error);
+    }
+
+    try {
+      await startStreamLiveConsumer();
+      logger.info("RabbitMQ consumer ready (stream.live.community.queue)");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable on boot — community stream live indicator sync will not run until reconnected"
       );
       logger.warn(error);
     }

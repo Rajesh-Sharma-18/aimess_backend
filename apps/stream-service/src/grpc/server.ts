@@ -191,6 +191,13 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             status: access.status,
             reason: access.reason,
             canComment: access.canComment,
+            streamStatus: access.streamStatus,
+            title: access.title,
+            description: access.description,
+            thumbnail: access.thumbnail ?? "",
+            creatorId: access.creatorId,
+            hlsUrl: access.hlsUrl ?? "",
+            flvUrl: access.flvUrl ?? "",
           });
         } catch (err) {
           logger.error(`gRPC checkStreamAccess error: ${String(err)}`);

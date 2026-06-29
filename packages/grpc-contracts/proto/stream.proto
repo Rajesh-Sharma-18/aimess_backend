@@ -100,6 +100,15 @@ message CheckStreamAccessResponse {
   string status      = 3; // membership status: ACTIVE|PENDING|...|OWNER|""
   string reason      = 4; // "" | NOT_MEMBER | BANNED | STREAM_NOT_FOUND
   bool   can_comment = 5; // reflects stream.commentStatus; false = chat disabled
+  // Stream snapshot — populated when allowed=true so the gateway can enrich the
+  // join ack without a second round-trip. Clients use this for reconnect recovery.
+  string stream_status = 6; // PENDING | LIVE | ENDED | CANCELLED
+  string title         = 7;
+  string description   = 8;
+  string thumbnail     = 9;  // raw object key; "" if none
+  string creator_id    = 10;
+  string hls_url       = 11; // "" if none (YOUTUBE streams have no SRS ingest)
+  string flv_url       = 12; // "" if none
 }
 
 message GetStreamStatsRequest {

@@ -76,7 +76,7 @@ export async function setupSockets(
     mediaClient
   );
   registerNotifyNamespace(io, notificationClient, notifySub);
-  registerStreamNamespace(io, streamClient, streamSub, pub);
+  registerStreamNamespace(io, streamClient, streamSub, pub, mediaClient);
 
   io.engine.on(
     "connection_error",
