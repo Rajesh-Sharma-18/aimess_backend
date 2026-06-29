@@ -11,6 +11,44 @@ export function resolvePersonDisplayName(
   return String(snapshot.displayName ?? "").trim();
 }
 
+/**
+ * Human-readable mute duration from whole minutes, rendered to match the client
+ * duration picker labels (5m / 10m / 30m / 1h / 6h / 24h / 7d / 30d):
+ *   5 → "5 minutes", 30 → "30 minutes", 60 → "1 hour", 360 → "6 hours",
+ *   1440 → "24 hours", 10080 → "7 days", 43200 → "30 days".
+ * Sub-7-day clean-hour spans stay in HOURS (so 1440 reads "24 hours", not
+ * "1 day"); 7 days and up render in DAYS. Falls back to minutes for odd values.
+ */
+export function formatMuteDuration(minutes: number): string {
+  // 7 days (10080 min) and beyond → days, matching the 7d / 30d presets.
+  if (minutes >= 10080 && minutes % 1440 === 0) {
+    const days = minutes / 1440;
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+  // 1h..< 7d in whole hours → hours, so 24h stays "24 hours".
+  if (minutes >= 60 && minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+/**
+ * Human-readable livestream runtime from whole seconds, Telegram-style:
+ *   5040 → "1h 24m", 3600 → "1h", 1440 → "24m", 45 → "45s", 0 → "0s".
+ * Hours+minutes when ≥ 1h (minutes dropped on the exact hour), minutes when
+ * ≥ 1m, otherwise seconds. Used for the LIVE_STREAM_ENDED system message and
+ * the livestream-ended push body.
+ */
+export function formatStreamDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(s / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${s}s`;
+}
+
 /** "MODERATOR" → "moderator", "ADMIN" → "admin". */
 function roleArticleForm(role: string): string {
   const r = role.toUpperCase();
@@ -66,10 +104,20 @@ export function buildCommunitySystemFallbackText(
     case "COMMUNITY_UPDATED":
       return "Community details updated";
     case "LIVE_STREAM_STARTED":
-      return "Live stream started";
+      // Host-named (Telegram group video-chat parity). "You started …" for the
+      // host's own view; "{host} started …" for everyone else.
+      return isActor
+        ? "You started a livestream"
+        : `${actor} started a livestream`;
     case "LIVE_STREAM_ENDED": {
+      // Stored fallback stays single-line so the community-list preview is clean;
+      // the client composes the richer two-line "…ended the livestream / Duration:
+      // {duration}" from systemMessageType + systemMetadata.duration.
       const duration = ((metadata.duration as string) || "").trim();
-      return duration ? `Live stream ended (${duration})` : "Live stream ended";
+      const lead = isActor
+        ? "You ended the livestream"
+        : `${actor} ended the livestream`;
+      return duration ? `${lead} (${duration})` : lead;
     }
 
     case "ROLE_CHANGED":
@@ -134,9 +182,19 @@ export function buildCommunitySystemFallbackText(
       if (isTarget) return "You were unbanned";
       return `${target} was unbanned`;
 
-    case "MEMBER_MUTED":
-      if (isTarget) return "You were muted";
-      return `${target} was muted`;
+    case "MEMBER_MUTED": {
+      // PERSONAL message — only the muted member ever reads this.
+      // Show the concrete expiry timestamp so the user knows exactly when they
+      // can post again; fall back to "indefinitely" when no expiry was set.
+      const mutedUntilMs = Number(metadata.mutedUntil);
+      if (Number.isFinite(mutedUntilMs) && mutedUntilMs > 0) {
+        const dateStr = new Date(mutedUntilMs).toUTCString();
+        if (isTarget) return `You are muted until ${dateStr}`;
+        return `${target} is muted until ${dateStr}`;
+      }
+      if (isTarget) return "You are muted indefinitely";
+      return `${target} is muted indefinitely`;
+    }
 
     case "MEMBER_UNMUTED":
       if (isTarget) return "You were unmuted";

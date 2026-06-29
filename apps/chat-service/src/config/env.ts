@@ -60,6 +60,7 @@ const envSchema = z.object({
   AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),
   COMMUNITY_GRPC_URL: z.string().default("0.0.0.0:4003"),
   NOTIFICATION_GRPC_URL: z.string().default("0.0.0.0:4006"),
+  STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
   /** user-service REST URL — snapshot fetching fallback. */
   USER_SERVICE_URL: z.string().url().optional(),
   /** auth-service REST URL — fallback account-name resolution. */

@@ -12,6 +12,8 @@ import {
   type CommunityJoinRequestCancelledPayload,
   type CommunityJoinRequestedPayload,
   type CommunityJoinRequestRejectedPayload,
+  type CommunityLivestreamStartedPayload,
+  type CommunityLivestreamEndedPayload,
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
   type CommunityMemberJoinedPayload,
@@ -38,16 +40,21 @@ import {
 
 const COMMUNITY_QUEUE = "community.queue";
 
-/** community.* notifications all gate on the communityEnabled category. */
+/**
+ * community.* notification scaffold. Defaults to the communityEnabled category;
+ * livestream events pass "liveStreamEnabled" so they honor the dedicated
+ * per-user livestream notification toggle.
+ */
 function base(
   type: string,
   communityId: string,
   actorId: string | undefined,
   extra: Record<string, string>,
-  deepLink?: string
+  deepLink?: string,
+  category: PushInput["category"] = "communityEnabled"
 ): Pick<PushInput, "category" | "type" | "actorId" | "deepLink" | "data"> {
   return {
-    category: "communityEnabled",
+    category,
     type,
     actorId,
     deepLink,
@@ -100,6 +107,96 @@ async function handleCommunityEvent(
             actorSnapshot: JSON.stringify(actorSnapshot),
           },
           buildDeepLink("community", p.communityId)
+        ),
+      }));
+      break;
+    }
+
+    case CommunityEvents.LIVESTREAM_STARTED: {
+      const p = data as CommunityLivestreamStartedPayload;
+      if (!p.recipientIds?.length) break;
+      const hostName = p.hostDisplayName || "Someone";
+      const navigation: NotificationNavigation = {
+        screen: "COMMUNITY_LIVESTREAM",
+        communityId: p.communityId,
+        communityName: p.communityName,
+        communityAvatarUrl: p.communityAvatarUrl,
+        communityHandle: p.communityHandle,
+        livestreamId: p.livestreamId,
+      };
+      const actorSnapshot = {
+        userId: p.hostUserId,
+        displayName: p.hostDisplayName,
+        avatarUrl: p.hostAvatarUrl,
+      };
+      await pushToUsers(p.recipientIds, (userId) => ({
+        userId,
+        title: p.communityName,
+        body: `${hostName} started a livestream.`,
+        ...base(
+          type,
+          p.communityId,
+          p.hostUserId,
+          {
+            livestreamId: p.livestreamId,
+            hostUserId: p.hostUserId,
+            hostName,
+            hostAvatarUrl: p.hostAvatarUrl ?? "",
+            communityName: p.communityName,
+            communityHandle: p.communityHandle ?? "",
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
+            navigation: JSON.stringify(navigation),
+            actorSnapshot: JSON.stringify(actorSnapshot),
+          },
+          buildDeepLink("community", p.communityId),
+          "liveStreamEnabled"
+        ),
+      }));
+      break;
+    }
+
+    case CommunityEvents.LIVESTREAM_ENDED: {
+      const p = data as CommunityLivestreamEndedPayload;
+      if (!p.recipientIds?.length) break;
+      const hostName = p.hostDisplayName || "Someone";
+      const navigation: NotificationNavigation = {
+        screen: "COMMUNITY_LIVESTREAM",
+        communityId: p.communityId,
+        communityName: p.communityName,
+        communityAvatarUrl: p.communityAvatarUrl,
+        communityHandle: p.communityHandle,
+        livestreamId: p.livestreamId,
+      };
+      const actorSnapshot = {
+        userId: p.hostUserId,
+        displayName: p.hostDisplayName,
+        avatarUrl: p.hostAvatarUrl,
+      };
+      await pushToUsers(p.recipientIds, (userId) => ({
+        userId,
+        title: p.communityName,
+        body: p.duration
+          ? `${hostName} ended the livestream (${p.duration}).`
+          : `${hostName} ended the livestream.`,
+        ...base(
+          type,
+          p.communityId,
+          p.hostUserId,
+          {
+            livestreamId: p.livestreamId,
+            hostUserId: p.hostUserId,
+            hostName,
+            hostAvatarUrl: p.hostAvatarUrl ?? "",
+            duration: p.duration ?? "",
+            durationSeconds: String(p.durationSeconds ?? 0),
+            communityName: p.communityName,
+            communityHandle: p.communityHandle ?? "",
+            communityAvatarUrl: p.communityAvatarUrl ?? "",
+            navigation: JSON.stringify(navigation),
+            actorSnapshot: JSON.stringify(actorSnapshot),
+          },
+          buildDeepLink("community", p.communityId),
+          "liveStreamEnabled"
         ),
       }));
       break;

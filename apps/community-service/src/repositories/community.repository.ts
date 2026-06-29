@@ -705,6 +705,20 @@ export const communityRepository = {
     return rows.map((r) => r.userId);
   },
 
+  /**
+   * userIds in this community who have DISABLED livestream notifications
+   * (CommunityMuteSetting.streamEnabled === false). Used to exclude them from the
+   * livestream push fan-out. Default (no setting row) is enabled, so absence ⇒
+   * eligible.
+   */
+  async findStreamMutedMemberIds(communityId: string): Promise<string[]> {
+    const rows = await prisma.communityMuteSetting.findMany({
+      where: { communityId, streamEnabled: false },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
+  },
+
   async listMembers(params: {
     communityId: string;
     status: CommunityMemberStatus;
@@ -2325,6 +2339,32 @@ export const communityRepository = {
     return null;
   },
 
+  /**
+   * Batch-fetch the caller's active MODERATION mutes across a set of communities
+   * (e.g. the page returned by `listMine`). Returns a Map keyed by communityId;
+   * only active rows (mutedUntil null OR in the future) are included. One indexed
+   * query for the whole page — avoids N+1 in the mine list.
+   */
+  async findCallerMutesByCommunityIds(
+    userId: string,
+    communityIds: string[]
+  ): Promise<Map<string, { mutedUntil: Date | null }>> {
+    if (communityIds.length === 0)
+      return new Map<string, { mutedUntil: Date | null }>();
+    const now = new Date();
+    const rows = await prisma.communityMemberMute.findMany({
+      where: {
+        userId,
+        communityId: { in: communityIds },
+        OR: [{ mutedUntil: null }, { mutedUntil: { gt: now } }],
+      },
+      select: { communityId: true, mutedUntil: true },
+    });
+    return new Map(
+      rows.map((r) => [r.communityId, { mutedUntil: r.mutedUntil }])
+    );
+  },
+
   /** Batch-fetch active mutes for a set of userIds in one community page. */
   async findActiveMemberMutesByUserIds(communityId: string, userIds: string[]) {
     if (userIds.length === 0)
@@ -2404,6 +2444,54 @@ export const communityRepository = {
       prisma.communityMemberMute.count({ where }),
     ]);
     return { rows, total };
+  },
+
+  /**
+   * A batch of TIMED mutes whose `mutedUntil` has already passed — the work-list
+   * for the auto-unmute sweeper. Indefinite mutes (`mutedUntil === null`) are
+   * never returned (they only lift on a manual unmute). Oldest-expiry first so a
+   * backlog drains deterministically.
+   */
+  findExpiredMemberMutes(params: { now: Date; limit: number }) {
+    return prisma.communityMemberMute.findMany({
+      where: { mutedUntil: { not: null, lte: params.now } },
+      orderBy: { mutedUntil: "asc" },
+      take: params.limit,
+    });
+  },
+
+  /**
+   * Atomically claims a single expired mute for the sweeper: deletes the row
+   * ONLY if it still exists AND is still expired. Returns the number of rows
+   * deleted (1 = this caller won the claim and should fire the unmute
+   * side-effects; 0 = another instance/redelivery already handled it, or the
+   * member was re-muted in the meantime). This is the exactly-once guarantee
+   * that makes the per-minute sweep safe under multiple service instances.
+   */
+  async claimExpiredMemberMute(id: string, now: Date): Promise<number> {
+    const res = await prisma.communityMemberMute.deleteMany({
+      where: { id, mutedUntil: { not: null, lte: now } },
+    });
+    return res.count;
+  },
+
+  /**
+   * Keyset page through ALL currently-active mutes across every community —
+   * used once at startup to re-mirror existing mutes into chat-service after the
+   * RoomMember mute fields were introduced (migration backfill). Ordered by id
+   * so `afterId` gives a stable cursor.
+   */
+  listActiveMutesPage(params: { now: Date; afterId?: string; limit: number }) {
+    return prisma.communityMemberMute.findMany({
+      where: {
+        AND: [
+          { OR: [{ mutedUntil: null }, { mutedUntil: { gt: params.now } }] },
+          ...(params.afterId ? [{ id: { gt: params.afterId } }] : []),
+        ],
+      },
+      orderBy: { id: "asc" },
+      take: params.limit,
+    });
   },
 
   // ---------------------------------------------------------------------------

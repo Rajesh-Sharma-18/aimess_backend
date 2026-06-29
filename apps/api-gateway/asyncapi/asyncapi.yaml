@@ -272,6 +272,15 @@ channels:
         { $ref: "#/components/messages/CommunityMemberRemoved" }
       communityMemberUnbanned:
         { $ref: "#/components/messages/CommunityMemberUnbanned" }
+      communityMemberMuted:
+        { $ref: "#/components/messages/CommunityMemberMuted" }
+      communityMemberUnmuted:
+        { $ref: "#/components/messages/CommunityMemberUnmuted" }
+      # livestream real-time (server -> client)
+      communityStreamStarted:
+        { $ref: "#/components/messages/CommunityStreamStarted" }
+      communityStreamEnded:
+        { $ref: "#/components/messages/CommunityStreamEnded" }
       # metadata + roster real-time (server -> client)
       communityMetaUpdated:
         { $ref: "#/components/messages/CommunityMetaUpdated" }
@@ -1108,6 +1117,16 @@ operations:
     summary: "community:member:unbanned — admin lifted a member's ban"
     messages:
       [{ $ref: "#/channels/community/messages/communityMemberUnbanned" }]
+  community.onMemberMuted:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:member:muted — admin/moderator muted a member (also sent to the muted member's user:<id>)"
+    messages: [{ $ref: "#/channels/community/messages/communityMemberMuted" }]
+  community.onMemberUnmuted:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:member:unmuted — mute lifted manually or auto-expired (also sent to user:<id>)"
+    messages: [{ $ref: "#/channels/community/messages/communityMemberUnmuted" }]
 
   # ======================================= /community parity (client -> server)
   community.messageRead:
@@ -2642,7 +2661,7 @@ components:
               oldRole: MEMBER
               newRole: MODERATOR
         - name: community_system_live_started
-          summary: "Community lifecycle system message — live stream started (SENDER-LESS)"
+          summary: "Community lifecycle system message — livestream started (HOST-NAMED)"
           payload:
             id: "684abc123def456789012350"
             messageId: "684abc123def456789012350"
@@ -2653,9 +2672,9 @@ components:
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "Live stream started"
+              text: "Jane Doe started a livestream"
               files: []
-            message: "Live stream started"
+            message: "Jane Doe started a livestream"
             clientMessageId: ""
             reactions: []
             serverTs: 1750000400000
@@ -2665,8 +2684,9 @@ components:
             systemMetadata:
               actorUserId: user_xyz
               actorName: Jane Doe
+              livestreamId: "684abc123def4567890123ff"
         - name: community_system_live_ended
-          summary: "Community lifecycle system message — live stream ended with duration (SENDER-LESS)"
+          summary: "Community lifecycle system message — livestream ended with duration (HOST-NAMED)"
           payload:
             id: "684abc123def456789012351"
             messageId: "684abc123def456789012351"
@@ -2677,9 +2697,9 @@ components:
             senderAvatar: ""
             contentType: SYSTEM
             content:
-              text: "Live stream ended (2 hours 15 minutes)"
+              text: "Jane Doe ended the livestream (1h 24m)"
               files: []
-            message: "Live stream ended (2 hours 15 minutes)"
+            message: "Jane Doe ended the livestream (1h 24m)"
             clientMessageId: ""
             reactions: []
             serverTs: 1750008500000
@@ -2689,7 +2709,9 @@ components:
             systemMetadata:
               actorUserId: user_xyz
               actorName: Jane Doe
-              duration: "2 hours 15 minutes"
+              livestreamId: "684abc123def4567890123ff"
+              duration: "1h 24m"
+              durationSeconds: 5040
         - name: community_system_joined
           summary: >-
             PERSONAL system message — the joining user joined the community.
@@ -2863,6 +2885,92 @@ components:
             userId: "user_def456"
             actorId: "user_admin001"
             updatedAt: 1749465800000
+    CommunityMemberMuted:
+      name: "community:member:muted"
+      title: "community:member:muted"
+      summary: "An admin/moderator muted a member (moderation mute — the member keeps READ access but cannot post). Broadcast to community:<id> (every member's roster badge) AND to the muted member's own user:<id> channel (multi-device composer disable, no refetch)."
+      payload: { $ref: "#/components/schemas/CommunityMemberMutedPayload" }
+      examples:
+        - name: Muted for 24 hours
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            memberId: "user_def456"
+            isMuted: true
+            mutedUntil: 1749552200000
+            actorId: "user_mod001"
+            updatedAt: 1749465800000
+        - name: Muted indefinitely
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            memberId: "user_def456"
+            isMuted: true
+            mutedUntil: null
+            actorId: "user_admin001"
+            updatedAt: 1749465800000
+    CommunityMemberUnmuted:
+      name: "community:member:unmuted"
+      title: "community:member:unmuted"
+      summary: 'A member''s mute was lifted — manual unmute by an admin/moderator OR automatic expiry by the sweeper (actorId is "" for an auto-unmute). Same fan-out as community:member:muted.'
+      payload: { $ref: "#/components/schemas/CommunityMemberUnmutedPayload" }
+      examples:
+        - name: Unmuted by a moderator
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            memberId: "user_def456"
+            isMuted: false
+            mutedUntil: null
+            actorId: "user_mod001"
+            updatedAt: 1749465810000
+        - name: Auto-unmuted on expiry
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            memberId: "user_def456"
+            isMuted: false
+            mutedUntil: null
+            actorId: ""
+            updatedAt: 1749552200000
+    CommunityStreamStarted:
+      name: "community:stream:started"
+      title: "community:stream:started"
+      summary: "A livestream went LIVE in a community. Emitted by stream-service to community:<id> AND relayed to the lightweight community-typing:<id> room (auto-joined by every member) so the live banner / list badge appears WITHOUT opening the chat. Additive over the legacy { communityId, streamId, title, hlsUrl } shape. activeLivestreamCount is the LIVE-only count after this stream went live (capped at 5); hasActiveLivestream is always true here."
+      payload: { $ref: "#/components/schemas/CommunityStreamStartedPayload" }
+      examples:
+        - name: A member started a livestream
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            livestreamId: "684abc123def4567890123ff"
+            streamId: "684abc123def4567890123ff"
+            host:
+              userId: "user_xyz"
+              displayName: "Jane Doe"
+              avatarUrl: "communities/avatars/jane.jpg"
+            title: "Friday Q&A"
+            hlsUrl: "https://cdn.aimess.com/hls/684abc.m3u8"
+            status: LIVE
+            startedAt: 1750000400000
+            activeLivestreamCount: 1
+            hasActiveLivestream: true
+    CommunityStreamEnded:
+      name: "community:stream:ended"
+      title: "community:stream:ended"
+      summary: "A livestream ENDED in a community. Same fan-out as community:stream:started. Unlike the legacy behavior (fired only when the LAST stream ended), this fires on EVERY end carrying the updated count — drive banner visibility off hasActiveLivestream/activeLivestreamCount, NOT the event's presence. hasActiveLivestream stays true while other streams remain live and flips false only when the final stream ends (activeLivestreamCount === 0)."
+      payload: { $ref: "#/components/schemas/CommunityStreamEndedPayload" }
+      examples:
+        - name: The last livestream ended
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            livestreamId: "684abc123def4567890123ff"
+            streamId: "684abc123def4567890123ff"
+            host:
+              userId: "user_xyz"
+              displayName: "Jane Doe"
+              avatarUrl: "communities/avatars/jane.jpg"
+            status: ENDED
+            endedAt: 1750008500000
+            duration: "1h 24m"
+            durationSeconds: 5040
+            activeLivestreamCount: 0
+            hasActiveLivestream: false
     CommunityMetaUpdated:
       name: "community:meta:updated"
       title: "community:meta:updated"
@@ -4923,9 +5031,11 @@ components:
               COMMUNITY_DESCRIPTION_UPDATED → "Community description updated"
               COMMUNITY_BANNER_UPDATED      → "Community banner updated"
               COMMUNITY_UPDATED             → "Community details updated"
-              LIVE_STREAM_STARTED           → "Live stream started"
-              LIVE_STREAM_ENDED             → "Live stream ended ({{metadata.duration}})"
-                                              or "Live stream ended" when duration absent
+              LIVE_STREAM_STARTED           → "{{actorName}} started a livestream"
+                                              or "You started a livestream" (viewer=host)
+              LIVE_STREAM_ENDED             → "{{actorName}} ended the livestream ({{metadata.duration}})"
+                                              or "… ended the livestream" when duration absent
+                                              or "You ended the livestream …" (viewer=host)
               ROLE_CHANGED (bystander)      → "{{targetName}} is now a moderator/admin/member"
               ROLE_CHANGED (viewer=target)  → "You are now a moderator/admin/member"
               MEMBER_REMOVED                → "{{targetName}} was removed"
@@ -4966,18 +5076,25 @@ components:
 
             ACTOR-LESS lifecycle types — COMMUNITY_CREATED, COMMUNITY_NAME_UPDATED,
             COMMUNITY_DESCRIPTION_UPDATED, COMMUNITY_AVATAR_UPDATED,
-            COMMUNITY_BANNER_UPDATED, COMMUNITY_UPDATED, LIVE_STREAM_STARTED,
-            LIVE_STREAM_ENDED — describe the EVENT, not the actor. They carry NO
-            `actorUserId`/`actorName` (and never `creatorId`/`creatorName`); the
-            actor must NOT be rendered. Show the canonical text for every viewer
-            (e.g. "Community created" — NEVER "{name} created the community").
+            COMMUNITY_BANNER_UPDATED, COMMUNITY_UPDATED — describe the EVENT, not
+            the actor. They carry NO `actorUserId`/`actorName` (and never
+            `creatorId`/`creatorName`); the actor must NOT be rendered. Show the
+            canonical text for every viewer (e.g. "Community created" — NEVER
+            "{name} created the community").
+
+            LIVE_STREAM_STARTED / LIVE_STREAM_ENDED are HOST-NAMED (Telegram group
+            video-chat parity): they DO carry `actorUserId`/`actorName` (the host)
+            and render "{actorName} started/ended a livestream" — "You …" when the
+            viewer is the host.
 
             Per-type extra fields:
 
             COMMUNITY_CREATED:       { communityName }
             COMMUNITY_NAME_UPDATED:  { newName } — the rename target (NOT newCommunityName)
-            LIVE_STREAM_ENDED:       { duration? } — human-readable runtime,
-                                     e.g. "2 hours 15 minutes"; absent if unknown
+            LIVE_STREAM_STARTED:     { livestreamId } + actorUserId/actorName (host)
+            LIVE_STREAM_ENDED:       { livestreamId, duration?, durationSeconds? }
+                                     + actorUserId/actorName (host). `duration` is a
+                                     human-readable runtime, e.g. "1h 24m"
             ROLE_CHANGED /
              MEMBER_ROLE_CHANGED:    { targetUserId, targetName, oldRole, newRole }
                                      — derive "promoted" vs "demoted" from role ranks
@@ -5807,6 +5924,126 @@ components:
         actorId: { type: string, description: "The admin who lifted the ban." }
         updatedAt: { type: integer, description: "Epoch ms." }
       required: [communityId, userId, actorId, updatedAt]
+    CommunityMemberMutedPayload:
+      type: object
+      description: "Server → client. A member was muted by moderation (can read, cannot post). Sent to community:<id> and the muted member's user:<id>."
+      properties:
+        communityId: { type: string }
+        memberId: { type: string, description: "The muted member's userId." }
+        isMuted:
+          type: boolean
+          enum: [true]
+          description: "Always true for this event (self-describing payload)."
+        mutedUntil:
+          type: integer
+          nullable: true
+          description: "Epoch ms when the mute expires; null = indefinite."
+        actorId:
+          type: string
+          description: 'The admin/moderator who muted ("" for a system action).'
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required: [communityId, memberId, isMuted, mutedUntil, actorId, updatedAt]
+    CommunityMemberUnmutedPayload:
+      type: object
+      description: "Server → client. A member's moderation mute was lifted (manual or auto-expiry). Sent to community:<id> and the member's user:<id>."
+      properties:
+        communityId: { type: string }
+        memberId: { type: string, description: "The unmuted member's userId." }
+        isMuted:
+          type: boolean
+          enum: [false]
+          description: "Always false for this event."
+        mutedUntil:
+          type: integer
+          nullable: true
+          description: "Always null for an unmute."
+        actorId:
+          type: string
+          description: 'Who lifted the mute ("" for an automatic/system unmute).'
+        updatedAt: { type: integer, description: "Epoch ms." }
+      required: [communityId, memberId, isMuted, mutedUntil, actorId, updatedAt]
+    CommunityStreamStartedPayload:
+      type: object
+      description: "Server → client. A livestream went LIVE in a community. Relayed to community:<id> AND community-typing:<id> (every member)."
+      properties:
+        communityId: { type: string }
+        livestreamId: { type: string }
+        streamId: { type: string, description: "Legacy alias of livestreamId." }
+        host:
+          type: object
+          properties:
+            userId: { type: string }
+            displayName: { type: string }
+            avatarUrl:
+              type: string
+              nullable: true
+              description: "Object key or resolved URL; resolve on read. May be null."
+          required: [userId, displayName, avatarUrl]
+        title: { type: string, nullable: true }
+        hlsUrl:
+          {
+            type: string,
+            nullable: true,
+            description: "Primary playback URL (HLS).",
+          }
+        status: { type: string, enum: [LIVE] }
+        startedAt: { type: integer, description: "Epoch ms." }
+        activeLivestreamCount:
+          type: integer
+          description: "LIVE-only count after this stream went live (0–5, capped)."
+        hasActiveLivestream: { type: boolean, enum: [true] }
+      required:
+        [
+          communityId,
+          livestreamId,
+          streamId,
+          host,
+          status,
+          startedAt,
+          activeLivestreamCount,
+          hasActiveLivestream,
+        ]
+    CommunityStreamEndedPayload:
+      type: object
+      description: "Server → client. A livestream ENDED in a community. Fires on EVERY end with the updated count — drive banner visibility off hasActiveLivestream/activeLivestreamCount."
+      properties:
+        communityId: { type: string }
+        livestreamId: { type: string }
+        streamId: { type: string, description: "Legacy alias of livestreamId." }
+        host:
+          type: object
+          properties:
+            userId: { type: string }
+            displayName: { type: string }
+            avatarUrl: { type: string, nullable: true }
+          required: [userId, displayName, avatarUrl]
+        status: { type: string, enum: [ENDED] }
+        endedAt: { type: integer, description: "Epoch ms." }
+        duration:
+          {
+            type: string,
+            description: 'Human-readable runtime, e.g. "1h 24m".',
+          }
+        durationSeconds: { type: integer }
+        activeLivestreamCount:
+          type: integer
+          description: "Remaining LIVE count (0 when the final stream ended)."
+        hasActiveLivestream:
+          type: boolean
+          description: "Stays true while other streams run; false only when the last ends."
+      required:
+        [
+          communityId,
+          livestreamId,
+          streamId,
+          host,
+          status,
+          endedAt,
+          duration,
+          durationSeconds,
+          activeLivestreamCount,
+          hasActiveLivestream,
+        ]
     CommunityMetaDto:
       type: object
       description: "Canonical post-update community metadata snapshot. Apply verbatim to the detail/header; patch the list row from it. `avatar` is a resolved presigned URL."

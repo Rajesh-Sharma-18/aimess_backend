@@ -13,6 +13,8 @@ import {
   type CommunityJoinRequestCancelledPayload,
   type CommunityJoinRequestedPayload,
   type CommunityJoinRequestRejectedPayload,
+  type CommunityLivestreamStartedPayload,
+  type CommunityLivestreamEndedPayload,
   type CommunityMemberAddedPayload,
   type CommunityMemberBannedPayload,
   type CommunityMemberJoinedPayload,
@@ -237,4 +239,31 @@ export function publishCommunityMemberJoinedSafe(
   data: CommunityMemberJoinedPayload
 ): void {
   publishSafe(CommunityEvents.MEMBER_JOINED, data, "community.member_joined");
+}
+
+/**
+ * Published when a livestream goes LIVE in a community (enriched from the raw
+ * stream-service `stream.started` event by the stream-lifecycle consumer).
+ * notifications-service fans out a "{host} started a livestream" push to every
+ * eligible recipient in the payload.
+ */
+export function publishCommunityLivestreamStartedSafe(
+  data: CommunityLivestreamStartedPayload
+): void {
+  publishSafe(
+    CommunityEvents.LIVESTREAM_STARTED,
+    data,
+    "community.livestream_started"
+  );
+}
+
+/** Published when a livestream ENDS — mirrors the started payload + duration. */
+export function publishCommunityLivestreamEndedSafe(
+  data: CommunityLivestreamEndedPayload
+): void {
+  publishSafe(
+    CommunityEvents.LIVESTREAM_ENDED,
+    data,
+    "community.livestream_ended"
+  );
 }

@@ -4405,7 +4405,29 @@ export const openApiSchemas = {
       isLive: {
         type: "boolean",
         description:
-          "True when the community has an active livestream. Phase 1 stub — always false until stream-service ships.",
+          "True when the community has at least one active (LIVE) livestream right now. Alias of hasActiveLivestream.",
+      },
+      hasActiveLivestream: {
+        type: "boolean",
+        description:
+          "Spec-aligned alias of isLive — true when ≥1 livestream is LIVE.",
+      },
+      activeLivestreamCount: {
+        type: "integer",
+        description:
+          "Number of currently-LIVE streams (0–5, capped). Equals liveStreams.length.",
+      },
+      isMemberMuted: {
+        type: "boolean",
+        description:
+          "True when the CALLER is currently under a moderation mute in this community (admin/moderator silenced them — they can still read but cannot post). Distinct from isMuted which is the caller's notification mute (push silence).",
+      },
+      memberMutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "ISO-8601 expiry of the caller's moderation mute; null = indefinite mute (when isMemberMuted) or not muted.",
       },
       lastActivity: { $ref: "#/components/schemas/CommunityLastActivity" },
       createdAt: { type: "string", format: "date-time" },
@@ -4429,6 +4451,8 @@ export const openApiSchemas = {
       "role",
       "isMuted",
       "muteUntil",
+      "isMemberMuted",
+      "memberMutedUntil",
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",
@@ -4436,6 +4460,8 @@ export const openApiSchemas = {
       "moderationStatus",
       "status",
       "isLive",
+      "hasActiveLivestream",
+      "activeLivestreamCount",
       "lastActivity",
       "createdAt",
       "updatedAt",
@@ -4702,7 +4728,16 @@ export const openApiSchemas = {
       isLive: {
         type: "boolean",
         description:
-          "True when the community has an active livestream right now. Phase 1 stub — always false until stream-service ships.",
+          "True when the community has at least one active (LIVE) livestream right now. Alias of hasActiveLivestream.",
+      },
+      hasActiveLivestream: {
+        type: "boolean",
+        description:
+          "Spec-aligned alias of isLive — true when ≥1 livestream is LIVE.",
+      },
+      activeLivestreamCount: {
+        type: "integer",
+        description: "Number of currently-LIVE streams (0–5, capped).",
       },
       lastActivityAt: {
         type: "integer",
@@ -4715,6 +4750,18 @@ export const openApiSchemas = {
         default: 0,
         description:
           "Unread community-chat messages for the caller based on their last-read state. 0 when fully read or chat-service is unavailable.",
+      },
+      isMemberMuted: {
+        type: "boolean",
+        description:
+          "True when the CALLER is currently under a moderation mute in this community. Distinct from isMuted which is the caller's notification mute (push silence).",
+      },
+      memberMutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "ISO-8601 expiry of the caller's moderation mute; null = indefinite mute (when isMemberMuted) or not muted.",
       },
       lastActivity: {
         allOf: [{ $ref: "#/components/schemas/CommunityLastActivity" }],
@@ -4736,11 +4783,15 @@ export const openApiSchemas = {
       "isJoined",
       "isMuted",
       "muteUntil",
+      "isMemberMuted",
+      "memberMutedUntil",
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",
       "moderationStatus",
       "isLive",
+      "hasActiveLivestream",
+      "activeLivestreamCount",
       "lastActivityAt",
       "lastActivity",
       "unreadMessageCount",
@@ -4900,7 +4951,16 @@ export const openApiSchemas = {
       isLive: {
         type: "boolean",
         description:
-          "True when the community has an active livestream right now. Phase 1 stub — always false until stream-service ships.",
+          "True when the community has at least one active (LIVE) livestream right now. Alias of hasActiveLivestream.",
+      },
+      hasActiveLivestream: {
+        type: "boolean",
+        description:
+          "Spec-aligned alias of isLive — true when ≥1 livestream is LIVE.",
+      },
+      activeLivestreamCount: {
+        type: "integer",
+        description: "Number of currently-LIVE streams (0–5, capped).",
       },
     },
     required: [
@@ -4923,6 +4983,8 @@ export const openApiSchemas = {
       "announcementEnabled",
       "moderationStatus",
       "isLive",
+      "hasActiveLivestream",
+      "activeLivestreamCount",
       "createdAt",
     ],
   },
@@ -5068,6 +5130,31 @@ export const openApiSchemas = {
         description:
           "Operator-supplied ban reason; null when not banned or no reason given.",
       },
+      isMuted: {
+        type: "boolean",
+        description:
+          "True while a moderation mute is currently effective for this member (admin/moderator silenced them — they can still read but cannot post). Distinct from the per-user notification mute on CommunityData.isMuted.",
+      },
+      mutedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "When the active mute was applied; null when not muted.",
+      },
+      mutedBy: {
+        type: "string",
+        format: "uuid",
+        nullable: true,
+        description:
+          "User ID of the moderator/admin who muted the member; null when not muted.",
+      },
+      mutedUntil: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "When the mute expires; null = indefinite mute OR not muted (use isMuted to disambiguate).",
+      },
     },
     required: [
       "userId",
@@ -5081,6 +5168,10 @@ export const openApiSchemas = {
       "bannedAt",
       "bannedBy",
       "banReason",
+      "isMuted",
+      "mutedAt",
+      "mutedBy",
+      "mutedUntil",
     ],
   },
   CommunityMembersResponseData: {
@@ -6287,7 +6378,9 @@ export const openApiSchemas = {
     properties: {
       linkId: {
         type: "string",
-        description: "MongoDB ObjectId of the invite-link record.",
+        description:
+          "Identifier for this link. For regular (temporary) links this is the MongoDB ObjectId of the CommunityInviteLink row. " +
+          "For permanent links (`isPermanent: true`) this equals `communityId` — there is no separate DB row.",
         example: "6843e1a2b5c3d4e5f6a7b8c9",
       },
       code: {
@@ -6374,6 +6467,15 @@ export const openApiSchemas = {
         description: "Computed: not revoked, not expired, not exhausted.",
         example: true,
       },
+      isPermanent: {
+        type: "boolean",
+        description:
+          "True when this is the community's permanent invitation link (stored on the Community row, not a CommunityInviteLink row). " +
+          "Permanent links have no expiry, no usage cap, and `linkId` equals `communityId`. " +
+          "Returned when POST /communities/:id/invite-links is called with an empty body on a PRIVATE community. " +
+          "Clients should check this flag rather than parsing `linkId`.",
+        example: false,
+      },
     },
     required: [
       "linkId",
@@ -6390,6 +6492,7 @@ export const openApiSchemas = {
       "revokedAt",
       "createdAt",
       "isActive",
+      "isPermanent",
     ],
     example: {
       linkId: "6843e1a2b5c3d4e5f6a7b8c9",
@@ -6406,6 +6509,7 @@ export const openApiSchemas = {
       revokedAt: null,
       createdAt: "2026-06-24T10:00:00.000Z",
       isActive: true,
+      isPermanent: false,
     },
   },
   InviteLinkPreviewData: {
@@ -7525,7 +7629,20 @@ export const openApiSchemas = {
       desc: { type: "string", nullable: true },
       memberNumber: { type: "integer" },
       onlineNember: { type: "integer" },
-      isLive: { type: "boolean" },
+      isLive: {
+        type: "boolean",
+        description:
+          "True when ≥1 livestream is LIVE (alias of hasActiveLivestream).",
+      },
+      hasActiveLivestream: {
+        type: "boolean",
+        description:
+          "True when the community has at least one LIVE stream right now.",
+      },
+      activeLivestreamCount: {
+        type: "integer",
+        description: "Number of currently-LIVE streams (0–5, capped).",
+      },
       tags: { type: "array", items: { type: "string" } },
       status: { type: "string" },
       lastMessageAt: {

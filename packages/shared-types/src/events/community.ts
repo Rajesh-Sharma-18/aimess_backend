@@ -24,6 +24,11 @@ export const CommunityEvents = {
   REPORT_ACTIONED: "community.report_actioned",
   MEMBER_LEFT: "community.member_left",
   MEMBER_JOINED: "community.member_joined",
+  // Livestream lifecycle (community-service stream-lifecycle consumer →
+  // notifications-service). Distinct from the raw stream-service `stream.*`
+  // events: these are the enriched, recipient-resolved notification triggers.
+  LIVESTREAM_STARTED: "community.livestream_started",
+  LIVESTREAM_ENDED: "community.livestream_ended",
 } as const;
 
 export type CommunityEventType =
@@ -157,13 +162,58 @@ export type CommunityClosedNotifyPayload = CommunityEventBase & {
 
 /** Deep-link navigation object embedded in community notification payloads. */
 export interface NotificationNavigation {
-  screen: "COMMUNITY_REQUESTS" | "COMMUNITY_DETAILS" | "COMMUNITY_CHAT";
+  screen:
+    | "COMMUNITY_REQUESTS"
+    | "COMMUNITY_DETAILS"
+    | "COMMUNITY_CHAT"
+    | "COMMUNITY_LIVESTREAM";
   communityId: string;
   communityName: string;
   communityAvatarUrl: string | null;
   communityHandle: string | null;
   requestId?: string;
+  /** Set on COMMUNITY_LIVESTREAM navigation — the stream to open. */
+  livestreamId?: string;
 }
+
+/**
+ * A livestream went LIVE in a community. Published by the community-service
+ * stream-lifecycle consumer (enriched from the raw `stream.started` event) for
+ * push fan-out. `recipientIds` is the pre-resolved eligible audience (active
+ * members minus the host minus anyone who muted livestream notifications for
+ * this community); the consumer still applies per-user category + quiet-hours
+ * gating before sending.
+ */
+export type CommunityLivestreamStartedPayload = CommunityEventBase & {
+  livestreamId: string;
+  /** The member who started the stream (excluded from recipients). */
+  hostUserId: string;
+  hostDisplayName: string;
+  hostAvatarUrl: string | null;
+  /** Stream title, when set. */
+  title?: string;
+  communityName: string;
+  communityHandle: string | null;
+  communityAvatarUrl: string | null;
+  /** Pre-resolved eligible audience — notify each. */
+  recipientIds: string[];
+};
+
+/** A livestream ENDED in a community. Mirrors the started payload + duration. */
+export type CommunityLivestreamEndedPayload = CommunityEventBase & {
+  livestreamId: string;
+  hostUserId: string;
+  hostDisplayName: string;
+  hostAvatarUrl: string | null;
+  title?: string;
+  communityName: string;
+  communityHandle: string | null;
+  communityAvatarUrl: string | null;
+  /** Human-readable runtime, e.g. "1h 24m". */
+  duration: string;
+  durationSeconds: number;
+  recipientIds: string[];
+};
 
 export type CommunityJoinRequestedPayload = CommunityEventBase & {
   /** Requester. */

@@ -71,6 +71,102 @@ export interface CommunityMemberUnbannedPayload {
 }
 
 /**
+ * Server → client. A member was muted by an admin/moderator (moderation mute —
+ * the member can still read/receive but cannot post). Broadcast to the
+ * `community:<id>` room (so every member's roster badge flips) AND to the muted
+ * member's own `user:<id>` channel (so the composer disables on every device
+ * with no refetch). Timestamps are epoch ms (wire convention). This is distinct
+ * from the per-user notification mute (`CommunityMuteSetting`).
+ */
+export interface CommunityMemberMutedSocketPayload {
+  communityId: string;
+  /** The muted member's userId. */
+  memberId: string;
+  isMuted: true;
+  /** Epoch ms when the mute expires; null = indefinite. */
+  mutedUntil: number | null;
+  /** The admin/moderator who muted ("" for a system auto-action). */
+  actorId: string;
+  updatedAt: number; // epoch ms
+}
+
+/**
+ * Server → client. A member's moderation mute was lifted — either a manual
+ * unmute by an admin/moderator or an automatic expiry by the sweeper. Same
+ * fan-out as {@link CommunityMemberMutedSocketPayload}.
+ */
+export interface CommunityMemberUnmutedSocketPayload {
+  communityId: string;
+  /** The unmuted member's userId. */
+  memberId: string;
+  isMuted: false;
+  mutedUntil: null;
+  /** Who lifted the mute ("" for an automatic/system unmute). */
+  actorId: string;
+  updatedAt: number; // epoch ms
+}
+
+/**
+ * Server → client. A livestream went LIVE in a community (`community:stream:started`).
+ * Emitted by stream-service to the `community:<id>` room AND relayed to the
+ * lightweight `community-typing:<id>` room (auto-joined by every member) so the
+ * live banner / list badge appears for connected members who have NOT opened the
+ * chat. Timestamps are epoch ms. `status` stays "LIVE" (the canonical stream enum
+ * value). `activeLivestreamCount` is the community's LIVE-only count AFTER this
+ * stream went live, clamped to the 5-stream cap; `hasActiveLivestream` is always
+ * true here. Additive over the legacy `{ communityId, streamId, title, hlsUrl }`
+ * payload — older listeners that read only those keys keep working.
+ */
+export interface CommunityStreamStartedSocketPayload {
+  communityId: string;
+  /** Canonical id of the stream (also mirrored as `streamId` for legacy clients). */
+  livestreamId: string;
+  /** @deprecated legacy alias of `livestreamId`. */
+  streamId: string;
+  host: {
+    userId: string;
+    displayName: string;
+    avatarUrl: string | null;
+  };
+  /** Stream title, when set. */
+  title: string | null;
+  /** Primary playback URL (HLS), when available. */
+  hlsUrl: string | null;
+  status: "LIVE";
+  startedAt: number; // epoch ms
+  activeLivestreamCount: number;
+  hasActiveLivestream: true;
+}
+
+/**
+ * Server → client. A livestream ENDED in a community (`community:stream:ended`).
+ * Same fan-out as {@link CommunityStreamStartedSocketPayload}. Unlike the legacy
+ * behavior (which only fired when the LAST stream ended), this now fires on EVERY
+ * stream end carrying the updated count — drive banner visibility off
+ * `hasActiveLivestream`/`activeLivestreamCount`, NOT the mere presence of the
+ * event. `hasActiveLivestream` stays true while OTHER streams remain live and
+ * flips false only when the final stream ends (`activeLivestreamCount === 0`).
+ */
+export interface CommunityStreamEndedSocketPayload {
+  communityId: string;
+  livestreamId: string;
+  /** @deprecated legacy alias of `livestreamId`. */
+  streamId: string;
+  host: {
+    userId: string;
+    displayName: string;
+    avatarUrl: string | null;
+  };
+  status: "ENDED";
+  endedAt: number; // epoch ms
+  /** Human-readable runtime, e.g. "1h 24m". */
+  duration: string;
+  durationSeconds: number;
+  activeLivestreamCount: number;
+  hasActiveLivestream: boolean;
+}
+
+/**
  * Canonical post-update community metadata snapshot carried by
  * `community:meta:updated`. The client applies this verbatim to the detail/header
  * screen and patches the matching list row (name/avatar/description/memberCount).

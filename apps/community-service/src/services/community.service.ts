@@ -16,8 +16,10 @@ import type {
   CommunityClosedPayload,
   CommunityMemberAddedPayload,
   CommunityMemberJoinedSocketPayload,
+  CommunityMemberMutedSocketPayload,
   CommunityMemberRemovedPayload,
   CommunityMemberUnbannedPayload,
+  CommunityMemberUnmutedSocketPayload,
   CommunityMemberUpdatedPayload,
   CommunityMetaDto,
   CommunityMetaUpdatedPayload,
@@ -147,6 +149,8 @@ import {
   publishCommunityCreatedForChatSafe,
   publishCommunityDeletedForChatSafe,
   publishCommunityInviteLinkSharedForChatSafe,
+  publishCommunityMemberMuteRetractedForChatSafe,
+  publishCommunityMemberMuteSyncedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
   publishCommunityVisibilityChangedForChatSafe,
@@ -608,7 +612,8 @@ async function toCommunityData(
   myRole: CommunityMemberRole | null,
   muteRow: MuteRowFragment,
   joinRequest: { id: string; status: CommunityJoinReqStatus } | null = null,
-  liveStreams: LiveStreamSummary[] = []
+  liveStreams: LiveStreamSummary[] = [],
+  callerModerationMute: { mutedUntil: Date | null } | null = null
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -645,12 +650,14 @@ async function toCommunityData(
         : null,
     ...muteFields(muteRow),
     moderationStatus: community.moderationStatus,
-    isLive: liveStreams.length > 0,
+    ...livestreamFields(liveStreams.length),
     liveStreams,
     status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
     lastActivity: buildLastActivity(community),
+    isMemberMuted: callerModerationMute !== null,
+    memberMutedUntil: callerModerationMute?.mutedUntil?.toISOString() ?? null,
   };
 }
 
@@ -697,6 +704,27 @@ function muteFields(muteRow: MuteRowFragment): {
   };
 }
 
+/** Platform cap on concurrent LIVE streams per community (see stream-service). */
+const MAX_ACTIVE_LIVESTREAMS = 5;
+
+/**
+ * Derive the list/detail livestream fields from a community's LIVE stream count.
+ * `isLive` is retained for backward compatibility (=== hasActiveLivestream); the
+ * count is clamped to the platform cap so the wire never reports more than 5.
+ */
+function livestreamFields(liveCount: number): {
+  isLive: boolean;
+  hasActiveLivestream: boolean;
+  activeLivestreamCount: number;
+} {
+  const count = Math.min(Math.max(0, liveCount), MAX_ACTIVE_LIVESTREAMS);
+  return {
+    isLive: count > 0,
+    hasActiveLivestream: count > 0,
+    activeLivestreamCount: count,
+  };
+}
+
 /** Map a community row to the discovery/browse DTO (resolves avatar URL). */
 async function toDiscoverItem(
   community: {
@@ -721,7 +749,7 @@ async function toDiscoverItem(
   muteRow: MuteRowFragment,
   isJoined: boolean,
   hasRequested: boolean,
-  isLive = false,
+  liveCount = 0,
   viewerId?: string
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
@@ -744,7 +772,7 @@ async function toDiscoverItem(
     isJoined,
     hasRequested,
     ...muteFields(muteRow),
-    isLive,
+    ...livestreamFields(liveCount),
     moderationStatus: community.moderationStatus,
     status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.getTime(),
@@ -796,6 +824,13 @@ async function toMemberData(member: {
     mutedAt: member.mutedAt ? member.mutedAt.toISOString() : null,
     mutedBy: member.mutedBy ?? null,
     mutedUntil: member.mutedUntil ? member.mutedUntil.toISOString() : null,
+    // Single-field convenience flag (Phase 8): true while a moderation mute is
+    // effective. Callers that don't populate the mute fields (most mutation
+    // responses) get `false` — the authoritative mute view is the member roster
+    // (`GET /:id/members`), the muted-members list, and the mute socket events.
+    isMuted:
+      member.mutedAt != null &&
+      (member.mutedUntil == null || member.mutedUntil.getTime() > Date.now()),
   };
 }
 
@@ -1073,6 +1108,7 @@ function toInviteLinkData(
     revokedAt: row.revokedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     isActive,
+    isPermanent: false,
   };
 }
 
@@ -1112,7 +1148,8 @@ function toPermanentInvitationLinkData(community: {
  * permanent community link without duplicating the rest of the join logic.
  *
  * Key invariants for permanent links:
- *  - `linkId` is a sentinel `"permanent:<communityId>"` — NOT a real DB row id
+ *  - `linkId` equals `communityId` (no real DB row exists for the permanent link)
+ *  - `isPermanent: true` → clients should use this flag to detect permanent links, not parse linkId
  *  - `maxUses: null` → unlimited
  *  - `expiresAt: null` → never expires
  *  - `revokedAt: null` → never revoked
@@ -1130,7 +1167,7 @@ function toPermanentLinkAsInviteLinkData(community: {
 }): CommunityInviteLinkData {
   const share = resolveCommunityShareLink(community, community.invitationCode);
   return {
-    linkId: `permanent:${community.id}`,
+    linkId: community.id,
     code: community.invitationCode,
     url: share.url,
     appDeepLink: share.appDeepLink,
@@ -1146,6 +1183,7 @@ function toPermanentLinkAsInviteLinkData(community: {
       community.invitationCodeCreatedAt ?? community.createdAt
     ).toISOString(),
     isActive: true,
+    isPermanent: true,
   };
 }
 
@@ -1217,15 +1255,15 @@ const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
 };
 
 /**
- * Bulk-check which of the given communityIds currently have a LIVE stream.
- * Always degrades gracefully (empty set on stream-service failure — the gRPC
- * client already falls back, so every community shows isLive=false).
+ * Bulk LIVE-only stream count per community for the mine + discover lists. One
+ * batched gRPC call backs both `isLive` (count > 0) and `activeLivestreamCount`.
+ * Degrades to an empty map (→ count 0, isLive false) on stream-service failure.
  */
-async function fetchLiveCommunityIds(
+async function fetchLiveStreamCounts(
   communityIds: string[]
-): Promise<Set<string>> {
-  if (!communityIds.length) return new Set();
-  return getStreamClient().getActiveCommunityIds(communityIds);
+): Promise<Map<string, number>> {
+  if (!communityIds.length) return new Map();
+  return getStreamClient().getActiveStreamCounts(communityIds);
 }
 
 /**
@@ -1412,21 +1450,27 @@ export const communityService = {
         ? membership.role
         : null;
 
-    // Fetch mute row, join request, and live streams in parallel.
-    const [muteRow, joinRequest, liveStreams] = await Promise.all([
-      communityRepository.findMuteByUserAndCommunity(callerId, id),
-      myRole === null
-        ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
-        : Promise.resolve(null),
-      fetchCommunityLiveStreams(id),
-    ]);
+    // Fetch notification mute row, join request, live streams, and caller's
+    // moderation mute (silenced-by-moderator) in parallel.
+    const [muteRow, joinRequest, liveStreams, callerModerationMute] =
+      await Promise.all([
+        communityRepository.findMuteByUserAndCommunity(callerId, id),
+        myRole === null
+          ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
+          : Promise.resolve(null),
+        fetchCommunityLiveStreams(id),
+        myRole !== null
+          ? communityRepository.findActiveMemberMute(id, callerId)
+          : Promise.resolve(null),
+      ]);
 
     return toCommunityData(
       community,
       myRole,
       muteRow,
       joinRequest,
-      liveStreams
+      liveStreams,
+      callerModerationMute
     );
   },
 
@@ -2043,13 +2087,16 @@ export const communityService = {
       .map((row) => row.lastActivityUserId)
       .filter((id): id is string => Boolean(id));
 
-    // Bulk-fetch chat enrichment, mute settings, live sender names, and live status in parallel.
-    const [chatMap, muteMap, senderNameMap, liveSet] = await Promise.all([
-      fetchChatEnrichment(userId, communityIds),
-      loadMuteMap(userId, communityIds),
-      communityRepository.getDisplayNamesByUserIds(senderIds),
-      fetchLiveCommunityIds(communityIds),
-    ]);
+    // Bulk-fetch chat enrichment, notification mute settings, moderation mutes,
+    // live sender names, and live status in parallel.
+    const [chatMap, muteMap, modMuteMap, senderNameMap, liveCountMap] =
+      await Promise.all([
+        fetchChatEnrichment(userId, communityIds),
+        loadMuteMap(userId, communityIds),
+        communityRepository.findCallerMutesByCommunityIds(userId, communityIds),
+        communityRepository.getDisplayNamesByUserIds(senderIds),
+        fetchLiveStreamCounts(communityIds),
+      ]);
 
     const communities: CommunityListItem[] = await Promise.all(
       pageRows.map(async (row) => {
@@ -2101,9 +2148,12 @@ export const communityService = {
           unreadMessageCount: chat.unreadMessageCount,
           lastActivity,
           ...muteFields(muteMap.get(row.id) ?? null),
-          isLive: liveSet.has(row.id),
+          ...livestreamFields(liveCountMap.get(row.id) ?? 0),
           moderationStatus: row.moderationStatus,
           status: communityAccessPolicy.deriveStatus(row),
+          isMemberMuted: modMuteMap.has(row.id),
+          memberMutedUntil:
+            modMuteMap.get(row.id)?.mutedUntil?.toISOString() ?? null,
         };
       })
     );
@@ -2187,15 +2237,16 @@ export const communityService = {
 
     const communityIds = rows.map((row) => row.id);
 
-    // Batch-load mute rows, pending join requests, and live status in parallel.
-    const [muteByCommunityId, pendingRequestSet, liveSet] = await Promise.all([
-      loadMuteMap(userId, communityIds),
-      communityRepository.findPendingRequestedCommunityIds(
-        userId,
-        communityIds
-      ),
-      fetchLiveCommunityIds(communityIds),
-    ]);
+    // Batch-load mute rows, pending join requests, and live counts in parallel.
+    const [muteByCommunityId, pendingRequestSet, liveCountMap] =
+      await Promise.all([
+        loadMuteMap(userId, communityIds),
+        communityRepository.findPendingRequestedCommunityIds(
+          userId,
+          communityIds
+        ),
+        fetchLiveStreamCounts(communityIds),
+      ]);
 
     // Build a fast lookup for membership: used by the mine-search alias
     // (includeJoined=true). Public discover always has isJoined=false.
@@ -2210,7 +2261,7 @@ export const communityService = {
           muteByCommunityId.get(row.id) ?? null,
           memberSet.has(row.id),
           pendingRequestSet.has(row.id),
-          liveSet.has(row.id),
+          liveCountMap.get(row.id) ?? 0,
           userId
         )
       )
@@ -2747,6 +2798,8 @@ export const communityService = {
     actorId: string;
     targetUserId?: string;
     extra?: Record<string, unknown>;
+    /** For PERSONAL subtypes (e.g. MEMBER_MUTED): the userId who should see the message. */
+    visibleToUserId?: string;
   }): void {
     // Telegram silent-kick parity: never post moderation removal/ban lines to the
     // chat timeline (they pile up across remove→rejoin cycles and the victim sees
@@ -2763,7 +2816,79 @@ export const communityService = {
       },
       triggeredByUserId: args.actorId,
       eventAt: new Date().toISOString(),
+      ...(args.visibleToUserId
+        ? { visibleToUserId: args.visibleToUserId }
+        : {}),
     });
+  },
+
+  /**
+   * Broadcasts a moderation MUTE/UNMUTE state change to every consumer that
+   * needs it — the single source of truth for "this member's mute changed":
+   *   1. mirrors the new state into chat-service's RoomMember (drives the
+   *      write-path gate, no per-message gRPC), and
+   *   2. emits the realtime `community:member:muted` / `:unmuted` socket event
+   *      to BOTH the community room (every member's roster badge) AND the
+   *      affected member's own `user:<id>` channel (multi-device composer
+   *      enable/disable with no refetch).
+   *
+   * Used by manual mute, manual unmute, AND the auto-unmute sweeper, so the wire
+   * payload is byte-identical regardless of trigger. Best-effort: a Redis hiccup
+   * never fails the originating moderation request (the chat mirror is already
+   * fire-and-forget via RabbitMQ).
+   *
+   * @param actorId The admin/moderator who acted; "" for an automatic/system unmute.
+   */
+  async _publishMuteStateChange(args: {
+    communityId: string;
+    targetUserId: string;
+    isMuted: boolean;
+    mutedUntil: Date | null;
+    actorId: string;
+  }): Promise<void> {
+    const { communityId, targetUserId, isMuted, mutedUntil, actorId } = args;
+
+    // 1. Mirror into chat-service RoomMember (fire-and-forget RabbitMQ).
+    publishCommunityMemberMuteSyncedForChatSafe({
+      communityId,
+      userId: targetUserId,
+      isMuted,
+      mutedUntil: mutedUntil ? mutedUntil.toISOString() : null,
+    });
+
+    // 2. Realtime socket fan-out (epoch ms on the wire).
+    const updatedAt = Date.now();
+    const event = isMuted
+      ? "community:member:muted"
+      : "community:member:unmuted";
+    const payload = isMuted
+      ? ({
+          communityId,
+          memberId: targetUserId,
+          isMuted: true,
+          mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
+          actorId,
+          updatedAt,
+        } satisfies CommunityMemberMutedSocketPayload)
+      : ({
+          communityId,
+          memberId: targetUserId,
+          isMuted: false,
+          mutedUntil: null,
+          actorId,
+          updatedAt,
+        } satisfies CommunityMemberUnmutedSocketPayload);
+
+    try {
+      await Promise.all([
+        publishCommunityRoomEvent(redis, communityId, event, payload),
+        publishChatUserEvent(redis, targetUserId, event, payload),
+      ]);
+    } catch (err) {
+      logger.warn(
+        `${event} broadcast failed community=${communityId} target=${targetUserId}: ${String(err)}`
+      );
+    }
   },
 
   /**
@@ -3507,15 +3632,7 @@ export const communityService = {
       );
     }
 
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_UNBANNED",
-      actorId: callerId,
-      targetUserId,
-      extra: {
-        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
-      },
-    });
+    // NOTE: no system message emitted — mirrors the silent MEMBER_BANNED policy.
 
     return toMemberData(updated);
   },
@@ -3575,13 +3692,26 @@ export const communityService = {
       mutedUntil: mutedUntil?.toISOString() ?? null,
     });
 
+    // Mirror into chat-service (write-path gate) + realtime socket fan-out.
+    await this._publishMuteStateChange({
+      communityId,
+      targetUserId,
+      isMuted: true,
+      mutedUntil,
+      actorId: callerId,
+    });
+
     this.emitMemberSystemMessage({
       communityId,
       systemMessageType: "MEMBER_MUTED",
       actorId: callerId,
       targetUserId,
+      // PERSONAL: only the muted member sees this message in their chat timeline.
+      visibleToUserId: targetUserId,
       extra: {
         targetName: target.snapshotDisplayName || target.snapshotUsername || "",
+        durationMinutes: durationMinutes ?? null,
+        mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
       },
     });
 
@@ -3624,7 +3754,7 @@ export const communityService = {
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
 
-    const [existing, targetMember] = await Promise.all([
+    const [existing, _targetMember] = await Promise.all([
       communityRepository.findMemberMute(communityId, targetUserId),
       communityRepository.findMemberByUserId(communityId, targetUserId),
     ]);
@@ -3656,17 +3786,22 @@ export const communityService = {
       targetUserId,
     });
 
-    this.emitMemberSystemMessage({
+    // Mirror unmute into chat-service (lifts the write-path gate) + realtime
+    // socket fan-out (re-enables the composer on every device, no refetch).
+    await this._publishMuteStateChange({
       communityId,
-      systemMessageType: "MEMBER_UNMUTED",
-      actorId: callerId,
       targetUserId,
-      extra: {
-        targetName:
-          targetMember?.snapshotDisplayName ||
-          targetMember?.snapshotUsername ||
-          "",
-      },
+      isMuted: false,
+      mutedUntil: null,
+      actorId: callerId,
+    });
+
+    // Remove the PERSONAL MEMBER_MUTED chat message that appeared only to the
+    // muted member — the deletion IS the "you're unmuted" signal, alongside the
+    // community:member:unmuted socket event that re-enables the composer.
+    publishCommunityMemberMuteRetractedForChatSafe({
+      communityId,
+      userId: targetUserId,
     });
   },
 
@@ -3726,6 +3861,83 @@ export const communityService = {
     }
 
     return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  /**
+   * Auto-unmute sweep — called every minute by the mute-sweeper job. Finds TIMED
+   * mutes whose `mutedUntil` has passed and, for each one it can ATOMICALLY claim
+   * (so the side-effects fire exactly once even across multiple service instances
+   * or RabbitMQ redeliveries), runs the same unmute side-effects as a manual
+   * unmute EXCEPT the push notification — a timer lapsing must not ping the user
+   * at an arbitrary hour (Telegram parity, product decision):
+   *   - audit MEMBER_UNMUTED (metadata.source = "auto")
+   *   - mirror the unmute into chat-service + emit `community:member:unmuted`
+   *   - post the "X was unmuted" system message
+   *
+   * Note: enforcement correctness does NOT depend on this sweep — chat-service
+   * applies lazy local expiry the instant `mutedUntil` passes. The sweep exists
+   * to deliver the realtime signal (composer re-enable, system line) + audit and
+   * to garbage-collect the expired row. Idempotent + batched.
+   *
+   * @returns how many mutes were actually expired this call (drain until short).
+   */
+  async expireDueMutes(limit: number): Promise<number> {
+    const now = new Date();
+    const rows = await communityRepository.findExpiredMemberMutes({
+      now,
+      limit,
+    });
+    if (rows.length === 0) return 0;
+
+    let expired = 0;
+    for (const row of rows) {
+      // Exactly-once: only the instance that deletes the row fires side-effects.
+      const claimed = await communityRepository.claimExpiredMemberMute(
+        row.id,
+        now
+      );
+      if (claimed !== 1) continue;
+      expired++;
+
+      try {
+        const member = await communityRepository.findMemberByUserId(
+          row.communityId,
+          row.userId
+        );
+        const _targetName =
+          member?.snapshotDisplayName || member?.snapshotUsername || "";
+
+        await this.recordAudit({
+          communityId: row.communityId,
+          actorId: "system",
+          action: "MEMBER_UNMUTED",
+          targetUserId: row.userId,
+          metadata: { source: "auto" },
+        });
+
+        // Lift the chat write-gate + realtime composer re-enable (NO push).
+        await this._publishMuteStateChange({
+          communityId: row.communityId,
+          targetUserId: row.userId,
+          isMuted: false,
+          mutedUntil: null,
+          actorId: "",
+        });
+
+        // Retract the PERSONAL MEMBER_MUTED chat message for the now-unmuted member.
+        publishCommunityMemberMuteRetractedForChatSafe({
+          communityId: row.communityId,
+          userId: row.userId,
+        });
+      } catch (err) {
+        // The row is already deleted (claim won), so the mute IS lifted and the
+        // chat lazy-expiry keeps the member un-gated; only the broadcast failed.
+        logger.warn(
+          `auto-unmute side-effects failed community=${row.communityId} user=${row.userId}: ${String(err)}`
+        );
+      }
+    }
+    return expired;
   },
 
   // ---------------------------------------------------------------------------
@@ -3985,7 +4197,8 @@ export const communityService = {
             muteMap.get(community.id) ?? null,
             isJoined,
             pendingRequestSet.has(community.id),
-            false,
+            // Favorites list does not enrich live status (parity with prior behavior).
+            0,
             callerId
           );
           return { ...base, likedAt: likedAtByCommunityId.get(community.id)! };

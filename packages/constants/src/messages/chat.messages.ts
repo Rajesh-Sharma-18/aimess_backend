@@ -225,6 +225,10 @@ export const CHAT_MESSAGES = {
     vi: "Bạn đã bị cấm khỏi phòng này",
     en: "You are banned from this room",
   },
+  CHAT_MUTED_IN_COMMUNITY: {
+    vi: "Bạn đang bị tắt tiếng trong cộng đồng này và không thể gửi tin nhắn",
+    en: "You are muted in this community and cannot post messages",
+  },
 
   // --- Friendship gate ---
   CHAT_FRIENDSHIP_REQUIRED: {

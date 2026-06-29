@@ -146,6 +146,33 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
       })();
     },
 
+    // GetActiveStreamCountsByCommunityIds — LIVE-only stream count per community.
+    getActiveStreamCountsByCommunityIds: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { communityIds?: string[] };
+          const counts =
+            await deps.livestreamService.getActiveStreamCountsByCommunityIds(
+              Array.isArray(req.communityIds) ? req.communityIds : []
+            );
+          callback(null, {
+            counts: counts.map((c) => ({
+              communityId: c.communityId,
+              count: c.count,
+            })),
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC getActiveStreamCountsByCommunityIds error: ${String(err)}`
+          );
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // CheckStreamAccess — join gate: ACTIVE membership (when required) + not banned.
     checkStreamAccess: (
       call: grpc.ServerUnaryCall<unknown, unknown>,

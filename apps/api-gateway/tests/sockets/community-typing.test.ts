@@ -163,6 +163,41 @@ describe("typing:start / typing:stop — dual-room broadcast contract", () => {
   });
 });
 
+describe("livestream events — typing-room broadcast contract", () => {
+  // community.ns.ts relays community:stream:started / community:stream:ended to
+  // BOTH community:<id> AND community-typing:<id> (the TYPING_ROOM_BROADCAST_EVENTS
+  // set) so the live banner / list badge appears (started) and disappears (ended)
+  // for members who haven't opened the chat — they are only in the lightweight
+  // typing room. Mirror of the set in community.ns.ts; keep in sync.
+  const TYPING_ROOM_BROADCAST_EVENTS = new Set([
+    "community:member:joined",
+    "community:member:updated",
+    "community:member:removed",
+    "community:member:muted",
+    "community:member:unmuted",
+    "community:stream:started",
+    "community:stream:ended",
+  ]);
+
+  it("community:stream:started reaches the typing room (banner appears)", () => {
+    expect(TYPING_ROOM_BROADCAST_EVENTS.has("community:stream:started")).toBe(
+      true
+    );
+  });
+
+  it("community:stream:ended reaches the typing room (banner disappears)", () => {
+    expect(TYPING_ROOM_BROADCAST_EVENTS.has("community:stream:ended")).toBe(
+      true
+    );
+  });
+
+  it("a normal community:message:new stays chat-open-only (not in the set)", () => {
+    expect(TYPING_ROOM_BROADCAST_EVENTS.has("community:message:new")).toBe(
+      false
+    );
+  });
+});
+
 describe("typing:start — sender exclusion contract", () => {
   it("sender exclusion is enforced via socket.to(room), not community.to(room)", () => {
     // socket.to(room1).to(room2).emit(...) excludes the sending socket.

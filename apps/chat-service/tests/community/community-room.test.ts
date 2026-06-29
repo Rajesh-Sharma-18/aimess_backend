@@ -65,6 +65,68 @@ describe("GET /community/rooms (public list)", () => {
   });
 });
 
+describe("GET /community/rooms — livestream enrichment", () => {
+  it("attaches hasActiveLivestream + activeLivestreamCount per room", async () => {
+    mocks.generalRoomRepo.findActiveRooms.mockResolvedValue([
+      { id: "room-1", name: "Live One", lastMessageAt: new Date(1) },
+      { id: "room-2", name: "Quiet", lastMessageAt: new Date(1) },
+    ]);
+    mocks.generalRoomRepo.countActiveRooms.mockResolvedValue(2);
+    mocks.streamCountsClient.getActiveStreamCounts.mockResolvedValue(
+      new Map([["room-1", 3]])
+    );
+
+    const res = await request(app).get(`${BASE}/rooms`);
+
+    expect(res.status).toBe(200);
+    const rooms = res.body.data.data as Array<Record<string, unknown>>;
+    const r1 = rooms.find((r) => r.id === "room-1");
+    const r2 = rooms.find((r) => r.id === "room-2");
+    expect(r1).toMatchObject({
+      hasActiveLivestream: true,
+      activeLivestreamCount: 3,
+    });
+    expect(r2).toMatchObject({
+      hasActiveLivestream: false,
+      activeLivestreamCount: 0,
+    });
+    // One batched gRPC call for the whole page — no N+1.
+    expect(
+      mocks.streamCountsClient.getActiveStreamCounts
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it("clamps the count to the 5-stream cap", async () => {
+    mocks.generalRoomRepo.findActiveRooms.mockResolvedValue([
+      { id: "room-1", name: "Live One", lastMessageAt: new Date(1) },
+    ]);
+    mocks.generalRoomRepo.countActiveRooms.mockResolvedValue(1);
+    mocks.streamCountsClient.getActiveStreamCounts.mockResolvedValue(
+      new Map([["room-1", 99]])
+    );
+
+    const res = await request(app).get(`${BASE}/rooms`);
+    expect(res.body.data.data[0].activeLivestreamCount).toBe(5);
+  });
+
+  it("degrades to 0 when stream-service is unavailable (fail-open)", async () => {
+    mocks.generalRoomRepo.findActiveRooms.mockResolvedValue([
+      { id: "room-1", name: "Live One", lastMessageAt: new Date(1) },
+    ]);
+    mocks.generalRoomRepo.countActiveRooms.mockResolvedValue(1);
+    mocks.streamCountsClient.getActiveStreamCounts.mockRejectedValue(
+      new Error("stream-service down")
+    );
+
+    const res = await request(app).get(`${BASE}/rooms`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.data[0]).toMatchObject({
+      hasActiveLivestream: false,
+      activeLivestreamCount: 0,
+    });
+  });
+});
+
 describe("GET /community/rooms/search (public)", () => {
   it("POSITIVE: returns search hits", async () => {
     mocks.generalRoomRepo.searchRooms.mockResolvedValue([

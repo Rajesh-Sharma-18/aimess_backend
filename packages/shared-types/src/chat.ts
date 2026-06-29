@@ -109,10 +109,23 @@ export interface MemberRoleChangedMetadata {
   newRole: string;
 }
 
+export interface LivestreamSystemMetadata {
+  /** Normalized actor key — compare against currentUserId to render "You" vs actorName. */
+  actorUserId: string;
+  actorName: string;
+  /** The livestream this message refers to. */
+  livestreamId?: string;
+  /** LIVE_STREAM_ENDED only — human-readable runtime, e.g. "1h 24m". */
+  duration?: string;
+  /** LIVE_STREAM_ENDED only — runtime in whole seconds. */
+  durationSeconds?: number;
+}
+
 export type SystemMessageMetadata =
   | CommunityCreatedMetadata
   | CommunityUpdatedMetadata
-  | MemberRoleChangedMetadata;
+  | MemberRoleChangedMetadata
+  | LivestreamSystemMetadata;
 
 export interface ReactionUserDto {
   userId: string;

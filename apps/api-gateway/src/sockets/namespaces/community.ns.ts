@@ -309,19 +309,24 @@ export function registerCommunityNamespace(
             }
           })();
         } else {
-          // Roster events (join / role-update / remove) must also reach members
-          // who haven't opened the community chat yet. Those members are only in
-          // the lightweight `community-typing:<id>` room (auto-joined at connect),
-          // NOT in `community:<id>` (joined only via explicit community:join).
-          // Chaining .to() makes Socket.IO de-duplicate recipients, so members
-          // in both rooms receive exactly one delivery.
-          const ROSTER_EVENTS = new Set([
+          // Roster + livestream events must also reach members who haven't opened
+          // the community chat yet. Those members are only in the lightweight
+          // `community-typing:<id>` room (auto-joined at connect), NOT in
+          // `community:<id>` (joined only via explicit community:join). So the
+          // live banner / list badge appears (started) and disappears (ended) in
+          // real time without opening the chat. Chaining .to() makes Socket.IO
+          // de-duplicate recipients, so members in both rooms get one delivery.
+          const TYPING_ROOM_BROADCAST_EVENTS = new Set([
             "community:member:joined",
             "community:member:updated",
             "community:member:removed",
+            "community:member:muted",
+            "community:member:unmuted",
+            "community:stream:started",
+            "community:stream:ended",
           ]);
           const typingRoom = `community-typing:${channel.slice("community:".length)}`;
-          if (ROSTER_EVENTS.has(parsed.event)) {
+          if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {
             community
               .to(channel)
               .to(typingRoom)

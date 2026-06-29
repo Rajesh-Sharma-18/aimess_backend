@@ -78,6 +78,8 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMemberships: jest.fn().mockResolvedValue([]),
     findMemberByUserId: jest.fn(),
     findActiveMemberIdsByRoles: jest.fn().mockResolvedValue([]),
+    findActiveMemberIds: jest.fn().mockResolvedValue([]),
+    findStreamMutedMemberIds: jest.fn().mockResolvedValue([]),
     countActiveMembers: jest.fn().mockResolvedValue(1),
     setMemberCount: jest.fn().mockResolvedValue(undefined),
     createMember: jest.fn(),
@@ -99,6 +101,13 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     updateReport: jest.fn(),
     findAuditLogs: jest.fn().mockResolvedValue([]),
     createAuditLog: jest.fn().mockResolvedValue(undefined),
+    findExpiredMemberMutes: jest.fn().mockResolvedValue([]),
+    claimExpiredMemberMute: jest.fn().mockResolvedValue(0),
+    listActiveMutesPage: jest.fn().mockResolvedValue([]),
+    findActiveMemberMutesByUserIds: jest.fn().mockResolvedValue(new Map()),
+    upsertMemberMute: jest.fn(),
+    deleteMemberMute: jest.fn(),
+    findMemberMute: jest.fn(),
     findCategories: jest.fn().mockResolvedValue([]),
     findCategory: jest.fn(),
     createCategory: jest.fn(),
@@ -130,6 +139,8 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityJoinRequestRejectedSafe: jest.fn(),
   publishCommunityReportActionedSafe: jest.fn(),
   publishCommunityReportCreatedSafe: jest.fn(),
+  publishCommunityLivestreamStartedSafe: jest.fn(),
+  publishCommunityLivestreamEndedSafe: jest.fn(),
 }));
 
 // --- RabbitMQ: community chat publishers (key for system-message tests) ---
@@ -138,6 +149,8 @@ jest.mock("../../src/messaging/publish-community-chat.js", () => ({
   publishCommunityCreatedForChatSafe: jest.fn(),
   publishCommunityDeletedForChatSafe: jest.fn(),
   publishCommunityInviteLinkSharedForChatSafe: jest.fn(),
+  publishCommunityMemberMuteSyncedForChatSafe: jest.fn(),
+  publishCommunityMemberMuteRetractedForChatSafe: jest.fn(),
   publishCommunityStatusChangedForChatSafe: jest.fn(),
   publishCommunityVisibilityChangedForChatSafe: jest.fn(),
 }));
@@ -192,7 +205,9 @@ jest.mock("../../src/grpc/chat.client.js", () => ({
 
 jest.mock("../../src/grpc/stream.client.js", () => ({
   getStreamClient: jest.fn().mockReturnValue({
-    GetLiveStreamsByCommunityIds: jest.fn(),
+    getActiveCommunityIds: jest.fn().mockResolvedValue(new Set()),
+    getActiveStreamCounts: jest.fn().mockResolvedValue(new Map()),
+    getLiveStreamsByCommunity: jest.fn().mockResolvedValue([]),
   }),
 }));
 
@@ -200,12 +215,10 @@ jest.mock("../../src/grpc/stream.client.js", () => ({
 jest.mock("../../src/services/community-image.service.js", () => ({
   communityImageService: {
     resolveViewUrlForClient: jest.fn().mockResolvedValue(null),
-    generateUploadUrl: jest
-      .fn()
-      .mockResolvedValue({
-        uploadUrl: "http://minio/test",
-        objectKey: "test/key",
-      }),
+    generateUploadUrl: jest.fn().mockResolvedValue({
+      uploadUrl: "http://minio/test",
+      objectKey: "test/key",
+    }),
   },
 }));
 

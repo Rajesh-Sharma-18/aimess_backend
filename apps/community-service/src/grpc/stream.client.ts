@@ -16,6 +16,8 @@ const PROTO_PATH = path.resolve(
 
 export interface StreamClient {
   getActiveCommunityIds(communityIds: string[]): Promise<Set<string>>;
+  /** communityId → LIVE-only stream count. Communities with 0 live streams are omitted. */
+  getActiveStreamCounts(communityIds: string[]): Promise<Map<string, number>>;
   getLiveStreamsByCommunity(communityId: string): Promise<LiveStreamSummary[]>;
 }
 
@@ -47,6 +49,17 @@ export function createStreamClient(): StreamClient {
   );
   // Fail-open: if stream-service is down, every community shows isLive=false.
   activeIdsBreaker.fallback(() => ({ liveCommunityIds: [] }));
+
+  const activeCountsBreaker = makeBreaker(
+    "stream.getActiveStreamCountsByCommunityIds",
+    (communityIds: string[]) =>
+      makeGrpcCall<
+        unknown,
+        { counts?: { communityId: string; count: number }[] }
+      >(client, "getActiveStreamCountsByCommunityIds", { communityIds })
+  );
+  // Fail-open: if stream-service is down, every community shows count 0.
+  activeCountsBreaker.fallback(() => ({ counts: [] }));
 
   const liveStreamsBreaker = makeBreaker(
     "stream.getLiveStreamsByCommunity",
@@ -82,6 +95,21 @@ export function createStreamClient(): StreamClient {
           `stream.getActiveStreamsByCommunityIds failed; degrading isLive=false: ${String(err)}`
         );
         return new Set();
+      }
+    },
+
+    getActiveStreamCounts: async (communityIds) => {
+      if (!communityIds.length) return new Map();
+      try {
+        const res = await activeCountsBreaker.fire(communityIds);
+        return new Map(
+          (res.counts ?? []).map((c) => [c.communityId, Number(c.count ?? 0)])
+        );
+      } catch (err) {
+        logger.warn(
+          `stream.getActiveStreamCountsByCommunityIds failed; degrading to 0: ${String(err)}`
+        );
+        return new Map();
       }
     },
 

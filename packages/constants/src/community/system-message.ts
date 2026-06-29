@@ -91,7 +91,7 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   MEMBER_REMOVED: "COMMUNITY",
   MEMBER_BANNED: "COMMUNITY",
   MEMBER_UNBANNED: "COMMUNITY",
-  MEMBER_MUTED: "COMMUNITY",
+  MEMBER_MUTED: "PERSONAL",
   MEMBER_UNMUTED: "COMMUNITY",
   PINNED_MESSAGE: "COMMUNITY",
   UNPINNED_MESSAGE: "COMMUNITY",
@@ -272,8 +272,6 @@ export const ACTOR_LESS_SYSTEM_MESSAGE_TYPES = [
   "COMMUNITY_AVATAR_UPDATED",
   "COMMUNITY_BANNER_UPDATED",
   "COMMUNITY_UPDATED",
-  "LIVE_STREAM_STARTED",
-  "LIVE_STREAM_ENDED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** True when the subtype is a pure event whose text must never name an actor. */

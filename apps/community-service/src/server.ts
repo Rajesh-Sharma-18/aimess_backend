@@ -12,7 +12,12 @@ import {
 } from "./config/redis.js";
 import { startUserProfileUpdatedConsumer } from "./consumers/user-profile-updated.consumer.js";
 import { startCommunityActivityConsumer } from "./consumers/community-activity.consumer.js";
+import { startStreamLifecycleConsumer } from "./consumers/stream-lifecycle.consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
+import {
+  startMuteSweeper,
+  backfillActiveMutesToChat,
+} from "./jobs/mute-sweeper.js";
 
 async function start() {
   try {
@@ -87,8 +92,23 @@ async function start() {
       logger.warn(error);
     }
 
+    try {
+      await startStreamLifecycleConsumer();
+      logger.info("RabbitMQ consumer ready (community.stream-lifecycle.queue)");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable on boot — livestream system messages + push will not run until reconnected"
+      );
+      logger.warn(error);
+    }
+
     // Start gRPC server (stub implementations — real logic wired in later)
     startGrpcServer(env.COMMUNITY_GRPC_PORT);
+
+    // Auto-unmute: re-mirror existing active mutes to chat-service (one-shot
+    // migration backfill, best-effort) then start the per-minute expiry sweep.
+    void backfillActiveMutesToChat();
+    startMuteSweeper();
 
     app.listen(env.COMMUNITY_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(

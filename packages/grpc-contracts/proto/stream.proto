@@ -9,6 +9,11 @@ service StreamService {
   // Bulk: which of the given communities currently have a LIVE stream.
   // Backs community-service `isLive` on GET /communities/mine (fail-open).
   rpc GetActiveStreamsByCommunityIds (GetActiveStreamsRequest) returns (GetActiveStreamsResponse);
+  // Bulk: LIVE-only stream count per community. Backs
+  // `activeLivestreamCount`/`hasActiveLivestream` on GET /communities/mine and
+  // the chat-service community rooms list (fail-open). Superset of
+  // GetActiveStreamsByCommunityIds (count > 0 ⇒ live).
+  rpc GetActiveStreamCountsByCommunityIds (GetActiveStreamCountsRequest) returns (GetActiveStreamCountsResponse);
   // Gate a viewer joining a livestream room: ACTIVE community membership
   // (when STREAM_REQUIRE_MEMBERSHIP) + not banned from this stream.
   rpc CheckStreamAccess (CheckStreamAccessRequest) returns (CheckStreamAccessResponse);
@@ -71,6 +76,18 @@ message GetActiveStreamsRequest {
 }
 message GetActiveStreamsResponse {
   repeated string live_community_ids = 1; // subset of community_ids currently LIVE
+}
+
+message GetActiveStreamCountsRequest {
+  repeated string community_ids = 1;
+}
+message CommunityStreamCount {
+  string community_id = 1;
+  int32  count        = 2; // number of LIVE streams in this community
+}
+message GetActiveStreamCountsResponse {
+  // Only communities with count > 0 are returned; absent ⇒ 0 LIVE streams.
+  repeated CommunityStreamCount counts = 1;
 }
 
 message CheckStreamAccessRequest {
