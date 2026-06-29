@@ -244,6 +244,19 @@ export function registerCommunityNamespace(
           const parsed = JSON.parse(message) as RedisSocketEvent;
           if ((parsed.event as string).startsWith("community:")) {
             const viewerUserId = channel.slice("user:".length);
+            // ── Stream live indicator debug log ─────────────────────────────
+            if (
+              parsed.event === "community:stream:started" ||
+              parsed.event === "community:stream:ended"
+            ) {
+              const d = parsed.data as {
+                communityId?: string;
+                streamId?: string;
+              };
+              logger.info(
+                `🔴 [STREAM:GATEWAY:USER] user:* relay event=${parsed.event} userId=${viewerUserId} communityId=${d.communityId ?? "?"} → emitting to Socket.IO room="user:${viewerUserId}"`
+              );
+            }
             const payload =
               parsed.event === "community:message:new"
                 ? personalizeCommunitySocketMessage(parsed.data, viewerUserId)
@@ -260,6 +273,19 @@ export function registerCommunityNamespace(
       if (pattern !== "community:*") return;
       try {
         const parsed = JSON.parse(message) as RedisSocketEvent;
+        // ── Stream live indicator debug logs ─────────────────────────────────
+        if (
+          parsed.event === "community:stream:started" ||
+          parsed.event === "community:stream:ended"
+        ) {
+          const d = parsed.data as { communityId?: string; streamId?: string };
+          logger.info(
+            `🔴 [STREAM:GATEWAY] Redis pmessage received event=${parsed.event} channel=${channel} communityId=${d.communityId ?? "?"} streamId=${d.streamId ?? "?"}`
+          );
+          logger.info(
+            `🔴 [STREAM:GATEWAY] emitting ${parsed.event} to Socket.IO room="${channel}" (sockets in room must have called community:join)`
+          );
+        }
         if (parsed.event === "community:message:new") {
           void (async () => {
             try {

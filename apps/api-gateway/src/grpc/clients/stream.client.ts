@@ -58,9 +58,20 @@ export interface CheckStreamAccessParams {
 export interface CheckStreamAccessResult {
   allowed: boolean;
   isBanned: boolean;
+  /** Membership status: ACTIVE | PENDING | OWNER | "" */
   status: string;
   reason: string;
   canComment: boolean;
+  /** Stream lifecycle status: PENDING | LIVE | ENDED | CANCELLED */
+  streamStatus: string;
+  title: string;
+  description: string;
+  /** Raw thumbnail object key; "" if none */
+  thumbnail: string;
+  creatorId: string;
+  /** "" if none (e.g. YOUTUBE source type) */
+  hlsUrl: string;
+  flvUrl: string;
 }
 
 export interface DeleteCommentParams {
