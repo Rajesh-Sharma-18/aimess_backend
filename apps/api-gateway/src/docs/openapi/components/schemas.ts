@@ -2140,6 +2140,122 @@ export const openApiSchemas = {
     },
   },
 
+  StreamCommentReport: {
+    type: "object",
+    description: "A user-submitted report on a live chat comment.",
+    required: [
+      "id",
+      "commentId",
+      "livestreamId",
+      "reportedBy",
+      "reason",
+      "createdAt",
+    ],
+    properties: {
+      id: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
+      commentId: {
+        type: "string",
+        example: "64a1b2c3d4e5f6a7b8c9d0e2",
+        description: "ObjectId of the reported comment.",
+      },
+      livestreamId: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e3" },
+      reportedBy: {
+        type: "string",
+        example: "550e8400-e29b-41d4-a716-446655440000",
+        description: "userId who submitted the report.",
+      },
+      reason: {
+        type: "string",
+        enum: [
+          "OFFENSIVE_LANGUAGE",
+          "SPAM",
+          "INAPPROPRIATE_CONTENT",
+          "SCAM_OR_FRAUD",
+          "IMPERSONATION",
+          "OTHER",
+        ],
+        example: "SPAM",
+      },
+      details: {
+        type: "string",
+        nullable: true,
+        maxLength: 500,
+        example: "Flooding the chat with the same link.",
+      },
+      createdAt: { type: "string", format: "date-time" },
+    },
+  },
+
+  StreamCommentReportWithComment: {
+    type: "object",
+    description:
+      "A comment report enriched with the reported comment's content.",
+    required: [
+      "id",
+      "commentId",
+      "livestreamId",
+      "reportedBy",
+      "reason",
+      "createdAt",
+      "comment",
+    ],
+    properties: {
+      id: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e1" },
+      commentId: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e2" },
+      livestreamId: { type: "string", example: "64a1b2c3d4e5f6a7b8c9d0e3" },
+      reportedBy: {
+        type: "string",
+        example: "550e8400-e29b-41d4-a716-446655440000",
+      },
+      reason: {
+        type: "string",
+        enum: [
+          "OFFENSIVE_LANGUAGE",
+          "SPAM",
+          "INAPPROPRIATE_CONTENT",
+          "SCAM_OR_FRAUD",
+          "IMPERSONATION",
+          "OTHER",
+        ],
+        example: "SPAM",
+      },
+      details: { type: "string", nullable: true, maxLength: 500 },
+      createdAt: { type: "string", format: "date-time" },
+      comment: {
+        type: "object",
+        nullable: true,
+        description:
+          "The reported comment's current content; null if it was deleted.",
+        properties: {
+          id: { type: "string" },
+          sentBy: { type: "string" },
+          senderName: { type: "string" },
+          message: { type: "string" },
+          createdAt: { type: "string", format: "date-time" },
+        },
+      },
+    },
+  },
+
+  StreamCommentReportList: {
+    type: "object",
+    required: ["items", "nextCursor", "hasMore"],
+    properties: {
+      items: {
+        type: "array",
+        items: {
+          $ref: "#/components/schemas/StreamCommentReportWithComment",
+        },
+      },
+      nextCursor: {
+        type: "string",
+        nullable: true,
+        description: "Pass as `before` for the next page; null when no more.",
+      },
+      hasMore: { type: "boolean" },
+    },
+  },
+
   // ===========================================================================
   // Admin Livestream schemas
   // ===========================================================================

@@ -182,7 +182,7 @@ const listStreams = {
     operationId: "listStreams",
     summary: "List livestreams",
     description:
-      "Paginated cursor list of streams. Filter by community and/or status. Results are ordered newest-first.",
+      "Paginated cursor list of streams. Filter by community and/or status. Results are ordered newest-first.\n\n**Live stream sidebar:** To populate the 'other live streams' sidebar while watching, call `GET /streams?status=LIVE&limit=5` (omit `communityId` to get global results across all communities).",
     security: streamAuth,
     parameters: [
       {
@@ -729,6 +729,124 @@ const listBans = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// POST /streams/{id}/comments/{commentId}/report — Report a comment
+// ---------------------------------------------------------------------------
+const reportComment = {
+  post: {
+    tags: ["Streams"],
+    summary: "Report a chat comment",
+    description: `Any authenticated viewer can report a live chat comment for moderation review. Idempotent — submitting a second report on the same comment returns the original report unchanged.
+
+**Reason codes:**
+- \`OFFENSIVE_LANGUAGE\` — Offensive or abusive language
+- \`SPAM\` — Spam or repeated messages
+- \`INAPPROPRIATE_CONTENT\` — Inappropriate content
+- \`SCAM_OR_FRAUD\` — Scam or fraudulent links
+- \`IMPERSONATION\` — Impersonating someone
+- \`OTHER\` — Anything else (**\`details\` is required** for this reason)
+
+\`details\` is optional free-text context (max 500 characters).`,
+    security: streamAuth,
+    parameters: [
+      streamIdParam,
+      {
+        name: "commentId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description: "MongoDB ObjectId of the comment to report.",
+      },
+    ],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object" as const,
+            required: ["reason"],
+            properties: {
+              reason: {
+                type: "string" as const,
+                enum: [
+                  "OFFENSIVE_LANGUAGE",
+                  "SPAM",
+                  "INAPPROPRIATE_CONTENT",
+                  "SCAM_OR_FRAUD",
+                  "IMPERSONATION",
+                  "OTHER",
+                ],
+                example: "SPAM",
+              },
+              details: {
+                type: "string" as const,
+                maxLength: 500,
+                example: "This user is flooding the chat with the same link.",
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "201": streamOk(
+        "Report submitted (or existing report returned)",
+        "#/components/schemas/StreamCommentReport"
+      ),
+      "400": badRequest,
+      "401": unauthorized,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// GET /streams/{id}/comments/reports — List reported comments (owner/mod)
+// ---------------------------------------------------------------------------
+const listCommentReports = {
+  get: {
+    tags: ["Streams"],
+    summary: "List reported comments for a stream",
+    description:
+      "Returns a newest-first, cursor-paged list of comment reports for the stream, each enriched with the reported comment's current content (`comment` is `null` if the comment was deleted). Authorized for the stream owner or a community ADMIN/MODERATOR.",
+    security: streamAuth,
+    parameters: [
+      streamIdParam,
+      {
+        name: "limit",
+        in: "query" as const,
+        required: false,
+        schema: {
+          type: "integer" as const,
+          minimum: 1,
+          maximum: 100,
+          default: 30,
+        },
+        description: "Page size (1-100, default 30).",
+      },
+      {
+        name: "before",
+        in: "query" as const,
+        required: false,
+        schema: { type: "string" as const },
+        description: "Cursor — return reports older than this report id.",
+      },
+    ],
+    responses: {
+      "200": streamOk(
+        "Paged list of reports",
+        "#/components/schemas/StreamCommentReportList"
+      ),
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+      "500": internalError,
+    },
+  },
+};
+
 export const streamPaths = {
   "/streams": { ...createStream, ...listStreams },
   "/streams/{id}": { ...getStream, ...updateStream, ...deleteStream },
@@ -740,4 +858,6 @@ export const streamPaths = {
   "/streams/{id}/ban": banUser,
   "/streams/{id}/ban/{userId}": unbanUser,
   "/streams/{id}/bans": listBans,
+  "/streams/{id}/comments/{commentId}/report": reportComment,
+  "/streams/{id}/comments/reports": listCommentReports,
 };

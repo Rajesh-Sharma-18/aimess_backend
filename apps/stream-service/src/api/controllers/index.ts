@@ -12,6 +12,8 @@ import {
   commentsQuerySchema,
   banUserSchema,
   setCommentStatusSchema,
+  reportCommentSchema,
+  reportsQuerySchema,
 } from "../validators/index.js";
 
 export class StreamController {
@@ -164,5 +166,44 @@ export class StreamController {
 
     const items = await this.livestreamService.listBans(id, req.auth.userId);
     res.status(HTTP_STATUS.OK).json(new ApiResponse({ items }));
+  });
+
+  // Any authenticated viewer reports a live chat comment.
+  reportComment = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    const commentId =
+      typeof req.params.commentId === "string" ? req.params.commentId : "";
+    if (!id || !commentId) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = reportCommentSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const result = await this.commentService.reportComment({
+      commentId,
+      livestreamId: id,
+      reportedBy: req.auth.userId,
+      reason: parsed.data.reason,
+      details: parsed.data.details,
+    });
+
+    res.status(HTTP_STATUS.CREATED).json(new ApiResponse(result));
+  });
+
+  // Owner or community ADMIN/MODERATOR lists reported comments for a stream.
+  listCommentReports = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = reportsQuerySchema.safeParse(req.query);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const result = await this.commentService.listReports({
+      livestreamId: id,
+      requesterId: req.auth.userId,
+      limit: parsed.data.limit,
+      before: parsed.data.before,
+    });
+
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 }

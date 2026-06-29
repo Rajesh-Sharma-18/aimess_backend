@@ -15,6 +15,7 @@ import {
   LivestreamRepository,
   LivestreamCommentRepository,
   LivestreamBanRepository,
+  LivestreamCommentReportRepository,
 } from "./repositories/index.js";
 
 // -- Services --
@@ -53,6 +54,7 @@ async function start() {
     const streamRepo = new LivestreamRepository(prisma);
     const commentRepo = new LivestreamCommentRepository(prisma);
     const banRepo = new LivestreamBanRepository(prisma);
+    const commentReportRepo = new LivestreamCommentReportRepository(prisma);
 
     // 2. Services (inject repos + clients + redis)
     const srsService = new SrsService();
@@ -69,7 +71,8 @@ async function start() {
       userGrpcClient,
       redis,
       banRepo,
-      communityGrpcClient
+      communityGrpcClient,
+      commentReportRepo
     );
 
     // 3. Controllers
