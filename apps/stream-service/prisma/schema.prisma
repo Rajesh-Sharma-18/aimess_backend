@@ -44,13 +44,15 @@ model Livestream {
   peakViewers   Int       @default(0)
   totalViews    Int       @default(0)
   totalComments Int       @default(0)
-  livedAt       DateTime?
-  endedAt       DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  livedAt          DateTime?
+  endedAt          DateTime?
+  lastHeartbeatAt  DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@index([communityId])
   @@index([status])
+  @@index([status, lastHeartbeatAt])
   @@map("livestreams")
 }
 

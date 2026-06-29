@@ -32,6 +32,9 @@ import { communityGrpcClient } from "./grpc/community.client.js";
 // -- Controllers --
 import { StreamController } from "./api/controllers/index.js";
 
+// -- Jobs --
+import { startStreamSweeper } from "./jobs/stream-sweeper.js";
+
 async function start() {
   try {
     await prisma.$connect();
@@ -92,6 +95,9 @@ async function start() {
         "Stream Service listening on port " + String(env.STREAM_SERVICE_PORT)
       );
     });
+
+    // 6. Background jobs
+    startStreamSweeper(livestreamService);
   } catch (error) {
     logger.error(error);
     process.exit(1);

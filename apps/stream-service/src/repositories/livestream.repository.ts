@@ -175,6 +175,25 @@ export class LivestreamRepository {
     return rows.map((r) => r.communityId);
   }
 
+  /**
+   * Heartbeat sweeper input: LIVE streams whose host hasn't sent a heartbeat
+   * since `cutoff`. Covers two cases:
+   *  - `lastHeartbeatAt < cutoff` (host was sending, then stopped), and
+   *  - `lastHeartbeatAt == null && livedAt < cutoff` (stream went LIVE before
+   *    heartbeats were implemented, or the client never started sending them).
+   */
+  async findStaleLiveStreams(cutoff: Date): Promise<Livestream[]> {
+    return this.prisma.livestream.findMany({
+      where: {
+        status: "LIVE",
+        OR: [
+          { lastHeartbeatAt: { lt: cutoff } },
+          { lastHeartbeatAt: null, livedAt: { lt: cutoff } },
+        ],
+      },
+    } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+
   // ---------------------------------------------------------------------------
   // Backoffice admin read model (gRPC live-read source of truth).
   // The admin Livestream Management screen reads streams directly here over

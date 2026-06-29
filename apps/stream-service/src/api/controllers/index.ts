@@ -94,6 +94,14 @@ export class StreamController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  heartbeat = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.recordHeartbeat(id, req.auth.userId);
+    res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
+  });
+
   getComments = asyncHandler(async (req: Request, res: Response) => {
     const id = typeof req.params.id === "string" ? req.params.id : "";
     if (!id) throw new BadRequestError("STREAM_REQUEST_INVALID");

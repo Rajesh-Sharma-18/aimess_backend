@@ -632,6 +632,68 @@ export class LivestreamService {
     return view;
   }
 
+  /**
+   * Record a keep-alive heartbeat from the stream host. Updates `lastHeartbeatAt`
+   * so the sweeper knows the host is still connected. Called every ~30 s from the
+   * client while the stream is LIVE.
+   */
+  async recordHeartbeat(id: string, requesterId: string): Promise<void> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (stream.status !== "LIVE") {
+      throw new BadRequestError("STREAM_NOT_LIVE");
+    }
+    await this.streamRepo.updateById(id, { lastHeartbeatAt: new Date() });
+  }
+
+  /**
+   * Background sweeper: auto-end LIVE streams whose host hasn't heartbeated in
+   * `STREAM_HEARTBEAT_TIMEOUT_MS`. Called periodically from server.ts.
+   * Intentionally silent — a single stale stream failure does not block the rest.
+   */
+  async sweepStaleStreams(): Promise<void> {
+    const cutoff = new Date(Date.now() - env.STREAM_HEARTBEAT_TIMEOUT_MS);
+    let stale: Awaited<ReturnType<typeof this.streamRepo.findStaleLiveStreams>>;
+    try {
+      stale = await this.streamRepo.findStaleLiveStreams(cutoff);
+    } catch (err) {
+      logger.warn(`sweepStaleStreams: DB query failed — ${String(err)}`);
+      return;
+    }
+    if (!stale.length) return;
+
+    logger.info(`sweepStaleStreams: ending ${stale.length} stale stream(s)`);
+    for (const stream of stale) {
+      try {
+        const updated = await this.streamRepo.updateById(stream.id, {
+          status: "ENDED",
+          endedAt: new Date(),
+        });
+        await this.srsService.kickStream(stream.streamKey);
+        await this.publishStatus(updated.id, "ENDED");
+        void this.publishCommunityStreamEnded(updated);
+        this.eventPublisher("stream.ended", {
+          streamId: updated.id,
+          communityId: updated.communityId,
+          creatorId: updated.creatorId,
+          endedAt: updated.endedAt?.getTime() ?? Date.now(),
+          durationSeconds: computeDurationSeconds(updated),
+          peakViewers: updated.peakViewers,
+        });
+        logger.info(
+          `sweepStaleStreams: ended stream=${stream.id} community=${stream.communityId}`
+        );
+      } catch (err) {
+        logger.warn(
+          `sweepStaleStreams: failed to end stream=${stream.id} — ${String(err)}`
+        );
+      }
+    }
+  }
+
   /** Backs community-service `isLive` enrichment (fail-open caller side). */
   async getActiveStreamsByCommunityIds(
     communityIds: string[]
