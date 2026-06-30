@@ -24,6 +24,12 @@ import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
+  resolveForEveryoneOverrides,
+  deletedWasEffectiveLast,
+  type RecipientOverride,
+} from "./last-visible-resolver.js";
+import { privateVisibilitySource } from "./last-visible-adapters.js";
+import {
   resolveMediaUrlMap,
   urlFromMap,
   applyUrlMapToFiles,
@@ -470,6 +476,24 @@ export class PrivateMessageService {
    * Does NOT update the shared room snapshot — the other participant's view is
    * unchanged.
    */
+  /**
+   * Per-recipient list-preview overrides for a delete-for-everyone fan-out: the
+   * participant who has personally hidden `sharedPrevMessageId` gets their own
+   * visible preview instead of the shared one. Empty map in the common case.
+   */
+  async resolveForEveryoneOverrides(
+    roomId: string,
+    sharedPrevMessageId: string | null,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    return resolveForEveryoneOverrides(
+      privateVisibilitySource(this.messageRepo),
+      roomId,
+      sharedPrevMessageId,
+      recipientIds
+    );
+  }
+
   async recalculateLastMessageAfterDeleteForMe(
     roomId: string,
     deletedMessageCreatedAt: Date,
@@ -494,9 +518,11 @@ export class PrivateMessageService {
       userId
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
-    // visible is newer than it.
-    const wasEffectiveLast =
-      !prev || prev.createdAt.getTime() <= deletedMessageCreatedAt.getTime();
+    // visible is newer than it (single source of truth: deletedWasEffectiveLast).
+    const wasEffectiveLast = deletedWasEffectiveLast(
+      prev?.createdAt ?? null,
+      deletedMessageCreatedAt
+    );
     if (prev) {
       return {
         prevMessageId: prev.id,

@@ -29,6 +29,12 @@ export interface CommunityChatSummary {
   unreadMessageCount: number;
   /** false => lastMessageActivity must be rendered as null. */
   hasLastMessage: boolean;
+  /**
+   * True => the viewer hid the community-wide shared last; `lastMessage` (or its
+   * absence) is AUTHORITATIVE and must be used directly — clearing the column
+   * preview when there is no lastMessage — rather than overlaid only-when-newer.
+   */
+  perUserResolved?: boolean;
   lastMessage?: CommunityChatLastMessage;
   /**
    * The viewer's latest PERSONAL line (e.g. "You joined the community"), visible
@@ -188,6 +194,7 @@ export function createChatClient(): ChatClient {
           communityId: s.communityId,
           unreadMessageCount: Number(s.unreadMessageCount ?? 0),
           hasLastMessage: Boolean(s.hasLastMessage),
+          perUserResolved: Boolean(s.perUserResolved),
           lastMessage:
             s.hasLastMessage && s.lastMessage
               ? {

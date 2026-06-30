@@ -129,6 +129,12 @@ message CommunityChatSummary {
   int32  unreadMessageCount = 2;
   bool   hasLastMessage     = 3; // false => lastMessageActivity is null
   CommunityChatLastMessage lastMessage = 4;
+  // True => the viewer HID the community-wide shared last, so lastMessage (or its
+  // absence when hasLastMessage=false) is an AUTHORITATIVE per-viewer resolution:
+  // community-service uses it directly (and CLEARS the column preview when there
+  // is no lastMessage), rather than overlaying only-when-newer. Additive (field 6,
+  // defaults false for older callers).
+  bool   perUserResolved    = 6;
   // Viewer-private SYSTEM line (e.g. "You joined the community"): the latest
   // message visible ONLY to the requesting user (GeneralRoomMessage.visibleToUserId
   // == userId). community-service overlays this onto the per-viewer

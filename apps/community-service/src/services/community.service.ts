@@ -398,6 +398,89 @@ export function applyPersonalLastActivityOverlay(
   return base;
 }
 
+/** chat-service's per-viewer last message → the rendered CommunityLastActivity:
+ *  sender-less SYSTEM shape, else the "username: preview" member-message shape. */
+export function chatLastMessageToActivity(chat: {
+  username: string;
+  message: string;
+  dateTime: number;
+  isSystem?: boolean;
+  userId?: string;
+}): CommunityLastActivity {
+  return chat.isSystem
+    ? {
+        type: "system",
+        userId: null,
+        username: null,
+        preview: chat.message,
+        dateTime: chat.dateTime,
+      }
+    : {
+        type: "message",
+        userId: chat.userId || null,
+        username: chat.username,
+        preview: chat.message,
+        dateTime: chat.dateTime,
+      };
+}
+
+/** The empty per-viewer state: the viewer has hidden every visible message. A
+ *  sender-less, timestamp-zero system line so any real personal line (e.g. "You
+ *  joined the community") still wins the subsequent personal overlay. */
+export function emptyLastActivity(): {
+  lastActivity: CommunityLastActivity;
+  lastActivityAt: number;
+} {
+  return {
+    lastActivity: {
+      type: "system",
+      userId: null,
+      username: null,
+      preview: "",
+      dateTime: 0,
+    },
+    lastActivityAt: 0,
+  };
+}
+
+/**
+ * NEWEST-WINS reconciliation for the `perUserResolved=false` case (the viewer did
+ * NOT hide the shared last): the denormalized `Community.lastActivity*` column is
+ * the rich base, but a STRICTLY-NEWER chat message overrides it — which repairs a
+ * dropped `community.activity` event that left the column behind (missed-ADD).
+ *
+ * NOTE: this only repairs missed-ADD (chat newer than column). A dropped
+ * delete-for-EVERYONE event (column stale-NEWER than the rolled-back shared last)
+ * is NOT repaired here and remains a residual until the next activity event — the
+ * overlay is structurally incapable of moving the pointer backward (true fix =
+ * a community.activity DLQ, out of scope). The authoritative per-viewer
+ * delete-for-me case is handled separately via `perUserResolved`, NOT this fn.
+ *
+ * `lastActivityAt` shifts to the chat dateTime for DISPLAY only; pagination keeps
+ * using the stored `row.lastActivityAt`. Exported for unit coverage.
+ */
+export function applyChatLastMessageOverlay(
+  base: { lastActivity: CommunityLastActivity; lastActivityAt: number },
+  chat:
+    | {
+        username: string;
+        message: string;
+        dateTime: number;
+        isSystem?: boolean;
+        userId?: string;
+      }
+    | null
+    | undefined
+): { lastActivity: CommunityLastActivity; lastActivityAt: number } {
+  if (!chat || !chat.message || chat.dateTime <= base.lastActivityAt) {
+    return base;
+  }
+  return {
+    lastActivity: chatLastMessageToActivity(chat),
+    lastActivityAt: chat.dateTime,
+  };
+}
+
 /**
  * Telegram-style mapping from the set of community fields that actually changed
  * in one `update()` call to the ONE system-message subtype to post:
@@ -1212,6 +1295,26 @@ function toAuditLogData(log: {
  *  own personal line (e.g. "You joined the community"), if any. */
 type ChatEnrichment = {
   unreadMessageCount: number;
+  /**
+   * True => the viewer HID the community-wide shared last; `lastMessage` (or its
+   * absence) is AUTHORITATIVE for this viewer — use it directly and CLEAR the
+   * stale column preview when there is no lastMessage. False => `lastMessage` is
+   * the plain shared snapshot, overlaid onto the column only-when-newer (repairs
+   * lost-`community.activity`-event missed-ADD staleness).
+   */
+  perUserResolved: boolean;
+  /**
+   * chat-service's latest message visible to this viewer (community-wide last, or
+   * their previous-visible when perUserResolved). Carries its REAL timestamp.
+   * Absent when no visible message remains for the viewer.
+   */
+  lastMessage?: {
+    username: string;
+    message: string;
+    dateTime: number;
+    isSystem: boolean;
+    userId: string;
+  };
   /** The caller's latest personal SYSTEM line — overlaid onto lastActivity for
    *  the joiner only. Absent when the caller has no personal line. */
   personalLastMessage?: { message: string; dateTime: number };
@@ -1238,6 +1341,17 @@ async function fetchChatEnrichment(
   for (const s of summaries) {
     map.set(s.communityId, {
       unreadMessageCount: s.unreadMessageCount ?? 0,
+      perUserResolved: Boolean(s.perUserResolved),
+      lastMessage:
+        s.hasLastMessage && s.lastMessage
+          ? {
+              username: s.lastMessage.username,
+              message: s.lastMessage.message,
+              dateTime: s.lastMessage.dateTime,
+              isSystem: Boolean(s.lastMessage.isSystem),
+              userId: s.lastMessage.userId ?? "",
+            }
+          : undefined,
       personalLastMessage: s.personalLastMessage
         ? {
             message: s.personalLastMessage.message,
@@ -1251,6 +1365,7 @@ async function fetchChatEnrichment(
 
 const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
   unreadMessageCount: 0,
+  perUserResolved: false,
 };
 
 /**
@@ -2105,29 +2220,51 @@ export const communityService = {
         const avatar = await buildCommunityImageMedia(row.avatarUrl);
         const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
 
-        // Per-viewer PERSONAL overlay: the joiner sees their own "You joined the
-        // community" line as lastActivity when it is newer than the community-wide
-        // activity; everyone else keeps the community-wide message. The stored
-        // lastActivityAt (used for the pagination cursor below) is left untouched —
-        // only this viewer's displayed ordering reflects the personal timestamp.
+        // Per-viewer lastActivity (display-only; the pagination cursor below
+        // still uses the stored row.lastActivityAt so community-wide ordering is
+        // unchanged). Two signals reconcile into a base, then the viewer's own
+        // "You joined" personal line overlays when it is genuinely newest:
+        //   - the denormalized community-wide column (rich lifecycle semantics), and
+        //   - chat-service's per-viewer latest-visible message — AUTHORITATIVE when
+        //     the viewer hid the shared last (perUserResolved), else a strictly-
+        //     newer override that repairs missed-ADD lost-event staleness.
+        const columnBase = {
+          lastActivityAt: row.lastActivityAt.getTime(),
+          lastActivity: buildLastActivity({
+            ...row,
+            // Prefer the live member-snapshot name; fall back to the stored
+            // value when the sender has since left every community.
+            lastActivityUsername:
+              (row.lastActivityUserId
+                ? senderNameMap.get(row.lastActivityUserId)
+                : null) ?? row.lastActivityUsername,
+            // Self-referential SYSTEM line (role change / join): the viewer who
+            // IS the subject sees the first-person "You …" preview; everyone
+            // else keeps the third-person text.
+            lastActivityPreview: selectListPreview(row, userId),
+          }),
+        };
+        // Per-viewer base preview:
+        //  - perUserResolved => the viewer HID the community-wide last, so
+        //    chat-service's resolution is AUTHORITATIVE: use their previous-visible
+        //    (real timestamp), or CLEAR to empty when they have hidden everything.
+        //    This never trusts the (now stale-for-them) column.
+        //  - else => the rich column is the base; a strictly-newer chat message
+        //    overrides it (repairs missed-ADD lost-event staleness).
+        const reconciledBase = chat.perUserResolved
+          ? chat.lastMessage
+            ? {
+                lastActivity: chatLastMessageToActivity(chat.lastMessage),
+                lastActivityAt: chat.lastMessage.dateTime,
+              }
+            : emptyLastActivity()
+          : applyChatLastMessageOverlay(columnBase, chat.lastMessage);
+        // The viewer's own "You joined the community" personal line still wins
+        // when it is genuinely the newest visible thing (compared against the
+        // base's REAL timestamp — no +1ms inflation can wrongly suppress it).
         const { lastActivity, lastActivityAt } =
           applyPersonalLastActivityOverlay(
-            {
-              lastActivityAt: row.lastActivityAt.getTime(),
-              lastActivity: buildLastActivity({
-                ...row,
-                // Prefer the live member-snapshot name; fall back to the stored
-                // value when the sender has since left every community.
-                lastActivityUsername:
-                  (row.lastActivityUserId
-                    ? senderNameMap.get(row.lastActivityUserId)
-                    : null) ?? row.lastActivityUsername,
-                // Self-referential SYSTEM line (role change / join): the viewer who
-                // IS the subject sees the first-person "You …" preview; everyone
-                // else keeps the third-person text.
-                lastActivityPreview: selectListPreview(row, userId),
-              }),
-            },
+            reconciledBase,
             chat.personalLastMessage
           );
 

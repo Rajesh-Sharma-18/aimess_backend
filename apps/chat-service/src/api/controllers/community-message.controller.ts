@@ -18,6 +18,7 @@ import {
 } from "../../lib/chat-message.serializer.js";
 import { publishCommunityUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { publishCommunityActivitySafe } from "../../events/publish-community-activity.js";
+import { renderCommunityOverrides } from "../../lib/recipient-override-render.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
 import type { ChatMessageOrchestrator } from "../../services/chat-message-orchestrator.js";
@@ -389,6 +390,16 @@ export class CommunityMessageController {
             communityId: result.roomId,
             roomId: result.roomId,
             fetchMembers: () => this.service.getActiveMemberIds(result.roomId),
+            // Per-recipient correctness: a member who personally hid the new
+            // shared previous-visible message gets THEIR own preview instead.
+            resolveOverrides: (memberIds) =>
+              this.service
+                .resolveForEveryoneOverrides(
+                  result.roomId,
+                  recalc.prevMessageId,
+                  memberIds
+                )
+                .then((raw) => renderCommunityOverrides(raw)),
             senderId: recalc.sentBy,
             senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",

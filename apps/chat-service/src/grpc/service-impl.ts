@@ -20,6 +20,7 @@ import {
   publishCommunityUpdatedSafe,
 } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
+import { renderCommunityOverrides } from "../lib/recipient-override-render.js";
 import {
   convertMessageToPreview,
   buildPushPreview,
@@ -1935,6 +1936,7 @@ export function createCommunityImpl(
               communityId: s.communityId,
               unreadMessageCount: s.unreadMessageCount,
               hasLastMessage: s.hasLastMessage,
+              perUserResolved: s.perUserResolved,
               lastMessage: s.lastMessage
                 ? {
                     username: s.lastMessage.username,
@@ -2248,14 +2250,25 @@ export function createCommunityImpl(
                 req.messageId
               );
             if (recalc !== null) {
+              const fRoomId = result.roomId;
               publishCommunityUpdatedSafe({
                 redis,
                 communityId: req.communityId,
-                roomId: result.roomId,
+                roomId: fRoomId,
                 fetchMembers: () =>
-                  deps.communityMessageService.getActiveMemberIds(
-                    result.roomId
-                  ),
+                  deps.communityMessageService.getActiveMemberIds(fRoomId),
+                // Per-recipient correctness on the LIVE socket delete path (the
+                // gateway routes community:message:delete through this gRPC
+                // handler): a member who personally hid the new shared
+                // previous-visible message gets THEIR own preview, mirroring REST.
+                resolveOverrides: (memberIds) =>
+                  deps.communityMessageService
+                    .resolveForEveryoneOverrides(
+                      fRoomId,
+                      recalc.prevMessageId,
+                      memberIds
+                    )
+                    .then((raw) => renderCommunityOverrides(raw)),
                 senderId: recalc.sentBy,
                 senderName: recalc.senderName,
                 lastMessageId: recalc.prevMessageId ?? "",

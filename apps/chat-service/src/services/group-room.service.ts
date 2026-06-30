@@ -14,6 +14,7 @@ import {
   type VisibilitySource,
   type VisibleLast,
 } from "./last-visible-resolver.js";
+import { groupVisibilitySource } from "./last-visible-adapters.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
@@ -48,26 +49,7 @@ export class GroupRoomService {
    * room-type-agnostic `VisibleLast`.
    */
   private visibilitySource(): VisibilitySource {
-    return {
-      filterHidden: (ids, userId) =>
-        this.messageRepo.filterHiddenFromUser(ids, userId),
-      findPreviousVisibleForUser: async (roomId, userId) => {
-        const m = await this.messageRepo.findPreviousVisibleForUser(
-          roomId,
-          userId
-        );
-        return m
-          ? {
-              messageId: m.id,
-              senderId: m.senderId ?? "",
-              senderName: m.senderName ?? "",
-              messageType: m.messageType,
-              content: m.content,
-              createdAt: m.createdAt,
-            }
-          : null;
-      },
-    };
+    return groupVisibilitySource(this.messageRepo);
   }
 
   /**

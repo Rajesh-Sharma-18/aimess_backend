@@ -13,6 +13,7 @@ import {
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
+import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import {
   buildChatMessageEvent,
   buildDeletePayload,
@@ -371,6 +372,16 @@ export class GroupMessageController {
             type: "GROUP",
             roomId: rId,
             fetchRecipients: () => this.messageService.getActiveMemberIds(rId),
+            // Per-recipient correctness: a member who personally hid the new
+            // shared previous-visible message gets THEIR own preview instead.
+            resolveOverrides: (recipientIds) =>
+              this.messageService
+                .resolveForEveryoneOverrides(
+                  rId,
+                  recalc.prevMessageId,
+                  recipientIds
+                )
+                .then((raw) => renderConvOverrides(raw)),
             senderId: recalc.senderId ?? "",
             lastMessageId: recalc.prevMessageId ?? "",
             lastMessageAt: recalc.createdAt.getTime(),

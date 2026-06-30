@@ -9,6 +9,7 @@ import {
   resolveVisibleLastBulk,
   type VisibilitySource,
 } from "./last-visible-resolver.js";
+import { privateVisibilitySource } from "./last-visible-adapters.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
@@ -47,26 +48,7 @@ export class PrivateRoomService {
    * so the normalized senderName is "" (the list resolves the peer label itself).
    */
   private visibilitySource(): VisibilitySource {
-    return {
-      filterHidden: (ids, userId) =>
-        this.privateMessageRepo.filterHiddenFromUser(ids, userId),
-      findPreviousVisibleForUser: async (roomId, userId) => {
-        const m = await this.privateMessageRepo.findPreviousVisibleForUser(
-          roomId,
-          userId
-        );
-        return m
-          ? {
-              messageId: m.id,
-              senderId: m.senderId ?? "",
-              senderName: "",
-              messageType: m.messageType,
-              content: m.content,
-              createdAt: m.createdAt,
-            }
-          : null;
-      },
-    };
+    return privateVisibilitySource(this.privateMessageRepo);
   }
 
   async getOrCreateRoom(userId: string, peerId: string): Promise<PrivateRoom> {

@@ -24,6 +24,12 @@ import { assertGroupMember } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
+  resolveForEveryoneOverrides,
+  deletedWasEffectiveLast,
+  type RecipientOverride,
+} from "./last-visible-resolver.js";
+import { groupVisibilitySource } from "./last-visible-adapters.js";
+import {
   resolveMediaUrlMap,
   urlFromMap,
   applyUrlMapToFiles,
@@ -506,6 +512,24 @@ export class GroupMessageService {
     };
   }
 
+  /**
+   * Per-recipient list-preview overrides for a delete-for-everyone fan-out: the
+   * recipients who have personally hidden `sharedPrevMessageId` get their own
+   * visible preview instead of the shared one. Empty map in the common case.
+   */
+  async resolveForEveryoneOverrides(
+    roomId: string,
+    sharedPrevMessageId: string | null,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    return resolveForEveryoneOverrides(
+      groupVisibilitySource(this.messageRepo),
+      roomId,
+      sharedPrevMessageId,
+      recipientIds
+    );
+  }
+
   async deleteForMe(
     messageId: string,
     userId: string,
@@ -534,8 +558,9 @@ export class GroupMessageService {
    * list preview. Mirror of the community/private forMe variant: it does NOT
    * touch the shared GroupRoom snapshot — every other member is unaffected.
    * Always returns a recalc object (hasLastMessage:false when the user has now
-   * hidden every message); the caller gates the broadcast on
-   * wasEffectiveLastForUser so a delete-for-me on a NON-last message is a no-op.
+   * hidden every message) with a `wasEffectiveLast` flag (via
+   * deletedWasEffectiveLast); the caller gates the broadcast on it so a
+   * delete-for-me on a NON-last message is a no-op.
    */
   async recalculateLastMessageAfterDeleteForMe(
     roomId: string,
@@ -560,9 +585,11 @@ export class GroupMessageService {
       userId
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
-    // visible is newer than it.
-    const wasEffectiveLast =
-      !prev || prev.createdAt.getTime() <= deletedMessageCreatedAt.getTime();
+    // visible is newer than it (single source of truth: deletedWasEffectiveLast).
+    const wasEffectiveLast = deletedWasEffectiveLast(
+      prev?.createdAt ?? null,
+      deletedMessageCreatedAt
+    );
     if (prev) {
       return {
         prevMessageId: prev.id,

@@ -36,8 +36,12 @@ import {
 import { convertMessageToPreview } from "./message-preview.service.js";
 import {
   resolveVisibleLastBulk,
+  resolveForEveryoneOverrides,
+  deletedWasEffectiveLast,
   type VisibilitySource,
+  type RecipientOverride,
 } from "./last-visible-resolver.js";
+import { communityVisibilitySource } from "./last-visible-adapters.js";
 import type { CommunitySystemMessageService } from "./community-system-message.service.js";
 import {
   assertCommunityMember,
@@ -87,13 +91,19 @@ export interface CommunityChatSummary {
   /** false => the caller should render lastMessageActivity as null. */
   hasLastMessage: boolean;
   /**
+   * True when the viewer has globally/personally HIDDEN the community-wide shared
+   * last message, so `lastMessage` (or its absence) is an AUTHORITATIVE per-viewer
+   * resolution — community-service must use it directly, NOT merely overlay it
+   * when newer. When false, `lastMessage` is the plain shared snapshot and the
+   * denormalized column wins on ties (only a strictly-newer chat message overrides,
+   * which repairs lost-`community.activity`-event missed-ADD staleness).
+   */
+  perUserResolved: boolean;
+  /**
    * The latest message visible to THIS viewer (community-wide last, or — when the
-   * viewer has globally/personally hidden it — their previous-visible fallback).
-   * Per-user resolved via the shared LastVisibleResolver, so it is authoritative:
-   * community-service overlays it onto the denormalized column when newer, which
-   * fixes both lost-event staleness and the per-viewer delete-for-me preview.
+   * viewer hid it — their previous-visible fallback). Carries its REAL timestamp;
    * `isSystem` selects sender-less rendering; `userId` is the sender for the
-   * "username: message" message shape.
+   * "username: message" message shape. Absent when no visible message remains.
    */
   lastMessage?: {
     username: string;
@@ -473,26 +483,27 @@ export class CommunityMessageService {
    * lifecycle system types — so the normalized VisibleLast is safe to surface.
    */
   private visibilitySource(): VisibilitySource {
-    return {
-      filterHidden: (ids, userId) =>
-        this.messageRepo.filterHiddenByUser(ids, userId),
-      findPreviousVisibleForUser: async (roomId, userId) => {
-        const m = await this.messageRepo.findPreviousVisibleForUser(
-          roomId,
-          userId
-        );
-        return m
-          ? {
-              messageId: m.id,
-              senderId: m.sentBy,
-              senderName: m.senderName ?? "",
-              messageType: m.messageType,
-              content: m.message ?? "",
-              createdAt: m.createdAt,
-            }
-          : null;
-      },
-    };
+    return communityVisibilitySource(this.messageRepo);
+  }
+
+  /**
+   * Per-recipient list-preview overrides for a delete-for-everyone fan-out: of the
+   * given recipients, the ones who have personally hidden `sharedPrevMessageId`
+   * (the new shared previous-visible) get THEIR own visible preview instead.
+   * Empty map when nobody hid it (the common case). Exposed for the controller +
+   * gRPC delete paths.
+   */
+  async resolveForEveryoneOverrides(
+    roomId: string,
+    sharedPrevMessageId: string | null,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    return resolveForEveryoneOverrides(
+      this.visibilitySource(),
+      roomId,
+      sharedPrevMessageId,
+      recipientIds
+    );
   }
 
   /**
@@ -567,6 +578,7 @@ export class CommunityMessageService {
           communityId,
           unreadMessageCount: 0,
           hasLastMessage: false,
+          perUserResolved: false,
         };
       }
 
@@ -587,32 +599,30 @@ export class CommunityMessageService {
 
       let lastMessage: CommunityChatSummary["lastMessage"] | undefined;
       let hasLastMessage = false;
+      const perUserResolved = room ? overrides.has(communityId) : false;
 
-      if (room && overrides.has(communityId)) {
-        // Shared last is HIDDEN for this viewer → substitute their previous-visible.
+      if (perUserResolved) {
+        // Shared last is HIDDEN for this viewer → AUTHORITATIVE per-viewer
+        // resolution: substitute their previous-visible (with its REAL timestamp,
+        // no +1ms hack — community-service treats perUserResolved as authoritative,
+        // not timestamp-gated), or NONE when they have hidden every message.
         const prev = overrides.get(communityId) ?? null;
         if (prev) {
-          const roomLastAt =
-            room.lastMessageAt instanceof Date
-              ? room.lastMessageAt.getTime()
-              : new Date(room.lastMessageAt ?? 0).getTime();
           const isSystem = prev.messageType.toUpperCase() === "SYSTEM";
           lastMessage = {
             username: isSystem ? "" : prev.senderName,
             message: convertMessageToPreview(prev.messageType, prev.content),
-            // +1ms over the (hidden) shared last so community-service's overlay,
-            // which gates on dateTime > the stored lastActivityAt, always fires
-            // for this viewer even though the previous message is genuinely older.
-            dateTime: roomLastAt + 1,
+            dateTime: prev.createdAt.getTime(),
             isSystem,
             userId: isSystem ? "" : prev.senderId,
           };
           hasLastMessage = true;
         }
-        // prev === null → no visible message remains for this viewer; leave
-        // hasLastMessage false and lastMessage undefined.
+        // prev === null → no visible message remains; hasLastMessage false +
+        // lastMessage undefined, but perUserResolved stays TRUE so community-service
+        // CLEARS the (now stale-for-this-viewer) community-wide column preview.
       } else {
-        // Shared last is VISIBLE (common path) — use the shared snapshot.
+        // Shared last is VISIBLE (common path) — the plain shared snapshot.
         const last = (room?.lastMessage ?? null) as RoomLastMessageJson | null;
         if (last && last.createdAt) {
           const createdAt =
@@ -641,6 +651,7 @@ export class CommunityMessageService {
         communityId,
         unreadMessageCount,
         hasLastMessage,
+        perUserResolved,
         ...(lastMessage ? { lastMessage } : {}),
         ...(personalLastMessage ? { personalLastMessage } : {}),
       };
@@ -1712,9 +1723,11 @@ export class CommunityMessageService {
       userId
     );
     // The deleted (now-hidden) message was the viewer's last iff nothing still
-    // visible is newer than it.
-    const wasEffectiveLast =
-      !prev || prev.createdAt.getTime() <= deletedMessageCreatedAt.getTime();
+    // visible is newer than it (single source of truth: deletedWasEffectiveLast).
+    const wasEffectiveLast = deletedWasEffectiveLast(
+      prev?.createdAt ?? null,
+      deletedMessageCreatedAt
+    );
     if (prev) {
       return {
         prevMessageId: prev.id,

@@ -29,7 +29,14 @@ function buildService(overrides: {
   hiddenMessageIds?: Set<string>;
   previousVisibleByRoom?: Map<
     string,
-    { id: string; messageType: string; message: string; createdAt: Date } | null
+    {
+      id: string;
+      messageType: string;
+      message: string;
+      createdAt: Date;
+      sentBy?: string;
+      senderName?: string;
+    } | null
   >;
 }) {
   const memberRepo = {
@@ -139,5 +146,100 @@ describe("getChatSummaries — personalLastMessage overlay", () => {
 
     expect(summaries[0]!.personalLastMessage).toBeUndefined();
     expect(summaries[0]!.lastMessage?.message).toBe("Community photo updated");
+  });
+
+  it("delete-for-me: surfaces the previous-visible message as lastMessage WITH sender identity (not a sender-less overlay)", async () => {
+    const sharedAt = new Date(1_700_000_000_000);
+    const { service } = buildService({
+      members: [{ roomId: COMM_JOINED, lastReadAt: null }],
+      rooms: [
+        {
+          id: COMM_JOINED,
+          lastMessageId: "m-last",
+          lastMessageAt: sharedAt,
+          lastMessage: {
+            content: "the message I deleted",
+            senderId: "carol",
+            senderName: "Carol",
+            messageType: "TEXT",
+            createdAt: sharedAt,
+          },
+        },
+      ],
+      personal: new Map(),
+      // The shared last is hidden from this viewer (they delete-for-me'd it)…
+      hiddenMessageIds: new Set(["m-last"]),
+      // …so their effective last is the previous visible message from Bob.
+      previousVisibleByRoom: new Map([
+        [
+          COMM_JOINED,
+          {
+            id: "m-prev",
+            sentBy: "bob",
+            senderName: "Bob",
+            messageType: "TEXT",
+            message: "earlier message",
+            createdAt: new Date(1_699_999_000_000),
+          },
+        ],
+      ]),
+    });
+
+    const summaries = await service.getChatSummaries({
+      userId: USER,
+      communityIds: [COMM_JOINED],
+    });
+
+    const s = summaries[0]!;
+    expect(s.hasLastMessage).toBe(true);
+    // perUserResolved => community-service treats this as authoritative (no +1ms).
+    expect(s.perUserResolved).toBe(true);
+    // Rendered as a MEMBER message shape (carries sender), NOT sender-less SYSTEM,
+    // with the previous message's REAL timestamp (no inflation hack).
+    expect(s.lastMessage).toEqual({
+      username: "Bob",
+      message: "earlier message",
+      dateTime: new Date(1_699_999_000_000).getTime(),
+      isSystem: false,
+      userId: "bob",
+    });
+    // No join line here → personalLastMessage stays absent (the two are now
+    // independent signals, no longer colliding in one overlay slot).
+    expect(s.personalLastMessage).toBeUndefined();
+  });
+
+  it("delete-for-me with NO remaining visible message → hasLastMessage false", async () => {
+    const sharedAt = new Date(1_700_000_000_000);
+    const { service } = buildService({
+      members: [{ roomId: COMM_JOINED, lastReadAt: null }],
+      rooms: [
+        {
+          id: COMM_JOINED,
+          lastMessageId: "m-last",
+          lastMessageAt: sharedAt,
+          lastMessage: {
+            content: "only message",
+            senderId: "carol",
+            senderName: "Carol",
+            messageType: "TEXT",
+            createdAt: sharedAt,
+          },
+        },
+      ],
+      personal: new Map(),
+      hiddenMessageIds: new Set(["m-last"]),
+      previousVisibleByRoom: new Map([[COMM_JOINED, null]]), // nothing remains
+    });
+
+    const summaries = await service.getChatSummaries({
+      userId: USER,
+      communityIds: [COMM_JOINED],
+    });
+
+    expect(summaries[0]!.hasLastMessage).toBe(false);
+    expect(summaries[0]!.lastMessage).toBeUndefined();
+    // perUserResolved stays TRUE so community-service CLEARS the stale column
+    // preview instead of leaving the deleted message showing.
+    expect(summaries[0]!.perUserResolved).toBe(true);
   });
 });

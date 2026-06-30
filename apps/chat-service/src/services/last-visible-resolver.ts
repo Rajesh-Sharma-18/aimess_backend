@@ -58,6 +58,12 @@ export interface VisibilitySource {
     roomId: string,
     userId: string
   ): Promise<VisibleLast | null>;
+  /**
+   * Of `userIds`, the subset who have PERSONALLY hidden `messageId` (delete-for-me).
+   * Used by the delete-for-everyone broadcast to find which recipients cannot see
+   * the new shared previous-visible message, so they get their own preview instead.
+   */
+  hidersAmong(messageId: string, userIds: string[]): Promise<Set<string>>;
 }
 
 /** A room's shared (global) last-message pointer — the list snapshot to validate. */
@@ -103,7 +109,10 @@ export async function resolveVisibleLastBulk(
     .filter((id): id is string => Boolean(id));
   if (!sharedIds.length) return overrides;
 
-  const hidden = await source.filterHidden(sharedIds, userId);
+  // `?? new Set()` guards against a source/mock returning undefined (the test
+  // repo proxy default) — the real repositories always return a Set.
+  const hidden =
+    (await source.filterHidden(sharedIds, userId)) ?? new Set<string>();
   if (!hidden.size) return overrides;
 
   const hiddenRooms = rooms.filter(
@@ -118,48 +127,83 @@ export async function resolveVisibleLastBulk(
 }
 
 /**
- * Single-room resolution: the viewer's effective last visible message.
- *   - `{ override: null }`         → shared last is visible; use the snapshot.
- *   - `{ override: VisibleLast }`  → shared last hidden; use this fallback.
- *   - `{ override: null, empty: true }` → no visible message remains.
+ * Pure predicate (the SINGLE source of truth for the "was-last" gate): given the
+ * viewer's newest-still-visible message's createdAt AFTER a delete (null = none
+ * remain) and the deleted message's createdAt, was the deleted message the
+ * viewer's effective last visible message? If so, a targeted delete-for-me list
+ * bump is warranted; otherwise hiding it changed nothing and the bump is a no-op.
+ *
+ * The three delete-for-me recalc methods already hold `prev` (they need it for
+ * the preview), so they call this directly instead of re-querying. A
+ * same-millisecond tie resolves to `true` (treat as last) — a harmless extra
+ * refresh in a rare edge, never a wrong preview.
  */
-export async function resolveVisibleLast(
-  source: VisibilitySource,
-  roomId: string,
-  sharedLastMessageId: string | null,
-  userId: string
-): Promise<{ override: VisibleLast | null; empty: boolean }> {
-  if (!sharedLastMessageId) {
-    // No shared last at all — fall back to the viewer's newest visible (covers
-    // rooms whose snapshot was never set but messages exist).
-    const prev = await source.findPreviousVisibleForUser(roomId, userId);
-    return { override: prev, empty: prev === null };
-  }
-  const hidden = await source.filterHidden([sharedLastMessageId], userId);
-  if (!hidden.has(sharedLastMessageId)) {
-    return { override: null, empty: false }; // shared last visible — use snapshot
-  }
-  const prev = await source.findPreviousVisibleForUser(roomId, userId);
-  return { override: prev, empty: prev === null };
+export function deletedWasEffectiveLast(
+  prevVisibleCreatedAt: Date | null,
+  deletedMessageCreatedAt: Date
+): boolean {
+  if (!prevVisibleCreatedAt) return true; // nothing visible remains → it was last
+  return prevVisibleCreatedAt.getTime() <= deletedMessageCreatedAt.getTime();
+}
+
+/** A per-recipient list-preview override for the delete-for-everyone fan-out. */
+export interface RecipientOverride {
+  lastMessageId: string;
+  /** epoch ms */
+  lastMessageAt: number;
+  senderId: string;
+  senderName: string;
+  messageType: string;
+  /** raw content for the caller's preview renderer */
+  content: unknown;
 }
 
 /**
- * Was `deletedMessageCreatedAt` the viewer's effective last visible message
- * before this delete? Called AFTER the mutation, so the deleted row is already
- * hidden: the deletion was the viewer's last iff nothing currently visible is
- * newer than it. Replaces the dead `recalc === null` guard so a delete-for-me on
- * a NON-last message no longer emits a redundant targeted list bump.
+ * After a delete-for-everyone rolls the SHARED snapshot back to `sharedPrev`
+ * (the new community-wide previous-visible message), some recipients may have
+ * PERSONALLY hidden `sharedPrev` too — for them the fanned-out preview would
+ * point at a message they cannot see. This resolves a per-recipient override for
+ * exactly those recipients (the others receive the shared preview unchanged).
  *
- * A same-millisecond tie resolves to `true` (treat as last) — a harmless extra
- * refresh in a rare edge, never a wrong preview.
+ * Cost is bounded: ONE `hidersAmong` lookup over the recipient list, then
+ * `findPreviousVisibleForUser` only for the (usually zero) recipients who hid it.
+ * When `sharedPrev` is null (the room was emptied) every recipient who still has
+ * a personal message gets their own; here we only special-case the hiders since a
+ * null shared preview already renders as the empty state for everyone.
  */
-export async function wasEffectiveLastForUser(
+export async function resolveForEveryoneOverrides(
   source: VisibilitySource,
   roomId: string,
-  userId: string,
-  deletedMessageCreatedAt: Date
-): Promise<boolean> {
-  const prev = await source.findPreviousVisibleForUser(roomId, userId);
-  if (!prev) return true; // nothing visible remains → the deleted msg was the last
-  return prev.createdAt.getTime() <= deletedMessageCreatedAt.getTime();
+  sharedPrevMessageId: string | null,
+  recipientIds: string[]
+): Promise<Map<string, RecipientOverride | null>> {
+  const overrides = new Map<string, RecipientOverride | null>();
+  if (!sharedPrevMessageId || !recipientIds.length) return overrides;
+
+  const hiders =
+    (await source.hidersAmong(sharedPrevMessageId, recipientIds)) ??
+    new Set<string>();
+  if (!hiders.size) return overrides;
+
+  const hiderList = [...hiders];
+  const resolved = await Promise.all(
+    hiderList.map((uid) => source.findPreviousVisibleForUser(roomId, uid))
+  );
+  hiderList.forEach((uid, i) => {
+    const v = resolved[i];
+    overrides.set(
+      uid,
+      v
+        ? {
+            lastMessageId: v.messageId,
+            lastMessageAt: v.createdAt.getTime(),
+            senderId: v.senderId,
+            senderName: v.senderName,
+            messageType: v.messageType,
+            content: v.content,
+          }
+        : null // the recipient has hidden everything → empty preview for them
+    );
+  });
+  return overrides;
 }

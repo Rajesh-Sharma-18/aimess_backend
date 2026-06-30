@@ -20,6 +20,21 @@ interface BumpPreview {
   text: string;
 }
 
+/**
+ * A per-recipient override of the bumped list preview. Used by the
+ * delete-for-everyone fan-out so a recipient who has personally hidden the new
+ * shared previous-visible message receives THEIR own visible preview instead.
+ * `null` => that recipient has no visible message (render the empty state).
+ */
+export interface RecipientBump {
+  lastMessageId: string;
+  /** epoch ms */
+  lastMessageAt: number;
+  senderId: string;
+  senderName: string;
+  preview: BumpPreview;
+}
+
 interface PublishConvUpdatedParams {
   redis: Redis | Cluster;
   type: "PRIVATE" | "GROUP";
@@ -30,7 +45,13 @@ interface PublishConvUpdatedParams {
   /** epoch ms */
   lastMessageAt: number;
   preview: BumpPreview;
+  /** Optional per-recipient preview overrides (key present => override applies;
+   *  value null => empty preview for that recipient). */
+  recipientOverrides?: Map<string, RecipientBump | null>;
 }
+
+/** Empty per-recipient preview (the recipient has hidden every message). */
+const EMPTY_BUMP_PREVIEW: BumpPreview = { contentType: "", text: "" };
 
 /**
  * Fire-and-forget `conv:updated` bump. The recipient list may be supplied
@@ -41,16 +62,35 @@ interface PublishConvUpdatedParams {
  */
 type PublishConvUpdatedSafeParams = Omit<
   PublishConvUpdatedParams,
-  "recipientIds"
+  "recipientIds" | "recipientOverrides"
 > &
   (
     | { recipientIds: string[]; fetchRecipients?: never }
     | { recipientIds?: never; fetchRecipients: () => Promise<string[]> }
-  );
+  ) & {
+    /** Lazily compute per-recipient overrides once the recipient list is known
+     *  (used by the delete-for-everyone fan-out). */
+    resolveOverrides?: (
+      recipientIds: string[]
+    ) => Promise<Map<string, RecipientBump | null>>;
+  };
 
 export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
   void (async () => {
     const recipientIds = p.recipientIds ?? (await p.fetchRecipients());
+    // Isolate per-recipient override resolution: it issues extra DB queries, and
+    // a transient failure there must NOT suppress the bump for EVERY recipient
+    // (the shared preview is correct for the vast majority who hid nothing).
+    let recipientOverrides: Map<string, RecipientBump | null> | undefined;
+    if (p.resolveOverrides) {
+      try {
+        recipientOverrides = await p.resolveOverrides(recipientIds);
+      } catch (err) {
+        logger.warn(
+          `conv:updated override resolution failed for ${p.roomId}; falling back to shared preview: ${String(err)}`
+        );
+      }
+    }
     await publishConvUpdated({
       redis: p.redis,
       type: p.type,
@@ -60,6 +100,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       lastMessageId: p.lastMessageId,
       lastMessageAt: p.lastMessageAt,
       preview: p.preview,
+      recipientOverrides,
     });
   })().catch((error) => {
     logger.warn(
@@ -77,6 +118,30 @@ export async function publishConvUpdated(
   try {
     const pipeline = p.redis.pipeline();
     for (const recipientId of recipientIds) {
+      // Per-recipient override (key present): a recipient who hid the shared
+      // previous-visible message gets their own preview; null => empty preview.
+      const hasOverride = p.recipientOverrides?.has(recipientId) ?? false;
+      const override = hasOverride
+        ? (p.recipientOverrides?.get(recipientId) ?? null)
+        : undefined;
+      const lastMessageId =
+        override === undefined
+          ? p.lastMessageId
+          : (override?.lastMessageId ?? "");
+      const lastMessage =
+        override === undefined
+          ? p.preview
+          : (override?.preview ?? EMPTY_BUMP_PREVIEW);
+      const lastMessageAt =
+        override === undefined
+          ? p.lastMessageAt
+          : (override?.lastMessageAt ?? p.lastMessageAt);
+      const senderId =
+        override === undefined ? p.senderId : (override?.senderId ?? "");
+      // An override is a delete-recalc preview, never a NEW message — it must
+      // never raise an unread badge (a null override has senderId "" which would
+      // otherwise compute unread:true and show a phantom badge on an empty row).
+      const unread = override === undefined ? recipientId !== senderId : false;
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
@@ -84,11 +149,11 @@ export async function publishConvUpdated(
           data: {
             type: p.type,
             roomId: p.roomId,
-            lastMessageId: p.lastMessageId,
-            lastMessage: p.preview,
-            lastMessageAt: p.lastMessageAt,
-            senderId: p.senderId,
-            unread: recipientId !== p.senderId,
+            lastMessageId,
+            lastMessage,
+            lastMessageAt,
+            senderId,
+            unread,
           },
         })
       );
@@ -121,6 +186,11 @@ interface PublishCommunityUpdatedParams {
    */
   subjectUserId?: string;
   selfPreview?: string;
+  /** Optional per-member preview overrides (delete-for-everyone fan-out): a
+   *  member who hid the shared previous-visible message gets their own preview;
+   *  value null => empty preview for that member. Takes precedence over the
+   *  shared preview but NOT over the self-referential selfPreview branch. */
+  recipientOverrides?: Map<string, RecipientBump | null>;
 }
 
 export async function publishCommunityUpdated(
@@ -160,6 +230,33 @@ export async function publishCommunityUpdated(
   try {
     const pipeline = p.redis.pipeline();
     for (const memberId of eligibleIds) {
+      // Per-member override (delete-for-everyone fan-out): a member who hid the
+      // shared previous-visible message gets their OWN preview. Mutually
+      // exclusive with the self-referential selfPreview branch in practice
+      // (selfPreview is only set for lifecycle lines, overrides only for deletes).
+      const hasOverride = p.recipientOverrides?.has(memberId) ?? false;
+      const override = hasOverride
+        ? (p.recipientOverrides?.get(memberId) ?? null)
+        : undefined;
+      if (override !== undefined) {
+        pipeline.publish(
+          `user:${memberId}`,
+          JSON.stringify({
+            event: "community:updated",
+            data: {
+              communityId: p.communityId,
+              roomId: p.roomId,
+              lastMessageId: override?.lastMessageId ?? "",
+              lastMessage: override?.preview ?? EMPTY_BUMP_PREVIEW,
+              lastMessageAt: override?.lastMessageAt ?? p.lastMessageAt,
+              senderId: override?.senderId ?? "",
+              senderName: override?.senderName ?? "",
+              unread: false,
+            },
+          })
+        );
+        continue;
+      }
       // Self-referential system line: the subject member sees "You …"; everyone
       // else gets the third-person preview as-is.
       const lastMessage =
@@ -199,14 +296,33 @@ export async function publishCommunityUpdated(
  */
 type PublishCommunityUpdatedSafeParams = Omit<
   PublishCommunityUpdatedParams,
-  "memberIds"
-> & { fetchMembers: () => Promise<string[]> };
+  "memberIds" | "recipientOverrides"
+> & {
+  fetchMembers: () => Promise<string[]>;
+  /** Lazily compute per-member overrides once the member list is known
+   *  (delete-for-everyone fan-out). */
+  resolveOverrides?: (
+    memberIds: string[]
+  ) => Promise<Map<string, RecipientBump | null>>;
+};
 
 export function publishCommunityUpdatedSafe(
   p: PublishCommunityUpdatedSafeParams
 ): void {
   void (async () => {
     const memberIds = await p.fetchMembers();
+    // Isolate override resolution so a transient query failure never suppresses
+    // the bump for EVERY member (the shared preview is correct for the majority).
+    let recipientOverrides: Map<string, RecipientBump | null> | undefined;
+    if (p.resolveOverrides) {
+      try {
+        recipientOverrides = await p.resolveOverrides(memberIds);
+      } catch (err) {
+        logger.warn(
+          `community:updated override resolution failed for ${p.communityId}; falling back to shared preview: ${String(err)}`
+        );
+      }
+    }
     await publishCommunityUpdated({
       redis: p.redis,
       communityId: p.communityId,
@@ -219,6 +335,7 @@ export function publishCommunityUpdatedSafe(
       preview: p.preview,
       subjectUserId: p.subjectUserId,
       selfPreview: p.selfPreview,
+      recipientOverrides,
     });
   })().catch((error) => {
     logger.warn(
