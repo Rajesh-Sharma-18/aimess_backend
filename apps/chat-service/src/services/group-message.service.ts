@@ -24,6 +24,12 @@ import { assertGroupMember } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
+  resolveForEveryoneOverrides,
+  deletedWasEffectiveLast,
+  type RecipientOverride,
+} from "./last-visible-resolver.js";
+import { groupVisibilitySource } from "./last-visible-adapters.js";
+import {
   resolveMediaUrlMap,
   urlFromMap,
   applyUrlMapToFiles,
@@ -444,6 +450,86 @@ export class GroupMessageService {
     return this.messageRepo.countSearchResults(roomId, query);
   }
 
+  /**
+   * After a delete-for-everyone, if the deleted message was the room's current
+   * last message, finds the previous visible message and updates the room preview.
+   * Returns data for the conv:updated broadcast, or null when the deleted message
+   * was not the last (no-op).
+   */
+  async recalculateLastMessageAfterDelete(
+    roomId: string,
+    deletedMessageId: string
+  ): Promise<{
+    prevMessageId: string | null;
+    messageType: string;
+    content: unknown;
+    senderId: string | null;
+    senderName: string;
+    createdAt: Date;
+    hasLastMessage: boolean;
+  } | null> {
+    const [room, prev] = await Promise.all([
+      this.roomRepo.findByRoomId(roomId),
+      this.messageRepo.findPreviousVisible(roomId),
+    ]);
+    if (!room) return null;
+    if (
+      room.lastMessageId !== deletedMessageId &&
+      room.lastMessageId === (prev?.id ?? null)
+    ) {
+      return null;
+    }
+    if (prev) {
+      const prevContent = (prev.content ?? { text: "" }) as { text?: string };
+      await this.roomRepo.setLastMessage(roomId, {
+        id: prev.id,
+        senderId: prev.senderId ?? null,
+        senderName: prev.senderName ?? "",
+        content: { text: prevContent.text ?? "" },
+        messageType: prev.messageType,
+        createdAt: prev.createdAt,
+      });
+      return {
+        prevMessageId: prev.id,
+        messageType: prev.messageType,
+        content: prev.content,
+        senderId: prev.senderId ?? null,
+        senderName: prev.senderName ?? "",
+        createdAt: prev.createdAt,
+        hasLastMessage: true,
+      };
+    }
+
+    await this.roomRepo.setLastMessage(roomId, null);
+    return {
+      prevMessageId: null,
+      messageType: "",
+      content: null,
+      senderId: null,
+      senderName: "",
+      createdAt: new Date(0),
+      hasLastMessage: false,
+    };
+  }
+
+  /**
+   * Per-recipient list-preview overrides for a delete-for-everyone fan-out: the
+   * recipients who have personally hidden `sharedPrevMessageId` get their own
+   * visible preview instead of the shared one. Empty map in the common case.
+   */
+  async resolveForEveryoneOverrides(
+    roomId: string,
+    sharedPrevMessageId: string | null,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    return resolveForEveryoneOverrides(
+      groupVisibilitySource(this.messageRepo),
+      roomId,
+      sharedPrevMessageId,
+      recipientIds
+    );
+  }
+
   async deleteForMe(
     messageId: string,
     userId: string,
@@ -463,6 +549,69 @@ export class GroupMessageService {
     if (!member) throw new BadRequestError("CHAT_NOT_A_MEMBER");
 
     return this.messageRepo.deleteForMe(messageId, userId);
+  }
+
+  /**
+   * After a delete-for-me on the group's last message, find the message still
+   * visible to THAT member (skipping globally-deleted and personally-hidden
+   * messages) so a TARGETED conv:updated can refresh only the deleting user's
+   * list preview. Mirror of the community/private forMe variant: it does NOT
+   * touch the shared GroupRoom snapshot — every other member is unaffected.
+   * Always returns a recalc object (hasLastMessage:false when the user has now
+   * hidden every message) with a `wasEffectiveLast` flag (via
+   * deletedWasEffectiveLast); the caller gates the broadcast on it so a
+   * delete-for-me on a NON-last message is a no-op.
+   */
+  async recalculateLastMessageAfterDeleteForMe(
+    roomId: string,
+    deletedMessageCreatedAt: Date,
+    userId: string
+  ): Promise<{
+    prevMessageId: string | null;
+    messageType: string;
+    content: unknown;
+    senderId: string | null;
+    senderName: string;
+    createdAt: Date;
+    hasLastMessage: boolean;
+    /** True iff the deleted message was the viewer's last visible message — the
+     *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    wasEffectiveLast: boolean;
+  } | null> {
+    const room = await this.roomRepo.findByRoomId(roomId);
+    if (!room) return null;
+    const prev = await this.messageRepo.findPreviousVisibleForUser(
+      roomId,
+      userId
+    );
+    // The deleted (now-hidden) message was the viewer's last iff nothing still
+    // visible is newer than it (single source of truth: deletedWasEffectiveLast).
+    const wasEffectiveLast = deletedWasEffectiveLast(
+      prev?.createdAt ?? null,
+      deletedMessageCreatedAt
+    );
+    if (prev) {
+      return {
+        prevMessageId: prev.id,
+        messageType: prev.messageType,
+        content: prev.content,
+        senderId: prev.senderId ?? null,
+        senderName: prev.senderName ?? "",
+        createdAt: prev.createdAt,
+        hasLastMessage: true,
+        wasEffectiveLast,
+      };
+    }
+    return {
+      prevMessageId: null,
+      messageType: "",
+      content: null,
+      senderId: null,
+      senderName: "",
+      createdAt: new Date(0),
+      hasLastMessage: false,
+      wasEffectiveLast: true,
+    };
   }
 
   async deleteMessage(

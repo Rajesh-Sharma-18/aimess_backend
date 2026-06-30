@@ -30,6 +30,13 @@ export class LivestreamCommentRepository {
     return this.prisma.livestreamComment.findUnique({ where: { id } });
   }
 
+  async findByIds(ids: string[]): Promise<LivestreamComment[]> {
+    if (ids.length === 0) return [];
+    return this.prisma.livestreamComment.findMany({
+      where: { id: { in: ids } },
+    });
+  }
+
   async deleteById(id: string): Promise<void> {
     try {
       await this.prisma.livestreamComment.delete({ where: { id } });

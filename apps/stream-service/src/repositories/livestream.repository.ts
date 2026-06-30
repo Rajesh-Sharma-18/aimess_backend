@@ -103,6 +103,51 @@ export class LivestreamRepository {
     });
   }
 
+  /**
+   * Race-safe cap helper: count active (PENDING+LIVE) streams in a community
+   * created at-or-before the given (createdAt, id) — i.e. THIS stream's 0-based
+   * rank. Deterministic createdAt + id tiebreak so two same-millisecond creates
+   * resolve to distinct ranks. The just-created row is excluded from the prior
+   * count (strictly before by createdAt, or equal createdAt with a lower id).
+   */
+  async countActiveCreatedBefore(
+    communityId: string,
+    createdAt: Date,
+    id: string
+  ): Promise<number> {
+    return this.prisma.livestream.count({
+      where: {
+        communityId,
+        status: { in: [...ACTIVE_STATUSES] },
+        OR: [
+          { createdAt: { lt: createdAt } },
+          { AND: [{ createdAt }, { id: { lt: id } }] },
+        ],
+      },
+    });
+  }
+
+  /**
+   * Batched LIVE-only counts for a set of communities. Backs the
+   * `activeLivestreamCount` enrichment on the mine list + chat rooms list.
+   * Communities with 0 live streams are omitted. Counts in memory (live streams
+   * per community are capped low) to avoid any Mongo groupBy edge cases.
+   */
+  async countLiveByCommunityIds(
+    communityIds: string[]
+  ): Promise<Array<{ communityId: string; count: number }>> {
+    if (communityIds.length === 0) return [];
+    const rows = await this.prisma.livestream.findMany({
+      where: { communityId: { in: communityIds }, status: "LIVE" },
+      select: { communityId: true },
+    });
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      counts.set(r.communityId, (counts.get(r.communityId) ?? 0) + 1);
+    }
+    return [...counts].map(([communityId, count]) => ({ communityId, count }));
+  }
+
   /** Atomic +1 on totalViews. Best-effort — callers should not throw on failure. */
   async incrementTotalViews(id: string): Promise<void> {
     await this.prisma.livestream.update({
@@ -128,6 +173,25 @@ export class LivestreamRepository {
       distinct: ["communityId"],
     });
     return rows.map((r) => r.communityId);
+  }
+
+  /**
+   * Heartbeat sweeper input: LIVE streams whose host hasn't sent a heartbeat
+   * since `cutoff`. Covers two cases:
+   *  - `lastHeartbeatAt < cutoff` (host was sending, then stopped), and
+   *  - `lastHeartbeatAt == null && livedAt < cutoff` (stream went LIVE before
+   *    heartbeats were implemented, or the client never started sending them).
+   */
+  async findStaleLiveStreams(cutoff: Date): Promise<Livestream[]> {
+    return this.prisma.livestream.findMany({
+      where: {
+        status: "LIVE",
+        OR: [
+          { lastHeartbeatAt: { lt: cutoff } },
+          { lastHeartbeatAt: null, livedAt: { lt: cutoff } },
+        ],
+      },
+    } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
   }
 
   // ---------------------------------------------------------------------------

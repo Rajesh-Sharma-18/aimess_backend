@@ -618,6 +618,8 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             createdAt: { $gt: { $date: params.afterDate.toISOString() } },
             deletedBy: { $ne: params.userId },
+            // Personal system messages (e.g. "You joined") are informational only.
+            visibleToUserId: null,
             // Hidden membership lines never count toward unread (consistency with
             // countUnreadBulk / conversationMatch).
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
@@ -660,8 +662,10 @@ export class GeneralRoomMessageRepository {
             deletedForAll: false,
             deletedBy: { $ne: params.userId },
             sentBy: { $ne: params.userId },
-            // PERSONAL messages targeted at another user never count as unread here.
-            visibleToUserId: { $in: [null, params.userId] },
+            // PERSONAL system messages (visibleToUserId != null) are informational
+            // events (e.g. "You joined the community") and must never inflate unread.
+            // Only community-wide messages (visibleToUserId === null) count.
+            visibleToUserId: null,
             // Suppressed moderation lines never count toward unread either.
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
           },
@@ -1063,5 +1067,104 @@ export class GeneralRoomMessageRepository {
       where: { id: messageId },
       data: { reports: reports as unknown as Prisma.InputJsonValue },
     });
+  }
+
+  /**
+   * Most recent community-wide visible message for list-preview recalculation
+   * after a delete-for-everyone. Returns the newest message that is:
+   *   - not deleted for all
+   *   - community-wide (visibleToUserId is null / absent — personal system lines
+   *     like "You joined" must never become the community list preview)
+   *   - not a hidden lifecycle system type (joined/left etc.)
+   *
+   * Uses LIMIT 1 on a createdAt-desc sort for O(log n) performance via the
+   * existing (roomId, createdAt) index.
+   */
+  /**
+   * Given a list of message IDs (typically one per room from the lastMessageId
+   * field), returns the subset that are hidden from userId — either globally
+   * deleted or in that user's personal deletedBy array.
+   * Single batch aggregateRaw; used in getChatSummaries to avoid N+1.
+   */
+  async filterHiddenByUser(
+    messageIds: string[],
+    userId: string
+  ): Promise<Set<string>> {
+    if (!messageIds.length) return new Set();
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            _id: { $in: messageIds.map((id) => ({ $oid: id })) },
+            $or: [{ deletedForAll: true }, { deletedBy: userId }],
+          },
+        },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    return new Set(
+      raw
+        .map((d) => (typeof d._id === "string" ? d._id : (d._id?.$oid ?? "")))
+        .filter(Boolean)
+    );
+  }
+
+  async findPreviousVisibleMessage(
+    roomId: string
+  ): Promise<GeneralRoomMessage | null> {
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $oid: roomId },
+            deletedForAll: false,
+            // Personal system messages must not become the community-wide preview.
+            // $in:[null] also matches docs where the field is absent.
+            visibleToUserId: { $in: [null] },
+            // Hidden lifecycle lines (member joined/left) are never shown.
+            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: 1 },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+
+    if (!raw.length) return null;
+    const id = typeof raw[0]._id === "string" ? raw[0]._id : raw[0]._id?.$oid;
+    if (!id) return null;
+    return this.prisma.generalRoomMessage.findUnique({ where: { id } });
+  }
+
+  /**
+   * Most recent message visible to a specific community member — same criteria
+   * as findPreviousVisibleMessage but also excludes messages the user has
+   * hidden for themselves (userId appears in the deletedBy array).
+   * Used to build a per-user conv:updated after delete-for-me on the last message.
+   */
+  async findPreviousVisibleForUser(
+    roomId: string,
+    userId: string
+  ): Promise<GeneralRoomMessage | null> {
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $oid: roomId },
+            deletedForAll: false,
+            deletedBy: { $nin: [userId] },
+            visibleToUserId: { $in: [null] },
+            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: 1 },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+
+    if (!raw.length) return null;
+    const id = typeof raw[0]._id === "string" ? raw[0]._id : raw[0]._id?.$oid;
+    if (!id) return null;
+    return this.prisma.generalRoomMessage.findUnique({ where: { id } });
   }
 }

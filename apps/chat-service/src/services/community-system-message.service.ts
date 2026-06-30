@@ -6,6 +6,7 @@ import {
   isEligibleForLastActivity,
   isHiddenSystemMessage,
   isActorLessSystemMessage,
+  isPersonalJoinSessionType,
   sanitizeCommunitySystemMetadata,
   buildCommunitySystemFallbackText,
   buildCommunitySystemSelfPreview,
@@ -152,11 +153,15 @@ export class CommunitySystemMessageService {
           : {}),
       };
 
+      // For PERSONAL messages the stored text is always seen by the target user —
+      // pass visibleToUserId as the viewer so "You are muted until …" is persisted
+      // instead of the third-person form (which would never be read by anyone else).
       const fallbackText = buildCommunitySystemFallbackText(
         systemMessageType,
         enrichedMetadata,
         actorName,
-        targetName
+        targetName,
+        isPersonal ? (visibleToUserId ?? undefined) : undefined
       );
 
       // ACTOR-LESS lifecycle types ("Community created", "Community photo
@@ -210,6 +215,29 @@ export class CommunitySystemMessageService {
           );
           return null;
         }
+      }
+
+      // Stale-join-line cleanup: before inserting a new personal join-session
+      // line (COMMUNITY_JOINED / JOIN_REQUEST_APPROVED), hard-delete any prior
+      // ones for the same user in this room. This handles a race condition where
+      // the member-synced LEFT cleanup (which uses a timestamp bound) ran before
+      // the previous join message was flushed to DB — leaving an orphaned message
+      // that would appear alongside the new one after the user re-joined.
+      if (
+        isPersonal &&
+        visibleToUserId &&
+        isPersonalJoinSessionType(systemMessageType)
+      ) {
+        await this.messageRepo
+          .deletePersonalJoinMessages({
+            roomId: communityId,
+            userId: visibleToUserId,
+          })
+          .catch((err: unknown) => {
+            logger.warn(
+              `CommunitySystemMessageService|stale join-line cleanup failed community=${communityId} user=${visibleToUserId}: ${String(err)}`
+            );
+          });
       }
 
       const seq = await this.roomRepo.allocateSequence(communityId);

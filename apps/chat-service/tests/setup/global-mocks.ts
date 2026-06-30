@@ -83,4 +83,17 @@ jest.mock("../../src/lib/user-service-client.js", () => ({
   fetchAccountsBatch: jest.fn(async () => []),
 }));
 
+// --- stream-service gRPC client (uses import.meta.url + proto loader). The
+//     community rooms service imports it at module load; mock it so CJS-mode
+//     Jest never parses the real ESM client (__dirname redeclare). app-factory
+//     injects its own stub into CommunityRoomService for behavior. ------------
+jest.mock("../../src/grpc/stream.client.js", () => ({
+  getStreamCountsClient: jest.fn(() => ({
+    getActiveStreamCounts: jest.fn(async () => new Map()),
+  })),
+  createStreamCountsClient: jest.fn(() => ({
+    getActiveStreamCounts: jest.fn(async () => new Map()),
+  })),
+}));
+
 export {};

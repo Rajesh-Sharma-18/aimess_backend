@@ -3,6 +3,7 @@
   PrivateRoom,
   Prisma,
 } from "../generated/prisma/index.js";
+import { withWriteConflictRetry } from "../lib/db-errors.js";
 
 export class PrivateRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -15,11 +16,16 @@ export class PrivateRoomRepository {
   }
 
   async allocateSequence(roomId: string): Promise<number> {
-    const r = await this.prisma.privateRoom.update({
-      where: { roomId },
-      data: { lastSequence: { increment: 1 } },
-      select: { lastSequence: true },
-    });
+    // Bursty concurrent sends all `$inc` the same PrivateRoom document; retry
+    // the transient Mongo write-conflict (Prisma P2034) so fast/parallel sends
+    // don't fail with a user-visible SERVICE_ERROR. See withWriteConflictRetry.
+    const r = await withWriteConflictRetry(() =>
+      this.prisma.privateRoom.update({
+        where: { roomId },
+        data: { lastSequence: { increment: 1 } },
+        select: { lastSequence: true },
+      })
+    );
     return r.lastSequence;
   }
 
@@ -264,6 +270,42 @@ export class PrivateRoomRepository {
         pinnedCount: { increment: inc },
         ...(inc > 0 ? { lastPinnedAt: new Date() } : {}),
       },
+    });
+  }
+
+  /**
+   * Overwrite the room's last-message snapshot after a delete-for-everyone
+   * removes the current last message. Accepts null to clear (no visible messages
+   * remain). Unlike updateRoomOnNewMessage, this does not touch unread counts.
+   */
+  async setLastMessage(
+    roomId: string,
+    message: {
+      id: string;
+      senderId: string;
+      content: unknown;
+      messageType: string;
+      createdAt: Date;
+    } | null
+  ): Promise<void> {
+    await this.prisma.privateRoom.update({
+      where: { roomId },
+      data: message
+        ? {
+            lastMessageId: message.id,
+            lastMessageAt: message.createdAt,
+            lastMessage: {
+              content: message.content as Prisma.InputJsonValue,
+              senderId: message.senderId,
+              messageType: message.messageType,
+              createdAt: message.createdAt.toISOString(),
+            } as unknown as Prisma.InputJsonValue,
+          }
+        : {
+            lastMessageId: null,
+            lastMessageAt: null,
+            lastMessage: null as unknown as Prisma.InputJsonValue,
+          },
     });
   }
 

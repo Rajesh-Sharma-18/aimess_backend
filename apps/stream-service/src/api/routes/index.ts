@@ -34,6 +34,11 @@ export function createServiceRoutes(controller: StreamController): IRouter {
     authenticateAccessToken,
     controller.goLive
   );
+  router.post(
+    "/streams/:id/heartbeat",
+    authenticateAccessToken,
+    controller.heartbeat
+  );
   router.get(
     "/streams/:id/comments",
     authenticateAccessToken,
@@ -60,6 +65,20 @@ export function createServiceRoutes(controller: StreamController): IRouter {
     controller.unbanUser
   );
   router.get("/streams/:id/bans", authenticateAccessToken, controller.listBans);
+
+  // Comment reporting — any authenticated user.
+  router.post(
+    "/streams/:id/comments/:commentId/report",
+    authenticateAccessToken,
+    controller.reportComment
+  );
+
+  // Reported comments list — owner or community admin/moderator (enforced in service).
+  router.get(
+    "/streams/:id/comments/reports",
+    authenticateAccessToken,
+    controller.listCommentReports
+  );
 
   return router;
 }

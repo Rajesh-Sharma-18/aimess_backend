@@ -116,6 +116,40 @@ export function assertCommunityRoomWritable(
 }
 
 /**
+ * True when the member row carries an effective moderation mute. The mute state
+ * is mirrored onto RoomMember from community-service (`community.member.mute_synced`)
+ * so this is a pure, allocation-free check on an already-loaded row — no gRPC on
+ * the hot send path. Lazy expiry: a timed mute (`mutedUntil`) auto-lifts the
+ * instant it passes, even before the auto-unmute sweep clears the flag. An
+ * indefinite mute has `isMuted=true` with `mutedUntil=null`.
+ */
+export function isCommunityMemberMuted(
+  member: Pick<RoomMember, "isMuted" | "mutedUntil"> | null | undefined
+): boolean {
+  if (!member?.isMuted) return false;
+  if (member.mutedUntil == null) return true; // indefinite
+  return member.mutedUntil.getTime() > Date.now();
+}
+
+/**
+ * Community WRITE gate for moderation mute: a muted member cannot send / reply /
+ * edit / react / pin (Telegram parity — they keep full READ access). Call it in
+ * every community write path AFTER the membership/role guard (which loads the
+ * member), reusing the returned row so there is zero extra I/O. The mute is
+ * enforced server-side for BOTH socket and REST since every write funnels
+ * through chat-service.
+ *
+ * @throws ForbiddenError `CHAT_MUTED_IN_COMMUNITY` when the member is muted.
+ */
+export function assertCommunityMemberNotMuted(
+  member: Pick<RoomMember, "isMuted" | "mutedUntil"> | null | undefined
+): void {
+  if (isCommunityMemberMuted(member)) {
+    throw new ForbiddenError("CHAT_MUTED_IN_COMMUNITY");
+  }
+}
+
+/**
  * Community read access (Telegram-style): the caller is either an ACTIVE member
  * OR the community is PUBLIC (non-members can read PUBLIC community chat
  * history). For PRIVATE communities, active membership is required.

@@ -7,7 +7,7 @@ export const createStreamSchema = z.object({
   description: z.string().max(1000).optional(),
   thumbnail: z.string().url().optional(),
   sourceType: z
-    .enum(["PHONE_CAMERA", "URL", "YOUTUBE"])
+    .enum(["PHONE_CAMERA", "OBS_RTMP", "URL", "YOUTUBE"])
     .default("PHONE_CAMERA"),
   sourceUrl: z.string().min(1).optional(),
 });
@@ -49,9 +49,35 @@ export const setCommentStatusSchema = z.object({
   enabled: z.boolean(),
 });
 
+/** POST /streams/:id/comments/:commentId/report body — user reports a comment. */
+export const reportCommentSchema = z
+  .object({
+    reason: z.enum([
+      "OFFENSIVE_LANGUAGE",
+      "SPAM",
+      "INAPPROPRIATE_CONTENT",
+      "SCAM_OR_FRAUD",
+      "IMPERSONATION",
+      "OTHER",
+    ]),
+    details: z.string().max(500).optional(),
+  })
+  .refine(
+    (d) => d.reason !== "OTHER" || (!!d.details && d.details.trim().length > 0),
+    { message: "Details are required when reason is OTHER", path: ["details"] }
+  );
+
+/** GET /streams/:id/comments/reports query — newest-first cursor page. */
+export const reportsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  before: z.string().min(1).optional(),
+});
+
 export type CreateStreamInput = z.infer<typeof createStreamSchema>;
 export type ListStreamsQuery = z.infer<typeof listStreamsQuerySchema>;
 export type UpdateStreamInput = z.infer<typeof updateStreamSchema>;
 export type CommentsQuery = z.infer<typeof commentsQuerySchema>;
 export type BanUserInput = z.infer<typeof banUserSchema>;
 export type SetCommentStatusInput = z.infer<typeof setCommentStatusSchema>;
+export type ReportCommentInput = z.infer<typeof reportCommentSchema>;
+export type ReportsQuery = z.infer<typeof reportsQuerySchema>;

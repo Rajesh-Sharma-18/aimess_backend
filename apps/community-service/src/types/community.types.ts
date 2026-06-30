@@ -76,7 +76,11 @@ export type CommunityData = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
-  /** Currently-LIVE streams for this community. Empty array when none are live. */
+  /** Spec-aligned alias of `isLive` — true when ≥1 livestream is LIVE. */
+  hasActiveLivestream: boolean;
+  /** Number of currently-LIVE streams (equals liveStreams.length, clamped 0–5). */
+  activeLivestreamCount: number;
+  /** Currently-LIVE streams for this community (the active livestreams). Empty when none. */
   liveStreams: LiveStreamSummary[];
   /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
   moderationStatus: CommunityModerationStatus;
@@ -90,6 +94,16 @@ export type CommunityData = {
   createdAt: string;
   updatedAt: string;
   lastActivity: CommunityLastActivity;
+  /**
+   * True when the caller has an active MODERATION mute (silenced by a moderator/admin).
+   * Distinct from `isMuted` which is the notification mute (caller silenced the community).
+   */
+  isMemberMuted: boolean;
+  /**
+   * ISO-8601 expiry of the caller's moderation mute; null = indefinitely muted or not muted.
+   * Only meaningful when `isMemberMuted` is true.
+   */
+  memberMutedUntil: string | null;
 };
 
 /**
@@ -261,10 +275,18 @@ export type CommunityListItem = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
+  /** Spec-aligned alias of `isLive` — true when ≥1 livestream is LIVE. */
+  hasActiveLivestream: boolean;
+  /** Number of currently-LIVE streams (0–5). */
+  activeLivestreamCount: number;
   /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
   /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
   status: "ACTIVE" | "CLOSED";
+  /** True when the caller has an active MODERATION mute (silenced by a mod/admin). */
+  isMemberMuted: boolean;
+  /** ISO-8601 expiry of the caller's moderation mute; null = indefinite or not muted. */
+  memberMutedUntil: string | null;
 };
 
 /**
@@ -315,6 +337,10 @@ export type CommunityDiscoverItem = {
   announcementEnabled: boolean;
   /** True when the community has at least one active livestream right now. */
   isLive: boolean;
+  /** Spec-aligned alias of `isLive` — true when ≥1 livestream is LIVE. */
+  hasActiveLivestream: boolean;
+  /** Number of currently-LIVE streams (0–5). */
+  activeLivestreamCount: number;
   /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
   /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
@@ -355,6 +381,13 @@ export type CommunityMemberData = {
   mutedBy: string | null;
   /** ISO-8601 timestamp when the mute expires; null = indefinite or not muted. */
   mutedUntil: string | null;
+  /**
+   * True while a moderation mute is currently effective for this member
+   * (derived: `mutedAt != null && (mutedUntil == null || mutedUntil > now)`).
+   * Single source of truth for "is this member muted" in member-roster reads.
+   * Distinct from the per-user notification mute on `CommunityData.isMuted`.
+   */
+  isMuted: boolean;
 };
 
 /**
@@ -510,6 +543,8 @@ export type CommunityInviteLinkData = {
   createdAt: string;
   /** Computed: not revoked, not expired, not exhausted. */
   isActive: boolean;
+  /** True when this represents the community's permanent invitation code (stored on the Community row, not a CommunityInviteLink row). */
+  isPermanent: boolean;
 };
 
 /**
@@ -538,6 +573,26 @@ export type InviteLinkPreviewData = {
   appDeepLink: string;
   expiresAt: number | null;
   creatorId: string;
+};
+
+/**
+ * Response for `GET /communities/:id/invitation-link`.
+ *
+ * The permanent invitation link for a PRIVATE community — generated once during
+ * the community's lifetime and NEVER changed unless an admin explicitly requests
+ * regeneration (future `POST /communities/:id/regenerate-invitation` feature).
+ * Callers may safely cache this response indefinitely; the link is stable.
+ */
+export type PermanentInvitationLinkData = {
+  communityId: string;
+  communityName: string;
+  invitationCode: string;
+  /** HTTPS shareable link: `https://aimess.me/+<code>` */
+  invitationLink: string;
+  /** App deep-link: `aimess://join?code=<code>` */
+  appDeepLink: string;
+  /** Epoch ms — when the code was first generated. */
+  createdAt: number;
 };
 
 /** Liked/favorited community record. */

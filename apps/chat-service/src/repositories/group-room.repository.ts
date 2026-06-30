@@ -3,6 +3,7 @@
   GroupRoom,
   Prisma,
 } from "../generated/prisma/index.js";
+import { withWriteConflictRetry } from "../lib/db-errors.js";
 
 /** Clone a date pinned to the end of its calendar day (inclusive upper bound). */
 function endOfDay(d: Date): Date {
@@ -54,11 +55,16 @@ export class GroupRoomRepository {
   }
 
   async allocateSequence(roomId: string): Promise<number> {
-    const r = await this.prisma.groupRoom.update({
-      where: { roomId },
-      data: { lastSequence: { increment: 1 } },
-      select: { lastSequence: true },
-    });
+    // Bursty concurrent sends all `$inc` the same GroupRoom document; retry the
+    // transient Mongo write-conflict (Prisma P2034) so fast/parallel sends don't
+    // fail with a user-visible SERVICE_ERROR. See withWriteConflictRetry.
+    const r = await withWriteConflictRetry(() =>
+      this.prisma.groupRoom.update({
+        where: { roomId },
+        data: { lastSequence: { increment: 1 } },
+        select: { lastSequence: true },
+      })
+    );
     return r.lastSequence;
   }
 
@@ -175,6 +181,45 @@ export class GroupRoomRepository {
           createdAt: message.createdAt,
         },
       },
+    });
+  }
+
+  /**
+   * Overwrite the room's last-message snapshot after a delete-for-everyone
+   * removes the current last message. Accepts null to clear (no visible messages
+   * remain). Unlike updateLastMessage (new-send path), this does not require
+   * a full message object and is not retried on write-conflict.
+   */
+  async setLastMessage(
+    roomId: string,
+    message: {
+      id: string;
+      senderId: string | null;
+      senderName: string;
+      content: { text: string };
+      messageType: string;
+      createdAt: Date;
+    } | null
+  ): Promise<void> {
+    await this.prisma.groupRoom.update({
+      where: { roomId },
+      data: message
+        ? {
+            lastMessageId: message.id,
+            lastMessageAt: message.createdAt,
+            lastMessagePreview: {
+              text: message.content?.text || "",
+              senderId: message.senderId,
+              senderName: message.senderName,
+              messageType: message.messageType,
+              createdAt: message.createdAt,
+            },
+          }
+        : {
+            lastMessageId: null,
+            lastMessageAt: null,
+            lastMessagePreview: null as unknown as Prisma.InputJsonValue,
+          },
     });
   }
 

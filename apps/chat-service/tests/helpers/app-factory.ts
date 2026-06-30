@@ -126,6 +126,7 @@ export interface BuiltMocks {
   cacheRepo: any;
   // peers / infra
   userServiceClient: any;
+  streamCountsClient: any;
   redis: any;
   userSnapshotService: UserSnapshotService;
   // services (handy for spies in a few specs)
@@ -180,6 +181,7 @@ export function buildApp(): BuiltApp {
   // -- Real services wired to mocks --
   const privateRoomService = new PrivateRoomService(
     privateRoomRepo,
+    privateMessageRepo,
     cacheRepo,
     userSnapshotService,
     userServiceClient,
@@ -218,7 +220,8 @@ export function buildApp(): BuiltApp {
     groupMemberRepo,
     groupInviteLinkRepo,
     groupSystemMessageService,
-    redis
+    redis,
+    groupMessageRepo
   );
   const groupMessageService = new GroupMessageService(
     groupMessageRepo,
@@ -244,10 +247,16 @@ export function buildApp(): BuiltApp {
   const notificationService = new NotificationService(notificationRepo);
   const callService = new CallService(callRepo, privateRoomRepo, redis);
 
+  // Stub stream-counts gRPC client: default to "no live streams". A livestream
+  // test overrides streamCountsClient.getActiveStreamCounts per scenario.
+  const streamCountsClient: any = {
+    getActiveStreamCounts: jest.fn(async () => new Map()),
+  };
   const communityRoomService = new CommunityRoomService(
     generalRoomRepo,
     roomMemberRepo,
-    cacheRepo
+    cacheRepo,
+    streamCountsClient
   );
   const communityMessageService = new CommunityMessageService(
     generalRoomMessageRepo,
@@ -336,6 +345,7 @@ export function buildApp(): BuiltApp {
       callRepo,
       cacheRepo,
       userServiceClient,
+      streamCountsClient,
       redis,
       userSnapshotService,
       presenceService,

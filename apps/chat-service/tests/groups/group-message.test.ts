@@ -327,6 +327,83 @@ describe("POST /messages/delete", () => {
 
     expect(res.status).toBe(400);
   });
+
+  // --- delete-for-me (new): type:forMe hides only for the actor and refreshes
+  // ONLY their list preview; absent type stays forEveryone (backward-compat). ---
+  it("BACKWARD-COMPAT: absent `type` routes to delete-for-everyone", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      senderId: TEST_USER_ID,
+      roomId: ROOM,
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.deleteForEveryone.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      createdAt: new Date(1_700_000_000_000),
+    });
+
+    const res = await request(app)
+      .post(`${BASE}/messages/delete`)
+      .set(bearer(makeAccessToken()))
+      .send({ messageId: MSG, roomId: ROOM }); // no `type`
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupMessageRepo.deleteForEveryone).toHaveBeenCalled();
+    expect(mocks.groupMessageRepo.deleteForMe).not.toHaveBeenCalled();
+  });
+
+  it("POSITIVE: type:forMe hides only for the actor and emits a forMe tombstone", async () => {
+    mocks.groupMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      senderId: TEST_USER_ID,
+      roomId: ROOM,
+      createdAt: new Date(1_700_000_005_000),
+    });
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.deleteForMe.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      createdAt: new Date(1_700_000_005_000),
+    });
+    // Recalc: the deleted message WAS the actor's last → previous-visible exists.
+    mocks.groupRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      lastMessageId: MSG,
+    });
+    mocks.groupMessageRepo.findPreviousVisibleForUser.mockResolvedValue({
+      id: "gmsg0",
+      senderId: "other",
+      senderName: "Bob",
+      messageType: "TEXT",
+      content: { text: "earlier" },
+      createdAt: new Date(1_700_000_004_000),
+    });
+
+    const res = await request(app)
+      .post(`${BASE}/messages/delete`)
+      .set(bearer(makeAccessToken()))
+      .send({ messageId: MSG, roomId: ROOM, type: "forMe" });
+
+    expect(res.status).toBe(200);
+    // delete-for-me path, NOT delete-for-everyone.
+    expect(mocks.groupMessageRepo.deleteForMe).toHaveBeenCalledWith(
+      MSG,
+      TEST_USER_ID
+    );
+    expect(mocks.groupMessageRepo.deleteForEveryone).not.toHaveBeenCalled();
+    // The tombstone carries the forMe scope so peers ignore it (synchronous —
+    // the targeted conv:updated bump is fire-and-forget and covered by the
+    // LastVisibleResolver unit tests).
+    expect(mocks.redis.publish).toHaveBeenCalledWith(
+      `conv:${ROOM}`,
+      expect.stringContaining("forMe")
+    );
+  });
 });
 
 describe("PATCH /messages/:messageId (edit)", () => {

@@ -25,3 +25,63 @@ export function isDuplicateKeyError(err: unknown): boolean {
   if (e.code === 11000 || e.code === "11000") return true;
   return typeof e.message === "string" && e.message.includes("E11000");
 }
+
+/**
+ * True when `err` is a transient MongoDB write-conflict / deadlock that Prisma
+ * surfaces as `P2034` ("Transaction failed due to a write conflict or a
+ * deadlock. Please retry your transaction."), or the raw Mongo WriteConflict
+ * (numeric code `112` / `codeName: "WriteConflict"`).
+ *
+ * MongoDB/WiredTiger uses optimistic concurrency control: concurrent writes to
+ * the SAME document race, and because Prisma's Mongo connector runs each write
+ * transactionally, the loser gets a retryable conflict instead of being
+ * auto-retried by the server. This bites the hot per-room writes — a burst of
+ * sends each `$inc`-ing one room's `lastSequence` (allocateSequence) or bumping
+ * its last-message — where rapid/concurrent messages otherwise fail the send
+ * with a user-visible retryable SERVICE_ERROR. Callers wrap such writes in
+ * `withWriteConflictRetry` instead of failing.
+ */
+export function isWriteConflictError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as { code?: unknown; codeName?: unknown; message?: unknown };
+  // Prisma transient transaction failure (write conflict / deadlock).
+  if (e.code === "P2034") return true;
+  // Raw MongoServerError write conflict (numeric code or label).
+  if (e.code === 112 || e.code === "112") return true;
+  if (e.codeName === "WriteConflict") return true;
+  return (
+    typeof e.message === "string" &&
+    (e.message.includes("WriteConflict") ||
+      e.message.includes("write conflict") ||
+      e.message.includes("Please retry your transaction"))
+  );
+}
+
+/**
+ * Run `op`, retrying up to `attempts` times on a transient write-conflict
+ * (`isWriteConflictError`) with a small randomized exponential backoff. Any
+ * other error — and a conflict that survives every attempt — is rethrown
+ * unchanged so callers' existing error handling is unaffected.
+ *
+ * The jitter de-correlates racing senders so they don't all retry in lockstep
+ * and re-collide. Defaults (5 attempts, ~10/20/40/80ms capped at 100ms +
+ * jitter) comfortably absorb a human typing/pasting a burst into one room.
+ */
+export async function withWriteConflictRetry<T>(
+  op: () => Promise<T>,
+  attempts = 5
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await op();
+    } catch (err) {
+      if (!isWriteConflictError(err)) throw err;
+      lastErr = err;
+      const base = Math.min(10 * 2 ** attempt, 100);
+      const delay = base + Math.floor(Math.random() * base);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastErr;
+}

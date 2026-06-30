@@ -35,6 +35,26 @@ export class RoomMemberRepository {
     });
   }
 
+  /**
+   * Mirror a moderation MUTE/UNMUTE from community-service onto the member row
+   * (driven by the `community.member.mute_synced` event). `isMuted=false` also
+   * clears `mutedUntil` so the local write-path gate lifts cleanly. Upsert so a
+   * mute that races ahead of the membership sync still lands; the member row is
+   * normally already present (mute only targets active members).
+   */
+  async setMute(
+    roomId: string,
+    userId: string,
+    mute: { isMuted: boolean; mutedUntil: Date | null }
+  ): Promise<RoomMember> {
+    const mutedUntil = mute.isMuted ? mute.mutedUntil : null;
+    return this.prisma.roomMember.upsert({
+      where: { roomId_userId: { roomId, userId } },
+      create: { roomId, userId, isMuted: mute.isMuted, mutedUntil },
+      update: { isMuted: mute.isMuted, mutedUntil },
+    });
+  }
+
   async updateStatus(
     roomId: string,
     userId: string,

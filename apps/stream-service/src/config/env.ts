@@ -38,6 +38,12 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
+  /**
+   * How long (ms) a LIVE stream may go without a heartbeat before the sweeper
+   * auto-ends it. Client should call POST /streams/:id/heartbeat every 30 s.
+   * Default: 5 minutes (300 000 ms).
+   */
+  STREAM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().positive().default(300_000),
 
   // ---- SRS (OSSRS) media server endpoints ----
   /** SRS HTTP API base (clients DELETE, GET /api/v1/streams, etc.). */

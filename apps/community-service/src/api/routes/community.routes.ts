@@ -33,6 +33,7 @@ import {
   discoverCommunities,
   dismissCommunityReport,
   getCommunity,
+  getCommunityInvitationLink,
   getMuteSetting,
   getNotificationPreferences,
   joinCommunity,
@@ -608,6 +609,16 @@ communityRoutes.put(
   validateParams(communityIdParamsSchema),
   validateBody(setNotificationPrefsSchema),
   setNotificationPreferences
+);
+
+// --- Permanent invitation link (PRIVATE communities only) ---
+// Must be before /:id/invite-links so the literal "invitation-link" segment is
+// not misread as the :linkId variable in the delete route.
+
+communityRoutes.get(
+  "/:id/invitation-link",
+  validateParams(communityIdParamsSchema),
+  getCommunityInvitationLink
 );
 
 // --- Invite links (per-community) ---

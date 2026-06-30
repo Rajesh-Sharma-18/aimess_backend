@@ -5,7 +5,13 @@ import type { Redis, Cluster } from "ioredis";
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import { toWireMessage } from "../lib/chat-message.serializer.js";
 import { resolveMediaUrlMap, urlFromMap } from "../lib/media-resolve.js";
+import {
+  resolveVisibleLastBulk,
+  type VisibilitySource,
+} from "./last-visible-resolver.js";
+import { privateVisibilitySource } from "./last-visible-adapters.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
@@ -29,11 +35,21 @@ export type EnrichedPrivateRoom = PrivateRoom & {
 export class PrivateRoomService {
   constructor(
     private readonly privateRoomRepo: PrivateRoomRepository,
+    private readonly privateMessageRepo: PrivateMessageRepository,
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
     private readonly userServiceClient: UserServiceClient,
     private readonly redis: Redis | Cluster
   ) {}
+
+  /**
+   * Adapter exposing the private-message deletion shape (isDeleted + deletedFor
+   * MAP) to the shared LastVisibleResolver. PrivateMessage carries no senderName,
+   * so the normalized senderName is "" (the list resolves the peer label itself).
+   */
+  private visibilitySource(): VisibilitySource {
+    return privateVisibilitySource(this.privateMessageRepo);
+  }
 
   async getOrCreateRoom(userId: string, peerId: string): Promise<PrivateRoom> {
     const participantsKey = buildParticipantsKey(userId, peerId);
@@ -117,6 +133,39 @@ export class PrivateRoomService {
       )
     );
 
+    // Per-user lastMessage visibility pass (via the shared LastVisibleResolver):
+    // The shared lastMessageId on each room may point to a message the requesting
+    // user deleted for themselves. The resolver batch-checks which shared last
+    // ids are hidden (isDeleted OR deletedFor[userId] exists) and concurrently
+    // resolves the previous-visible message for ONLY those rooms (typically 0).
+    const overrides = await resolveVisibleLastBulk(
+      this.visibilitySource(),
+      rooms.map((r) => ({
+        roomId: r.roomId,
+        sharedLastMessageId: r.lastMessageId,
+      })),
+      userId
+    );
+    // Normalize the resolver's VisibleLast into the PrivateRoom.lastMessage JSON
+    // shape so the wire response is unchanged; key absent => use shared snapshot.
+    const perUserFallback = new Map<
+      string,
+      PrivateRoom["lastMessage"] | null
+    >();
+    for (const [roomId, prev] of overrides) {
+      perUserFallback.set(
+        roomId,
+        prev
+          ? ({
+              content: prev.content,
+              senderId: prev.senderId,
+              messageType: prev.messageType,
+              createdAt: prev.createdAt.toISOString(),
+            } as unknown as PrivateRoom["lastMessage"])
+          : null
+      );
+    }
+
     const now = Date.now();
     return rooms.map((room) => {
       const peerId = (room.participants || []).find((p) => p !== userId) || "";
@@ -130,12 +179,15 @@ export class PrivateRoomService {
         myMute != null &&
         (myMute.muteUntil == null ||
           new Date(myMute.muteUntil).getTime() > now);
-      // Normalize the embedded preview's kind field (messageType -> contentType)
-      // so the conversation-list AND inbox-private rows match the canonical wire.
-      const lm = room.lastMessage;
-      const lastMessage = (lm && typeof lm === "object"
-        ? toWireMessage(lm as { messageType?: string | null })
-        : (lm ?? null)) as unknown as PrivateRoom["lastMessage"];
+
+      // Use per-user fallback if the shared lastMessage is hidden for this user.
+      const rawLm = perUserFallback.has(room.roomId)
+        ? (perUserFallback.get(room.roomId) ?? null)
+        : room.lastMessage;
+      const lastMessage = (rawLm && typeof rawLm === "object"
+        ? toWireMessage(rawLm as { messageType?: string | null })
+        : (rawLm ?? null)) as unknown as PrivateRoom["lastMessage"];
+
       return {
         ...room,
         lastMessage,

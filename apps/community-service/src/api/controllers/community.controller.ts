@@ -1105,6 +1105,36 @@ export const setNotificationPreferences = asyncHandler(
   }
 );
 
+// --- Permanent invitation link (PRIVATE communities) -----------------------
+
+/**
+ * GET /communities/:id/invitation-link
+ *
+ * Returns the community's PERMANENT invitation code. The code is generated on
+ * the first call and NEVER changes — every subsequent call returns the same
+ * code regardless of how many times the endpoint is hit.
+ *
+ * Only available for PRIVATE communities (400 for PUBLIC).
+ * Requires the caller to be an ACTIVE community member.
+ */
+export const getCommunityInvitationLink = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+    const result = await communityService.getOrCreatePermanentInvitationLink(
+      id,
+      req.auth.userId
+    );
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          result,
+          t("COMMUNITY_PERMANENT_INVITATION_LINK_FETCHED", req.locale)
+        )
+      );
+  }
+);
+
 // --- Invite links ----------------------------------------------------------
 
 export const createCommunityInviteLink = asyncHandler(

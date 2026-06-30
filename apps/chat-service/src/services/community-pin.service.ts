@@ -4,6 +4,7 @@ import { logger } from "@aimess/logger";
 import { normalizeMessageType } from "../lib/chat-message.serializer.js";
 import {
   assertCommunityMember,
+  assertCommunityMemberNotMuted,
   assertCommunityRoomWritable,
 } from "../lib/access-guard.js";
 import { resolvePinsMedia } from "../lib/media-resolve.js";
@@ -35,9 +36,16 @@ export class CommunityPinService {
     const { roomId, messageId, userId, communityId } = params;
 
     // 1. Assert ADMIN or MODERATOR role (throws CHAT_NOT_A_MEMBER / CHAT_INSUFFICIENT_PERMISSIONS)
-    await assertCommunityMember(this.memberRepo, roomId, userId, {
-      roles: ["admin", "moderator"],
-    });
+    const pinner = await assertCommunityMember(
+      this.memberRepo,
+      roomId,
+      userId,
+      {
+        roles: ["admin", "moderator"],
+      }
+    );
+    // A muted moderator is fully silenced — pinning posts a system action too.
+    assertCommunityMemberNotMuted(pinner);
 
     // 2. Load room and assert writable (not closed / suspended)
     const room = await this.roomRepo.findRoomById(roomId);
@@ -127,9 +135,13 @@ export class CommunityPinService {
     const { roomId, messageId, userId } = params;
 
     // 1. Assert ADMIN or MODERATOR role
-    await assertCommunityMember(this.memberRepo, roomId, userId, {
-      roles: ["admin", "moderator"],
-    });
+    const unpinner = await assertCommunityMember(
+      this.memberRepo,
+      roomId,
+      userId,
+      { roles: ["admin", "moderator"] }
+    );
+    assertCommunityMemberNotMuted(unpinner);
 
     // 2. Find the active pin for this message
     const activePinForMessage =

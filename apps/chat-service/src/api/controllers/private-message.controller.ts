@@ -13,6 +13,7 @@ import {
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
+import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import {
   buildChatMessageEvent,
   buildDeletePayload,
@@ -257,6 +258,84 @@ export class PrivateMessageController {
         JSON.stringify({ event: "message:delete", data: tombstone })
       );
     }
+
+    // For delete-for-everyone: recalculate and broadcast the new list preview
+    // to all participants so the conversation list never shows "Message deleted".
+    if (type === "forEveryone" && result.roomId) {
+      void this.messageService
+        .recalculateLastMessageAfterDelete(result.roomId, messageId)
+        .then((recalc) => {
+          if (recalc === null) return; // not the last message — no-op
+          const preview = buildMessagePreview(
+            recalc.messageType,
+            recalc.content
+          );
+          // Private room participants come from the message itself.
+          const participants = [
+            (result as { senderId?: string }).senderId ?? userId,
+            (result as { receiverId?: string }).receiverId ?? "",
+          ].filter(Boolean);
+          publishConvUpdatedSafe({
+            redis: this.redis,
+            type: "PRIVATE",
+            roomId: result.roomId,
+            recipientIds: participants,
+            // Per-recipient correctness: the other participant, if they have
+            // personally hidden the new shared previous-visible message, gets
+            // THEIR own preview instead.
+            resolveOverrides: (recipientIds) =>
+              this.messageService
+                .resolveForEveryoneOverrides(
+                  result.roomId,
+                  recalc.prevMessageId,
+                  recipientIds
+                )
+                .then((raw) => renderConvOverrides(raw)),
+            senderId: recalc.senderId,
+            lastMessageId: recalc.prevMessageId ?? "",
+            lastMessageAt: recalc.createdAt.getTime(),
+            preview: { contentType: recalc.messageType, text: preview },
+          });
+        })
+        .catch(() => {
+          // Best-effort: a preview recalculation failure must never surface to
+          // the user. The list will self-correct on next load.
+        });
+    }
+
+    // For delete-for-me: send a targeted conv:updated ONLY to the deleting
+    // user so their list shows the previous visible message instead of the
+    // one they just hid. The shared room snapshot is NOT changed — the other
+    // participant keeps seeing the original last message.
+    if (type !== "forEveryone" && result.roomId) {
+      void this.messageService
+        .recalculateLastMessageAfterDeleteForMe(
+          result.roomId,
+          result.createdAt,
+          userId
+        )
+        .then((recalc) => {
+          // Skip unless the deleted message was the viewer's effective last
+          // visible message — hiding an older message changes nothing in their list.
+          if (recalc === null || !recalc.wasEffectiveLast) return;
+          const preview = buildMessagePreview(
+            recalc.messageType,
+            recalc.content
+          );
+          publishConvUpdatedSafe({
+            redis: this.redis,
+            type: "PRIVATE",
+            roomId: result.roomId,
+            recipientIds: [userId],
+            senderId: recalc.senderId,
+            lastMessageId: recalc.prevMessageId ?? "",
+            lastMessageAt: recalc.createdAt.getTime(),
+            preview: { contentType: recalc.messageType, text: preview },
+          });
+        })
+        .catch(() => {});
+    }
+
     res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
   });
 

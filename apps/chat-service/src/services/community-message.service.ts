@@ -34,9 +34,18 @@ import {
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
 import { convertMessageToPreview } from "./message-preview.service.js";
+import {
+  resolveVisibleLastBulk,
+  resolveForEveryoneOverrides,
+  deletedWasEffectiveLast,
+  type VisibilitySource,
+  type RecipientOverride,
+} from "./last-visible-resolver.js";
+import { communityVisibilitySource } from "./last-visible-adapters.js";
 import type { CommunitySystemMessageService } from "./community-system-message.service.js";
 import {
   assertCommunityMember,
+  assertCommunityMemberNotMuted,
   assertCommunityReadAccess,
   assertCommunityRoomWritable,
 } from "../lib/access-guard.js";
@@ -81,18 +90,35 @@ export interface CommunityChatSummary {
   unreadMessageCount: number;
   /** false => the caller should render lastMessageActivity as null. */
   hasLastMessage: boolean;
+  /**
+   * True when the viewer has globally/personally HIDDEN the community-wide shared
+   * last message, so `lastMessage` (or its absence) is an AUTHORITATIVE per-viewer
+   * resolution — community-service must use it directly, NOT merely overlay it
+   * when newer. When false, `lastMessage` is the plain shared snapshot and the
+   * denormalized column wins on ties (only a strictly-newer chat message overrides,
+   * which repairs lost-`community.activity`-event missed-ADD staleness).
+   */
+  perUserResolved: boolean;
+  /**
+   * The latest message visible to THIS viewer (community-wide last, or — when the
+   * viewer hid it — their previous-visible fallback). Carries its REAL timestamp;
+   * `isSystem` selects sender-less rendering; `userId` is the sender for the
+   * "username: message" message shape. Absent when no visible message remains.
+   */
   lastMessage?: {
     username: string;
     message: string;
     /** epoch ms */
     dateTime: number;
+    isSystem: boolean;
+    userId: string;
   };
   /**
    * The viewer's latest PERSONAL system line (e.g. "You joined the community"),
    * visible only to this user. community-service overlays it onto the per-viewer
    * /communities/mine lastActivity when it is newer than the community-wide
    * activity, so the joiner sees their own join line while others do not. Absent
-   * when the viewer has no personal line in that community.
+   * when the viewer has no personal line in that community. Always sender-less.
    */
   personalLastMessage?: {
     message: string;
@@ -245,7 +271,16 @@ export class CommunityMessageService {
     // RoomMember row is mirrored as non-"active" by the community sync consumer,
     // so this rejects banned users with CHAT_NOT_A_MEMBER. Read/edit/delete/
     // react/pin paths already guard this way; send is the write chokepoint.
-    await assertCommunityMember(this.memberRepo, params.roomId, params.sentBy);
+    const sender = await assertCommunityMember(
+      this.memberRepo,
+      params.roomId,
+      params.sentBy
+    );
+    // …and not moderation-muted. Reuses the row just loaded (no extra I/O); the
+    // mute is mirrored from community-service, so this blocks every send path
+    // (gateway socket → gRPC, REST orchestrator, direct gRPC) including media,
+    // GIF, sticker, voice and file messages (all funnel through here).
+    assertCommunityMemberNotMuted(sender);
 
     // Check idempotency
     if (params.clientMessageId) {
@@ -441,6 +476,37 @@ export class CommunityMessageService {
   }
 
   /**
+   * Adapter exposing the community-message deletion shape (deletedForAll +
+   * deletedBy ARRAY) to the shared LastVisibleResolver. The repo's
+   * findPreviousVisibleForUser already excludes globally-deleted, the viewer's
+   * own deletedBy hides, foreign personal (visibleToUserId) rows AND hidden
+   * lifecycle system types — so the normalized VisibleLast is safe to surface.
+   */
+  private visibilitySource(): VisibilitySource {
+    return communityVisibilitySource(this.messageRepo);
+  }
+
+  /**
+   * Per-recipient list-preview overrides for a delete-for-everyone fan-out: of the
+   * given recipients, the ones who have personally hidden `sharedPrevMessageId`
+   * (the new shared previous-visible) get THEIR own visible preview instead.
+   * Empty map when nobody hid it (the common case). Exposed for the controller +
+   * gRPC delete paths.
+   */
+  async resolveForEveryoneOverrides(
+    roomId: string,
+    sharedPrevMessageId: string | null,
+    recipientIds: string[]
+  ): Promise<Map<string, RecipientOverride | null>> {
+    return resolveForEveryoneOverrides(
+      this.visibilitySource(),
+      roomId,
+      sharedPrevMessageId,
+      recipientIds
+    );
+  }
+
+  /**
    * Bulk community-chat summaries for GET /communities/mine. For each requested
    * communityId (roomId === communityId): unread count + last-message preview,
    * but ONLY for communities the user is an ACTIVE member of (member-only
@@ -488,6 +554,22 @@ export class CommunityMessageService {
     ]);
     const roomById = new Map(rooms.map((r) => [r.id, r]));
 
+    // Per-user lastMessage visibility pass (shared LastVisibleResolver):
+    // For each room whose shared lastMessageId is hidden from this viewer
+    // (globally deleted OR in their personal deletedBy array), resolve the
+    // previous message they CAN see. The result is surfaced as the per-user
+    // `lastMessage` below — authoritative, so community-service can override the
+    // denormalized column for this viewer (fixing both the per-user delete-for-me
+    // preview AND lost community.activity-event staleness).
+    const overrides = await resolveVisibleLastBulk(
+      this.visibilitySource(),
+      rooms.map((r) => ({
+        roomId: r.id,
+        sharedLastMessageId: r.lastMessageId,
+      })),
+      params.userId
+    );
+
     // 4. Build a summary for EVERY requested community.
     return ids.map((communityId) => {
       if (!readMap.has(communityId)) {
@@ -496,16 +578,16 @@ export class CommunityMessageService {
           communityId,
           unreadMessageCount: 0,
           hasLastMessage: false,
+          perUserResolved: false,
         };
       }
 
       const room = roomById.get(communityId);
-      const last = (room?.lastMessage ?? null) as RoomLastMessageJson | null;
       const unreadMessageCount = unreadMap[communityId] ?? 0;
 
       // The viewer's own personal line (e.g. "You joined the community"). Carried
-      // separately so community-service can overlay it per-viewer without
-      // disturbing the community-wide preview/ordering for anyone else.
+      // SEPARATELY from lastMessage so community-service can pick the newer of the
+      // two per-viewer — they no longer collide in one overlay slot.
       const personal = personalMap.get(communityId);
       const personalLastMessage =
         personal && personal.message
@@ -515,36 +597,62 @@ export class CommunityMessageService {
             }
           : undefined;
 
-      if (!last || !last.createdAt) {
-        return {
-          communityId,
-          unreadMessageCount,
-          hasLastMessage: false,
-          ...(personalLastMessage ? { personalLastMessage } : {}),
-        };
+      let lastMessage: CommunityChatSummary["lastMessage"] | undefined;
+      let hasLastMessage = false;
+      const perUserResolved = room ? overrides.has(communityId) : false;
+
+      if (perUserResolved) {
+        // Shared last is HIDDEN for this viewer → AUTHORITATIVE per-viewer
+        // resolution: substitute their previous-visible (with its REAL timestamp,
+        // no +1ms hack — community-service treats perUserResolved as authoritative,
+        // not timestamp-gated), or NONE when they have hidden every message.
+        const prev = overrides.get(communityId) ?? null;
+        if (prev) {
+          const isSystem = prev.messageType.toUpperCase() === "SYSTEM";
+          lastMessage = {
+            username: isSystem ? "" : prev.senderName,
+            message: convertMessageToPreview(prev.messageType, prev.content),
+            dateTime: prev.createdAt.getTime(),
+            isSystem,
+            userId: isSystem ? "" : prev.senderId,
+          };
+          hasLastMessage = true;
+        }
+        // prev === null → no visible message remains; hasLastMessage false +
+        // lastMessage undefined, but perUserResolved stays TRUE so community-service
+        // CLEARS the (now stale-for-this-viewer) community-wide column preview.
+      } else {
+        // Shared last is VISIBLE (common path) — the plain shared snapshot.
+        const last = (room?.lastMessage ?? null) as RoomLastMessageJson | null;
+        if (last && last.createdAt) {
+          const createdAt =
+            last.createdAt instanceof Date
+              ? last.createdAt
+              : new Date(last.createdAt);
+          // SYSTEM messages are sender-less: the preview is a complete sentence
+          // (e.g. "John joined the community"), so the list must NEVER prefix it
+          // with a sender name — force username/userId empty for SYSTEM.
+          const messageType = last.messageType ?? "";
+          const isSystem = messageType.toUpperCase() === "SYSTEM";
+          lastMessage = {
+            username: isSystem ? "" : (last.senderName ?? ""),
+            message: convertMessageToPreview(messageType, last.content),
+            dateTime: Number.isNaN(createdAt.getTime())
+              ? 0
+              : createdAt.getTime(),
+            isSystem,
+            userId: isSystem ? "" : (last.senderId ?? ""),
+          };
+          hasLastMessage = true;
+        }
       }
-
-      const createdAt =
-        last.createdAt instanceof Date
-          ? last.createdAt
-          : new Date(last.createdAt);
-
-      // SYSTEM messages are sender-less: the preview is a complete sentence
-      // (e.g. "John joined the community"), so the community list must NEVER
-      // prefix it with a sender name. Force username empty for SYSTEM, mirroring
-      // the REST `lastActivity` rule in community-service's buildLastActivity.
-      const messageType = last.messageType ?? "";
-      const isSystem = messageType.toUpperCase() === "SYSTEM";
 
       return {
         communityId,
         unreadMessageCount,
-        hasLastMessage: true,
-        lastMessage: {
-          username: isSystem ? "" : (last.senderName ?? ""),
-          message: convertMessageToPreview(messageType, last.content),
-          dateTime: Number.isNaN(createdAt.getTime()) ? 0 : createdAt.getTime(),
-        },
+        hasLastMessage,
+        perUserResolved,
+        ...(lastMessage ? { lastMessage } : {}),
         ...(personalLastMessage ? { personalLastMessage } : {}),
       };
     });
@@ -1325,7 +1433,12 @@ export class CommunityMessageService {
     // the caller must be an ACTIVE member of the room the message lives in BEFORE
     // any sender/type/window check. Mirrors reactToMessage/listMedia; NotFound so
     // foreign-message existence isn't leaked. (cross-room IDOR)
-    await this.assertActiveMemberOfMessageRoom(message, params.userId);
+    const editor = await this.assertActiveMemberOfMessageRoom(
+      message,
+      params.userId
+    );
+    // A muted member cannot mutate room content (Telegram: editing needs send).
+    assertCommunityMemberNotMuted(editor);
     if (message.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
     if (message.sentBy !== params.userId)
@@ -1371,6 +1484,8 @@ export class CommunityMessageService {
     if (!member || member.status !== "active") {
       throw new ForbiddenError("CHAT_NOT_A_MEMBER");
     }
+    // A muted member can neither add NOR remove a reaction (this path toggles).
+    assertCommunityMemberNotMuted(member);
     // ...and only when the community room is open (closed/suspended → read-only).
     assertCommunityRoomWritable(
       await this.roomRepo.findRoomById(message.roomId)
@@ -1460,7 +1575,11 @@ export class CommunityMessageService {
     // Authorize against the message's OWN room (never a body-supplied communityId):
     // only an ACTIVE member of the room the message lives in may hide it. Mirrors
     // reactToMessage; NotFound so foreign-message existence isn't leaked.
-    await this.assertActiveMemberOfMessageRoom(message, userId);
+    const delForMeMember = await this.assertActiveMemberOfMessageRoom(
+      message,
+      userId
+    );
+    assertCommunityMemberNotMuted(delForMeMember);
 
     if (normalizeMessageType(message.messageType) === "SYSTEM")
       throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
@@ -1490,9 +1609,147 @@ export class CommunityMessageService {
       if (!["admin", "moderator"].includes(member.role)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
+      // Admin/mod deleting someone else's message is moderation — not gated by mute.
+    } else {
+      // Muted member cannot delete their own messages.
+      assertCommunityMemberNotMuted(member);
     }
 
     return this.messageRepo.deleteForAll(messageId);
+  }
+
+  /**
+   * After a delete-for-everyone, if the deleted message was the room's current
+   * last message, recalculate and persist the new last message from the previous
+   * visible community-wide message.
+   *
+   * Returns the recalculated data so the caller can broadcast it via sockets and
+   * the community.activity queue, OR null when the deleted message was NOT the
+   * last (no-op: callers must not broadcast any update in that case).
+   */
+  async recalculateLastMessageAfterDelete(
+    roomId: string,
+    deletedMessageId: string
+  ): Promise<{
+    prevMessageId: string | null;
+    preview: string;
+    messageType: string;
+    sentBy: string;
+    senderName: string;
+    createdAt: Date;
+    hasLastMessage: boolean;
+  } | null> {
+    // Run both queries in parallel — we need prev regardless of which message
+    // was the current last. The classic check (room.lastMessageId === deletedId)
+    // has a race: if a prior delete's fire-and-forget setLastMessage hasn't
+    // landed yet, lastMessageId is stale and the check incorrectly returns null.
+    // Instead we skip only when the visible-last genuinely hasn't changed.
+    const [room, prev] = await Promise.all([
+      this.roomRepo.findRoomById(roomId),
+      this.messageRepo.findPreviousVisibleMessage(roomId),
+    ]);
+    if (!room) return null;
+    // Skip if the deleted message wasn't the current last AND the visible-last
+    // is still the same as what's stored (i.e. nothing actually changed).
+    if (
+      room.lastMessageId !== deletedMessageId &&
+      room.lastMessageId === (prev?.id ?? null)
+    ) {
+      return null;
+    }
+    if (prev) {
+      await this.roomRepo.setLastMessage(roomId, {
+        id: prev.id,
+        sentBy: prev.sentBy,
+        senderName: prev.senderName ?? "",
+        content: prev.message ?? "",
+        messageType: prev.messageType,
+        createdAt: prev.createdAt,
+      });
+      return {
+        prevMessageId: prev.id,
+        preview: convertMessageToPreview(prev.messageType, prev.message ?? ""),
+        messageType: prev.messageType,
+        sentBy: prev.sentBy,
+        senderName: prev.senderName ?? "",
+        createdAt: prev.createdAt,
+        hasLastMessage: true,
+      };
+    }
+
+    await this.roomRepo.setLastMessage(roomId, null);
+    return {
+      prevMessageId: null,
+      preview: "",
+      messageType: "",
+      sentBy: "",
+      senderName: "",
+      createdAt: new Date(0),
+      hasLastMessage: false,
+    };
+  }
+
+  /**
+   * After a delete-for-me on the last message, finds the previous message
+   * visible to that specific member (skipping globally-deleted messages,
+   * messages they personally hid, personal system messages, and hidden
+   * lifecycle lines). Returns data for a targeted community:updated socket
+   * broadcast to that user only — does NOT touch the shared GeneralRoom
+   * lastMessage snapshot or the community-service lastActivityPreview.
+   * Returns null when the deleted message was not the room's current last.
+   */
+  async recalculateLastMessageAfterDeleteForMe(
+    roomId: string,
+    deletedMessageCreatedAt: Date,
+    userId: string
+  ): Promise<{
+    prevMessageId: string | null;
+    preview: string;
+    messageType: string;
+    sentBy: string;
+    senderName: string;
+    createdAt: Date;
+    hasLastMessage: boolean;
+    /** True iff the deleted message was the viewer's last visible message — the
+     *  ONLY case where a targeted list bump is warranted (else it is a no-op). */
+    wasEffectiveLast: boolean;
+  } | null> {
+    const room = await this.roomRepo.findRoomById(roomId);
+    if (!room) return null;
+    // No early-return on lastMessageId check: the deleted message may not be
+    // the globally-last but could still be the user's effective last visible.
+    const prev = await this.messageRepo.findPreviousVisibleForUser(
+      roomId,
+      userId
+    );
+    // The deleted (now-hidden) message was the viewer's last iff nothing still
+    // visible is newer than it (single source of truth: deletedWasEffectiveLast).
+    const wasEffectiveLast = deletedWasEffectiveLast(
+      prev?.createdAt ?? null,
+      deletedMessageCreatedAt
+    );
+    if (prev) {
+      return {
+        prevMessageId: prev.id,
+        preview: convertMessageToPreview(prev.messageType, prev.message ?? ""),
+        messageType: prev.messageType,
+        sentBy: prev.sentBy,
+        senderName: prev.senderName ?? "",
+        createdAt: prev.createdAt,
+        hasLastMessage: true,
+        wasEffectiveLast,
+      };
+    }
+    return {
+      prevMessageId: null,
+      preview: "",
+      messageType: "",
+      sentBy: "",
+      senderName: "",
+      createdAt: new Date(0),
+      hasLastMessage: false,
+      wasEffectiveLast: true,
+    };
   }
 
   async report(params: {

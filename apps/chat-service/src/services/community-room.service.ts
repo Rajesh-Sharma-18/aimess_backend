@@ -4,18 +4,67 @@ import type { GeneralRoomRepository } from "../repositories/general-room.reposit
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { GeneralRoom } from "../generated/prisma/index.js";
+import {
+  getStreamCountsClient,
+  type StreamCountsClient,
+} from "../grpc/stream.client.js";
+
+/** Platform cap on concurrent LIVE streams per community (see stream-service). */
+const MAX_ACTIVE_LIVESTREAMS = 5;
+
+/** A community room enriched with livestream state (+ unread for authed callers). */
+export type CommunityRoomView = GeneralRoom & {
+  /** Alias of hasActiveLivestream — matches the documented ChatCommunityRoom.isLive. */
+  isLive: boolean;
+  hasActiveLivestream: boolean;
+  activeLivestreamCount: number;
+  hasUnread?: boolean;
+};
 
 export class CommunityRoomService {
   constructor(
     private readonly roomRepo: GeneralRoomRepository,
     private readonly memberRepo: RoomMemberRepository,
-    private readonly cacheRepo: CacheRepository
+    private readonly cacheRepo: CacheRepository,
+    // Injectable for tests; defaults to the shared singleton in production.
+    private readonly streamClient: StreamCountsClient = getStreamCountsClient()
   ) {}
 
-  async getRooms(userId: string | null): Promise<GeneralRoom[]> {
-    const rooms = await this.roomRepo.findActiveRooms();
+  /**
+   * Batched LIVE-only stream count per community (room id === communityId). One
+   * gRPC call for the whole list — no N+1. Fail-open: an empty map on error so
+   * the rooms list degrades to "no live streams" rather than failing.
+   */
+  private async fetchLiveCounts(
+    communityIds: string[]
+  ): Promise<Map<string, number>> {
+    if (!communityIds.length) return new Map();
+    try {
+      return await this.streamClient.getActiveStreamCounts(communityIds);
+    } catch {
+      return new Map();
+    }
+  }
 
-    if (!userId) return rooms;
+  async getRooms(userId: string | null): Promise<CommunityRoomView[]> {
+    const rooms = await this.roomRepo.findActiveRooms();
+    const liveCounts = await this.fetchLiveCounts(rooms.map((r) => r.id));
+
+    const withLivestream = (room: GeneralRoom): CommunityRoomView => {
+      const count = Math.min(
+        liveCounts.get(room.id) ?? 0,
+        MAX_ACTIVE_LIVESTREAMS
+      );
+      return {
+        ...room,
+        isLive: count > 0,
+        hasActiveLivestream: count > 0,
+        activeLivestreamCount: count,
+      };
+    };
+
+    // Anonymous callers get livestream state but no per-user unread (no token).
+    if (!userId) return rooms.map(withLivestream);
 
     // Attach read timestamps for unread indicators
     const readTimestamps =
@@ -31,9 +80,9 @@ export class CommunityRoomService {
         : 0;
 
       return {
-        ...room,
+        ...withLivestream(room),
         hasUnread: lastMsgTs > lastReadTs,
-      } as GeneralRoom & { hasUnread: boolean };
+      };
     });
   }
 

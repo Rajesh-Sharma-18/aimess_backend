@@ -5,6 +5,7 @@ import {
   resolveCommunitySystemSubjectUserId,
   sanitizeCommunitySystemMetadata,
   isActorLessSystemMessage,
+  formatMuteDuration,
 } from "@aimess/constants";
 
 const ACTOR = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -142,7 +143,7 @@ describe("system message text — display names and You personalization", () => 
     ).toBe("Community name updated");
   });
 
-  it("displays live stream started message", () => {
+  it("displays live stream started message (host-named)", () => {
     expect(
       buildCommunitySystemFallbackText(
         "LIVE_STREAM_STARTED",
@@ -150,24 +151,53 @@ describe("system message text — display names and You personalization", () => 
         "Admin User",
         ""
       )
-    ).toBe("Live stream started");
+    ).toBe("Admin User started a livestream");
   });
 
-  it("displays live stream ended message with duration", () => {
+  it('shows "You started a livestream" to the host', () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "LIVE_STREAM_STARTED",
+        { actorUserId: ACTOR },
+        "Admin User",
+        "",
+        ACTOR
+      )
+    ).toBe("You started a livestream");
+  });
+
+  it("displays live stream ended message with duration (host-named)", () => {
     expect(
       buildCommunitySystemFallbackText(
         "LIVE_STREAM_ENDED",
-        { duration: "2 hours 15 minutes" },
-        "",
+        { actorUserId: ACTOR, duration: "1h 24m" },
+        "Admin User",
         ""
       )
-    ).toBe("Live stream ended (2 hours 15 minutes)");
+    ).toBe("Admin User ended the livestream (1h 24m)");
+  });
+
+  it('shows "You ended the livestream" to the host', () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "LIVE_STREAM_ENDED",
+        { actorUserId: ACTOR, duration: "1h 24m" },
+        "Admin User",
+        "",
+        ACTOR
+      )
+    ).toBe("You ended the livestream (1h 24m)");
   });
 
   it("displays live stream ended message without duration", () => {
     expect(
-      buildCommunitySystemFallbackText("LIVE_STREAM_ENDED", {}, "", "")
-    ).toBe("Live stream ended");
+      buildCommunitySystemFallbackText(
+        "LIVE_STREAM_ENDED",
+        { actorUserId: ACTOR },
+        "Admin User",
+        ""
+      )
+    ).toBe("Admin User ended the livestream");
   });
 });
 
@@ -458,5 +488,113 @@ describe("historical immutability — text depends only on the message's own sna
     expect(demotedToMember).toBe("Rajesh is now a member");
     // Re-render the first line one more time: still the moderator text.
     expect(renderFor(moderatorLineMetadata, BYSTANDER)).toBe(promotedToMod);
+  });
+});
+
+/**
+ * MEMBER_MUTED / MEMBER_UNMUTED — Telegram-style duration phrasing (Phase 5).
+ * The duration is carried structurally as `metadata.durationMinutes` so clients
+ * can localize; the deterministic English fallback renders "…for <duration>" for
+ * timed mutes and "…indefinitely" when there is no duration.
+ */
+describe("formatMuteDuration — duration picker preset labels", () => {
+  it("renders each picker preset to match its label", () => {
+    expect(formatMuteDuration(5)).toBe("5 minutes");
+    expect(formatMuteDuration(10)).toBe("10 minutes");
+    expect(formatMuteDuration(30)).toBe("30 minutes");
+    expect(formatMuteDuration(60)).toBe("1 hour");
+    expect(formatMuteDuration(360)).toBe("6 hours");
+    // 24h stays "24 hours" (NOT "1 day") to match the picker label.
+    expect(formatMuteDuration(1440)).toBe("24 hours");
+    expect(formatMuteDuration(10080)).toBe("7 days");
+    expect(formatMuteDuration(43200)).toBe("30 days");
+  });
+
+  it("falls back to minutes for non-round values", () => {
+    expect(formatMuteDuration(1)).toBe("1 minute");
+    expect(formatMuteDuration(90)).toBe("90 minutes");
+  });
+});
+
+describe("MEMBER_MUTED — personal message with until date/time", () => {
+  // Fixed future epoch for deterministic test output. The fallback renders the
+  // date via `new Date(ms).toUTCString()` — we mirror that here.
+  const MUTED_UNTIL_MS = 1_800_000_000_000; // ~2027
+  const MUTED_UNTIL_DATE = new Date(MUTED_UNTIL_MS).toUTCString();
+
+  it("timed mute reads 'X is muted until <date>' for bystanders", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "MEMBER_MUTED",
+        {
+          targetUserId: TARGET,
+          actorUserId: ACTOR,
+          mutedUntil: MUTED_UNTIL_MS,
+        },
+        "Admin User",
+        "Peter Parker",
+        BYSTANDER
+      )
+    ).toBe(`Peter Parker is muted until ${MUTED_UNTIL_DATE}`);
+  });
+
+  it("timed mute reads 'You are muted until <date>' for the target (PERSONAL)", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "MEMBER_MUTED",
+        {
+          targetUserId: TARGET,
+          actorUserId: ACTOR,
+          mutedUntil: MUTED_UNTIL_MS,
+        },
+        "Admin User",
+        "Peter Parker",
+        TARGET
+      )
+    ).toBe(`You are muted until ${MUTED_UNTIL_DATE}`);
+  });
+
+  it("indefinite mute (null/missing mutedUntil) reads '…indefinitely'", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "MEMBER_MUTED",
+        { targetUserId: TARGET, actorUserId: ACTOR, mutedUntil: null },
+        "Admin User",
+        "Peter Parker",
+        BYSTANDER
+      )
+    ).toBe("Peter Parker is muted indefinitely");
+
+    // missing key also degrades to indefinitely
+    expect(
+      buildCommunitySystemFallbackText(
+        "MEMBER_MUTED",
+        { targetUserId: TARGET, actorUserId: ACTOR },
+        "Admin User",
+        "Peter Parker",
+        TARGET
+      )
+    ).toBe("You are muted indefinitely");
+  });
+
+  it("unmute reads 'X was unmuted' / 'You were unmuted'", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "MEMBER_UNMUTED",
+        { targetUserId: TARGET, actorUserId: ACTOR },
+        "Admin User",
+        "Peter Parker",
+        BYSTANDER
+      )
+    ).toBe("Peter Parker was unmuted");
+    expect(
+      buildCommunitySystemFallbackText(
+        "MEMBER_UNMUTED",
+        { targetUserId: TARGET, actorUserId: ACTOR },
+        "Admin User",
+        "Peter Parker",
+        TARGET
+      )
+    ).toBe("You were unmuted");
   });
 });

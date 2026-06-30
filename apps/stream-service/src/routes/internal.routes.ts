@@ -21,6 +21,15 @@ export function createInternalRoutes(
 
   router.post("/srs/hooks", (req: Request, res: Response) => {
     void (async () => {
+      const body = (req.body ?? {}) as {
+        action?: string;
+        stream?: string;
+        app?: string;
+      };
+      logger.info(
+        `SRS hook HIT — action=${body.action ?? "?"} stream=${body.stream ?? "?"} app=${body.app ?? "?"} ip=${req.ip ?? "?"}`
+      );
+
       // Shared-secret guard (only enforced when configured).
       if (env.SRS_HOOK_SECRET) {
         const provided =
@@ -36,11 +45,6 @@ export function createInternalRoutes(
         }
       }
 
-      const body = (req.body ?? {}) as {
-        action?: string;
-        stream?: string;
-        app?: string;
-      };
       const action = body.action ?? "";
       const streamKey = body.stream ?? "";
 

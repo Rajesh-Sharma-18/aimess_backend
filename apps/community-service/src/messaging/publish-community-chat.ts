@@ -110,6 +110,37 @@ export function publishCommunityMemberSyncedForChatSafe(
   );
 }
 
+export interface CommunityMemberMuteSyncedForChat {
+  communityId: string;
+  userId: string;
+  /** True while the member is moderation-muted; false on unmute/expiry. */
+  isMuted: boolean;
+  /**
+   * ISO timestamp when a timed mute expires; null = indefinite mute (when
+   * `isMuted`) or no mute (when `!isMuted`). chat-service mirrors this onto its
+   * RoomMember and applies lazy local expiry on the write path.
+   */
+  mutedUntil: string | null;
+}
+
+/**
+ * Mirrors a moderation MUTE/UNMUTE into chat-service's RoomMember so the chat
+ * write-path can block a muted member WITHOUT a per-message gRPC round-trip
+ * (matches how membership status is mirrored via `community.member.synced`).
+ * Moderation mute lives in its OWN table (`CommunityMemberMute`) — orthogonal to
+ * membership status/role — so it rides a dedicated sync event rather than
+ * overloading `community.member.synced`.
+ */
+export function publishCommunityMemberMuteSyncedForChatSafe(
+  data: CommunityMemberMuteSyncedForChat
+): void {
+  publishSafe(
+    "community.member.mute_synced",
+    data,
+    "community.member.mute_synced (chat-sync)"
+  );
+}
+
 export interface CommunityStatusChangedForChat {
   communityId: string;
   /** "SUSPENDED" = admin closed; "ACTIVE" = admin reopened. */
@@ -140,6 +171,24 @@ export interface CommunityInviteLinkSharedForChat {
   inviterId: string;
   recipientId: string;
   eventAt: string;
+  // ── Additive enrichment (all optional → an in-flight event published by an
+  //    older build still processes; chat-service degrades each field gracefully).
+  //    Lets chat-service render a rich invitation card + a non-blank inbox
+  //    preview + an FCM push without any extra cross-service lookup. ───────────
+  /** Raw community avatar object key (resolve-on-read; NEVER a presigned URL). */
+  communityAvatarUrl?: string | null;
+  /** Member-count snapshot at send time, for the invitation card. */
+  memberCount?: number;
+  /** Fully-built shareable URL (e.g. https://aimess.me/+CODE or a PUBLIC handle URL). */
+  inviteUrl?: string;
+  /** App deep link (aimess://join?code=CODE or aimess://resolve?handle=…). */
+  inviteDeepLink?: string;
+  /** True when the link never expires and has unlimited uses. */
+  isPermanent?: boolean;
+  /** Inviter display name — chat bubble sender + push title ("John invited you…"). */
+  inviterName?: string;
+  /** Inviter avatar object key (resolve-on-read) for the push sender avatar. */
+  inviterAvatarUrl?: string | null;
 }
 
 /**
@@ -199,5 +248,22 @@ export function publishCommunitySystemMessageForChatSafe(
     "community.system_message",
     data,
     "community.system_message (chat-sync)"
+  );
+}
+
+/**
+ * Tells chat-service to find and delete the PERSONAL MEMBER_MUTED system
+ * message for `userId` in the community's general room, then emit a
+ * `community:message:deleted` socket event to the affected member so the
+ * mute banner disappears from their chat UI in real time. Fire-and-forget.
+ */
+export function publishCommunityMemberMuteRetractedForChatSafe(data: {
+  communityId: string;
+  userId: string;
+}): void {
+  publishSafe(
+    "community.member.mute_msg_retracted",
+    data,
+    "community.member.mute_msg_retracted (chat-sync)"
   );
 }

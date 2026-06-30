@@ -9,8 +9,15 @@ import {
   resolveMediaUrlMap,
   urlFromMap,
 } from "../lib/media-resolve.js";
+import {
+  resolveVisibleLastBulk,
+  type VisibilitySource,
+  type VisibleLast,
+} from "./last-visible-resolver.js";
+import { groupVisibilitySource } from "./last-visible-adapters.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
+import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupInviteLinkRepository } from "../repositories/group-invite-link.repository.js";
 import type { GroupSystemMessageService } from "./group-system-message.service.js";
 import type { GroupRoom, GroupMember } from "../generated/prisma/index.js";
@@ -32,8 +39,61 @@ export class GroupRoomService {
     private readonly memberRepo: GroupMemberRepository,
     private readonly inviteLinkRepo: GroupInviteLinkRepository,
     private readonly sysMsg: GroupSystemMessageService,
-    private readonly redis: Redis | Cluster
+    private readonly redis: Redis | Cluster,
+    private readonly messageRepo: GroupMessageRepository
   ) {}
+
+  /**
+   * Adapter that exposes the group-message deletion shape (deletedForUserIds
+   * ARRAY) to the shared LastVisibleResolver. Normalizes a GroupMessage into the
+   * room-type-agnostic `VisibleLast`.
+   */
+  private visibilitySource(): VisibilitySource {
+    return groupVisibilitySource(this.messageRepo);
+  }
+
+  /**
+   * Per-user list-preview pass shared by getInboxGroups and getUserGroups: for
+   * each room whose shared lastMessageId is hidden from the viewer (globally
+   * deleted OR personally hidden), substitute the viewer's previous-visible
+   * message into `lastMessagePreview`. Rooms whose shared last is visible (the
+   * common case) are returned untouched. Ordering (lastMessageAt) is left as the
+   * shared snapshot dictates — display-only per-user correction, no re-sort.
+   */
+  private async applyPerUserPreview<T extends GroupRoom>(
+    rooms: T[],
+    userId: string
+  ): Promise<T[]> {
+    if (!rooms.length) return rooms;
+    const overrides = await resolveVisibleLastBulk(
+      this.visibilitySource(),
+      rooms.map((r) => ({
+        roomId: r.roomId,
+        sharedLastMessageId: r.lastMessageId,
+      })),
+      userId
+    );
+    if (!overrides.size) return rooms;
+    return rooms.map((room) => {
+      if (!overrides.has(room.roomId)) return room;
+      const prev: VisibleLast | null = overrides.get(room.roomId) ?? null;
+      const content = (prev?.content ?? null) as { text?: string } | null;
+      return {
+        ...room,
+        // Preserve the GroupRoom.lastMessagePreview JSON shape so the wire
+        // response is unchanged; only the per-viewer content differs.
+        lastMessagePreview: prev
+          ? {
+              text: content?.text ?? "",
+              senderId: prev.senderId,
+              senderName: prev.senderName,
+              messageType: prev.messageType,
+              createdAt: prev.createdAt,
+            }
+          : null,
+      } as T;
+    });
+  }
 
   async createGroup(params: {
     name: string;
@@ -175,7 +235,10 @@ export class GroupRoomService {
   ): Promise<GroupRoomMembership[]> {
     const roomIds = await this.memberRepo.getActiveRoomIds(userId);
     if (!roomIds.length) return [];
-    const rooms = await this.roomRepo.getUserGroups(userId, roomIds, params);
+    const rawRooms = await this.roomRepo.getUserGroups(userId, roomIds, params);
+    // Per-user visibility: swap in the viewer's previous-visible preview for any
+    // room whose shared last message they have hidden (delete-for-me / global).
+    const rooms = await this.applyPerUserPreview(rawRooms, userId);
     // Resolve every room logo on this page ONCE (deduped) → download URLs.
     const avatarUrls = await resolveMediaUrlMap(rooms.map((r) => r.avatar));
     // Every row here is a group the caller is an ACTIVE member of.
@@ -252,12 +315,15 @@ export class GroupRoomService {
     const membershipByRoom = new Map(memberships.map((m) => [m.roomId, m]));
     const roomIds = memberships.map((m) => m.roomId);
 
-    const rooms = await this.roomRepo.getInboxGroups({
+    const rawRooms = await this.roomRepo.getInboxGroups({
       roomIds,
       direction: params.direction,
       ts: params.ts,
       limit: params.limit,
     });
+    // Per-user visibility: swap in the viewer's previous-visible preview for any
+    // room whose shared last message they have hidden (delete-for-me / global).
+    const rooms = await this.applyPerUserPreview(rawRooms, params.userId);
 
     // Resolve every room logo on this page ONCE (deduped) → download URLs, so
     // the unified inbox renders a usable avatar instead of a raw object key.

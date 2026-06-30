@@ -6,6 +6,7 @@ import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
+import type { MediaClient } from "../../grpc/clients/media.client.js";
 
 // §3: bound free-text fields so a naive or abusive client cannot exceed the
 // 1 MB socket frame, blow up storage, or fan an oversized payload out to a whole
@@ -57,6 +58,7 @@ const StreamCommentDeleteSchema = z.object({
   streamId: z.string().min(1),
   commentId: z.string().min(1),
 });
+const StreamHeartbeatSchema = z.object({ streamId: z.string().min(1) });
 
 // ─── Redis pub/sub message shape published by stream-service ─────────────────
 // stream-service publishes { event: "stream:comment:new"|"stream:status", data }
@@ -66,11 +68,48 @@ interface RedisSocketEvent {
   data: unknown;
 }
 
+/** Presign a USER_AVATAR object key to a download URL; returns null on any error. */
+async function presignAvatar(
+  mediaClient: MediaClient,
+  objectKey: string,
+  requesterId: string
+): Promise<string | null> {
+  if (!objectKey) return null;
+  try {
+    const res = await mediaClient.generateDownloadUrl({
+      objectKey,
+      category: "USER_AVATAR",
+      requesterId,
+    });
+    return res?.downloadUrl ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Enrich a raw comment payload by replacing the senderAvatar object key with a
+ * presigned download URL. Returns the comment unchanged if the key is empty or
+ * presigning fails.
+ */
+async function enrichCommentAvatar(
+  mediaClient: MediaClient,
+  comment: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const key =
+    typeof comment.senderAvatar === "string" ? comment.senderAvatar : "";
+  const sentBy = typeof comment.sentBy === "string" ? comment.sentBy : "";
+  if (!key) return comment;
+  const url = await presignAvatar(mediaClient, key, sentBy);
+  return { ...comment, senderAvatar: url ?? "" };
+}
+
 export function registerStreamNamespace(
   io: SocketIOServer,
   streamClient: StreamClient,
   redisSub: Redis,
-  redisPub: Redis
+  redisPub: Redis,
+  mediaClient: MediaClient
 ): void {
   const streamNs: Namespace = io.of("/stream");
   streamNs.use(gatewaySocketAuthMiddleware);
@@ -132,6 +171,69 @@ export function registerStreamNamespace(
         // only notify + kick the banned user instead of telling the whole room.
         if (parsed.event === "stream:banned") {
           void kickBannedUser(channel, parsed.data);
+          return;
+        }
+        // Presign the senderAvatar object key before emitting live comments so
+        // clients receive a ready-to-use image URL, not a raw S3 key.
+        if (parsed.event === "stream:comment:new") {
+          void (async () => {
+            try {
+              const enriched = await enrichCommentAvatar(
+                mediaClient,
+                parsed.data as Record<string, unknown>
+              );
+              streamNs.to(channel).emit("stream:comment:new", enriched);
+            } catch {
+              streamNs.to(channel).emit("stream:comment:new", parsed.data);
+            }
+          })();
+          return;
+        }
+        // stream:status carries internal broadcaster context when status === "LIVE"
+        // (creatorId, hlsUrl, flvUrl, startedAt — set by publishStatus in stream-service).
+        // Strip those fields from the room broadcast so clients only receive the
+        // stable { streamId, status } shape, then send stream:broadcast:live
+        // directly to the broadcaster's socket with the full ingest context.
+        if (parsed.event === "stream:status") {
+          const d = (parsed.data ?? {}) as {
+            streamId?: string;
+            status?: string;
+            communityId?: string;
+            creatorId?: string;
+            hlsUrl?: string;
+            flvUrl?: string;
+            startedAt?: number;
+          };
+          // Broadcast the clean status event to all viewers in the room.
+          // communityId is included so FE on the stream viewer screen can update
+          // the community isLive badge without a separate /community room subscription.
+          streamNs.to(channel).emit("stream:status", {
+            streamId: d.streamId,
+            status: d.status,
+            communityId: d.communityId,
+          });
+          // If this is a LIVE transition, find the broadcaster's socket and send them
+          // a targeted confirmation so their UI can switch to "You are live!".
+          if (d.status === "LIVE" && d.creatorId) {
+            void (async () => {
+              try {
+                const sockets = await streamNs.in(channel).fetchSockets();
+                for (const s of sockets) {
+                  if (s.data.userId !== d.creatorId) continue;
+                  s.emit("stream:broadcast:live", {
+                    streamId: d.streamId,
+                    startedAt: d.startedAt,
+                    hlsUrl: d.hlsUrl ?? "",
+                    flvUrl: d.flvUrl ?? "",
+                  });
+                }
+              } catch (err) {
+                logger.warn(
+                  `/stream broadcast:live targeted emit error on ${channel}: ${String(err)}`
+                );
+              }
+            })();
+          }
           return;
         }
         streamNs.to(channel).emit(parsed.event, parsed.data);
@@ -203,11 +305,11 @@ export function registerStreamNamespace(
           // Join gate: only non-banned ACTIVE community members (or the owner)
           // may enter. Fail-closed — a check error denies entry.
           let canComment: boolean;
+          let access: Awaited<
+            ReturnType<typeof streamClient.checkStreamAccess>
+          >;
           try {
-            const access = await streamClient.checkStreamAccess({
-              streamId,
-              userId,
-            });
+            access = await streamClient.checkStreamAccess({ streamId, userId });
             if (!access.allowed) {
               ackError(callback, "FORBIDDEN", locale);
               return;
@@ -217,7 +319,13 @@ export function registerStreamNamespace(
             logger.warn(
               `/stream join access check failed for ${streamId}: ${String(err)}`
             );
-            ackError(callback, "FORBIDDEN", locale);
+            // Emit stream:error so the FE can distinguish a service outage from a
+            // permanent ban (SERVICE_ERROR ack is retryable; FORBIDDEN is not).
+            socket.emit("stream:error", {
+              streamId,
+              code: "SERVICE_UNAVAILABLE",
+            });
+            ackError(callback, "SERVICE_ERROR", locale);
             return;
           }
 
@@ -251,7 +359,28 @@ export function registerStreamNamespace(
             // gRPC returns newest-first; reverse to oldest-first so the backfill
             // reads chronologically and live `stream:comment:new` events append
             // naturally after it (one consistent, append-only timeline).
-            recentComments = [...res.comments].reverse();
+            const rawComments = [...res.comments].reverse();
+
+            // Presign unique avatar keys so clients receive ready-to-use URLs.
+            // Deduplicate by key to avoid N calls for N comments by the same user.
+            const avatarKeyMap = new Map<string, string>();
+            for (const c of rawComments) {
+              if (c.senderAvatar && !avatarKeyMap.has(c.senderAvatar)) {
+                const url = await presignAvatar(
+                  mediaClient,
+                  c.senderAvatar,
+                  c.sentBy
+                );
+                avatarKeyMap.set(c.senderAvatar, url ?? "");
+              }
+            }
+            recentComments = rawComments.map((c) => ({
+              ...c,
+              senderAvatar: c.senderAvatar
+                ? (avatarKeyMap.get(c.senderAvatar) ?? "")
+                : "",
+            }));
+
             nextCursor = res.nextCursor ?? "";
             hasMore = res.hasMore ?? false;
           } catch (err) {
@@ -266,6 +395,18 @@ export function registerStreamNamespace(
             nextCursor,
             hasMore,
             canComment,
+            // Snapshot of stream state at join time — used by FE for reconnect
+            // recovery (no need to re-fetch stream detail via REST after a blip).
+            streamSnapshot: {
+              status: access.streamStatus,
+              chatEnabled: canComment,
+              title: access.title,
+              description: access.description,
+              thumbnail: access.thumbnail || null,
+              creatorId: access.creatorId,
+              hlsUrl: access.hlsUrl || null,
+              flvUrl: access.flvUrl || null,
+            },
           });
           emitViewerCount(streamId);
         })();
@@ -358,10 +499,31 @@ export function registerStreamNamespace(
             // `before` (history): service returns newest-first → reverse to oldest-first for prepend.
             // `after`  (catch-up): service already returns oldest-first → no reverse needed.
             const isAfterQuery = !before && !!after;
+            const rawComments = isAfterQuery
+              ? res.comments
+              : [...res.comments].reverse();
+
+            // Presign unique avatar keys (same pattern as stream:join backfill).
+            const avatarKeyMap = new Map<string, string>();
+            for (const c of rawComments) {
+              if (c.senderAvatar && !avatarKeyMap.has(c.senderAvatar)) {
+                const url = await presignAvatar(
+                  mediaClient,
+                  c.senderAvatar,
+                  c.sentBy
+                );
+                avatarKeyMap.set(c.senderAvatar, url ?? "");
+              }
+            }
+            const comments = rawComments.map((c) => ({
+              ...c,
+              senderAvatar: c.senderAvatar
+                ? (avatarKeyMap.get(c.senderAvatar) ?? "")
+                : "",
+            }));
+
             ackOk(callback, "SOCKET_STREAM_LOAD_MORE", locale, {
-              comments: isAfterQuery
-                ? res.comments
-                : [...res.comments].reverse(),
+              comments,
               nextCursor: res.nextCursor,
               hasMore: res.hasMore,
             });
@@ -433,6 +595,26 @@ export function registerStreamNamespace(
         })();
       }
     );
+
+    // Keep-alive: client emits every ~30 s while the tab is visible. We refresh
+    // the Redis session-set TTL so a silent reconnect (network blip that doesn't
+    // trigger a full socket reconnect) doesn't evict the viewer before they leave.
+    // Only refreshes if the socket is actually in the room — prevents phantom
+    // heartbeats from a mis-wired client re-emitting stale streamIds.
+    socket.on("stream:heartbeat", (payload: unknown) => {
+      const r = StreamHeartbeatSchema.safeParse(payload);
+      if (!r.success) return;
+      const { streamId } = r.data;
+      if (!socket.rooms.has(roomKey(streamId))) return;
+      void redisPub
+        .sadd(sessionKey(streamId), userId)
+        .then(() => redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC))
+        .catch((err: unknown) => {
+          logger.warn(
+            `/stream heartbeat Redis error for ${streamId}: ${String(err)}`
+          );
+        });
+    });
 
     socket.on("disconnect", (reason: string) => {
       logger.debug(`/stream disconnected userId=${userId} reason=${reason}`);

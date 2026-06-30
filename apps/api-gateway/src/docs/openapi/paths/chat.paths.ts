@@ -1443,35 +1443,156 @@ const communityMessages = {
             properties: {
               communityId: {
                 type: "string" as const,
+                example: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
                 description:
                   "The community-service Community.id (used for the broadcast + activity bump).",
               },
               message: {
                 type: "string" as const,
                 maxLength: 4000,
-                description: "Plain-text body (max 4000 chars).",
+                description:
+                  "Plain-text body (max 4000 chars). Required for TEXT messages.",
               },
               messageType: {
                 type: "string" as const,
+                enum: [
+                  "TEXT",
+                  "IMAGE",
+                  "VIDEO",
+                  "AUDIO",
+                  "GIF",
+                  "VOICE",
+                  "DOCUMENT",
+                  "STICKER",
+                  "LOCATION",
+                  "CONTACT",
+                ],
                 description:
-                  "Community message kind (accepted case-insensitively; lower-case spelling + 'custom'). Normalized to UPPER-CASE on the wire.",
+                  "Community message kind. Accepted case-insensitively; normalized to UPPER-CASE on the wire. " +
+                  "TEXT — plain text (requires `message`). " +
+                  "IMAGE — photo(s) (requires `media.files`, mime image/*). " +
+                  "VIDEO — video clip (requires `media.files`, mime video/*). " +
+                  "AUDIO — audio file (requires `media.files`, mime audio/*). " +
+                  "GIF — animated GIF (requires `media.files`, mime image/gif or video/mp4). " +
+                  "VOICE — voice note (requires `media.files`, mime audio/ogg or audio/aac, include `durationMs` + `waveform`). " +
+                  "DOCUMENT — file attachment (requires `media.files`, any MIME). " +
+                  "STICKER — sticker asset (requires `sticker`). " +
+                  "LOCATION — GPS share (requires `location`). " +
+                  "CONTACT — contact card (requires `contact`).",
               },
               parentMessageId: {
                 type: "string" as const,
                 nullable: true,
-                description: "ID of the message being replied to.",
+                example: "668f1a2b3c4d5e6f7a8b9c01",
+                description:
+                  "ObjectId of the message being replied to (thread reply). " +
+                  "When set, the response `quoteData` will contain a snapshot of the parent message " +
+                  "(senderId, senderName, contentType, preview text/media). " +
+                  'Example: `"668f1a2b3c4d5e6f7a8b9c01"`. Pass null or omit for a top-level message.',
               },
               clientMessageId: {
                 type: "string" as const,
-                description: "Idempotency key.",
+                description:
+                  "Idempotency key (UUID v4 or any unique string). " +
+                  "If the same key is sent twice, the second call returns 200 with `idempotent: true` and the original message — no duplicate is stored.",
               },
               media: {
                 type: "object" as const,
-                description: "Structured media attachments.",
+                description:
+                  "Structured media attachments. Required for IMAGE, VIDEO, AUDIO, GIF, VOICE, and DOCUMENT messages.",
                 properties: {
                   files: {
                     type: "array" as const,
-                    items: { type: "object" as const },
+                    description:
+                      "One or more file objects. For IMAGE up to 10 files; other types 1 file each. " +
+                      "Provide either `objectKey` (preferred — object-storage key, resolved to presigned URL on read) " +
+                      "or `url` (direct CDN / presigned upload URL). Never persist the resolved URL — it is time-limited.",
+                    items: {
+                      type: "object" as const,
+                      required: ["mime", "size", "name"],
+                      properties: {
+                        objectKey: {
+                          type: "string" as const,
+                          description:
+                            "Object-storage key returned by the media-upload endpoint. " +
+                            "Preferred over `url` — the server resolves it to a presigned GET URL at read time.",
+                          example: "media/images/comm_01j9x8vb/668f1a2b.jpg",
+                        },
+                        url: {
+                          type: "string" as const,
+                          description:
+                            "Direct CDN or presigned URL. Use when objectKey is unavailable.",
+                          example:
+                            "https://cdn.aimess.me/media/images/comm_01j9x8vb/668f1a2b.jpg",
+                        },
+                        mime: {
+                          type: "string" as const,
+                          description:
+                            "MIME type. Supported: image/jpeg, image/png, image/webp, image/gif, " +
+                            "video/mp4, video/quicktime, video/webm, audio/ogg, audio/aac, audio/mpeg, " +
+                            "audio/flac, application/pdf, application/msword, text/plain, and more.",
+                          example: "image/jpeg",
+                        },
+                        size: {
+                          type: "integer" as const,
+                          description:
+                            "File size in bytes. Limits: images ≤10 MB each; video ≤100 MB; audio/voice ≤50 MB; documents ≤50 MB.",
+                          example: 204800,
+                        },
+                        name: {
+                          type: "string" as const,
+                          description:
+                            "Original filename (sanitized server-side).",
+                          example: "photo.jpg",
+                        },
+                        width: {
+                          type: "integer" as const,
+                          nullable: true,
+                          description:
+                            "Pixel width. Provide for images and videos so the client can pre-allocate layout space before the asset loads.",
+                          example: 1920,
+                        },
+                        height: {
+                          type: "integer" as const,
+                          nullable: true,
+                          description: "Pixel height.",
+                          example: 1080,
+                        },
+                        durationMs: {
+                          type: "integer" as const,
+                          nullable: true,
+                          description:
+                            "Duration in milliseconds. Required for VOICE (≤300 000 ms = 5 min) and VIDEO (≤180 000 ms = 3 min). Also provide for AUDIO.",
+                          example: 34500,
+                        },
+                        blurhash: {
+                          type: "string" as const,
+                          nullable: true,
+                          description:
+                            "BlurHash encoded placeholder string for images. Rendered as a low-res placeholder while the real image loads. " +
+                            "Generate with the @woltapp/blurhash library (4×3 or 4×4 components). " +
+                            'Example: `"LqKk3+%NIXxu~qxt%MWBt7WBNGjY"`.',
+                          example: "LqKk3+%NIXxu~qxt%MWBt7WBNGjY",
+                        },
+                        waveform: {
+                          type: "array" as const,
+                          nullable: true,
+                          items: {
+                            type: "number" as const,
+                            minimum: 0,
+                            maximum: 1,
+                          },
+                          description:
+                            "Normalised amplitude samples in [0, 1], exactly 100 elements. " +
+                            "Required for VOICE messages — drives the in-chat waveform scrubber bar. " +
+                            "Compute from the raw PCM/OGG before upload (e.g. with ffmpeg or the `waveform-data` npm package).",
+                          example: [
+                            0.1, 0.3, 0.6, 0.9, 0.7, 0.4, 0.2, 0.5, 0.8, 0.6,
+                            0.3, 0.2, 0.4, 0.7, 0.9, 0.8, 0.5, 0.3, 0.1, 0.2,
+                          ],
+                        },
+                      },
+                    },
                   },
                 },
               },
@@ -1480,6 +1601,237 @@ const communityMessages = {
               },
               contact: { $ref: "#/components/schemas/ChatContactAttachment" },
               sticker: { $ref: "#/components/schemas/ChatSticker" },
+            },
+          },
+          examples: {
+            "text-simple": {
+              summary: "TEXT — plain text",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "TEXT",
+                message: "Hey everyone! 👋 Welcome to the community.",
+                clientMessageId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+              },
+            },
+            "text-reply": {
+              summary: "TEXT — reply to another message (parentMessageId)",
+              description:
+                "Use `parentMessageId` to thread a reply. The response will include `quoteData` with a snapshot of the parent message.",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "TEXT",
+                message: "Totally agree with that! 🙌",
+                // parentMessageId: ObjectId of the message you are replying to
+                // Get this from the id/messageId field of any ChatCommunityMessage or ChatCommunityWireMessage
+                parentMessageId: "668f1a2b3c4d5e6f7a8b9c01",
+                clientMessageId: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+              },
+            },
+            "image-single": {
+              summary: "IMAGE — single photo",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "IMAGE",
+                message: "Check out this view! 🌅",
+                media: {
+                  files: [
+                    {
+                      objectKey: "media/images/comm_01j9x8vb/668f1a2b.jpg",
+                      mime: "image/jpeg",
+                      size: 204800,
+                      name: "sunset.jpg",
+                      width: 1920,
+                      height: 1080,
+                      blurhash: "LqKk3+%NIXxu~qxt%MWBt7WBNGjY",
+                    },
+                  ],
+                },
+                clientMessageId: "c3d4e5f6-a7b8-9012-cdef-123456789012",
+              },
+            },
+            "image-multi": {
+              summary: "IMAGE — multiple photos (up to 10)",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "IMAGE",
+                message: "Event highlights 🎉",
+                media: {
+                  files: [
+                    {
+                      objectKey: "media/images/comm_01j9x8vb/img1.jpg",
+                      mime: "image/jpeg",
+                      size: 512000,
+                      name: "event1.jpg",
+                      width: 1080,
+                      height: 1080,
+                      blurhash: "L6PZfSi_.AyE_3t7t7R**0o#DgR4",
+                    },
+                    {
+                      objectKey: "media/images/comm_01j9x8vb/img2.jpg",
+                      mime: "image/jpeg",
+                      size: 483000,
+                      name: "event2.jpg",
+                      width: 1080,
+                      height: 1080,
+                      blurhash: "LGF5?xYk^6#M@-5c,1J5@[or[Q6.",
+                    },
+                  ],
+                },
+                clientMessageId: "d4e5f6a7-b8c9-0123-defa-234567890123",
+              },
+            },
+            video: {
+              summary: "VIDEO — video clip (≤100 MB, ≤3 min)",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "VIDEO",
+                media: {
+                  files: [
+                    {
+                      objectKey: "media/videos/comm_01j9x8vb/668f2b3c.mp4",
+                      mime: "video/mp4",
+                      size: 8388608,
+                      name: "highlight_reel.mp4",
+                      width: 1280,
+                      height: 720,
+                      durationMs: 47300,
+                    },
+                  ],
+                },
+                clientMessageId: "e5f6a7b8-c9d0-1234-efab-345678901234",
+              },
+            },
+            audio: {
+              summary: "AUDIO — audio file (mp3 / aac / flac)",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "AUDIO",
+                media: {
+                  files: [
+                    {
+                      objectKey: "media/audio/comm_01j9x8vb/668f3c4d.mp3",
+                      mime: "audio/mpeg",
+                      size: 3145728,
+                      name: "community_podcast_ep1.mp3",
+                      durationMs: 198000,
+                    },
+                  ],
+                },
+                clientMessageId: "f6a7b8c9-d0e1-2345-fabc-456789012345",
+              },
+            },
+            "voice-note": {
+              summary: "VOICE — voice note (ogg/aac, ≤5 min, with waveform)",
+              description:
+                "Voice notes require `durationMs` and `waveform` (100 normalised amplitude samples). " +
+                "The waveform drives the in-chat scrubber bar on the client.",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "VOICE",
+                media: {
+                  files: [
+                    {
+                      objectKey: "media/voice/comm_01j9x8vb/668f4d5e.ogg",
+                      mime: "audio/ogg",
+                      size: 98304,
+                      name: "voice_note.ogg",
+                      durationMs: 34500,
+                      waveform: [
+                        0.1, 0.3, 0.6, 0.9, 0.7, 0.4, 0.2, 0.5, 0.8, 0.6, 0.3,
+                        0.2, 0.4, 0.7, 0.9, 0.8, 0.5, 0.3, 0.1, 0.2, 0.4, 0.6,
+                        0.8, 0.7, 0.5, 0.3, 0.1, 0.4, 0.6, 0.9, 0.8, 0.7, 0.5,
+                        0.3, 0.2, 0.4, 0.6, 0.8, 0.7, 0.5, 0.3, 0.2, 0.4, 0.7,
+                        0.9, 0.8, 0.6, 0.4, 0.2, 0.3, 0.5, 0.7, 0.9, 0.8, 0.6,
+                        0.4, 0.2, 0.1, 0.3, 0.5, 0.7, 0.6, 0.4, 0.2, 0.1, 0.3,
+                        0.5, 0.7, 0.8, 0.9, 0.7, 0.5, 0.3, 0.1, 0.2, 0.4, 0.6,
+                        0.8, 0.9, 0.7, 0.5, 0.3, 0.2, 0.4, 0.6, 0.7, 0.8, 0.6,
+                        0.4, 0.2, 0.1, 0.3, 0.5, 0.6, 0.7, 0.5, 0.3, 0.2, 0.1,
+                        0.2,
+                      ],
+                    },
+                  ],
+                },
+                clientMessageId: "a7b8c9d0-e1f2-3456-abcd-567890123456",
+              },
+            },
+            gif: {
+              summary: "GIF — animated GIF",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "GIF",
+                media: {
+                  files: [
+                    {
+                      objectKey: "media/gifs/comm_01j9x8vb/668f5e6f.gif",
+                      mime: "image/gif",
+                      size: 2097152,
+                      name: "celebration.gif",
+                      width: 480,
+                      height: 270,
+                    },
+                  ],
+                },
+                clientMessageId: "b8c9d0e1-f2a3-4567-bcde-678901234567",
+              },
+            },
+            document: {
+              summary: "DOCUMENT — file attachment (PDF / doc / text)",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "DOCUMENT",
+                message: "Community guidelines v2.0",
+                media: {
+                  files: [
+                    {
+                      objectKey: "media/docs/comm_01j9x8vb/668f6f7a.pdf",
+                      mime: "application/pdf",
+                      size: 1048576,
+                      name: "community_guidelines_v2.pdf",
+                    },
+                  ],
+                },
+                clientMessageId: "c9d0e1f2-a3b4-5678-cdef-789012345678",
+              },
+            },
+            sticker: {
+              summary: "STICKER — sticker from a pack",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "STICKER",
+                sticker: {
+                  packId: "sticker_pack_celebrations_v1",
+                  stickerId: "sticker_party_01",
+                  objectKey: "stickers/celebrations/party_01.webp",
+                },
+                clientMessageId: "d0e1f2a3-b4c5-6789-defa-890123456789",
+              },
+            },
+            location: {
+              summary: "LOCATION — GPS location share",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "LOCATION",
+                location: {
+                  lat: 28.6139,
+                  lng: 77.209,
+                  placeName: "India Gate",
+                  placeAddress: "Rajpath, New Delhi, India 110001",
+                },
+                clientMessageId: "e1f2a3b4-c5d6-7890-efab-901234567890",
+              },
+            },
+            contact: {
+              summary: "CONTACT — contact card share",
+              value: {
+                communityId: "comm_01j9x8vb2f3g4h5k6m7n8p9q",
+                messageType: "CONTACT",
+                contact: {
+                  name: "Rajesh Sharma",
+                  phone: "+91 98765 43210",
+                  userId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+                },
+                clientMessageId: "f2a3b4c5-d6e7-8901-fabc-012345678901",
+              },
             },
           },
         },

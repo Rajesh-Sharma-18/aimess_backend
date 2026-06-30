@@ -12,12 +12,43 @@ import {
 } from "./config/redis.js";
 import { startUserProfileUpdatedConsumer } from "./consumers/user-profile-updated.consumer.js";
 import { startCommunityActivityConsumer } from "./consumers/community-activity.consumer.js";
+import { startStreamLifecycleConsumer } from "./consumers/stream-lifecycle.consumer.js";
+import { startStreamLiveConsumer } from "./consumers/stream-live.consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
+import {
+  startMuteSweeper,
+  backfillActiveMutesToChat,
+} from "./jobs/mute-sweeper.js";
 
 async function start() {
   try {
     await prisma.$connect();
     logger.info("MongoDB connected");
+
+    // Sparse unique index on Community.invitationCode — enforces global uniqueness
+    // for non-null codes while allowing multiple communities to have null (i.e. no
+    // permanent link yet). Prisma cannot express sparse indexes in the MongoDB
+    // schema, so we create it idempotently here. createIndex is a no-op when the
+    // index already exists with the same options.
+    try {
+      await prisma.$runCommandRaw({
+        createIndexes: "communities",
+        indexes: [
+          {
+            key: { invitationCode: 1 },
+            name: "communities_invitationCode_unique_sparse",
+            unique: true,
+            sparse: true,
+          },
+        ],
+      });
+      logger.info("Index ready: communities.invitationCode (sparse unique)");
+    } catch (indexErr) {
+      logger.warn(
+        "Could not create invitationCode sparse index — permanent invite links may lack uniqueness enforcement"
+      );
+      logger.warn(indexErr);
+    }
 
     if (env.REDIS_CACHE_ENABLED) {
       try {
@@ -62,8 +93,33 @@ async function start() {
       logger.warn(error);
     }
 
+    try {
+      await startStreamLifecycleConsumer();
+      logger.info("RabbitMQ consumer ready (community.stream-lifecycle.queue)");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable on boot — livestream system messages + push will not run until reconnected"
+      );
+      logger.warn(error);
+    }
+
+    try {
+      await startStreamLiveConsumer();
+      logger.info("RabbitMQ consumer ready (stream.live.community.queue)");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable on boot — community stream live indicator sync will not run until reconnected"
+      );
+      logger.warn(error);
+    }
+
     // Start gRPC server (stub implementations — real logic wired in later)
     startGrpcServer(env.COMMUNITY_GRPC_PORT);
+
+    // Auto-unmute: re-mirror existing active mutes to chat-service (one-shot
+    // migration backfill, best-effort) then start the per-minute expiry sweep.
+    void backfillActiveMutesToChat();
+    startMuteSweeper();
 
     app.listen(env.COMMUNITY_SERVICE_PORT, "0.0.0.0", () => {
       logger.info(

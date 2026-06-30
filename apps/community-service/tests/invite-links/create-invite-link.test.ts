@@ -6,6 +6,13 @@
  * (every role admitted while ACTIVE; non-members and non-ACTIVE statuses denied)
  * plus the abuse guards (per-member active-link cap, audit, createdBy ownership).
  *
+ * NOTE: these tests exercise the PARAMETERIZED temp-link path (they pass
+ * `maxUses` / `expiresInMinutes`). A bare `{}` call on a PRIVATE community is the
+ * permanent single-source-of-truth short-circuit — it returns the stored
+ * permanent code WITHOUT a new row and skips the rate-limit / active-link-cap
+ * guards. That path is covered in permanent-invitation-link.test.ts. The abuse
+ * guards below only apply to the parameterized path, so the calls pass a param.
+ *
  * Only the I/O boundary is mocked (repository, storage). The per-user Redis rate
  * limit fails open under test (cache not ready), so it does not interfere here;
  * it is covered directly in invite-rate-limit.test.ts.
@@ -91,7 +98,10 @@ describe("createInviteLink — authorization (any active member)", () => {
     async (role) => {
       repo.findMembership.mockResolvedValue({ role, status: "ACTIVE" });
 
-      const link = await communityService.createInviteLink(CID, CALLER, {});
+      // Parameterized call → legacy temp-link create path (a fresh row).
+      const link = await communityService.createInviteLink(CID, CALLER, {
+        maxUses: 5,
+      });
 
       expect(link.communityId).toBe(CID);
       expect(link.createdBy).toBe(CALLER); // ownership preserved
@@ -134,11 +144,12 @@ describe("createInviteLink — authorization (any active member)", () => {
 
 describe("createInviteLink — abuse guards", () => {
   it("rejects with COMMUNITY_INVITE_LINK_LIMIT_REACHED at the per-member active-link cap", async () => {
-    // Default cap is 20 active links per member.
+    // Default cap is 20 active links per member. The cap applies only to the
+    // parameterized temp-link path, so pass a param.
     repo.countActiveInviteLinksByCreator.mockResolvedValue(20);
 
     await expect(
-      communityService.createInviteLink(CID, CALLER, {})
+      communityService.createInviteLink(CID, CALLER, { maxUses: 5 })
     ).rejects.toThrow("COMMUNITY_INVITE_LINK_LIMIT_REACHED");
     expect(repo.createInviteLink).not.toHaveBeenCalled();
   });
@@ -146,7 +157,9 @@ describe("createInviteLink — abuse guards", () => {
   it("allows creation just under the cap", async () => {
     repo.countActiveInviteLinksByCreator.mockResolvedValue(19);
 
-    const link = await communityService.createInviteLink(CID, CALLER, {});
+    const link = await communityService.createInviteLink(CID, CALLER, {
+      maxUses: 5,
+    });
     expect(link.linkId).toBe(LINK_ID);
   });
 

@@ -15,6 +15,7 @@ import {
   LivestreamRepository,
   LivestreamCommentRepository,
   LivestreamBanRepository,
+  LivestreamCommentReportRepository,
 } from "./repositories/index.js";
 
 // -- Services --
@@ -30,6 +31,9 @@ import { communityGrpcClient } from "./grpc/community.client.js";
 
 // -- Controllers --
 import { StreamController } from "./api/controllers/index.js";
+
+// -- Jobs --
+import { startStreamSweeper } from "./jobs/stream-sweeper.js";
 
 async function start() {
   try {
@@ -53,6 +57,7 @@ async function start() {
     const streamRepo = new LivestreamRepository(prisma);
     const commentRepo = new LivestreamCommentRepository(prisma);
     const banRepo = new LivestreamBanRepository(prisma);
+    const commentReportRepo = new LivestreamCommentReportRepository(prisma);
 
     // 2. Services (inject repos + clients + redis)
     const srsService = new SrsService();
@@ -69,7 +74,8 @@ async function start() {
       userGrpcClient,
       redis,
       banRepo,
-      communityGrpcClient
+      communityGrpcClient,
+      commentReportRepo
     );
 
     // 3. Controllers
@@ -89,6 +95,9 @@ async function start() {
         "Stream Service listening on port " + String(env.STREAM_SERVICE_PORT)
       );
     });
+
+    // 6. Background jobs
+    startStreamSweeper(livestreamService);
   } catch (error) {
     logger.error(error);
     process.exit(1);

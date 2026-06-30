@@ -7,6 +7,7 @@ import {
   ConflictError,
   BadRequestError,
 } from "@aimess/errors";
+import { formatStreamDuration } from "@aimess/constants";
 
 import { env } from "../config/env.js";
 import type { Livestream } from "../generated/prisma/index.js";
@@ -19,6 +20,7 @@ import type { SrsService, IngestEndpoints } from "./srs.service.js";
 import type { CommunityGrpcClient } from "../grpc/community.client.js";
 import type { redis as RedisClient } from "../config/redis.js";
 import { publishStreamEvent } from "../events/index.js";
+import { userGrpcClient } from "../grpc/user.client.js";
 
 /** Stream record enriched with a live viewer count + presentation helpers. */
 export interface StreamView {
@@ -64,6 +66,15 @@ export interface StreamAccess {
   status: string;
   reason: string; // "" | NOT_MEMBER | BANNED | STREAM_NOT_FOUND
   canComment: boolean; // reflects stream.commentStatus; false = chat disabled
+  // Stream snapshot — populated when allowed=true so the gateway can enrich the
+  // join ack without a second gRPC round-trip.
+  streamStatus: string;
+  title: string;
+  description: string;
+  thumbnail: string | null;
+  creatorId: string;
+  hlsUrl: string | null;
+  flvUrl: string | null;
 }
 
 /** A ban row as exposed over REST. */
@@ -185,7 +196,11 @@ export class LivestreamService {
     private readonly communityClient: CommunityGrpcClient,
     private readonly redis: typeof RedisClient,
     private readonly banRepo: LivestreamBanRepository,
-    private readonly eventPublisher: typeof publishStreamEvent = publishStreamEvent
+    private readonly eventPublisher: typeof publishStreamEvent = publishStreamEvent,
+    // Resolves the host's display-name/avatar snapshot for enriched community
+    // livestream socket payloads. Defaults to the shared singleton; injectable
+    // for tests. Best-effort — a failure degrades to an empty host name.
+    private readonly userClient: typeof userGrpcClient = userGrpcClient
   ) {}
 
   /**
@@ -258,6 +273,26 @@ export class LivestreamService {
       dashUrl: playback?.dashUrl ?? null,
     });
 
+    // Race-safe cap enforcement. The count check above has a small window where
+    // two concurrent creates both pass at count = MAX-1 and produce MAX+1. After
+    // inserting, re-derive THIS stream's rank among the community's active
+    // streams (deterministic createdAt + id tiebreak): if MAX or more were
+    // created at-or-before it, this one lost the race — delete it and reject, so
+    // the community never keeps more than MAX concurrent streams.
+    const priorActive = await this.streamRepo.countActiveCreatedBefore(
+      created.communityId,
+      created.createdAt,
+      created.id
+    );
+    if (priorActive >= env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) {
+      await this.streamRepo.deleteById(created.id).catch((err: unknown) => {
+        logger.warn(
+          `failed to roll back over-cap stream ${created.id}: ${String(err)}`
+        );
+      });
+      throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
+    }
+
     void this.eventPublisher("stream.created", {
       streamId: created.id,
       communityId: created.communityId,
@@ -297,6 +332,15 @@ export class LivestreamService {
       return false;
     }
 
+    // Already LIVE (e.g. markLive was called manually before the hook fired) —
+    // allow the publish but skip the re-broadcast so status events fire exactly once.
+    if (stream.status === "LIVE") {
+      logger.info(
+        `on_publish for already-LIVE stream id=${stream.id} — allowing without re-broadcast`
+      );
+      return true;
+    }
+
     const playback = this.srsService.buildPlaybackUrls(streamKey);
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "LIVE",
@@ -306,13 +350,13 @@ export class LivestreamService {
       dashUrl: playback.dashUrl,
     });
 
-    await this.publishStatus(updated.id, "LIVE");
-    void this.publishCommunityStreamStarted(
-      updated.communityId,
-      updated.id,
-      updated.title,
-      updated.hlsUrl
-    );
+    await this.publishStatus(updated.id, "LIVE", updated.communityId, {
+      creatorId: updated.creatorId,
+      hlsUrl: updated.hlsUrl,
+      flvUrl: updated.flvUrl,
+      startedAt: updated.livedAt?.getTime() ?? Date.now(),
+    });
+    void this.publishCommunityStreamStarted(updated);
     this.eventPublisher("stream.started", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -342,13 +386,14 @@ export class LivestreamService {
       endedAt: new Date(),
     });
 
-    await this.publishStatus(updated.id, "ENDED");
-    void this.publishCommunityStreamEnded(updated.communityId);
+    await this.publishStatus(updated.id, "ENDED", updated.communityId);
+    void this.publishCommunityStreamEnded(updated);
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
       creatorId: updated.creatorId,
       endedAt: updated.endedAt?.getTime() ?? Date.now(),
+      durationSeconds: computeDurationSeconds(updated),
       peakViewers: updated.peakViewers,
     });
   }
@@ -398,13 +443,14 @@ export class LivestreamService {
     // Best-effort terminate the SRS publisher.
     await this.srsService.kickStream(stream.streamKey);
 
-    await this.publishStatus(updated.id, "ENDED");
-    void this.publishCommunityStreamEnded(updated.communityId);
+    await this.publishStatus(updated.id, "ENDED", updated.communityId);
+    void this.publishCommunityStreamEnded(updated);
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
       creatorId: updated.creatorId,
       endedAt: updated.endedAt?.getTime() ?? Date.now(),
+      durationSeconds: computeDurationSeconds(updated),
       peakViewers: updated.peakViewers,
     });
 
@@ -439,13 +485,13 @@ export class LivestreamService {
       dashUrl: playback.dashUrl,
     });
 
-    await this.publishStatus(updated.id, "LIVE");
-    void this.publishCommunityStreamStarted(
-      updated.communityId,
-      updated.id,
-      updated.title,
-      updated.hlsUrl
-    );
+    await this.publishStatus(updated.id, "LIVE", updated.communityId, {
+      creatorId: updated.creatorId,
+      hlsUrl: updated.hlsUrl,
+      flvUrl: updated.flvUrl,
+      startedAt: updated.livedAt?.getTime() ?? Date.now(),
+    });
+    void this.publishCommunityStreamStarted(updated);
     this.eventPublisher("stream.started", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -481,13 +527,14 @@ export class LivestreamService {
       await this.srsService.kickStream(stream.streamKey);
     }
 
-    await this.publishStatus(updated.id, "ENDED");
-    void this.publishCommunityStreamEnded(updated.communityId);
+    await this.publishStatus(updated.id, "ENDED", updated.communityId);
+    void this.publishCommunityStreamEnded(updated);
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
       creatorId: updated.creatorId,
       endedAt: updated.endedAt?.getTime() ?? Date.now(),
+      durationSeconds: computeDurationSeconds(updated),
       peakViewers: updated.peakViewers,
     });
 
@@ -613,11 +660,84 @@ export class LivestreamService {
     return view;
   }
 
+  /**
+   * Record a keep-alive heartbeat from the stream host. Updates `lastHeartbeatAt`
+   * so the sweeper knows the host is still connected. Called every ~30 s from the
+   * client while the stream is LIVE.
+   */
+  async recordHeartbeat(id: string, requesterId: string): Promise<void> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+    if (stream.status !== "LIVE") {
+      throw new BadRequestError("STREAM_NOT_LIVE");
+    }
+    await this.streamRepo.updateById(id, { lastHeartbeatAt: new Date() });
+  }
+
+  /**
+   * Background sweeper: auto-end LIVE streams whose host hasn't heartbeated in
+   * `STREAM_HEARTBEAT_TIMEOUT_MS`. Called periodically from server.ts.
+   * Intentionally silent — a single stale stream failure does not block the rest.
+   */
+  async sweepStaleStreams(): Promise<void> {
+    const cutoff = new Date(Date.now() - env.STREAM_HEARTBEAT_TIMEOUT_MS);
+    let stale: Awaited<ReturnType<typeof this.streamRepo.findStaleLiveStreams>>;
+    try {
+      stale = await this.streamRepo.findStaleLiveStreams(cutoff);
+    } catch (err) {
+      logger.warn(`sweepStaleStreams: DB query failed — ${String(err)}`);
+      return;
+    }
+    if (!stale.length) return;
+
+    logger.info(`sweepStaleStreams: ending ${stale.length} stale stream(s)`);
+    for (const stream of stale) {
+      try {
+        const updated = await this.streamRepo.updateById(stream.id, {
+          status: "ENDED",
+          endedAt: new Date(),
+        });
+        await this.srsService.kickStream(stream.streamKey);
+        await this.publishStatus(updated.id, "ENDED", updated.communityId);
+        void this.publishCommunityStreamEnded(updated);
+        this.eventPublisher("stream.ended", {
+          streamId: updated.id,
+          communityId: updated.communityId,
+          creatorId: updated.creatorId,
+          endedAt: updated.endedAt?.getTime() ?? Date.now(),
+          durationSeconds: computeDurationSeconds(updated),
+          peakViewers: updated.peakViewers,
+        });
+        logger.info(
+          `sweepStaleStreams: ended stream=${stream.id} community=${stream.communityId}`
+        );
+      } catch (err) {
+        logger.warn(
+          `sweepStaleStreams: failed to end stream=${stream.id} — ${String(err)}`
+        );
+      }
+    }
+  }
+
   /** Backs community-service `isLive` enrichment (fail-open caller side). */
   async getActiveStreamsByCommunityIds(
     communityIds: string[]
   ): Promise<string[]> {
     return this.streamRepo.findLiveCommunityIds(communityIds);
+  }
+
+  /**
+   * Backs `activeLivestreamCount`/`hasActiveLivestream` on GET /communities/mine
+   * and the chat-service community rooms list. Returns the LIVE-only count per
+   * community (communities with 0 live streams are omitted). Fail-open caller side.
+   */
+  async getActiveStreamCountsByCommunityIds(
+    communityIds: string[]
+  ): Promise<Array<{ communityId: string; count: number }>> {
+    return this.streamRepo.countLiveByCommunityIds(communityIds);
   }
 
   /**
@@ -726,6 +846,13 @@ export class LivestreamService {
         status: "",
         reason: "STREAM_NOT_FOUND",
         canComment: false,
+        streamStatus: "",
+        title: "",
+        description: "",
+        thumbnail: null,
+        creatorId: "",
+        hlsUrl: null,
+        flvUrl: null,
       };
     }
 
@@ -737,10 +864,28 @@ export class LivestreamService {
         status: "",
         reason: "BANNED",
         canComment: false,
+        streamStatus: "",
+        title: "",
+        description: "",
+        thumbnail: null,
+        creatorId: "",
+        hlsUrl: null,
+        flvUrl: null,
       };
     }
 
     const canComment = stream.commentStatus;
+
+    // Snapshot fields shared by all allowed=true paths.
+    const snapshot = {
+      streamStatus: stream.status,
+      title: stream.title,
+      description: stream.description,
+      thumbnail: stream.thumbnail,
+      creatorId: stream.creatorId,
+      hlsUrl: stream.hlsUrl,
+      flvUrl: stream.flvUrl,
+    };
 
     // The owner can always watch their own stream.
     if (stream.creatorId === userId) {
@@ -757,6 +902,7 @@ export class LivestreamService {
         status: "OWNER",
         reason: "",
         canComment,
+        ...snapshot,
       };
     }
 
@@ -791,6 +937,7 @@ export class LivestreamService {
         status: "",
         reason: "",
         canComment: isMember ? canComment : false,
+        ...snapshot,
       };
     }
 
@@ -807,6 +954,7 @@ export class LivestreamService {
       status: "",
       reason: "",
       canComment,
+      ...snapshot,
     };
   }
 
@@ -960,13 +1108,27 @@ export class LivestreamService {
     await this.streamRepo.updateById(streamId, { thumbnail });
   }
 
-  private async publishStatus(streamId: string, status: string): Promise<void> {
+  private async publishStatus(
+    streamId: string,
+    status: string,
+    communityId: string,
+    // Extra fields included only on LIVE transitions so the gateway can send a
+    // targeted stream:broadcast:live event to the broadcaster's socket.
+    broadcasterCtx?: {
+      creatorId: string;
+      hlsUrl: string | null;
+      flvUrl: string | null;
+      startedAt: number;
+    }
+  ): Promise<void> {
     try {
       await this.redis.publish(
         `stream:${streamId}`,
         JSON.stringify({
           event: "stream:status",
-          data: { streamId, status },
+          // communityId is always included so the /stream namespace viewer can
+          // update the community isLive badge without a separate /community room.
+          data: { streamId, status, communityId, ...broadcasterCtx },
         })
       );
     } catch (error) {
@@ -976,48 +1138,125 @@ export class LivestreamService {
     }
   }
 
-  /** Notify every member in the community room that a stream just went live. */
-  private async publishCommunityStreamStarted(
-    communityId: string,
-    streamId: string,
-    title: string,
-    hlsUrl: string | null
-  ): Promise<void> {
+  /**
+   * Resolve the host's display-name/avatar snapshot for an enriched community
+   * livestream socket payload. Best-effort: a user-service failure degrades to an
+   * empty name + null avatar (the client falls back to its community roster).
+   * `avatarUrl` carries the snapshot's raw avatar object key — stream-service's
+   * established wire convention (mirrors comment senderAvatar); resolve on read.
+   */
+  private async resolveHost(creatorId: string): Promise<{
+    userId: string;
+    displayName: string;
+    avatarUrl: string | null;
+  }> {
     try {
+      const [snap] = await this.userClient.bulkGetUserSnapshots([creatorId]);
+      return {
+        userId: creatorId,
+        displayName: snap?.displayName ?? "",
+        avatarUrl: snap?.avatarObjectKey || null,
+      };
+    } catch (error) {
+      logger.warn(
+        `host snapshot resolve failed for ${creatorId}: ${String(error)}`
+      );
+      return { userId: creatorId, displayName: "", avatarUrl: null };
+    }
+  }
+
+  /**
+   * Notify the community that a stream just went LIVE. Enriched (host, live
+   * count, hasActiveLivestream, startedAt) for the live banner + list badge;
+   * additive over the legacy { communityId, streamId, title, hlsUrl } shape. The
+   * gateway relays this to BOTH the open-chat room and the lightweight typing
+   * room, so every connected member sees the banner without opening the chat.
+   */
+  private async publishCommunityStreamStarted(
+    stream: Livestream
+  ): Promise<void> {
+    logger.info(
+      `🔴 [STREAM:LIVE] publishCommunityStreamStarted → Redis channel=community:${stream.communityId} streamId=${stream.id} title="${stream.title ?? ""}"`
+    );
+    try {
+      const [host, liveCount] = await Promise.all([
+        this.resolveHost(stream.creatorId),
+        this.streamRepo.countLiveByCommunity(stream.communityId),
+      ]);
       await this.redis.publish(
-        `community:${communityId}`,
+        `community:${stream.communityId}`,
         JSON.stringify({
           event: "community:stream:started",
-          data: { communityId, streamId, title, hlsUrl },
+          data: {
+            communityId: stream.communityId,
+            livestreamId: stream.id,
+            streamId: stream.id, // legacy alias
+            host,
+            title: stream.title ?? null,
+            hlsUrl: stream.hlsUrl ?? null,
+            status: "LIVE",
+            startedAt: stream.livedAt?.getTime() ?? Date.now(),
+            activeLivestreamCount: Math.min(
+              liveCount,
+              env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
+            ),
+            hasActiveLivestream: true,
+          },
         })
+      );
+      logger.info(
+        `🔴 [STREAM:LIVE] ✅ community:stream:started published to Redis community:${stream.communityId}`
       );
     } catch (error) {
       logger.warn(
-        `community stream-started broadcast failed for community=${communityId}: ${String(error)}`
+        `community stream-started broadcast failed for community=${stream.communityId}: ${String(error)}`
       );
     }
   }
 
   /**
-   * Notify every member in the community room that no streams are live anymore.
-   * Only fires when the last LIVE stream for this community has ended.
+   * Notify the community that a stream ENDED. Unlike the legacy behavior (which
+   * only fired when the LAST stream ended), this fires on EVERY end carrying the
+   * updated live count — `hasActiveLivestream` stays true while other streams run
+   * and flips false only when the final stream ends. Drive banner visibility off
+   * `hasActiveLivestream`/`activeLivestreamCount`, not the event's presence.
    */
-  private async publishCommunityStreamEnded(
-    communityId: string
-  ): Promise<void> {
+  private async publishCommunityStreamEnded(stream: Livestream): Promise<void> {
     try {
-      const liveCount = await this.streamRepo.countLiveByCommunity(communityId);
-      if (liveCount > 0) return; // another stream is still live
+      // Count is read AFTER this stream is ENDED, so it reflects the streams
+      // that remain live.
+      const [host, liveCount] = await Promise.all([
+        this.resolveHost(stream.creatorId),
+        this.streamRepo.countLiveByCommunity(stream.communityId),
+      ]);
+      const durationSeconds = computeDurationSeconds(stream);
       await this.redis.publish(
-        `community:${communityId}`,
+        `community:${stream.communityId}`,
         JSON.stringify({
           event: "community:stream:ended",
-          data: { communityId },
+          data: {
+            communityId: stream.communityId,
+            livestreamId: stream.id,
+            streamId: stream.id, // legacy alias
+            host,
+            status: "ENDED",
+            endedAt: stream.endedAt?.getTime() ?? Date.now(),
+            duration: formatStreamDuration(durationSeconds),
+            durationSeconds,
+            activeLivestreamCount: Math.min(
+              liveCount,
+              env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
+            ),
+            hasActiveLivestream: liveCount > 0,
+          },
         })
+      );
+      logger.info(
+        `🔴 [STREAM:ENDED] ✅ community:stream:ended published to Redis community:${stream.communityId}`
       );
     } catch (error) {
       logger.warn(
-        `community stream-ended broadcast failed for community=${communityId}: ${String(error)}`
+        `community stream-ended broadcast failed for community=${stream.communityId}: ${String(error)}`
       );
     }
   }

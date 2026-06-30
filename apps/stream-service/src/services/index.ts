@@ -10,4 +10,7 @@ export { LivestreamCommentService } from "./livestream-comment.service.js";
 export type {
   CommentDto,
   GetCommentsResult,
+  CommentReportDto,
+  CommentReportReason,
 } from "./livestream-comment.service.js";
+export { COMMENT_REPORT_REASONS } from "./livestream-comment.service.js";

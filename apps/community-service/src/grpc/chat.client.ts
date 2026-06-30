@@ -18,6 +18,10 @@ export interface CommunityChatLastMessage {
   message: string;
   /** epoch ms */
   dateTime: number;
+  /** true => sender-less SYSTEM line; false => "username: message" member line. */
+  isSystem?: boolean;
+  /** sender userId for the member-message shape ("" for SYSTEM / unknown). */
+  userId?: string;
 }
 
 export interface CommunityChatSummary {
@@ -25,6 +29,12 @@ export interface CommunityChatSummary {
   unreadMessageCount: number;
   /** false => lastMessageActivity must be rendered as null. */
   hasLastMessage: boolean;
+  /**
+   * True => the viewer hid the community-wide shared last; `lastMessage` (or its
+   * absence) is AUTHORITATIVE and must be used directly — clearing the column
+   * preview when there is no lastMessage — rather than overlaid only-when-newer.
+   */
+  perUserResolved?: boolean;
   lastMessage?: CommunityChatLastMessage;
   /**
    * The viewer's latest PERSONAL line (e.g. "You joined the community"), visible
@@ -184,12 +194,15 @@ export function createChatClient(): ChatClient {
           communityId: s.communityId,
           unreadMessageCount: Number(s.unreadMessageCount ?? 0),
           hasLastMessage: Boolean(s.hasLastMessage),
+          perUserResolved: Boolean(s.perUserResolved),
           lastMessage:
             s.hasLastMessage && s.lastMessage
               ? {
                   username: s.lastMessage.username ?? "",
                   message: s.lastMessage.message ?? "",
                   dateTime: Number(s.lastMessage.dateTime ?? 0),
+                  isSystem: Boolean(s.lastMessage.isSystem),
+                  userId: s.lastMessage.userId ?? "",
                 }
               : undefined,
           // proto-loader null-fills sub-messages; a real personal line always

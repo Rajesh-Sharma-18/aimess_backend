@@ -15,8 +15,11 @@ import type {
   CommunityAddedPayload,
   CommunityClosedPayload,
   CommunityMemberAddedPayload,
+  CommunityMemberJoinedSocketPayload,
+  CommunityMemberMutedSocketPayload,
   CommunityMemberRemovedPayload,
   CommunityMemberUnbannedPayload,
+  CommunityMemberUnmutedSocketPayload,
   CommunityMemberUpdatedPayload,
   CommunityMetaDto,
   CommunityMetaUpdatedPayload,
@@ -96,6 +99,7 @@ import type {
   CommunityReportData,
   CommunityReportWithUsersData,
   InviteLinkPreviewData,
+  PermanentInvitationLinkData,
   MyInviteData,
   MyJoinRequestData,
   MyReportData,
@@ -145,6 +149,7 @@ import {
   publishCommunityCreatedForChatSafe,
   publishCommunityDeletedForChatSafe,
   publishCommunityInviteLinkSharedForChatSafe,
+  publishCommunityMemberMuteSyncedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
   publishCommunityVisibilityChangedForChatSafe,
@@ -393,6 +398,89 @@ export function applyPersonalLastActivityOverlay(
   return base;
 }
 
+/** chat-service's per-viewer last message → the rendered CommunityLastActivity:
+ *  sender-less SYSTEM shape, else the "username: preview" member-message shape. */
+export function chatLastMessageToActivity(chat: {
+  username: string;
+  message: string;
+  dateTime: number;
+  isSystem?: boolean;
+  userId?: string;
+}): CommunityLastActivity {
+  return chat.isSystem
+    ? {
+        type: "system",
+        userId: null,
+        username: null,
+        preview: chat.message,
+        dateTime: chat.dateTime,
+      }
+    : {
+        type: "message",
+        userId: chat.userId || null,
+        username: chat.username,
+        preview: chat.message,
+        dateTime: chat.dateTime,
+      };
+}
+
+/** The empty per-viewer state: the viewer has hidden every visible message. A
+ *  sender-less, timestamp-zero system line so any real personal line (e.g. "You
+ *  joined the community") still wins the subsequent personal overlay. */
+export function emptyLastActivity(): {
+  lastActivity: CommunityLastActivity;
+  lastActivityAt: number;
+} {
+  return {
+    lastActivity: {
+      type: "system",
+      userId: null,
+      username: null,
+      preview: "",
+      dateTime: 0,
+    },
+    lastActivityAt: 0,
+  };
+}
+
+/**
+ * NEWEST-WINS reconciliation for the `perUserResolved=false` case (the viewer did
+ * NOT hide the shared last): the denormalized `Community.lastActivity*` column is
+ * the rich base, but a STRICTLY-NEWER chat message overrides it — which repairs a
+ * dropped `community.activity` event that left the column behind (missed-ADD).
+ *
+ * NOTE: this only repairs missed-ADD (chat newer than column). A dropped
+ * delete-for-EVERYONE event (column stale-NEWER than the rolled-back shared last)
+ * is NOT repaired here and remains a residual until the next activity event — the
+ * overlay is structurally incapable of moving the pointer backward (true fix =
+ * a community.activity DLQ, out of scope). The authoritative per-viewer
+ * delete-for-me case is handled separately via `perUserResolved`, NOT this fn.
+ *
+ * `lastActivityAt` shifts to the chat dateTime for DISPLAY only; pagination keeps
+ * using the stored `row.lastActivityAt`. Exported for unit coverage.
+ */
+export function applyChatLastMessageOverlay(
+  base: { lastActivity: CommunityLastActivity; lastActivityAt: number },
+  chat:
+    | {
+        username: string;
+        message: string;
+        dateTime: number;
+        isSystem?: boolean;
+        userId?: string;
+      }
+    | null
+    | undefined
+): { lastActivity: CommunityLastActivity; lastActivityAt: number } {
+  if (!chat || !chat.message || chat.dateTime <= base.lastActivityAt) {
+    return base;
+  }
+  return {
+    lastActivity: chatLastMessageToActivity(chat),
+    lastActivityAt: chat.dateTime,
+  };
+}
+
 /**
  * Telegram-style mapping from the set of community fields that actually changed
  * in one `update()` call to the ONE system-message subtype to post:
@@ -606,7 +694,8 @@ async function toCommunityData(
   myRole: CommunityMemberRole | null,
   muteRow: MuteRowFragment,
   joinRequest: { id: string; status: CommunityJoinReqStatus } | null = null,
-  liveStreams: LiveStreamSummary[] = []
+  liveStreams: LiveStreamSummary[] = [],
+  callerModerationMute: { mutedUntil: Date | null } | null = null
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -643,12 +732,14 @@ async function toCommunityData(
         : null,
     ...muteFields(muteRow),
     moderationStatus: community.moderationStatus,
-    isLive: liveStreams.length > 0,
+    ...livestreamFields(liveStreams.length),
     liveStreams,
     status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
     lastActivity: buildLastActivity(community),
+    isMemberMuted: callerModerationMute !== null,
+    memberMutedUntil: callerModerationMute?.mutedUntil?.toISOString() ?? null,
   };
 }
 
@@ -695,6 +786,27 @@ function muteFields(muteRow: MuteRowFragment): {
   };
 }
 
+/** Platform cap on concurrent LIVE streams per community (see stream-service). */
+const MAX_ACTIVE_LIVESTREAMS = 5;
+
+/**
+ * Derive the list/detail livestream fields from a community's LIVE stream count.
+ * `isLive` is retained for backward compatibility (=== hasActiveLivestream); the
+ * count is clamped to the platform cap so the wire never reports more than 5.
+ */
+function livestreamFields(liveCount: number): {
+  isLive: boolean;
+  hasActiveLivestream: boolean;
+  activeLivestreamCount: number;
+} {
+  const count = Math.min(Math.max(0, liveCount), MAX_ACTIVE_LIVESTREAMS);
+  return {
+    isLive: count > 0,
+    hasActiveLivestream: count > 0,
+    activeLivestreamCount: count,
+  };
+}
+
 /** Map a community row to the discovery/browse DTO (resolves avatar URL). */
 async function toDiscoverItem(
   community: {
@@ -719,7 +831,7 @@ async function toDiscoverItem(
   muteRow: MuteRowFragment,
   isJoined: boolean,
   hasRequested: boolean,
-  isLive = false,
+  liveCount = 0,
   viewerId?: string
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
@@ -742,7 +854,7 @@ async function toDiscoverItem(
     isJoined,
     hasRequested,
     ...muteFields(muteRow),
-    isLive,
+    ...livestreamFields(liveCount),
     moderationStatus: community.moderationStatus,
     status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.getTime(),
@@ -794,6 +906,13 @@ async function toMemberData(member: {
     mutedAt: member.mutedAt ? member.mutedAt.toISOString() : null,
     mutedBy: member.mutedBy ?? null,
     mutedUntil: member.mutedUntil ? member.mutedUntil.toISOString() : null,
+    // Single-field convenience flag (Phase 8): true while a moderation mute is
+    // effective. Callers that don't populate the mute fields (most mutation
+    // responses) get `false` — the authoritative mute view is the member roster
+    // (`GET /:id/members`), the muted-members list, and the mute socket events.
+    isMuted:
+      member.mutedAt != null &&
+      (member.mutedUntil == null || member.mutedUntil.getTime() > Date.now()),
   };
 }
 
@@ -1071,6 +1190,82 @@ function toInviteLinkData(
     revokedAt: row.revokedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     isActive,
+    isPermanent: false,
+  };
+}
+
+/**
+ * Build a `PermanentInvitationLinkData` DTO from a community that already has
+ * its `invitationCode` set. Throws if called before the code is allocated
+ * (guards against logic bugs — callers in this file always check first).
+ */
+function toPermanentInvitationLinkData(community: {
+  id: string;
+  name: string;
+  invitationCode: string | null;
+  invitationCodeCreatedAt: Date | null;
+  createdAt: Date;
+}): PermanentInvitationLinkData {
+  if (!community.invitationCode) {
+    throw new Error(
+      `toPermanentInvitationLinkData called on community ${community.id} with no invitationCode`
+    );
+  }
+  return {
+    communityId: community.id,
+    communityName: community.name,
+    invitationCode: community.invitationCode,
+    invitationLink: buildInviteUrl(community.invitationCode),
+    appDeepLink: buildInviteDeepLink(community.invitationCode),
+    createdAt: (
+      community.invitationCodeCreatedAt ?? community.createdAt
+    ).getTime(),
+  };
+}
+
+/**
+ * Synthesize a `CommunityInviteLinkData`-shaped object from a community's
+ * permanent invitation code so that `redeemInviteLink` and `lookupInviteLink`
+ * can return a consistent response shape for both regular links AND the
+ * permanent community link without duplicating the rest of the join logic.
+ *
+ * Key invariants for permanent links:
+ *  - `linkId` equals `communityId` (no real DB row exists for the permanent link)
+ *  - `isPermanent: true` → clients should use this flag to detect permanent links, not parse linkId
+ *  - `maxUses: null` → unlimited
+ *  - `expiresAt: null` → never expires
+ *  - `revokedAt: null` → never revoked
+ *  - `autoApprove: false` → request-to-join (PRIVATE default)
+ *  - `isActive: true` → always active (lifecycle managed on the Community row)
+ */
+function toPermanentLinkAsInviteLinkData(community: {
+  id: string;
+  type: CommunityType;
+  handle: string;
+  adminId: string;
+  invitationCode: string;
+  invitationCodeCreatedAt: Date | null;
+  createdAt: Date;
+}): CommunityInviteLinkData {
+  const share = resolveCommunityShareLink(community, community.invitationCode);
+  return {
+    linkId: community.id,
+    code: community.invitationCode,
+    url: share.url,
+    appDeepLink: share.appDeepLink,
+    linkType: share.linkType,
+    communityId: community.id,
+    createdBy: community.adminId,
+    maxUses: null,
+    usedCount: 0,
+    autoApprove: false,
+    expiresAt: null,
+    revokedAt: null,
+    createdAt: (
+      community.invitationCodeCreatedAt ?? community.createdAt
+    ).toISOString(),
+    isActive: true,
+    isPermanent: true,
   };
 }
 
@@ -1100,6 +1295,26 @@ function toAuditLogData(log: {
  *  own personal line (e.g. "You joined the community"), if any. */
 type ChatEnrichment = {
   unreadMessageCount: number;
+  /**
+   * True => the viewer HID the community-wide shared last; `lastMessage` (or its
+   * absence) is AUTHORITATIVE for this viewer — use it directly and CLEAR the
+   * stale column preview when there is no lastMessage. False => `lastMessage` is
+   * the plain shared snapshot, overlaid onto the column only-when-newer (repairs
+   * lost-`community.activity`-event missed-ADD staleness).
+   */
+  perUserResolved: boolean;
+  /**
+   * chat-service's latest message visible to this viewer (community-wide last, or
+   * their previous-visible when perUserResolved). Carries its REAL timestamp.
+   * Absent when no visible message remains for the viewer.
+   */
+  lastMessage?: {
+    username: string;
+    message: string;
+    dateTime: number;
+    isSystem: boolean;
+    userId: string;
+  };
   /** The caller's latest personal SYSTEM line — overlaid onto lastActivity for
    *  the joiner only. Absent when the caller has no personal line. */
   personalLastMessage?: { message: string; dateTime: number };
@@ -1126,6 +1341,17 @@ async function fetchChatEnrichment(
   for (const s of summaries) {
     map.set(s.communityId, {
       unreadMessageCount: s.unreadMessageCount ?? 0,
+      perUserResolved: Boolean(s.perUserResolved),
+      lastMessage:
+        s.hasLastMessage && s.lastMessage
+          ? {
+              username: s.lastMessage.username,
+              message: s.lastMessage.message,
+              dateTime: s.lastMessage.dateTime,
+              isSystem: Boolean(s.lastMessage.isSystem),
+              userId: s.lastMessage.userId ?? "",
+            }
+          : undefined,
       personalLastMessage: s.personalLastMessage
         ? {
             message: s.personalLastMessage.message,
@@ -1139,18 +1365,19 @@ async function fetchChatEnrichment(
 
 const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
   unreadMessageCount: 0,
+  perUserResolved: false,
 };
 
 /**
- * Bulk-check which of the given communityIds currently have a LIVE stream.
- * Always degrades gracefully (empty set on stream-service failure — the gRPC
- * client already falls back, so every community shows isLive=false).
+ * Bulk LIVE-only stream count per community for the mine + discover lists. One
+ * batched gRPC call backs both `isLive` (count > 0) and `activeLivestreamCount`.
+ * Degrades to an empty map (→ count 0, isLive false) on stream-service failure.
  */
-async function fetchLiveCommunityIds(
+async function fetchLiveStreamCounts(
   communityIds: string[]
-): Promise<Set<string>> {
-  if (!communityIds.length) return new Set();
-  return getStreamClient().getActiveCommunityIds(communityIds);
+): Promise<Map<string, number>> {
+  if (!communityIds.length) return new Map();
+  return getStreamClient().getActiveStreamCounts(communityIds);
 }
 
 /**
@@ -1163,6 +1390,11 @@ async function fetchCommunityLiveStreams(
 ): Promise<LiveStreamSummary[]> {
   return getStreamClient().getLiveStreamsByCommunity(communityId);
 }
+
+/** A fully-loaded Community row as returned by the repository (never null). */
+type CommunityRow = NonNullable<
+  Awaited<ReturnType<typeof communityRepository.findById>>
+>;
 
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
@@ -1332,21 +1564,27 @@ export const communityService = {
         ? membership.role
         : null;
 
-    // Fetch mute row, join request, and live streams in parallel.
-    const [muteRow, joinRequest, liveStreams] = await Promise.all([
-      communityRepository.findMuteByUserAndCommunity(callerId, id),
-      myRole === null
-        ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
-        : Promise.resolve(null),
-      fetchCommunityLiveStreams(id),
-    ]);
+    // Fetch notification mute row, join request, live streams, and caller's
+    // moderation mute (silenced-by-moderator) in parallel.
+    const [muteRow, joinRequest, liveStreams, callerModerationMute] =
+      await Promise.all([
+        communityRepository.findMuteByUserAndCommunity(callerId, id),
+        myRole === null
+          ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
+          : Promise.resolve(null),
+        fetchCommunityLiveStreams(id),
+        myRole !== null
+          ? communityRepository.findActiveMemberMute(id, callerId)
+          : Promise.resolve(null),
+      ]);
 
     return toCommunityData(
       community,
       myRole,
       muteRow,
       joinRequest,
-      liveStreams
+      liveStreams,
+      callerModerationMute
     );
   },
 
@@ -1963,13 +2201,16 @@ export const communityService = {
       .map((row) => row.lastActivityUserId)
       .filter((id): id is string => Boolean(id));
 
-    // Bulk-fetch chat enrichment, mute settings, live sender names, and live status in parallel.
-    const [chatMap, muteMap, senderNameMap, liveSet] = await Promise.all([
-      fetchChatEnrichment(userId, communityIds),
-      loadMuteMap(userId, communityIds),
-      communityRepository.getDisplayNamesByUserIds(senderIds),
-      fetchLiveCommunityIds(communityIds),
-    ]);
+    // Bulk-fetch chat enrichment, notification mute settings, moderation mutes,
+    // live sender names, and live status in parallel.
+    const [chatMap, muteMap, modMuteMap, senderNameMap, liveCountMap] =
+      await Promise.all([
+        fetchChatEnrichment(userId, communityIds),
+        loadMuteMap(userId, communityIds),
+        communityRepository.findCallerMutesByCommunityIds(userId, communityIds),
+        communityRepository.getDisplayNamesByUserIds(senderIds),
+        fetchLiveStreamCounts(communityIds),
+      ]);
 
     const communities: CommunityListItem[] = await Promise.all(
       pageRows.map(async (row) => {
@@ -1979,29 +2220,51 @@ export const communityService = {
         const avatar = await buildCommunityImageMedia(row.avatarUrl);
         const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
 
-        // Per-viewer PERSONAL overlay: the joiner sees their own "You joined the
-        // community" line as lastActivity when it is newer than the community-wide
-        // activity; everyone else keeps the community-wide message. The stored
-        // lastActivityAt (used for the pagination cursor below) is left untouched —
-        // only this viewer's displayed ordering reflects the personal timestamp.
+        // Per-viewer lastActivity (display-only; the pagination cursor below
+        // still uses the stored row.lastActivityAt so community-wide ordering is
+        // unchanged). Two signals reconcile into a base, then the viewer's own
+        // "You joined" personal line overlays when it is genuinely newest:
+        //   - the denormalized community-wide column (rich lifecycle semantics), and
+        //   - chat-service's per-viewer latest-visible message — AUTHORITATIVE when
+        //     the viewer hid the shared last (perUserResolved), else a strictly-
+        //     newer override that repairs missed-ADD lost-event staleness.
+        const columnBase = {
+          lastActivityAt: row.lastActivityAt.getTime(),
+          lastActivity: buildLastActivity({
+            ...row,
+            // Prefer the live member-snapshot name; fall back to the stored
+            // value when the sender has since left every community.
+            lastActivityUsername:
+              (row.lastActivityUserId
+                ? senderNameMap.get(row.lastActivityUserId)
+                : null) ?? row.lastActivityUsername,
+            // Self-referential SYSTEM line (role change / join): the viewer who
+            // IS the subject sees the first-person "You …" preview; everyone
+            // else keeps the third-person text.
+            lastActivityPreview: selectListPreview(row, userId),
+          }),
+        };
+        // Per-viewer base preview:
+        //  - perUserResolved => the viewer HID the community-wide last, so
+        //    chat-service's resolution is AUTHORITATIVE: use their previous-visible
+        //    (real timestamp), or CLEAR to empty when they have hidden everything.
+        //    This never trusts the (now stale-for-them) column.
+        //  - else => the rich column is the base; a strictly-newer chat message
+        //    overrides it (repairs missed-ADD lost-event staleness).
+        const reconciledBase = chat.perUserResolved
+          ? chat.lastMessage
+            ? {
+                lastActivity: chatLastMessageToActivity(chat.lastMessage),
+                lastActivityAt: chat.lastMessage.dateTime,
+              }
+            : emptyLastActivity()
+          : applyChatLastMessageOverlay(columnBase, chat.lastMessage);
+        // The viewer's own "You joined the community" personal line still wins
+        // when it is genuinely the newest visible thing (compared against the
+        // base's REAL timestamp — no +1ms inflation can wrongly suppress it).
         const { lastActivity, lastActivityAt } =
           applyPersonalLastActivityOverlay(
-            {
-              lastActivityAt: row.lastActivityAt.getTime(),
-              lastActivity: buildLastActivity({
-                ...row,
-                // Prefer the live member-snapshot name; fall back to the stored
-                // value when the sender has since left every community.
-                lastActivityUsername:
-                  (row.lastActivityUserId
-                    ? senderNameMap.get(row.lastActivityUserId)
-                    : null) ?? row.lastActivityUsername,
-                // Self-referential SYSTEM line (role change / join): the viewer who
-                // IS the subject sees the first-person "You …" preview; everyone
-                // else keeps the third-person text.
-                lastActivityPreview: selectListPreview(row, userId),
-              }),
-            },
+            reconciledBase,
             chat.personalLastMessage
           );
 
@@ -2021,9 +2284,12 @@ export const communityService = {
           unreadMessageCount: chat.unreadMessageCount,
           lastActivity,
           ...muteFields(muteMap.get(row.id) ?? null),
-          isLive: liveSet.has(row.id),
+          ...livestreamFields(liveCountMap.get(row.id) ?? 0),
           moderationStatus: row.moderationStatus,
           status: communityAccessPolicy.deriveStatus(row),
+          isMemberMuted: modMuteMap.has(row.id),
+          memberMutedUntil:
+            modMuteMap.get(row.id)?.mutedUntil?.toISOString() ?? null,
         };
       })
     );
@@ -2107,15 +2373,16 @@ export const communityService = {
 
     const communityIds = rows.map((row) => row.id);
 
-    // Batch-load mute rows, pending join requests, and live status in parallel.
-    const [muteByCommunityId, pendingRequestSet, liveSet] = await Promise.all([
-      loadMuteMap(userId, communityIds),
-      communityRepository.findPendingRequestedCommunityIds(
-        userId,
-        communityIds
-      ),
-      fetchLiveCommunityIds(communityIds),
-    ]);
+    // Batch-load mute rows, pending join requests, and live counts in parallel.
+    const [muteByCommunityId, pendingRequestSet, liveCountMap] =
+      await Promise.all([
+        loadMuteMap(userId, communityIds),
+        communityRepository.findPendingRequestedCommunityIds(
+          userId,
+          communityIds
+        ),
+        fetchLiveStreamCounts(communityIds),
+      ]);
 
     // Build a fast lookup for membership: used by the mine-search alias
     // (includeJoined=true). Public discover always has isJoined=false.
@@ -2130,7 +2397,7 @@ export const communityService = {
           muteByCommunityId.get(row.id) ?? null,
           memberSet.has(row.id),
           pendingRequestSet.has(row.id),
-          liveSet.has(row.id),
+          liveCountMap.get(row.id) ?? 0,
           userId
         )
       )
@@ -2667,6 +2934,8 @@ export const communityService = {
     actorId: string;
     targetUserId?: string;
     extra?: Record<string, unknown>;
+    /** For PERSONAL subtypes (e.g. MEMBER_MUTED): the userId who should see the message. */
+    visibleToUserId?: string;
   }): void {
     // Telegram silent-kick parity: never post moderation removal/ban lines to the
     // chat timeline (they pile up across remove→rejoin cycles and the victim sees
@@ -2683,7 +2952,79 @@ export const communityService = {
       },
       triggeredByUserId: args.actorId,
       eventAt: new Date().toISOString(),
+      ...(args.visibleToUserId
+        ? { visibleToUserId: args.visibleToUserId }
+        : {}),
     });
+  },
+
+  /**
+   * Broadcasts a moderation MUTE/UNMUTE state change to every consumer that
+   * needs it — the single source of truth for "this member's mute changed":
+   *   1. mirrors the new state into chat-service's RoomMember (drives the
+   *      write-path gate, no per-message gRPC), and
+   *   2. emits the realtime `community:member:muted` / `:unmuted` socket event
+   *      to BOTH the community room (every member's roster badge) AND the
+   *      affected member's own `user:<id>` channel (multi-device composer
+   *      enable/disable with no refetch).
+   *
+   * Used by manual mute, manual unmute, AND the auto-unmute sweeper, so the wire
+   * payload is byte-identical regardless of trigger. Best-effort: a Redis hiccup
+   * never fails the originating moderation request (the chat mirror is already
+   * fire-and-forget via RabbitMQ).
+   *
+   * @param actorId The admin/moderator who acted; "" for an automatic/system unmute.
+   */
+  async _publishMuteStateChange(args: {
+    communityId: string;
+    targetUserId: string;
+    isMuted: boolean;
+    mutedUntil: Date | null;
+    actorId: string;
+  }): Promise<void> {
+    const { communityId, targetUserId, isMuted, mutedUntil, actorId } = args;
+
+    // 1. Mirror into chat-service RoomMember (fire-and-forget RabbitMQ).
+    publishCommunityMemberMuteSyncedForChatSafe({
+      communityId,
+      userId: targetUserId,
+      isMuted,
+      mutedUntil: mutedUntil ? mutedUntil.toISOString() : null,
+    });
+
+    // 2. Realtime socket fan-out (epoch ms on the wire).
+    const updatedAt = Date.now();
+    const event = isMuted
+      ? "community:member:muted"
+      : "community:member:unmuted";
+    const payload = isMuted
+      ? ({
+          communityId,
+          memberId: targetUserId,
+          isMuted: true,
+          mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
+          actorId,
+          updatedAt,
+        } satisfies CommunityMemberMutedSocketPayload)
+      : ({
+          communityId,
+          memberId: targetUserId,
+          isMuted: false,
+          mutedUntil: null,
+          actorId,
+          updatedAt,
+        } satisfies CommunityMemberUnmutedSocketPayload);
+
+    try {
+      await Promise.all([
+        publishCommunityRoomEvent(redis, communityId, event, payload),
+        publishChatUserEvent(redis, targetUserId, event, payload),
+      ]);
+    } catch (err) {
+      logger.warn(
+        `${event} broadcast failed community=${communityId} target=${targetUserId}: ${String(err)}`
+      );
+    }
   },
 
   /**
@@ -2758,13 +3099,14 @@ export const communityService = {
         member.snapshotAvatarKey
       );
       const memberDto = {
+        communityId: community.id,
         userId: member.userId,
         username: member.snapshotUsername,
         displayName: member.snapshotDisplayName,
         avatarUrl: avatarView?.url ?? null,
         role: member.role,
         joinedAt: member.joinedAt.getTime(),
-      };
+      } satisfies CommunityMemberJoinedSocketPayload;
       await publishCommunityRoomEvent(
         redis,
         community.id,
@@ -3426,15 +3768,7 @@ export const communityService = {
       );
     }
 
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_UNBANNED",
-      actorId: callerId,
-      targetUserId,
-      extra: {
-        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
-      },
-    });
+    // NOTE: no system message emitted — mirrors the silent MEMBER_BANNED policy.
 
     return toMemberData(updated);
   },
@@ -3494,14 +3828,13 @@ export const communityService = {
       mutedUntil: mutedUntil?.toISOString() ?? null,
     });
 
-    this.emitMemberSystemMessage({
+    // Mirror into chat-service (write-path gate) + realtime socket fan-out.
+    await this._publishMuteStateChange({
       communityId,
-      systemMessageType: "MEMBER_MUTED",
-      actorId: callerId,
       targetUserId,
-      extra: {
-        targetName: target.snapshotDisplayName || target.snapshotUsername || "",
-      },
+      isMuted: true,
+      mutedUntil,
+      actorId: callerId,
     });
 
     const view = await buildUserSnapshotView(
@@ -3543,7 +3876,7 @@ export const communityService = {
     );
     assertCommunityRole(callerMembership, CommunityMemberRole.MODERATOR);
 
-    const [existing, targetMember] = await Promise.all([
+    const [existing, _targetMember] = await Promise.all([
       communityRepository.findMemberMute(communityId, targetUserId),
       communityRepository.findMemberByUserId(communityId, targetUserId),
     ]);
@@ -3575,17 +3908,14 @@ export const communityService = {
       targetUserId,
     });
 
-    this.emitMemberSystemMessage({
+    // Mirror unmute into chat-service (lifts the write-path gate) + realtime
+    // socket fan-out (re-enables the composer on every device, no refetch).
+    await this._publishMuteStateChange({
       communityId,
-      systemMessageType: "MEMBER_UNMUTED",
-      actorId: callerId,
       targetUserId,
-      extra: {
-        targetName:
-          targetMember?.snapshotDisplayName ||
-          targetMember?.snapshotUsername ||
-          "",
-      },
+      isMuted: false,
+      mutedUntil: null,
+      actorId: callerId,
     });
   },
 
@@ -3645,6 +3975,77 @@ export const communityService = {
     }
 
     return buildPaginatedResponse(items, total, params.page, params.limit);
+  },
+
+  /**
+   * Auto-unmute sweep — called every minute by the mute-sweeper job. Finds TIMED
+   * mutes whose `mutedUntil` has passed and, for each one it can ATOMICALLY claim
+   * (so the side-effects fire exactly once even across multiple service instances
+   * or RabbitMQ redeliveries), runs the same unmute side-effects as a manual
+   * unmute EXCEPT the push notification — a timer lapsing must not ping the user
+   * at an arbitrary hour (Telegram parity, product decision):
+   *   - audit MEMBER_UNMUTED (metadata.source = "auto")
+   *   - mirror the unmute into chat-service + emit `community:member:unmuted`
+   *   - post the "X was unmuted" system message
+   *
+   * Note: enforcement correctness does NOT depend on this sweep — chat-service
+   * applies lazy local expiry the instant `mutedUntil` passes. The sweep exists
+   * to deliver the realtime signal (composer re-enable, system line) + audit and
+   * to garbage-collect the expired row. Idempotent + batched.
+   *
+   * @returns how many mutes were actually expired this call (drain until short).
+   */
+  async expireDueMutes(limit: number): Promise<number> {
+    const now = new Date();
+    const rows = await communityRepository.findExpiredMemberMutes({
+      now,
+      limit,
+    });
+    if (rows.length === 0) return 0;
+
+    let expired = 0;
+    for (const row of rows) {
+      // Exactly-once: only the instance that deletes the row fires side-effects.
+      const claimed = await communityRepository.claimExpiredMemberMute(
+        row.id,
+        now
+      );
+      if (claimed !== 1) continue;
+      expired++;
+
+      try {
+        const member = await communityRepository.findMemberByUserId(
+          row.communityId,
+          row.userId
+        );
+        const _targetName =
+          member?.snapshotDisplayName || member?.snapshotUsername || "";
+
+        await this.recordAudit({
+          communityId: row.communityId,
+          actorId: "system",
+          action: "MEMBER_UNMUTED",
+          targetUserId: row.userId,
+          metadata: { source: "auto" },
+        });
+
+        // Lift the chat write-gate + realtime composer re-enable (NO push).
+        await this._publishMuteStateChange({
+          communityId: row.communityId,
+          targetUserId: row.userId,
+          isMuted: false,
+          mutedUntil: null,
+          actorId: "",
+        });
+      } catch (err) {
+        // The row is already deleted (claim won), so the mute IS lifted and the
+        // chat lazy-expiry keeps the member un-gated; only the broadcast failed.
+        logger.warn(
+          `auto-unmute side-effects failed community=${row.communityId} user=${row.userId}: ${String(err)}`
+        );
+      }
+    }
+    return expired;
   },
 
   // ---------------------------------------------------------------------------
@@ -3904,7 +4305,8 @@ export const communityService = {
             muteMap.get(community.id) ?? null,
             isJoined,
             pendingRequestSet.has(community.id),
-            false,
+            // Favorites list does not enrich live status (parity with prior behavior).
+            0,
             callerId
           );
           return { ...base, likedAt: likedAtByCommunityId.get(community.id)! };
@@ -6515,6 +6917,196 @@ export const communityService = {
   },
 
   // ---------------------------------------------------------------------------
+  // Permanent invitation link (PRIVATE communities only)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Return — or lazily generate — the community's PERMANENT invitation code.
+   *
+   * Behaviour contract (Telegram-like):
+   *  - Code generated on the **first call** and persisted forever.
+   *  - **Every subsequent call returns the identical code** — no new code is ever
+   *    generated unless an admin explicitly calls a future "regenerate" endpoint.
+   *  - Updating the community name / avatar / description / settings does NOT
+   *    affect the code.
+   *  - Closing and reopening the community does NOT affect the code.
+   *  - 100 concurrent callers on a brand-new community collapse onto one winner
+   *    via the `setInvitationCodeOnce` atomic guard and all receive the same code.
+   *
+   * Authorization: any ACTIVE community member may retrieve the link.
+   */
+  async getOrCreatePermanentInvitationLink(
+    communityId: string,
+    callerId: string
+  ): Promise<PermanentInvitationLinkData> {
+    const community = await communityRepository.findById(communityId);
+    if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
+
+    // Permanent invitation links only exist for PRIVATE communities.
+    // PUBLIC communities are discoverable via their canonical handle URL.
+    if (community.type !== CommunityType.PRIVATE) {
+      throw new BadRequestError("COMMUNITY_NOT_PRIVATE");
+    }
+
+    const membership = await communityRepository.findMembership(
+      communityId,
+      callerId
+    );
+    assertCommunityRole(membership, CommunityMemberRole.MEMBER);
+
+    const withCode = await this.ensurePermanentInvitationCode(community);
+    return toPermanentInvitationLinkData(withCode);
+  },
+
+  /**
+   * Internal: ensure a PRIVATE community has its permanent `invitationCode`
+   * allocated, returning the community row with a guaranteed non-null code.
+   *
+   * This is the SINGLE source of the get-or-create logic — both the dedicated
+   * `GET /communities/:id/invitation-link` endpoint and the bare
+   * `POST /communities/:id/invite-links` SSOT short-circuit funnel through here,
+   * so there is exactly one place that can ever mint a permanent code.
+   *
+   *  - **Fast path:** code already set → returns the row unchanged (zero writes).
+   *  - **Slow path (first call only):** generate a 128-bit base64url candidate,
+   *    persist it via the atomic `setInvitationCodeOnce` guard
+   *    (updateMany WHERE invitationCode IS NULL — no transaction, works on
+   *    standalone Mongo), and retry up to 3× on a lost race / unique collision.
+   *    A losing concurrent caller re-reads and returns the winner's code, so
+   *    100 simultaneous first-callers all converge on ONE code.
+   */
+  async ensurePermanentInvitationCode(
+    community: CommunityRow
+  ): Promise<CommunityRow> {
+    // Fast path — already allocated. Pure read, no write.
+    if (community.invitationCode) {
+      return community;
+    }
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const candidate = generateInviteCode();
+      const result = await communityRepository.setInvitationCodeOnce(
+        community.id,
+        candidate
+      );
+
+      if (result.count === 1) {
+        // We won — re-read to return the fully populated row.
+        const updated = await communityRepository.findById(community.id);
+        return updated!;
+      }
+
+      // Another concurrent request beat us (or a DB-level collision on the
+      // sparse unique index). Re-read to pick up the winning code.
+      const refreshed = await communityRepository.findById(community.id);
+      if (refreshed?.invitationCode) {
+        return refreshed;
+      }
+      // invitationCode still null — extremely unlikely. Loop with a new candidate.
+    }
+
+    // Last-resort re-read before giving up (covers the pathological 3-collision case).
+    const final = await communityRepository.findById(community.id);
+    if (final?.invitationCode) {
+      return final;
+    }
+    throw new Error("Failed to allocate permanent invitation code");
+  },
+
+  /**
+   * Redeem the community's PERMANENT invitation code.
+   *
+   * Mirrors `redeemInviteLink` but:
+   *  - The community is looked up by its permanent `invitationCode` field (not a
+   *    `CommunityInviteLink` row), so there is no `usedCount` to increment.
+   *  - The link is always `autoApprove: false` (request-to-join for PRIVATE).
+   *  - A synthetic `CommunityInviteLinkData` is returned so the caller's response
+   *    shape is identical to a regular redeem.
+   *
+   * NOT exposed as a standalone service method on purpose — it is only called
+   * from `redeemInviteLink` as a fallback when `findInviteLinkByCode` returns null.
+   */
+  async redeemPermanentInviteCode(
+    code: string,
+    community: {
+      id: string;
+      type: CommunityType;
+      handle: string;
+      adminId: string;
+      status: CommunityStatus;
+      moderationStatus: CommunityModerationStatus;
+      deletedAt: Date | null;
+      // invitationCode is `string | null` from Prisma but the caller already
+      // verified it equals `code` (non-null) via findCommunityByInvitationCode.
+      invitationCode: string | null;
+      invitationCodeCreatedAt: Date | null;
+      createdAt: Date;
+    },
+    callerId: string
+  ): Promise<{
+    link: CommunityInviteLinkData;
+    request?: CommunityJoinRequestData;
+    member?: CommunityMemberData;
+  }> {
+    communityAccessPolicy.assertWritable(community);
+
+    const existing = await communityRepository.findMemberByUserId(
+      community.id,
+      callerId
+    );
+    if (existing?.status === CommunityMemberStatus.BANNED) {
+      throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+    }
+    if (existing?.status === CommunityMemberStatus.ACTIVE) {
+      // Idempotent: already a member.
+      return {
+        // Pass `code` explicitly: community.invitationCode is string|null from
+        // Prisma, but we know it equals `code` (non-null) from the lookup.
+        link: toPermanentLinkAsInviteLinkData({
+          ...community,
+          invitationCode: code,
+        }),
+        member: await toMemberData(existing),
+      };
+    }
+
+    // Permanent links are always autoApprove=false (request-to-join).
+    // Only audit when this is a NEW or recycled request, not an idempotent re-tap.
+    const existingRequest =
+      await communityRepository.findJoinRequestByCommunityAndUser(
+        community.id,
+        callerId
+      );
+    const willCreateOrRecycle =
+      !existingRequest ||
+      existingRequest.status !== CommunityJoinReqStatus.PENDING;
+
+    if (willCreateOrRecycle) {
+      await this.recordAudit({
+        communityId: community.id,
+        actorId: callerId,
+        action: "INVITE_LINK_REDEEMED",
+        targetUserId: callerId,
+        metadata: { code, isPermanentLink: true },
+      });
+    }
+
+    const joinResult = await this.createJoinRequest(
+      community.id,
+      callerId,
+      null
+    );
+
+    return {
+      link: toPermanentLinkAsInviteLinkData({
+        ...community,
+        invitationCode: code,
+      }),
+      request: joinResult,
+    };
+  },
+
+  // ---------------------------------------------------------------------------
   // Invite links (shareable join links — distinct from 1:1 invites)
   // ---------------------------------------------------------------------------
   async createInviteLink(
@@ -6541,6 +7133,35 @@ export const communityService = {
     );
     assertCommunityRole(membership, CommunityMemberRole.MEMBER);
     communityAccessPolicy.assertWritable(community);
+
+    // ── SINGLE SOURCE OF TRUTH short-circuit (bare/default call) ───────────────
+    // A "Generate Invitation Link" button posts an EMPTY body. With no maxUses /
+    // expiresInMinutes / autoApprove, the caller wants THE community's canonical
+    // invite link — not a fresh throwaway link. For PRIVATE communities we return
+    // the PERMANENT, never-changing code (lazily minted once via the shared
+    // `ensurePermanentInvitationCode` helper) shaped as a `CommunityInviteLinkData`
+    // so the response contract is unchanged. This is idempotent: repeated bare
+    // calls return the identical code with NO new rows, NO rate-limit consumption,
+    // and NO active-link-cap usage.
+    //
+    // PUBLIC communities fall through to the legacy path: their share URL is
+    // handle-based and code-independent (already deterministic), so there is no
+    // "code changes every call" problem to fix for them.
+    //
+    // A PARAMETERIZED call (any of maxUses / expiresInMinutes / autoApprove
+    // present) is an explicit request for a custom temporary link and keeps the
+    // full legacy multi-link behavior below — preserving Expiring / Limited-use /
+    // Auto-approve links untouched.
+    const isDefaultCall =
+      input.maxUses == null &&
+      input.expiresInMinutes == null &&
+      input.autoApprove == null;
+    if (isDefaultCall && community.type === CommunityType.PRIVATE) {
+      const withCode = await this.ensurePermanentInvitationCode(community);
+      return toPermanentLinkAsInviteLinkData(
+        withCode as CommunityRow & { invitationCode: string }
+      );
+    }
 
     // Abuse guards (now that every member can create links):
     //  1. Per-user create rate limit (429 when exceeded).
@@ -6733,7 +7354,26 @@ export const communityService = {
       // Caller specified a particular link — validate it.
       linkRow = await communityRepository.findInviteLinkById(input.linkId);
       if (!linkRow || linkRow.communityId !== communityId) {
-        throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+        // Permanent invitation links have no CommunityInviteLink DB row — their
+        // sentinel linkId equals communityId. Synthesize a compatible row from
+        // the community's invitationCode so downstream code can treat both paths
+        // uniformly (code, isPermanent flag, audit id, etc. all work correctly).
+        if (input.linkId === communityId && community.invitationCode) {
+          linkRow = {
+            id: communityId,
+            code: community.invitationCode,
+            communityId,
+            createdBy: community.adminId,
+            maxUses: null,
+            usedCount: 0,
+            autoApprove: false,
+            expiresAt: null,
+            revokedAt: null,
+            createdAt: community.invitationCodeCreatedAt ?? community.createdAt,
+          } as CommunityInviteLink;
+        } else {
+          throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+        }
       }
       const now = Date.now();
       const isActive =
@@ -6805,6 +7445,18 @@ export const communityService = {
     const sentUserIds: string[] = [];
     const eventAt = new Date().toISOString();
 
+    // Build the shareable link DTO ONCE (reused for the response AND each DM
+    // event), and resolve the inviter's identity ONCE (single batch gRPC, NOT
+    // per-recipient) so the invitation card + push can show "<inviter> invited
+    // you…" with no N+1. Both are best-effort: a missing snapshot leaves the
+    // name/avatar blank and the DM still delivers.
+    const linkData = toInviteLinkData(linkRow, community);
+    const inviterSnapshot = (await fetchUserSnapshotHits([callerId])).get(
+      callerId
+    );
+    const isPermanentLink =
+      linkRow.expiresAt === null && linkRow.maxUses === null;
+
     for (const recipientId of candidateIds) {
       // `existingIds === null` means the user-service lookup was UNAVAILABLE
       // (circuit open / transient gRPC error). Fail OPEN there — a verification
@@ -6839,6 +7491,8 @@ export const communityService = {
       }
 
       // Eligible (new, or a previously-LEFT member who may rejoin) → fan out.
+      // Existing fields are UNCHANGED; the enrichment fields are additive so the
+      // chat-service consumer can render a rich card + push with no extra lookup.
       publishCommunityInviteLinkSharedForChatSafe({
         communityId,
         communityName: community.name,
@@ -6846,6 +7500,13 @@ export const communityService = {
         inviterId: callerId,
         recipientId,
         eventAt,
+        communityAvatarUrl: community.avatarUrl ?? null,
+        memberCount: community.memberCount,
+        inviteUrl: linkData.url,
+        inviteDeepLink: linkData.appDeepLink,
+        isPermanent: isPermanentLink,
+        inviterName: inviterSnapshot?.displayName,
+        inviterAvatarUrl: inviterSnapshot?.avatarObjectKey ?? null,
       });
       sentUserIds.push(recipientId);
     }
@@ -6867,7 +7528,7 @@ export const communityService = {
     });
 
     return {
-      link: toInviteLinkData(linkRow, community),
+      link: linkData,
       summary: {
         requested: requestedIds.length,
         sent: sentUserIds.length,
@@ -6891,7 +7552,15 @@ export const communityService = {
     member?: CommunityMemberData;
   }> {
     const link = await communityRepository.findInviteLinkByCode(code);
-    if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+    if (!link) {
+      // Fallback: check if this is the community's permanent invitation code.
+      // Permanent codes are stored on the Community row, not in CommunityInviteLink.
+      const communityByCode =
+        await communityRepository.findCommunityByInvitationCode(code);
+      if (!communityByCode)
+        throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+      return this.redeemPermanentInviteCode(code, communityByCode, callerId);
+    }
     assertInviteLinkActive(link);
 
     const community = await communityRepository.findById(link.communityId);
@@ -7030,7 +7699,63 @@ export const communityService = {
     callerId: string
   ): Promise<InviteLinkPreviewData> {
     const link = await communityRepository.findInviteLinkByCode(code);
-    if (!link) throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+
+    // Permanent-code fallback: if no CommunityInviteLink row owns this code,
+    // check whether it is the community's permanent invitation code instead.
+    // Permanent codes are never revoked/expired/exhausted, so assertInviteLinkActive
+    // is intentionally skipped.
+    if (!link) {
+      const communityByCode =
+        await communityRepository.findCommunityByInvitationCode(code);
+      if (!communityByCode)
+        throw new NotFoundError("COMMUNITY_INVITE_LINK_NOT_FOUND");
+
+      const membership = await communityRepository.findMemberByUserId(
+        communityByCode.id,
+        callerId
+      );
+      if (membership?.status === CommunityMemberStatus.BANNED) {
+        throw new ForbiddenError("COMMUNITY_JOIN_BANNED");
+      }
+      const isJoinedPerm = membership?.status === CommunityMemberStatus.ACTIVE;
+
+      const pendingRequestPerm =
+        !isJoinedPerm && callerId
+          ? await communityRepository.findJoinRequestByCommunityAndUser(
+              communityByCode.id,
+              callerId
+            )
+          : null;
+      const pendingRowPerm =
+        pendingRequestPerm?.status === "PENDING" ? pendingRequestPerm : null;
+
+      const avatarViewPerm =
+        await communityImageService.resolveViewUrlForClient(
+          communityByCode.avatarUrl
+        );
+      const coverViewPerm = await communityImageService.resolveViewUrlForClient(
+        communityByCode.coverUrl
+      );
+
+      return {
+        communityId: communityByCode.id,
+        communityName: communityByCode.name,
+        description: communityByCode.description ?? null,
+        avatarUrl: avatarViewPerm?.url ?? null,
+        bannerUrl: coverViewPerm?.url ?? null,
+        memberCount: communityByCode.memberCount,
+        communityType: communityByCode.type,
+        isJoined: isJoinedPerm,
+        joinRequestId: pendingRowPerm?.id ?? null,
+        joinRequestStatus: pendingRowPerm ? ("PENDING" as const) : null,
+        invitationCode: code,
+        inviteUrl: buildInviteUrl(code),
+        appDeepLink: buildInviteDeepLink(code),
+        expiresAt: null, // permanent links never expire
+        creatorId: communityByCode.adminId,
+      };
+    }
+
     assertInviteLinkActive(link);
 
     const community = await communityRepository.findById(link.communityId);

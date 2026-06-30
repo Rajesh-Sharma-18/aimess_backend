@@ -116,12 +116,25 @@ message CommunityChatLastMessage {
   string username = 1;
   string message  = 2;
   int64  dateTime = 3; // epoch ms
+  // True => render sender-less (a complete SYSTEM sentence). False => render as
+  // "username: message" (a normal member message). Lets community-service pick
+  // the correct lastActivity shape when it overlays this per-viewer message.
+  bool   isSystem = 4;
+  // Sender userId for the message shape ("" for SYSTEM / unknown). Backward
+  // compatible: omitted by older callers, defaults to "".
+  string userId   = 5;
 }
 message CommunityChatSummary {
   string communityId        = 1;
   int32  unreadMessageCount = 2;
   bool   hasLastMessage     = 3; // false => lastMessageActivity is null
   CommunityChatLastMessage lastMessage = 4;
+  // True => the viewer HID the community-wide shared last, so lastMessage (or its
+  // absence when hasLastMessage=false) is an AUTHORITATIVE per-viewer resolution:
+  // community-service uses it directly (and CLEARS the column preview when there
+  // is no lastMessage), rather than overlaying only-when-newer. Additive (field 6,
+  // defaults false for older callers).
+  bool   perUserResolved    = 6;
   // Viewer-private SYSTEM line (e.g. "You joined the community"): the latest
   // message visible ONLY to the requesting user (GeneralRoomMessage.visibleToUserId
   // == userId). community-service overlays this onto the per-viewer

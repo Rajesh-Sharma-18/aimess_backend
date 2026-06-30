@@ -112,6 +112,17 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(20),
+
+  // --- Auto-unmute sweeper (expires TIMED moderation mutes) ---
+  /** Enable the per-minute auto-unmute sweep. Set false on replicas/tests. */
+  MUTE_SWEEPER_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
+  /** Sweep cadence in milliseconds (default 60s — Telegram-grade promptness). */
+  MUTE_SWEEPER_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  /** Expired-mute rows processed per batch (drains across ticks; bounds DB load). */
+  MUTE_SWEEPER_BATCH_SIZE: z.coerce.number().int().positive().default(200),
 });
 
 const parsed = envSchema.safeParse(process.env);

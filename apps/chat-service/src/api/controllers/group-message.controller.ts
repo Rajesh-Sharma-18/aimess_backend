@@ -13,6 +13,7 @@ import {
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
 import { buildMessagePreview } from "../../events/publish-message-sent.js";
+import { renderConvOverrides } from "../../lib/recipient-override-render.js";
 import {
   buildChatMessageEvent,
   buildDeletePayload,
@@ -315,23 +316,35 @@ export class GroupMessageController {
 
   deleteMessage = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    const { messageId, roomId } = req.body;
-    const result = await this.messageService.deleteMessage(
-      messageId,
-      userId,
-      roomId
-    );
-    // §2.3: canonical tombstone — REST body == socket payload byte-for-byte.
+    const { messageId, roomId, type } = req.body as {
+      messageId: string;
+      roomId: string;
+      type?: "forMe" | "forEveryone";
+    };
+    // ABSENT `type` === "forEveryone" (backward-compatible with existing clients).
+    const scope = type === "forMe" ? "forMe" : "forEveryone";
+
+    const result =
+      scope === "forMe"
+        ? await this.messageService.deleteForMe(messageId, userId, roomId)
+        : await this.messageService.deleteMessage(messageId, userId, roomId);
+
+    // §2.3: canonical tombstone — REST body == socket payload byte-for-byte. The
+    // `scope` round-trips so each client applies forMe (hide only for the actor,
+    // keyed by deletedBy) vs forEveryone (placeholder for all).
     const tombstone = result
       ? buildDeletePayload({
           conversationType: "GROUP",
           messageId: result.id,
           roomId: result.roomId,
-          scope: "forEveryone",
+          scope,
           deletedBy: userId,
           sequenceNumber: result.sequenceNumber,
           deletedType:
-            (result as { deletedType?: string }).deletedType ?? "SELF_DELETE",
+            scope === "forMe"
+              ? "SELF_DELETE"
+              : ((result as { deletedType?: string }).deletedType ??
+                "SELF_DELETE"),
         })
       : null;
     if (result?.roomId && tombstone) {
@@ -340,6 +353,75 @@ export class GroupMessageController {
         JSON.stringify({ event: "message:delete", data: tombstone })
       );
     }
+
+    // delete-for-everyone: recalc the SHARED snapshot and bump every member's
+    // list — each recipient re-resolved to THEIR own visible preview so a member
+    // who personally hid the new previous-visible message never sees it.
+    if (result?.roomId && scope === "forEveryone") {
+      const rId = result.roomId;
+      void this.messageService
+        .recalculateLastMessageAfterDelete(rId, messageId)
+        .then((recalc) => {
+          if (recalc === null) return; // not the last message — no-op
+          const preview = buildMessagePreview(
+            recalc.messageType,
+            recalc.content
+          );
+          publishConvUpdatedSafe({
+            redis: this.redis,
+            type: "GROUP",
+            roomId: rId,
+            fetchRecipients: () => this.messageService.getActiveMemberIds(rId),
+            // Per-recipient correctness: a member who personally hid the new
+            // shared previous-visible message gets THEIR own preview instead.
+            resolveOverrides: (recipientIds) =>
+              this.messageService
+                .resolveForEveryoneOverrides(
+                  rId,
+                  recalc.prevMessageId,
+                  recipientIds
+                )
+                .then((raw) => renderConvOverrides(raw)),
+            senderId: recalc.senderId ?? "",
+            lastMessageId: recalc.prevMessageId ?? "",
+            lastMessageAt: recalc.createdAt.getTime(),
+            preview: { contentType: recalc.messageType, text: preview },
+          });
+        })
+        .catch(() => {
+          // Best-effort: a preview recalculation failure must never surface to
+          // the user. The list will self-correct on next load.
+        });
+    }
+
+    // delete-for-me: TARGETED conv:updated to the deleting user's devices only.
+    // The shared GroupRoom snapshot is untouched (other members unaffected), and
+    // the bump fires ONLY when the deleted message was the viewer's effective
+    // last visible message (else hiding it changes nothing in their list).
+    if (result?.roomId && scope === "forMe") {
+      const rId = result.roomId;
+      const deletedAt = result.createdAt;
+      void this.messageService
+        .recalculateLastMessageAfterDeleteForMe(rId, deletedAt, userId)
+        .then((recalc) => {
+          if (!recalc || !recalc.wasEffectiveLast) return; // no-op: not the last
+          const preview = recalc.hasLastMessage
+            ? buildMessagePreview(recalc.messageType, recalc.content)
+            : "";
+          publishConvUpdatedSafe({
+            redis: this.redis,
+            type: "GROUP",
+            roomId: rId,
+            recipientIds: [userId],
+            senderId: recalc.senderId ?? "",
+            lastMessageId: recalc.prevMessageId ?? "",
+            lastMessageAt: recalc.createdAt.getTime(),
+            preview: { contentType: recalc.messageType, text: preview },
+          });
+        })
+        .catch(() => {});
+    }
+
     res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
   });
 

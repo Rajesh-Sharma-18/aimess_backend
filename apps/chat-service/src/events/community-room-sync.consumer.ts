@@ -13,6 +13,9 @@ import { CacheRepository } from "../repositories/cache.repository.js";
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import { CommunitySystemMessageService } from "../services/community-system-message.service.js";
 import { UserSnapshotService } from "../services/user-snapshot.service.js";
+import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
+import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
+import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 
 /** community member status → chat RoomMember status. */
 export function mapMemberStatus(status: string | undefined): string | null {
@@ -90,6 +93,9 @@ interface CommunityRoomSyncEvent {
     userId?: string;
     status?: string;
     role?: string;
+    // member.mute_synced — moderation mute mirror (orthogonal to status/role)
+    isMuted?: boolean;
+    mutedUntil?: string | null;
     // community.status.changed
     communityStatus?: string;
     // community.invite_link_shared
@@ -98,6 +104,14 @@ interface CommunityRoomSyncEvent {
     inviterId?: string;
     recipientId?: string;
     eventAt?: string;
+    // community.invite_link_shared — additive enrichment (all optional)
+    communityAvatarUrl?: string | null;
+    memberCount?: number;
+    inviteUrl?: string;
+    inviteDeepLink?: string;
+    isPermanent?: boolean;
+    inviterName?: string;
+    inviterAvatarUrl?: string | null;
     // community.system_message
     systemMessageType?: string;
     metadata?: Record<string, unknown>;
@@ -282,6 +296,28 @@ export class CommunityRoomSyncConsumer {
           break;
         }
 
+        case "community.member.mute_synced": {
+          // Mirror a moderation mute/unmute onto RoomMember so the community
+          // write-path gate (send/edit/react/pin) can block a muted member
+          // LOCALLY — no per-message gRPC. Lazy expiry on the read side handles
+          // timed mutes; an explicit unmute (manual or auto) clears the flag.
+          const userId = event.data.userId;
+          if (!userId) break;
+          const isMuted = event.data.isMuted === true;
+          const mutedUntil =
+            isMuted && event.data.mutedUntil
+              ? new Date(event.data.mutedUntil)
+              : null;
+          await this.memberRepo.setMute(communityId, userId, {
+            isMuted,
+            mutedUntil,
+          });
+          logger.debug(
+            `Synced RoomMember mute community=${communityId} user=${userId} isMuted=${isMuted} until=${mutedUntil?.toISOString() ?? "-"}`
+          );
+          break;
+        }
+
         case "community.invite_link_shared": {
           const {
             inviterId,
@@ -289,6 +325,13 @@ export class CommunityRoomSyncConsumer {
             linkCode,
             communityId: cId,
             communityName,
+            communityAvatarUrl,
+            memberCount,
+            inviteUrl,
+            inviteDeepLink,
+            isPermanent,
+            inviterName,
+            inviterAvatarUrl,
           } = event.data;
           if (!inviterId || !recipientId || !linkCode) {
             logger.warn(
@@ -302,6 +345,13 @@ export class CommunityRoomSyncConsumer {
             linkCode,
             communityId: cId,
             communityName: communityName ?? "",
+            communityAvatarUrl: communityAvatarUrl ?? null,
+            memberCount,
+            inviteUrl,
+            inviteDeepLink,
+            isPermanent,
+            inviterName,
+            inviterAvatarUrl: inviterAvatarUrl ?? null,
           });
           break;
         }
@@ -363,9 +413,19 @@ export class CommunityRoomSyncConsumer {
 
   /**
    * Creates or reuses a private room between inviter and recipient, then inserts
-   * a SYSTEM message carrying the community invite link. Bypasses the friendship
-   * check intentionally — this is an admin-initiated system notification, not a
-   * user-to-user message. Publishes to Redis so delivery-service fans it out.
+   * a SYSTEM message carrying the community invite link and runs the SAME live
+   * side-effects as a normal personal message — the canonical `message:new`
+   * broadcast, the `conv:updated` inbox bump, the unread + last-activity update,
+   * and an FCM/APNs push for offline devices — so the invitation behaves exactly
+   * like a personal chat message on every device (web / mobile / desktop).
+   *
+   * Bypasses the friendship check intentionally — this is an admin-initiated
+   * system notification, not a user-to-user message.
+   *
+   * Idempotent: a deterministic `clientMessageId`
+   * (`cinv:<communityId>:<linkCode>:<recipientId>`) means an accidental double
+   * Bulk-Send, or a RabbitMQ redelivery, reuses the existing message instead of
+   * posting a duplicate invitation.
    */
   private async deliverInviteLinkDm(params: {
     inviterId: string;
@@ -373,9 +433,28 @@ export class CommunityRoomSyncConsumer {
     linkCode: string;
     communityId: string;
     communityName: string;
+    communityAvatarUrl?: string | null;
+    memberCount?: number;
+    inviteUrl?: string;
+    inviteDeepLink?: string;
+    isPermanent?: boolean;
+    inviterName?: string;
+    inviterAvatarUrl?: string | null;
   }): Promise<void> {
-    const { inviterId, recipientId, linkCode, communityId, communityName } =
-      params;
+    const {
+      inviterId,
+      recipientId,
+      linkCode,
+      communityId,
+      communityName,
+      communityAvatarUrl = null,
+      memberCount,
+      inviteUrl,
+      inviteDeepLink,
+      isPermanent,
+      inviterName,
+      inviterAvatarUrl = null,
+    } = params;
 
     // 1. Find or create the private room (no friendship check — system event).
     const key = buildParticipantsKey(inviterId, recipientId);
@@ -392,44 +471,158 @@ export class CommunityRoomSyncConsumer {
       );
     }
 
-    // 2. Allocate sequence number and persist the system message.
-    const seq = await this.privateRoomRepo.allocateSequence(room.roomId);
-    const message = await this.privateMessageRepo.createMessage({
-      roomId: room.roomId,
-      senderId: inviterId,
-      receiverId: recipientId,
-      content: { text: "" },
-      messageType: "SYSTEM",
-      systemEvent: "COMMUNITY_INVITE",
-      systemData: { communityId, communityName, linkCode },
-      sequenceNumber: seq,
-    });
+    // 2. Idempotency — a deterministic key per (community, link, recipient) so a
+    //    double Bulk-Send or a queue redelivery cannot post a duplicate.
+    const clientMessageId = `cinv:${communityId}:${linkCode}:${recipientId}`;
+    const existing = await this.privateMessageRepo.findByClientMessageId(
+      room.roomId,
+      inviterId,
+      clientMessageId
+    );
+    if (existing) {
+      logger.debug(
+        `invite_link_shared: duplicate suppressed room=${room.roomId} key=${clientMessageId}`
+      );
+      return;
+    }
 
-    // 3. Publish to Redis so delivery-service fans out to connected sockets.
+    // 3. Structured invitation payload — carried in systemData so the client
+    //    renders a rich "join community" card. content.text is a human fallback
+    //    so the inbox preview + push body are never blank.
+    const previewText = communityName
+      ? `Invitation to join ${communityName}`
+      : "Community invitation";
+    const content = { text: previewText };
+    const systemData: Record<string, unknown> = {
+      communityId,
+      communityName,
+      communityAvatarUrl,
+      memberCount,
+      linkCode,
+      inviteUrl,
+      inviteDeepLink,
+      isPermanent,
+      inviterId,
+      inviterName,
+    };
+
+    // 4. Allocate sequence + persist the SYSTEM message. The create is guarded
+    //    against the idempotency unique index losing a race (two events in
+    //    flight): a duplicate-key error is treated as "already delivered".
+    const seq = await this.privateRoomRepo.allocateSequence(room.roomId);
+    const message = await this.privateMessageRepo
+      .createMessage({
+        roomId: room.roomId,
+        senderId: inviterId,
+        receiverId: recipientId,
+        content,
+        messageType: "SYSTEM",
+        systemEvent: "COMMUNITY_INVITE",
+        systemData,
+        clientMessageId,
+        sequenceNumber: seq,
+      })
+      .catch((err: unknown) => {
+        const sig = `${(err as { code?: string })?.code ?? ""} ${
+          (err as Error)?.message ?? ""
+        }`;
+        if (sig.includes("P2002") || sig.includes("E11000")) {
+          logger.debug(
+            `invite_link_shared: duplicate create race suppressed room=${room!.roomId} key=${clientMessageId}`
+          );
+          return null;
+        }
+        throw err;
+      });
+    if (!message) return; // duplicate race — already delivered
+
+    const createdAt =
+      message.createdAt instanceof Date ? message.createdAt : new Date();
+    const sentAt = createdAt.getTime();
+
+    // 5. Unread + last-activity on the PrivateRoom (drives the recipient's inbox
+    //    badge + non-blank "Invitation to join …" preview). Fire-and-forget.
+    void this.privateRoomRepo
+      .updateRoomOnNewMessage({
+        roomId: room.roomId,
+        message: {
+          _id: message.id,
+          content,
+          senderId: inviterId,
+          messageType: "SYSTEM",
+          systemEvent: "COMMUNITY_INVITE",
+          systemData,
+          createdAt,
+        },
+        receiverId: recipientId,
+      })
+      .catch((err: unknown) =>
+        logger.warn(
+          `invite_link_shared: room bump failed room=${room!.roomId}: ${String(err)}`
+        )
+      );
+
+    // 6. Live broadcast — the canonical message:new wire event (identical shape
+    //    to a normal private message; systemEvent/systemData ride along for the
+    //    card). Reaches every device joined to the conversation room.
+    const wireEvent = buildChatMessageEvent({
+      id: message.id,
+      clientMessageId,
+      roomId: room.roomId,
+      conversationType: "PRIVATE",
+      senderId: inviterId,
+      senderName: inviterName ?? "",
+      senderAvatar: "",
+      receiverId: recipientId,
+      messageType: "SYSTEM",
+      content,
+      sequenceNumber: seq,
+      serverTs: sentAt,
+      systemEvent: "COMMUNITY_INVITE",
+      systemData,
+    });
     await redis
       .publish(
         `conv:${room.roomId}`,
-        JSON.stringify({
-          event: "message:new",
-          data: {
-            messageId: message.id,
-            conversationId: room.roomId,
-            senderId: inviterId,
-            contentType: "SYSTEM",
-            contentText: "",
-            sentAt:
-              message.createdAt instanceof Date
-                ? message.createdAt.getTime()
-                : Date.now(),
-            sequenceNumber: seq,
-          },
-        })
+        JSON.stringify({ event: "message:new", data: wireEvent })
       )
       .catch((err: unknown) => {
         logger.warn(
           `invite_link_shared: Redis publish failed for room=${room!.roomId}: ${String(err)}`
         );
       });
+
+    // 7. Inbox bump-to-top + unread fan-out to BOTH participants' devices
+    //    (user:<id> channels → multi-device, no refetch).
+    publishConvUpdatedSafe({
+      redis,
+      type: "PRIVATE",
+      roomId: room.roomId,
+      senderId: inviterId,
+      recipientIds: [inviterId, recipientId],
+      lastMessageId: message.id,
+      lastMessageAt: sentAt,
+      preview: { contentType: "SYSTEM", text: previewText },
+    });
+
+    // 8. FCM/APNs push for the recipient when offline — reuses the normal chat
+    //    push pipeline (notifications-service decides per-device delivery). The
+    //    push title is the inviter's name, the body the invitation preview.
+    publishMessageSentSafe({
+      conversationId: room.roomId,
+      conversationType: "PRIVATE",
+      messageId: message.id,
+      clientMessageId,
+      senderId: inviterId,
+      senderName: inviterName ?? "",
+      senderAvatar: inviterAvatarUrl ?? "",
+      preview: previewText,
+      messageType: "SYSTEM",
+      sentAt,
+      recipientIds: [recipientId],
+      communityId,
+      communityName,
+    });
 
     logger.debug(
       `invite_link_shared: system DM delivered room=${room.roomId} msg=${message.id}`

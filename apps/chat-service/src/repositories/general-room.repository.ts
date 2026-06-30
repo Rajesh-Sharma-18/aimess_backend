@@ -1,4 +1,9 @@
-﻿import type { PrismaClient, GeneralRoom } from "../generated/prisma/index.js";
+﻿import type {
+  PrismaClient,
+  GeneralRoom,
+  Prisma,
+} from "../generated/prisma/index.js";
+import { withWriteConflictRetry } from "../lib/db-errors.js";
 
 export class GeneralRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -12,13 +17,21 @@ export class GeneralRoomRepository {
    * PrivateRoomRepository/GroupRoomRepository.allocateSequence, but keys on the
    * GeneralRoom primary id (roomId === community/general-room id). Sequences are
    * monotonic, not gapless — a rare idempotent-race retry may burn one number.
+   *
+   * Wrapped in `withWriteConflictRetry`: a burst of concurrent sends to one room
+   * all `$inc` the SAME GeneralRoom document, so Mongo/WiredTiger raises a
+   * transient write-conflict (Prisma P2034) for the losers. Without the retry
+   * those sends fail with a user-visible SERVICE_ERROR when the user types fast
+   * or fires several messages at once.
    */
   async allocateSequence(roomId: string): Promise<number> {
-    const r = await this.prisma.generalRoom.update({
-      where: { id: roomId },
-      data: { lastSequence: { increment: 1 } },
-      select: { lastSequence: true },
-    });
+    const r = await withWriteConflictRetry(() =>
+      this.prisma.generalRoom.update({
+        where: { id: roomId },
+        data: { lastSequence: { increment: 1 } },
+        select: { lastSequence: true },
+      })
+    );
     return r.lastSequence;
   }
 
@@ -90,20 +103,25 @@ export class GeneralRoomRepository {
       createdAt: Date;
     }
   ): Promise<GeneralRoom | null> {
-    return this.prisma.generalRoom.update({
-      where: { id: roomId },
-      data: {
-        lastMessageId: String(message._id),
-        lastMessageAt: message.createdAt,
-        lastMessage: {
-          content: message.message,
-          senderId: message.sentBy,
-          senderName: message.senderName,
-          messageType: message.messageType,
-          createdAt: message.createdAt,
+    // Same hot document as allocateSequence — bursty concurrent sends to one
+    // room contend on this last-message bump too, so retry the transient
+    // write-conflict rather than dropping the preview update under load.
+    return withWriteConflictRetry(() =>
+      this.prisma.generalRoom.update({
+        where: { id: roomId },
+        data: {
+          lastMessageId: String(message._id),
+          lastMessageAt: message.createdAt,
+          lastMessage: {
+            content: message.message,
+            senderId: message.sentBy,
+            senderName: message.senderName,
+            messageType: message.messageType,
+            createdAt: message.createdAt,
+          },
         },
-      },
-    });
+      })
+    );
   }
 
   async incMemberNumber(roomId: string, inc: number): Promise<void> {
@@ -183,6 +201,46 @@ export class GeneralRoomRepository {
         pinnedCount: { increment: inc },
         ...(inc > 0 ? { lastPinnedAt: new Date() } : {}),
       },
+    });
+  }
+
+  /**
+   * Unconditionally overwrite the room's last-message snapshot. Accepts null
+   * to clear (used when the deleted message was the only message in the room).
+   * Unlike `addLastestMessageToRoom` (which is called on new sends), this does
+   * NOT retry write-conflicts — it is a fire-and-forget preview update, not a
+   * critical sequence-number allocation, so a single attempt is fine.
+   */
+  async setLastMessage(
+    roomId: string,
+    message: {
+      id: string;
+      sentBy: string;
+      senderName: string;
+      content: string;
+      messageType: string;
+      createdAt: Date;
+    } | null
+  ): Promise<void> {
+    await this.prisma.generalRoom.update({
+      where: { id: roomId },
+      data: message
+        ? {
+            lastMessageId: message.id,
+            lastMessageAt: message.createdAt,
+            lastMessage: {
+              content: message.content,
+              senderId: message.sentBy,
+              senderName: message.senderName,
+              messageType: message.messageType,
+              createdAt: message.createdAt,
+            },
+          }
+        : {
+            lastMessageId: null,
+            lastMessageAt: null,
+            lastMessage: null as unknown as Prisma.InputJsonValue,
+          },
     });
   }
 

@@ -16,6 +16,9 @@ import {
   normalizeMessageType,
   buildDeletePayload,
 } from "../../lib/chat-message.serializer.js";
+import { publishCommunityUpdatedSafe } from "../../events/publish-conv-updated.js";
+import { publishCommunityActivitySafe } from "../../events/publish-community-activity.js";
+import { renderCommunityOverrides } from "../../lib/recipient-override-render.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
 import type { ChatMessageOrchestrator } from "../../services/chat-message-orchestrator.js";
@@ -373,6 +376,93 @@ export class CommunityMessageController {
         `community:${result.roomId}`,
         JSON.stringify({ event: "community:message:deleted", data: tombstone })
       );
+    }
+
+    // When deleted for everyone: recalculate and broadcast the new last-message
+    // preview to all members so the community list never shows "Message deleted".
+    if (type === "forEveryone" && result.roomId) {
+      void this.service
+        .recalculateLastMessageAfterDelete(result.roomId, messageId)
+        .then((recalc) => {
+          if (recalc === null) return; // not the last message — no-op
+          publishCommunityUpdatedSafe({
+            redis: this.redis,
+            communityId: result.roomId,
+            roomId: result.roomId,
+            fetchMembers: () => this.service.getActiveMemberIds(result.roomId),
+            // Per-recipient correctness: a member who personally hid the new
+            // shared previous-visible message gets THEIR own preview instead.
+            resolveOverrides: (memberIds) =>
+              this.service
+                .resolveForEveryoneOverrides(
+                  result.roomId,
+                  recalc.prevMessageId,
+                  memberIds
+                )
+                .then((raw) => renderCommunityOverrides(raw)),
+            senderId: recalc.sentBy,
+            senderName: recalc.senderName,
+            lastMessageId: recalc.prevMessageId ?? "",
+            lastMessageAt: recalc.createdAt.getTime(),
+            preview: {
+              contentType: normalizeMessageType(recalc.messageType),
+              text: recalc.preview,
+            },
+          });
+          if (recalc.hasLastMessage) {
+            publishCommunityActivitySafe({
+              communityId: result.roomId,
+              lastMessageAt: new Date().toISOString(),
+              lastMessageId: recalc.prevMessageId ?? "",
+              senderUserId: recalc.sentBy,
+              senderUsername: recalc.senderName,
+              messagePreview: recalc.preview,
+              type: "message",
+            });
+          }
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `deleteMessage|recalculate lastMessage failed roomId=${result.roomId}: ${String(err)}`
+          );
+        });
+    }
+
+    // When deleted for me: send a targeted community:updated ONLY to the
+    // deleting user so their community list shows the previous message they
+    // can see. The shared GeneralRoom snapshot and community-service
+    // lastActivityPreview are NOT changed — all other members are unaffected.
+    if (type !== "forEveryone" && result.roomId) {
+      void this.service
+        .recalculateLastMessageAfterDeleteForMe(
+          result.roomId,
+          result.createdAt,
+          userId
+        )
+        .then((recalc) => {
+          // Skip unless the deleted message was the viewer's effective last
+          // visible message — hiding an older message changes nothing in their list.
+          if (recalc === null || !recalc.wasEffectiveLast) return;
+          publishCommunityUpdatedSafe({
+            redis: this.redis,
+            communityId: result.roomId,
+            roomId: result.roomId,
+            fetchMembers: () => Promise.resolve([userId]),
+            senderId: recalc.sentBy,
+            senderName: recalc.senderName,
+            lastMessageId: recalc.prevMessageId ?? "",
+            lastMessageAt: recalc.createdAt.getTime(),
+            preview: {
+              contentType: normalizeMessageType(recalc.messageType),
+              text: recalc.preview,
+            },
+          });
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `deleteMessage|recalculateForMe failed roomId=${result.roomId}: ${String(err)}`
+          );
+        });
     }
 
     // When deleted for everyone, check if the message was actively pinned.

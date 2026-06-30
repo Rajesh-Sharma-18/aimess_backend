@@ -690,4 +690,77 @@ export class PrivateMessageRepository {
       })
       .slice(0, params.limit);
   }
+
+  /**
+   * Given a list of message IDs, returns those that are NOT visible to userId
+   * (globally deleted OR personally hidden by that user).
+   * Used as a single batch check before the per-user fallback in list endpoints
+   * so we avoid N+1 queries for every conversation in the list.
+   */
+  async filterHiddenFromUser(
+    messageIds: string[],
+    userId: string
+  ): Promise<Set<string>> {
+    if (!messageIds.length) return new Set();
+    const raw = (await this.prisma.privateMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            _id: { $in: messageIds.map((id) => ({ $oid: id })) },
+            $or: [
+              { isDeleted: true },
+              { [`deletedFor.${userId}`]: { $exists: true } },
+            ],
+          },
+        },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    return new Set(
+      raw
+        .map((d) => (typeof d._id === "string" ? d._id : (d._id?.$oid ?? "")))
+        .filter(Boolean)
+    );
+  }
+
+  /**
+   * Most recent non-deleted message in a room — used to recalculate the
+   * lastMessage preview after a delete-for-everyone removes the current one.
+   */
+  async findPreviousVisible(roomId: string): Promise<PrivateMessage | null> {
+    return this.prisma.privateMessage.findFirst({
+      where: { roomId, isDeleted: false },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  /**
+   * Most recent message visible to a specific user — excludes globally-deleted
+   * messages (isDeleted) AND messages the user hid for themselves (deletedFor).
+   * Used to recalculate the per-user list preview after a delete-for-me on the
+   * last message. Uses aggregateRaw so we can match on the dynamic
+   * `deletedFor.<userId>` key without loading every message in memory.
+   */
+  async findPreviousVisibleForUser(
+    roomId: string,
+    userId: string
+  ): Promise<PrivateMessage | null> {
+    const raw = (await this.prisma.privateMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId,
+            isDeleted: false,
+            [`deletedFor.${userId}`]: { $exists: false },
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: 1 },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    if (!raw.length) return null;
+    const id = typeof raw[0]._id === "string" ? raw[0]._id : raw[0]._id?.$oid;
+    if (!id) return null;
+    return this.prisma.privateMessage.findUnique({ where: { id } });
+  }
 }
