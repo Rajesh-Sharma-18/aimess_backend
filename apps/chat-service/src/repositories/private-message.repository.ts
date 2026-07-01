@@ -617,6 +617,27 @@ export class PrivateMessageRepository {
     });
   }
 
+  /** All rows from one album send (base id + `base:N` siblings), seq-ordered. */
+  async findAlbumBatchByClientMessageId(
+    roomId: string,
+    senderId: string,
+    baseClientMessageId: string
+  ): Promise<PrivateMessage[]> {
+    return this.prisma.privateMessage.findMany({
+      where: {
+        roomId,
+        senderId,
+        OR: [
+          { clientMessageId: baseClientMessageId },
+          {
+            clientMessageId: { startsWith: `${baseClientMessageId}:` },
+          },
+        ],
+      },
+      orderBy: { sequenceNumber: "asc" },
+    });
+  }
+
   async createForwardedMessage(data: {
     roomId: string;
     senderId: string;

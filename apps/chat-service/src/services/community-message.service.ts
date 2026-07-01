@@ -50,7 +50,11 @@ import {
   assertCommunityRoomWritable,
 } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
-import { markIdempotentReplay } from "../lib/idempotency.js";
+import {
+  attachAlbumMessages,
+  markAlbumIdempotentReplay,
+} from "../lib/album-messages.js";
+import { splitCommunityMediaAlbum } from "../lib/split-media-album.js";
 import {
   resolveMediaUrlMap,
   urlFromMap,
@@ -282,13 +286,24 @@ export class CommunityMessageService {
     // GIF, sticker, voice and file messages (all funnel through here).
     assertCommunityMemberNotMuted(sender);
 
-    // Check idempotency
+    // Check idempotency (album batches use `base:N` sibling clientMessageIds).
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.sentBy}:${params.clientMessageId}`;
       const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
       if (cachedId) {
         const cached = await this.messageRepo.findById(cachedId);
-        if (cached) return markIdempotentReplay(cached);
+        if (cached) {
+          const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
+            params.roomId,
+            params.sentBy,
+            params.clientMessageId
+          );
+          const messages = batch.length > 0 ? batch : [cached];
+          return markAlbumIdempotentReplay(
+            messages[messages.length - 1]!,
+            messages
+          );
+        }
       }
       const existing = await this.messageRepo.findOne({
         roomId: params.roomId,
@@ -299,75 +314,98 @@ export class CommunityMessageService {
         this.cacheRepo
           .setMessageIdempotency(idemKey, existing.id)
           .catch(() => {});
-        return markIdempotentReplay(existing);
+        const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
+          params.roomId,
+          params.sentBy,
+          params.clientMessageId
+        );
+        const messages = batch.length > 0 ? batch : [existing];
+        return markAlbumIdempotentReplay(
+          messages[messages.length - 1]!,
+          messages
+        );
       }
     }
 
-    // Allocate a per-room monotonic sequence number (parity with private/group
-    // rooms) so community sync/pagination can use gap-safe keyset cursors. Runs
-    // after the idempotency pre-check so replays don't burn numbers; a rare
-    // concurrent-race P2002 below may leave a one-number gap (acceptable).
-    const sequenceNumber = await this.roomRepo.allocateSequence(params.roomId);
+    const parts = splitCommunityMediaAlbum(
+      params.messageType,
+      params.message || "",
+      params.attachments,
+      params.clientMessageId ?? null
+    );
 
-    const entity: Record<string, unknown> = {
-      roomId: params.roomId,
-      sentBy: params.sentBy,
-      senderName: params.senderName,
-      senderAvatar: params.senderAvatar,
-      message: params.message || "",
-      // §1 single casing: store the canonical UPPER-CASE type (matches the
-      // private/group services, which both persist via normalizeMessageType).
-      // The gRPC send handler already upper-cases contentType, so this is a
-      // no-op for live sends but guarantees UPPER for any other caller.
-      messageType: normalizeMessageType(params.messageType),
-      parentMessageId: params.parentMessageId || null,
-      clientMessageId: params.clientMessageId || null,
-      sequenceNumber,
-    };
-
-    if (params.attachments?.length) {
-      entity.attachments = params.attachments;
-    }
-
-    // If reply, attach quote data
+    let quoteData: Record<string, unknown> | undefined;
     if (params.parentMessageId) {
       const originalMsg = await this.messageRepo.findById(
         params.parentMessageId
       );
       if (originalMsg) {
-        entity.quoteData = {
+        quoteData = {
           message: originalMsg.message,
           senderName: originalMsg.senderName,
         };
       }
     }
 
-    let message: GeneralRoomMessage;
-    try {
-      message = await this.messageRepo.save(
-        entity as Parameters<typeof this.messageRepo.save>[0]
+    const created: GeneralRoomMessage[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!;
+      const sequenceNumber = await this.roomRepo.allocateSequence(
+        params.roomId
       );
-    } catch (err) {
-      // Concurrent send with the same clientMessageId lost the unique-index
-      // insert (E11000/P2002 from the sparse idempotency index) — re-read and
-      // return the winner so both collapse to one message.
-      if (isDuplicateKeyError(err) && params.clientMessageId) {
-        const dup = await this.messageRepo.findOne({
-          roomId: params.roomId,
-          sentBy: params.sentBy,
-          clientMessageId: params.clientMessageId,
-        });
-        if (dup) return markIdempotentReplay(dup);
+      const entity: Record<string, unknown> = {
+        roomId: params.roomId,
+        sentBy: params.sentBy,
+        senderName: params.senderName,
+        senderAvatar: params.senderAvatar,
+        message: part.message,
+        messageType: normalizeMessageType(part.messageType),
+        parentMessageId: params.parentMessageId || null,
+        clientMessageId: part.clientMessageId || null,
+        sequenceNumber,
+        ...(part.attachments.length ? { attachments: part.attachments } : {}),
+        ...(i === 0 && quoteData ? { quoteData } : {}),
+      };
+
+      try {
+        const row = await this.messageRepo.save(
+          entity as Parameters<typeof this.messageRepo.save>[0]
+        );
+        created.push(row);
+      } catch (err) {
+        if (isDuplicateKeyError(err) && part.clientMessageId) {
+          const dup = await this.messageRepo.findOne({
+            roomId: params.roomId,
+            sentBy: params.sentBy,
+            clientMessageId: part.clientMessageId,
+          });
+          if (dup) {
+            const batch =
+              params.clientMessageId && i === 0
+                ? await this.messageRepo.findAlbumBatchByClientMessageId(
+                    params.roomId,
+                    params.sentBy,
+                    params.clientMessageId
+                  )
+                : [];
+            const messages = batch.length > 0 ? batch : [dup];
+            return markAlbumIdempotentReplay(
+              messages[messages.length - 1]!,
+              messages
+            );
+          }
+        }
+        throw err;
       }
-      throw err;
     }
+
+    const message = created[created.length - 1]!;
 
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.sentBy}:${params.clientMessageId}`;
       this.cacheRepo.setMessageIdempotency(idemKey, message.id).catch(() => {});
     }
 
-    // Update room last message
     this.roomRepo
       .addLastestMessageToRoom(params.roomId, {
         _id: message.id,
@@ -382,7 +420,7 @@ export class CommunityMessageService {
           `CommunityMessageService|addLastestMessageToRoom failed: ${String(err)}`
         );
       });
-    return message;
+    return attachAlbumMessages(message, created);
   }
 
   /**

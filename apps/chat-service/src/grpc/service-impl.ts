@@ -56,6 +56,7 @@ import {
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
+import { getAlbumMessages } from "../lib/album-messages.js";
 import {
   assertPrivateParticipant,
   assertGroupMember,
@@ -232,39 +233,48 @@ export function createMessagingImpl(
               msg.createdAt instanceof Date
                 ? msg.createdAt.getTime()
                 : Date.now();
-            const full = msg as Record<string, unknown>;
-            // Resolve-on-read: raw avatar/attachment object-keys → full presigned
-            // URLs for the live push (the stored snapshot keeps the raw keys).
-            const [bcastAvatar, bcastContent] = await Promise.all([
+            const [bcastAvatar] = await Promise.all([
               resolveMediaUrl(req.senderAvatar || ""),
-              resolveBroadcastContent(msg.content ?? null),
             ]);
-            await redis.publish(
-              `conv:${req.conversationId}`,
-              JSON.stringify({
-                event: "message:new",
-                data: buildChatMessageEvent({
-                  id: msg.id,
-                  clientMessageId: req.clientMessageId,
-                  roomId: req.conversationId,
-                  conversationType:
-                    conversationType === "GROUP" ? "GROUP" : "PRIVATE",
-                  senderId: req.senderId,
-                  senderName: req.senderName,
-                  senderAvatar: bcastAvatar,
-                  senderRole: msg.senderRole,
-                  receiverId: req.receiverId,
-                  messageType: msg.messageType,
-                  content: bcastContent ?? null,
-                  parentMessageId: (full.parentMessageId as string) || "",
-                  quoteData: full.quoteData ?? null,
-                  reactions: [],
-                  clientTs,
-                  serverTs,
-                  sequenceNumber: msg.sequenceNumber,
-                }),
-              })
-            );
+            const albumRows = getAlbumMessages(msg);
+            for (const row of albumRows) {
+              const rowFull = row as Record<string, unknown>;
+              const rowServerTs =
+                row.createdAt instanceof Date
+                  ? row.createdAt.getTime()
+                  : serverTs;
+              const bcastContent = await resolveBroadcastContent(
+                row.content ?? null
+              );
+              await redis.publish(
+                `conv:${req.conversationId}`,
+                JSON.stringify({
+                  event: "message:new",
+                  data: buildChatMessageEvent({
+                    id: row.id,
+                    clientMessageId: req.clientMessageId,
+                    roomId: req.conversationId,
+                    conversationType:
+                      conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+                    senderId: req.senderId,
+                    senderName: req.senderName,
+                    senderAvatar: bcastAvatar,
+                    senderRole:
+                      (row as { senderRole?: string }).senderRole ??
+                      msg.senderRole,
+                    receiverId: req.receiverId,
+                    messageType: row.messageType,
+                    content: bcastContent ?? null,
+                    parentMessageId: (rowFull.parentMessageId as string) || "",
+                    quoteData: rowFull.quoteData ?? null,
+                    reactions: [],
+                    clientTs,
+                    serverTs: rowServerTs,
+                    sequenceNumber: row.sequenceNumber,
+                  }),
+                })
+              );
+            }
           }
 
           // Bump-to-top: fan out conv:updated to every participant's inbox.
@@ -1682,44 +1692,72 @@ export function createCommunityImpl(
           // guard the private/group path uses (see line 225).
           const alreadySent = isIdempotentReplay(saved);
           if (!alreadySent) {
-            // Resolve-on-read for the live push: sender avatar + attachment keys
-            // → full presigned URLs (the stored snapshot keeps the raw keys).
-            const [bcastSenderAvatar, bcastFiles] = await Promise.all([
-              resolveMediaUrl(senderAvatar || ""),
-              resolveContentFiles((parsed.files ?? []) as MediaFileLike[]),
-            ]);
-            await redis.publish(
-              "community:" + req.communityId,
-              JSON.stringify({
-                event: "community:message:new",
-                data: {
-                  // V2 canonical fields
-                  id: saved.id,
-                  messageId: saved.id,
-                  communityId: req.communityId,
-                  roomId: saved.roomId,
-                  senderId: saved.sentBy,
-                  senderName,
-                  senderAvatar: bcastSenderAvatar,
-                  parentMessageId: saved.parentMessageId ?? "",
-                  quoteData: buildCanonicalQuote(saved.quoteData),
-                  content: {
-                    text: saved.message ?? "",
-                    files: bcastFiles,
-                    ...(parsed.location ? { location: parsed.location } : {}),
-                    ...(parsed.contact ? { contact: parsed.contact } : {}),
-                    ...(parsed.sticker ? { sticker: parsed.sticker } : {}),
+            const bcastSenderAvatar = await resolveMediaUrl(senderAvatar || "");
+            const albumRows = getAlbumMessages(saved);
+            for (const row of albumRows) {
+              const rowSentAt =
+                row.createdAt instanceof Date
+                  ? row.createdAt.getTime()
+                  : sentAt;
+              const rowAttachments = Array.isArray(row.attachments)
+                ? (row.attachments as MediaFileLike[])
+                : [];
+              const rowBcastFiles = await resolveContentFiles(rowAttachments);
+              const rowAttRecords = rowAttachments as Array<
+                Record<string, unknown>
+              >;
+              const rowLocation = rowAttRecords.find(
+                (a) => String(a.type).toLowerCase() === "location"
+              );
+              const rowContact = rowAttRecords.find(
+                (a) => String(a.type).toLowerCase() === "contact"
+              );
+              const rowSticker = rowAttRecords.find(
+                (a) => String(a.type).toLowerCase() === "sticker"
+              );
+              await redis.publish(
+                "community:" + req.communityId,
+                JSON.stringify({
+                  event: "community:message:new",
+                  data: {
+                    id: row.id,
+                    messageId: row.id,
+                    communityId: req.communityId,
+                    roomId: row.roomId,
+                    senderId: row.sentBy,
+                    senderName,
+                    senderAvatar: bcastSenderAvatar,
+                    parentMessageId: row.parentMessageId ?? "",
+                    quoteData: buildCanonicalQuote(row.quoteData),
+                    content: {
+                      text: row.message ?? "",
+                      files: rowBcastFiles,
+                      ...(rowLocation ? { location: rowLocation } : {}),
+                      ...(rowContact ? { contact: rowContact } : {}),
+                      ...(rowSticker ? { sticker: rowSticker } : {}),
+                    },
+                    reactions: [],
+                    message: row.message ?? "",
+                    contentType: normalizeMessageType(row.messageType),
+                    isEdited: false,
+                    editedAt: 0,
+                    clientMessageId: req.clientMessageId ?? "",
+                    serverTs: rowSentAt,
+                    sentAt: rowSentAt,
+                    sequenceNumber: row.sequenceNumber,
                   },
-                  reactions: [],
-                  message: saved.message ?? "",
-                  contentType: normalizeMessageType(saved.messageType),
-                  isEdited: false,
-                  editedAt: 0,
-                  clientMessageId: req.clientMessageId ?? "",
-                  serverTs: sentAt,
-                  sentAt,
-                },
-              })
+                })
+              );
+            }
+
+            const lastAttachments = Array.isArray(saved.attachments)
+              ? (saved.attachments as Array<Record<string, unknown>>)
+              : (parsed.files ?? []);
+            const lastLocation = lastAttachments.find(
+              (a) => String(a.type).toLowerCase() === "location"
+            );
+            const lastContact = lastAttachments.find(
+              (a) => String(a.type).toLowerCase() === "contact"
             );
 
             // Denormalize activity to community-service so GET /communities/mine
@@ -1740,9 +1778,9 @@ export function createCommunityImpl(
                 // voice/document/location/contact) never persist a blank preview.
                 messagePreview: convertMessageToPreview(saved.messageType, {
                   text: saved.message ?? "",
-                  files: parsed.files ?? [],
-                  ...(parsed.location ? { location: parsed.location } : {}),
-                  ...(parsed.contact ? { contact: parsed.contact } : {}),
+                  files: lastAttachments,
+                  ...(lastLocation ? { location: lastLocation } : {}),
+                  ...(lastContact ? { contact: lastContact } : {}),
                 }),
               });
             }
@@ -1764,9 +1802,9 @@ export function createCommunityImpl(
                 contentType: normalizeMessageType(saved.messageType),
                 text: convertMessageToPreview(saved.messageType, {
                   text: saved.message ?? "",
-                  files: parsed.files ?? [],
-                  ...(parsed.location ? { location: parsed.location } : {}),
-                  ...(parsed.contact ? { contact: parsed.contact } : {}),
+                  files: lastAttachments,
+                  ...(lastLocation ? { location: lastLocation } : {}),
+                  ...(lastContact ? { contact: lastContact } : {}),
                 }),
               },
             });

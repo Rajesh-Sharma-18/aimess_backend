@@ -156,6 +156,27 @@ export class GeneralRoomMessageRepository {
     return this.prisma.generalRoomMessage.findFirst({ where });
   }
 
+  /** All rows from one album send (base id + `base:N` siblings), seq-ordered. */
+  async findAlbumBatchByClientMessageId(
+    roomId: string,
+    sentBy: string,
+    baseClientMessageId: string
+  ): Promise<GeneralRoomMessage[]> {
+    return this.prisma.generalRoomMessage.findMany({
+      where: {
+        roomId,
+        sentBy,
+        OR: [
+          { clientMessageId: baseClientMessageId },
+          {
+            clientMessageId: { startsWith: `${baseClientMessageId}:` },
+          },
+        ],
+      },
+      orderBy: { sequenceNumber: "asc" },
+    });
+  }
+
   async findByRoomIdWithTime(
     roomId: string,
     beforeTimestamp: string,
