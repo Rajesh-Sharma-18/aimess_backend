@@ -18,5 +18,6 @@ module.exports = {
     "<rootDir>/apps/backoffice-service/jest.config.cjs",
     "<rootDir>/apps/api-gateway/jest.config.cjs",
     "<rootDir>/apps/media-service/jest.config.cjs",
+    "<rootDir>/apps/stream-service/jest.config.cjs",
   ],
 };

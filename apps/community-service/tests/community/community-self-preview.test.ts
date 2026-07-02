@@ -110,6 +110,80 @@ describe("selectListPreview", () => {
 });
 
 /**
+ * `lastActivityTargetUserId`/`lastActivityTargetPreview` used to carry
+ * reaction personalization; reactions now use a fully separate mechanism
+ * (`applyReactionOverlay` + the `lastActivityReaction*` columns — see
+ * community-reaction-activity.test.ts) so a reaction is never visible to
+ * anyone but its own actor/target, not even via a third-person fallback
+ * line. These tests keep pinning the generic target-preview mechanism
+ * itself (reserved for a future second self-referential viewer, e.g. a
+ * two-sided lifecycle line) using reaction-shaped fixtures only because
+ * that was the original motivating case — not because reactions still flow
+ * through here.
+ */
+describe("selectListPreview — generic target-preview mechanism (reaction-shaped fixtures)", () => {
+  const ACTOR = SUBJECT;
+  const TARGET = OTHER;
+  const THIRD_PARTY = "33333333-3333-4333-8333-333333333333";
+
+  const reactionRow = {
+    lastActivityType: "reaction",
+    lastActivityPreview: "Jim reacted ❤️ to Jane's message",
+    lastActivitySelfPreview: "You reacted ❤️ to Jane's message",
+    lastActivityUserId: ACTOR,
+    lastActivityTargetUserId: TARGET,
+    lastActivityTargetPreview: "Jim reacted ❤️ to your message",
+  };
+
+  it("gives the actor the first-person 'You reacted …' preview", () => {
+    expect(selectListPreview(reactionRow, ACTOR)).toBe(
+      "You reacted ❤️ to Jane's message"
+    );
+  });
+
+  it("gives the target (message owner) the '…to your message' preview", () => {
+    expect(selectListPreview(reactionRow, TARGET)).toBe(
+      "Jim reacted ❤️ to your message"
+    );
+  });
+
+  it("gives every other member the third-person preview", () => {
+    expect(selectListPreview(reactionRow, THIRD_PARTY)).toBe(
+      "Jim reacted ❤️ to Jane's message"
+    );
+  });
+
+  it("self-reaction collapses target into self (actor === target)", () => {
+    const selfReactionRow = {
+      lastActivityType: "reaction",
+      lastActivityPreview: "Jim reacted ❤️ to their own message",
+      lastActivitySelfPreview: "You reacted ❤️ to your message",
+      lastActivityUserId: ACTOR,
+      // No separate target row written when actor === target (see
+      // service-impl.ts / community-message.controller.ts reaction handlers).
+      lastActivityTargetUserId: null,
+      lastActivityTargetPreview: null,
+    };
+    expect(selectListPreview(selfReactionRow, ACTOR)).toBe(
+      "You reacted ❤️ to your message"
+    );
+    expect(selectListPreview(selfReactionRow, THIRD_PARTY)).toBe(
+      "Jim reacted ❤️ to their own message"
+    );
+  });
+
+  it("target-preview branch is a no-op for non-reaction rows (target fields absent)", () => {
+    const messageRow = {
+      lastActivityType: "message",
+      lastActivityPreview: "Hello!",
+      lastActivitySelfPreview: null,
+      lastActivityUserId: ACTOR,
+    };
+    expect(selectListPreview(messageRow, TARGET)).toBe("Hello!");
+  });
+});
+
+/**
  * Suite: applyPersonalLastActivityOverlay
  *
  * Pins the per-viewer PERSONAL overlay that gives the joiner "You joined the

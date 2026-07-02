@@ -594,7 +594,6 @@ import {
   type AdminCommunityBrief,
 } from "../grpc/community.client.js";
 import { userClient, type AdminProfileRecord } from "../grpc/user.client.js";
-import { communityMembersRepository } from "./community-members.repository.js";
 import type {
   LivestreamReportType,
   ReportSeverity,
@@ -1146,6 +1145,13 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     return { data, pagination: offsetMeta(query.page, query.limit, total) };
   }
 
+  /**
+   * The admin "Livestream User List" — the users who ACTUALLY watched this
+   * stream, backed by the durable `LivestreamViewerSession` history persisted
+   * by stream-service on join/leave (see `apps/stream-service`
+   * `LivestreamViewerSessionRepository`). Replaces the earlier placeholder
+   * that returned the stream's community roster instead of real viewers.
+   */
   async listUsers(
     livestreamId: string,
     query: ListLivestreamUsersQuery
@@ -1153,23 +1159,35 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     const s = await streamClient.adminGetStream(livestreamId);
     if (!s) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
 
-    const page = await communityMembersRepository.listMembers(s.communityId, {
-      search: query.search,
-      role: query.type,
+    const { sessions, total } = await streamClient.adminListViewerSessions({
+      streamId: livestreamId,
       page: query.page,
       limit: query.limit,
-      sortField: "joinedAt",
-      sortDir: "desc",
+      sortField: query.sortField,
+      sortDir: query.sortDir,
     });
-    const data: LivestreamUserItem[] = page.data.map((m) => ({
-      userId: m.userId,
-      username: m.username,
-      handle: m.handle || null,
-      avatarUrl: m.avatarUrl,
-      type: m.role,
-      joinedAt: m.joinedAt,
-    }));
-    return { data, pagination: page.pagination };
+
+    const userIds = unique(sessions.map((v) => v.userId));
+    const profiles = userIds.length
+      ? await userClient.adminGetProfilesByIds(userIds)
+      : [];
+    const profileMap = new Map(profiles.map((p) => [p.userId, p]));
+
+    const data: LivestreamUserItem[] = sessions.map((v) => {
+      const p = profileMap.get(v.userId);
+      return {
+        userId: v.userId,
+        username: p?.username ?? "",
+        handle: p?.username ? `@${p.username}` : null,
+        avatarUrl: p?.avatarUrl || null,
+        joinedAt: new Date(v.joinedAt).toISOString(),
+        // 0 from the wire means "still watching" (see AdminViewerSessionRow).
+        leftAt: v.leftAt > 0 ? new Date(v.leftAt).toISOString() : null,
+        watchDurationSeconds: v.watchDurationSeconds,
+      };
+    });
+
+    return { data, pagination: offsetMeta(query.page, query.limit, total) };
   }
 
   async end(

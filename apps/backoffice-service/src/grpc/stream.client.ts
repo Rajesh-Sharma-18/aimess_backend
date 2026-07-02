@@ -30,6 +30,24 @@ export interface AdminForceEndResult {
   status: string;
 }
 
+/** One viewer session row from AdminListViewerSessions. */
+export interface AdminViewerSessionRow {
+  userId: string;
+  /** epoch ms. */
+  joinedAt: number;
+  /** epoch ms; 0 = still watching. */
+  leftAt: number;
+  watchDurationSeconds: number;
+}
+
+export interface AdminListViewerSessionsArgs {
+  streamId: string;
+  page: number;
+  limit: number;
+  sortField?: "joinedAt" | "watchDurationSeconds";
+  sortDir?: "asc" | "desc";
+}
+
 /** Filters forwarded to stream-service AdminListStreams (all optional). */
 export interface AdminListStreamsArgs {
   search?: string;
@@ -105,6 +123,28 @@ interface RawAdminListStreamsRes {
 interface RawAdminGetStreamRes {
   found: boolean;
   stream?: RawAdminStreamRow;
+}
+
+interface RawAdminViewerSessionRow {
+  userId: string;
+  joinedAt: string | number;
+  leftAt: string | number;
+  watchDurationSeconds: string | number;
+}
+interface RawAdminListViewerSessionsRes {
+  sessions: RawAdminViewerSessionRow[];
+  total: string | number;
+}
+
+function toAdminViewerSessionRow(
+  r: RawAdminViewerSessionRow
+): AdminViewerSessionRow {
+  return {
+    userId: r.userId,
+    joinedAt: Number(r.joinedAt ?? 0),
+    leftAt: Number(r.leftAt ?? 0),
+    watchDurationSeconds: Number(r.watchDurationSeconds ?? 0),
+  };
 }
 
 function toAdminStreamRow(r: RawAdminStreamRow): AdminStreamRow {
@@ -218,6 +258,24 @@ const adminGetStreamBreaker = makeBreaker(
     }))
 );
 
+const adminListViewerSessionsBreaker = makeBreaker(
+  "stream.adminListViewerSessions",
+  (args: AdminListViewerSessionsArgs) =>
+    call<Record<string, unknown>, RawAdminListViewerSessionsRes>(
+      "adminListViewerSessions",
+      {
+        streamId: args.streamId,
+        page: args.page,
+        limit: args.limit,
+        sortField: args.sortField ?? "joinedAt",
+        sortDir: args.sortDir ?? "desc",
+      }
+    ).then((r) => ({
+      sessions: (r.sessions ?? []).map(toAdminViewerSessionRow),
+      total: Number(r.total ?? 0),
+    }))
+);
+
 export const streamClient = {
   /** Backoffice admin list — fail-closed (propagates on outage). */
   async adminListStreams(
@@ -230,6 +288,13 @@ export const streamClient = {
   async adminGetStream(streamId: string): Promise<AdminStreamRow | null> {
     const r = await adminGetStreamBreaker.fire({ streamId });
     return r.found && r.stream ? r.stream : null;
+  },
+
+  /** Backoffice admin viewer-session list (the actual "Livestream User List"). */
+  async adminListViewerSessions(
+    args: AdminListViewerSessionsArgs
+  ): Promise<{ sessions: AdminViewerSessionRow[]; total: number }> {
+    return adminListViewerSessionsBreaker.fire(args);
   },
 
   async getStreamStats(streamId: string): Promise<StreamStatsResult> {

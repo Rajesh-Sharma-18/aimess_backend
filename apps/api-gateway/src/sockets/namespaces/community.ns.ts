@@ -255,11 +255,35 @@ export function registerCommunityNamespace(
                 `🔴 [STREAM:GATEWAY:USER] user:* relay event=${parsed.event} userId=${viewerUserId} communityId=${d.communityId ?? "?"} → emitting to Socket.IO room="user:${viewerUserId}"`
               );
             }
+            // [JOIN-TRACE] temporary investigation logging — remove after diagnosis.
+            if (
+              parsed.event === "community:message:new" ||
+              parsed.event === "community:message:deleted"
+            ) {
+              logger.info(
+                `[JOIN-TRACE] gateway REDIS RECEIVED event=${parsed.event} channel=${channel} payload=${JSON.stringify(parsed.data)} ts=${Date.now()}`
+              );
+            }
             const payload =
               parsed.event === "community:message:new"
                 ? personalizeCommunitySocketMessage(parsed.data, viewerUserId)
                 : parsed.data;
             community.to(channel).emit(parsed.event, payload);
+            // [JOIN-TRACE]
+            if (
+              parsed.event === "community:message:new" ||
+              parsed.event === "community:message:deleted"
+            ) {
+              void community
+                .in(channel)
+                .fetchSockets()
+                .then((sockets) => {
+                  logger.info(
+                    `[JOIN-TRACE] gateway SOCKET EMITTED event=${parsed.event} room=${channel} socketCount=${sockets.length} socketIds=${JSON.stringify(sockets.map((s) => s.id))} ts=${Date.now()}`
+                  );
+                })
+                .catch(() => {});
+            }
 
             // Auto-join the typing room when the user is added to a new community
             // while their socket is connected, so they immediately receive

@@ -57,6 +57,28 @@ model Livestream {
 }
 
 // -----------------------------------------------------------------------------
+// LivestreamViewerSession — one join→leave watch session for a user on a
+//   livestream. Durable history; Redis (`stream:session:users:<streamId>`,
+//   owned by api-gateway) remains the source of truth for CURRENT live
+//   presence/count — this table is only for "who watched, when, how long".
+//   A user can have multiple sessions per stream (rejoin after a leave), but
+//   at most ONE open session (leftAt: null) at a time — reconnects reuse the
+//   open session instead of creating a duplicate.
+// -----------------------------------------------------------------------------
+model LivestreamViewerSession {
+  id                   String    @id @default(auto()) @map("_id") @db.ObjectId
+  livestreamId         String
+  userId               String
+  joinedAt             DateTime  @default(now())
+  leftAt               DateTime?
+  watchDurationSeconds Int?
+
+  @@index([livestreamId, userId])
+  @@index([livestreamId, joinedAt])
+  @@map("livestream_viewer_sessions")
+}
+
+// -----------------------------------------------------------------------------
 // LivestreamComment — realtime comments on a livestream.
 //   Cursor pagination on (livestreamId, createdAt desc); clientCommentId gives
 //   idempotency for at-least-once delivery from the gateway socket.

@@ -196,28 +196,39 @@ model SystemSetting {
 }
 
 // -----------------------------------------------------------------------------
-// Announcements (i18n)
+// Announcements
 // -----------------------------------------------------------------------------
-model Announcement {
-  id          String    @id @default(uuid()) @db.Uuid
-  status      String    @default("draft") // draft | scheduled | published
-  audience    String    @default("all")
-  publishAt   DateTime? @db.Timestamptz(3)
-  createdById String    @db.Uuid
-  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
-
-  translations AnnouncementTranslation[]
+enum AnnouncementTarget {
+  ALL
+  COMMUNITY
 }
 
-model AnnouncementTranslation {
-  id             String       @id @default(uuid()) @db.Uuid
-  announcementId String       @db.Uuid
-  announcement   Announcement @relation(fields: [announcementId], references: [id])
-  locale         String // "en" | "vi"
-  title          String
-  body           String
+enum AnnouncementStatus {
+  SCHEDULED // has a future scheduledAt, waiting for the poller
+  PROCESSING // claimed for delivery, batches are being enqueued
+  SENT // all batches enqueued successfully
+  FAILED // delivery exhausted retries
+}
 
-  @@unique([announcementId, locale])
+model Announcement {
+  id             String             @id @default(uuid()) @db.Uuid
+  title          String
+  description    String
+  target         AnnouncementTarget
+  communityId    String?            @db.Uuid // required iff target == COMMUNITY
+  status         AnnouncementStatus @default(SCHEDULED)
+  scheduledAt    DateTime?          @db.Timestamptz(3) // null = deliver immediately
+  recipientCount Int                @default(0)
+  failureReason  String?
+  createdById    String             @db.Uuid
+  createdAt      DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @db.Timestamptz(3)
+  sentAt         DateTime?          @db.Timestamptz(3)
+
+  @@index([status, scheduledAt]) // poller claim query
+  @@index([target, status]) // list filter
+  @@index([createdAt(sort: Desc)])
+  @@index([communityId])
 }
 
 // -----------------------------------------------------------------------------

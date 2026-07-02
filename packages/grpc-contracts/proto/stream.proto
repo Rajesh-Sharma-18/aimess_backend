@@ -37,6 +37,19 @@ service StreamService {
   rpc AdminListStreams (AdminListStreamsRequest) returns (AdminListStreamsResponse);
   // Single stream detail (LIVE viewer count overlaid from Redis).
   rpc AdminGetStream (AdminGetStreamRequest) returns (AdminGetStreamResponse);
+
+  // ---- Viewer session tracking ----
+  // Called by the gateway (fire-and-forget) when a socket joins a stream room.
+  // Persists a durable join record so the admin panel can show actual viewers
+  // (as opposed to Redis, which only tracks CURRENT presence).
+  rpc RecordViewerJoin (RecordViewerJoinRequest) returns (RecordViewerJoinResponse);
+  // Called by the gateway (fire-and-forget) on stream:leave / disconnect / ban-kick.
+  // Closes the caller's most recent open session for this stream (idempotent —
+  // a second call with no open session is a no-op success).
+  rpc RecordViewerLeave (RecordViewerLeaveRequest) returns (RecordViewerLeaveResponse);
+  // Admin: paginated viewer session history for a stream (the "Livestream User
+  // List" screen). Backs GET /admin/v1/livestreams/:id/users.
+  rpc AdminListViewerSessions (AdminListViewerSessionsRequest) returns (AdminListViewerSessionsResponse);
 }
 
 // One livestream comment row, shared by PostComment + GetComments.
@@ -225,4 +238,44 @@ message AdminGetStreamRequest {
 message AdminGetStreamResponse {
   bool found = 1;
   AdminStreamRow stream = 2;
+}
+
+// ---- Viewer session tracking ------------------------------------------------
+
+message RecordViewerJoinRequest {
+  string stream_id = 1;
+  string user_id   = 2;
+}
+message RecordViewerJoinResponse {
+  string session_id = 1;
+}
+
+message RecordViewerLeaveRequest {
+  string stream_id = 1;
+  string user_id   = 2;
+}
+message RecordViewerLeaveResponse {
+  bool success = 1; // true even when there was no open session to close (idempotent)
+}
+
+// One viewer's session on a stream. left_at = 0 means still watching; in that
+// case watch_duration_seconds is computed live (now - joined_at) rather than
+// stored, so it stays accurate while the admin has the page open.
+message AdminViewerSessionRow {
+  string user_id                = 1;
+  int64  joined_at              = 2; // epoch ms
+  int64  left_at                = 3; // epoch ms; 0 = still watching
+  int64  watch_duration_seconds = 4;
+}
+
+message AdminListViewerSessionsRequest {
+  string stream_id  = 1;
+  int32  page       = 2; // 1-based
+  int32  limit      = 3;
+  string sort_field = 4; // joinedAt | watchDurationSeconds; "" = joinedAt
+  string sort_dir    = 5; // asc | desc; "" = desc
+}
+message AdminListViewerSessionsResponse {
+  repeated AdminViewerSessionRow sessions = 1;
+  int64 total = 2;
 }

@@ -29,6 +29,7 @@ jest.mock("../../src/services/index.js", () => {
 });
 
 import request from "supertest";
+import { NotFoundError } from "@aimess/errors";
 
 import { app } from "../../src/app.js";
 import { adminUserRepository } from "../../src/repositories/index.js";
@@ -64,10 +65,11 @@ beforeEach(() => {
       {
         userId: "u1",
         username: "john",
-        handle: "john",
+        handle: "@john",
         avatarUrl: null,
-        type: "ADMIN",
         joinedAt: "2026-06-01T00:00:00.000Z",
+        leftAt: "2026-06-01T00:10:00.000Z",
+        watchDurationSeconds: 600,
       },
     ],
     pagination: { mode: "offset", page: 1, limit: 20, total: 1 },
@@ -124,27 +126,32 @@ describe("GET /v1/livestreams", () => {
 });
 
 describe("GET /v1/livestreams/:livestreamId/users", () => {
-  it("returns 200 with the community-member page", async () => {
+  it("returns 200 with the actual-viewers page (join/leave/watch duration)", async () => {
     const res = await request(app)
       .get(`/v1/livestreams/${LID}/users`)
       .set(auth());
     expect(res.status).toBe(200);
-    expect(res.body.data[0].type).toBe("ADMIN");
+    expect(res.body.data[0].userId).toBe("u1");
+    expect(res.body.data[0].joinedAt).toBe("2026-06-01T00:00:00.000Z");
+    expect(res.body.data[0].leftAt).toBe("2026-06-01T00:10:00.000Z");
+    expect(res.body.data[0].watchDurationSeconds).toBe(600);
     expect(svc.listLivestreamUsers).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards the search + type filter to the service", async () => {
+  it("forwards sort filters to the service", async () => {
     await request(app)
-      .get(`/v1/livestreams/${LID}/users?search=john&type=MODERATOR`)
+      .get(
+        `/v1/livestreams/${LID}/users?sortField=watchDurationSeconds&sortDir=asc`
+      )
       .set(auth());
     const [, query] = svc.listLivestreamUsers.mock.calls[0];
-    expect(query.search).toBe("john");
-    expect(query.type).toBe("MODERATOR");
+    expect(query.sortField).toBe("watchDurationSeconds");
+    expect(query.sortDir).toBe("asc");
   });
 
-  it("rejects an invalid type filter (400)", async () => {
+  it("rejects an invalid sortField (400)", async () => {
     const res = await request(app)
-      .get(`/v1/livestreams/${LID}/users?type=OWNER`)
+      .get(`/v1/livestreams/${LID}/users?sortField=role`)
       .set(auth());
     expect(res.status).toBe(400);
     expect(svc.listLivestreamUsers).not.toHaveBeenCalled();
@@ -162,6 +169,16 @@ describe("GET /v1/livestreams/:livestreamId/users", () => {
       .set(auth());
     expect(res.status).toBe(403);
     expect(svc.listLivestreamUsers).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for an unknown livestream id", async () => {
+    svc.listLivestreamUsers.mockRejectedValueOnce(
+      new NotFoundError("LIVESTREAM_NOT_FOUND")
+    );
+    const res = await request(app)
+      .get("/v1/livestreams/ghost/users")
+      .set(auth());
+    expect(res.status).toBe(404);
   });
 });
 

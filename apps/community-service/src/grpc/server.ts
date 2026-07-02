@@ -248,6 +248,66 @@ const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  /**
+   * Synchronous companion to the async `community.activity.queue`
+   * "reaction_added"/"reaction_removed" event — see the proto doc. Delegates
+   * to the SAME repository methods `community-activity.consumer.ts` calls, so
+   * there is exactly one implementation of "how a reaction updates the
+   * overlay"; this RPC and the queue consumer are just two callers of it.
+   * Fail-soft: any error still returns ok:false rather than throwing, since
+   * the async queue publish (already sent by the caller beforehand) remains
+   * the backstop — a failure here must never fail the reaction itself.
+   */
+  updateReactionActivity: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          added?: boolean;
+          messageId?: string;
+          emoji?: string;
+          actorId?: string;
+          actorPreview?: string;
+          targetId?: string;
+          targetPreview?: string;
+          reactedAt?: number | string;
+        };
+        const communityId = (req.communityId ?? "").trim();
+        const messageId = (req.messageId ?? "").trim();
+        const emoji = req.emoji ?? "";
+        const actorId = (req.actorId ?? "").trim();
+        if (!communityId || !messageId || !emoji || !actorId) {
+          callback(null, { ok: false });
+          return;
+        }
+
+        if (req.added) {
+          await communityRepository.setReactionActivity(communityId, {
+            messageId,
+            emoji,
+            actorId,
+            actorPreview: req.actorPreview ?? "",
+            targetId: req.targetId ? req.targetId : null,
+            targetPreview: req.targetPreview ? req.targetPreview : null,
+            reactedAt: new Date(Number(req.reactedAt) || Date.now()),
+          });
+        } else {
+          await communityRepository.clearReactionActivityIfCurrent(
+            communityId,
+            { messageId, emoji, actorId }
+          );
+        }
+        callback(null, { ok: true });
+      } catch (err) {
+        logger.error("updateReactionActivity gRPC handler failed", err);
+        callback(null, { ok: false });
+      }
+    })();
+  },
+
   // ---- Backoffice (admin panel) Community Management ----
   // Read-through list for the admin Community Management screen. Offset paginated.
   adminListCommunities: (

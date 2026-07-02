@@ -364,6 +364,89 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
       })();
     },
 
+    // RecordViewerJoin — gateway fire-and-forget on stream:join. Always
+    // succeeds from the caller's perspective; internal failures are logged
+    // and swallowed by the service, never surfaced as a gRPC error.
+    recordViewerJoin: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string; userId: string };
+          await deps.livestreamService.recordViewerJoin(
+            req.streamId,
+            req.userId
+          );
+          callback(null, { sessionId: "" });
+        } catch (err) {
+          logger.error(`gRPC recordViewerJoin error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // RecordViewerLeave — gateway fire-and-forget on stream:leave/disconnect/ban.
+    recordViewerLeave: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string; userId: string };
+          await deps.livestreamService.recordViewerLeave(
+            req.streamId,
+            req.userId
+          );
+          callback(null, { success: true });
+        } catch (err) {
+          logger.error(`gRPC recordViewerLeave error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // AdminListViewerSessions — backoffice "Livestream User List" (actual viewers).
+    adminListViewerSessions: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            streamId: string;
+            page?: number;
+            limit?: number;
+            sortField?: string;
+            sortDir?: string;
+          };
+          const sortField: "joinedAt" | "watchDurationSeconds" =
+            req.sortField === "watchDurationSeconds"
+              ? "watchDurationSeconds"
+              : "joinedAt";
+          const { sessions, total } =
+            await deps.livestreamService.adminListViewerSessions(req.streamId, {
+              page: req.page && req.page > 0 ? req.page : 1,
+              limit: req.limit && req.limit > 0 ? req.limit : 20,
+              sortField,
+              sortDir: req.sortDir === "asc" ? "asc" : "desc",
+            });
+          callback(null, {
+            sessions: sessions.map((s) => ({
+              userId: s.userId,
+              joinedAt: s.joinedAt.getTime(),
+              leftAt: s.leftAt ? s.leftAt.getTime() : 0,
+              watchDurationSeconds: s.watchDurationSeconds,
+            })),
+            total,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminListViewerSessions error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // GetLiveStreamsByCommunity — live stream list for community detail enrichment.
     getLiveStreamsByCommunity: (
       call: grpc.ServerUnaryCall<unknown, unknown>,

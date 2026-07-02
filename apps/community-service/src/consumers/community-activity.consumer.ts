@@ -27,10 +27,31 @@ interface CommunityActivityMessage {
     senderUsername?: string;
     messagePreview?: string;
     type?: string;
-    /** First-person ("You …") preview for a self-referential SYSTEM line. */
+    /** First-person ("You …") preview for a self-referential SYSTEM line
+     *  (role change / join) — reactions no longer use this field. */
     selfPreview?: string;
+    /** Second self-referential viewer (role change / join target) — reactions
+     *  no longer use this field. */
+    targetUserId?: string;
+    targetPreview?: string;
+    /**
+     * Reaction-overlay fields, present only when `type` is "reaction_added" /
+     * "reaction_removed". A reaction NEVER goes through the canonical
+     * lastActivity* bump above — it is a fully separate overlay, visible only
+     * to its own actor + the reacted-to message's owner (see
+     * community.repository.ts's setReactionActivity/clearReactionActivityIfCurrent).
+     */
+    reactionMessageId?: string;
+    reactionEmoji?: string;
+    reactionActorId?: string;
+    reactionActorPreview?: string;
+    reactionTargetId?: string | null;
+    reactionTargetPreview?: string | null;
   };
 }
+
+const REACTION_ADDED = "reaction_added";
+const REACTION_REMOVED = "reaction_removed";
 
 export async function startCommunityActivityConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
@@ -61,17 +82,55 @@ export async function startCommunityActivityConsumer(): Promise<void> {
 
       try {
         if (parsed.type === ACTIVITY_EVENT) {
-          const at = new Date(parsed.data.lastMessageAt);
-          if (parsed.data.communityId && !Number.isNaN(at.getTime())) {
-            await communityRepository.updateLastActivity(
-              parsed.data.communityId,
-              at,
-              parsed.data.type ?? "message",
-              parsed.data.messagePreview ?? "",
-              parsed.data.senderUsername ?? null,
-              parsed.data.senderUserId ?? null,
-              parsed.data.selfPreview ?? null
-            );
+          const { communityId } = parsed.data;
+          if (parsed.data.type === REACTION_ADDED) {
+            if (
+              communityId &&
+              parsed.data.reactionMessageId &&
+              parsed.data.reactionEmoji &&
+              parsed.data.reactionActorId
+            ) {
+              await communityRepository.setReactionActivity(communityId, {
+                messageId: parsed.data.reactionMessageId,
+                emoji: parsed.data.reactionEmoji,
+                actorId: parsed.data.reactionActorId,
+                actorPreview: parsed.data.reactionActorPreview ?? "",
+                targetId: parsed.data.reactionTargetId ?? null,
+                targetPreview: parsed.data.reactionTargetPreview ?? null,
+                reactedAt: new Date(parsed.data.lastMessageAt),
+              });
+            }
+          } else if (parsed.data.type === REACTION_REMOVED) {
+            if (
+              communityId &&
+              parsed.data.reactionMessageId &&
+              parsed.data.reactionEmoji &&
+              parsed.data.reactionActorId
+            ) {
+              await communityRepository.clearReactionActivityIfCurrent(
+                communityId,
+                {
+                  messageId: parsed.data.reactionMessageId,
+                  emoji: parsed.data.reactionEmoji,
+                  actorId: parsed.data.reactionActorId,
+                }
+              );
+            }
+          } else {
+            const at = new Date(parsed.data.lastMessageAt);
+            if (communityId && !Number.isNaN(at.getTime())) {
+              await communityRepository.updateLastActivity(
+                communityId,
+                at,
+                parsed.data.type ?? "message",
+                parsed.data.messagePreview ?? "",
+                parsed.data.senderUsername ?? null,
+                parsed.data.senderUserId ?? null,
+                parsed.data.selfPreview ?? null,
+                parsed.data.targetUserId ?? null,
+                parsed.data.targetPreview ?? null
+              );
+            }
           }
         } else {
           logger.warn(

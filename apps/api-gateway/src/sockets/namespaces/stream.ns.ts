@@ -138,6 +138,14 @@ export function registerStreamNamespace(
           `/stream ban session srem error for ${streamId}: ${String(err)}`
         );
       }
+      // Close their durable viewer session too — best-effort.
+      streamClient
+        .recordViewerLeave({ streamId, userId: bannedUserId })
+        .catch((err: unknown) =>
+          logger.warn(
+            `/stream ban recordViewerLeave failed for ${streamId}: ${String(err)}`
+          )
+        );
       // Broadcast the corrected viewer count (SCARD is always accurate).
       try {
         const viewerCount = Math.max(
@@ -345,6 +353,17 @@ export function registerStreamNamespace(
             );
           }
 
+          // Durable viewer-session record (separate from the Redis presence set
+          // above) — best-effort, never blocks or fails the join ack. Idempotent
+          // server-side: a reconnect while still "open" reuses the same session.
+          streamClient
+            .recordViewerJoin({ streamId, userId })
+            .catch((err: unknown) =>
+              logger.warn(
+                `/stream recordViewerJoin failed for ${streamId}: ${String(err)}`
+              )
+            );
+
           // Backfill recent comments (best-effort; a stream-service blip must
           // not block the join).
           let recentComments: unknown[] = [];
@@ -437,6 +456,15 @@ export function registerStreamNamespace(
               );
             }
             emitViewerCount(streamId);
+            // Close the durable viewer session to match the Redis presence
+            // removal above — best-effort, never blocks the leave ack.
+            streamClient
+              .recordViewerLeave({ streamId, userId })
+              .catch((err: unknown) =>
+                logger.warn(
+                  `/stream recordViewerLeave failed for ${streamId}: ${String(err)}`
+                )
+              );
           }
           ackOk(callback, "SOCKET_STREAM_LEFT", locale);
         })();
@@ -644,6 +672,15 @@ export function registerStreamNamespace(
               `/stream disconnect session srem error for ${streamId}: ${String(err)}`
             );
           }
+          // Close the durable viewer session — covers crashes/network drops
+          // that never fire an explicit stream:leave. Best-effort.
+          streamClient
+            .recordViewerLeave({ streamId, userId })
+            .catch((err: unknown) =>
+              logger.warn(
+                `/stream disconnect recordViewerLeave failed for ${streamId}: ${String(err)}`
+              )
+            );
           // Emit directly (the per-socket debounce map is already cleared and
           // the socket is leaving — read once and broadcast to the room).
           try {

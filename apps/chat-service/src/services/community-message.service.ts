@@ -31,9 +31,13 @@ import type {
 import {
   normalizeMessageType,
   toggleStoredReaction,
+  reactionUserIdMap,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
-import { convertMessageToPreview } from "./message-preview.service.js";
+import {
+  convertMessageToPreview,
+  buildReactionTargetPreview,
+} from "./message-preview.service.js";
 import {
   resolveVisibleLastBulk,
   resolveForEveryoneOverrides,
@@ -1494,6 +1498,46 @@ export class CommunityMessageService {
     return this.messageRepo.editMessage(params.messageId, params.content.text);
   }
 
+  /**
+   * Reconstruct the `{text, files, location, contact}` content shape
+   * `convertMessageToPreview`/`buildReactionTargetPreview` expect, from a raw
+   * stored message row. Mirrors `ChatMessageOrchestrator`'s
+   * `firstAttachmentOfType` extraction so a reaction's target preview matches
+   * EXACTLY what that message's own send-time list/push preview showed
+   * (filename / place name / contact name included), instead of falling back
+   * to the type's generic label.
+   */
+  private messagePreviewContent(message: {
+    message: string | null;
+    attachments: unknown;
+  }): {
+    text: string;
+    files: Array<Record<string, unknown>>;
+    location?: Record<string, unknown>;
+    contact?: Record<string, unknown>;
+  } {
+    const attachments = Array.isArray(message.attachments)
+      ? (message.attachments as Array<Record<string, unknown>>)
+      : [];
+    const byType = (type: string): Record<string, unknown> | undefined => {
+      const hit = attachments.find(
+        (a) => a && (a as { type?: string }).type === type
+      );
+      if (!hit) return undefined;
+      const { type: _omit, ...rest } = hit;
+      void _omit;
+      return rest;
+    };
+    const location = byType("location");
+    const contact = byType("contact");
+    return {
+      text: message.message ?? "",
+      files: attachments,
+      ...(location ? { location } : {}),
+      ...(contact ? { contact } : {}),
+    };
+  }
+
   async reactToMessage(params: {
     messageId: string;
     userId: string;
@@ -1506,6 +1550,14 @@ export class CommunityMessageService {
       count: number;
       users: Array<{ userId: string; displayName: string; avatarUrl: string }>;
     }>;
+    /** True when this call ADDED the reactor to the bucket; false when it REMOVED them (toggle-off). */
+    added: boolean;
+    /** Reactor's display name (resolved from the same snapshot fetch used to enrich the stored reactors). */
+    actorName: string;
+    /** The reacted-to message's owner — the OTHER personalized viewer besides the actor. */
+    targetUserId: string;
+    /** The reacted-to message's own preview text (quoted text or media label). */
+    targetMessagePreview: string;
   }> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -1528,6 +1580,13 @@ export class CommunityMessageService {
     assertCommunityRoomWritable(
       await this.roomRepo.findRoomById(message.roomId)
     );
+
+    // Determine add vs remove BEFORE toggling — the lastActivity preview must
+    // only bump on add (Telegram never shows a "removed their reaction" line).
+    const wasReactedByUser = (
+      reactionUserIdMap(message.reactions)[params.emoji] ?? []
+    ).includes(params.userId);
+    const added = !wasReactedByUser;
 
     // Toggle the reactor in/out of the emoji bucket (shared with private/group);
     // non-atomic read-modify-write, acceptable at current scale.
@@ -1601,6 +1660,60 @@ export class CommunityMessageService {
       messageId: params.messageId,
       roomId: message.roomId,
       reactions: reactionGroups,
+      added,
+      // Only guaranteed present in `snaps` when added===true (the actor was just
+      // pushed into the bucket); callers only need this in that case.
+      actorName: (snaps.get(params.userId)?.displayName as string) || "",
+      targetUserId: message.sentBy,
+      targetMessagePreview: buildReactionTargetPreview(
+        normalizeMessageType(message.messageType),
+        this.messagePreviewContent(message)
+      ),
+    };
+  }
+
+  /**
+   * Best-effort LIVE nudge after a reaction is removed — NOT the source of
+   * truth for whether the reaction overlay actually cleared (that's
+   * community-service's `clearReactionActivityIfCurrent`, gated by an
+   * identity match on messageId+emoji+actorId). This just gives the reaction's
+   * former actor/target an immediate refresh to the room's real latest
+   * activity over the socket; if the removed reaction wasn't the one being
+   * displayed to them, this resends the same value they already see (a safe
+   * no-op), so no identity check is needed here at all.
+   */
+  async getLatestRealActivityForLiveBump(roomId: string): Promise<{
+    prevMessageId: string | null;
+    preview: string;
+    messageType: string;
+    sentBy: string;
+    senderName: string;
+    createdAt: Date;
+    hasLastMessage: boolean;
+  }> {
+    const prev = await this.messageRepo.findPreviousVisibleMessage(roomId);
+    if (!prev) {
+      return {
+        prevMessageId: null,
+        preview: "",
+        messageType: "",
+        sentBy: "",
+        senderName: "",
+        createdAt: new Date(0),
+        hasLastMessage: false,
+      };
+    }
+    return {
+      prevMessageId: prev.id,
+      preview: convertMessageToPreview(
+        prev.messageType,
+        this.messagePreviewContent(prev)
+      ),
+      messageType: prev.messageType,
+      sentBy: prev.sentBy,
+      senderName: prev.senderName ?? "",
+      createdAt: prev.createdAt,
+      hasLastMessage: true,
     };
   }
 

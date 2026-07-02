@@ -134,15 +134,13 @@ export type ListLivestreamReportsQueryInput = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
-// Per-stream users (community members) list query.
+// Per-stream users (actual viewers) list query.
 // ---------------------------------------------------------------------------
-export const livestreamUserTypeEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
-
 export const listLivestreamUsersQuerySchema = z.object({
-  search: z.string().trim().min(1).optional(),
-  type: livestreamUserTypeEnum.optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
+  sortField: z.enum(["joinedAt", "watchDurationSeconds"]).optional(),
+  sortDir: z.enum(["asc", "desc"]).optional(),
 });
 export type ListLivestreamUsersQueryInput = z.infer<
   typeof listLivestreamUsersQuerySchema
