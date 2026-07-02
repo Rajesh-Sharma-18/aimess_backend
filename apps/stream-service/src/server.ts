@@ -66,7 +66,8 @@ async function start() {
       srsService,
       communityGrpcClient,
       redis,
-      banRepo
+      banRepo,
+      userGrpcClient
     );
     const commentService = new LivestreamCommentService(
       commentRepo,

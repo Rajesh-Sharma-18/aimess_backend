@@ -12,6 +12,7 @@ import { createAdminRouter } from "./routes/admin.routes.js";
 import { createApiRouter } from "./routes/api.routes.js";
 import { createLinkHostRouter } from "./routes/linkhost.routes.js";
 import { healthRouter } from "./routes/health.routes.js";
+import { createInternalSrsRouter } from "./routes/internal-srs.routes.js";
 import type { MessagingClient } from "./grpc/clients/messaging.client.js";
 import type { MediaClient } from "./grpc/clients/media.client.js";
 
@@ -70,6 +71,9 @@ export function createApp(
   // app" preview. Host-gated — non-link hosts pass straight through to the API.
   // Mounted before the rate limiter / API so link traffic isn't proxied.
   app.use(createLinkHostRouter());
+
+  // SRS server callbacks. No user JWT; stream-service validates SRS_HOOK_SECRET.
+  app.use("/internal", createInternalSrsRouter());
 
   app.use(rateLimiter);
 

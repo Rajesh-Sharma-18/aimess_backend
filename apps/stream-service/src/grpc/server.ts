@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { ForbiddenError } from "@aimess/errors";
 
 import type { LivestreamCommentService } from "../services/livestream-comment.service.js";
 import type {
@@ -78,7 +79,14 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
           });
         } catch (err) {
           logger.error(`gRPC postComment error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          if (err instanceof ForbiddenError) {
+            callback({
+              code: grpc.status.PERMISSION_DENIED,
+              message: String(err),
+            });
+          } else {
+            callback({ code: grpc.status.INTERNAL, message: String(err) });
+          }
         }
       })();
     },
@@ -398,6 +406,62 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
         } catch (err) {
           logger.error(`gRPC getLiveStreamsByCommunity error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // NotifyMemberMuteStatus — best-effort push from community-service after a
+    // mute/unmute; relays a live socket notice to the target's currently-LIVE
+    // stream sessions in that community. Never fails the caller.
+    notifyMemberMuteStatus: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            communityId?: string;
+            userId?: string;
+            isMuted?: boolean;
+            mutedUntil?: number;
+          };
+          await deps.livestreamService.broadcastMuteStatusForCommunity(
+            req.communityId ?? "",
+            req.userId ?? "",
+            Boolean(req.isMuted),
+            Number(req.mutedUntil ?? 0)
+          );
+          callback(null, { ok: true });
+        } catch (err) {
+          logger.warn(`gRPC notifyMemberMuteStatus error: ${String(err)}`);
+          callback(null, { ok: false });
+        }
+      })();
+    },
+
+    // NotifyMemberBanStatus — best-effort push from community-service after an
+    // ADMIN bans/unbans a member; relays a `stream:banned` kick to the target's
+    // currently-LIVE stream sessions in that community. Never fails the caller.
+    notifyMemberBanStatus: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            communityId?: string;
+            userId?: string;
+            isBanned?: boolean;
+          };
+          await deps.livestreamService.broadcastBanStatusForCommunity(
+            req.communityId ?? "",
+            req.userId ?? "",
+            Boolean(req.isBanned)
+          );
+          callback(null, { ok: true });
+        } catch (err) {
+          logger.warn(`gRPC notifyMemberBanStatus error: ${String(err)}`);
+          callback(null, { ok: false });
         }
       })();
     },

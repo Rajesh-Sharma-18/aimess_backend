@@ -49,6 +49,7 @@ export {
   listCommunities,
   getCommunityDetails,
   listCommunityMembers,
+  listCommunityMutedMembers,
   closeCommunity,
   reopenCommunity,
   bulkCloseCommunities,

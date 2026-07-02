@@ -29,6 +29,11 @@ service CommunityService {
   rpc AdminListCommunities (AdminListCommunitiesRequest) returns (AdminListCommunitiesResponse);
   rpc AdminGetCommunity (AdminGetCommunityRequest) returns (AdminCommunityDetail);
   rpc AdminListCommunityMembers (AdminListCommunityMembersRequest) returns (AdminListCommunityMembersResponse);
+  // Currently-muted members for a community (moderation mute, lazy expiration).
+  // backoffice-only — the community-facing REST list is gated to MODERATOR+
+  // members via CommunityService's own JWT; this RPC has no community-membership
+  // requirement since the caller is a trusted platform admin.
+  rpc AdminListMutedMembers (AdminListMutedMembersRequest) returns (AdminListMutedMembersResponse);
   // Batch enrichment: fetch name + avatar + category + memberCount for a set of
   // community ids. Backs the backoffice Livestream Management list/detail join
   // (one round-trip per page). avatar_url is already presigned.
@@ -84,6 +89,11 @@ service CommunityService {
   rpc ChangeMemberRole  (ChangeMemberRoleRequest)   returns (ModerationActionResponse);
   rpc CreateReport      (CreateReportRequest)       returns (CreateReportResponse);
   rpc DeleteCommunity   (DeleteCommunityRequest)    returns (ModerationActionResponse);
+  // Community-wide mute — the single write path for the moderation mute record.
+  // Called from the community UI/socket AND from stream-service's livestream
+  // "mute" action, so both entry points share one source of truth.
+  rpc MuteMember        (MuteMemberRequest)        returns (ModerationActionResponse);
+  rpc UnmuteMember      (UnmuteMemberRequest)      returns (ModerationActionResponse);
 
   // ---- Per-message read receipt (fine-grained, single room) ----
   rpc MarkCommunityMessageRead (MarkCommunityMessageReadRequest) returns (MarkCommunityMessageReadResponse);
@@ -259,6 +269,29 @@ message AdminCommunityMemberRow {
 }
 message AdminListCommunityMembersResponse {
   repeated AdminCommunityMemberRow members = 1;
+  int64 total = 2;
+}
+
+// ---- Backoffice Community Muted-Member List ----
+// Platform-admin view of a community's currently-muted members (moderation
+// mute — see MuteMember/UnmuteMember). Offset paginated, newest mute first.
+message AdminListMutedMembersRequest {
+  string community_id = 1;
+  int32  page         = 2;
+  int32  limit        = 3;
+}
+message AdminMutedMemberRow {
+  string user_id     = 1;
+  string username    = 2;  // snapshotDisplayName (fallback snapshotUsername)
+  string handle      = 3;  // snapshotUsername (the @handle)
+  string avatar_url  = 4;  // resolved/presigned, "" when none
+  string muted_by    = 5;  // AuthUser.id of the moderator/admin who muted
+  string reason      = 6;  // "" if none
+  int64  muted_at    = 7;  // epoch ms
+  int64  muted_until = 8;  // epoch ms; 0 = indefinite
+}
+message AdminListMutedMembersResponse {
+  repeated AdminMutedMemberRow members = 1;
   int64 total = 2;
 }
 
@@ -565,13 +598,17 @@ message PinCommunityMessageResponse {
 }
 
 // ---- Moderation ----
-// Generic result for kick / ban / unban / transfer-admin / role-change / delete.
+// Generic result for kick / ban / unban / mute / unmute / transfer-admin /
+// role-change / delete.
 // error_code is "" on success; "NOT_FOUND" | "FORBIDDEN" | "ALREADY_BANNED" | etc.
 message ModerationActionResponse {
   bool   ok             = 1;
   string community_id   = 2;
   string target_user_id = 3;
   string error_code     = 4;
+  // Only populated by MuteMember; epoch ms, 0 = indefinite mute (ignored by
+  // every other moderation action that reuses this response shape).
+  int64  muted_until    = 5;
 }
 
 message KickMemberRequest {
@@ -589,6 +626,23 @@ message BanMemberRequest {
 }
 
 message UnbanMemberRequest {
+  string community_id    = 1;
+  string actor_id        = 2;
+  string target_user_id  = 3;
+}
+
+// Single entry point for community moderation mute — called both from the
+// community UI/socket AND from stream-service (livestream "mute" action), so
+// there is exactly one mute record regardless of where it was triggered.
+message MuteMemberRequest {
+  string community_id     = 1;
+  string actor_id         = 2; // performing the action (must be admin/mod)
+  string target_user_id   = 3;
+  int64  duration_minutes = 4; // 0 = indefinite
+  string reason           = 5; // "" if not provided
+}
+
+message UnmuteMemberRequest {
   string community_id    = 1;
   string actor_id        = 2;
   string target_user_id  = 3;

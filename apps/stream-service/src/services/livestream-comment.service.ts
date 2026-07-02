@@ -91,6 +91,43 @@ export class LivestreamCommentService {
     private readonly reportRepo: LivestreamCommentReportRepository
   ) {}
 
+  /**
+   * True when a moderator has muted this user in the stream's community.
+   * Fail-open: a community-service outage must not silence the whole chat.
+   */
+  private async isMuted(communityId: string, userId: string): Promise<boolean> {
+    try {
+      const mute = await this.communityClient.checkMute(communityId, userId);
+      return mute.isMuted;
+    } catch (error) {
+      logger.warn(
+        `mute check failed for community=${communityId} user=${userId}: ${String(error)}`
+      );
+      return false;
+    }
+  }
+
+  /**
+   * True when an ADMIN has banned this user from the stream's community.
+   * Fail-open: consistent with {@link isMuted} — an outage never silences the
+   * whole chat on its own; the local per-stream ban (checked separately, always
+   * available) remains the synchronous hard gate.
+   */
+  private async isCommunityBanned(
+    communityId: string,
+    userId: string
+  ): Promise<boolean> {
+    try {
+      const ban = await this.communityClient.checkBan(communityId, userId);
+      return ban.isBanned;
+    } catch (error) {
+      logger.warn(
+        `community ban check failed for community=${communityId} user=${userId}: ${String(error)}`
+      );
+      return false;
+    }
+  }
+
   /** True if requester is the stream owner or a community ADMIN/MODERATOR (fail-closed). */
   private async hasModeratorAccess(
     stream: { creatorId: string; communityId: string },
@@ -109,6 +146,22 @@ export class LivestreamCommentService {
     } catch {
       return false; // circuit-open / error = deny
     }
+  }
+
+  /** Resolves a user's rank for comment-delete authorization. Throws on a community-service outage (fail-closed). */
+  private async resolveDeleteRank(
+    stream: { creatorId: string; communityId: string },
+    userId: string
+  ): Promise<"OWNER" | "ADMIN" | "MODERATOR" | "MEMBER"> {
+    if (stream.creatorId === userId) return "OWNER";
+    const membership = await this.communityClient.validateMembership(
+      stream.communityId,
+      userId
+    );
+    if (membership.isMember && membership.role === "ADMIN") return "ADMIN";
+    if (membership.isMember && membership.role === "MODERATOR")
+      return "MODERATOR";
+    return "MEMBER";
   }
 
   /**
@@ -131,7 +184,8 @@ export class LivestreamCommentService {
       if (existing) return toDto(existing);
     }
 
-    // Enforce ban + commentStatus (defend at write path, not just join gate).
+    // Enforce ban (local + community-wide) + commentStatus + moderator mute
+    // (defend at write path, not just join gate).
     const stream = await this.streamRepo.findById(params.livestreamId);
     if (
       stream &&
@@ -139,8 +193,17 @@ export class LivestreamCommentService {
     ) {
       throw new ForbiddenError("COMMENTS_BANNED");
     }
+    if (
+      stream &&
+      (await this.isCommunityBanned(stream.communityId, params.userId))
+    ) {
+      throw new ForbiddenError("COMMENTS_BANNED");
+    }
     if (stream && !stream.commentStatus) {
       throw new ForbiddenError("COMMENTS_DISABLED");
+    }
+    if (stream && (await this.isMuted(stream.communityId, params.userId))) {
+      throw new ForbiddenError("COMMENTS_MUTED");
     }
 
     // Enrich author snapshot (best-effort; degrades to empty on user-service down).
@@ -220,10 +283,36 @@ export class LivestreamCommentService {
     const stream = await this.streamRepo.findById(comment.livestreamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
 
-    // Authorization: author OR stream owner OR community admin/mod
+    // Authorization:
+    // - Any user may delete their own comment.
+    // - Stream owner / community ADMIN may delete anyone's comment.
+    // - Community MODERATOR may delete their own comment plus any plain
+    //   MEMBER's comment, but not an OWNER/ADMIN/MODERATOR's comment.
     const isAuthor = comment.sentBy === requesterId;
-    if (!isAuthor && !(await this.hasModeratorAccess(stream, requesterId))) {
-      throw new ForbiddenError("COMMENT_DELETE_FORBIDDEN");
+    if (!isAuthor) {
+      let requesterRank: "OWNER" | "ADMIN" | "MODERATOR" | "MEMBER";
+      try {
+        requesterRank = await this.resolveDeleteRank(stream, requesterId);
+      } catch {
+        throw new ForbiddenError("COMMENT_DELETE_FORBIDDEN"); // fail-closed
+      }
+
+      if (requesterRank === "MEMBER") {
+        throw new ForbiddenError("COMMENT_DELETE_FORBIDDEN");
+      }
+
+      if (requesterRank === "MODERATOR") {
+        let authorRank: "OWNER" | "ADMIN" | "MODERATOR" | "MEMBER";
+        try {
+          authorRank = await this.resolveDeleteRank(stream, comment.sentBy);
+        } catch {
+          throw new ForbiddenError("COMMENT_DELETE_FORBIDDEN"); // fail-closed
+        }
+        if (authorRank !== "MEMBER") {
+          throw new ForbiddenError("COMMENT_DELETE_FORBIDDEN");
+        }
+      }
+      // requesterRank === "OWNER" || "ADMIN" -> allowed unconditionally
     }
 
     await this.commentRepo.deleteById(commentId);

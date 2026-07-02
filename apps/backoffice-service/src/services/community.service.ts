@@ -3,6 +3,7 @@ import { logger } from "@aimess/logger";
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import {
   communityMembersRepository,
+  communityMutesRepository,
   communityRepository,
   moderationActionRepository,
 } from "../repositories/index.js";
@@ -15,8 +16,10 @@ import type {
   CommunityDetail,
   CommunityListItem,
   CommunityMemberRow,
+  CommunityMutedMemberRow,
   ListCommunitiesQuery,
   ListCommunityMembersQuery,
+  ListMutedMembersQuery,
   ModerationActor,
   Paginated,
   PaginationMeta,
@@ -95,6 +98,14 @@ export const communityService = {
     query: ListCommunityMembersQuery
   ): Promise<Paginated<CommunityMemberRow>> {
     return communityMembersRepository.listMembers(communityId, query);
+  },
+
+  /** List a community's currently-muted members (platform-admin only). */
+  listMutedMembers(
+    communityId: string,
+    query: ListMutedMembersQuery
+  ): Promise<Paginated<CommunityMutedMemberRow>> {
+    return communityMutesRepository.listMutedMembers(communityId, query);
   },
 
   async closeCommunity(

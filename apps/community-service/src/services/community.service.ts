@@ -2918,6 +2918,15 @@ export const communityService = {
     // as removal). MEMBER_BANNED is in HIDDEN_SYSTEM_MESSAGE_TYPES. The banned
     // user receives a push notification via notifications-service.
 
+    // Best-effort: kick the target from any of their currently-LIVE stream
+    // sessions in this community. Never blocks/fails the ban itself
+    // (notifyMemberBanStatus swallows its own errors).
+    void getStreamClient().notifyMemberBanStatus(
+      communityId,
+      targetUserId,
+      true
+    );
+
     return toMemberData(updated);
   },
 
@@ -3770,6 +3779,16 @@ export const communityService = {
 
     // NOTE: no system message emitted — mirrors the silent MEMBER_BANNED policy.
 
+    // Best-effort, currently a no-op on the stream-service side: unban does not
+    // auto-rejoin the user to any room (same as the local per-stream unban) — the
+    // call exists for symmetry with notifyMemberBanStatus(true) and as a hook if
+    // a "you can rejoin now" push is ever added.
+    void getStreamClient().notifyMemberBanStatus(
+      communityId,
+      targetUserId,
+      false
+    );
+
     return toMemberData(updated);
   },
 
@@ -3836,6 +3855,16 @@ export const communityService = {
       mutedUntil,
       actorId: callerId,
     });
+
+    // Best-effort: push a real-time notice to any of the target's currently-LIVE
+    // stream sessions in this community. Never blocks/fails the mute itself
+    // (notifyMemberMuteStatus swallows its own errors).
+    void getStreamClient().notifyMemberMuteStatus(
+      communityId,
+      targetUserId,
+      true,
+      mutedUntil ? mutedUntil.getTime() : 0
+    );
 
     const view = await buildUserSnapshotView(
       {
@@ -3916,6 +3945,23 @@ export const communityService = {
       isMuted: false,
       mutedUntil: null,
       actorId: callerId,
+    });
+
+    // Best-effort: push a real-time notice to any of the target's currently-LIVE
+    // stream sessions in this community (notifyMemberMuteStatus swallows its
+    // own errors).
+    void getStreamClient().notifyMemberMuteStatus(
+      communityId,
+      targetUserId,
+      false,
+      0
+    );
+
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_UNMUTED",
+      actorId: callerId,
+      targetUserId,
     });
   },
 

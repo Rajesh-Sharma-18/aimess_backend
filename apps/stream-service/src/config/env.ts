@@ -54,8 +54,8 @@ const envSchema = z.object({
   SRS_HLS_BASE: z.string().url().default("http://localhost:8080"),
   /** Base for WHIP (WebRTC) publish URLs minted for phone-camera ingest. */
   SRS_WHIP_BASE: z.string().url().default("http://localhost:1985"),
-  /** Shared secret the SRS http_hooks endpoint validates (query/header). */
-  SRS_HOOK_SECRET: z.string().min(1).optional(),
+  /** Shared secret the SRS http_hooks endpoint validates (header, required). */
+  SRS_HOOK_SECRET: z.string().min(1),
 
   /** ffmpeg binary path for URL re-stream ingest (host prerequisite in dev). */
   FFMPEG_PATH: z.string().default("ffmpeg"),

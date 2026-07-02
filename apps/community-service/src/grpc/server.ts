@@ -559,6 +559,79 @@ const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // Admin Muted-Member List — currently-muted members of a community (lazy
+  // expiration: mutedUntil null OR in the future), newest mute first. Unlike the
+  // REST `/muted-members` endpoint this has NO community-membership/role check —
+  // the caller is a trusted backoffice platform admin, not a community member.
+  adminListMutedMembers: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          page?: number;
+          limit?: number;
+        };
+
+        const { rows, total } = await communityRepository.listMutedMembers({
+          communityId: (req.communityId || "").trim(),
+          now: new Date(),
+          page: coercePage(req.page),
+          limit: coerceLimit(req.limit),
+        });
+
+        let members: {
+          userId: string;
+          username: string;
+          handle: string;
+          avatarUrl: string;
+          mutedBy: string;
+          reason: string;
+          mutedAt: number;
+          mutedUntil: number;
+        }[] = [];
+        if (rows.length > 0) {
+          const userIds = rows.map((r) => r.userId);
+          const memberRows = await communityRepository.findMembersByUserIds(
+            (req.communityId || "").trim(),
+            userIds
+          );
+          const memberMap = new Map(memberRows.map((m) => [m.userId, m]));
+
+          members = await Promise.all(
+            rows.map(async (row) => {
+              const member = memberMap.get(row.userId);
+              const avatarView = await memberAvatarService.resolveViewUrl(
+                member?.snapshotAvatarKey ?? null
+              );
+              return {
+                userId: row.userId,
+                username:
+                  member?.snapshotDisplayName || member?.snapshotUsername || "",
+                handle: member?.snapshotUsername ?? "",
+                avatarUrl: avatarView?.url ?? "",
+                mutedBy: row.mutedBy,
+                reason: row.reason ?? "",
+                mutedAt: row.createdAt.getTime(),
+                mutedUntil: row.mutedUntil ? row.mutedUntil.getTime() : 0,
+              };
+            })
+          );
+        }
+
+        callback(null, { members, total });
+      } catch (err) {
+        logger.error("adminListMutedMembers gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminListMutedMembers failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   // Admin User Management → Communities reverse lookup: communities the user is an
   // ACTIVE member of. Offset paginated, searchable by community name/id, sortable.
   // Each row's avatar is the community avatar presigned via the community-image
@@ -802,6 +875,100 @@ const communityImpl: grpc.UntypedServiceImplementation = {
           callback({
             code: grpc.status.INTERNAL,
             message: "unbanMember failed",
+          } as grpc.ServiceError);
+        }
+      }
+    })();
+  },
+
+  // Single write path for community moderation mute — called from the
+  // community UI/socket AND from stream-service's livestream "mute" action, so
+  // both entry points share one mute record.
+  muteMember: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        actorId?: string;
+        targetUserId?: string;
+        durationMinutes?: number;
+        reason?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const actorId = (req.actorId ?? "").trim();
+      const targetUserId = (req.targetUserId ?? "").trim();
+      const durationMinutes =
+        req.durationMinutes && req.durationMinutes > 0
+          ? Number(req.durationMinutes)
+          : null;
+      try {
+        const result = await communityService.muteMember(
+          communityId,
+          actorId,
+          targetUserId,
+          durationMinutes,
+          req.reason || undefined
+        );
+        callback(null, {
+          ok: true,
+          communityId,
+          targetUserId,
+          errorCode: "",
+          mutedUntil: result.mutedUntil
+            ? new Date(result.mutedUntil).getTime()
+            : 0,
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            communityId,
+            targetUserId,
+            errorCode: err.message,
+            mutedUntil: 0,
+          });
+        } else {
+          logger.error("muteMember gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "muteMember failed",
+          } as grpc.ServiceError);
+        }
+      }
+    })();
+  },
+
+  unmuteMember: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        actorId?: string;
+        targetUserId?: string;
+      };
+      const communityId = (req.communityId ?? "").trim();
+      const actorId = (req.actorId ?? "").trim();
+      const targetUserId = (req.targetUserId ?? "").trim();
+      try {
+        await communityService.unmuteMember(communityId, actorId, targetUserId);
+        callback(null, { ok: true, communityId, targetUserId, errorCode: "" });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            communityId,
+            targetUserId,
+            errorCode: err.message,
+          });
+        } else {
+          logger.error("unmuteMember gRPC handler failed", err);
+          callback({
+            code: grpc.status.INTERNAL,
+            message: "unmuteMember failed",
           } as grpc.ServiceError);
         }
       }

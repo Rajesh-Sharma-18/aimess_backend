@@ -69,6 +69,8 @@ export class LivestreamRepository {
   /**
    * Cursor-paginated list (id desc). When `cursor` is given, returns rows with
    * id < cursor (older). Fetches `limit + 1` to derive `hasMore` in the service.
+   * When `status` is omitted, only PENDING/LIVE streams are returned — pass an
+   * explicit `status` (e.g. "ENDED") to see past streams.
    */
   async listByCommunity(params: {
     communityId?: string;
@@ -79,7 +81,9 @@ export class LivestreamRepository {
     const { communityId, status, limit, cursor } = params;
     const where: Prisma.LivestreamWhereInput = {
       ...(communityId ? { communityId } : {}),
-      ...(status ? { status } : {}),
+      // No explicit status filter → only currently-relevant streams (PENDING/LIVE).
+      // Ended/cancelled streams must be requested explicitly via ?status=.
+      ...(status ? { status } : { status: { in: [...ACTIVE_STATUSES] } }),
       ...(cursor ? { id: { lt: cursor } } : {}),
     };
     return this.prisma.livestream.findMany({
@@ -93,6 +97,22 @@ export class LivestreamRepository {
   async countActiveByCommunity(communityId: string): Promise<number> {
     return this.prisma.livestream.count({
       where: { communityId, status: { in: [...ACTIVE_STATUSES] } },
+    });
+  }
+
+  /** Count of PENDING+LIVE streams by one creator in one community. */
+  async countActiveByCommunityAndCreator(
+    communityId: string,
+    creatorId: string,
+    excludeStreamId?: string
+  ): Promise<number> {
+    return this.prisma.livestream.count({
+      where: {
+        communityId,
+        creatorId,
+        status: { in: [...ACTIVE_STATUSES] },
+        ...(excludeStreamId ? { NOT: { id: excludeStreamId } } : {}),
+      },
     });
   }
 
