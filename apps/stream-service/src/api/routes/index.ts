@@ -66,6 +66,33 @@ export function createServiceRoutes(controller: StreamController): IRouter {
   );
   router.get("/streams/:id/bans", authenticateAccessToken, controller.listBans);
 
+  // Mute — owner or community ADMIN/MODERATOR (enforced by community-service,
+  // the single source of truth for the moderation mute record).
+  router.post(
+    "/streams/:id/mute/:userId",
+    authenticateAccessToken,
+    controller.muteMember
+  );
+  router.delete(
+    "/streams/:id/mute/:userId",
+    authenticateAccessToken,
+    controller.unmuteMember
+  );
+
+  // Community-wide ban — ADMIN only (enforced by community-service). Distinct
+  // from the owner-only, stream-local /ban above: this bans from the entire
+  // community, not just this one stream.
+  router.post(
+    "/streams/:id/community-ban/:userId",
+    authenticateAccessToken,
+    controller.communityBanMember
+  );
+  router.delete(
+    "/streams/:id/community-ban/:userId",
+    authenticateAccessToken,
+    controller.communityUnbanMember
+  );
+
   // Comment reporting — any authenticated user.
   router.post(
     "/streams/:id/comments/:commentId/report",

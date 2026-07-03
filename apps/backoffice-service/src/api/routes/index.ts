@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 
+import { announcementRoutes } from "./announcement.routes.js";
 import { authRoutes } from "./auth.routes.js";
 import { dashboardRoutes } from "./dashboard.routes.js";
 import { livestreamRoutes } from "./livestream.routes.js";
@@ -39,4 +40,9 @@ serviceRoutes.use(communityRoutes);
 // gateway strips `/admin` and forwards `/v1/*` verbatim). Self-prefixed, NOT
 // nested under a base path — same as community.
 serviceRoutes.use(groupRoutes);
+// Announcements routes are self-prefixed with `/announcements` so they resolve
+// at `/v1/announcements/*` — matching the documented gateway path
+// `/admin/v1/announcements` (the gateway strips `/admin` and forwards `/v1/*`
+// verbatim). Self-prefixed, NOT nested under a base path — same as moderation.
+serviceRoutes.use(announcementRoutes);
 serviceRoutes.use("/dashboard", dashboardRoutes);

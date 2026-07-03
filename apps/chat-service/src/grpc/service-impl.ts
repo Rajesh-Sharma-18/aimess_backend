@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { publishUserSocketEvent } from "@aimess/redis";
+import { buildReactionActivityText } from "@aimess/constants";
 import { redis } from "../config/redis.js";
 import { publishCommunityActivitySafe } from "../events/publish-community-activity.js";
 import {
@@ -21,6 +22,7 @@ import {
 } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 import { renderCommunityOverrides } from "../lib/recipient-override-render.js";
+import { getCommunityReconcileClient } from "./community.client.js";
 import {
   convertMessageToPreview,
   buildPushPreview,
@@ -56,6 +58,7 @@ import {
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
+import { getAlbumMessages } from "../lib/album-messages.js";
 import {
   assertPrivateParticipant,
   assertGroupMember,
@@ -232,39 +235,48 @@ export function createMessagingImpl(
               msg.createdAt instanceof Date
                 ? msg.createdAt.getTime()
                 : Date.now();
-            const full = msg as Record<string, unknown>;
-            // Resolve-on-read: raw avatar/attachment object-keys → full presigned
-            // URLs for the live push (the stored snapshot keeps the raw keys).
-            const [bcastAvatar, bcastContent] = await Promise.all([
+            const [bcastAvatar] = await Promise.all([
               resolveMediaUrl(req.senderAvatar || ""),
-              resolveBroadcastContent(msg.content ?? null),
             ]);
-            await redis.publish(
-              `conv:${req.conversationId}`,
-              JSON.stringify({
-                event: "message:new",
-                data: buildChatMessageEvent({
-                  id: msg.id,
-                  clientMessageId: req.clientMessageId,
-                  roomId: req.conversationId,
-                  conversationType:
-                    conversationType === "GROUP" ? "GROUP" : "PRIVATE",
-                  senderId: req.senderId,
-                  senderName: req.senderName,
-                  senderAvatar: bcastAvatar,
-                  senderRole: msg.senderRole,
-                  receiverId: req.receiverId,
-                  messageType: msg.messageType,
-                  content: bcastContent ?? null,
-                  parentMessageId: (full.parentMessageId as string) || "",
-                  quoteData: full.quoteData ?? null,
-                  reactions: [],
-                  clientTs,
-                  serverTs,
-                  sequenceNumber: msg.sequenceNumber,
-                }),
-              })
-            );
+            const albumRows = getAlbumMessages(msg);
+            for (const row of albumRows) {
+              const rowFull = row as Record<string, unknown>;
+              const rowServerTs =
+                row.createdAt instanceof Date
+                  ? row.createdAt.getTime()
+                  : serverTs;
+              const bcastContent = await resolveBroadcastContent(
+                row.content ?? null
+              );
+              await redis.publish(
+                `conv:${req.conversationId}`,
+                JSON.stringify({
+                  event: "message:new",
+                  data: buildChatMessageEvent({
+                    id: row.id,
+                    clientMessageId: req.clientMessageId,
+                    roomId: req.conversationId,
+                    conversationType:
+                      conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+                    senderId: req.senderId,
+                    senderName: req.senderName,
+                    senderAvatar: bcastAvatar,
+                    senderRole:
+                      (row as { senderRole?: string }).senderRole ??
+                      msg.senderRole,
+                    receiverId: req.receiverId,
+                    messageType: row.messageType,
+                    content: bcastContent ?? null,
+                    parentMessageId: (rowFull.parentMessageId as string) || "",
+                    quoteData: rowFull.quoteData ?? null,
+                    reactions: [],
+                    clientTs,
+                    serverTs: rowServerTs,
+                    sequenceNumber: row.sequenceNumber,
+                  }),
+                })
+              );
+            }
           }
 
           // Bump-to-top: fan out conv:updated to every participant's inbox.
@@ -1682,44 +1694,72 @@ export function createCommunityImpl(
           // guard the private/group path uses (see line 225).
           const alreadySent = isIdempotentReplay(saved);
           if (!alreadySent) {
-            // Resolve-on-read for the live push: sender avatar + attachment keys
-            // → full presigned URLs (the stored snapshot keeps the raw keys).
-            const [bcastSenderAvatar, bcastFiles] = await Promise.all([
-              resolveMediaUrl(senderAvatar || ""),
-              resolveContentFiles((parsed.files ?? []) as MediaFileLike[]),
-            ]);
-            await redis.publish(
-              "community:" + req.communityId,
-              JSON.stringify({
-                event: "community:message:new",
-                data: {
-                  // V2 canonical fields
-                  id: saved.id,
-                  messageId: saved.id,
-                  communityId: req.communityId,
-                  roomId: saved.roomId,
-                  senderId: saved.sentBy,
-                  senderName,
-                  senderAvatar: bcastSenderAvatar,
-                  parentMessageId: saved.parentMessageId ?? "",
-                  quoteData: buildCanonicalQuote(saved.quoteData),
-                  content: {
-                    text: saved.message ?? "",
-                    files: bcastFiles,
-                    ...(parsed.location ? { location: parsed.location } : {}),
-                    ...(parsed.contact ? { contact: parsed.contact } : {}),
-                    ...(parsed.sticker ? { sticker: parsed.sticker } : {}),
+            const bcastSenderAvatar = await resolveMediaUrl(senderAvatar || "");
+            const albumRows = getAlbumMessages(saved);
+            for (const row of albumRows) {
+              const rowSentAt =
+                row.createdAt instanceof Date
+                  ? row.createdAt.getTime()
+                  : sentAt;
+              const rowAttachments = Array.isArray(row.attachments)
+                ? (row.attachments as MediaFileLike[])
+                : [];
+              const rowBcastFiles = await resolveContentFiles(rowAttachments);
+              const rowAttRecords = rowAttachments as Array<
+                Record<string, unknown>
+              >;
+              const rowLocation = rowAttRecords.find(
+                (a) => String(a.type).toLowerCase() === "location"
+              );
+              const rowContact = rowAttRecords.find(
+                (a) => String(a.type).toLowerCase() === "contact"
+              );
+              const rowSticker = rowAttRecords.find(
+                (a) => String(a.type).toLowerCase() === "sticker"
+              );
+              await redis.publish(
+                "community:" + req.communityId,
+                JSON.stringify({
+                  event: "community:message:new",
+                  data: {
+                    id: row.id,
+                    messageId: row.id,
+                    communityId: req.communityId,
+                    roomId: row.roomId,
+                    senderId: row.sentBy,
+                    senderName,
+                    senderAvatar: bcastSenderAvatar,
+                    parentMessageId: row.parentMessageId ?? "",
+                    quoteData: buildCanonicalQuote(row.quoteData),
+                    content: {
+                      text: row.message ?? "",
+                      files: rowBcastFiles,
+                      ...(rowLocation ? { location: rowLocation } : {}),
+                      ...(rowContact ? { contact: rowContact } : {}),
+                      ...(rowSticker ? { sticker: rowSticker } : {}),
+                    },
+                    reactions: [],
+                    message: row.message ?? "",
+                    contentType: normalizeMessageType(row.messageType),
+                    isEdited: false,
+                    editedAt: 0,
+                    clientMessageId: req.clientMessageId ?? "",
+                    serverTs: rowSentAt,
+                    sentAt: rowSentAt,
+                    sequenceNumber: row.sequenceNumber,
                   },
-                  reactions: [],
-                  message: saved.message ?? "",
-                  contentType: normalizeMessageType(saved.messageType),
-                  isEdited: false,
-                  editedAt: 0,
-                  clientMessageId: req.clientMessageId ?? "",
-                  serverTs: sentAt,
-                  sentAt,
-                },
-              })
+                })
+              );
+            }
+
+            const lastAttachments = Array.isArray(saved.attachments)
+              ? (saved.attachments as Array<Record<string, unknown>>)
+              : (parsed.files ?? []);
+            const lastLocation = lastAttachments.find(
+              (a) => String(a.type).toLowerCase() === "location"
+            );
+            const lastContact = lastAttachments.find(
+              (a) => String(a.type).toLowerCase() === "contact"
             );
 
             // Denormalize activity to community-service so GET /communities/mine
@@ -1740,9 +1780,9 @@ export function createCommunityImpl(
                 // voice/document/location/contact) never persist a blank preview.
                 messagePreview: convertMessageToPreview(saved.messageType, {
                   text: saved.message ?? "",
-                  files: parsed.files ?? [],
-                  ...(parsed.location ? { location: parsed.location } : {}),
-                  ...(parsed.contact ? { contact: parsed.contact } : {}),
+                  files: lastAttachments,
+                  ...(lastLocation ? { location: lastLocation } : {}),
+                  ...(lastContact ? { contact: lastContact } : {}),
                 }),
               });
             }
@@ -1764,9 +1804,9 @@ export function createCommunityImpl(
                 contentType: normalizeMessageType(saved.messageType),
                 text: convertMessageToPreview(saved.messageType, {
                   text: saved.message ?? "",
-                  files: parsed.files ?? [],
-                  ...(parsed.location ? { location: parsed.location } : {}),
-                  ...(parsed.contact ? { contact: parsed.contact } : {}),
+                  files: lastAttachments,
+                  ...(lastLocation ? { location: lastLocation } : {}),
+                  ...(lastContact ? { contact: lastContact } : {}),
                 }),
               },
             });
@@ -2109,7 +2149,7 @@ export function createCommunityImpl(
             })
           );
 
-          callback(null, {
+          const ackPayload = {
             messageId: result.messageId,
             communityId: result.roomId,
             reactions: result.reactions.map((g) => ({
@@ -2121,16 +2161,171 @@ export function createCommunityImpl(
                 avatarUrl: u.avatarUrl,
               })),
             })),
-          });
-          publishCommunityActivitySafe({
-            communityId: req.communityId,
-            lastMessageAt: new Date().toISOString(),
-            lastMessageId: req.messageId,
-            senderUserId: req.userId,
-            senderUsername: "",
-            messagePreview: `reacted with ${req.emoji}`,
-            type: "reaction",
-          });
+          };
+          // Reactions are a fully separate OVERLAY — never touching the
+          // canonical lastActivity columns. Mirrors the REST reactToMessage
+          // handler (community-message.controller.ts) exactly.
+          const isSelfReaction = result.targetUserId === req.userId;
+
+          if (result.added) {
+            const reactedAt = Date.now();
+            const { selfPreview, targetPreview } = buildReactionActivityText({
+              actorName: result.actorName,
+              targetMessagePreview: result.targetMessagePreview,
+              emoji: req.emoji,
+              isSelfReaction,
+            });
+            publishCommunityActivitySafe({
+              communityId: req.communityId,
+              lastMessageAt: new Date(reactedAt).toISOString(),
+              lastMessageId: req.messageId,
+              senderUserId: req.userId,
+              senderUsername: result.actorName,
+              messagePreview: "",
+              type: "reaction_added",
+              reactionMessageId: req.messageId,
+              reactionEmoji: req.emoji,
+              reactionActorId: req.userId,
+              reactionActorPreview: selfPreview,
+              reactionTargetId: isSelfReaction ? null : result.targetUserId,
+              reactionTargetPreview: isSelfReaction ? null : targetPreview,
+            });
+
+            // Synchronous companion — awaited BEFORE the gRPC ack, same
+            // reasoning as the REST handler: a caller that reloads right
+            // after receiving this response must never race ahead of the
+            // DB write. The queue publish above remains the backstop on
+            // failure/timeout.
+            await getCommunityReconcileClient().updateReactionActivity({
+              communityId: req.communityId,
+              added: true,
+              messageId: req.messageId,
+              emoji: req.emoji,
+              actorId: req.userId,
+              actorPreview: selfPreview,
+              targetId: isSelfReaction ? null : result.targetUserId,
+              targetPreview: isSelfReaction ? null : targetPreview,
+              reactedAt,
+            });
+            callback(null, ackPayload);
+
+            // Live bump — restricted to just the actor (+ target, if a
+            // different person), same reasoning as the REST handler.
+            publishCommunityUpdatedSafe({
+              redis,
+              communityId: req.communityId,
+              roomId: result.roomId,
+              fetchMembers: () =>
+                Promise.resolve(
+                  isSelfReaction
+                    ? [req.userId]
+                    : [req.userId, result.targetUserId]
+                ),
+              senderId: req.userId,
+              senderName: "",
+              lastMessageId: req.messageId,
+              lastMessageAt: reactedAt,
+              preview: { contentType: "SYSTEM", text: selfPreview },
+              subjectUserId: req.userId,
+              selfPreview,
+              ...(isSelfReaction
+                ? {}
+                : {
+                    resolveOverrides: () =>
+                      Promise.resolve(
+                        new Map([
+                          [
+                            result.targetUserId,
+                            {
+                              lastMessageId: req.messageId,
+                              lastMessageAt: reactedAt,
+                              senderId: req.userId,
+                              senderName: result.actorName,
+                              preview: {
+                                contentType: "SYSTEM",
+                                text: targetPreview,
+                              },
+                            },
+                          ],
+                        ])
+                      ),
+                  }),
+            });
+          } else {
+            // Removed — clear the overlay IF this exact reaction is the one
+            // currently shown (identity match is authoritative in
+            // community-service; a no-op otherwise).
+            publishCommunityActivitySafe({
+              communityId: req.communityId,
+              lastMessageAt: new Date().toISOString(),
+              lastMessageId: req.messageId,
+              senderUserId: req.userId,
+              senderUsername: result.actorName,
+              messagePreview: "",
+              type: "reaction_removed",
+              reactionMessageId: req.messageId,
+              reactionEmoji: req.emoji,
+              reactionActorId: req.userId,
+            });
+
+            // Synchronous companion — see the ADD branch's comment above.
+            await getCommunityReconcileClient().updateReactionActivity({
+              communityId: req.communityId,
+              added: false,
+              messageId: req.messageId,
+              emoji: req.emoji,
+              actorId: req.userId,
+            });
+            callback(null, ackPayload);
+
+            // Same reasoning as the REST handler (community-message.controller.ts):
+            // this MUST go through `resolveOverrides` with a fresh `Date.now()`
+            // timestamp, not the reverted message's own (older) `createdAt` —
+            // otherwise a client that only applies a bump when it's newer than
+            // what it already has (the reaction's own `now()` bump) silently
+            // drops this revert, leaving the removed reaction stuck on screen.
+            // The override branch also forces `unread:false`, since this is a
+            // revert of already-seen content, never a new message.
+            void deps.communityMessageService
+              .getLatestRealActivityForLiveBump(result.roomId)
+              .then((recalc) => {
+                if (!recalc.hasLastMessage) return;
+                const revertAt = Date.now();
+                const revertBump = {
+                  lastMessageId: recalc.prevMessageId ?? "",
+                  lastMessageAt: revertAt,
+                  senderId: recalc.sentBy,
+                  senderName: recalc.senderName,
+                  preview: {
+                    contentType: normalizeMessageType(recalc.messageType),
+                    text: recalc.preview,
+                  },
+                };
+                const recipients = isSelfReaction
+                  ? [req.userId]
+                  : [req.userId, result.targetUserId];
+                publishCommunityUpdatedSafe({
+                  redis,
+                  communityId: req.communityId,
+                  roomId: result.roomId,
+                  fetchMembers: () => Promise.resolve(recipients),
+                  senderId: recalc.sentBy,
+                  senderName: recalc.senderName,
+                  lastMessageId: revertBump.lastMessageId,
+                  lastMessageAt: revertAt,
+                  preview: revertBump.preview,
+                  resolveOverrides: () =>
+                    Promise.resolve(
+                      new Map(recipients.map((id) => [id, revertBump]))
+                    ),
+                });
+              })
+              .catch((err: unknown) => {
+                logger.warn(
+                  `reactToCommunityMessage|getLatestRealActivityForLiveBump failed roomId=${result.roomId}: ${String(err)}`
+                );
+              });
+          }
         } catch (err) {
           logger.error(`gRPC reactToCommunityMessage error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });

@@ -69,6 +69,8 @@ export class LivestreamRepository {
   /**
    * Cursor-paginated list (id desc). When `cursor` is given, returns rows with
    * id < cursor (older). Fetches `limit + 1` to derive `hasMore` in the service.
+   * When `status` is omitted, only PENDING/LIVE streams are returned — pass an
+   * explicit `status` (e.g. "ENDED") to see past streams.
    */
   async listByCommunity(params: {
     communityId?: string;
@@ -79,7 +81,9 @@ export class LivestreamRepository {
     const { communityId, status, limit, cursor } = params;
     const where: Prisma.LivestreamWhereInput = {
       ...(communityId ? { communityId } : {}),
-      ...(status ? { status } : {}),
+      // No explicit status filter → only currently-relevant streams (PENDING/LIVE).
+      // Ended/cancelled streams must be requested explicitly via ?status=.
+      ...(status ? { status } : { status: { in: [...ACTIVE_STATUSES] } }),
       ...(cursor ? { id: { lt: cursor } } : {}),
     };
     return this.prisma.livestream.findMany({
@@ -89,10 +93,34 @@ export class LivestreamRepository {
     });
   }
 
-  /** Count of PENDING+LIVE streams for a community (concurrency cap). */
+  /**
+   * Count of LIVE streams for a community (concurrency cap). PENDING streams
+   * (still setting up, never published) never occupy a slot — only a genuinely
+   * broadcasting stream counts.
+   */
   async countActiveByCommunity(communityId: string): Promise<number> {
     return this.prisma.livestream.count({
-      where: { communityId, status: { in: [...ACTIVE_STATUSES] } },
+      where: { communityId, status: "LIVE" },
+    });
+  }
+
+  /**
+   * Count of LIVE streams by one creator in one community. PENDING streams
+   * never block a new create/go-live — only an already-broadcasting stream
+   * from the same creator does.
+   */
+  async countActiveByCommunityAndCreator(
+    communityId: string,
+    creatorId: string,
+    excludeStreamId?: string
+  ): Promise<number> {
+    return this.prisma.livestream.count({
+      where: {
+        communityId,
+        creatorId,
+        status: "LIVE",
+        ...(excludeStreamId ? { NOT: { id: excludeStreamId } } : {}),
+      },
     });
   }
 
@@ -104,9 +132,9 @@ export class LivestreamRepository {
   }
 
   /**
-   * Race-safe cap helper: count active (PENDING+LIVE) streams in a community
-   * created at-or-before the given (createdAt, id) — i.e. THIS stream's 0-based
-   * rank. Deterministic createdAt + id tiebreak so two same-millisecond creates
+   * Race-safe cap helper: count LIVE streams in a community created
+   * at-or-before the given (createdAt, id) — i.e. THIS stream's 0-based rank.
+   * Deterministic createdAt + id tiebreak so two same-millisecond creates
    * resolve to distinct ranks. The just-created row is excluded from the prior
    * count (strictly before by createdAt, or equal createdAt with a lower id).
    */
@@ -118,7 +146,7 @@ export class LivestreamRepository {
     return this.prisma.livestream.count({
       where: {
         communityId,
-        status: { in: [...ACTIVE_STATUSES] },
+        status: "LIVE",
         OR: [
           { createdAt: { lt: createdAt } },
           { AND: [{ createdAt }, { id: { lt: id } }] },
@@ -192,6 +220,20 @@ export class LivestreamRepository {
         ],
       },
     } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+
+  /**
+   * PENDING sweeper input: streams created before `cutoff` that never went
+   * LIVE (abandoned setup, crashed client, failed publish). Left unswept these
+   * permanently occupy the creator's one-active-stream-per-community slot.
+   */
+  async findStalePendingStreams(cutoff: Date): Promise<Livestream[]> {
+    return this.prisma.livestream.findMany({
+      where: {
+        status: "PENDING",
+        createdAt: { lt: cutoff },
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------

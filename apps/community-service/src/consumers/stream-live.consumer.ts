@@ -32,6 +32,7 @@ interface StreamStartedData {
   streamId: string;
   communityId: string;
   creatorId: string;
+  title?: string;
   livedAt: number;
 }
 
@@ -127,6 +128,9 @@ export async function startStreamLiveConsumer(): Promise<void> {
         ? {
             communityId,
             streamId,
+            ...((data as StreamStartedData).title
+              ? { title: (data as StreamStartedData).title }
+              : {}),
             livedAt: (data as StreamStartedData).livedAt,
           }
         : { communityId, streamId };

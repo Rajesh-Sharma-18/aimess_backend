@@ -4,7 +4,7 @@ import type { Redis, Cluster } from "ioredis";
 import { logger } from "@aimess/logger";
 import { BadRequestError, NotFoundError } from "@aimess/errors";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
-import { HTTP_STATUS, t } from "@aimess/constants";
+import { HTTP_STATUS, t, buildReactionActivityText } from "@aimess/constants";
 
 import {
   buildPaginatedResponse,
@@ -16,9 +16,13 @@ import {
   normalizeMessageType,
   buildDeletePayload,
 } from "../../lib/chat-message.serializer.js";
-import { publishCommunityUpdatedSafe } from "../../events/publish-conv-updated.js";
+import {
+  publishCommunityUpdatedSafe,
+  type RecipientBump,
+} from "../../events/publish-conv-updated.js";
 import { publishCommunityActivitySafe } from "../../events/publish-community-activity.js";
 import { renderCommunityOverrides } from "../../lib/recipient-override-render.js";
+import { getCommunityReconcileClient } from "../../grpc/community.client.js";
 import type { CommunityMessageService } from "../../services/community-message.service.js";
 import type { CommunityPinService } from "../../services/community-pin.service.js";
 import type { ChatMessageOrchestrator } from "../../services/chat-message-orchestrator.js";
@@ -343,6 +347,188 @@ export class CommunityMessageController {
           `community:message:reaction publish failed: ${String(err)}`
         );
       });
+
+    // Reactions are a fully separate OVERLAY on top of lastActivity — they
+    // NEVER touch the canonical `lastActivityAt/Type/Preview/Username/UserId`
+    // columns (that stays exactly what a real message/system event last set,
+    // untouched, forever — the rest of the community's view is never affected
+    // by a reaction). The overlay is visible ONLY to the reactor and (if
+    // different) the reacted-to message's owner; every other member sees
+    // nothing different. Mirrors the gRPC reactToCommunityMessage handler.
+    const isSelfReaction = result.targetUserId === userId;
+
+    if (result.added) {
+      const reactedAt = Date.now();
+      const { selfPreview, targetPreview } = buildReactionActivityText({
+        actorName: result.actorName,
+        targetMessagePreview: result.targetMessagePreview,
+        emoji,
+        isSelfReaction,
+      });
+      publishCommunityActivitySafe({
+        communityId: result.roomId,
+        lastMessageAt: new Date(reactedAt).toISOString(),
+        lastMessageId: result.messageId,
+        senderUserId: userId,
+        senderUsername: result.actorName,
+        messagePreview: "",
+        type: "reaction_added",
+        reactionMessageId: result.messageId,
+        reactionEmoji: emoji,
+        reactionActorId: userId,
+        reactionActorPreview: selfPreview,
+        reactionTargetId: isSelfReaction ? null : result.targetUserId,
+        reactionTargetPreview: isSelfReaction ? null : targetPreview,
+      });
+
+      // Synchronous companion to the publish above — AWAITED before the
+      // response returns, so a client that reloads immediately after seeing
+      // this reaction can never race ahead of the DB write (the async queue
+      // publish just above is best-effort/eventual and was the sole path
+      // before this; a reload could land in the gap and see the reaction
+      // "disappear" until the queue caught up). Never blocks the reaction on
+      // failure — errors resolve to `false`, and the queue publish remains
+      // the backstop.
+      await getCommunityReconcileClient().updateReactionActivity({
+        communityId: result.roomId,
+        added: true,
+        messageId: result.messageId,
+        emoji,
+        actorId: userId,
+        actorPreview: selfPreview,
+        targetId: isSelfReaction ? null : result.targetUserId,
+        targetPreview: isSelfReaction ? null : targetPreview,
+        reactedAt,
+      });
+
+      // Live bump — reused pipeline, but the recipient list is restricted to
+      // JUST the actor (+ target, if a different person): everyone else must
+      // see no change at all, so `fetchMembers` returns only those 1-2 ids
+      // instead of the full membership. The actor gets `selfPreview` via the
+      // existing subjectUserId mechanism; the target (when different) gets
+      // `targetPreview` via a per-recipient override — same delete-for-
+      // everyone-style mechanism already used elsewhere, not a new one.
+      publishCommunityUpdatedSafe({
+        redis: this.redis,
+        communityId: result.roomId,
+        roomId: result.roomId,
+        fetchMembers: () =>
+          Promise.resolve(
+            isSelfReaction ? [userId] : [userId, result.targetUserId]
+          ),
+        senderId: userId,
+        senderName: "",
+        lastMessageId: result.messageId,
+        lastMessageAt: reactedAt,
+        preview: { contentType: "SYSTEM", text: selfPreview },
+        subjectUserId: userId,
+        selfPreview,
+        ...(isSelfReaction
+          ? {}
+          : {
+              resolveOverrides: () =>
+                Promise.resolve(
+                  new Map([
+                    [
+                      result.targetUserId,
+                      {
+                        lastMessageId: result.messageId,
+                        lastMessageAt: reactedAt,
+                        senderId: userId,
+                        senderName: result.actorName,
+                        preview: { contentType: "SYSTEM", text: targetPreview },
+                      },
+                    ],
+                  ])
+                ),
+            }),
+      });
+    } else {
+      // Removed — tell community-service to clear the overlay IF this exact
+      // (messageId, emoji, actorId) is the one currently shown; a removal of
+      // some OTHER, non-displayed reaction is a safe no-op there (identity
+      // match is authoritative and lives entirely in community-service).
+      publishCommunityActivitySafe({
+        communityId: result.roomId,
+        lastMessageAt: new Date().toISOString(),
+        lastMessageId: result.messageId,
+        senderUserId: userId,
+        senderUsername: result.actorName,
+        messagePreview: "",
+        type: "reaction_removed",
+        reactionMessageId: result.messageId,
+        reactionEmoji: emoji,
+        reactionActorId: userId,
+      });
+
+      // Synchronous companion — see the ADD branch's comment above for why
+      // this is awaited before the response, not just fire-and-forget.
+      await getCommunityReconcileClient().updateReactionActivity({
+        communityId: result.roomId,
+        added: false,
+        messageId: result.messageId,
+        emoji,
+        actorId: userId,
+      });
+
+      // Best-effort live nudge for the two people who might have been shown
+      // this reaction: refresh them to the room's real latest activity. Safe
+      // even when this wasn't the displayed reaction (same value, no visual
+      // change) — no identity check needed on this side.
+      //
+      // This MUST go through `resolveOverrides` (a RecipientBump per
+      // recipient), NOT the plain shared-preview params, for two reasons that
+      // bit us before the fix (see community-system-message-delivery-style
+      // regression test for reactions):
+      //  1. `lastMessageAt` here is deliberately `Date.now()`, not the reverted
+      //     message's own `createdAt` — a client that only applies a bump when
+      //     its timestamp is newer than what it already has (the reaction's own
+      //     `now()` bump) would otherwise silently drop this revert and leave
+      //     the removed reaction's preview stuck on screen.
+      //  2. The override branch forces `unread:false` — exactly the same
+      //     "never raise an unread badge" rule already documented on
+      //     `publishConvUpdated`'s override handling — because this is a revert
+      //     of already-seen content, never a new message.
+      void this.service
+        .getLatestRealActivityForLiveBump(result.roomId)
+        .then((recalc) => {
+          if (!recalc.hasLastMessage) return;
+          const revertAt = Date.now();
+          const revertBump: RecipientBump = {
+            lastMessageId: recalc.prevMessageId ?? "",
+            lastMessageAt: revertAt,
+            senderId: recalc.sentBy,
+            senderName: recalc.senderName,
+            preview: {
+              contentType: normalizeMessageType(recalc.messageType),
+              text: recalc.preview,
+            },
+          };
+          const recipients = isSelfReaction
+            ? [userId]
+            : [userId, result.targetUserId];
+          publishCommunityUpdatedSafe({
+            redis: this.redis,
+            communityId: result.roomId,
+            roomId: result.roomId,
+            fetchMembers: () => Promise.resolve(recipients),
+            senderId: recalc.sentBy,
+            senderName: recalc.senderName,
+            lastMessageId: revertBump.lastMessageId,
+            lastMessageAt: revertAt,
+            preview: revertBump.preview,
+            resolveOverrides: () =>
+              Promise.resolve(
+                new Map(recipients.map((id) => [id, revertBump]))
+              ),
+          });
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `reactToMessage|getLatestRealActivityForLiveBump failed roomId=${result.roomId}: ${String(err)}`
+          );
+        });
+    }
 
     res
       .status(HTTP_STATUS.OK)

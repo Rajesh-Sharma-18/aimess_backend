@@ -49,6 +49,7 @@ export {
   listCommunities,
   getCommunityDetails,
   listCommunityMembers,
+  listCommunityMutedMembers,
   closeCommunity,
   reopenCommunity,
   bulkCloseCommunities,
@@ -59,3 +60,8 @@ export {
   getGroupDetails,
   listGroupMembers,
 } from "./groups.controller.js";
+export {
+  createAnnouncement,
+  listAnnouncements,
+  getAnnouncementDetails,
+} from "./announcement.controller.js";

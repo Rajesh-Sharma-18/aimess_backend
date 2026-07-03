@@ -80,7 +80,7 @@ export const listLivestreamReports: RequestHandler = (req, res, next) => {
   })();
 };
 
-/** GET /v1/livestreams/:livestreamId/users — paginated community members. */
+/** GET /v1/livestreams/:livestreamId/users — paginated actual viewers (join/leave/watch-duration history). */
 export const listLivestreamUsers: RequestHandler = (req, res, next) => {
   void (async () => {
     try {

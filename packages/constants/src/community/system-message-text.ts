@@ -313,4 +313,49 @@ export function personalizeCommunitySystemMessageForViewer(
   return personalized === thirdPersonText ? thirdPersonText : personalized;
 }
 
+/**
+ * Telegram-style copy for a community message reaction, in all three viewer
+ * perspectives at once (community-service's `selectListPreview` picks the
+ * right one per viewer; this is the single source of truth for the wording,
+ * mirroring the SYSTEM-message self/third-person split above).
+ *
+ * Self-reaction (`isSelfReaction`, actor reacted to their own message) collapses
+ * the target-perspective copy into the self copy since actor === target — there
+ * is no third "you received a reaction" viewer in that case.
+ */
+export function buildReactionActivityText(params: {
+  actorName: string;
+  /**
+   * The reacted-to message's own preview text (e.g. `"Let's meet at 5..."`
+   * or `📷 Photo`), from `MessagePreviewService.buildReactionTargetPreview`.
+   * Replaces the message owner's name so the line references WHAT was
+   * reacted to, not WHO owns it (Telegram/WhatsApp convention).
+   */
+  targetMessagePreview: string;
+  emoji: string;
+  isSelfReaction: boolean;
+}): {
+  /** Shown to everyone except the actor and the target. */
+  thirdPersonPreview: string;
+  /** Shown to the actor (the person who reacted). */
+  selfPreview: string;
+  /** Shown to the target (the message owner), when target !== actor. */
+  targetPreview: string;
+} {
+  const { actorName, targetMessagePreview, emoji, isSelfReaction } = params;
+  if (isSelfReaction) {
+    const selfPreview = `You reacted ${emoji} to ${targetMessagePreview}`;
+    return {
+      thirdPersonPreview: `${actorName} reacted ${emoji} to ${targetMessagePreview}`,
+      selfPreview,
+      targetPreview: selfPreview,
+    };
+  }
+  return {
+    thirdPersonPreview: `${actorName} reacted ${emoji} to ${targetMessagePreview}`,
+    selfPreview: `You reacted ${emoji} to ${targetMessagePreview}`,
+    targetPreview: `${actorName} reacted ${emoji} to your message`,
+  };
+}
+
 export { CommunitySystemMessageType };

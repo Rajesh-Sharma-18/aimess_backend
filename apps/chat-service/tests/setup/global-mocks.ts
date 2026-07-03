@@ -96,4 +96,29 @@ jest.mock("../../src/grpc/stream.client.js", () => ({
   })),
 }));
 
+// --- community-service gRPC client (same import.meta.url + proto loader +
+//     __dirname-redeclare issue as stream.client.js above). The community
+//     reaction handlers (REST + gRPC) call getCommunityReconcileClient() to
+//     synchronously mirror a reaction's lastActivity update into
+//     community-service, alongside the async community.activity.queue
+//     publish. Default: resolves true (as if community-service ack'd). ------
+jest.mock("../../src/grpc/community.client.js", () => ({
+  getCommunityReconcileClient: jest.fn(() => ({
+    listCommunities: jest.fn(async () => ({
+      communities: [],
+      nextAfterId: "",
+      hasMore: false,
+    })),
+    updateReactionActivity: jest.fn(async () => true),
+  })),
+  createCommunityReconcileClient: jest.fn(() => ({
+    listCommunities: jest.fn(async () => ({
+      communities: [],
+      nextAfterId: "",
+      hasMore: false,
+    })),
+    updateReactionActivity: jest.fn(async () => true),
+  })),
+}));
+
 export {};

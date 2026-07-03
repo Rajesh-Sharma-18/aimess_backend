@@ -12,6 +12,8 @@ import {
   commentsQuerySchema,
   banUserSchema,
   setCommentStatusSchema,
+  muteMemberSchema,
+  communityBanMemberSchema,
   reportCommentSchema,
   reportsQuerySchema,
 } from "../validators/index.js";
@@ -212,6 +214,101 @@ export class StreamController {
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse({ items }, t("STREAM_BANS_FETCHED", req.locale)));
+  });
+
+  // Owner or community ADMIN/MODERATOR mutes a member. Writes through to the
+  // single community moderation mute record (authorization enforced there) —
+  // muting from the stream and muting from the community screen share one
+  // mute state, in both directions.
+  muteMember = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    const userId =
+      typeof req.params.userId === "string" ? req.params.userId : "";
+    if (!id || !userId) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = muteMemberSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const result = await this.livestreamService.muteMember(
+      id,
+      req.auth.userId,
+      userId,
+      parsed.data.durationMinutes,
+      parsed.data.reason
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { muted: userId, mutedUntil: result.mutedUntil || null },
+          t("STREAM_MEMBER_MUTED", req.locale)
+        )
+      );
+  });
+
+  // Owner or community ADMIN/MODERATOR unmutes a member (same write-through).
+  unmuteMember = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    const userId =
+      typeof req.params.userId === "string" ? req.params.userId : "";
+    if (!id || !userId) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.unmuteMember(id, req.auth.userId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { unmuted: userId },
+          t("STREAM_MEMBER_UNMUTED", req.locale)
+        )
+      );
+  });
+
+  // Community ADMIN bans a member community-wide (writes through to
+  // community-service; ADMIN-only, unlike mute which also allows MODERATOR).
+  // Kicks live sockets the same way the local per-stream ban does.
+  communityBanMember = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    const userId =
+      typeof req.params.userId === "string" ? req.params.userId : "";
+    if (!id || !userId) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    const parsed = communityBanMemberSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.communityBanMember(
+      id,
+      req.auth.userId,
+      userId,
+      parsed.data.reason
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse({ banned: userId }, t("STREAM_USER_BANNED", req.locale))
+      );
+  });
+
+  // Community ADMIN lifts a community-wide ban (same write-through as above).
+  communityUnbanMember = asyncHandler(async (req: Request, res: Response) => {
+    const id = typeof req.params.id === "string" ? req.params.id : "";
+    const userId =
+      typeof req.params.userId === "string" ? req.params.userId : "";
+    if (!id || !userId) throw new BadRequestError("STREAM_REQUEST_INVALID");
+
+    await this.livestreamService.communityUnbanMember(
+      id,
+      req.auth.userId,
+      userId
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(
+          { unbanned: userId },
+          t("STREAM_USER_UNBANNED", req.locale)
+        )
+      );
   });
 
   // Any authenticated viewer reports a live chat comment.

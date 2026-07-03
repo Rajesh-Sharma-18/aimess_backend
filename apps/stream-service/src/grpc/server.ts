@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { logger } from "@aimess/logger";
+import { ForbiddenError } from "@aimess/errors";
 
 import type { LivestreamCommentService } from "../services/livestream-comment.service.js";
 import type {
@@ -78,7 +79,14 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
           });
         } catch (err) {
           logger.error(`gRPC postComment error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          if (err instanceof ForbiddenError) {
+            callback({
+              code: grpc.status.PERMISSION_DENIED,
+              message: String(err),
+            });
+          } else {
+            callback({ code: grpc.status.INTERNAL, message: String(err) });
+          }
         }
       })();
     },
@@ -364,6 +372,89 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
       })();
     },
 
+    // RecordViewerJoin — gateway fire-and-forget on stream:join. Always
+    // succeeds from the caller's perspective; internal failures are logged
+    // and swallowed by the service, never surfaced as a gRPC error.
+    recordViewerJoin: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string; userId: string };
+          await deps.livestreamService.recordViewerJoin(
+            req.streamId,
+            req.userId
+          );
+          callback(null, { sessionId: "" });
+        } catch (err) {
+          logger.error(`gRPC recordViewerJoin error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // RecordViewerLeave — gateway fire-and-forget on stream:leave/disconnect/ban.
+    recordViewerLeave: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { streamId: string; userId: string };
+          await deps.livestreamService.recordViewerLeave(
+            req.streamId,
+            req.userId
+          );
+          callback(null, { success: true });
+        } catch (err) {
+          logger.error(`gRPC recordViewerLeave error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // AdminListViewerSessions — backoffice "Livestream User List" (actual viewers).
+    adminListViewerSessions: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            streamId: string;
+            page?: number;
+            limit?: number;
+            sortField?: string;
+            sortDir?: string;
+          };
+          const sortField: "joinedAt" | "watchDurationSeconds" =
+            req.sortField === "watchDurationSeconds"
+              ? "watchDurationSeconds"
+              : "joinedAt";
+          const { sessions, total } =
+            await deps.livestreamService.adminListViewerSessions(req.streamId, {
+              page: req.page && req.page > 0 ? req.page : 1,
+              limit: req.limit && req.limit > 0 ? req.limit : 20,
+              sortField,
+              sortDir: req.sortDir === "asc" ? "asc" : "desc",
+            });
+          callback(null, {
+            sessions: sessions.map((s) => ({
+              userId: s.userId,
+              joinedAt: s.joinedAt.getTime(),
+              leftAt: s.leftAt ? s.leftAt.getTime() : 0,
+              watchDurationSeconds: s.watchDurationSeconds,
+            })),
+            total,
+          });
+        } catch (err) {
+          logger.error(`gRPC adminListViewerSessions error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // GetLiveStreamsByCommunity — live stream list for community detail enrichment.
     getLiveStreamsByCommunity: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
@@ -398,6 +489,62 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
         } catch (err) {
           logger.error(`gRPC getLiveStreamsByCommunity error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // NotifyMemberMuteStatus — best-effort push from community-service after a
+    // mute/unmute; relays a live socket notice to the target's currently-LIVE
+    // stream sessions in that community. Never fails the caller.
+    notifyMemberMuteStatus: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            communityId?: string;
+            userId?: string;
+            isMuted?: boolean;
+            mutedUntil?: number;
+          };
+          await deps.livestreamService.broadcastMuteStatusForCommunity(
+            req.communityId ?? "",
+            req.userId ?? "",
+            Boolean(req.isMuted),
+            Number(req.mutedUntil ?? 0)
+          );
+          callback(null, { ok: true });
+        } catch (err) {
+          logger.warn(`gRPC notifyMemberMuteStatus error: ${String(err)}`);
+          callback(null, { ok: false });
+        }
+      })();
+    },
+
+    // NotifyMemberBanStatus — best-effort push from community-service after an
+    // ADMIN bans/unbans a member; relays a `stream:banned` kick to the target's
+    // currently-LIVE stream sessions in that community. Never fails the caller.
+    notifyMemberBanStatus: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            communityId?: string;
+            userId?: string;
+            isBanned?: boolean;
+          };
+          await deps.livestreamService.broadcastBanStatusForCommunity(
+            req.communityId ?? "",
+            req.userId ?? "",
+            Boolean(req.isBanned)
+          );
+          callback(null, { ok: true });
+        } catch (err) {
+          logger.warn(`gRPC notifyMemberBanStatus error: ${String(err)}`);
+          callback(null, { ok: false });
         }
       })();
     },

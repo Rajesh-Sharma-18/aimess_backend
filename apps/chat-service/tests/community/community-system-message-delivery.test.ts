@@ -63,7 +63,12 @@ function makeService(
     })
   );
   const findOne = jest.fn(async () => opts.findOneResult ?? null);
-  const messageRepo = { findOne, createSystemMessage };
+  const deletePersonalJoinMessages = jest.fn(async () => [] as string[]);
+  const messageRepo = {
+    findOne,
+    createSystemMessage,
+    deletePersonalJoinMessages,
+  };
 
   const roomRepo = {
     allocateSequence: jest.fn(async () => 7),
@@ -98,7 +103,13 @@ function makeService(
     opts.withMemberRepo ? (memberRepo as never) : undefined
   );
 
-  return { service, createSystemMessage, memberRepo, redis };
+  return {
+    service,
+    createSystemMessage,
+    deletePersonalJoinMessages,
+    memberRepo,
+    redis,
+  };
 }
 
 beforeEach(() => {
@@ -107,7 +118,7 @@ beforeEach(() => {
 });
 
 describe("CommunitySystemMessageService — lastActivity eligibility", () => {
-  it.each(["MEMBER_LEFT", "MEMBER_JOINED"])(
+  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"])(
     "%s is a hidden membership line — never persisted or broadcast (post backstop)",
     async (type) => {
       const h = makeService({
@@ -157,12 +168,12 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
   });
 
   it.each([
+    // Visible moderation lines (Telegram parity): delivered to all members but
+    // not eligible to bump the community-list preview. NOT in HIDDEN_SYSTEM_MESSAGE_TYPES
+    // (MEMBER_REMOVED / MEMBER_BANNED ARE in that set — "removal must be SILENT" —
+    // and are covered by the hidden-membership-line case above instead).
     "MEMBER_MUTED",
     "MEMBER_UNMUTED",
-    // Visible moderation lines (Telegram parity): delivered to all members but
-    // not eligible to bump the community-list preview. NOT in HIDDEN_SYSTEM_MESSAGE_TYPES.
-    "MEMBER_REMOVED",
-    "MEMBER_BANNED",
     "MEMBER_UNBANNED",
   ])(
     "%s is delivered but does not bump lastActivity (non-hidden moderation churn)",
@@ -318,6 +329,192 @@ describe("CommunitySystemMessageService — real-time list bump", () => {
 
     expect(h.createSystemMessage).not.toHaveBeenCalled();
     expect(pubListBump).not.toHaveBeenCalled();
+  });
+});
+
+describe("CommunitySystemMessageService — single active join line per user (rejoin dedup)", () => {
+  it("purges any prior join-session line for the user BEFORE inserting the new COMMUNITY_JOINED row", async () => {
+    const h = makeService({ withMemberRepo: false });
+    const calls: string[] = [];
+    h.deletePersonalJoinMessages.mockImplementation(async () => {
+      calls.push("delete");
+      return ["stale-1"];
+    });
+    h.createSystemMessage.mockImplementation(
+      async (params: { fallbackText: string }) => {
+        calls.push("create");
+        return {
+          id: "msg-1",
+          sentBy: ACTOR,
+          senderName: "",
+          message: params.fallbackText,
+          messageType: "SYSTEM",
+          createdAt: new Date(EVENT_AT),
+        };
+      }
+    );
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "COMMUNITY_JOINED",
+      metadata: {},
+      triggeredByUserId: ACTOR,
+      visibleToUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    expect(h.deletePersonalJoinMessages).toHaveBeenCalledWith({
+      roomId: COMMUNITY_ID,
+      userId: ACTOR,
+    });
+    expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
+    // Cleanup must run before the new row is created so a rejoin never leaves
+    // two "You joined the community" lines visible at once.
+    expect(calls).toEqual(["delete", "create"]);
+  });
+
+  it("REGRESSION: publishes community:message:deleted on the user's personal channel for each purged stale join line, so an already-open client removes it in real time instead of surviving until reload", async () => {
+    const h = makeService({ withMemberRepo: false });
+    h.deletePersonalJoinMessages.mockResolvedValue(["stale-1", "stale-2"]);
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "COMMUNITY_JOINED",
+      metadata: {},
+      triggeredByUserId: ACTOR,
+      visibleToUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    const deleteCalls = h.redis.publish.mock.calls.filter(
+      ([, raw]: [string, string]) =>
+        (JSON.parse(raw) as { event: string }).event ===
+        "community:message:deleted"
+    );
+    expect(deleteCalls).toHaveLength(2);
+    for (const [channel, raw] of deleteCalls as Array<[string, string]>) {
+      // PERSONAL join lines are user-scoped — deletion must publish to the
+      // user's own channel, never the community-wide room (other members never
+      // saw this line in the first place).
+      expect(channel).toBe(`user:${ACTOR}`);
+      const parsed = JSON.parse(raw) as { data: Record<string, unknown> };
+      expect(parsed.data.communityId).toBe(COMMUNITY_ID);
+      expect(parsed.data.roomId).toBe(COMMUNITY_ID);
+    }
+    expect(
+      (deleteCalls as Array<[string, string]>).map(
+        ([, raw]) =>
+          (JSON.parse(raw) as { data: { messageId: string } }).data.messageId
+      )
+    ).toEqual(["stale-1", "stale-2"]);
+  });
+
+  it("does NOT publish community:message:deleted when there was nothing stale to purge", async () => {
+    const h = makeService({ withMemberRepo: false });
+    h.deletePersonalJoinMessages.mockResolvedValue([]);
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "COMMUNITY_JOINED",
+      metadata: {},
+      triggeredByUserId: ACTOR,
+      visibleToUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    const deleteCalls = h.redis.publish.mock.calls.filter(
+      ([, raw]: [string, string]) =>
+        (JSON.parse(raw) as { event: string }).event ===
+        "community:message:deleted"
+    );
+    expect(deleteCalls).toHaveLength(0);
+  });
+
+  it("also purges stale lines for JOIN_REQUEST_APPROVED (the other join-session type)", async () => {
+    const h = makeService({ withMemberRepo: false });
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "JOIN_REQUEST_APPROVED",
+      metadata: {},
+      triggeredByUserId: ACTOR,
+      visibleToUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    expect(h.deletePersonalJoinMessages).toHaveBeenCalledWith({
+      roomId: COMMUNITY_ID,
+      userId: ACTOR,
+    });
+  });
+
+  it("does NOT purge join lines for unrelated PERSONAL types (e.g. ROLE_CHANGED_SELF)", async () => {
+    const h = makeService({ withMemberRepo: false });
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "ROLE_CHANGED_SELF",
+      metadata: { oldRole: "MEMBER", newRole: "MODERATOR" },
+      triggeredByUserId: ACTOR,
+      visibleToUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    expect(h.deletePersonalJoinMessages).not.toHaveBeenCalled();
+  });
+
+  it("does NOT purge for COMMUNITY-visible types (no visibleToUserId)", async () => {
+    const h = makeService({ withMemberRepo: false });
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "ROLE_CHANGED",
+      metadata: {
+        targetUserId: TARGET,
+        oldRole: "MEMBER",
+        newRole: "MODERATOR",
+      },
+      triggeredByUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    expect(h.deletePersonalJoinMessages).not.toHaveBeenCalled();
+  });
+
+  it("a cleanup failure is swallowed — the new join line still posts", async () => {
+    const h = makeService({ withMemberRepo: false });
+    h.deletePersonalJoinMessages.mockRejectedValueOnce(new Error("db down"));
+
+    const id = await h.service.postReturnId({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "COMMUNITY_JOINED",
+      metadata: {},
+      triggeredByUserId: ACTOR,
+      visibleToUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    expect(id).toBe("msg-1");
+    expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("a REDELIVERY (dedup pre-check hit) skips cleanup entirely — no wasted delete on replay", async () => {
+    const h = makeService({
+      withMemberRepo: false,
+      findOneResult: { id: "already-posted" },
+    });
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "COMMUNITY_JOINED",
+      metadata: {},
+      triggeredByUserId: ACTOR,
+      visibleToUserId: ACTOR,
+      eventAt: EVENT_AT,
+    });
+
+    expect(h.deletePersonalJoinMessages).not.toHaveBeenCalled();
+    expect(h.createSystemMessage).not.toHaveBeenCalled();
   });
 });
 

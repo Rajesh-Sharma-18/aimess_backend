@@ -24,6 +24,11 @@ import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
+  attachAlbumMessages,
+  markAlbumIdempotentReplay,
+} from "../lib/album-messages.js";
+import { splitDirectMediaAlbum } from "../lib/split-media-album.js";
+import {
   resolveForEveryoneOverrides,
   deletedWasEffectiveLast,
   type RecipientOverride,
@@ -87,31 +92,35 @@ export class PrivateMessageService {
       throw new ForbiddenError("CHAT_FRIENDSHIP_REQUIRED");
     }
 
-    // Idempotency: if clientMessageId provided, check for existing message
+    // Idempotency: if clientMessageId provided, check for existing message (album
+    // batch includes `base:N` sibling rows).
     if (params.clientMessageId) {
       const existing = await this.messageRepo.findByClientMessageId(
         params.roomId,
         params.senderId,
         params.clientMessageId
       );
-      if (existing) return markIdempotentReplay(existing);
+      if (existing) {
+        const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
+          params.roomId,
+          params.senderId,
+          params.clientMessageId
+        );
+        const messages = batch.length > 0 ? batch : [existing];
+        return markAlbumIdempotentReplay(
+          messages[messages.length - 1]!,
+          messages
+        );
+      }
     }
 
-    const entity: Record<string, unknown> = {
-      roomId: params.roomId,
-      senderId: params.senderId,
-      receiverId: params.receiverId,
-      content: params.content,
-      messageType: normalizeMessageType(params.messageType),
-      parentMessageId: params.parentMessageId || null,
-      clientMessageId: params.clientMessageId ?? null,
-      // §5.1: persist the client compose time alongside (never instead of) the
-      // server createdAt, so the client can show its original send time offline.
-      ...(params.clientTs ? { clientInfo: { clientTs: params.clientTs } } : {}),
-    };
+    const parts = splitDirectMediaAlbum(
+      params.messageType,
+      params.content,
+      params.clientMessageId ?? null
+    );
 
-    // If reply, attach the canonical quote snapshot (§1/§9):
-    // { messageId, senderId, senderName, messageType, preview, isDeleted }.
+    let quoteData: Record<string, unknown> | undefined;
     if (params.parentMessageId) {
       const originalMsg = await this.messageRepo.findById(
         params.parentMessageId
@@ -124,7 +133,7 @@ export class PrivateMessageService {
         );
         const senderSnap =
           (snapshots.get(originSenderId) as Record<string, unknown>) || {};
-        entity.quoteData = {
+        quoteData = {
           messageId: originalMsg.id,
           senderId: originSenderId,
           senderName:
@@ -140,37 +149,61 @@ export class PrivateMessageService {
       }
     }
 
-    // Allocate the per-room monotonic sequence AFTER the idempotency pre-check,
-    // immediately before insert, so a retried clientMessageId never burns a seq.
-    // On the duplicate-key path below the allocated seq is discarded (an
-    // acceptable per-room gap — we do not retry allocation).
-    const seq = await this.roomRepo.allocateSequence(params.roomId);
-    entity.sequenceNumber = seq;
+    const created: PrivateMessage[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!;
+      const entity: Record<string, unknown> = {
+        roomId: params.roomId,
+        senderId: params.senderId,
+        receiverId: params.receiverId,
+        content: part.content,
+        messageType: normalizeMessageType(part.messageType),
+        parentMessageId: params.parentMessageId || null,
+        clientMessageId: part.clientMessageId ?? null,
+        ...(i === 0 && params.clientTs
+          ? { clientInfo: { clientTs: params.clientTs } }
+          : {}),
+        ...(i === 0 && quoteData ? { quoteData } : {}),
+      };
 
-    let message: PrivateMessage;
-    try {
-      message = await this.messageRepo.createMessage(
-        entity as Parameters<PrivateMessageRepository["createMessage"]>[0]
-      );
-    } catch (err) {
-      // Concurrent send with the same clientMessageId: the pre-send dedup check
-      // above raced with a sibling request, both saw "not found", and both
-      // reached the insert. The partial-unique idempotency index
-      // (roomId, senderId, clientMessageId) rejects the loser with E11000/P2002.
-      // Re-read and return the winner so all concurrent sends collapse to one
-      // message instead of surfacing a 500 / SERVICE_ERROR.
-      if (params.clientMessageId && isDuplicateKeyError(err)) {
-        const dup = await this.messageRepo.findByClientMessageId(
-          params.roomId,
-          params.senderId,
-          params.clientMessageId
+      const seq = await this.roomRepo.allocateSequence(params.roomId);
+      entity.sequenceNumber = seq;
+
+      try {
+        const row = await this.messageRepo.createMessage(
+          entity as Parameters<PrivateMessageRepository["createMessage"]>[0]
         );
-        if (dup) return markIdempotentReplay(dup);
+        created.push(row);
+      } catch (err) {
+        if (part.clientMessageId && isDuplicateKeyError(err)) {
+          const dup = await this.messageRepo.findByClientMessageId(
+            params.roomId,
+            params.senderId,
+            part.clientMessageId
+          );
+          if (dup) {
+            const batch =
+              params.clientMessageId && i === 0
+                ? await this.messageRepo.findAlbumBatchByClientMessageId(
+                    params.roomId,
+                    params.senderId,
+                    params.clientMessageId
+                  )
+                : [];
+            const messages = batch.length > 0 ? batch : [dup];
+            return markAlbumIdempotentReplay(
+              messages[messages.length - 1]!,
+              messages
+            );
+          }
+        }
+        throw err;
       }
-      throw err;
     }
 
-    // Update room with last message
+    const message = created[created.length - 1]!;
+
+    // Update room with last message; unread += one per persisted row.
     this.roomRepo
       .updateRoomOnNewMessage({
         roomId: params.roomId,
@@ -184,11 +217,12 @@ export class PrivateMessageService {
           createdAt: message.createdAt,
         },
         receiverId: params.receiverId,
+        unreadIncrement: created.length,
       })
       .catch((err: unknown) => {
         logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
       });
-    return message;
+    return attachAlbumMessages(message, created);
   }
 
   async getMessages(params: {

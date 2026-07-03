@@ -71,6 +71,9 @@ export const AUDIT_ACTIONS = {
   LIVESTREAM_BULK_ENDED: "livestream.bulk_ended",
   LIVESTREAM_REPORTS_BULK_REVIEWED: "livestream.reports_bulk_reviewed",
   LIVESTREAM_THUMBNAIL_UPDATED: "livestream.thumbnail_updated",
+  ANNOUNCEMENT_CREATED: "announcement.created",
+  ANNOUNCEMENT_SENT: "announcement.sent",
+  ANNOUNCEMENT_FAILED: "announcement.failed",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

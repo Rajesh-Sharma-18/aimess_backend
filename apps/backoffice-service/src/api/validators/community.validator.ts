@@ -193,6 +193,17 @@ export type ListCommunityMembersQueryInput = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// Muted-Members list query (platform-admin view of a community's mutes).
+// ---------------------------------------------------------------------------
+export const listMutedMembersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+export type ListMutedMembersQueryInput = z.infer<
+  typeof listMutedMembersQuerySchema
+>;
+
+// ---------------------------------------------------------------------------
 // Close.
 // ---------------------------------------------------------------------------
 export const closeCommunitySchema = z.object({

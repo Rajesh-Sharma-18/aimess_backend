@@ -873,6 +873,17 @@ export const communityRepository = {
           lastActivityUsername: true,
           lastActivityUserId: true,
           lastActivitySelfPreview: true,
+          // NOTE: previously missing from this select — selectListPreview's
+          // target-branch (role-change/join second viewer) was silently dead
+          // in `listMine` because these were always undefined here. Fixed
+          // alongside adding the reaction-overlay columns below.
+          lastActivityTargetUserId: true,
+          lastActivityTargetPreview: true,
+          lastActivityReactionAt: true,
+          lastActivityReactionActorId: true,
+          lastActivityReactionActorPreview: true,
+          lastActivityReactionTargetId: true,
+          lastActivityReactionTargetPreview: true,
           createdAt: true,
           moderationStatus: true,
           status: true,
@@ -908,7 +919,9 @@ export const communityRepository = {
     preview: string,
     username: string | null,
     userId: string | null,
-    selfPreview: string | null = null
+    selfPreview: string | null = null,
+    targetUserId: string | null = null,
+    targetPreview: string | null = null
   ): Promise<void> {
     await prisma.community.updateMany({
       where: { id: communityId, lastActivityAt: { lt: activityAt } },
@@ -921,6 +934,76 @@ export const communityRepository = {
         // Always overwrite — a subsequent non-self bump (e.g. a normal message)
         // must clear a stale "You …" preview from an earlier role-change/join.
         lastActivitySelfPreview: selfPreview,
+        // Same always-overwrite rule for the target (reaction "…to your message")
+        // pair — a later non-reaction bump must clear a stale target preview too.
+        lastActivityTargetUserId: targetUserId,
+        lastActivityTargetPreview: targetPreview,
+      },
+    });
+  },
+
+  /**
+   * Set the reaction OVERLAY to represent a just-ADDED reaction — always an
+   * unconditional overwrite (no forward-only guard): an add is by definition
+   * the newest reaction event, and it always displaces whatever reaction was
+   * previously shown (even one on a different message). Never touches the
+   * canonical lastActivity* columns — a reaction is never what the rest of
+   * the community sees. `targetId`/`targetPreview` are null for a
+   * self-reaction (actor === message owner — only the actor has a view).
+   */
+  async setReactionActivity(
+    communityId: string,
+    params: {
+      messageId: string;
+      emoji: string;
+      actorId: string;
+      actorPreview: string;
+      targetId: string | null;
+      targetPreview: string | null;
+      reactedAt: Date;
+    }
+  ): Promise<void> {
+    await prisma.community.updateMany({
+      where: { id: communityId },
+      data: {
+        lastActivityReactionAt: params.reactedAt,
+        lastActivityReactionMessageId: params.messageId,
+        lastActivityReactionEmoji: params.emoji,
+        lastActivityReactionActorId: params.actorId,
+        lastActivityReactionActorPreview: params.actorPreview,
+        lastActivityReactionTargetId: params.targetId,
+        lastActivityReactionTargetPreview: params.targetPreview,
+      },
+    });
+  },
+
+  /**
+   * Clear the reaction overlay ONLY if it currently represents the exact
+   * (messageId, emoji, actorId) being removed — a `WHERE` match, not a bare
+   * unconditional clear. Removing a DIFFERENT reaction (same message but a
+   * different emoji/user, or any reaction on another message) must be a
+   * no-op: that reaction was never the one being shown, so there is nothing
+   * to clear. `updateMany` naturally matches zero rows in that case.
+   */
+  async clearReactionActivityIfCurrent(
+    communityId: string,
+    params: { messageId: string; emoji: string; actorId: string }
+  ): Promise<void> {
+    await prisma.community.updateMany({
+      where: {
+        id: communityId,
+        lastActivityReactionMessageId: params.messageId,
+        lastActivityReactionEmoji: params.emoji,
+        lastActivityReactionActorId: params.actorId,
+      },
+      data: {
+        lastActivityReactionAt: null,
+        lastActivityReactionMessageId: null,
+        lastActivityReactionEmoji: null,
+        lastActivityReactionActorId: null,
+        lastActivityReactionActorPreview: null,
+        lastActivityReactionTargetId: null,
+        lastActivityReactionTargetPreview: null,
       },
     });
   },

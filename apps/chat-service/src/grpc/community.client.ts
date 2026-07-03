@@ -37,11 +37,32 @@ export interface ListCommunitiesResult {
   hasMore: boolean;
 }
 
+export interface UpdateReactionActivityParams {
+  communityId: string;
+  added: boolean;
+  messageId: string;
+  emoji: string;
+  actorId: string;
+  actorPreview?: string;
+  targetId?: string | null;
+  targetPreview?: string | null;
+  /** epoch ms; only meaningful when added = true. */
+  reactedAt?: number;
+}
+
 export interface CommunityReconcileClient {
   listCommunities(p: {
     afterId?: string;
     limit?: number;
   }): Promise<ListCommunitiesResult>;
+  /**
+   * Synchronous companion to the async `community.activity.queue`
+   * "reaction_added"/"reaction_removed" publish — see the proto doc. Callers
+   * should treat a `false`/thrown result as non-fatal: the async queue
+   * publish (sent separately, unconditionally) remains the resiliency
+   * backstop, so a reaction must never fail just because this call did.
+   */
+  updateReactionActivity(p: UpdateReactionActivityParams): Promise<boolean>;
 }
 
 /**
@@ -81,5 +102,44 @@ export function createCommunityReconcileClient(): CommunityReconcileClient {
     { timeout: 10_000 }
   );
 
-  return { listCommunities: (p) => listBreaker.fire(p) };
+  // Short timeout — this call is awaited inline in the reaction request path;
+  // a slow/unreachable community-service must not stall the reaction response
+  // for long. The async queue publish (sent unconditionally alongside this)
+  // is what actually guarantees eventual persistence.
+  const updateReactionActivityBreaker = makeBreaker(
+    "community.updateReactionActivity",
+    (p: UpdateReactionActivityParams) =>
+      call<unknown, { ok: boolean }>("updateReactionActivity", {
+        communityId: p.communityId,
+        added: p.added,
+        messageId: p.messageId,
+        emoji: p.emoji,
+        actorId: p.actorId,
+        actorPreview: p.actorPreview ?? "",
+        targetId: p.targetId ?? "",
+        targetPreview: p.targetPreview ?? "",
+        reactedAt: String(p.reactedAt ?? 0),
+      }),
+    { timeout: 1_500 }
+  );
+
+  return {
+    listCommunities: (p) => listBreaker.fire(p),
+    updateReactionActivity: async (p) => {
+      try {
+        const res = await updateReactionActivityBreaker.fire(p);
+        return Boolean(res?.ok);
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+/** Lazily-created shared client (one gRPC channel per process) — mirrors
+ *  community-service's `getChatClient()`. */
+let cached: CommunityReconcileClient | undefined;
+export function getCommunityReconcileClient(): CommunityReconcileClient {
+  cached ??= createCommunityReconcileClient();
+  return cached;
 }

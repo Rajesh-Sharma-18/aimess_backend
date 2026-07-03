@@ -44,6 +44,13 @@ const envSchema = z.object({
    * Default: 5 minutes (300 000 ms).
    */
   STREAM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().positive().default(300_000),
+  /**
+   * How long (ms) a PENDING stream (created but never went LIVE — abandoned
+   * setup, crashed client, failed publish) may sit before the sweeper
+   * auto-cancels it. Without this a stuck PENDING row permanently occupies the
+   * creator's one-active-stream-per-community slot. Default: 10 minutes.
+   */
+  STREAM_PENDING_TIMEOUT_MS: z.coerce.number().positive().default(600_000),
 
   // ---- SRS (OSSRS) media server endpoints ----
   /** SRS HTTP API base (clients DELETE, GET /api/v1/streams, etc.). */
@@ -54,8 +61,8 @@ const envSchema = z.object({
   SRS_HLS_BASE: z.string().url().default("http://localhost:8080"),
   /** Base for WHIP (WebRTC) publish URLs minted for phone-camera ingest. */
   SRS_WHIP_BASE: z.string().url().default("http://localhost:1985"),
-  /** Shared secret the SRS http_hooks endpoint validates (query/header). */
-  SRS_HOOK_SECRET: z.string().min(1).optional(),
+  /** Shared secret the SRS http_hooks endpoint validates (header, required). */
+  SRS_HOOK_SECRET: z.string().min(1),
 
   /** ffmpeg binary path for URL re-stream ingest (host prerequisite in dev). */
   FFMPEG_PATH: z.string().default("ffmpeg"),

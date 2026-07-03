@@ -38,6 +38,31 @@ export interface CommunityActivityPayload {
    * never composes its own copy). Only set for self-referential system lines.
    */
   selfPreview?: string;
+  /**
+   * A SECOND self-referential viewer for the role-change/join family (e.g. a
+   * future two-sided lifecycle line). No current caller sets this — reactions
+   * used to, but no longer do (see the reaction-overlay fields below).
+   */
+  targetUserId?: string;
+  targetPreview?: string;
+  /**
+   * Reaction-overlay fields — present ONLY when `type` is `"reaction_added"` /
+   * `"reaction_removed"`. A reaction NEVER touches the canonical
+   * lastActivityAt/Type/Preview/Username/UserId fields above (those must
+   * remain exactly what the rest of the community sees, unaffected by any
+   * reaction) — it lives in a fully separate overlay, visible only to its own
+   * actor and (if different) the reacted-to message's owner. See
+   * community-service's `setReactionActivity`/`clearReactionActivityIfCurrent`.
+   */
+  reactionMessageId?: string;
+  reactionEmoji?: string;
+  reactionActorId?: string;
+  /** First-person preview shown to the reactor ("You reacted 👍 to 'Hello'"). */
+  reactionActorPreview?: string;
+  /** The reacted-to message's owner; null for a self-reaction (no second viewer). */
+  reactionTargetId?: string | null;
+  /** Third-person preview shown to the owner ("Peter reacted ❤️ to '…'"). */
+  reactionTargetPreview?: string | null;
 }
 
 let channelPromise: Promise<amqp.Channel> | null = null;

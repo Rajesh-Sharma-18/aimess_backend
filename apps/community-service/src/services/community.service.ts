@@ -225,12 +225,7 @@ function buildAvatarMedia(
  * USER-message activity types: a real member action. The community-list preview
  * keeps the sender so the client can render "<sender>: <preview>" / "You: …".
  */
-const PREFIXED_ACTIVITY_TYPES = new Set([
-  "message",
-  "reaction",
-  "edited",
-  "deleted",
-]);
+const PREFIXED_ACTIVITY_TYPES = new Set(["message", "edited", "deleted"]);
 
 /**
  * SYSTEM / lifecycle activity types: the stored preview is a complete,
@@ -240,6 +235,12 @@ const PREFIXED_ACTIVITY_TYPES = new Set([
  * source of truth for the no-prefix rule; `buildLastActivity` forces
  * `username: null` for every member of it so the Mine/List/Search/Summary DTOs
  * can never leak a "Someone: <system text>" prefix.
+ *
+ * "reaction" is a valid {@link CommunityLastActivityType} value but is NEVER
+ * written to the canonical `lastActivityType` column — it lives entirely in
+ * the separate reaction OVERLAY (`lastActivityReaction*` columns), rendered by
+ * {@link applyReactionOverlay} below, never by `buildLastActivity`/
+ * `selectListPreview`. Listed here only so the DTO union stays complete.
  */
 const SENDERLESS_ACTIVITY_TYPES = new Set([
   "system",
@@ -248,6 +249,7 @@ const SENDERLESS_ACTIVITY_TYPES = new Set([
   "removal",
   "pinned",
   "unpinned",
+  "reaction",
 ]);
 
 /**
@@ -281,6 +283,11 @@ const SELF_JOIN_ACTIVITY_PREVIEW = "You joined the community";
  * the subject sees that "You …" line; everyone else must NOT see a join line
  * (returns null). Returns null only when there is no stored preview.
  *
+ * The `lastActivityTargetUserId`/`lastActivityTargetPreview` pair exists for a
+ * future second self-referential viewer in the role-change/join family; no
+ * current caller sets it (reactions used to, but no longer do — see
+ * {@link applyReactionOverlay} for the fully separate reaction mechanism).
+ *
  * Exported for unit coverage (community-self-preview.test.ts).
  */
 export function selectListPreview(
@@ -289,11 +296,19 @@ export function selectListPreview(
     lastActivityPreview?: string | null;
     lastActivitySelfPreview?: string | null;
     lastActivityUserId?: string | null;
+    lastActivityTargetUserId?: string | null;
+    lastActivityTargetPreview?: string | null;
   },
   viewerId: string
 ): string | null {
   if (row.lastActivitySelfPreview && row.lastActivityUserId === viewerId) {
     return row.lastActivitySelfPreview;
+  }
+  if (
+    row.lastActivityTargetPreview &&
+    row.lastActivityTargetUserId === viewerId
+  ) {
+    return row.lastActivityTargetPreview;
   }
   if (row.lastActivityType === "join" && row.lastActivityUserId === viewerId) {
     return SELF_JOIN_ACTIVITY_PREVIEW;
@@ -335,7 +350,7 @@ export function buildLastActivity(community: {
   // USER MESSAGE → carry the sender so the client renders "<sender>: <preview>".
   if (PREFIXED_ACTIVITY_TYPES.has(rawType)) {
     return {
-      type: rawType as "message" | "reaction" | "edited" | "deleted",
+      type: rawType as "message" | "edited" | "deleted",
       userId: community.lastActivityUserId ?? null,
       username: community.lastActivityUsername ?? "",
       preview: community.lastActivityPreview ?? "",
@@ -347,7 +362,14 @@ export function buildLastActivity(community: {
   // standalone sentence, NEVER prefixed → username is forced to null.
   const systemType = (
     SENDERLESS_ACTIVITY_TYPES.has(rawType) ? rawType : "created"
-  ) as "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
+  ) as
+    | "system"
+    | "created"
+    | "join"
+    | "removal"
+    | "pinned"
+    | "unpinned"
+    | "reaction";
   const dateTime =
     systemType === "created"
       ? community.createdAt.getTime()
@@ -478,6 +500,59 @@ export function applyChatLastMessageOverlay(
   return {
     lastActivity: chatLastMessageToActivity(chat),
     lastActivityAt: chat.dateTime,
+  };
+}
+
+/**
+ * The reaction OVERLAY: a reaction is fully independent of every other
+ * lastActivity source (canonical column, chat-message overlay, personal-join
+ * overlay) — it never touches any of them. It is visible ONLY to its own
+ * actor and (if different) the reacted-to message's owner, and ONLY while it
+ * is genuinely the newest thing (`lastActivityReactionAt > base.lastActivityAt`
+ * — the same NEWEST-WINS pattern as {@link applyChatLastMessageOverlay}). A
+ * real message/system event sent after the reaction silently supersedes it
+ * with no explicit clearing needed; removing the reaction explicitly clears
+ * `lastActivityReactionAt` (see community.repository.ts's
+ * clearReactionActivityIfCurrent), which also makes this a no-op.
+ *
+ * Every other viewer (not the actor, not the target) ALWAYS falls through to
+ * `base` unchanged — this is what makes a reaction invisible to the rest of
+ * the community regardless of recency.
+ *
+ * Exported for unit coverage (community-reaction-activity.test.ts).
+ */
+export function applyReactionOverlay(
+  base: { lastActivity: CommunityLastActivity; lastActivityAt: number },
+  row: {
+    lastActivityReactionAt?: Date | null;
+    lastActivityReactionActorId?: string | null;
+    lastActivityReactionActorPreview?: string | null;
+    lastActivityReactionTargetId?: string | null;
+    lastActivityReactionTargetPreview?: string | null;
+  },
+  viewerId: string
+): { lastActivity: CommunityLastActivity; lastActivityAt: number } {
+  if (!row.lastActivityReactionAt) return base;
+  const reactionAt = row.lastActivityReactionAt.getTime();
+  if (reactionAt <= base.lastActivityAt) return base;
+
+  const preview =
+    row.lastActivityReactionActorId === viewerId
+      ? row.lastActivityReactionActorPreview
+      : row.lastActivityReactionTargetId === viewerId
+        ? row.lastActivityReactionTargetPreview
+        : null;
+  if (!preview) return base;
+
+  return {
+    lastActivity: {
+      type: "reaction",
+      userId: null,
+      username: null,
+      preview,
+      dateTime: reactionAt,
+    },
+    lastActivityAt: reactionAt,
   };
 }
 
@@ -2259,12 +2334,21 @@ export const communityService = {
               }
             : emptyLastActivity()
           : applyChatLastMessageOverlay(columnBase, chat.lastMessage);
+        // Reaction overlay: visible ONLY to the reaction's own actor/target,
+        // and ONLY while it is genuinely newer than everything else above —
+        // see applyReactionOverlay's doc for why this fully replaces the old
+        // "reaction via selectListPreview" mechanism.
+        const reactionOverlaid = applyReactionOverlay(
+          reconciledBase,
+          row,
+          userId
+        );
         // The viewer's own "You joined the community" personal line still wins
         // when it is genuinely the newest visible thing (compared against the
         // base's REAL timestamp — no +1ms inflation can wrongly suppress it).
         const { lastActivity, lastActivityAt } =
           applyPersonalLastActivityOverlay(
-            reconciledBase,
+            reactionOverlaid,
             chat.personalLastMessage
           );
 
@@ -2917,6 +3001,15 @@ export const communityService = {
     // Product rule: ban is silent from the chat-message perspective (same policy
     // as removal). MEMBER_BANNED is in HIDDEN_SYSTEM_MESSAGE_TYPES. The banned
     // user receives a push notification via notifications-service.
+
+    // Best-effort: kick the target from any of their currently-LIVE stream
+    // sessions in this community. Never blocks/fails the ban itself
+    // (notifyMemberBanStatus swallows its own errors).
+    void getStreamClient().notifyMemberBanStatus(
+      communityId,
+      targetUserId,
+      true
+    );
 
     return toMemberData(updated);
   },
@@ -3770,6 +3863,16 @@ export const communityService = {
 
     // NOTE: no system message emitted — mirrors the silent MEMBER_BANNED policy.
 
+    // Best-effort, currently a no-op on the stream-service side: unban does not
+    // auto-rejoin the user to any room (same as the local per-stream unban) — the
+    // call exists for symmetry with notifyMemberBanStatus(true) and as a hook if
+    // a "you can rejoin now" push is ever added.
+    void getStreamClient().notifyMemberBanStatus(
+      communityId,
+      targetUserId,
+      false
+    );
+
     return toMemberData(updated);
   },
 
@@ -3836,6 +3939,16 @@ export const communityService = {
       mutedUntil,
       actorId: callerId,
     });
+
+    // Best-effort: push a real-time notice to any of the target's currently-LIVE
+    // stream sessions in this community. Never blocks/fails the mute itself
+    // (notifyMemberMuteStatus swallows its own errors).
+    void getStreamClient().notifyMemberMuteStatus(
+      communityId,
+      targetUserId,
+      true,
+      mutedUntil ? mutedUntil.getTime() : 0
+    );
 
     const view = await buildUserSnapshotView(
       {
@@ -3916,6 +4029,23 @@ export const communityService = {
       isMuted: false,
       mutedUntil: null,
       actorId: callerId,
+    });
+
+    // Best-effort: push a real-time notice to any of the target's currently-LIVE
+    // stream sessions in this community (notifyMemberMuteStatus swallows its
+    // own errors).
+    void getStreamClient().notifyMemberMuteStatus(
+      communityId,
+      targetUserId,
+      false,
+      0
+    );
+
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_UNMUTED",
+      actorId: callerId,
+      targetUserId,
     });
   },
 

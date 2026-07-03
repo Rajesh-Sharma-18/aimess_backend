@@ -6,7 +6,9 @@ import { app } from "./app.js";
 import { env } from "./config/env.js";
 import { prisma } from "./config/prisma.js";
 import { connectBackofficeRedis, redis } from "./config/redis.js";
+import { startAnnouncementScheduler } from "./lib/announcement-scheduler.js";
 import { startAdminReportIngestConsumer } from "./messaging/consume-admin-report-ingest.js";
+import { startAnnouncementDeliveryConsumer } from "./messaging/consume-announcement-delivery.js";
 import { startStreamLifecycleConsumer } from "./messaging/consume-stream-lifecycle.js";
 
 let httpServer: Server | undefined;
@@ -78,6 +80,37 @@ const startServer = async (): Promise<void> => {
       logger.warn(
         "RabbitMQ unavailable/timed out — stream lifecycle consumer will not run until RabbitMQ is reachable"
       );
+      logger.warn(error);
+    }
+
+    try {
+      await Promise.race([
+        startAnnouncementDeliveryConsumer(),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error(
+                  "RabbitMQ announcement delivery connect timed out after 5s"
+                )
+              ),
+            5000
+          )
+        ),
+      ]);
+      logger.info("Announcement delivery consumer connected");
+    } catch (error) {
+      logger.warn(
+        "RabbitMQ unavailable/timed out — announcement delivery will not run until RabbitMQ is reachable"
+      );
+      logger.warn(error);
+    }
+
+    try {
+      startAnnouncementScheduler();
+      logger.info("Announcement scheduler started");
+    } catch (error) {
+      logger.warn("Failed to start announcement scheduler");
       logger.warn(error);
     }
 

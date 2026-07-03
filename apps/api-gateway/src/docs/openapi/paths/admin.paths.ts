@@ -2457,7 +2457,7 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.7 Announcements  (PLANNED) — requires `announcements.manage`
+  // §4.7 Announcements — requires `announcements.manage`
   // ===========================================================================
   "/admin/v1/announcements": {
     get: {
@@ -2465,27 +2465,93 @@ export const adminPaths = {
       operationId: "adminListAnnouncements",
       summary: "List announcements",
       description:
-        PLANNED +
-        "List with status (draft/scheduled/published) (admin_db OWN). Requires `announcements.manage`.",
+        "Paginated, filtered list (admin_db OWN). Filters: `search` (title/description), " +
+        "`target` (ALL/COMMUNITY), `status` (repeatable), `dateFrom`/`dateTo` (on createdAt). " +
+        "Sort whitelist `createdAt|scheduledAt|sentAt|title` with `:asc|:desc` (default " +
+        "`createdAt:desc`). Requires `announcements.manage`.",
       security: adminSecurity,
-      parameters: [...listParams],
+      parameters: [
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Matches title or description (case-insensitive).",
+        },
+        {
+          name: "target",
+          in: "query",
+          required: false,
+          schema: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+        },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          style: "form",
+          explode: true,
+          schema: {
+            type: "array",
+            items: { $ref: "#/components/schemas/AdminAnnouncementStatus" },
+          },
+          description: "Repeatable.",
+        },
+        {
+          name: "dateFrom",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date" },
+        },
+        {
+          name: "dateTo",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date" },
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            pattern: "^(createdAt|scheduledAt|sentAt|title):(asc|desc)$",
+            default: "createdAt:desc",
+          },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
       responses: {
         "200": listRes(
           "Announcements",
-          "#/components/schemas/AdminAnnouncement"
+          "#/components/schemas/AdminAnnouncementListItem"
         ),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing announcements.manage"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     post: {
       tags: [adminTags.announcements],
       operationId: "adminCreateAnnouncement",
       summary: "Create an announcement",
       description:
-        PLANNED +
-        "Body has `translations: { en, vi }`, `audience`, `publishAt`. Audited. Requires `announcements.manage`.",
+        "Validates and persists the announcement. If `scheduledAt` is set (must be in the " +
+        "future), delivery is scheduled via the background poller; otherwise delivery is " +
+        "enqueued immediately (never sent synchronously — recipients are fanned out in " +
+        "paginated batches over RabbitMQ). `target=COMMUNITY` requires `communityId` and is " +
+        "validated against community-service before the row is created. Audited. Requires " +
+        "`announcements.manage`.",
       security: adminSecurity,
       requestBody: jsonBody(
         "#/components/schemas/AdminAnnouncementCreateRequest"
@@ -2498,8 +2564,9 @@ export const adminPaths = {
         "400": errRes("Validation failed"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing announcements.manage"),
+        "404": errRes("Community not found (target=COMMUNITY)"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/announcements/{id}": {
@@ -2508,8 +2575,8 @@ export const adminPaths = {
       operationId: "adminGetAnnouncement",
       summary: "Get an announcement",
       description:
-        PLANNED +
-        "Includes all translations (admin_db OWN). Requires `announcements.manage`.",
+        "Full announcement detail, including delivery status, recipientCount, and sentAt " +
+        "(admin_db OWN). Requires `announcements.manage`.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
@@ -2518,69 +2585,7 @@ export const adminPaths = {
         "403": errRes("Missing announcements.manage"),
         "404": errRes("Announcement not found"),
       },
-      "x-implementation-status": "planned",
-    },
-    patch: {
-      tags: [adminTags.announcements],
-      operationId: "adminUpdateAnnouncement",
-      summary: "Update an announcement",
-      description: PLANNED + "Audited. Requires `announcements.manage`.",
-      security: adminSecurity,
-      parameters: [idPathParam],
-      requestBody: jsonBody(
-        "#/components/schemas/AdminAnnouncementUpdateRequest"
-      ),
-      responses: {
-        "200": okRes(
-          "Announcement updated",
-          "#/components/schemas/AdminAnnouncement"
-        ),
-        "400": errRes("Validation failed"),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing announcements.manage"),
-        "404": errRes("Announcement not found"),
-      },
-      "x-implementation-status": "planned",
-    },
-    delete: {
-      tags: [adminTags.announcements],
-      operationId: "adminDeleteAnnouncement",
-      summary: "Delete an announcement",
-      description: PLANNED + "Audited. Requires `announcements.manage`.",
-      security: adminSecurity,
-      parameters: [idPathParam],
-      responses: {
-        "200": okRes(
-          "Announcement deleted",
-          "#/components/schemas/AdminAnnouncement"
-        ),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing announcements.manage"),
-        "404": errRes("Announcement not found"),
-      },
-      "x-implementation-status": "planned",
-    },
-  },
-  "/admin/v1/announcements/{id}/publish": {
-    post: {
-      tags: [adminTags.announcements],
-      operationId: "adminPublishAnnouncement",
-      summary: "Publish an announcement",
-      description:
-        PLANNED +
-        "Emits `admin.announcement_published` → notifications-service fans out. Audited. Requires `announcements.manage`.",
-      security: adminSecurity,
-      parameters: [idPathParam],
-      responses: {
-        "200": okRes(
-          "Announcement published",
-          "#/components/schemas/AdminAnnouncement"
-        ),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing announcements.manage"),
-        "404": errRes("Announcement not found"),
-      },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 

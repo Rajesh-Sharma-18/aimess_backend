@@ -31,9 +31,13 @@ import type {
 import {
   normalizeMessageType,
   toggleStoredReaction,
+  reactionUserIdMap,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
-import { convertMessageToPreview } from "./message-preview.service.js";
+import {
+  convertMessageToPreview,
+  buildReactionTargetPreview,
+} from "./message-preview.service.js";
 import {
   resolveVisibleLastBulk,
   resolveForEveryoneOverrides,
@@ -50,7 +54,11 @@ import {
   assertCommunityRoomWritable,
 } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
-import { markIdempotentReplay } from "../lib/idempotency.js";
+import {
+  attachAlbumMessages,
+  markAlbumIdempotentReplay,
+} from "../lib/album-messages.js";
+import { splitCommunityMediaAlbum } from "../lib/split-media-album.js";
 import {
   resolveMediaUrlMap,
   urlFromMap,
@@ -282,13 +290,24 @@ export class CommunityMessageService {
     // GIF, sticker, voice and file messages (all funnel through here).
     assertCommunityMemberNotMuted(sender);
 
-    // Check idempotency
+    // Check idempotency (album batches use `base:N` sibling clientMessageIds).
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.sentBy}:${params.clientMessageId}`;
       const cachedId = await this.cacheRepo.getMessageIdempotency(idemKey);
       if (cachedId) {
         const cached = await this.messageRepo.findById(cachedId);
-        if (cached) return markIdempotentReplay(cached);
+        if (cached) {
+          const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
+            params.roomId,
+            params.sentBy,
+            params.clientMessageId
+          );
+          const messages = batch.length > 0 ? batch : [cached];
+          return markAlbumIdempotentReplay(
+            messages[messages.length - 1]!,
+            messages
+          );
+        }
       }
       const existing = await this.messageRepo.findOne({
         roomId: params.roomId,
@@ -299,75 +318,98 @@ export class CommunityMessageService {
         this.cacheRepo
           .setMessageIdempotency(idemKey, existing.id)
           .catch(() => {});
-        return markIdempotentReplay(existing);
+        const batch = await this.messageRepo.findAlbumBatchByClientMessageId(
+          params.roomId,
+          params.sentBy,
+          params.clientMessageId
+        );
+        const messages = batch.length > 0 ? batch : [existing];
+        return markAlbumIdempotentReplay(
+          messages[messages.length - 1]!,
+          messages
+        );
       }
     }
 
-    // Allocate a per-room monotonic sequence number (parity with private/group
-    // rooms) so community sync/pagination can use gap-safe keyset cursors. Runs
-    // after the idempotency pre-check so replays don't burn numbers; a rare
-    // concurrent-race P2002 below may leave a one-number gap (acceptable).
-    const sequenceNumber = await this.roomRepo.allocateSequence(params.roomId);
+    const parts = splitCommunityMediaAlbum(
+      params.messageType,
+      params.message || "",
+      params.attachments,
+      params.clientMessageId ?? null
+    );
 
-    const entity: Record<string, unknown> = {
-      roomId: params.roomId,
-      sentBy: params.sentBy,
-      senderName: params.senderName,
-      senderAvatar: params.senderAvatar,
-      message: params.message || "",
-      // §1 single casing: store the canonical UPPER-CASE type (matches the
-      // private/group services, which both persist via normalizeMessageType).
-      // The gRPC send handler already upper-cases contentType, so this is a
-      // no-op for live sends but guarantees UPPER for any other caller.
-      messageType: normalizeMessageType(params.messageType),
-      parentMessageId: params.parentMessageId || null,
-      clientMessageId: params.clientMessageId || null,
-      sequenceNumber,
-    };
-
-    if (params.attachments?.length) {
-      entity.attachments = params.attachments;
-    }
-
-    // If reply, attach quote data
+    let quoteData: Record<string, unknown> | undefined;
     if (params.parentMessageId) {
       const originalMsg = await this.messageRepo.findById(
         params.parentMessageId
       );
       if (originalMsg) {
-        entity.quoteData = {
+        quoteData = {
           message: originalMsg.message,
           senderName: originalMsg.senderName,
         };
       }
     }
 
-    let message: GeneralRoomMessage;
-    try {
-      message = await this.messageRepo.save(
-        entity as Parameters<typeof this.messageRepo.save>[0]
+    const created: GeneralRoomMessage[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!;
+      const sequenceNumber = await this.roomRepo.allocateSequence(
+        params.roomId
       );
-    } catch (err) {
-      // Concurrent send with the same clientMessageId lost the unique-index
-      // insert (E11000/P2002 from the sparse idempotency index) — re-read and
-      // return the winner so both collapse to one message.
-      if (isDuplicateKeyError(err) && params.clientMessageId) {
-        const dup = await this.messageRepo.findOne({
-          roomId: params.roomId,
-          sentBy: params.sentBy,
-          clientMessageId: params.clientMessageId,
-        });
-        if (dup) return markIdempotentReplay(dup);
+      const entity: Record<string, unknown> = {
+        roomId: params.roomId,
+        sentBy: params.sentBy,
+        senderName: params.senderName,
+        senderAvatar: params.senderAvatar,
+        message: part.message,
+        messageType: normalizeMessageType(part.messageType),
+        parentMessageId: params.parentMessageId || null,
+        clientMessageId: part.clientMessageId || null,
+        sequenceNumber,
+        ...(part.attachments.length ? { attachments: part.attachments } : {}),
+        ...(i === 0 && quoteData ? { quoteData } : {}),
+      };
+
+      try {
+        const row = await this.messageRepo.save(
+          entity as Parameters<typeof this.messageRepo.save>[0]
+        );
+        created.push(row);
+      } catch (err) {
+        if (isDuplicateKeyError(err) && part.clientMessageId) {
+          const dup = await this.messageRepo.findOne({
+            roomId: params.roomId,
+            sentBy: params.sentBy,
+            clientMessageId: part.clientMessageId,
+          });
+          if (dup) {
+            const batch =
+              params.clientMessageId && i === 0
+                ? await this.messageRepo.findAlbumBatchByClientMessageId(
+                    params.roomId,
+                    params.sentBy,
+                    params.clientMessageId
+                  )
+                : [];
+            const messages = batch.length > 0 ? batch : [dup];
+            return markAlbumIdempotentReplay(
+              messages[messages.length - 1]!,
+              messages
+            );
+          }
+        }
+        throw err;
       }
-      throw err;
     }
+
+    const message = created[created.length - 1]!;
 
     if (params.clientMessageId) {
       const idemKey = `${params.roomId}:${params.sentBy}:${params.clientMessageId}`;
       this.cacheRepo.setMessageIdempotency(idemKey, message.id).catch(() => {});
     }
 
-    // Update room last message
     this.roomRepo
       .addLastestMessageToRoom(params.roomId, {
         _id: message.id,
@@ -382,7 +424,7 @@ export class CommunityMessageService {
           `CommunityMessageService|addLastestMessageToRoom failed: ${String(err)}`
         );
       });
-    return message;
+    return attachAlbumMessages(message, created);
   }
 
   /**
@@ -1456,6 +1498,46 @@ export class CommunityMessageService {
     return this.messageRepo.editMessage(params.messageId, params.content.text);
   }
 
+  /**
+   * Reconstruct the `{text, files, location, contact}` content shape
+   * `convertMessageToPreview`/`buildReactionTargetPreview` expect, from a raw
+   * stored message row. Mirrors `ChatMessageOrchestrator`'s
+   * `firstAttachmentOfType` extraction so a reaction's target preview matches
+   * EXACTLY what that message's own send-time list/push preview showed
+   * (filename / place name / contact name included), instead of falling back
+   * to the type's generic label.
+   */
+  private messagePreviewContent(message: {
+    message: string | null;
+    attachments: unknown;
+  }): {
+    text: string;
+    files: Array<Record<string, unknown>>;
+    location?: Record<string, unknown>;
+    contact?: Record<string, unknown>;
+  } {
+    const attachments = Array.isArray(message.attachments)
+      ? (message.attachments as Array<Record<string, unknown>>)
+      : [];
+    const byType = (type: string): Record<string, unknown> | undefined => {
+      const hit = attachments.find(
+        (a) => a && (a as { type?: string }).type === type
+      );
+      if (!hit) return undefined;
+      const { type: _omit, ...rest } = hit;
+      void _omit;
+      return rest;
+    };
+    const location = byType("location");
+    const contact = byType("contact");
+    return {
+      text: message.message ?? "",
+      files: attachments,
+      ...(location ? { location } : {}),
+      ...(contact ? { contact } : {}),
+    };
+  }
+
   async reactToMessage(params: {
     messageId: string;
     userId: string;
@@ -1468,6 +1550,14 @@ export class CommunityMessageService {
       count: number;
       users: Array<{ userId: string; displayName: string; avatarUrl: string }>;
     }>;
+    /** True when this call ADDED the reactor to the bucket; false when it REMOVED them (toggle-off). */
+    added: boolean;
+    /** Reactor's display name (resolved from the same snapshot fetch used to enrich the stored reactors). */
+    actorName: string;
+    /** The reacted-to message's owner — the OTHER personalized viewer besides the actor. */
+    targetUserId: string;
+    /** The reacted-to message's own preview text (quoted text or media label). */
+    targetMessagePreview: string;
   }> {
     const message = await this.messageRepo.findById(params.messageId);
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -1490,6 +1580,13 @@ export class CommunityMessageService {
     assertCommunityRoomWritable(
       await this.roomRepo.findRoomById(message.roomId)
     );
+
+    // Determine add vs remove BEFORE toggling — the lastActivity preview must
+    // only bump on add (Telegram never shows a "removed their reaction" line).
+    const wasReactedByUser = (
+      reactionUserIdMap(message.reactions)[params.emoji] ?? []
+    ).includes(params.userId);
+    const added = !wasReactedByUser;
 
     // Toggle the reactor in/out of the emoji bucket (shared with private/group);
     // non-atomic read-modify-write, acceptable at current scale.
@@ -1563,6 +1660,60 @@ export class CommunityMessageService {
       messageId: params.messageId,
       roomId: message.roomId,
       reactions: reactionGroups,
+      added,
+      // Only guaranteed present in `snaps` when added===true (the actor was just
+      // pushed into the bucket); callers only need this in that case.
+      actorName: (snaps.get(params.userId)?.displayName as string) || "",
+      targetUserId: message.sentBy,
+      targetMessagePreview: buildReactionTargetPreview(
+        normalizeMessageType(message.messageType),
+        this.messagePreviewContent(message)
+      ),
+    };
+  }
+
+  /**
+   * Best-effort LIVE nudge after a reaction is removed — NOT the source of
+   * truth for whether the reaction overlay actually cleared (that's
+   * community-service's `clearReactionActivityIfCurrent`, gated by an
+   * identity match on messageId+emoji+actorId). This just gives the reaction's
+   * former actor/target an immediate refresh to the room's real latest
+   * activity over the socket; if the removed reaction wasn't the one being
+   * displayed to them, this resends the same value they already see (a safe
+   * no-op), so no identity check is needed here at all.
+   */
+  async getLatestRealActivityForLiveBump(roomId: string): Promise<{
+    prevMessageId: string | null;
+    preview: string;
+    messageType: string;
+    sentBy: string;
+    senderName: string;
+    createdAt: Date;
+    hasLastMessage: boolean;
+  }> {
+    const prev = await this.messageRepo.findPreviousVisibleMessage(roomId);
+    if (!prev) {
+      return {
+        prevMessageId: null,
+        preview: "",
+        messageType: "",
+        sentBy: "",
+        senderName: "",
+        createdAt: new Date(0),
+        hasLastMessage: false,
+      };
+    }
+    return {
+      prevMessageId: prev.id,
+      preview: convertMessageToPreview(
+        prev.messageType,
+        this.messagePreviewContent(prev)
+      ),
+      messageType: prev.messageType,
+      sentBy: prev.sentBy,
+      senderName: prev.senderName ?? "",
+      createdAt: prev.createdAt,
+      hasLastMessage: true,
     };
   }
 

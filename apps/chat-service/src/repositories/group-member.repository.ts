@@ -183,14 +183,19 @@ export class GroupMemberRepository {
     });
   }
 
-  async incUnreadForRoom(roomId: string, excludeUserId: string): Promise<void> {
+  async incUnreadForRoom(
+    roomId: string,
+    excludeUserId: string,
+    increment = 1
+  ): Promise<void> {
+    if (increment <= 0) return;
     await this.prisma.groupMember.updateMany({
       where: {
         roomId,
         status: "ACTIVE",
         userId: { not: excludeUserId },
       },
-      data: { unreadCount: { increment: 1 } },
+      data: { unreadCount: { increment } },
     });
   }
 

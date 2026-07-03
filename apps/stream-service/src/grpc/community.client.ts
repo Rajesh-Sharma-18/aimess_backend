@@ -18,6 +18,24 @@ interface ValidateMembershipResult {
   status: string;
 }
 
+interface CheckMuteResult {
+  isMuted: boolean;
+  mutedUntil: number; // epoch ms; 0 = indefinite or not muted
+}
+
+interface CheckBanResult {
+  isBanned: boolean;
+}
+
+/** Mirrors community.proto's ModerationActionResponse (mute/unmute share it). */
+interface ModerationActionResult {
+  ok: boolean;
+  communityId: string;
+  targetUserId: string;
+  errorCode: string;
+  mutedUntil: number; // only populated by muteMember; epoch ms, 0 = indefinite
+}
+
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
   longs: String,
@@ -49,6 +67,69 @@ const validateMembershipBreaker: Breaker<
     )
 );
 
+const checkMuteBreaker: Breaker<
+  { communityId: string; userId: string },
+  CheckMuteResult
+> = makeBreaker(
+  "community.checkCommunityMute",
+  (args: { communityId: string; userId: string }) =>
+    call<{ communityId: string; userId: string }, CheckMuteResult>(
+      "checkCommunityMute",
+      args
+    )
+);
+
+const checkBanBreaker: Breaker<
+  { communityId: string; userId: string },
+  { isMember: boolean; isBanned: boolean; status: string; role: string }
+> = makeBreaker(
+  "community.checkCommunityMembership",
+  (args: { communityId: string; userId: string }) =>
+    call<
+      { communityId: string; userId: string },
+      { isMember: boolean; isBanned: boolean; status: string; role: string }
+    >("checkCommunityMembership", args)
+);
+
+const muteMemberBreaker: Breaker<
+  {
+    communityId: string;
+    actorId: string;
+    targetUserId: string;
+    durationMinutes: number;
+    reason: string;
+  },
+  ModerationActionResult
+> = makeBreaker("community.muteMember", (args) =>
+  call<typeof args, ModerationActionResult>("muteMember", args)
+);
+
+const unmuteMemberBreaker: Breaker<
+  { communityId: string; actorId: string; targetUserId: string },
+  ModerationActionResult
+> = makeBreaker("community.unmuteMember", (args) =>
+  call<typeof args, ModerationActionResult>("unmuteMember", args)
+);
+
+const banMemberBreaker: Breaker<
+  {
+    communityId: string;
+    actorId: string;
+    targetUserId: string;
+    reason: string;
+  },
+  ModerationActionResult
+> = makeBreaker("community.banMember", (args) =>
+  call<typeof args, ModerationActionResult>("banMember", args)
+);
+
+const unbanMemberBreaker: Breaker<
+  { communityId: string; actorId: string; targetUserId: string },
+  ModerationActionResult
+> = makeBreaker("community.unbanMember", (args) =>
+  call<typeof args, ModerationActionResult>("unbanMember", args)
+);
+
 /**
  * Circuit-broken community-service client. Backs the go-live + join gates.
  *
@@ -56,6 +137,17 @@ const validateMembershipBreaker: Breaker<
  *   - createStream: fail-closed (deny go-live when membership unverifiable)
  *   - checkAccess:  fail-open  (allow viewing so a community-service outage
  *                              doesn't black out all live streams)
+ *   - checkMute:    fail-open  (a moderator's mute must not be *required* to
+ *                              keep chat flowing during a community-service outage)
+ *   - muteMember/unmuteMember: throw on circuit-open / gRPC error (a real
+ *     write action — the caller must know it didn't happen); a business
+ *     rejection (unauthorized, self-target, etc.) comes back as ok:false
+ *     with errorCode, not a throw.
+ *   - checkBan:     fail-open  (consistent with every other community-service
+ *                              read here — an outage never blacks out viewing
+ *                              on its own; the local per-stream ban remains a
+ *                              synchronous, always-available hard block)
+ *   - banMember/unbanMember: throw on circuit-open / gRPC error, same as mute.
  */
 export const communityGrpcClient = {
   async validateMembership(
@@ -70,6 +162,120 @@ export const communityGrpcClient = {
       isMember: Boolean(result?.isMember),
       role: result?.role ?? "",
       status: result?.status ?? "",
+    };
+  },
+
+  /** Moderator-applied community mute (distinct from per-user notification mute). */
+  async checkMute(
+    communityId: string,
+    userId: string
+  ): Promise<CheckMuteResult> {
+    const result = await checkMuteBreaker.fire({ communityId, userId });
+    return {
+      isMuted: Boolean(result?.isMuted),
+      mutedUntil: Number(result?.mutedUntil ?? 0),
+    };
+  },
+
+  /**
+   * Write-through to the single community mute record. `durationMinutes<=0`
+   * means indefinite. Authorization (MODERATOR+ rank, self/admin guards) is
+   * enforced entirely on the community-service side.
+   */
+  async muteMember(
+    communityId: string,
+    actorId: string,
+    targetUserId: string,
+    durationMinutes: number,
+    reason: string
+  ): Promise<ModerationActionResult> {
+    const result = await muteMemberBreaker.fire({
+      communityId,
+      actorId,
+      targetUserId,
+      durationMinutes,
+      reason,
+    });
+    return {
+      ok: Boolean(result?.ok),
+      communityId: result?.communityId ?? communityId,
+      targetUserId: result?.targetUserId ?? targetUserId,
+      errorCode: result?.errorCode ?? "",
+      mutedUntil: Number(result?.mutedUntil ?? 0),
+    };
+  },
+
+  async unmuteMember(
+    communityId: string,
+    actorId: string,
+    targetUserId: string
+  ): Promise<ModerationActionResult> {
+    const result = await unmuteMemberBreaker.fire({
+      communityId,
+      actorId,
+      targetUserId,
+    });
+    return {
+      ok: Boolean(result?.ok),
+      communityId: result?.communityId ?? communityId,
+      targetUserId: result?.targetUserId ?? targetUserId,
+      errorCode: result?.errorCode ?? "",
+      mutedUntil: 0,
+    };
+  },
+
+  /**
+   * Community-wide ban status (ADMIN-applied in community-service) — distinct
+   * from the stream-local `LivestreamBan` table. Fail-open: an outage never
+   * blacks out viewing on its own.
+   */
+  async checkBan(communityId: string, userId: string): Promise<CheckBanResult> {
+    const result = await checkBanBreaker.fire({ communityId, userId });
+    return { isBanned: Boolean(result?.isBanned) };
+  },
+
+  /**
+   * Write-through to the single community ban record. Authorization (ADMIN
+   * only — stricter than mute's MODERATOR+) is enforced entirely on the
+   * community-service side.
+   */
+  async banMember(
+    communityId: string,
+    actorId: string,
+    targetUserId: string,
+    reason: string
+  ): Promise<ModerationActionResult> {
+    const result = await banMemberBreaker.fire({
+      communityId,
+      actorId,
+      targetUserId,
+      reason,
+    });
+    return {
+      ok: Boolean(result?.ok),
+      communityId: result?.communityId ?? communityId,
+      targetUserId: result?.targetUserId ?? targetUserId,
+      errorCode: result?.errorCode ?? "",
+      mutedUntil: 0,
+    };
+  },
+
+  async unbanMember(
+    communityId: string,
+    actorId: string,
+    targetUserId: string
+  ): Promise<ModerationActionResult> {
+    const result = await unbanMemberBreaker.fire({
+      communityId,
+      actorId,
+      targetUserId,
+    });
+    return {
+      ok: Boolean(result?.ok),
+      communityId: result?.communityId ?? communityId,
+      targetUserId: result?.targetUserId ?? targetUserId,
+      errorCode: result?.errorCode ?? "",
+      mutedUntil: 0,
     };
   },
 };

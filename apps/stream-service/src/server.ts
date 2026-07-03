@@ -16,6 +16,7 @@ import {
   LivestreamCommentRepository,
   LivestreamBanRepository,
   LivestreamCommentReportRepository,
+  LivestreamViewerSessionRepository,
 } from "./repositories/index.js";
 
 // -- Services --
@@ -28,6 +29,9 @@ import {
 // -- gRPC clients --
 import { userGrpcClient } from "./grpc/user.client.js";
 import { communityGrpcClient } from "./grpc/community.client.js";
+
+// -- Events --
+import { publishStreamEvent } from "./events/index.js";
 
 // -- Controllers --
 import { StreamController } from "./api/controllers/index.js";
@@ -58,6 +62,7 @@ async function start() {
     const commentRepo = new LivestreamCommentRepository(prisma);
     const banRepo = new LivestreamBanRepository(prisma);
     const commentReportRepo = new LivestreamCommentReportRepository(prisma);
+    const viewerSessionRepo = new LivestreamViewerSessionRepository(prisma);
 
     // 2. Services (inject repos + clients + redis)
     const srsService = new SrsService();
@@ -66,7 +71,10 @@ async function start() {
       srsService,
       communityGrpcClient,
       redis,
-      banRepo
+      banRepo,
+      viewerSessionRepo,
+      publishStreamEvent,
+      userGrpcClient
     );
     const commentService = new LivestreamCommentService(
       commentRepo,

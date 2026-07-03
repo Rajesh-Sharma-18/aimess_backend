@@ -49,6 +49,25 @@ export const setCommentStatusSchema = z.object({
   enabled: z.boolean(),
 });
 
+/**
+ * POST /streams/:id/mute/:userId body — owner or community ADMIN/MODERATOR
+ * mutes a member (writes through to the community-wide moderation mute).
+ */
+export const muteMemberSchema = z.object({
+  durationMinutes: z.number().int().positive().optional(),
+  reason: z.string().max(500).optional(),
+});
+
+/**
+ * POST /streams/:id/community-ban/:userId body — community ADMIN bans a member
+ * from the whole community (writes through to community-service; ADMIN-only,
+ * stricter than mute's MODERATOR+). Distinct from the owner-only, stream-local
+ * `banUserSchema` above.
+ */
+export const communityBanMemberSchema = z.object({
+  reason: z.string().max(500).optional(),
+});
+
 /** POST /streams/:id/comments/:commentId/report body — user reports a comment. */
 export const reportCommentSchema = z
   .object({
@@ -79,5 +98,7 @@ export type UpdateStreamInput = z.infer<typeof updateStreamSchema>;
 export type CommentsQuery = z.infer<typeof commentsQuerySchema>;
 export type BanUserInput = z.infer<typeof banUserSchema>;
 export type SetCommentStatusInput = z.infer<typeof setCommentStatusSchema>;
+export type MuteMemberInput = z.infer<typeof muteMemberSchema>;
+export type CommunityBanMemberInput = z.infer<typeof communityBanMemberSchema>;
 export type ReportCommentInput = z.infer<typeof reportCommentSchema>;
 export type ReportsQuery = z.infer<typeof reportsQuerySchema>;
