@@ -819,6 +819,193 @@ const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // ---- Backoffice Category Management (4 handlers) ----
+  // Thin gRPC wrappers around communityService's existing category CRUD —
+  // zero duplicated business logic. Business errors are returned via
+  // `errorCode` (not thrown), matching adminSetModerationStatus above.
+
+  adminListCategories: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          search?: string;
+          status?: string;
+          page?: number;
+          limit?: number;
+          sortField?: string;
+          sortDir?: string;
+        };
+        const status =
+          req.status === "visible" || req.status === "hidden"
+            ? req.status
+            : undefined;
+        const sortField =
+          req.sortField === "name" ||
+          req.sortField === "order" ||
+          req.sortField === "createdAt"
+            ? req.sortField
+            : undefined;
+        const sortDir = req.sortDir === "desc" ? "desc" : undefined;
+
+        const result = await communityService.listCategoriesAdmin({
+          search: req.search?.trim() || undefined,
+          status,
+          page: coercePage(req.page),
+          limit: coerceLimit(req.limit),
+          sortField,
+          sortDir,
+        });
+
+        callback(null, {
+          categories: result.categories.map((c) => ({
+            id: c.id,
+            name: c.name,
+            slug: c.slug,
+            visible: c.visible,
+            order: c.order,
+            createdAt: new Date(c.createdAt).getTime(),
+            updatedAt: new Date(c.updatedAt).getTime(),
+          })),
+          total: result.pagination.total,
+        });
+      } catch (err) {
+        logger.error("adminListCategories gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminListCategories failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  adminCreateCategory: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { name?: string };
+        const category = await communityService.createCategory({
+          name: (req.name ?? "").trim(),
+        });
+        callback(null, {
+          ok: true,
+          category: {
+            id: category.id,
+            name: category.name,
+            slug: category.slug,
+            visible: category.visible,
+            order: category.order,
+            createdAt: new Date(category.createdAt).getTime(),
+            updatedAt: new Date(category.updatedAt).getTime(),
+          },
+          errorCode: "",
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            category: undefined,
+            errorCode: err.messageKey,
+          });
+          return;
+        }
+        logger.error("adminCreateCategory gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminCreateCategory failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  adminUpdateCategory: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          categoryId?: string;
+          name?: string;
+          hasName?: boolean;
+          visible?: boolean;
+          hasVisible?: boolean;
+        };
+        const category = await communityService.updateCategory(
+          (req.categoryId ?? "").trim(),
+          {
+            ...(req.hasName ? { name: (req.name ?? "").trim() } : {}),
+            ...(req.hasVisible ? { visible: !!req.visible } : {}),
+          }
+        );
+        callback(null, {
+          ok: true,
+          category: {
+            id: category.id,
+            name: category.name,
+            slug: category.slug,
+            visible: category.visible,
+            order: category.order,
+            createdAt: new Date(category.createdAt).getTime(),
+            updatedAt: new Date(category.updatedAt).getTime(),
+          },
+          errorCode: "",
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            category: undefined,
+            errorCode: err.messageKey,
+          });
+          return;
+        }
+        logger.error("adminUpdateCategory gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminUpdateCategory failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  adminDeleteCategory: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { categoryId?: string };
+        const result = await communityService.deleteCategory(
+          (req.categoryId ?? "").trim()
+        );
+        callback(null, {
+          ok: true,
+          softDeleted: result.softDeleted,
+          errorCode: "",
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            softDeleted: false,
+            errorCode: err.messageKey,
+          });
+          return;
+        }
+        logger.error("adminDeleteCategory gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminDeleteCategory failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   // ---- Member moderation (7 handlers called by gateway socket events) ----
   // Business errors are returned in `errorCode` (not as gRPC exceptions) so
   // the gateway can map them to appropriate ack error codes. Only infra

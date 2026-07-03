@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 
 import { announcementRoutes } from "./announcement.routes.js";
 import { authRoutes } from "./auth.routes.js";
+import { categoryRoutes } from "./category.routes.js";
 import { dashboardRoutes } from "./dashboard.routes.js";
 import { livestreamRoutes } from "./livestream.routes.js";
 import { meRoutes } from "./me.routes.js";
@@ -45,4 +46,9 @@ serviceRoutes.use(groupRoutes);
 // `/admin/v1/announcements` (the gateway strips `/admin` and forwards `/v1/*`
 // verbatim). Self-prefixed, NOT nested under a base path — same as moderation.
 serviceRoutes.use(announcementRoutes);
+// Category Management routes are self-prefixed with `/categories` so they
+// resolve at `/v1/categories/*` — matching the documented gateway path
+// `/admin/v1/categories` (the gateway strips `/admin` and forwards `/v1/*`
+// verbatim). Self-prefixed, NOT nested under a base path — same as moderation.
+serviceRoutes.use(categoryRoutes);
 serviceRoutes.use("/dashboard", dashboardRoutes);

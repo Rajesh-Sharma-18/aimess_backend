@@ -65,3 +65,9 @@ export {
   listAnnouncements,
   getAnnouncementDetails,
 } from "./announcement.controller.js";
+export {
+  listCategories,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+} from "./category.controller.js";

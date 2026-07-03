@@ -1481,6 +1481,8 @@ export const communityService = {
     status?: "visible" | "hidden" | "all";
     page: number;
     limit: number;
+    sortField?: "name" | "order" | "createdAt";
+    sortDir?: "asc" | "desc";
   }): Promise<AdminCategoryListResult> {
     const active =
       query.status === "visible"
@@ -1494,6 +1496,8 @@ export const communityService = {
       active,
       page: query.page,
       limit: query.limit,
+      sortField: query.sortField,
+      sortDir: query.sortDir,
     });
 
     const totalPages = total === 0 ? 0 : Math.ceil(total / query.limit);
@@ -1570,14 +1574,23 @@ export const communityService = {
     };
   },
 
-  async deleteCategory(id: string): Promise<void> {
+  /**
+   * Soft-delete (mirrors `Community.deletedAt`) when the category is still
+   * referenced by communities — the FK would otherwise dangle; hard-delete
+   * otherwise. Returns which branch was taken so callers can report it.
+   */
+  async deleteCategory(id: string): Promise<{ softDeleted: boolean }> {
     const category = await communityRepository.findCategoryByIdAdmin(id);
     if (!category) throw new NotFoundError("CATEGORY_NOT_FOUND");
 
     const inUse = await communityRepository.countCommunitiesWithCategory(id);
-    if (inUse > 0) throw new ConflictError("CATEGORY_IN_USE");
+    if (inUse > 0) {
+      await communityRepository.softDeleteCategoryById(id);
+      return { softDeleted: true };
+    }
 
     await communityRepository.deleteCategoryById(id);
+    return { softDeleted: false };
   },
 
   async checkNameAvailability(

@@ -2688,35 +2688,58 @@ export const openApiSchemas = {
   },
 
   // ---- Categories ----
+  // Owned by community-service's `CommunityCategory` (community_db); the
+  // admin panel manages it exclusively through a gRPC bridge — no duplicate
+  // category table exists in admin_db. Single plain-text `name` (no i18n).
   AdminCategory: {
     type: "object",
     properties: {
-      id: { type: "string", example: "cat_food" },
-      name: {
-        type: "object",
-        description: "Localized name per locale.",
-        example: { en: "Food", vi: "Ẩm thực" },
+      id: { type: "string", example: "665f1b2c3d4e5f6a7b8c9d0e" },
+      name: { type: "string", example: "Technology" },
+      slug: { type: "string", example: "technology" },
+      visible: {
+        type: "boolean",
+        description: "Shown in the create-community category picker.",
+        example: true,
       },
-      icon: { type: "string", nullable: true, example: "utensils" },
-      order: { type: "integer", example: 1 },
+      order: { type: "integer", example: 0 },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
     },
-    required: ["id", "name"],
+    required: [
+      "id",
+      "name",
+      "slug",
+      "visible",
+      "order",
+      "createdAt",
+      "updatedAt",
+    ],
   },
   AdminCategoryCreateRequest: {
     type: "object",
     required: ["name"],
     properties: {
-      name: { type: "object", example: { en: "Food", vi: "Ẩm thực" } },
-      icon: { type: "string", nullable: true, example: "utensils" },
-      order: { type: "integer", example: 1 },
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 80,
+        description: "Trimmed; must be unique case-insensitively.",
+        example: "Technology",
+      },
     },
   },
   AdminCategoryUpdateRequest: {
     type: "object",
+    description: "At least one of `name` or `visible` must be provided.",
     properties: {
-      name: { type: "object", example: { en: "Food", vi: "Ẩm thực" } },
-      icon: { type: "string", nullable: true },
-      order: { type: "integer" },
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 80,
+        example: "Renamed category",
+      },
+      visible: { type: "boolean", example: false },
     },
   },
 

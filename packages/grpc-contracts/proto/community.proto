@@ -55,6 +55,15 @@ service CommunityService {
   rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
   rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
 
+  // ---- Backoffice (admin panel) Category Management ----
+  // Categories are owned by community-service (CommunityCategory); the
+  // backoffice admin panel manages them exclusively through these RPCs — no
+  // duplicate category table exists on the backoffice side.
+  rpc AdminListCategories (AdminListCategoriesRequest) returns (AdminListCategoriesResponse);
+  rpc AdminCreateCategory (AdminCreateCategoryRequest) returns (AdminCategoryMutationResponse);
+  rpc AdminUpdateCategory (AdminUpdateCategoryRequest) returns (AdminCategoryMutationResponse);
+  rpc AdminDeleteCategory (AdminDeleteCategoryRequest) returns (AdminDeleteCategoryResponse);
+
   // Bulk community-chat summaries for GET /communities/mine: per-community unread
   // count + last-message preview for the calling user. Member-only previews.
   rpc GetCommunityChatSummaries (GetCommunityChatSummariesRequest) returns (GetCommunityChatSummariesResponse);
@@ -386,6 +395,61 @@ message AdminSetModerationStatusResponse {
   int64  closed_at  = 3; // epoch ms; 0 when ACTIVE
   // "" on success, else COMMUNITY_NOT_FOUND | COMMUNITY_ALREADY_CLOSED | COMMUNITY_NOT_CLOSED
   string error_code = 4;
+}
+
+// ---- Backoffice Category Management ----
+message AdminCategoryRow {
+  string id         = 1;
+  string name       = 2;
+  string slug       = 3;
+  bool   visible    = 4; // CommunityCategory.active
+  int32  order      = 5;
+  int64  created_at = 6; // epoch ms
+  int64  updated_at = 7; // epoch ms
+}
+
+message AdminListCategoriesRequest {
+  string search     = 1; // "" = no filter
+  string status     = 2; // "visible" | "hidden" | "" (= all)
+  int32  page       = 3;
+  int32  limit      = 4;
+  string sort_field = 5; // "name" | "order" | "createdAt" | "" (default "order")
+  string sort_dir    = 6; // "asc" | "desc" | "" (default "asc")
+}
+
+message AdminListCategoriesResponse {
+  repeated AdminCategoryRow categories = 1;
+  int64                     total      = 2;
+}
+
+message AdminCreateCategoryRequest {
+  string name = 1;
+}
+
+message AdminUpdateCategoryRequest {
+  string category_id  = 1;
+  string name         = 2; // "" = leave unchanged
+  bool   has_name      = 3; // true when `name` was provided in the request body
+  bool   visible       = 4; // ignored unless has_visible
+  bool   has_visible    = 5;
+}
+
+// "" on success, else CATEGORY_NOT_FOUND | CATEGORY_NAME_TAKEN
+message AdminCategoryMutationResponse {
+  bool             ok         = 1;
+  AdminCategoryRow category   = 2;
+  string           error_code = 3;
+}
+
+message AdminDeleteCategoryRequest {
+  string category_id = 1;
+}
+
+// "" on success, else CATEGORY_NOT_FOUND
+message AdminDeleteCategoryResponse {
+  bool   ok           = 1;
+  bool   soft_deleted  = 2; // true when the category was in use (soft-deleted, not removed)
+  string error_code    = 3;
 }
 
 message GetCommunityCountRequest {}

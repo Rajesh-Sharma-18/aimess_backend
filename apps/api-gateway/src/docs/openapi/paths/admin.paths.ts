@@ -2590,7 +2590,11 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.8 Categories  (PLANNED) — requires `categories.manage`
+  // §4.8 Categories — requires `categories.manage`
+  //
+  // Owned by community-service's `CommunityCategory` (community_db) — the
+  // admin panel manages it exclusively through a gRPC bridge (no duplicate
+  // category table exists in admin_db). Plain-text `name`, no i18n/icon.
   // ===========================================================================
   "/admin/v1/categories": {
     get: {
@@ -2598,24 +2602,68 @@ export const adminPaths = {
       operationId: "adminListCategories",
       summary: "List categories",
       description:
-        PLANNED +
-        "Community categories (gRPC-live community-svc or admin_db OWN — ownership open question §6.2). Requires `categories.manage` (read uses the same perm group).",
+        "Paginated, searchable, sortable list (gRPC-live from community-service). " +
+        "`search` matches name (case-insensitive). `status` filters by visibility " +
+        "(`visible`/`hidden`/`all`, default `all`). Sort whitelist " +
+        "`name|order|createdAt` with `:asc|:desc` (default `order:asc`). Requires " +
+        "`categories.manage`.",
       security: adminSecurity,
-      parameters: [...listParams],
+      parameters: [
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Matches name (case-insensitive).",
+        },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["visible", "hidden", "all"],
+            default: "all",
+          },
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            pattern: "^(name|order|createdAt):(asc|desc)$",
+            default: "order:asc",
+          },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
       responses: {
         "200": listRes("Categories", "#/components/schemas/AdminCategory"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     post: {
       tags: [adminTags.categories],
       operationId: "adminCreateCategory",
       summary: "Create a category",
       description:
-        PLANNED +
-        "i18n name (en/vi), icon, order. Audited. Requires `categories.manage`.",
+        "`name` is trimmed and must be unique case-insensitively (community-service " +
+        "enforces this; concurrent duplicate creates race safely on the underlying " +
+        "unique index). Audited. Requires `categories.manage`.",
       security: adminSecurity,
       requestBody: jsonBody("#/components/schemas/AdminCategoryCreateRequest"),
       responses: {
@@ -2623,8 +2671,9 @@ export const adminPaths = {
         "400": errRes("Validation failed"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
+        "409": errRes("Category name already taken"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/categories/{id}": {
@@ -2632,7 +2681,10 @@ export const adminPaths = {
       tags: [adminTags.categories],
       operationId: "adminUpdateCategory",
       summary: "Update a category",
-      description: PLANNED + "Audited. Requires `categories.manage`.",
+      description:
+        "Update `name` and/or toggle `visible` — at least one must be provided. A new " +
+        "`name` is re-checked for case-insensitive uniqueness. Audited. Requires " +
+        "`categories.manage`.",
       security: adminSecurity,
       parameters: [idPathParam],
       requestBody: jsonBody("#/components/schemas/AdminCategoryUpdateRequest"),
@@ -2642,26 +2694,43 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
         "404": errRes("Category not found"),
+        "409": errRes("Category name already taken"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     delete: {
       tags: [adminTags.categories],
       operationId: "adminDeleteCategory",
       summary: "Delete a category",
       description:
-        PLANNED +
-        "Guard: blocked if the category is in use. 🔐 step-up TOTP. Audited. Requires `categories.manage`.",
+        "Hard-deletes the category when no community references it. When the category " +
+        "is still referenced by one or more communities, it is soft-deleted instead " +
+        "(permanently hidden from every category query, same `deletedAt` convention as " +
+        "`Community.deletedAt`) so existing communities keep a valid `categoryId`. " +
+        "Audited. Requires `categories.manage`.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
+      parameters: [idPathParam],
       responses: {
-        "200": okRes("Category deleted", "#/components/schemas/AdminCategory"),
-        "401": errRes("Unauthorized / invalid TOTP"),
+        "200": {
+          description: "Category deleted",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: { type: "null" },
+                },
+                required: ["success", "data"],
+              },
+            },
+          },
+        },
+        "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
         "404": errRes("Category not found"),
-        "409": errRes("Category in use"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 

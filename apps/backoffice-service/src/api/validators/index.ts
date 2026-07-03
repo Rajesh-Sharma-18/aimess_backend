@@ -149,3 +149,15 @@ export {
   type ListAnnouncementsQueryInput,
   type AnnouncementIdParam,
 } from "./announcement.validator.js";
+
+export {
+  createCategorySchema,
+  updateCategorySchema,
+  listCategoriesQuerySchema,
+  categoryIdParamSchema,
+  categoryStatusEnum,
+  type CreateCategoryInput,
+  type UpdateCategoryInput,
+  type ListCategoriesQueryInput,
+  type CategoryIdParam,
+} from "./category.validator.js";

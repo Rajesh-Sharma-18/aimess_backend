@@ -20,7 +20,7 @@ export const communityRepository = {
   // ---------------------------------------------------------------------------
   listActiveCategories() {
     return prisma.communityCategory.findMany({
-      where: { active: true },
+      where: { active: true, deletedAt: { isSet: false } },
       orderBy: [{ order: "asc" }, { name: "asc" }],
       select: { id: true, name: true, slug: true },
     });
@@ -28,7 +28,7 @@ export const communityRepository = {
 
   findActiveCategoryById(categoryId: string) {
     return prisma.communityCategory.findFirst({
-      where: { id: categoryId, active: true },
+      where: { id: categoryId, active: true, deletedAt: { isSet: false } },
       select: { id: true, name: true },
     });
   },
@@ -65,8 +65,12 @@ export const communityRepository = {
     active?: boolean;
     page: number;
     limit: number;
+    sortField?: "name" | "order" | "createdAt";
+    sortDir?: "asc" | "desc";
   }) {
-    const where: Prisma.CommunityCategoryWhereInput = {};
+    const where: Prisma.CommunityCategoryWhereInput = {
+      deletedAt: { isSet: false },
+    };
     if (params.search) {
       where.name = { contains: params.search, mode: "insensitive" };
     }
@@ -74,10 +78,16 @@ export const communityRepository = {
       where.active = params.active;
     }
     const skip = (params.page - 1) * params.limit;
+    const sortField = params.sortField ?? "order";
+    const sortDir = params.sortDir ?? "asc";
+    const orderBy: Prisma.CommunityCategoryOrderByWithRelationInput[] =
+      sortField === "order"
+        ? [{ order: sortDir }, { name: "asc" }]
+        : [{ [sortField]: sortDir }];
     return Promise.all([
       prisma.communityCategory.findMany({
         where,
-        orderBy: [{ order: "asc" }, { name: "asc" }],
+        orderBy,
         skip,
         take: params.limit,
         select: {
@@ -96,7 +106,7 @@ export const communityRepository = {
 
   findCategoryByIdAdmin(id: string) {
     return prisma.communityCategory.findFirst({
-      where: { id },
+      where: { id, deletedAt: { isSet: false } },
       select: {
         id: true,
         name: true,
@@ -113,6 +123,7 @@ export const communityRepository = {
     return prisma.communityCategory.findFirst({
       where: {
         name: { equals: name, mode: "insensitive" },
+        deletedAt: { isSet: false },
         ...(excludeId ? { id: { not: excludeId } } : {}),
       },
       select: { id: true },
@@ -156,6 +167,20 @@ export const communityRepository = {
   deleteCategoryById(id: string) {
     return prisma.communityCategory.delete({
       where: { id },
+      select: { id: true, name: true, slug: true },
+    });
+  },
+
+  /**
+   * Permanent soft-delete for a category still referenced by communities —
+   * same idiom as `Community.deletedAt`. Hides the category from every
+   * category query (`deletedAt: { isSet: false }`) without breaking the
+   * `categoryId` FK on communities still pointing at it.
+   */
+  softDeleteCategoryById(id: string) {
+    return prisma.communityCategory.update({
+      where: { id },
+      data: { active: false, deletedAt: new Date() },
       select: { id: true, name: true, slug: true },
     });
   },
