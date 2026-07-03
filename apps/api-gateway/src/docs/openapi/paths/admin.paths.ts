@@ -1029,10 +1029,12 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.3 Communities  (Community Management module — IMPLEMENTED, Phase 1 mock
-  //      data behind the real contract; see docs/COMMUNITY-MANAGEMENT-API-SPEC.md.
-  //      Phase 2 swaps MockCommunityRepository → gRPC-backed repo, no contract
-  //      change. `communities.read` = list/detail; `communities.moderate` =
+  // §4.3 Communities  (Community Management module — IMPLEMENTED, live gRPC to
+  //      community-service via GrpcCommunityRepository; see
+  //      docs/COMMUNITY-MANAGEMENT-API-SPEC.md. A MockCommunityRepository still
+  //      exists in source for offline/demo use but is NOT the active
+  //      implementation — do not describe this module as mock data.
+  //      `communities.read` = list/detail; `communities.moderate` =
   //      close/reopen/bulk.)
   // ===========================================================================
   "/admin/v1/communities": {
@@ -1041,7 +1043,7 @@ export const adminPaths = {
       operationId: "adminListCommunities",
       summary: "List communities (community management table)",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Paginated, filtered communities list. " +
+        "Paginated, filtered communities list (live gRPC). " +
         "Filters: `search` (community name / admin name), `type`, `category` (slug or id), `status`, " +
         "`createdFrom`/`createdTo` (on createdAt, inclusive). Sort whitelist " +
         "`createdAt|name|memberCount|livestreamCount` with `:asc|:desc` (default `createdAt:desc`). " +
@@ -1132,7 +1134,7 @@ export const adminPaths = {
       operationId: "adminGetCommunity",
       summary: "Get community detail",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Full community detail: core entity, owner " +
+        "Full community detail (live gRPC): core entity, owner " +
         "profile + account standing, member stats, livestream stats (nullable; `stale` until " +
         "stream-service gRPC), moderation history timeline, and settings summary. `partial` is true " +
         "when an upstream source could not be reached. Requires `communities.read`.",
@@ -1223,7 +1225,7 @@ export const adminPaths = {
       operationId: "adminCloseCommunity",
       summary: "Close a community",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Move a community to CLOSED with a " +
+        "Move a community to CLOSED with a " +
         "`reasonCode` (+ optional `reasonNote`, `notifyOwner`). Records a ModerationAction + AuditLog. " +
         "Requires `communities.moderate`.",
       security: adminSecurity,
@@ -1256,7 +1258,7 @@ export const adminPaths = {
       operationId: "adminReopenCommunity",
       summary: "Reopen a community",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Move a CLOSED community back to ACTIVE " +
+        "Move a CLOSED community back to ACTIVE " +
         "(+ optional `reasonNote`, `notifyOwner`). Records a ModerationAction + AuditLog. " +
         "Requires `communities.moderate`.",
       security: adminSecurity,
@@ -1292,7 +1294,7 @@ export const adminPaths = {
       operationId: "adminBulkCloseCommunities",
       summary: "Bulk close communities",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Close up to 100 communities in one call. " +
+        "Close up to 100 communities in one call. " +
         "Returns **207 Multi-Status** with per-item outcome (partial success is normal). One " +
         "ModerationAction + AuditLog per succeeded item. Requires `communities.moderate`.",
       security: adminSecurity,
@@ -1317,7 +1319,7 @@ export const adminPaths = {
       operationId: "adminBulkReopenCommunities",
       summary: "Bulk reopen communities",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Reopen up to 100 communities in one call. " +
+        "Reopen up to 100 communities in one call. " +
         "Returns **207 Multi-Status** with per-item outcome. One ModerationAction + AuditLog per " +
         "succeeded item. Requires `communities.moderate`.",
       security: adminSecurity,
@@ -1785,9 +1787,12 @@ export const adminPaths = {
       summary: "Resolve a report",
       description:
         "**(Phase 1 — mock data behind the real contract)** Mark a report RESOLVED with a resolution " +
-        "+ optional enforcement action. The enforcement (`SUSPEND_7D`, `BAN`, …) is recorded as a " +
-        "decision and emitted as `moderation.action.requested` (RabbitMQ) — auth/user-service own " +
-        "actual account state (bounded-context rule). Audited. Idempotent via `Idempotency-Key`. " +
+        "+ optional enforcement action (`actionOnReportedUser`). **The enforcement action is currently " +
+        "RECORDED ONLY, not applied** — there is no RabbitMQ publish or call into the Users module in " +
+        "the current code, despite an earlier version of this doc claiming one (`moderation.action.requested`). " +
+        'Resolving with e.g. `actionOnReportedUser: "BAN"` returns `appliedActions` in the response but ' +
+        "does NOT actually ban the user — do not surface this as a completed enforcement action in the UI " +
+        "until backend wires the real enforcement call. Audited (writes an AuditLog row only, no ModerationAction). " +
         "Requires `reports.action`.",
       security: adminSecurity,
       parameters: [
@@ -2093,7 +2098,8 @@ export const adminPaths = {
       operationId: "adminBulkReviewStreamReports",
       summary: "Bulk review stream reports",
       description:
-        "Transition up to 100 stream reports to REVIEWING, RESOLVED, or DISMISSED in a single request. Returns 207 Multi-Status. Audited as `livestream.reports_bulk_reviewed`. Requires `livestreams.moderate`.",
+        "Transition up to 100 stream reports to REVIEWING, RESOLVED, or DISMISSED in a single request. Returns 207 Multi-Status. Audited as `livestream.reports_bulk_reviewed`. " +
+        "**NO-OP WARNING: the live implementation does not mutate any report row** — it unconditionally reports every item as succeeded without touching report state. Report status for livestream reports is intended to be owned by the Reports & Moderation module, which this endpoint does not call into. Do not rely on this endpoint to actually change report status today. Requires `livestreams.moderate`.",
       security: adminSecurity,
       requestBody: {
         required: true,
