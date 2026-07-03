@@ -2770,7 +2770,8 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.9 Audit Logs  (PLANNED) — requires `auditlogs.read`
+  // §4.9 Audit Logs  (IMPLEMENTED) — requires `auditlogs.read`. Read-only;
+  // rows are written automatically by every other admin module.
   // ===========================================================================
   "/admin/v1/audit-logs": {
     get: {
@@ -2778,40 +2779,59 @@ export const adminPaths = {
       operationId: "adminListAuditLogs",
       summary: "List audit logs",
       description:
-        PLANNED +
-        "Append-only table (admin_db OWN) — no mutations. Filters: `actorId`, `action`, `targetType`, `from`, `to`. Requires `auditlogs.read`.",
+        "Append-only table (admin_db OWN) — no mutations, newest first. search matches performer name/email OR targetId. action is repeatable (?action=A&action=B). Sort whitelist createdAt|action with :asc|:desc (default createdAt:desc). dateFrom/dateTo are YYYY-MM-DD, applied as a whole-day range. Requires auditlogs.read.",
       security: adminSecurity,
       parameters: [
-        ...listParams,
         {
-          name: "actorId",
+          name: "search",
           in: "query",
           required: false,
           schema: { type: "string" },
+          description:
+            "Matches performer name/email OR targetId (case-insensitive).",
         },
         {
           name: "action",
           in: "query",
           required: false,
-          schema: { type: "string" },
+          style: "form",
+          explode: true,
+          schema: { type: "array", items: { type: "string", maxLength: 100 } },
+          description: "Repeatable action-name filter.",
         },
         {
-          name: "targetType",
+          name: "sort",
           in: "query",
           required: false,
-          schema: { type: "string" },
+          schema: {
+            type: "string",
+            pattern: "^(createdAt|action):(asc|desc)$",
+            default: "createdAt:desc",
+          },
         },
         {
-          name: "from",
+          name: "page",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date-time" },
+          schema: { type: "integer", minimum: 1, default: 1 },
         },
         {
-          name: "to",
+          name: "limit",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date-time" },
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+        {
+          name: "dateFrom",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date" },
+        },
+        {
+          name: "dateTo",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date" },
         },
       ],
       responses: {
@@ -2819,47 +2839,7 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing auditlogs.read"),
       },
-      "x-implementation-status": "planned",
-    },
-  },
-  "/admin/v1/audit-logs/export": {
-    get: {
-      tags: [adminTags.auditLogs],
-      operationId: "adminExportAuditLogs",
-      summary: "Export audit logs",
-      description:
-        PLANNED +
-        "CSV/JSON export (presigned MinIO for large exports — private bucket). Requires `auditlogs.read`.",
-      security: adminSecurity,
-      parameters: [
-        {
-          name: "format",
-          in: "query",
-          required: false,
-          schema: { type: "string", enum: ["csv", "json"], default: "csv" },
-        },
-        {
-          name: "from",
-          in: "query",
-          required: false,
-          schema: { type: "string", format: "date-time" },
-        },
-        {
-          name: "to",
-          in: "query",
-          required: false,
-          schema: { type: "string", format: "date-time" },
-        },
-      ],
-      responses: {
-        "200": okRes(
-          "Export ready",
-          "#/components/schemas/AdminAuditLogExport"
-        ),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing auditlogs.read"),
-      },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/audit-logs/{id}": {
@@ -2868,7 +2848,7 @@ export const adminPaths = {
       operationId: "adminGetAuditLog",
       summary: "Get audit log detail",
       description:
-        PLANNED + "Full diff detail (admin_db OWN). Requires `auditlogs.read`.",
+        "Full detail incl. before/after metadata diff and a derived reason (scans metadata.after then metadata.before for the first non-empty reason/note/reasonNote/reasonCode string). id must be a UUID. Requires auditlogs.read.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
@@ -2877,201 +2857,261 @@ export const adminPaths = {
         "403": errRes("Missing auditlogs.read"),
         "404": errRes("Audit log not found"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 
   // ===========================================================================
-  // §4.10 System Health  (PLANNED) — requires `systemhealth.read`
+  // §4.10 System Health  (IMPLEMENTED) — requires `systemhealth.read`. No
+  // request body/query params. Redis-cached, 5s TTL. Never 500s — a partial
+  // outage still returns 200 with the affected components marked down/degraded.
   // ===========================================================================
-  "/admin/v1/system/health": {
+  "/admin/v1/system-health": {
     get: {
       tags: [adminTags.systemHealth],
-      operationId: "adminGetServiceHealth",
-      summary: "Per-service health",
+      operationId: "adminGetSystemHealth",
+      summary: "Live system health snapshot",
       description:
-        PLANNED +
-        "Per-service status (Chat/Media/Livestream/Notification + auth/user/community). Probes gRPC health + circuit-breaker state (redis + gRPC-live). Requires `systemhealth.read`.",
+        "Overall status + services-up tally + per-service health (gRPC ping + circuit-breaker stats for auth/community/chat; media/notification/stream/user report status:'unknown', monitored:false — no probe wired for them yet) + infrastructure health (Postgres/Redis/RabbitMQ/MinIO). lastUpdated is the true staleness indicator (cache TTL 5s). Requires systemhealth.read.",
       security: adminSecurity,
       responses: {
-        "200": okRes(
-          "Service health",
-          "#/components/schemas/AdminServiceStatus"
-        ),
+        "200": okRes("System health", "#/components/schemas/AdminSystemHealth"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing systemhealth.read"),
       },
-      "x-implementation-status": "planned",
-    },
-  },
-  "/admin/v1/system/queues": {
-    get: {
-      tags: [adminTags.systemHealth],
-      operationId: "adminGetQueueDepths",
-      summary: "Queue depths",
-      description:
-        PLANNED +
-        "RabbitMQ/Bull queue depths, DLQ counts (redis). Requires `systemhealth.read`.",
-      security: adminSecurity,
-      responses: {
-        "200": okRes("Queue depths", "#/components/schemas/AdminSystemQueues"),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing systemhealth.read"),
-      },
-      "x-implementation-status": "planned",
-    },
-  },
-  "/admin/v1/system/metrics": {
-    get: {
-      tags: [adminTags.systemHealth],
-      operationId: "adminGetPlatformMetrics",
-      summary: "Platform metrics snapshot",
-      description:
-        PLANNED +
-        "Aggregate platform metrics snapshot (read-model + redis). Requires `systemhealth.read`.",
-      security: adminSecurity,
-      responses: {
-        "200": okRes(
-          "Metrics snapshot",
-          "#/components/schemas/AdminSystemMetrics"
-        ),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing systemhealth.read"),
-      },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 
   // ===========================================================================
-  // §4.11 Admin Accounts  (PLANNED) — requires `admins.manage` (SUPER_ADMIN)
+  // §4.11 Admin Accounts  (IMPLEMENTED) — requires `admins.manage`
+  // (SUPER_ADMIN-gated for SUPER_ADMIN-targeting mutations). NOTE: there is no
+  // TOTP/2FA step-up flow implemented today — do not send X-Totp-Code.
   // ===========================================================================
-  "/admin/v1/admins": {
+  "/admin/v1/admin-accounts/permissions": {
+    get: {
+      tags: [adminTags.adminAccounts],
+      operationId: "adminListPermissionCatalogue",
+      summary: "List the full permission catalogue",
+      description:
+        "Every permission key + its group, for building a permission-picker/reference UI. Requires admins.manage.",
+      security: adminSecurity,
+      responses: {
+        "200": listRes(
+          "Permission catalogue",
+          "#/components/schemas/AdminPermissionCatalogueItem"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/admin-accounts": {
     get: {
       tags: [adminTags.adminAccounts],
       operationId: "adminListAdminAccounts",
       summary: "List admin accounts",
       description:
-        PLANNED +
-        "List admin accounts + roles (admin_db OWN). Requires `admins.manage` (SUPER_ADMIN only).",
+        "Paginated, searchable, filtered admin list (admin_db OWN). search matches name OR email. status enum ACTIVE|DISABLED|INVITED|all (default all). roleKey enum or all (default all). Sort whitelist name|email|createdAt|lastLoginAt with :asc|:desc (default createdAt:desc). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [...listParams],
+      parameters: [
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+        },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["ACTIVE", "DISABLED", "INVITED", "all"],
+            default: "all",
+          },
+        },
+        {
+          name: "roleKey",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: [
+              "SUPER_ADMIN",
+              "ADMIN",
+              "MODERATOR",
+              "SUPPORT_AGENT",
+              "ANALYST",
+              "all",
+            ],
+            default: "all",
+          },
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            pattern: "^(name|email|createdAt|lastLoginAt):(asc|desc)$",
+            default: "createdAt:desc",
+          },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
       responses: {
         "200": listRes("Admin accounts", "#/components/schemas/AdminAccount"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     post: {
       tags: [adminTags.adminAccounts],
       operationId: "adminCreateAdminAccount",
       summary: "Create an admin account",
       description:
-        PLANNED +
-        "Create admin (invite + initial TOTP enrolment). 🔐 step-up TOTP. Audited. Requires `admins.manage` (SUPER_ADMIN only).",
+        "Only a SUPER_ADMIN actor may create a SUPER_ADMIN target (else 403 ADMIN_FORBIDDEN). Audited (admin.created). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [totpHeaderParam],
       requestBody: jsonBody("#/components/schemas/AdminAccountCreateRequest"),
       responses: {
         "201": okRes("Admin created", "#/components/schemas/AdminAccount"),
         "400": errRes("Validation failed"),
-        "401": errRes("Unauthorized / invalid TOTP"),
-        "403": errRes("Missing admins.manage"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
+        "404": errRes("ADMIN_ROLE_NOT_FOUND (defensive)"),
+        "409": errRes("ADMIN_EMAIL_TAKEN"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/admins/{id}": {
+  "/admin/v1/admin-accounts/{id}": {
     get: {
       tags: [adminTags.adminAccounts],
       operationId: "adminGetAdminAccount",
       summary: "Get an admin account",
-      description: PLANNED + "Requires `admins.manage` (SUPER_ADMIN only).",
+      description: "Requires admins.manage.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
         "200": okRes("Admin account", "#/components/schemas/AdminAccount"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage"),
-        "404": errRes("Admin not found"),
+        "404": errRes("ADMIN_NOT_FOUND"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
-  },
-  "/admin/v1/admins/{id}/role": {
     patch: {
       tags: [adminTags.adminAccounts],
-      operationId: "adminChangeAdminRole",
-      summary: "Change an admin's role",
+      operationId: "adminUpdateAdminAccount",
+      summary: "Update an admin's profile (name/avatarUrl only)",
       description:
-        PLANNED +
-        "Change role/permissions. 🔐 step-up TOTP. Audited. Requires `admins.manage` (SUPER_ADMIN only).",
+        "Cannot edit an existing SUPER_ADMIN target unless the actor is SUPER_ADMIN. Role changes are NOT accepted here — use .../permissions. Audited (admin.updated). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
-      requestBody: jsonBody("#/components/schemas/AdminAccountRoleRequest"),
+      parameters: [idPathParam],
+      requestBody: jsonBody("#/components/schemas/AdminAccountUpdateRequest"),
       responses: {
-        "200": okRes("Role changed", "#/components/schemas/AdminAccount"),
+        "200": okRes("Admin updated", "#/components/schemas/AdminAccount"),
         "400": errRes("Validation failed"),
-        "401": errRes("Unauthorized / invalid TOTP"),
-        "403": errRes("Missing admins.manage"),
-        "404": errRes("Admin not found"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
+        "404": errRes("ADMIN_NOT_FOUND"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/admins/{id}/disable": {
+  "/admin/v1/admin-accounts/{id}/activate": {
     post: {
       tags: [adminTags.adminAccounts],
-      operationId: "adminDisableAdminAccount",
-      summary: "Disable an admin account",
+      operationId: "adminActivateAdminAccount",
+      summary: "Activate a disabled admin account",
       description:
-        PLANNED +
-        "Deactivate. 🔐 step-up TOTP. Audited. Requires `admins.manage` (SUPER_ADMIN only).",
+        "No request body. Audited (admin.activated). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
+      parameters: [idPathParam],
       responses: {
-        "200": okRes("Admin disabled", "#/components/schemas/AdminAccount"),
-        "401": errRes("Unauthorized / invalid TOTP"),
-        "403": errRes("Missing admins.manage"),
-        "404": errRes("Admin not found"),
+        "200": okRes("Admin activated", "#/components/schemas/AdminAccount"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
+        "404": errRes("ADMIN_NOT_FOUND"),
+        "409": errRes("ADMIN_ALREADY_ACTIVE"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/admins/{id}/reset-totp": {
+  "/admin/v1/admin-accounts/{id}/deactivate": {
     post: {
       tags: [adminTags.adminAccounts],
-      operationId: "adminResetAdminTotp",
-      summary: "Reset an admin's TOTP",
+      operationId: "adminDeactivateAdminAccount",
+      summary: "Deactivate an admin account",
       description:
-        PLANNED +
-        "Force 2FA re-enrolment. 🔐 step-up TOTP. Audited. Requires `admins.manage` (SUPER_ADMIN only).",
+        "No request body. Immediately revokes ALL active sessions for the target admin. 403 ADMIN_CANNOT_DEACTIVATE_SELF if id === actor.id. Audited (admin.deactivated). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
+      parameters: [idPathParam],
       responses: {
-        "200": okRes("TOTP reset", "#/components/schemas/AdminAccount"),
-        "401": errRes("Unauthorized / invalid TOTP"),
-        "403": errRes("Missing admins.manage"),
-        "404": errRes("Admin not found"),
+        "200": okRes("Admin deactivated", "#/components/schemas/AdminAccount"),
+        "401": errRes("Unauthorized"),
+        "403": errRes(
+          "Missing admins.manage, ADMIN_FORBIDDEN, or ADMIN_CANNOT_DEACTIVATE_SELF"
+        ),
+        "404": errRes("ADMIN_NOT_FOUND"),
+        "409": errRes("ADMIN_ALREADY_INACTIVE"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/roles": {
+  "/admin/v1/admin-accounts/{id}/permissions": {
     get: {
       tags: [adminTags.adminAccounts],
-      operationId: "adminListRoles",
-      summary: "List roles",
-      description:
-        PLANNED +
-        "List roles + permission sets (admin_db OWN). Requires `admins.manage` (SUPER_ADMIN only).",
+      operationId: "adminGetAdminAccountPermissions",
+      summary: "Get an admin's resolved (role-derived) permissions",
+      description: "Requires admins.manage.",
       security: adminSecurity,
+      parameters: [idPathParam],
       responses: {
-        "200": listRes("Roles", "#/components/schemas/AdminRole"),
+        "200": okRes(
+          "Permissions view",
+          "#/components/schemas/AdminAccountPermissionsView"
+        ),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage"),
+        "404": errRes("ADMIN_NOT_FOUND"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
+    },
+    patch: {
+      tags: [adminTags.adminAccounts],
+      operationId: "adminSetAdminAccountRole",
+      summary: "Reassign an admin's role",
+      description:
+        "There is NO per-permission override in this service — this REPLACES the admin's whole role. Both the existing role and the incoming roleKey are checked against the SUPER_ADMIN gate; either can 403. Audited (admin.permissions_updated). Requires admins.manage.",
+      security: adminSecurity,
+      parameters: [idPathParam],
+      requestBody: jsonBody("#/components/schemas/AdminAccountRoleRequest"),
+      responses: {
+        "200": okRes(
+          "Permissions view",
+          "#/components/schemas/AdminAccountPermissionsView"
+        ),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
+        "404": errRes("ADMIN_NOT_FOUND or ADMIN_ROLE_NOT_FOUND"),
+      },
+      "x-implementation-status": "implemented",
     },
   },
 
