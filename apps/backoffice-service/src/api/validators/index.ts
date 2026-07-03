@@ -161,3 +161,10 @@ export {
   type ListCategoriesQueryInput,
   type CategoryIdParam,
 } from "./category.validator.js";
+
+export {
+  listAuditLogsQuerySchema,
+  auditLogIdParamSchema,
+  type ListAuditLogsQueryInput,
+  type AuditLogIdParam,
+} from "./audit-log.validator.js";

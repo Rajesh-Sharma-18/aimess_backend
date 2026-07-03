@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 
 import { announcementRoutes } from "./announcement.routes.js";
+import { auditLogRoutes } from "./audit-log.routes.js";
 import { authRoutes } from "./auth.routes.js";
 import { categoryRoutes } from "./category.routes.js";
 import { dashboardRoutes } from "./dashboard.routes.js";
@@ -51,4 +52,9 @@ serviceRoutes.use(announcementRoutes);
 // `/admin/v1/categories` (the gateway strips `/admin` and forwards `/v1/*`
 // verbatim). Self-prefixed, NOT nested under a base path — same as moderation.
 serviceRoutes.use(categoryRoutes);
+// Audit Logs routes are self-prefixed with `/audit-logs` so they resolve at
+// `/v1/audit-logs/*` — matching the documented gateway path `/admin/v1/audit-logs`
+// (the gateway strips `/admin` and forwards `/v1/*` verbatim). Self-prefixed, NOT
+// nested under a base path — same as moderation/announcements.
+serviceRoutes.use(auditLogRoutes);
 serviceRoutes.use("/dashboard", dashboardRoutes);
