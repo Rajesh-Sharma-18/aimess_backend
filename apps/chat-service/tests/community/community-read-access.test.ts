@@ -245,20 +245,23 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
   // ban the user's PERSONAL join-session onboarding lines are hard-deleted so
   // they never accumulate across rejoin cycles.
   // -------------------------------------------------------------------------
-  it("deletePersonalJoinMessages purges only the user's join-session lines, bounded by eventAt", async () => {
+  it("deletePersonalJoinMessages purges only the user's join-session lines, bounded by eventAt, and returns the deleted ids", async () => {
+    const findMany = jest.fn().mockResolvedValue([{ id: "stale-1" }]);
     const deleteMany = jest.fn().mockResolvedValue({ count: 1 });
-    const prisma = { generalRoomMessage: { deleteMany } };
+    const prisma = { generalRoomMessage: { findMany, deleteMany } };
     const repo = new GeneralRoomMessageRepository(prisma as never);
 
     const boundary = new Date(1_700_000_500_000);
-    const count = await repo.deletePersonalJoinMessages({
+    const ids = await repo.deletePersonalJoinMessages({
       roomId: ROOM_ID,
       userId: USER_ID,
       beforeOrAt: boundary,
     });
 
-    expect(count).toBe(1);
-    const where = deleteMany.mock.calls[0][0].where;
+    // Returns the deleted ids (not just a count) so a caller can emit a
+    // per-id `community:message:deleted` event for an already-connected client.
+    expect(ids).toEqual(["stale-1"]);
+    const where = findMany.mock.calls[0][0].where;
     expect(where.roomId).toBe(ROOM_ID);
     // Scoped to the user's OWN personal rows only.
     expect(where.visibleToUserId).toBe(USER_ID);
@@ -269,17 +272,28 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     // Bounded by the leave time so a redelivered stale "left" can't nuke a
     // fresher rejoin line.
     expect(where.createdAt).toEqual({ lte: boundary });
+    // The actual delete targets exactly the ids just looked up.
+    expect(deleteMany.mock.calls[0][0].where).toEqual({
+      id: { in: ["stale-1"] },
+    });
   });
 
   it("deletePersonalJoinMessages omits the createdAt bound when no eventAt given", async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
     const deleteMany = jest.fn().mockResolvedValue({ count: 0 });
-    const prisma = { generalRoomMessage: { deleteMany } };
+    const prisma = { generalRoomMessage: { findMany, deleteMany } };
     const repo = new GeneralRoomMessageRepository(prisma as never);
 
-    await repo.deletePersonalJoinMessages({ roomId: ROOM_ID, userId: USER_ID });
+    const ids = await repo.deletePersonalJoinMessages({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+    });
 
-    const where = deleteMany.mock.calls[0][0].where;
+    expect(ids).toEqual([]);
+    const where = findMany.mock.calls[0][0].where;
     expect(where.createdAt).toBeUndefined();
+    // No stale rows found → deleteMany is skipped entirely (no-op DB call).
+    expect(deleteMany).not.toHaveBeenCalled();
   });
 
   it("read guard hides a non-active member's OWN join line but keeps it for an active member", async () => {
@@ -325,11 +339,13 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
   // EVERYONE — including active members — clears history that piled up before
   // the silent-kick rule (Telegram parity).
   // -------------------------------------------------------------------------
-  it("hides only the high-churn lifecycle lines (left/joined); moderation lines (removed/banned/unbanned) stay visible — Telegram parity", async () => {
+  it("hides the SILENT moderation/lifecycle lines (left/joined/removed/banned); unbanned stays visible — Telegram parity", async () => {
     const rows = [
-      // Visible moderation lines (NOT in HIDDEN_SYSTEM_MESSAGE_TYPES).
+      // Hidden: removal/ban must be SILENT from the chat-message perspective —
+      // the affected user learns via `community:membership:removed` instead.
       { id: "removed", deletedBy: [], systemMessageType: "MEMBER_REMOVED" },
       { id: "banned", deletedBy: [], systemMessageType: "MEMBER_BANNED" },
+      // Visible: informational moderation action (NOT in HIDDEN_SYSTEM_MESSAGE_TYPES).
       { id: "unbanned", deletedBy: [], systemMessageType: "MEMBER_UNBANNED" },
       // Hidden: voluntary-leave noise.
       { id: "left", deletedBy: [], systemMessageType: "MEMBER_LEFT" },
@@ -358,14 +374,8 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       viewerIsActiveMember: true,
     });
 
-    // left + joined dropped; moderation lines + role change + message survive.
-    expect(messages.map((m) => m.id)).toEqual([
-      "removed",
-      "banned",
-      "unbanned",
-      "rolechg",
-      "msg",
-    ]);
+    // left + joined + removed + banned dropped; unbanned + role change + message survive.
+    expect(messages.map((m) => m.id)).toEqual(["unbanned", "rolechg", "msg"]);
   });
 
   it("joiner with a legacy MEMBER_JOINED + personal COMMUNITY_JOINED sees exactly ONE join line (the duplicate fix)", async () => {
@@ -429,7 +439,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       (s: Record<string, unknown>) => "$match" in s
     ).$match;
     expect(match.systemMessageType).toEqual({
-      $nin: ["MEMBER_LEFT", "MEMBER_JOINED"],
+      $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"],
     });
   });
 
@@ -446,7 +456,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
 
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
     expect(match.systemMessageType).toEqual({
-      $nin: ["MEMBER_LEFT", "MEMBER_JOINED"],
+      $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"],
     });
   });
 
@@ -462,7 +472,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
 
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
     expect(match.systemMessageType).toEqual({
-      $nin: ["MEMBER_LEFT", "MEMBER_JOINED"],
+      $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"],
     });
   });
 });
@@ -609,6 +619,10 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
     };
     const messageRepo = {
       createSystemMessage: jest.fn().mockResolvedValue(created),
+      findOne: jest.fn().mockResolvedValue(null),
+      // Stale-join-line cleanup (rejoin dedup) runs before every personal
+      // join-session insert — see CommunitySystemMessageService.postOne().
+      deletePersonalJoinMessages: jest.fn().mockResolvedValue([]),
     };
     const roomRepo = {
       allocateSequence: jest.fn().mockResolvedValue(1),
@@ -738,25 +752,33 @@ describe("Community pin/unpin → system messages", () => {
   const MSG_ID = "m".repeat(24);
 
   it("CommunityPinService.pin emits PINNED_MESSAGE", async () => {
-    const post = jest.fn().mockResolvedValue(undefined);
+    const postReturnId = jest.fn().mockResolvedValue("sys-1");
     const svc = new CommunityPinService(
       {
-        countPinsByRoom: jest.fn().mockResolvedValue(0),
+        countActivePinsByRoom: jest.fn().mockResolvedValue(0),
         createPin: jest.fn().mockResolvedValue({ id: "p" }),
+        setPinSystemMessageId: jest.fn().mockResolvedValue(undefined),
       } as never,
       {
         findById: jest.fn().mockResolvedValue({
           id: MSG_ID,
           roomId: ROOM_ID,
           message: "hi",
+          messageType: "TEXT",
+          deletedForAll: false,
           createdAt: new Date(),
         }),
       } as never,
       {
+        findRoomById: jest.fn().mockResolvedValue({
+          id: ROOM_ID,
+          name: "Test Community",
+          status: "active",
+        }),
         incPinnedCount: jest.fn().mockResolvedValue({ pinnedCount: 1 }),
       } as never,
       { findByRoomAndUser: jest.fn().mockResolvedValue(MOD) } as never,
-      { post } as never
+      { postReturnId } as never
     );
 
     await svc.pin({
@@ -766,7 +788,7 @@ describe("Community pin/unpin → system messages", () => {
       communityId: ROOM_ID,
     });
 
-    expect(post).toHaveBeenCalledWith(
+    expect(postReturnId).toHaveBeenCalledWith(
       expect.objectContaining({
         communityId: ROOM_ID,
         systemMessageType: "PINNED_MESSAGE",
@@ -775,27 +797,32 @@ describe("Community pin/unpin → system messages", () => {
     );
   });
 
-  it("CommunityPinService.unpin emits UNPINNED_MESSAGE", async () => {
-    const post = jest.fn().mockResolvedValue(undefined);
+  it("CommunityPinService.unpin does NOT emit a system message (soft-delete only, product requirement)", async () => {
+    const postReturnId = jest.fn().mockResolvedValue("sys-1");
     const svc = new CommunityPinService(
-      { deletePin: jest.fn().mockResolvedValue({ deletedCount: 1 }) } as never,
+      {
+        findActivePinByMessageId: jest.fn().mockResolvedValue({
+          id: "p",
+          roomId: ROOM_ID,
+          messageId: MSG_ID,
+        }),
+        softDeletePin: jest
+          .fn()
+          .mockResolvedValue({ id: "p", unpinnedAt: new Date() }),
+      } as never,
       {} as never,
       {
         incPinnedCount: jest.fn().mockResolvedValue({ pinnedCount: 0 }),
       } as never,
       { findByRoomAndUser: jest.fn().mockResolvedValue(MOD) } as never,
-      { post } as never
+      { postReturnId } as never
     );
 
     await svc.unpin({ roomId: ROOM_ID, messageId: MSG_ID, userId: USER_ID });
 
-    expect(post).toHaveBeenCalledWith(
-      expect.objectContaining({
-        communityId: ROOM_ID,
-        systemMessageType: "UNPINNED_MESSAGE",
-        triggeredByUserId: USER_ID,
-      })
-    );
+    // NOTE: unpin() intentionally posts no UNPINNED_MESSAGE line (history is
+    // preserved via the soft-deleted pin row, not a chat system message).
+    expect(postReturnId).not.toHaveBeenCalled();
   });
 
   it("CommunityMessageService.pinMessage (gRPC path) emits PINNED_MESSAGE", async () => {

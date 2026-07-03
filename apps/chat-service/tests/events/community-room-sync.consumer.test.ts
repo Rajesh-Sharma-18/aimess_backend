@@ -13,7 +13,7 @@
  * callback (mirrors tests/events/user-profile.consumer.test.ts).
  */
 
-const deletePersonalJoinMessages = jest.fn(async () => 1);
+const deletePersonalJoinMessages = jest.fn(async () => [] as string[]);
 const upsert = jest.fn(async () => undefined);
 const setMute = jest.fn(async () => undefined);
 
@@ -129,8 +129,9 @@ async function start() {
 describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
   beforeEach(() => {
     deletePersonalJoinMessages.mockClear();
-    deletePersonalJoinMessages.mockResolvedValue(1);
+    deletePersonalJoinMessages.mockResolvedValue([]);
     upsert.mockClear();
+    redisPublish.mockClear();
   });
 
   it("LEFT purges the user's join lines bounded by eventAt, and acks", async () => {
@@ -165,6 +166,57 @@ describe("CommunityRoomSyncConsumer — join-line cleanup", () => {
       })
     );
     expect(deletePersonalJoinMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("REGRESSION: LEFT that purges a stale join line publishes community:message:deleted on the user's OWN channel, so an already-open client removes it without a reload", async () => {
+    deletePersonalJoinMessages.mockResolvedValue(["stale-msg-1"]);
+    const fake = await start();
+    await fake.deliver(
+      memberSynced({
+        communityId: COMMUNITY,
+        userId: USER,
+        status: "LEFT",
+        eventAt: EVENT_AT,
+      })
+    );
+
+    const deleteCall = redisPublish.mock.calls.find(
+      (c) =>
+        (JSON.parse(c[1] as string) as { event: string }).event ===
+        "community:message:deleted"
+    );
+    expect(deleteCall).toBeDefined();
+    // Personal join line — must publish to the user's own channel, never the
+    // community-wide room (other members never saw this line).
+    expect(deleteCall![0]).toBe(`user:${USER}`);
+    const parsed = JSON.parse(deleteCall![1] as string) as {
+      data: Record<string, unknown>;
+    };
+    expect(parsed.data).toMatchObject({
+      messageId: "stale-msg-1",
+      communityId: COMMUNITY,
+      roomId: COMMUNITY,
+    });
+  });
+
+  it("does NOT publish community:message:deleted when nothing was purged", async () => {
+    deletePersonalJoinMessages.mockResolvedValue([]);
+    const fake = await start();
+    await fake.deliver(
+      memberSynced({
+        communityId: COMMUNITY,
+        userId: USER,
+        status: "LEFT",
+        eventAt: EVENT_AT,
+      })
+    );
+
+    const deleteCall = redisPublish.mock.calls.find(
+      (c) =>
+        (JSON.parse(c[1] as string) as { event: string }).event ===
+        "community:message:deleted"
+    );
+    expect(deleteCall).toBeUndefined();
   });
 
   it("ACTIVE sync does NOT purge (rejoin must keep its fresh line)", async () => {

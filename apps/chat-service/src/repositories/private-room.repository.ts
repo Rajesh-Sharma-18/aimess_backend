@@ -129,6 +129,8 @@ export class PrivateRoomRepository {
       createdAt: Date;
     };
     receiverId: string;
+    /** How many unread rows this send contributes (albums > 1). */
+    unreadIncrement?: number;
   }): Promise<PrivateRoom | null> {
     const { roomId, message, receiverId } = params;
     const now = message.createdAt || new Date();
@@ -143,7 +145,8 @@ export class PrivateRoomRepository {
       string,
       number
     >;
-    unreadCountByUser[receiverId] = (unreadCountByUser[receiverId] || 0) + 1;
+    unreadCountByUser[receiverId] =
+      (unreadCountByUser[receiverId] || 0) + (params.unreadIncrement ?? 1);
 
     const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
       string,

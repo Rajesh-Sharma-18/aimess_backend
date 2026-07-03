@@ -156,6 +156,27 @@ export class GeneralRoomMessageRepository {
     return this.prisma.generalRoomMessage.findFirst({ where });
   }
 
+  /** All rows from one album send (base id + `base:N` siblings), seq-ordered. */
+  async findAlbumBatchByClientMessageId(
+    roomId: string,
+    sentBy: string,
+    baseClientMessageId: string
+  ): Promise<GeneralRoomMessage[]> {
+    return this.prisma.generalRoomMessage.findMany({
+      where: {
+        roomId,
+        sentBy,
+        OR: [
+          { clientMessageId: baseClientMessageId },
+          {
+            clientMessageId: { startsWith: `${baseClientMessageId}:` },
+          },
+        ],
+      },
+      orderBy: { sequenceNumber: "asc" },
+    });
+  }
+
   async findByRoomIdWithTime(
     roomId: string,
     beforeTimestamp: string,
@@ -759,27 +780,39 @@ export class GeneralRoomMessageRepository {
    * PERSONAL join-session onboarding lines ("You joined the community", "Your
    * request to join was approved") for one community, so they never accumulate
    * across join→leave→rejoin cycles. Invoked when a membership goes inactive
-   * (left / removed / banned). Returns the deleted count.
+   * (left / removed / banned).
    *
    * `beforeOrAt` is the leave-event timestamp: only rows created at/BEFORE it are
    * purged, so a redelivered stale "left" event can never delete the FRESH join
    * line created by a subsequent rejoin (which is strictly newer). Omit to purge
    * all sessions (e.g. one-time backfill).
+   *
+   * Returns the deleted row ids (not just a count) so the caller can emit a
+   * `community:message:deleted` event per id — an already-connected client that
+   * rendered the prior join line before this cleanup ran has no other way to
+   * learn it was removed; without this it stays on screen until the client
+   * does a fresh fetch (reload/reconnect).
    */
   async deletePersonalJoinMessages(params: {
     roomId: string;
     userId: string;
     beforeOrAt?: Date;
-  }): Promise<number> {
-    const res = await this.prisma.generalRoomMessage.deleteMany({
-      where: {
-        roomId: params.roomId,
-        visibleToUserId: params.userId,
-        systemMessageType: { in: [...PERSONAL_JOIN_SESSION_TYPES] },
-        ...(params.beforeOrAt ? { createdAt: { lte: params.beforeOrAt } } : {}),
-      },
+  }): Promise<string[]> {
+    const where = {
+      roomId: params.roomId,
+      visibleToUserId: params.userId,
+      systemMessageType: { in: [...PERSONAL_JOIN_SESSION_TYPES] },
+      ...(params.beforeOrAt ? { createdAt: { lte: params.beforeOrAt } } : {}),
+    };
+    const stale = await this.prisma.generalRoomMessage.findMany({
+      where,
+      select: { id: true },
     });
-    return res.count;
+    if (stale.length === 0) return [];
+    await this.prisma.generalRoomMessage.deleteMany({
+      where: { id: { in: stale.map((m) => m.id) } },
+    });
+    return stale.map((m) => m.id);
   }
 
   async searchByText(

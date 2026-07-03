@@ -13,7 +13,10 @@ import { CacheRepository } from "../repositories/cache.repository.js";
 import { buildParticipantsKey, generateRoomId } from "../lib/room-id.js";
 import { CommunitySystemMessageService } from "../services/community-system-message.service.js";
 import { UserSnapshotService } from "../services/user-snapshot.service.js";
-import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
+import {
+  buildChatMessageEvent,
+  buildDeletePayload,
+} from "../lib/chat-message.serializer.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
 
@@ -241,7 +244,11 @@ export class CommunityRoomSyncConsumer {
           // goes INACTIVE (left / removed / banned), hard-delete the user's
           // PERSONAL join-session onboarding lines ("You joined the community",
           // "Your request to join was approved") so they never accumulate across
-          // join→leave→rejoin cycles. INTERNAL — no community-wide socket emit.
+          // join→leave→rejoin cycles. No community-wide socket emit (other
+          // members never saw this PERSONAL line), but the affected user's OWN
+          // already-connected client DID render it before leaving — publish a
+          // `community:message:deleted` on their personal `user:<id>` channel so
+          // it disappears in real time instead of surviving until a reload.
           // Bounded by the leave-event timestamp so a redelivered stale "left"
           // can't delete a FRESH rejoin line (which is strictly newer).
           //
@@ -272,7 +279,11 @@ export class CommunityRoomSyncConsumer {
             const boundary = event.data.eventAt
               ? new Date(event.data.eventAt)
               : undefined;
-            const deleted = await this.messageRepo
+            // [JOIN-TRACE] temporary investigation logging — remove after diagnosis.
+            logger.info(
+              `[JOIN-TRACE] delete-cleanup (LEAVE path) START community=${communityId} user=${userId} boundary=${boundary?.toISOString() ?? "none"} ts=${Date.now()}`
+            );
+            const deletedIds = await this.messageRepo
               .deletePersonalJoinMessages({
                 roomId: communityId,
                 userId,
@@ -285,12 +296,42 @@ export class CommunityRoomSyncConsumer {
                 logger.warn(
                   `member.synced join-cleanup failed community=${communityId} user=${userId}: ${String(err)}`
                 );
-                return 0;
+                return [] as string[];
               });
-            if (deleted > 0) {
+            // [JOIN-TRACE]
+            logger.info(
+              `[JOIN-TRACE] delete-cleanup (LEAVE path) DONE community=${communityId} user=${userId} deletedIds=${JSON.stringify(deletedIds)} ts=${Date.now()}`
+            );
+            if (deletedIds.length > 0) {
               logger.debug(
-                `member.synced join-cleanup: removed ${deleted} personal join line(s) community=${communityId} user=${userId}`
+                `member.synced join-cleanup: removed ${deletedIds.length} personal join line(s) community=${communityId} user=${userId}`
               );
+              for (const messageId of deletedIds) {
+                const tombstone = buildDeletePayload({
+                  conversationType: "COMMUNITY",
+                  messageId,
+                  roomId: communityId,
+                  scope: "forEveryone",
+                  deletedBy: "",
+                });
+                // [JOIN-TRACE]
+                logger.info(
+                  `[JOIN-TRACE] delete PUBLISH (LEAVE path) messageId=${messageId} community=${communityId} user=${userId} channel=user:${userId} payload=${JSON.stringify(tombstone)} ts=${Date.now()}`
+                );
+                await redis
+                  .publish(
+                    `user:${userId}`,
+                    JSON.stringify({
+                      event: "community:message:deleted",
+                      data: tombstone,
+                    })
+                  )
+                  .catch((err: unknown) => {
+                    logger.warn(
+                      `member.synced join-cleanup delete-publish failed community=${communityId} user=${userId} message=${messageId}: ${String(err)}`
+                    );
+                  });
+              }
             }
           }
           break;

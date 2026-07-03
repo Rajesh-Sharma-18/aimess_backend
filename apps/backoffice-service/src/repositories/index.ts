@@ -44,3 +44,4 @@ export {
   GrpcGroupRepository,
 } from "./group.grpc.repository.js";
 export { reportDetailRepository } from "./report-detail.repository.js";
+export { announcementRepository } from "./announcement.repository.js";

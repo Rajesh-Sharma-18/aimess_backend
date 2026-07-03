@@ -740,6 +740,64 @@ export function registerChatNamespace(
         .emit("typing:stop", typingPayload(conversationId, senderName));
     });
 
+    // ── Voice recording presence ────────────────────────────────────────────────
+    // Fire-and-forget (no ack). Server holds a 6 s countdown per conversationId;
+    // if recording:stop is never received (app crash, network drop) the timer fires
+    // and broadcasts the stop automatically. On disconnect all pending timers are
+    // flushed and stops are broadcast. Identical to typing indicator architecture.
+    const recordingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+    const clearRecording = (conversationId: string): void => {
+      const t = recordingTimers.get(conversationId);
+      if (t !== undefined) {
+        clearTimeout(t);
+        recordingTimers.delete(conversationId);
+      }
+    };
+
+    const recordingPayload = (conversationId: string, senderName?: string) =>
+      buildTypingBroadcast(
+        userId,
+        socket.data.userDetails,
+        conversationId,
+        Date.now(),
+        { senderName }
+      );
+
+    socket.on("recording:start", (payload: unknown) => {
+      const r = TypingSchema.safeParse(payload);
+      if (!r.success) return;
+      const { conversationId, senderName } = r.data;
+
+      // Reset the expiry window each time the client sends recording:start.
+      clearRecording(conversationId);
+
+      socket
+        .to(`conv:${conversationId}`)
+        .emit("recording:start", recordingPayload(conversationId, senderName));
+
+      recordingTimers.set(
+        conversationId,
+        setTimeout(() => {
+          recordingTimers.delete(conversationId);
+          chat
+            .to(`conv:${conversationId}`)
+            .emit("recording:stop", recordingPayload(conversationId));
+        }, 6000)
+      );
+    });
+
+    socket.on("recording:stop", (payload: unknown) => {
+      const r = TypingSchema.safeParse(payload);
+      if (!r.success) return;
+      const { conversationId, senderName } = r.data;
+
+      clearRecording(conversationId);
+      socket
+        .to(`conv:${conversationId}`)
+        .emit("recording:stop", recordingPayload(conversationId, senderName));
+    });
+
     // Feature 1: Forward message
     socket.on(
       "message:forward",
@@ -1111,6 +1169,16 @@ export function registerChatNamespace(
           .emit("typing:stop", typingPayload(conversationId));
       }
       typingTimers.clear();
+
+      // Flush all pending recording-expiry timers and broadcast stop so peers are
+      // never stuck with a "recording…" indicator after the socket closes.
+      for (const [conversationId, timer] of recordingTimers) {
+        clearTimeout(timer);
+        chat
+          .to(`conv:${conversationId}`)
+          .emit("recording:stop", recordingPayload(conversationId));
+      }
+      recordingTimers.clear();
 
       if (userId) {
         void redisPub.del(`user:online:${userId}`);

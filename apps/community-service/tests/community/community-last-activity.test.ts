@@ -56,6 +56,11 @@ describe("buildLastActivity — SYSTEM activities are NEVER sender-prefixed", ()
     ["Member Unbanned", "system", "John Doe was unbanned"],
     ["Pinned", "pinned", "John Doe pinned a message"],
     ["Unpinned", "unpinned", "John Doe unpinned a message"],
+    // "reaction" is senderless too: the stored preview is ALREADY a complete
+    // Telegram-style sentence with the actor's name baked in by
+    // buildReactionActivityText (chat-service) — never re-prefixed with
+    // "<actor>: " like a normal message/edit/delete would be.
+    ["Reaction", "reaction", "John Doe reacted ❤️ to Jane Roe's message"],
   ];
 
   it.each(SYSTEM_CASES)(
@@ -117,7 +122,7 @@ describe("buildLastActivity — SYSTEM activities are NEVER sender-prefixed", ()
 });
 
 describe("buildLastActivity — USER messages KEEP the sender prefix (unchanged)", () => {
-  it.each(["message", "reaction", "edited", "deleted"])(
+  it.each(["message", "edited", "deleted"])(
     "[%s] keeps username so the client renders '<sender>: <preview>'",
     (type) => {
       const result = buildLastActivity(

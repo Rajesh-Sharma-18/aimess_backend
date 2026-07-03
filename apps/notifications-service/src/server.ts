@@ -5,6 +5,7 @@ import { env } from "./config/env.js";
 import { connectDatabase } from "./config/prisma.js";
 import { redis } from "./config/redis.js";
 import { startAdminUserConsumer } from "./consumers/admin-user.consumer.js";
+import { startAnnouncementConsumer } from "./consumers/announcement.consumer.js";
 import { startChatConsumer } from "./consumers/chat.consumer.js";
 import { startCommunityConsumer } from "./consumers/community.consumer.js";
 import { startGroupConsumer } from "./consumers/group.consumer.js";
@@ -56,6 +57,7 @@ async function start() {
     await startConsumerSafe("group consumer", startGroupConsumer);
     await startConsumerSafe("friend consumer", startFriendConsumer);
     await startConsumerSafe("admin-user consumer", startAdminUserConsumer);
+    await startConsumerSafe("announcement consumer", startAnnouncementConsumer);
     await startConsumerSafe("settings consumer", startSettingsConsumer);
     await startConsumerSafe("session consumer", startSessionConsumer);
 

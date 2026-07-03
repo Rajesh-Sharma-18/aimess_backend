@@ -16,6 +16,7 @@ import type {
   LivestreamRepository,
 } from "../repositories/livestream.repository.js";
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
+import type { LivestreamViewerSessionRepository } from "../repositories/livestream-viewer-session.repository.js";
 import type { SrsService, IngestEndpoints } from "./srs.service.js";
 import type { CommunityGrpcClient } from "../grpc/community.client.js";
 import type { redis as RedisClient } from "../config/redis.js";
@@ -222,6 +223,7 @@ export class LivestreamService {
     private readonly communityClient: CommunityGrpcClient,
     private readonly redis: typeof RedisClient,
     private readonly banRepo: LivestreamBanRepository,
+    private readonly viewerSessionRepo: LivestreamViewerSessionRepository,
     private readonly eventPublisher: typeof publishStreamEvent = publishStreamEvent,
     // Resolves the host's display-name/avatar snapshot for enriched community
     // livestream socket payloads. Defaults to the shared singleton; injectable
@@ -448,6 +450,10 @@ export class LivestreamService {
 
     await this.publishStatus(updated.id, "ENDED", updated.communityId);
     void this.publishCommunityStreamEnded(updated);
+    void this.closeOpenViewerSessions(
+      updated.id,
+      updated.endedAt ?? new Date()
+    );
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -505,6 +511,10 @@ export class LivestreamService {
 
     await this.publishStatus(updated.id, "ENDED", updated.communityId);
     void this.publishCommunityStreamEnded(updated);
+    void this.closeOpenViewerSessions(
+      updated.id,
+      updated.endedAt ?? new Date()
+    );
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -600,6 +610,10 @@ export class LivestreamService {
 
     await this.publishStatus(updated.id, "ENDED", updated.communityId);
     void this.publishCommunityStreamEnded(updated);
+    void this.closeOpenViewerSessions(
+      updated.id,
+      updated.endedAt ?? new Date()
+    );
     this.eventPublisher("stream.ended", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -784,6 +798,10 @@ export class LivestreamService {
         await this.srsService.kickStream(stream.streamKey);
         await this.publishStatus(updated.id, "ENDED", updated.communityId);
         void this.publishCommunityStreamEnded(updated);
+        void this.closeOpenViewerSessions(
+          updated.id,
+          updated.endedAt ?? new Date()
+        );
         this.eventPublisher("stream.ended", {
           streamId: updated.id,
           communityId: updated.communityId,
@@ -912,7 +930,30 @@ export class LivestreamService {
       ),
       this.streamRepo.adminCount(filter),
     ]);
-    return { items: rows.map(toAdminRow), total };
+    const items = await Promise.all(rows.map((r) => this.toAdminRowLive(r)));
+    return { items, total };
+  }
+
+  /**
+   * {@link toAdminRow} plus a live Redis overlay for LIVE rows — mirrors
+   * {@link adminGetStream}. Without this, `viewerCount` on a LIVE row is the
+   * stored DB column, which `incrementViewer` only nudges via the coarse SRS
+   * on_play/on_stop hook (a rough per-hit counter, not a unique-viewer count)
+   * and can drift far from the real number of people currently watching.
+   * Bounded per call to one page of rows, so the extra Redis round-trips are cheap.
+   */
+  private async toAdminRowLive(s: Livestream): Promise<AdminStreamRow> {
+    const row = toAdminRow(s);
+    if (s.status === "LIVE") {
+      try {
+        row.viewerCount = await this.redis.scard(sessionKey(s.id));
+      } catch (error) {
+        logger.warn(
+          `admin live viewer count read failed for stream=${s.id}: ${String(error)}`
+        );
+      }
+    }
+    return row;
   }
 
   /**
@@ -923,17 +964,7 @@ export class LivestreamService {
   async adminGetStream(streamId: string): Promise<AdminStreamRow | null> {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) return null;
-    const row = toAdminRow(stream);
-    if (stream.status === "LIVE") {
-      try {
-        row.viewerCount = await this.redis.scard(sessionKey(streamId));
-      } catch (error) {
-        logger.warn(
-          `admin live viewer count read failed for stream=${streamId}: ${String(error)}`
-        );
-      }
-    }
-    return row;
+    return this.toAdminRowLive(stream);
   }
 
   /**
@@ -999,6 +1030,114 @@ export class LivestreamService {
         joinedAt: joinedAtById.get(userId) ?? null,
       };
     });
+  }
+
+  /**
+   * Durable join record (called by the gateway, fire-and-forget, right after
+   * the Redis `SADD` on `stream:join`). Redis stays the source of truth for
+   * CURRENT live presence/count; this is the persisted history the admin panel
+   * reads. Idempotent — a rejoin while already open reuses the open session
+   * (see {@link LivestreamViewerSessionRepository.recordJoin}).
+   */
+  async recordViewerJoin(streamId: string, userId: string): Promise<void> {
+    try {
+      await this.viewerSessionRepo.recordJoin(streamId, userId);
+    } catch (error) {
+      logger.warn(
+        `recordViewerJoin failed for stream=${streamId} user=${userId}: ${String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Close the durable viewer session (called by the gateway, fire-and-forget,
+   * from `stream:leave`, socket `disconnect`, and ban-kick). No-op when there
+   * is no open session for this user (duplicate leave, or a leave for a stream
+   * the socket never actually joined).
+   */
+  async recordViewerLeave(streamId: string, userId: string): Promise<void> {
+    try {
+      await this.viewerSessionRepo.recordLeave(streamId, userId);
+    } catch (error) {
+      logger.warn(
+        `recordViewerLeave failed for stream=${streamId} user=${userId}: ${String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Best-effort close-out of every still-open viewer session when a stream
+   * ends, so an unexpected disconnect (crash, network drop, no `stream:leave`)
+   * never leaves a session open forever. Called from every ENDED transition —
+   * owner stop, SRS on_unpublish, admin force-end, and the stale-stream
+   * sweeper. Never throws into the caller.
+   */
+  private async closeOpenViewerSessions(
+    streamId: string,
+    endedAt: Date
+  ): Promise<void> {
+    try {
+      await this.viewerSessionRepo.closeAllOpenForStream(streamId, endedAt);
+    } catch (error) {
+      logger.warn(
+        `closeOpenViewerSessions failed for stream=${streamId}: ${String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Admin: paginated, PER-USER viewer history for a stream (the "Livestream
+   * User List" screen). A rejoin/reconnect produces multiple underlying
+   * session rows, but this returns exactly one aggregated entry per unique
+   * user — see {@link LivestreamViewerSessionRepository.listByStream}.
+   */
+  async adminListViewerSessions(
+    streamId: string,
+    params: {
+      page: number;
+      limit: number;
+      sortField: "joinedAt" | "watchDurationSeconds";
+      sortDir: "asc" | "desc";
+    }
+  ): Promise<{
+    sessions: Array<{
+      userId: string;
+      joinedAt: Date;
+      leftAt: Date | null;
+      watchDurationSeconds: number;
+    }>;
+    total: number;
+  }> {
+    const skip = (params.page - 1) * params.limit;
+    const { rows, total } = await this.viewerSessionRepo.listByStream(
+      streamId,
+      {
+        skip,
+        take: params.limit,
+        sortField: params.sortField,
+        sortDir: params.sortDir,
+      }
+    );
+    const now = Date.now();
+    return {
+      sessions: rows.map((r) => ({
+        userId: r.userId,
+        joinedAt: r.joinedAt,
+        leftAt: r.leftAt,
+        // Aggregated total already sums every CLOSED session for this user;
+        // top up with the currently-open session's live elapsed time (if
+        // any), same as the pre-aggregation per-row live-compute.
+        watchDurationSeconds:
+          r.watchDurationSeconds +
+          (r.openSessionJoinedAt
+            ? Math.max(
+                0,
+                Math.round((now - r.openSessionJoinedAt.getTime()) / 1000)
+              )
+            : 0),
+      })),
+      total,
+    };
   }
 
   /**

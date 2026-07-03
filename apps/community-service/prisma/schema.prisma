@@ -74,6 +74,38 @@ model Community {
   // the list renders this instead of the third-person preview. Opaque string —
   // rendered by chat-service (single template source), never composed here.
   lastActivitySelfPreview String?
+  // Reaction activity ("X reacted ❤️ to your message") is ABOUT two people at
+  // once: the actor (lastActivityUserId/lastActivitySelfPreview above) AND the
+  // reacted-to message's owner. This pair mirrors that same self-preview
+  // pattern for the SECOND viewer — the target — so both the reactor and the
+  // message owner see a personalized first-person line, while everyone else
+  // falls back to lastActivityPreview (third-person). Null for every other
+  // activity type. Opaque string, single template source in chat-service.
+  lastActivityTargetUserId  String?
+  lastActivityTargetPreview String?
+  // Reaction OVERLAY — fully independent of the canonical lastActivity* fields
+  // above. Reactions never write lastActivityAt/Type/Preview/Username/UserId
+  // (so a message/system event is ALWAYS what everyone else sees — a reaction
+  // can never overwrite what the rest of the community reads). This overlay
+  // represents ONLY the single most-recently-ADDED still-active reaction
+  // system-wide, visible ONLY to its own actor and (if different) the
+  // reacted-to message's owner; every other viewer always falls back to the
+  // canonical columns. Read-time gate: only shown when
+  // lastActivityReactionAt is strictly newer than lastActivityAt (a genuinely
+  // newer message/system event silently supersedes a stale reaction with no
+  // explicit clear needed). Explicitly cleared (all fields → null) only when
+  // the SPECIFIC reaction identified by
+  // (lastActivityReactionMessageId, lastActivityReactionEmoji,
+  // lastActivityReactionActorId) is removed — removing a DIFFERENT reaction
+  // (same message, other emoji/user, or a different message entirely) is a
+  // no-op here, since that reaction was never the one being shown.
+  lastActivityReactionAt            DateTime?
+  lastActivityReactionMessageId     String?
+  lastActivityReactionEmoji         String?
+  lastActivityReactionActorId       String?
+  lastActivityReactionActorPreview  String?
+  lastActivityReactionTargetId      String?
+  lastActivityReactionTargetPreview String?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   // Admin moderation state. DISTINCT from `deletedAt`: moderationStatus is an

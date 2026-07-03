@@ -271,24 +271,29 @@ export type ListLivestreamReportsQuery = {
   cursor?: string;
 };
 
-/** Membership type in a livestream's community (the "Type" column). */
-export type LivestreamUserType = "ADMIN" | "MODERATOR" | "MEMBER";
-
-/** One row in the per-livestream user (community member) list. */
+/**
+ * One row in the per-livestream "Livestream User List" — an actual viewer
+ * session (who watched, when, for how long), backed by stream-service's
+ * durable `LivestreamViewerSession` table. A user who rejoined has multiple
+ * rows (one per join→leave session).
+ */
 export type LivestreamUserItem = {
   userId: string;
   username: string;
   handle: string | null;
   avatarUrl: string | null;
-  /** ADMIN | MODERATOR | MEMBER — the member's role in the stream's community. */
-  type: LivestreamUserType;
+  /** ISO-8601 — when this viewing session started. */
   joinedAt: string;
+  /** ISO-8601; null = still watching. */
+  leftAt: string | null;
+  /** Computed live (now - joinedAt) while still watching. */
+  watchDurationSeconds: number;
 };
 
-/** Normalized per-stream users list query (post-validation/coercion). */
+/** Normalized per-stream viewers list query (post-validation/coercion). */
 export type ListLivestreamUsersQuery = {
-  search?: string;
-  type?: LivestreamUserType;
   page: number;
   limit: number;
+  sortField?: "joinedAt" | "watchDurationSeconds";
+  sortDir?: "asc" | "desc";
 };

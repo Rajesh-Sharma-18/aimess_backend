@@ -84,3 +84,26 @@ export const buildMessagePreview = convertMessageToPreview;
 export function buildPushPreview(messageType: string, text: string): string {
   return convertMessageToPreview(messageType, { text });
 }
+
+const REACTION_TARGET_PREVIEW_MAX_LEN = 40;
+
+/**
+ * Short, quoted preview of the message a reaction targets, for the
+ * `"${actor} reacted ${emoji} to ${preview}"` activity line. Reuses
+ * {@link convertMessageToPreview} for the label/text, then truncates TEXT
+ * bodies to a reaction-line-appropriate length and quotes them; media/
+ * structured types keep their emoji label unquoted (e.g. `📷 Photo`).
+ */
+export function buildReactionTargetPreview(
+  contentType: string,
+  content: unknown
+): string {
+  const type = String(contentType ?? "").toUpperCase();
+  const preview = convertMessageToPreview(contentType, content);
+  if (type !== "TEXT" && type !== "SYSTEM") return preview;
+  const truncated =
+    preview.length > REACTION_TARGET_PREVIEW_MAX_LEN
+      ? `${preview.slice(0, REACTION_TARGET_PREVIEW_MAX_LEN).trimEnd()}...`
+      : preview;
+  return `"${truncated}"`;
+}

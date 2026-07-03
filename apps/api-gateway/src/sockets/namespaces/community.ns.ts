@@ -255,11 +255,35 @@ export function registerCommunityNamespace(
                 `🔴 [STREAM:GATEWAY:USER] user:* relay event=${parsed.event} userId=${viewerUserId} communityId=${d.communityId ?? "?"} → emitting to Socket.IO room="user:${viewerUserId}"`
               );
             }
+            // [JOIN-TRACE] temporary investigation logging — remove after diagnosis.
+            if (
+              parsed.event === "community:message:new" ||
+              parsed.event === "community:message:deleted"
+            ) {
+              logger.info(
+                `[JOIN-TRACE] gateway REDIS RECEIVED event=${parsed.event} channel=${channel} payload=${JSON.stringify(parsed.data)} ts=${Date.now()}`
+              );
+            }
             const payload =
               parsed.event === "community:message:new"
                 ? personalizeCommunitySocketMessage(parsed.data, viewerUserId)
                 : parsed.data;
             community.to(channel).emit(parsed.event, payload);
+            // [JOIN-TRACE]
+            if (
+              parsed.event === "community:message:new" ||
+              parsed.event === "community:message:deleted"
+            ) {
+              void community
+                .in(channel)
+                .fetchSockets()
+                .then((sockets) => {
+                  logger.info(
+                    `[JOIN-TRACE] gateway SOCKET EMITTED event=${parsed.event} room=${channel} socketCount=${sockets.length} socketIds=${JSON.stringify(sockets.map((s) => s.id))} ts=${Date.now()}`
+                  );
+                })
+                .catch(() => {});
+            }
 
             // Auto-join the typing room when the user is added to a new community
             // while their socket is connected, so they immediately receive
@@ -549,6 +573,75 @@ export function registerCommunityNamespace(
     // ── FIRE-AND-FORGET — legacy aliases (backward compat) ──────────────────
     socket.on("typing:start", handleTypingStart);
     socket.on("typing:stop", handleTypingStop);
+
+    // ── Voice recording presence ────────────────────────────────────────────────
+    // Fire-and-forget (no ack). A 6 s server-side TTL auto-stops stale indicators
+    // if recording:stop is never received. On disconnect all pending timers are
+    // flushed and stop events broadcast. Identical to typing indicator architecture.
+    // Broadcasts to both community:<id> (open-chat) AND community-typing:<id>
+    // (always-on membership) rooms so sidebar recording indicators work even when
+    // chat is not open. Socket.IO de-duplicates recipients.
+    const recordingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+    const clearRecording = (communityId: string): void => {
+      const t = recordingTimers.get(communityId);
+      if (t !== undefined) {
+        clearTimeout(t);
+        recordingTimers.delete(communityId);
+      }
+    };
+
+    const communityRecordingPayload = (communityId: string) => ({
+      eventId: randomUUID(),
+      communityId,
+      roomId: communityId,
+      userDetails: socket.data.userDetails,
+      userId,
+      senderName: socket.data.userDetails.displayName || "",
+      timestamp: Date.now(),
+    });
+
+    // Shared handler for both canonical and legacy recording event names.
+    const handleRecordingStart = (payload: unknown): void => {
+      const r = CommunityTypingSchema.safeParse(payload);
+      if (!r.success) return;
+      const { communityId } = r.data;
+      clearRecording(communityId);
+      // socket.to() excludes sender; chain both rooms — Socket.IO de-dupes.
+      socket
+        .to(`community:${communityId}`)
+        .to(`community-typing:${communityId}`)
+        .emit("recording:start", communityRecordingPayload(communityId));
+      recordingTimers.set(
+        communityId,
+        setTimeout(() => {
+          recordingTimers.delete(communityId);
+          // TTL expiry: use community.to() — timer fires outside socket context.
+          community
+            .to(`community:${communityId}`)
+            .to(`community-typing:${communityId}`)
+            .emit("recording:stop", communityRecordingPayload(communityId));
+        }, 6000)
+      );
+    };
+
+    const handleRecordingStop = (payload: unknown): void => {
+      const r = CommunityTypingSchema.safeParse(payload);
+      if (!r.success) return;
+      const { communityId } = r.data;
+      clearRecording(communityId);
+      socket
+        .to(`community:${communityId}`)
+        .to(`community-typing:${communityId}`)
+        .emit("recording:stop", communityRecordingPayload(communityId));
+    };
+
+    // ── FIRE-AND-FORGET (NO ACK) — canonical names ──────────────────────────
+    socket.on("community:recording:start", handleRecordingStart);
+    socket.on("community:recording:stop", handleRecordingStop);
+    // ── FIRE-AND-FORGET — legacy aliases (backward compat) ──────────────────
+    socket.on("recording:start", handleRecordingStart);
+    socket.on("recording:stop", handleRecordingStop);
 
     socket.on(
       "community:join",
@@ -1270,6 +1363,17 @@ export function registerCommunityNamespace(
           .emit("typing:stop", communityTypingPayload(communityId));
       }
       typingTimers.clear();
+
+      // Flush all pending recording-expiry timers and broadcast stop so members are
+      // never stuck with a "recording…" indicator after the socket closes.
+      for (const [communityId, timer] of recordingTimers) {
+        clearTimeout(timer);
+        community
+          .to(`community:${communityId}`)
+          .to(`community-typing:${communityId}`)
+          .emit("recording:stop", communityRecordingPayload(communityId));
+      }
+      recordingTimers.clear();
     });
   });
 }

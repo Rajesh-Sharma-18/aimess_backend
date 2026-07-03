@@ -28,6 +28,7 @@ import {
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
+import { getAlbumMessages } from "../lib/album-messages.js";
 
 import type { PrivateMessageService } from "./private-message.service.js";
 import type { GroupMessageService } from "./group-message.service.js";
@@ -260,11 +261,40 @@ export class ChatMessageOrchestrator {
     });
 
     if (!alreadySent) {
-      // ── 1. Live broadcast: message:new on conv:<roomId> ──────────────────
-      await this.redis.publish(
-        `conv:${params.roomId}`,
-        JSON.stringify({ event: "message:new", data: wireEvent })
-      );
+      const albumRows = getAlbumMessages(msg);
+      // ── 1. Live broadcast: message:new on conv:<roomId> (one per album row) ─
+      for (const row of albumRows) {
+        const rowFull = row as Record<string, unknown>;
+        const rowServerTs =
+          row.createdAt instanceof Date ? row.createdAt.getTime() : serverTs;
+        const rowBcastContent = await this.resolveBroadcastContent(
+          row.content ?? null
+        );
+        const rowWire = buildChatMessageEvent({
+          id: row.id,
+          clientMessageId,
+          roomId: params.roomId,
+          conversationType,
+          senderId: params.senderId,
+          senderName,
+          senderAvatar: bcastAvatar,
+          senderRole:
+            (row as { senderRole?: string }).senderRole ?? msg.senderRole,
+          receiverId: params.receiverId,
+          messageType: row.messageType,
+          content: rowBcastContent ?? null,
+          parentMessageId: (rowFull.parentMessageId as string) || "",
+          quoteData: rowFull.quoteData ?? null,
+          reactions: [],
+          clientTs,
+          serverTs: rowServerTs,
+          sequenceNumber: row.sequenceNumber,
+        });
+        await this.redis.publish(
+          `conv:${params.roomId}`,
+          JSON.stringify({ event: "message:new", data: rowWire })
+        );
+      }
 
       // ── 2. Bump-to-top: conv:updated fan-out (fire-and-forget) ───────────
       const bumpBase = {
@@ -409,9 +439,67 @@ export class ChatMessageOrchestrator {
     };
 
     if (!alreadySent) {
-      await this.redis.publish(
-        `community:${params.communityId}`,
-        JSON.stringify({ event: "community:message:new", data: wireEvent })
+      const albumRows = getAlbumMessages(saved);
+      for (const row of albumRows) {
+        const rowSentAt =
+          row.createdAt instanceof Date ? row.createdAt.getTime() : sentAt;
+        const rowAttachments = Array.isArray(row.attachments)
+          ? (row.attachments as MediaFileLike[])
+          : [];
+        const rowLocation = this.firstAttachmentOfType(
+          rowAttachments as Array<Record<string, unknown>>,
+          "location"
+        );
+        const rowContact = this.firstAttachmentOfType(
+          rowAttachments as Array<Record<string, unknown>>,
+          "contact"
+        );
+        const rowSticker = this.firstAttachmentOfType(
+          rowAttachments as Array<Record<string, unknown>>,
+          "sticker"
+        );
+        const rowBcastFiles = await resolveContentFiles(rowAttachments);
+        const rowWire: Record<string, unknown> = {
+          id: row.id,
+          messageId: row.id,
+          communityId: params.communityId,
+          roomId: row.roomId,
+          senderId: row.sentBy,
+          senderName,
+          senderAvatar: bcastSenderAvatar,
+          parentMessageId: row.parentMessageId ?? "",
+          quoteData: buildCanonicalQuote(row.quoteData),
+          content: {
+            text: row.message ?? "",
+            files: rowBcastFiles,
+            ...(rowLocation ? { location: rowLocation } : {}),
+            ...(rowContact ? { contact: rowContact } : {}),
+            ...(rowSticker ? { sticker: rowSticker } : {}),
+          },
+          reactions: [],
+          message: row.message ?? "",
+          contentType: normalizeMessageType(row.messageType),
+          clientMessageId,
+          serverTs: rowSentAt,
+          sentAt: rowSentAt,
+          sequenceNumber: row.sequenceNumber,
+        };
+        await this.redis.publish(
+          `community:${params.communityId}`,
+          JSON.stringify({ event: "community:message:new", data: rowWire })
+        );
+      }
+
+      const lastAttachments = Array.isArray(saved.attachments)
+        ? (saved.attachments as Array<Record<string, unknown>>)
+        : [];
+      const lastLocation = this.firstAttachmentOfType(
+        lastAttachments,
+        "location"
+      );
+      const lastContact = this.firstAttachmentOfType(
+        lastAttachments,
+        "contact"
       );
 
       // Denormalize activity to community-service (orders GET /communities/mine).
@@ -431,9 +519,9 @@ export class ChatMessageOrchestrator {
           // document/location/contact) never persist a blank preview.
           messagePreview: convertMessageToPreview(saved.messageType, {
             text: saved.message ?? "",
-            files,
-            ...(location ? { location } : {}),
-            ...(contact ? { contact } : {}),
+            files: lastAttachments,
+            ...(lastLocation ? { location: lastLocation } : {}),
+            ...(lastContact ? { contact: lastContact } : {}),
           }),
         });
       }
@@ -453,9 +541,9 @@ export class ChatMessageOrchestrator {
           contentType: normalizeMessageType(saved.messageType),
           text: convertMessageToPreview(saved.messageType, {
             text: saved.message ?? "",
-            files,
-            ...(location ? { location } : {}),
-            ...(contact ? { contact } : {}),
+            files: lastAttachments,
+            ...(lastLocation ? { location: lastLocation } : {}),
+            ...(lastContact ? { contact: lastContact } : {}),
           }),
         },
       });

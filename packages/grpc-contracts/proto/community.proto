@@ -23,6 +23,18 @@ service CommunityService {
   // `community_id`, and what is their role. Backs the go-live check.
   rpc ValidateMembership (ValidateMembershipRequest) returns (ValidateMembershipResponse);
 
+  // Synchronous companion to chat-service's async `community.activity.queue`
+  // "reaction_added"/"reaction_removed" publish: chat-service calls this
+  // RIGHT AFTER a reaction toggle, in addition to (never instead of) the
+  // existing queue publish, which remains the resiliency backstop for when
+  // this call fails (community-service down/unreachable). Closes the race
+  // where `GET /communities/mine` reads the DB before the async event has
+  // been consumed, making the reaction's `lastActivity` appear to vanish on
+  // an immediate page reload. Delegates to the EXACT SAME
+  // `setReactionActivity`/`clearReactionActivityIfCurrent` repository methods
+  // the queue consumer already calls — no separate persistence logic.
+  rpc UpdateReactionActivity (UpdateReactionActivityRequest) returns (UpdateReactionActivityResponse);
+
   // ---- Backoffice (admin panel) Community Management ----
   // Read-through queries for the admin Community Management screen + the
   // close/reopen moderation command. backoffice-service is the only caller.
@@ -167,6 +179,25 @@ message EnsureCommunityRoomRequest {
 message EnsureCommunityRoomResponse {
   bool   ok          = 1;
   string communityId = 2;
+}
+
+// ---- Synchronous reaction-activity companion (see UpdateReactionActivity above) ----
+message UpdateReactionActivityRequest {
+  string communityId          = 1;
+  // true => mirrors setReactionActivity (unconditional overwrite).
+  // false => mirrors clearReactionActivityIfCurrent (identity-matched clear).
+  bool   added                = 2;
+  string messageId             = 3;
+  string emoji                 = 4;
+  string actorId                = 5;
+  // Only meaningful when added = true.
+  string actorPreview           = 6;
+  string targetId                = 7;  // "" = no target (self-reaction)
+  string targetPreview           = 8;
+  int64  reactedAt               = 9;  // epoch ms; only meaningful when added = true
+}
+message UpdateReactionActivityResponse {
+  bool ok = 1;
 }
 
 // ---- Backoffice Community Management ----

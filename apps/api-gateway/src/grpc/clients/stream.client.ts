@@ -84,6 +84,16 @@ export interface DeleteCommentResult {
   livestreamId: string;
 }
 
+/** Durable viewer-session tracking — fire-and-forget from the caller side. */
+export interface RecordViewerJoinParams {
+  streamId: string;
+  userId: string;
+}
+export interface RecordViewerLeaveParams {
+  streamId: string;
+  userId: string;
+}
+
 export interface StreamClient {
   postComment(p: PostCommentParams): Promise<PostCommentResult>;
   getComments(p: GetCommentsParams): Promise<GetCommentsResult>;
@@ -91,6 +101,8 @@ export interface StreamClient {
     p: CheckStreamAccessParams
   ): Promise<CheckStreamAccessResult>;
   deleteComment(p: DeleteCommentParams): Promise<DeleteCommentResult>;
+  recordViewerJoin(p: RecordViewerJoinParams): Promise<void>;
+  recordViewerLeave(p: RecordViewerLeaveParams): Promise<void>;
 }
 
 /** int64 createdAt arrives as a string (proto-loader longs:String); coerce. */
@@ -166,10 +178,32 @@ export function createStreamClient(): StreamClient {
       }))
   );
 
+  const recordViewerJoinBreaker = makeBreaker(
+    "stream.recordViewerJoin",
+    (p: RecordViewerJoinParams) =>
+      call<unknown, { sessionId: string }>("recordViewerJoin", {
+        streamId: p.streamId,
+        userId: p.userId,
+      })
+  );
+
+  const recordViewerLeaveBreaker = makeBreaker(
+    "stream.recordViewerLeave",
+    (p: RecordViewerLeaveParams) =>
+      call<unknown, { success: boolean }>("recordViewerLeave", {
+        streamId: p.streamId,
+        userId: p.userId,
+      })
+  );
+
   return {
     postComment: (p) => postCommentBreaker.fire(p),
     getComments: (p) => getCommentsBreaker.fire(p),
     checkStreamAccess: (p) => checkAccessBreaker.fire(p),
     deleteComment: (p) => deleteCommentBreaker.fire(p),
+    // Durable viewer-session tracking — callers treat these as best-effort
+    // (wrap in try/catch, never block the join/leave ack on the result).
+    recordViewerJoin: (p) => recordViewerJoinBreaker.fire(p).then(() => {}),
+    recordViewerLeave: (p) => recordViewerLeaveBreaker.fire(p).then(() => {}),
   };
 }

@@ -208,7 +208,7 @@ export type CommunityLastActivityType =
 export type CommunityLastActivity =
   | {
       // USER MESSAGE — client prefixes the preview with the sender / "You".
-      type: "message" | "reaction" | "edited" | "deleted";
+      type: "message" | "edited" | "deleted";
       userId: string | null;
       username: string;
       preview: string;
@@ -216,7 +216,18 @@ export type CommunityLastActivity =
     }
   | {
       // SYSTEM / lifecycle — standalone text, NEVER prefixed (username === null).
-      type: "system" | "created" | "join" | "removal" | "pinned" | "unpinned";
+      // "reaction" lives here: its preview is always a complete Telegram-style
+      // sentence ("You reacted ❤️ to X's message" / "X reacted ❤️ to your
+      // message" / "X reacted ❤️ to Y's message") with the actor's name already
+      // baked in by community.service.ts's selectListPreview — never re-prefix it.
+      type:
+        | "system"
+        | "created"
+        | "join"
+        | "removal"
+        | "pinned"
+        | "unpinned"
+        | "reaction";
       userId: null;
       username: null;
       preview: string;
