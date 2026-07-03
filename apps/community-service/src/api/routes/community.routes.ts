@@ -147,6 +147,14 @@ communityRoutes.get("/categories", listCategories);
 
 // Admin category CRUD — these MUST be before the `/:id` param route, and are
 // gated by a platform-admin role check (fail-fast, before the validators).
+//
+// NOTE: despite the `/admin` path segment, these routes sit behind the SAME
+// `authenticateAccessToken` as every other `/communities/*` route (standard
+// user JWT, JWT_ACCESS_SECRET) — NOT backoffice-service's admin-panel JWT
+// (JWT_ADMIN_SECRET). `requirePlatformAdmin` only checks the `role: "ADMIN"`
+// claim on that user token. Sending a backoffice admin-panel session token
+// here fails signature verification with 401 "Invalid access token." — a
+// real recurring source of confusion, see docs/openapi community.paths.ts.
 communityRoutes.get(
   "/categories/admin",
   requirePlatformAdmin,

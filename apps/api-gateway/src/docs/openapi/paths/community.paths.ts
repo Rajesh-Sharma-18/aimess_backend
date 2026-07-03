@@ -188,7 +188,10 @@ export const communityPaths = {
       operationId: "adminListAllCategories",
       summary: "List all categories (admin)",
       description:
-        "Admin: paginated list of all community categories including hidden ones. Filter by `status=visible|hidden|all` (default `all`). Search by name with `?search=`. Results include `visible` flag (mapped from the `active` field).",
+        "Paginated list of all community categories including hidden ones. Filter by `status=visible|hidden|all` (default `all`). Search by name with `?search=`. Results include `visible` flag (mapped from the `active` field). " +
+        "IMPORTANT — despite the `/admin` path segment, this is a community-service endpoint secured with the standard user `bearerAuth` access token (the same one used by every other `/communities/*` route), NOT the backoffice `adminBearerAuth` admin-panel token. " +
+        'The caller must be an AIMess user whose access token carries the platform `role: "ADMIN"` claim (set at login for GlobalRole ADMIN accounts). A backoffice admin-panel session token will fail signature verification here with 401 `Invalid access token.`, because backoffice-service signs its tokens with a separate `JWT_ADMIN_SECRET`. ' +
+        "For the admin-panel-authenticated equivalent, see `GET /admin/v1/categories` instead, which proxies to this data via gRPC.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
