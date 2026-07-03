@@ -514,9 +514,16 @@ export class GroupMessageController {
         .json(new ApiResponse(empty, t("CHAT_NO_MESSAGES_FOUND", req.locale)));
       return;
     }
+    const skip = (page - 1) * limit;
     const [messages, totalCount] = await Promise.all([
-      this.messageService.searchMessages({ roomId, userId, query, limit }),
-      this.messageService.countSearchResults(roomId, query),
+      this.messageService.searchMessages({
+        roomId,
+        userId,
+        query,
+        limit,
+        skip,
+      }),
+      this.messageService.countSearchResults(roomId, query, userId),
     ]);
     const wire = await this.messageService.enrichForWire(messages, userId);
     const paginated = buildListResponse(wire, totalCount, page, limit);

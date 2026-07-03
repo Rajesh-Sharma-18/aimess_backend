@@ -367,12 +367,15 @@ export class PrivateMessageService {
     userId: string;
     query: string;
     limit: number;
+    skip?: number;
   }): Promise<PrivateMessage[]> {
     await assertPrivateParticipant(this.roomRepo, params.roomId, params.userId);
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,
-      params.limit
+      params.limit,
+      params.userId,
+      params.skip ?? 0
     );
   }
 
@@ -744,8 +747,12 @@ export class PrivateMessageService {
     return this.messageRepo.countByRoom(roomId);
   }
 
-  async countSearchResults(roomId: string, query: string): Promise<number> {
-    return this.messageRepo.countSearchResults(roomId, query);
+  async countSearchResults(
+    roomId: string,
+    query: string,
+    userId: string
+  ): Promise<number> {
+    return this.messageRepo.countSearchResults(roomId, query, userId);
   }
 
   async forwardMessage(params: {

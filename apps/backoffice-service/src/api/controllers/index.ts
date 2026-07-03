@@ -71,3 +71,15 @@ export {
   deleteCategory,
 } from "./category.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
+export { getSystemHealth } from "./system-health.controller.js";
+export {
+  listAdminAccounts,
+  createAdminAccount,
+  getAdminAccountDetails,
+  updateAdminAccount,
+  activateAdminAccount,
+  deactivateAdminAccount,
+  listPermissions,
+  getAdminPermissions,
+  updateAdminPermissions,
+} from "./admin-account.controller.js";

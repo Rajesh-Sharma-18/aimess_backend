@@ -70,6 +70,8 @@ export interface GetCommunityMessagesResponse {
   messages: CommunityMessageDto[];
   nextCursor: string;
   hasMore: boolean;
+  /** JSON-encoded PinnedMessageSummary, or "" when the room has no active pin. */
+  pinnedMessageJson: string;
 }
 export interface CommunityMessageDto {
   messageId: string;

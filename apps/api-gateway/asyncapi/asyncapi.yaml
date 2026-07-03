@@ -231,6 +231,8 @@ channels:
       communityMessageNew: { $ref: "#/components/messages/CommunityMessageNew" }
       communityMemberJoined:
         { $ref: "#/components/messages/CommunityMemberJoined" }
+      communityJoinRequestListUpdate:
+        { $ref: "#/components/messages/CommunityJoinRequestListUpdate" }
       communityCatchup: { $ref: "#/components/messages/CommunityCatchup" }
       communityCatchupResult:
         { $ref: "#/components/messages/CommunityCatchupResult" }
@@ -886,6 +888,26 @@ operations:
     channel: { $ref: "#/channels/community" }
     summary: "community:member:joined"
     messages: [{ $ref: "#/channels/community/messages/communityMemberJoined" }]
+  community.onJoinRequestListUpdate:
+    action: receive
+    channel: { $ref: "#/channels/community" }
+    summary: "community:join_request:updated — an ADMIN/MODERATOR's 'Accept Requests' list changed"
+    description: |
+      Fired by community-service on every join-request lifecycle change so every
+      open admin/moderator "Accept Requests" screen adds, drops, or flips the
+      affected request in real time — no manual reload. `status` is `"PENDING"`
+      for a brand-new (or recycled) request, `"APPROVED"`/`"REJECTED"` when a
+      moderator decides it.
+
+      Dual delivery, same reasoning as `community:added`: broadcast to the
+      `community:<id>` room (admins who have the community open) AND to each
+      admin/moderator's own `user:<id>` channel (admins who only have the
+      standalone requests screen mounted and never joined the room). Distinct
+      from `community:join_request:update` (singular, `/notify`), which is the
+      REQUESTER's own status-flip notification — this event is for the
+      MODERATOR-facing list.
+    messages:
+      [{ $ref: "#/channels/community/messages/communityJoinRequestListUpdate" }]
   community.catchup:
     action: send
     channel: { $ref: "#/channels/community" }
@@ -3247,6 +3269,39 @@ components:
               communityAvatarUrl: null
               communityHandle: "photography-club"
               requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+    CommunityJoinRequestListUpdate:
+      name: "community:join_request:updated"
+      title: "community:join_request:updated"
+      summary: >-
+        MODERATOR-facing "Accept Requests" list refresh — distinct from the
+        singular `community:join_request:update` sent to the requester.
+      payload:
+        { $ref: "#/components/schemas/CommunityJoinRequestListUpdateDTO" }
+      examples:
+        - name: New join request landed (status=PENDING)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+            status: PENDING
+            userId: "user_requester"
+            actorId: "user_requester"
+            updatedAt: 1749465800000
+        - name: Request approved (drop from the pending list)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+            status: APPROVED
+            userId: "user_requester"
+            actorId: "user_moderator"
+            updatedAt: 1749465900000
+        - name: Request rejected (drop from the pending list)
+          payload:
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            requestId: "6843e1a2b5c3d4e5f6a7b8d0"
+            status: REJECTED
+            userId: "user_requester"
+            actorId: "user_moderator"
+            updatedAt: 1749465900000
     CommunityJoined:
       name: "community:joined"
       title: "community:joined"
@@ -5458,6 +5513,33 @@ components:
             - $ref: "#/components/schemas/NotificationNavigation"
           description: "Deep-link navigation included in the realtime status-flip event."
       required: [communityId, requestId, status]
+    CommunityJoinRequestListUpdateDTO:
+      type: object
+      description: |
+        Server → client (`/community`, room `community:<communityId>` AND each
+        admin/moderator's own `user:<id>` channel). MODERATOR-facing "Accept
+        Requests" list refresh — published by community-service on every
+        join-request lifecycle change (`notifyJoinRequestDecided`) so an open
+        admin panel adds, drops, or flips the affected row without a manual
+        reload. Distinct from `CommunityJoinRequestUpdateDTO` above, which is
+        the REQUESTER's own personal status-flip notification.
+      properties:
+        communityId: { type: string }
+        requestId: { type: string }
+        status:
+          {
+            type: string,
+            enum: [PENDING, APPROVED, REJECTED],
+            description: "PENDING = a new (or recycled) request just landed; APPROVED/REJECTED = a moderator decided it.",
+          }
+        userId: { type: string, description: "The requester." }
+        actorId:
+          {
+            type: string,
+            description: "The requester themself for PENDING, the deciding admin/moderator for APPROVED/REJECTED.",
+          }
+        updatedAt: { type: integer, description: "epoch ms." }
+      required: [communityId, requestId, status, userId, updatedAt]
     CommunityJoinedDTO:
       type: object
       description: |

@@ -110,6 +110,21 @@ jest.mock("../../src/grpc/community.client.js", () => ({
       hasMore: false,
     })),
     updateReactionActivity: jest.fn(async () => true),
+    updateMessageActivity: jest.fn(async () => true),
+    // Role authorization for pin/unpin/delete-for-everyone-of-another's-message
+    // now comes from this call (community-service's live CommunityMember.role),
+    // not RoomMember.role — see access-guard.ts assertCommunityRole/getCommunityLiveRole.
+    // Default: ADMIN, so existing tests that drive their scenario purely via
+    // roomMemberRepo's mocked role keep passing unless a test specifically
+    // wants to exercise a DENIED case, in which case it should override this
+    // mock (via its own jest.mock("../../src/grpc/community.client.js", ...)
+    // or by grabbing the mock instance) to return the intended role.
+    checkCommunityMembership: jest.fn(async () => ({
+      isMember: true,
+      isBanned: false,
+      status: "ACTIVE",
+      role: "ADMIN",
+    })),
   })),
   createCommunityReconcileClient: jest.fn(() => ({
     listCommunities: jest.fn(async () => ({
@@ -118,6 +133,21 @@ jest.mock("../../src/grpc/community.client.js", () => ({
       hasMore: false,
     })),
     updateReactionActivity: jest.fn(async () => true),
+    updateMessageActivity: jest.fn(async () => true),
+    // Role authorization for pin/unpin/delete-for-everyone-of-another's-message
+    // now comes from this call (community-service's live CommunityMember.role),
+    // not RoomMember.role — see access-guard.ts assertCommunityRole/getCommunityLiveRole.
+    // Default: ADMIN, so existing tests that drive their scenario purely via
+    // roomMemberRepo's mocked role keep passing unless a test specifically
+    // wants to exercise a DENIED case, in which case it should override this
+    // mock (via its own jest.mock("../../src/grpc/community.client.js", ...)
+    // or by grabbing the mock instance) to return the intended role.
+    checkCommunityMembership: jest.fn(async () => ({
+      isMember: true,
+      isBanned: false,
+      status: "ACTIVE",
+      role: "ADMIN",
+    })),
   })),
 }));
 

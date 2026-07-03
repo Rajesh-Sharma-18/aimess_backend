@@ -431,9 +431,16 @@ export class PrivateMessageController {
         .json(new ApiResponse(empty, t("CHAT_NO_MESSAGES_FOUND", req.locale)));
       return;
     }
+    const skip = (page - 1) * limit;
     const [messages, totalCount] = await Promise.all([
-      this.messageService.searchMessages({ roomId, userId, query, limit }),
-      this.messageService.countSearchResults(roomId, query),
+      this.messageService.searchMessages({
+        roomId,
+        userId,
+        query,
+        limit,
+        skip,
+      }),
+      this.messageService.countSearchResults(roomId, query, userId),
     ]);
     const enriched = await this.messageService.enrichMessages(messages);
     const paginated = buildListResponse(enriched, totalCount, page, limit);

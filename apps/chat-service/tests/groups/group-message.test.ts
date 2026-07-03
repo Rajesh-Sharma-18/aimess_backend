@@ -153,6 +153,48 @@ describe("GET /:roomId/messages/search (membership-gated)", () => {
     expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
+  // Regression: `page` was parsed but never converted to a DB skip, so page 2
+  // silently returned the exact same window as page 1 and any match beyond
+  // the first `limit` results was unreachable.
+  it("REGRESSION: page 2 requests a distinct offset window, not page 1 again", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.searchByText.mockResolvedValue([]);
+    mocks.groupMessageRepo.countSearchResults.mockResolvedValue(0);
+
+    await request(app)
+      .get(`${BASE}/${ROOM}/messages/search?q=hello&page=2&limit=10`)
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.groupMessageRepo.searchByText).toHaveBeenCalledWith(
+      ROOM,
+      "hello",
+      10,
+      expect.any(String),
+      10
+    );
+  });
+
+  it("REGRESSION: countSearchResults is scoped to the requesting user (deleted-for-me parity)", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      role: "MEMBER",
+    });
+    mocks.groupMessageRepo.searchByText.mockResolvedValue([]);
+    mocks.groupMessageRepo.countSearchResults.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get(`${BASE}/${ROOM}/messages/search?q=hello`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupMessageRepo.countSearchResults).toHaveBeenCalledWith(
+      ROOM,
+      "hello",
+      expect.any(String)
+    );
+  });
+
   // AUDIT H2 — search must be gated on active membership (IDOR).
   it("SECURITY: IDOR — 403 searching a group you're not a member of", async () => {
     mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);

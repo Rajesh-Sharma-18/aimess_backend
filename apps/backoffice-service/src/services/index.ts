@@ -10,3 +10,5 @@ export { communityService } from "./community.service.js";
 export { groupService } from "./group.service.js";
 export { announcementService } from "./announcement.service.js";
 export { categoryService } from "./category.service.js";
+export { systemHealthService } from "./system-health.service.js";
+export { adminAccountService } from "./admin-account.service.js";

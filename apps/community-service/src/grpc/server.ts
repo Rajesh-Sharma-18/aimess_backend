@@ -308,6 +308,65 @@ const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  /**
+   * Synchronous companion to the async `community.activity.queue` "message"
+   * event for the CANONICAL lastActivity bump (send/edit/delete-for-everyone),
+   * and the sole path for the delete-for-me personal self-hide overlay (which
+   * the queue never carries — see the proto doc). Delegates to the SAME
+   * repository methods the queue consumer calls
+   * (`updateLastActivity`/`setSelfLastActivityOverride`), so there is exactly
+   * one implementation of each. Fail-soft: any error still returns ok:false
+   * rather than throwing — the async queue publish (already sent by the
+   * caller beforehand, canonical mode only) remains the backstop.
+   */
+  updateMessageActivity: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          lastMessageAt?: number | string;
+          lastMessageId?: string;
+          senderUserId?: string;
+          senderUsername?: string;
+          messagePreview?: string;
+          activityType?: string;
+          selfUserId?: string;
+          selfPreview?: string;
+        };
+        const communityId = (req.communityId ?? "").trim();
+        if (!communityId) {
+          callback(null, { ok: false });
+          return;
+        }
+
+        const selfUserId = (req.selfUserId ?? "").trim();
+        if (selfUserId) {
+          await communityRepository.setSelfLastActivityOverride(communityId, {
+            userId: selfUserId,
+            preview: req.selfPreview ?? "",
+          });
+        } else {
+          const at = new Date(Number(req.lastMessageAt) || Date.now());
+          await communityRepository.updateLastActivity(
+            communityId,
+            at,
+            req.activityType ?? "message",
+            req.messagePreview ?? "",
+            req.senderUsername ?? null,
+            req.senderUserId ?? null
+          );
+        }
+        callback(null, { ok: true });
+      } catch (err) {
+        logger.error("updateMessageActivity gRPC handler failed", err);
+        callback(null, { ok: false });
+      }
+    })();
+  },
+
   // ---- Backoffice (admin panel) Community Management ----
   // Read-through list for the admin Community Management screen. Offset paginated.
   adminListCommunities: (

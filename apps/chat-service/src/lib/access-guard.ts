@@ -1,4 +1,5 @@
 import { ForbiddenError, NotFoundError } from "@aimess/errors";
+import { logger } from "@aimess/logger";
 
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
@@ -9,6 +10,7 @@ import type {
   GroupMember,
   RoomMember,
 } from "../generated/prisma/index.js";
+import { getCommunityReconcileClient } from "../grpc/community.client.js";
 
 /**
  * Centralized access guards for chat-service.
@@ -68,25 +70,89 @@ export async function assertGroupMember(
 }
 
 /**
+ * Live role lookup against community-service's AUTHORITATIVE
+ * `CommunityMember.role` — NOT chat-service's locally-mirrored `RoomMember.role`,
+ * which is a one-way, async, best-effort sync (`events/community-room-sync.consumer.ts`)
+ * that can go stale (a role change lands in community-service immediately but
+ * only reaches `RoomMember` after its queue event is consumed). This is the
+ * ONE centralized place chat-service asks community-service "what is this
+ * user's role right now" — every role-gated community write path routes
+ * through this function (directly, or via {@link assertCommunityRole} /
+ * {@link assertCommunityMember}'s `opts.roles`) so the lookup is never
+ * duplicated and the source of truth can't drift per call site again.
+ *
+ * `communityId` is the community-service community id — for community general
+ * rooms this always equals the chat-service `roomId` (`GeneralRoom.id ===
+ * communityId`), so existing call sites need no new field, just pass `roomId`.
+ *
+ * Never throws (delegates to `checkCommunityMembership`, which never throws
+ * either) — returns `""` (lowercase-normalized) on a transport failure or when
+ * the user isn't a member, so callers checking `roles.includes(role)` fail
+ * CLOSED by construction, without each call site needing its own try/catch.
+ */
+export async function getCommunityLiveRole(
+  communityId: string,
+  userId: string
+): Promise<string> {
+  const { role } = await getCommunityReconcileClient().checkCommunityMembership(
+    { communityId, userId }
+  );
+  return role.toLowerCase();
+}
+
+/**
+ * Convenience wrapper over {@link getCommunityLiveRole} for call sites that
+ * want the standard `CHAT_INSUFFICIENT_PERMISSIONS` 403. Some existing call
+ * sites throw a DIFFERENT error class for this same condition (e.g.
+ * `deleteForAll`'s "others need admin/moderator" branch uses `BadRequestError`,
+ * a 400) — those call {@link getCommunityLiveRole} directly and throw their
+ * own error to preserve their existing status code exactly.
+ *
+ * Fails CLOSED: an unreachable community-service resolves to role `""`, which
+ * never matches `roles`, so the action is denied rather than silently
+ * trusting a possibly-stale local role. Deliberate trade-off for
+ * moderation-sensitive actions (the reverse of the socket ban-gate's
+ * fail-OPEN policy, which only gates room visibility, not a mutation).
+ *
+ * @throws ForbiddenError `CHAT_INSUFFICIENT_PERMISSIONS` when the live role
+ *   isn't one of `roles` (including when community-service is unreachable).
+ */
+export async function assertCommunityRole(
+  communityId: string,
+  userId: string,
+  roles: readonly string[]
+): Promise<void> {
+  const liveRole = await getCommunityLiveRole(communityId, userId);
+  if (!roles.includes(liveRole)) {
+    logger.warn(
+      `assertCommunityRole|denied communityId=${communityId} userId=${userId} liveRole="${liveRole || "(none)"}" required=[${roles.join(",")}]`
+    );
+    throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
+  }
+}
+
+/**
  * Community / general room: the caller MUST be an ACTIVE member (banned/left
- * members are rejected). When `roles` is supplied the member's role must be one
- * of them. Mirrors the check enforced by `getConversation`/`listMedia`.
+ * members are rejected — this status check stays on `RoomMember`, unchanged;
+ * only role-gating moved to community-service, see {@link assertCommunityRole}).
+ * When `roles` is supplied, the caller's LIVE community-service role must be
+ * one of them. Mirrors the check enforced by `getConversation`/`listMedia`.
  *
  * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller isn't an active member.
- * @throws ForbiddenError `CHAT_INSUFFICIENT_PERMISSIONS` when the role is too low.
+ * @throws ForbiddenError `CHAT_INSUFFICIENT_PERMISSIONS` when the live role is too low.
  */
 export async function assertCommunityMember(
   memberRepo: Pick<RoomMemberRepository, "findByRoomAndUser">,
   roomId: string,
   userId: string,
-  opts?: { roles?: readonly string[] }
+  opts?: { roles?: readonly string[]; communityId?: string }
 ): Promise<RoomMember> {
   const member = await memberRepo.findByRoomAndUser(roomId, userId);
   if (!member || member.status !== "active") {
     throw new ForbiddenError("CHAT_NOT_A_MEMBER");
   }
-  if (opts?.roles && !opts.roles.includes(member.role)) {
-    throw new ForbiddenError("CHAT_INSUFFICIENT_PERMISSIONS");
+  if (opts?.roles) {
+    await assertCommunityRole(opts.communityId ?? roomId, userId, opts.roles);
   }
   return member;
 }

@@ -142,6 +142,41 @@ const startServer = async () => {
       );
     }
 
+    function isMongoIndexNotFoundError(error: unknown): boolean {
+      return (
+        typeof error === "object" &&
+        error !== null &&
+        "message" in error &&
+        typeof (error as { message?: string }).message === "string" &&
+        /index not found|ns not found/i.test(
+          (error as { message: string }).message
+        )
+      );
+    }
+
+    /**
+     * Drops an index that should no longer exist. Used to clean up indexes
+     * that predate the current schema and were never removed via migration
+     * (Mongo indexes aren't reconciled by `prisma generate`/`db push` diffing
+     * the way relational migrations are). Best-effort and idempotent: a
+     * missing index (already dropped, or a fresh DB that never had it) is not
+     * an error.
+     */
+    async function dropStaleIndex(collection: string, indexName: string) {
+      try {
+        await prisma.$runCommandRaw({
+          dropIndexes: collection,
+          index: indexName,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any);
+        logger.info(`Stale index dropped: ${indexName}`);
+      } catch (err) {
+        if (isMongoIndexNotFoundError(err)) return;
+        logger.warn(`Failed to drop stale index ${indexName} — continuing`);
+        logger.warn(err);
+      }
+    }
+
     async function ensureIndex(
       collection: string,
       indexBody: Record<string, unknown>,
@@ -267,6 +302,17 @@ const startServer = async () => {
       );
       logger.warn(err);
     }
+
+    // A stale unique index on (roomId, messageId) predates the current
+    // CommunityMessagePin schema (which intentionally has no @@unique — the
+    // same message can be pinned/unpinned/re-pinned as soft-delete history).
+    // It was never introduced via a tracked schema/migration, so it can't be
+    // reconciled by `prisma generate`/`db push`; drop it explicitly on every
+    // startup so any environment still carrying it self-heals.
+    await dropStaleIndex(
+      "community_message_pins",
+      "community_message_pins_roomId_messageId_key"
+    );
 
     await connectChatRedis();
 
@@ -418,7 +464,9 @@ const startServer = async () => {
       generalRoomMessageRepo,
       generalRoomRepo,
       roomMemberRepo,
-      communitySystemMessageService
+      communitySystemMessageService,
+      userSnapshotService,
+      cacheRepo
     );
 
     const webRtcConfigService = new WebRtcConfigService();

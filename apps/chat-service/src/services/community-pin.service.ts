@@ -7,16 +7,46 @@ import {
   assertCommunityMemberNotMuted,
   assertCommunityRoomWritable,
 } from "../lib/access-guard.js";
-import { resolvePinsMedia } from "../lib/media-resolve.js";
+import {
+  resolvePinsMedia,
+  resolveContentFiles,
+  resolveMediaUrl,
+  type MediaFileLike,
+} from "../lib/media-resolve.js";
 import type { CommunityMessagePinRepository } from "../repositories/community-message-pin.repository.js";
 import type { GeneralRoomMessageRepository } from "../repositories/general-room-message.repository.js";
 import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
+import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { CommunityMessagePin } from "../generated/prisma/index.js";
 import type { CommunitySystemMessageService } from "./community-system-message.service.js";
+import type { UserSnapshotService } from "./user-snapshot.service.js";
 
-/** How many active pins one community room may have at a time. */
-const PIN_LIMIT_PER_ROOM = 1;
+/**
+ * FE-header-ready snapshot of a room's currently pinned message. Reuses the
+ * SAME `CommunityMessagePin` persistence as pin/unpin — no separate pin store.
+ * `null` when the room has no active pin. When the pinned message still
+ * exists, content/media/sender fields reflect the LIVE message row (so an
+ * edit after pinning is visible); when it was hard-deleted, fields fall back
+ * to the pin's own frozen snapshot and `isAvailable` is `false` — mirroring
+ * the existing pin-banner "Message doesn't exist" behavior.
+ */
+export interface PinnedMessageSummary {
+  messageId: string;
+  roomId: string;
+  communityId: string;
+  senderId: string;
+  senderName: string;
+  senderHandle: string;
+  senderAvatar: string;
+  messageType: string;
+  text: string;
+  media: MediaFileLike[];
+  createdAt: number;
+  pinnedAt: number;
+  pinnedBy: string;
+  isAvailable: boolean;
+}
 
 export class CommunityPinService {
   constructor(
@@ -24,7 +54,14 @@ export class CommunityPinService {
     private readonly messageRepo: GeneralRoomMessageRepository,
     private readonly roomRepo: GeneralRoomRepository,
     private readonly memberRepo: RoomMemberRepository,
-    private readonly systemMessageService?: CommunitySystemMessageService
+    private readonly systemMessageService?: CommunitySystemMessageService,
+    /**
+     * Optional — enables `senderHandle` resolution on `getActivePinSummary`.
+     * Optional so existing 4/5-arg construction sites (tests) keep working
+     * untouched; production wires both in server.ts.
+     */
+    private readonly userSnapshotService?: UserSnapshotService,
+    private readonly cacheRepo?: CacheRepository
   ) {}
 
   async pin(params: {
@@ -32,16 +69,26 @@ export class CommunityPinService {
     messageId: string;
     userId: string;
     communityId: string;
-  }): Promise<{ pin: CommunityMessagePin; pinnedCount: number }> {
+  }): Promise<{
+    pin: CommunityMessagePin;
+    pinnedCount: number;
+    /** Set when pinning this message replaced a different message's active pin — the caller uses it to also emit the existing UNPIN realtime event. */
+    replacedPin?: CommunityMessagePin | null;
+    /** True when the requested message was already the room's active pin — no DB write occurred. */
+    idempotent?: boolean;
+  }> {
     const { roomId, messageId, userId, communityId } = params;
 
-    // 1. Assert ADMIN or MODERATOR role (throws CHAT_NOT_A_MEMBER / CHAT_INSUFFICIENT_PERMISSIONS)
+    // 1. Assert ADMIN or MODERATOR role (throws CHAT_NOT_A_MEMBER / CHAT_INSUFFICIENT_PERMISSIONS).
+    //    Role is checked LIVE against community-service (source of truth) —
+    //    see assertCommunityRole in access-guard.ts.
     const pinner = await assertCommunityMember(
       this.memberRepo,
       roomId,
       userId,
       {
         roles: ["admin", "moderator"],
+        communityId,
       }
     );
     // A muted moderator is fully silenced — pinning posts a system action too.
@@ -55,14 +102,7 @@ export class CommunityPinService {
     const communityName: string =
       typeof room.name === "string" && room.name ? room.name : "Community";
 
-    // 3. Enforce single-active-pin limit (service-level; MongoDB partial unique
-    //    indexes are not available in Prisma — enforced here instead).
-    const activePins = await this.pinRepo.countActivePinsByRoom(roomId);
-    if (activePins >= PIN_LIMIT_PER_ROOM) {
-      throw new BadRequestError("ACTIVE_PIN_ALREADY_EXISTS");
-    }
-
-    // 4. Validate the message to pin
+    // 3. Validate the message to pin
     const msg = await this.messageRepo.findById(messageId);
     if (!msg || msg.roomId !== roomId)
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -71,28 +111,84 @@ export class CommunityPinService {
     if (normalizeMessageType(msg.messageType) === "SYSTEM")
       throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
-    // 5. Persist pin record
-    const pin = await this.pinRepo.createPin({
-      communityId,
-      roomId,
-      messageId: msg.id,
-      pinnedBy: userId,
-      pinnedAt: new Date(),
-      messageCreatedAt: msg.createdAt,
-      senderId: msg.sentBy ?? "",
-      senderDisplayName: msg.senderName ?? "",
-      senderAvatar: msg.senderAvatar ?? "",
-      contentPinned: {
-        text: msg.message ?? "",
-        urls: [],
-        files: [],
-      },
-    });
+    // 4. Only one pinned message may exist per community/room. Find the
+    //    current active pin (if any) instead of hard-blocking on it.
+    const currentActivePin = await this.pinRepo.findActivePinByRoom(roomId);
 
-    const updated = await this.roomRepo.incPinnedCount(roomId, 1);
-    const pinnedCount = updated?.pinnedCount ?? activePins + 1;
+    // 4a. Re-pinning the message that's already active is a no-op success —
+    //     nothing to switch, no new record, no realtime event needed.
+    if (currentActivePin && currentActivePin.messageId === msg.id) {
+      return {
+        pin: currentActivePin,
+        pinnedCount: room.pinnedCount ?? 1,
+        replacedPin: null,
+        idempotent: true,
+      };
+    }
 
-    // 6. Create PINNED_MESSAGE system line (best-effort).
+    // 4b/5. Switch (or first-pin) atomically: soft-delete the previous active
+    //    pin (if any) and create the new one in a single transaction so the
+    //    one-active-pin-per-room invariant is never observably violated and
+    //    no duplicate active pin can be created under concurrent requests.
+    const { pin, replacedPin, pinnedCount } = await this.pinRepo.runTransaction(
+      async (tx) => {
+        let replaced: CommunityMessagePin | null = null;
+        if (currentActivePin) {
+          replaced = await this.pinRepo.softDeletePin(
+            currentActivePin.id,
+            userId,
+            new Date(),
+            tx
+          );
+          if (!replaced) {
+            throw new Error(
+              `CommunityPinService|switch: failed to soft-delete previous pin ${currentActivePin.id}`
+            );
+          }
+          await this.roomRepo.incPinnedCount(roomId, -1, tx);
+        }
+
+        const created = await this.pinRepo.createPin(
+          {
+            communityId,
+            roomId,
+            messageId: msg.id,
+            pinnedBy: userId,
+            pinnedAt: new Date(),
+            messageCreatedAt: msg.createdAt,
+            senderId: msg.sentBy ?? "",
+            senderDisplayName: msg.senderName ?? "",
+            senderAvatar: msg.senderAvatar ?? "",
+            contentPinned: {
+              text: msg.message ?? "",
+              urls: [],
+              files: [],
+            },
+          },
+          tx
+        );
+        const updatedRoom = await this.roomRepo.incPinnedCount(roomId, 1, tx);
+
+        return {
+          pin: created,
+          replacedPin: replaced,
+          pinnedCount: updatedRoom?.pinnedCount ?? 1,
+        };
+      }
+    );
+
+    // 5b. Switching pins: the previous active pin's "pinned a message" system
+    //    line is now stale — retract it (best-effort) same as an explicit
+    //    unpin would. Independent of the new pin's own system line below.
+    if (replacedPin?.pinSystemMessageId) {
+      await this.systemMessageService?.retractSystemMessage({
+        communityId,
+        messageId: replacedPin.pinSystemMessageId,
+      });
+    }
+
+    // 6. Create PINNED_MESSAGE system line (best-effort, outside the
+    //    transaction — a failure here must not roll back the pin switch).
     //    "eventAt" is scoped to this pin's ID so a retry doesn't duplicate the line.
     //    communityName drives the text: "{CommunityName} pinned a message".
     const eventAt = `pin:${pin.id}`;
@@ -113,10 +209,18 @@ export class CommunityPinService {
         return null;
       });
 
-    // 7. Store back-reference (best-effort)
+    // 7. Store back-reference (best-effort, but AWAITED — not fire-and-forget —
+    //    so a rapid subsequent unpin/re-pin always sees this pin's
+    //    pinSystemMessageId already persisted; a detached write here would
+    //    race a fast unpin and silently skip the system-line retraction).
+    //    Reflect it on the in-memory `pin` immediately too, so the response
+    //    of THIS call is correct without waiting on a re-read.
     if (sysMessageId) {
-      void this.pinRepo
+      await this.pinRepo
         .setPinSystemMessageId(pin.id, sysMessageId)
+        .then(() => {
+          pin.pinSystemMessageId = sysMessageId;
+        })
         .catch((err: unknown) => {
           logger.warn(
             `CommunityPinService|setPinSystemMessageId failed: ${String(err)}`
@@ -124,17 +228,25 @@ export class CommunityPinService {
         });
     }
 
-    return { pin, pinnedCount };
+    return { pin, pinnedCount, replacedPin, idempotent: false };
   }
 
   async unpin(params: {
     roomId: string;
     messageId: string;
     userId: string;
-  }): Promise<{ pin: CommunityMessagePin | null; pinnedCount: number }> {
+  }): Promise<{
+    pin: CommunityMessagePin | null;
+    pinnedCount: number;
+    /** Set when this unpin retracted a "pinned a message" system line — the caller uses it to recalculate lastActivity if that line was the room's last message. */
+    retractedSystemMessageId?: string | null;
+  }> {
     const { roomId, messageId, userId } = params;
 
-    // 1. Assert ADMIN or MODERATOR role
+    // 1. Assert ADMIN or MODERATOR role, checked LIVE against community-service.
+    //    No separate communityId param here — roomId === communityId for
+    //    community general rooms, and assertCommunityMember's opts.communityId
+    //    defaults to roomId when omitted.
     const unpinner = await assertCommunityMember(
       this.memberRepo,
       roomId,
@@ -159,9 +271,20 @@ export class CommunityPinService {
     const updated = await this.roomRepo.incPinnedCount(roomId, -1);
     const pinnedCount = updated?.pinnedCount ?? 0;
 
-    // NOTE: No UNPINNED_MESSAGE system message (product requirement).
+    // NOTE: No UNPINNED_MESSAGE system message (product requirement). But the
+    // ORIGINAL "{actor} pinned a message" line from the pin() call must be
+    // retracted now — otherwise it lingers in history after the pin itself
+    // is gone. Best-effort, same mechanism as a normal message hard-delete.
+    const retractedSystemMessageId =
+      activePinForMessage.pinSystemMessageId ?? null;
+    if (retractedSystemMessageId) {
+      await this.systemMessageService?.retractSystemMessage({
+        communityId: activePinForMessage.communityId || roomId,
+        messageId: retractedSystemMessageId,
+      });
+    }
 
-    return { pin: unpinnedPin, pinnedCount };
+    return { pin: unpinnedPin, pinnedCount, retractedSystemMessageId };
   }
 
   /**
@@ -187,5 +310,88 @@ export class CommunityPinService {
 
   async countPins(roomId: string): Promise<number> {
     return this.pinRepo.countActivePinsByRoom(roomId);
+  }
+
+  /**
+   * The room's currently active pinned message, FE-header-ready — for
+   * embedding as a top-level `pinnedMessage` field on the Community Messages
+   * API response (REST `GET /rooms/:roomId/messages` and the gRPC/socket
+   * `community:messages:fetch` equivalent). `null` when no message is pinned.
+   *
+   * Fixed query cost regardless of page size: 1 query to find the active pin
+   * (`findActivePinByRoom`, indexed on `[roomId, unpinnedAt]`), and — only if
+   * a pin exists — 1 query to load the live message row, plus one batched
+   * (Redis-cached) user-snapshot lookup for `senderHandle`. Never scales with
+   * the number of messages in the requested page (no N+1).
+   */
+  async getActivePinSummary(
+    roomId: string
+  ): Promise<PinnedMessageSummary | null> {
+    const pin = await this.pinRepo.findActivePinByRoom(roomId);
+    if (!pin) return null;
+
+    const message = await this.messageRepo.findById(pin.messageId);
+    const isAvailable = Boolean(
+      message && !message.deletedForAll && !pin.originalMessageDeletedAt
+    );
+
+    if (!isAvailable) {
+      // Original message hard-deleted (or no longer resolvable) — fall back
+      // to the pin's own frozen snapshot, same source the pin-list/banner
+      // already uses. Mirrors the documented "Message doesn't exist" state.
+      const snapshotContent = (pin.contentPinned ?? {}) as {
+        text?: string;
+      };
+      return {
+        messageId: pin.messageId,
+        roomId: pin.roomId,
+        communityId: pin.communityId || pin.roomId,
+        senderId: pin.senderId,
+        senderName: pin.senderDisplayName || "",
+        senderHandle: "",
+        senderAvatar: await resolveMediaUrl(pin.senderAvatar),
+        messageType: "TEXT",
+        text: snapshotContent.text ?? "",
+        media: [],
+        createdAt: pin.messageCreatedAt.getTime(),
+        pinnedAt: pin.pinnedAt.getTime(),
+        pinnedBy: pin.pinnedBy,
+        isAvailable: false,
+      };
+    }
+
+    const attachments = Array.isArray(message!.attachments)
+      ? (message!.attachments as MediaFileLike[])
+      : [];
+    const [media, senderAvatar] = await Promise.all([
+      resolveContentFiles(attachments),
+      resolveMediaUrl(message!.senderAvatar || pin.senderAvatar),
+    ]);
+
+    let senderHandle = "";
+    if (this.userSnapshotService && this.cacheRepo) {
+      const snaps = await this.userSnapshotService.getUserSnapshotsMap(
+        [message!.sentBy],
+        this.cacheRepo
+      );
+      senderHandle = (snaps.get(message!.sentBy)?.memberId as string) || "";
+    }
+
+    return {
+      messageId: message!.id,
+      roomId: pin.roomId,
+      communityId: pin.communityId || pin.roomId,
+      senderId: message!.sentBy,
+      senderName: message!.senderName || pin.senderDisplayName || "",
+      senderHandle,
+      senderAvatar,
+      messageType: normalizeMessageType(message!.messageType),
+      text: message!.message || "",
+      media,
+      createdAt: message!.createdAt.getTime(),
+      pinnedAt: pin.pinnedAt.getTime(),
+      pinnedBy: pin.pinnedBy,
+      isAvailable: true,
+    };
   }
 }

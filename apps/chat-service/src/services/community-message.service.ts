@@ -52,6 +52,7 @@ import {
   assertCommunityMemberNotMuted,
   assertCommunityReadAccess,
   assertCommunityRoomWritable,
+  getCommunityLiveRole,
 } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
@@ -1384,6 +1385,7 @@ export class CommunityMessageService {
     userId: string;
     query: string;
     limit: number;
+    skip?: number;
   }): Promise<CommunityMessageWire[]> {
     const { member } = await assertCommunityReadAccess(
       this.roomRepo,
@@ -1396,7 +1398,8 @@ export class CommunityMessageService {
       params.query,
       params.limit,
       params.userId,
-      isActiveMember(member)
+      isActiveMember(member),
+      params.skip ?? 0
     );
     const urlMap = await this.resolveRowsMedia(rows);
     return rows.map((m) =>
@@ -1408,8 +1411,23 @@ export class CommunityMessageService {
     return this.messageRepo.countByRoom(roomId);
   }
 
-  async countSearchResults(roomId: string, query: string): Promise<number> {
-    return this.messageRepo.countSearchResults(roomId, query);
+  async countSearchResults(
+    roomId: string,
+    query: string,
+    userId: string
+  ): Promise<number> {
+    const { member } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      roomId,
+      userId
+    );
+    return this.messageRepo.countSearchResults(
+      roomId,
+      query,
+      userId,
+      isActiveMember(member)
+    );
   }
 
   async listMedia(params: {
@@ -1751,13 +1769,23 @@ export class CommunityMessageService {
     // so foreign-message existence isn't leaked. (cross-room IDOR)
     const member = await this.assertActiveMemberOfMessageRoom(message, userId);
 
+    // Mirrors editMessage/pinMessage/reactToMessage: a message already tombstoned
+    // for everyone cannot be deleted-for-everyone again (idempotent no-op would
+    // hide a genuine "this was already handled" signal from the client).
+    if (message.deletedForAll)
+      throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+
     if (normalizeMessageType(message.messageType) === "SYSTEM")
       throw new BadRequestError("CHAT_SYSTEM_MESSAGE_IMMUTABLE");
 
     // Sender can always delete their own message for everyone.
-    // Others need admin or moderator role.
+    // Others need admin or moderator role — checked LIVE against
+    // community-service (source of truth), not the possibly-stale
+    // RoomMember.role `member` carries. roomId === communityId for community
+    // general rooms.
     if (message.sentBy !== userId) {
-      if (!["admin", "moderator"].includes(member.role)) {
+      const liveRole = await getCommunityLiveRole(message.roomId, userId);
+      if (!["admin", "moderator"].includes(liveRole)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
       // Admin/mod deleting someone else's message is moderation — not gated by mute.

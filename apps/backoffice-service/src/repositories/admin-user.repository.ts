@@ -1,5 +1,24 @@
 import { prisma } from "../config/prisma.js";
-import type { AdminStatus, RoleKey } from "../generated/prisma/client.js";
+import type {
+  AdminStatus,
+  Prisma,
+  RoleKey,
+} from "../generated/prisma/client.js";
+import type { ListAdminAccountsQuery } from "../types/admin-account.types.js";
+
+/** Whitelisted sort columns for the list endpoint (validator enforces the shape). */
+type AdminAccountSortField = "name" | "email" | "createdAt" | "lastLoginAt";
+
+function parseAdminAccountSort(sort: string): {
+  field: AdminAccountSortField;
+  dir: "asc" | "desc";
+} {
+  const [field, dir] = sort.split(":") as [
+    AdminAccountSortField,
+    "asc" | "desc",
+  ];
+  return { field, dir };
+}
 
 export const adminUserRepository = {
   /** Lookup for login — includes the role (key needed for JWT claims). */
@@ -65,8 +84,55 @@ export const adminUserRepository = {
     });
   },
 
+  updateProfile(id: string, input: { name?: string; avatarUrl?: string }) {
+    return prisma.adminUser.update({
+      where: { id },
+      data: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.avatarUrl !== undefined
+          ? { avatarUrl: input.avatarUrl }
+          : {}),
+      },
+      include: { role: true },
+    });
+  },
+
   /** Used by the seed to find a role id by its key. */
   findRoleByKey(key: RoleKey) {
     return prisma.adminRole.findUnique({ where: { key } });
+  },
+
+  /** Paginated + filtered admin list (newest first by default). */
+  async list(query: ListAdminAccountsQuery) {
+    const { field, dir } = parseAdminAccountSort(query.sort);
+    const where: Prisma.AdminUserWhereInput = {};
+
+    if (query.status && query.status !== "all") {
+      where.status = query.status;
+    }
+    if (query.roleKey && query.roleKey !== "all") {
+      where.role = { key: query.roleKey as RoleKey };
+    }
+    if (query.search) {
+      where.OR = [
+        { name: { contains: query.search, mode: "insensitive" } },
+        { email: { contains: query.search, mode: "insensitive" } },
+      ];
+    }
+
+    const skip = (query.page - 1) * query.limit;
+    const [rows, total] = await Promise.all([
+      prisma.adminUser.findMany({
+        where,
+        // Tiebreak on id so pages are deterministic when two rows share a sort key.
+        orderBy: [{ [field]: dir }, { id: "desc" }],
+        skip,
+        take: query.limit,
+        include: { role: true },
+      }),
+      prisma.adminUser.count({ where }),
+    ]);
+
+    return { rows, total };
   },
 };

@@ -55,6 +55,25 @@ export interface CommunityMemberJoinedSocketPayload {
   joinedAt: number; // epoch ms
 }
 
+/**
+ * Server → client. A join request's status changed (approved/rejected), or a
+ * new one was created/cancelled. Broadcast to the `community:<id>` room so
+ * every connected admin/moderator's "Accept Requests" list updates in real
+ * time without a manual refetch — mirrors the roster-broadcast pattern used
+ * by {@link CommunityMemberJoinedSocketPayload}.
+ */
+export interface CommunityJoinRequestUpdatedSocketPayload {
+  communityId: string;
+  requestId: string;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
+  /** The requester whose request changed status. */
+  userId: string;
+  /** Who acted: the requester themself for PENDING/CANCELLED, the
+   *  approving/rejecting admin for APPROVED/REJECTED. */
+  actorId?: string;
+  updatedAt: number; // epoch ms
+}
+
 export interface CommunityMemberRemovedPayload {
   communityId: string;
   userId: string; // who was removed

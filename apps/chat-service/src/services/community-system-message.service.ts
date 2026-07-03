@@ -463,6 +463,43 @@ export class CommunitySystemMessageService {
     }
   }
 
+  /**
+   * Hard-hides a single COMMUNITY-visible system message this service
+   * previously posted — currently only the PINNED_MESSAGE line tied to a pin
+   * that was since undone (unpinned, or replaced by pinning a different
+   * message) — and tells connected clients to remove it. Same `deletedForAll`
+   * mechanism and tombstone shape as a normal message hard-delete; just
+   * triggered by pin lifecycle instead of a user delete action. Mirrors
+   * `publishJoinLineDeletions` below for the PERSONAL case. Best-effort:
+   * never throws — the pin state change that triggered this must not roll
+   * back on a failure here.
+   */
+  async retractSystemMessage(params: {
+    communityId: string;
+    messageId: string;
+  }): Promise<void> {
+    const { communityId, messageId } = params;
+    try {
+      const hidden = await this.messageRepo.deleteForAll(messageId);
+      if (!hidden) return;
+      const tombstone = buildDeletePayload({
+        conversationType: "COMMUNITY",
+        messageId,
+        roomId: communityId,
+        scope: "forEveryone",
+        deletedBy: "",
+      });
+      await this.redis.publish(
+        `community:${communityId}`,
+        JSON.stringify({ event: "community:message:deleted", data: tombstone })
+      );
+    } catch (err) {
+      logger.warn(
+        `CommunitySystemMessageService|retractSystemMessage failed messageId=${messageId}: ${String(err)}`
+      );
+    }
+  }
+
   private nameOf(
     snapshots: Map<string, Record<string, unknown>>,
     userId: string | null
