@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
+import { isAppError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 import { buildReactionActivityText } from "@aimess/constants";
 import { redis } from "../config/redis.js";
@@ -81,6 +82,43 @@ async function resolveBroadcastContent(content: unknown): Promise<unknown> {
     };
   }
   return content;
+}
+
+/** Maps an `AppError.statusCode` (HTTP convention, from `@aimess/errors`) to the
+ * closest gRPC status. Unmapped/unexpected statuses fall back to INTERNAL. */
+const APP_ERROR_STATUS_TO_GRPC: Record<number, grpc.status> = {
+  400: grpc.status.INVALID_ARGUMENT,
+  401: grpc.status.UNAUTHENTICATED,
+  403: grpc.status.PERMISSION_DENIED,
+  404: grpc.status.NOT_FOUND,
+  409: grpc.status.ALREADY_EXISTS,
+  410: grpc.status.FAILED_PRECONDITION,
+  415: grpc.status.INVALID_ARGUMENT,
+  429: grpc.status.RESOURCE_EXHAUSTED,
+};
+
+/**
+ * Map a caught service-layer error to a gRPC callback error object, preserving
+ * an `AppError`'s `messageKey` (e.g. "CHAT_MESSAGE_NOT_FOUND") verbatim as the
+ * gRPC error message so the gateway can resolve a specific, localized ack
+ * message instead of a generic one (see `resolveGrpcAckError` in
+ * api-gateway's `sockets/ack.ts`). `messageKey` is always a short catalog
+ * token, never free text, so this can never leak internals/stack traces.
+ * Any non-`AppError` (Prisma failure, unexpected bug, etc.) becomes a generic
+ * INTERNAL error with a safe, non-descriptive message — exactly the previous
+ * behavior for truly unexpected failures, minus the `String(err)` leak.
+ */
+function toGrpcCallbackError(err: unknown): {
+  code: grpc.status;
+  message: string;
+} {
+  if (isAppError(err)) {
+    return {
+      code: APP_ERROR_STATUS_TO_GRPC[err.statusCode] ?? grpc.status.INTERNAL,
+      message: err.messageKey ?? "INTERNAL_ERROR",
+    };
+  }
+  return { code: grpc.status.INTERNAL, message: "INTERNAL_ERROR" };
 }
 
 export interface GrpcDeps {
@@ -1857,12 +1895,15 @@ export function createCommunityImpl(
           };
 
           const limit = req.limit || 30;
-          const messages = await deps.communityMessageService.getMessages({
-            roomId: req.roomId,
-            userId: req.requesterId,
-            cursor: req.cursor || undefined,
-            limit,
-          });
+          const [messages, pinnedMessage] = await Promise.all([
+            deps.communityMessageService.getMessages({
+              roomId: req.roomId,
+              userId: req.requesterId,
+              cursor: req.cursor || undefined,
+              limit,
+            }),
+            deps.communityPinService.getActivePinSummary(req.roomId),
+          ]);
 
           const last = messages[messages.length - 1];
           const nextCursor =
@@ -1914,6 +1955,9 @@ export function createCommunityImpl(
             })),
             nextCursor,
             hasMore,
+            pinnedMessageJson: pinnedMessage
+              ? JSON.stringify(pinnedMessage)
+              : "",
           });
         } catch (err) {
           logger.error(`gRPC getCommunityMessages error: ${String(err)}`);
@@ -2431,93 +2475,147 @@ export function createCommunityImpl(
               },
             })
           );
+
+          // lastActivity recalculation MUST complete (including the
+          // synchronous community-service confirmation below) BEFORE the ack
+          // — mirrors reactToMessage's guaranteed-before-response pattern.
+          // Previously this ran AFTER callback(), so a client that re-fetched
+          // GET /communities/mine immediately on receiving the delete
+          // response could race ahead of the (fire-and-forget, no-DLQ) async
+          // community.activity.queue publish and see stale lastActivity.
+          let forEveryoneRecalc: Awaited<
+            ReturnType<
+              typeof deps.communityMessageService.recalculateLastMessageAfterDelete
+            >
+          > = null;
+          let forMeRecalc: Awaited<
+            ReturnType<
+              typeof deps.communityMessageService.recalculateLastMessageAfterDeleteForMe
+            >
+          > = null;
+
+          // delete-for-everyone: recalculate and persist to community-service.
+          if (req.deleteType === "forEveryone" && result?.roomId) {
+            forEveryoneRecalc =
+              await deps.communityMessageService.recalculateLastMessageAfterDelete(
+                result.roomId,
+                req.messageId
+              );
+            if (
+              forEveryoneRecalc !== null &&
+              forEveryoneRecalc.hasLastMessage
+            ) {
+              publishCommunityActivitySafe({
+                communityId: req.communityId,
+                lastMessageAt: new Date().toISOString(),
+                lastMessageId: forEveryoneRecalc.prevMessageId ?? "",
+                senderUserId: forEveryoneRecalc.sentBy,
+                senderUsername: forEveryoneRecalc.senderName,
+                messagePreview: forEveryoneRecalc.preview,
+                type: "message",
+              });
+              // Synchronous companion — awaited before the ack, same
+              // reasoning as reactToMessage's updateReactionActivity call.
+              // Never blocks the delete on failure; the queue publish above
+              // remains the backstop.
+              await getCommunityReconcileClient().updateMessageActivity({
+                communityId: req.communityId,
+                lastMessageAt: Date.now(),
+                lastMessageId: forEveryoneRecalc.prevMessageId ?? "",
+                senderUserId: forEveryoneRecalc.sentBy,
+                senderUsername: forEveryoneRecalc.senderName,
+                messagePreview: forEveryoneRecalc.preview,
+                activityType: "message",
+              });
+            }
+          }
+
+          // delete-for-me: personalize the deleting user's own view only.
+          // Shared snapshot and canonical community-service lastActivity are
+          // NOT changed — every other member is unaffected. The self-hide
+          // overlay (lastActivityUserId/lastActivitySelfPreview) is the only
+          // path that persists this, since the async queue never carries it.
+          if (req.deleteType !== "forEveryone" && result?.roomId) {
+            forMeRecalc =
+              await deps.communityMessageService.recalculateLastMessageAfterDeleteForMe(
+                result.roomId,
+                result.createdAt,
+                req.userId
+              );
+            if (forMeRecalc !== null && forMeRecalc.wasEffectiveLast) {
+              await getCommunityReconcileClient().updateMessageActivity({
+                communityId: req.communityId,
+                selfUserId: req.userId,
+                selfPreview: forMeRecalc.preview,
+              });
+            }
+          }
+
           callback(null, {
             messageId: result?.id ?? req.messageId,
             communityId: req.communityId,
             roomId: result?.roomId ?? "",
             deleteType: req.deleteType,
           });
-          // delete-for-everyone: recalculate and broadcast to all members.
-          if (req.deleteType === "forEveryone" && result?.roomId) {
-            const recalc =
-              await deps.communityMessageService.recalculateLastMessageAfterDelete(
-                result.roomId,
-                req.messageId
-              );
-            if (recalc !== null) {
-              const fRoomId = result.roomId;
-              publishCommunityUpdatedSafe({
-                redis,
-                communityId: req.communityId,
-                roomId: fRoomId,
-                fetchMembers: () =>
-                  deps.communityMessageService.getActiveMemberIds(fRoomId),
-                // Per-recipient correctness on the LIVE socket delete path (the
-                // gateway routes community:message:delete through this gRPC
-                // handler): a member who personally hid the new shared
-                // previous-visible message gets THEIR own preview, mirroring REST.
-                resolveOverrides: (memberIds) =>
-                  deps.communityMessageService
-                    .resolveForEveryoneOverrides(
-                      fRoomId,
-                      recalc.prevMessageId,
-                      memberIds
-                    )
-                    .then((raw) => renderCommunityOverrides(raw)),
-                senderId: recalc.sentBy,
-                senderName: recalc.senderName,
-                lastMessageId: recalc.prevMessageId ?? "",
-                lastMessageAt: recalc.createdAt.getTime(),
-                preview: {
-                  contentType: normalizeMessageType(recalc.messageType),
-                  text: recalc.preview,
-                },
-              });
-              if (recalc.hasLastMessage) {
-                publishCommunityActivitySafe({
-                  communityId: req.communityId,
-                  lastMessageAt: new Date().toISOString(),
-                  lastMessageId: recalc.prevMessageId ?? "",
-                  senderUserId: recalc.sentBy,
-                  senderUsername: recalc.senderName,
-                  messagePreview: recalc.preview,
-                  type: "message",
-                });
-              }
-            }
+
+          // Realtime socket bump — fire-and-forget, AFTER the ack (matches
+          // reactToMessage's ordering: the DB write is guaranteed by now, the
+          // live push is best-effort on top of it).
+          if (forEveryoneRecalc !== null && result?.roomId) {
+            const fRoomId = result.roomId;
+            const recalc = forEveryoneRecalc;
+            publishCommunityUpdatedSafe({
+              redis,
+              communityId: req.communityId,
+              roomId: fRoomId,
+              fetchMembers: () =>
+                deps.communityMessageService.getActiveMemberIds(fRoomId),
+              // Per-recipient correctness on the LIVE socket delete path (the
+              // gateway routes community:message:delete through this gRPC
+              // handler): a member who personally hid the new shared
+              // previous-visible message gets THEIR own preview, mirroring REST.
+              resolveOverrides: (memberIds) =>
+                deps.communityMessageService
+                  .resolveForEveryoneOverrides(
+                    fRoomId,
+                    recalc.prevMessageId,
+                    memberIds
+                  )
+                  .then((raw) => renderCommunityOverrides(raw)),
+              senderId: recalc.sentBy,
+              senderName: recalc.senderName,
+              lastMessageId: recalc.prevMessageId ?? "",
+              lastMessageAt: recalc.createdAt.getTime(),
+              preview: {
+                contentType: normalizeMessageType(recalc.messageType),
+                text: recalc.preview,
+              },
+            });
           }
-          // delete-for-me: send a targeted community:updated only to the
-          // deleting user so their list shows the previous visible message.
-          // Shared snapshot and community-service preview are NOT changed.
-          if (req.deleteType !== "forEveryone" && result?.roomId) {
-            const recalc =
-              await deps.communityMessageService.recalculateLastMessageAfterDeleteForMe(
-                result.roomId,
-                result.createdAt,
-                req.userId
-              );
-            // Skip unless the deleted message was the viewer's effective last
-            // visible message (matches the REST controller gate).
-            if (recalc !== null && recalc.wasEffectiveLast) {
-              publishCommunityUpdatedSafe({
-                redis,
-                communityId: req.communityId,
-                roomId: result.roomId,
-                fetchMembers: () => Promise.resolve([req.userId]),
-                senderId: recalc.sentBy,
-                senderName: recalc.senderName,
-                lastMessageId: recalc.prevMessageId ?? "",
-                lastMessageAt: recalc.createdAt.getTime(),
-                preview: {
-                  contentType: normalizeMessageType(recalc.messageType),
-                  text: recalc.preview,
-                },
-              });
-            }
+          if (
+            forMeRecalc !== null &&
+            forMeRecalc.wasEffectiveLast &&
+            result?.roomId
+          ) {
+            const recalc = forMeRecalc;
+            publishCommunityUpdatedSafe({
+              redis,
+              communityId: req.communityId,
+              roomId: result.roomId,
+              fetchMembers: () => Promise.resolve([req.userId]),
+              senderId: recalc.sentBy,
+              senderName: recalc.senderName,
+              lastMessageId: recalc.prevMessageId ?? "",
+              lastMessageAt: recalc.createdAt.getTime(),
+              preview: {
+                contentType: normalizeMessageType(recalc.messageType),
+                text: recalc.preview,
+              },
+            });
           }
         } catch (err) {
           logger.error(`gRPC deleteCommunityMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -2541,18 +2639,38 @@ export function createCommunityImpl(
             roomId: req.roomId,
             communityId: req.communityId,
           });
-          await redis.publish(
-            `community:${req.communityId}`,
-            JSON.stringify({
-              event: "community:message:pinned",
-              data: {
-                communityId: req.communityId,
-                roomId: req.roomId,
-                pin: result.pin,
-                pinnedCount: result.pinnedCount,
-              },
-            })
-          );
+          if (!result.idempotent) {
+            // Switching pins: tell clients the previous message was unpinned
+            // (same event `unpinCommunityMessage` publishes) before announcing
+            // the new pin, so a listening client never sees two pins at once.
+            if (result.replacedPin) {
+              await redis.publish(
+                `community:${req.communityId}`,
+                JSON.stringify({
+                  event: "community:message:unpinned",
+                  data: {
+                    communityId: req.communityId,
+                    roomId: req.roomId,
+                    messageId: result.replacedPin.messageId,
+                    pin: result.replacedPin,
+                    pinnedCount: null,
+                  },
+                })
+              );
+            }
+            await redis.publish(
+              `community:${req.communityId}`,
+              JSON.stringify({
+                event: "community:message:pinned",
+                data: {
+                  communityId: req.communityId,
+                  roomId: req.roomId,
+                  pin: result.pin,
+                  pinnedCount: result.pinnedCount,
+                },
+              })
+            );
+          }
           callback(null, {
             messageId: req.messageId,
             communityId: req.communityId,
@@ -2561,7 +2679,7 @@ export function createCommunityImpl(
           });
         } catch (err) {
           logger.error(`gRPC pinCommunityMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },
@@ -2605,7 +2723,7 @@ export function createCommunityImpl(
           });
         } catch (err) {
           logger.error(`gRPC unpinCommunityMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },

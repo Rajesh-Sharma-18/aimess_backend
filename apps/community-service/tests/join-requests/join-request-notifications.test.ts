@@ -87,6 +87,9 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMembership: jest.fn(),
     findJoinRequestById: jest.fn(),
     findJoinRequestsByIds: jest.fn(),
+    findJoinRequestByCommunityAndUser: jest.fn(),
+    createJoinRequest: jest.fn(),
+    recyclePendingJoinRequest: jest.fn(),
     updateJoinRequest: jest.fn(),
     bulkUpdateJoinRequestStatus: jest.fn(),
     findMemberByUserId: jest.fn(),
@@ -111,21 +114,30 @@ jest.mock("../../src/services/member-avatar.service.js", () => ({
   },
 }));
 
-import { publishCommunityRoomEvent } from "@aimess/redis";
+import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import {
   publishCommunityJoinRequestApprovedSafe,
   publishCommunityJoinRequestRejectedSafe,
+  publishCommunityJoinRequestedSafe,
   publishCommunityMemberAddedSafe,
 } from "../../src/messaging/publish-community.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const pubApproved = publishCommunityJoinRequestApprovedSafe as jest.Mock;
 const pubRejected = publishCommunityJoinRequestRejectedSafe as jest.Mock;
+const pubRequested = publishCommunityJoinRequestedSafe as jest.Mock;
 const pubMemberAdded = publishCommunityMemberAddedSafe as jest.Mock;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
+const pubChatUserEvent = publishChatUserEvent as jest.Mock;
+
+/** Isolate the `community:join_request:updated` calls among all room-event calls. */
+const joinRequestUpdatedCalls = () =>
+  pubRoomEvent.mock.calls.filter(
+    ([, , evt]) => evt === "community:join_request:updated"
+  );
 
 const CID = "c".repeat(24);
 const RID = "r".repeat(24);
@@ -223,8 +235,12 @@ describe("approveJoinRequest — events + member fan-out", () => {
   it("broadcasts community:member:joined into the community room", async () => {
     await communityService.approveJoinRequest(CID, MOD, RID);
 
-    // notifyMemberJoined now emits two room events: community:member:joined + community:stats:updated
-    expect(pubRoomEvent).toHaveBeenCalledTimes(2);
+    // notifyMemberJoined emits two room events (member:joined + stats:updated);
+    // the join-request-list-refresh event is asserted separately below.
+    const roomEvents = pubRoomEvent.mock.calls.map(([, , evt]) => evt);
+    expect(
+      roomEvents.filter((evt) => evt !== "community:join_request:updated")
+    ).toHaveLength(2);
     const joinedCall = pubRoomEvent.mock.calls.find(
       ([, , evt]) => evt === "community:member:joined"
     );
@@ -242,6 +258,33 @@ describe("approveJoinRequest — events + member fan-out", () => {
     await communityService.approveJoinRequest(CID, MOD, RID);
     expect(pubRejected).not.toHaveBeenCalled();
   });
+
+  it("broadcasts community:join_request:updated (status=APPROVED) for realtime list refresh", async () => {
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    const calls = joinRequestUpdatedCalls();
+    expect(calls).toHaveLength(1);
+    const [, roomCommunityId, , payload] = calls[0];
+    expect(roomCommunityId).toBe(CID);
+    expect(payload).toMatchObject({
+      communityId: CID,
+      requestId: RID,
+      status: "APPROVED",
+      userId: REQUESTER,
+      actorId: MOD,
+    });
+    expect(typeof payload.updatedAt).toBe("number");
+  });
+
+  it("also fans community:join_request:updated to every admin/moderator's personal channel", async () => {
+    await communityService.approveJoinRequest(CID, MOD, RID);
+
+    const personalCalls = pubChatUserEvent.mock.calls.filter(
+      ([, , evt]) => evt === "community:join_request:updated"
+    );
+    const recipients = personalCalls.map((c) => c[1]).sort();
+    expect(recipients).toEqual([MOD, "moderator-2"].sort());
+  });
 });
 
 describe("rejectJoinRequest — previously-silent path now emits an event", () => {
@@ -256,6 +299,7 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
       decidedAt: new Date(),
     });
     repo.createAuditLog.mockResolvedValue(undefined);
+    repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
   });
 
   it("publishes community.join_request_rejected addressed to the requester", async () => {
@@ -277,7 +321,31 @@ describe("rejectJoinRequest — previously-silent path now emits an event", () =
     await communityService.rejectJoinRequest(CID, MOD, RID);
     expect(pubApproved).not.toHaveBeenCalled();
     expect(pubMemberAdded).not.toHaveBeenCalled();
-    expect(pubRoomEvent).not.toHaveBeenCalled();
+  });
+
+  it("still broadcasts community:join_request:updated (status=REJECTED) — the list-refresh fix", async () => {
+    await communityService.rejectJoinRequest(CID, MOD, RID);
+
+    const calls = joinRequestUpdatedCalls();
+    expect(calls).toHaveLength(1);
+    const [, roomCommunityId, , payload] = calls[0];
+    expect(roomCommunityId).toBe(CID);
+    expect(payload).toMatchObject({
+      communityId: CID,
+      requestId: RID,
+      status: "REJECTED",
+      userId: REQUESTER,
+      actorId: MOD,
+    });
+  });
+
+  it("does not let a broadcast failure fail the reject request (best-effort)", async () => {
+    pubRoomEvent.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      communityService.rejectJoinRequest(CID, MOD, RID)
+    ).resolves.toMatchObject({ status: "REJECTED" });
+    expect(pubRejected).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -298,6 +366,7 @@ describe("bulkRejectJoinRequests — emits one rejected event per pending reques
     ]);
     repo.bulkUpdateJoinRequestStatus.mockResolvedValue(undefined);
     repo.createAuditLog.mockResolvedValue(undefined);
+    repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
   });
 
   it("fans a rejected event to every requester, none skipped", async () => {
@@ -327,6 +396,72 @@ describe("bulkRejectJoinRequests — emits one rejected event per pending reques
     expect(result.rejected).toEqual([]);
     expect(result.skipped).toEqual([RID]);
     expect(pubRejected).not.toHaveBeenCalled();
+  });
+
+  it("broadcasts one community:join_request:updated per pending request (multiple pending)", async () => {
+    await communityService.bulkRejectJoinRequests(CID, MOD, [RID, RID2]);
+
+    const calls = joinRequestUpdatedCalls();
+    expect(calls).toHaveLength(2);
+    const requestIds = calls.map(([, , , payload]) => payload.requestId).sort();
+    expect(requestIds).toEqual([RID, RID2].sort());
+    for (const [, , , payload] of calls) {
+      expect(payload.status).toBe("REJECTED");
+    }
+  });
+
+  it("broadcasts exactly one event for the last remaining pending request", async () => {
+    repo.findJoinRequestsByIds.mockResolvedValue([pendingRequest]);
+
+    await communityService.bulkRejectJoinRequests(CID, MOD, [RID]);
+
+    const calls = joinRequestUpdatedCalls();
+    expect(calls).toHaveLength(1);
+    expect(calls[0][3]).toMatchObject({ requestId: RID, status: "REJECTED" });
+  });
+});
+
+describe("bulkApproveJoinRequests — join-request list refresh", () => {
+  const RID2 = "s".repeat(24);
+  const REQUESTER2 = "88888888-8888-4888-8888-888888888888";
+  const memberRow2 = { ...memberRow, userId: REQUESTER2 };
+
+  beforeEach(() => {
+    repo.findById.mockResolvedValue(community);
+    repo.findMembership.mockResolvedValue({ role: "ADMIN", status: "ACTIVE" });
+    repo.findJoinRequestsByIds.mockResolvedValue([
+      pendingRequest,
+      { ...pendingRequest, id: RID2, userId: REQUESTER2 },
+    ]);
+    repo.findMembersByUserIds.mockResolvedValueOnce([]); // existing-member probe
+    repo.createMember.mockResolvedValue(undefined);
+    repo.bulkUpdateJoinRequestStatus.mockResolvedValue(undefined);
+    repo.countActiveMembers.mockResolvedValue(7);
+    repo.setMemberCount.mockResolvedValue(undefined);
+    repo.findMembersByUserIds.mockResolvedValueOnce([memberRow, memberRow2]); // post-write re-read
+    repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
+    repo.createAuditLog.mockResolvedValue(undefined);
+  });
+
+  it("broadcasts one community:join_request:updated per approved request (multiple admins reached)", async () => {
+    const result = await communityService.bulkApproveJoinRequests(CID, MOD, [
+      RID,
+      RID2,
+    ]);
+
+    expect(result.approved).toEqual([RID, RID2]);
+    const calls = joinRequestUpdatedCalls();
+    expect(calls).toHaveLength(2);
+    for (const [, , , payload] of calls) {
+      expect(payload.status).toBe("APPROVED");
+    }
+    const personalCalls = pubChatUserEvent.mock.calls.filter(
+      ([, , evt]) => evt === "community:join_request:updated"
+    );
+    // 2 approved requests × 2 moderator recipients each.
+    expect(personalCalls).toHaveLength(4);
+    const recipients = [...new Set(personalCalls.map((c) => c[1]))].sort();
+    expect(recipients).toEqual([MOD, "moderator-2"].sort());
   });
 });
 
@@ -382,5 +517,73 @@ describe("redeemInviteLink (autoApprove) — member_added with welcome-able acto
     // No join-request decision events for an auto-approve self-join.
     expect(pubApproved).not.toHaveBeenCalled();
     expect(pubRejected).not.toHaveBeenCalled();
+  });
+});
+
+describe("createJoinRequest — realtime 'new request' list refresh (was completely missing)", () => {
+  beforeEach(() => {
+    repo.findById.mockResolvedValue(community);
+    repo.findMemberByUserId.mockResolvedValue(null); // not yet a member
+    repo.findJoinRequestByCommunityAndUser.mockResolvedValue(null); // no existing request
+    repo.createJoinRequest.mockResolvedValue(pendingRequest);
+    repo.findActiveMemberIdsByRoles.mockResolvedValue([MOD, "moderator-2"]);
+  });
+
+  it("publishes community.join_requested for the moderators (cross-service/push)", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    expect(pubRequested).toHaveBeenCalledTimes(1);
+    const payload = pubRequested.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      communityId: CID,
+      requestId: RID,
+      userId: REQUESTER,
+      moderatorRecipientIds: [MOD, "moderator-2"],
+    });
+  });
+
+  it("broadcasts community:join_request:updated (status=PENDING) into the community room", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    const calls = joinRequestUpdatedCalls();
+    expect(calls).toHaveLength(1);
+    const [, roomCommunityId, , payload] = calls[0];
+    expect(roomCommunityId).toBe(CID);
+    expect(payload).toMatchObject({
+      communityId: CID,
+      requestId: RID,
+      status: "PENDING",
+      userId: REQUESTER,
+      actorId: REQUESTER, // self — no moderator has decided anything yet
+    });
+    expect(typeof payload.updatedAt).toBe("number");
+  });
+
+  it("also fans community:join_request:updated to every admin/moderator's personal channel", async () => {
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    const personalCalls = pubChatUserEvent.mock.calls.filter(
+      ([, , evt]) => evt === "community:join_request:updated"
+    );
+    const recipients = personalCalls.map((c) => c[1]).sort();
+    expect(recipients).toEqual([MOD, "moderator-2"].sort());
+  });
+
+  it("does not broadcast again when the caller retries and an identical PENDING request already exists (no spam)", async () => {
+    repo.findJoinRequestByCommunityAndUser.mockResolvedValue(pendingRequest); // already PENDING
+
+    await communityService.createJoinRequest(CID, REQUESTER, null);
+
+    expect(pubRequested).not.toHaveBeenCalled();
+    expect(joinRequestUpdatedCalls()).toHaveLength(0);
+  });
+
+  it("does not let a broadcast failure fail the create request (best-effort)", async () => {
+    pubRoomEvent.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      communityService.createJoinRequest(CID, REQUESTER, null)
+    ).resolves.toMatchObject({ status: "PENDING" });
+    expect(pubRequested).toHaveBeenCalledTimes(1);
   });
 });

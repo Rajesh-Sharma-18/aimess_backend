@@ -36,7 +36,13 @@ export function mapMemberStatus(status: string | undefined): string | null {
   }
 }
 
-/** community member role → chat RoomMember role. */
+/**
+ * Community member role → chat RoomMember role. Fails CLOSED on anything
+ * unrecognized (missing, malformed, or a future enum value this mapper
+ * hasn't been taught yet) by returning null so the caller leaves the
+ * existing RoomMember.role untouched rather than silently demoting it —
+ * only an exact ADMIN/MODERATOR/MEMBER match may write a role.
+ */
 export function mapMemberRole(role: string | undefined): string | null {
   if (!role) return null;
   switch (role.toUpperCase()) {
@@ -44,8 +50,10 @@ export function mapMemberRole(role: string | undefined): string | null {
       return "admin";
     case "MODERATOR":
       return "moderator";
-    default:
+    case "MEMBER":
       return "member";
+    default:
+      return null;
   }
 }
 

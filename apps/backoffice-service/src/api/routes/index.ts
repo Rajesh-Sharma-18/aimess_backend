@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 
+import { adminAccountRoutes } from "./admin-account.routes.js";
 import { announcementRoutes } from "./announcement.routes.js";
 import { auditLogRoutes } from "./audit-log.routes.js";
 import { authRoutes } from "./auth.routes.js";
@@ -10,6 +11,7 @@ import { meRoutes } from "./me.routes.js";
 import { communityRoutes } from "./community.routes.js";
 import { groupRoutes } from "./groups.routes.js";
 import { moderationRoutes } from "./moderation.routes.js";
+import { systemHealthRoutes } from "./system-health.routes.js";
 import { usersRoutes } from "./users.routes.js";
 
 /** API v1 routes — mounted at `/v1` (gateway proxies /admin/* → :3010/v1/*). */
@@ -57,4 +59,14 @@ serviceRoutes.use(categoryRoutes);
 // (the gateway strips `/admin` and forwards `/v1/*` verbatim). Self-prefixed, NOT
 // nested under a base path — same as moderation/announcements.
 serviceRoutes.use(auditLogRoutes);
+// System Health is self-prefixed with `/system-health` so it resolves at
+// `/v1/system-health` — matching the documented gateway path
+// `/admin/v1/system-health` (the gateway strips `/admin` and forwards `/v1/*`
+// verbatim). Self-prefixed, NOT nested under a base path — same as audit-logs.
+serviceRoutes.use(systemHealthRoutes);
+// Admin Accounts routes are self-prefixed with `/admin-accounts` so they
+// resolve at `/v1/admin-accounts/*` — matching the documented gateway path
+// `/admin/v1/admin-accounts` (the gateway strips `/admin` and forwards `/v1/*`
+// verbatim). Self-prefixed, NOT nested under a base path — same as audit-logs.
+serviceRoutes.use(adminAccountRoutes);
 serviceRoutes.use("/dashboard", dashboardRoutes);

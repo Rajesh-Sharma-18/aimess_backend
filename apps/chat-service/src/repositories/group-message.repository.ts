@@ -490,18 +490,24 @@ export class GroupMessageRepository {
   async searchByText(
     roomId: string,
     query: string,
-    limit: number
+    limit: number,
+    userId: string,
+    skip = 0
   ): Promise<GroupMessage[]> {
     // content.text is inside a Json column — use a raw regex query for matching
     // ids, then re-fetch via the typed client for the normal message shape.
+    // `deletedForUserIds` mirrors the same per-user delete-for-me idiom used
+    // elsewhere in this repository (e.g. countUnreadSince above) — without it,
+    // search resurrects messages this user deleted for themselves.
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const raw = (await this.prisma.groupMessage.findRaw({
       filter: {
         roomId,
         isDeleted: false,
+        deletedForUserIds: { $ne: userId },
         "content.text": { $regex: escaped, $options: "i" },
       },
-      options: { sort: { createdAt: -1 }, limit },
+      options: { sort: { createdAt: -1 }, skip, limit },
     })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
 
     const ids = raw
@@ -509,10 +515,14 @@ export class GroupMessageRepository {
       .filter((id): id is string => Boolean(id));
     if (!ids.length) return [];
 
-    return this.prisma.groupMessage.findMany({
+    const rows = await this.prisma.groupMessage.findMany({
       where: { id: { in: ids } },
-      orderBy: { createdAt: "desc" },
     });
+    // Preserve findRaw's paginated order — an unordered `IN` re-fetch plus a
+    // fresh createdAt sort would silently undo the skip/limit window on
+    // same-timestamp rows.
+    const order = new Map(ids.map((id, i) => [id, i]));
+    return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   }
 
   async findByClientMessageId(
@@ -604,7 +614,11 @@ export class GroupMessageRepository {
     });
   }
 
-  async countSearchResults(roomId: string, query: string): Promise<number> {
+  async countSearchResults(
+    roomId: string,
+    query: string,
+    userId: string
+  ): Promise<number> {
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const result = (await this.prisma.groupMessage.aggregateRaw({
       pipeline: [
@@ -612,6 +626,7 @@ export class GroupMessageRepository {
           $match: {
             roomId,
             isDeleted: false,
+            deletedForUserIds: { $ne: userId },
             "content.text": { $regex: escaped, $options: "i" },
           },
         },

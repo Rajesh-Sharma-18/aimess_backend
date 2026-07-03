@@ -1,30 +1,53 @@
 import type {
   PrismaClient,
+  Prisma,
   CommunityMessagePin,
 } from "../generated/prisma/index.js";
+
+/** A `PrismaClient` or the interactive-transaction client Prisma hands the callback in `$transaction(async (tx) => ...)`. */
+type PrismaOrTx = PrismaClient | Prisma.TransactionClient;
 
 export class CommunityMessagePinRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
-  async createPin(data: {
-    communityId: string;
-    roomId: string;
-    messageId: string;
-    pinnedBy: string;
-    pinnedAt?: Date;
-    messageCreatedAt: Date;
-    senderId: string;
-    senderDisplayName?: string;
-    senderAvatar?: string;
-    contentPinned?: object;
-  }): Promise<CommunityMessagePin> {
-    return this.prisma.communityMessagePin.create({
+  /**
+   * Runs `fn` inside a MongoDB interactive transaction (requires the replica-set
+   * connection already used in every environment). Lets the pin/switch-pin flow
+   * combine soft-deleting the previous active pin and creating the new one into
+   * a single atomic unit without duplicating either repository method.
+   */
+  async runTransaction<T>(
+    fn: (tx: Prisma.TransactionClient) => Promise<T>
+  ): Promise<T> {
+    return this.prisma.$transaction(fn);
+  }
+
+  async createPin(
+    data: {
+      communityId: string;
+      roomId: string;
+      messageId: string;
+      pinnedBy: string;
+      pinnedAt?: Date;
+      messageCreatedAt: Date;
+      senderId: string;
+      senderDisplayName?: string;
+      senderAvatar?: string;
+      contentPinned?: object;
+    },
+    client: PrismaOrTx = this.prisma
+  ): Promise<CommunityMessagePin> {
+    return client.communityMessagePin.create({
       data: {
         communityId: data.communityId,
         roomId: data.roomId,
         messageId: data.messageId,
         pinnedBy: data.pinnedBy,
         pinnedAt: data.pinnedAt ?? new Date(),
+        // Written explicitly (not left undefined) so MongoDB persists the key.
+        // An absent key does not match Prisma's `unpinnedAt: null` filters used
+        // by every "active pin" lookup (findActivePinByMessageId/ByRoom, counts).
+        unpinnedAt: null,
         messageCreatedAt: data.messageCreatedAt,
         senderId: data.senderId,
         senderDisplayName: data.senderDisplayName ?? "",
@@ -36,9 +59,10 @@ export class CommunityMessagePinRepository {
 
   /** Find the single active pin for a room (unpinnedAt is null). */
   async findActivePinByRoom(
-    roomId: string
+    roomId: string,
+    client: PrismaOrTx = this.prisma
   ): Promise<CommunityMessagePin | null> {
-    return this.prisma.communityMessagePin.findFirst({
+    return client.communityMessagePin.findFirst({
       where: { roomId, unpinnedAt: null },
       orderBy: { pinnedAt: "desc" },
     });
@@ -68,10 +92,11 @@ export class CommunityMessagePinRepository {
   async softDeletePin(
     pinId: string,
     unpinnedByUserId: string,
-    unpinnedAt: Date
+    unpinnedAt: Date,
+    client: PrismaOrTx = this.prisma
   ): Promise<CommunityMessagePin | null> {
     try {
-      return await this.prisma.communityMessagePin.update({
+      return await client.communityMessagePin.update({
         where: { id: pinId },
         data: { unpinnedAt, unpinnedByUserId },
       });

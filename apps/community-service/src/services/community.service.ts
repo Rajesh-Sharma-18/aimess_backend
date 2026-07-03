@@ -14,6 +14,7 @@ import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
   CommunityAddedPayload,
   CommunityClosedPayload,
+  CommunityJoinRequestUpdatedSocketPayload,
   CommunityMemberAddedPayload,
   CommunityMemberJoinedSocketPayload,
   CommunityMemberMutedSocketPayload,
@@ -3307,6 +3308,73 @@ export const communityService = {
     });
   },
 
+  /**
+   * Fan out `community:join_request:updated` so every open admin/moderator
+   * "Accept Requests" list adds, drops, or flips the affected request in real
+   * time — no manual page reload. Reused by:
+   *   - createJoinRequest (status "PENDING" — a new request just landed), and
+   *   - approve/reject and their bulk variants (status "APPROVED"/"REJECTED"),
+   * so the realtime side-effect stays DRY across all five call sites.
+   *
+   * Dual delivery, mirroring `community:added`'s reasoning above: the
+   * `community:<id>` room broadcast reaches admins who have the community
+   * open, while the per-moderator `user:<id>` emit reaches admins who only
+   * have the standalone requests screen mounted (never joined the room).
+   * Best-effort — a publish failure must never fail the calling request.
+   */
+  async notifyJoinRequestDecided(args: {
+    communityId: string;
+    requestId: string;
+    status: "PENDING" | "APPROVED" | "REJECTED";
+    targetUserId: string;
+    actorId: string;
+    decidedAt: Date;
+    /** Bulk callers hoist this once to avoid an N+1 of identical role reads. */
+    moderatorRecipientIds?: string[];
+  }): Promise<void> {
+    const { communityId, requestId, status, targetUserId, actorId, decidedAt } =
+      args;
+    try {
+      const moderatorRecipientIds =
+        args.moderatorRecipientIds ??
+        (await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]));
+
+      const payload = {
+        communityId,
+        requestId,
+        status,
+        userId: targetUserId,
+        actorId,
+        updatedAt: decidedAt.getTime(),
+      } satisfies CommunityJoinRequestUpdatedSocketPayload;
+
+      await Promise.all([
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:join_request:updated",
+          payload
+        ),
+        ...moderatorRecipientIds.map((modId) =>
+          publishChatUserEvent(
+            redis,
+            modId,
+            "community:join_request:updated",
+            payload
+          )
+        ),
+      ]);
+    } catch (error) {
+      logger.warn(
+        `community:join_request:updated broadcast failed for community=${communityId} request=${requestId}`
+      );
+      logger.warn(error);
+    }
+  },
+
   async addMembers(
     communityId: string,
     callerId: string,
@@ -3346,7 +3414,11 @@ export const communityService = {
     // Reactivated members keep their existing row in hand; the fresh joinedAt is
     // taken from the reactivation write below (it advances to now), so the DTO is
     // built without a re-read while still reporting the latest join time.
-    const toReactivate: { userId: string; joinedAt: Date }[] = [];
+    const toReactivate: {
+      userId: string;
+      joinedAt: Date;
+      role: CommunityMemberRole;
+    }[] = [];
     const toCreate: string[] = [];
 
     for (const userId of userIds) {
@@ -3371,8 +3443,13 @@ export const communityService = {
       } else if (member.status === CommunityMemberStatus.BANNED) {
         skipped.push({ userId, reason: "BANNED" });
       } else {
-        // LEFT (or any other inactive non-banned state) → reactivate.
-        toReactivate.push({ userId, joinedAt: member.joinedAt });
+        // LEFT (or any other inactive non-banned state) → reactivate,
+        // preserving the rank they held before leaving.
+        toReactivate.push({
+          userId,
+          joinedAt: member.joinedAt,
+          role: member.role,
+        });
       }
     }
 
@@ -3397,7 +3474,8 @@ export const communityService = {
               snapshotUsername: snap.username,
               snapshotDisplayName: snap.displayName,
               snapshotAvatarKey: snap.avatarObjectKey,
-            }
+            },
+            m.role
           );
           reactivatedJoinedAt.set(m.userId, row.joinedAt);
         }
@@ -4513,7 +4591,8 @@ export const communityService = {
         newRow = await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           callerId,
-          snapshotData
+          snapshotData,
+          existingMember!.role
         );
       } else {
         newRow = await communityRepository.createMember({
@@ -5205,6 +5284,19 @@ export const communityService = {
         requesterDisplayName: requesterSnap?.displayName ?? "Unknown",
         requesterAvatarUrl: requesterAvatarMedia.downloadUrl,
       });
+
+      // Admin/moderator "Accept Requests" list realtime refresh — a new
+      // request just landed, so every open admin panel should see it appear
+      // without a manual reload. Same broadcast used by approve/reject.
+      await this.notifyJoinRequestDecided({
+        communityId,
+        requestId: row.id,
+        status: "PENDING",
+        targetUserId: callerId,
+        actorId: callerId,
+        decidedAt: new Date(),
+        moderatorRecipientIds,
+      });
     }
 
     return toJoinRequestData(row);
@@ -5377,7 +5469,8 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        }
+        },
+        targetMember.role
       );
     } else {
       await communityRepository.createMember({
@@ -5455,6 +5548,16 @@ export const communityService = {
         displayName: callerSnapApprove?.displayName ?? "Unknown",
       },
       decidedAt: new Date().toISOString(),
+    });
+
+    // Admin/moderator "Accept Requests" list realtime refresh.
+    await this.notifyJoinRequestDecided({
+      communityId: community.id,
+      requestId: request.id,
+      status: "APPROVED",
+      targetUserId: request.userId,
+      actorId: callerId,
+      decidedAt: new Date(),
     });
 
     // COMMUNITY_JOINED personal system message is now emitted inside
@@ -5538,6 +5641,16 @@ export const communityService = {
       visibleToUserId: request.userId,
     });
 
+    // Admin/moderator "Accept Requests" list realtime refresh.
+    await this.notifyJoinRequestDecided({
+      communityId: community.id,
+      requestId: request.id,
+      status: "REJECTED",
+      targetUserId: request.userId,
+      actorId: callerId,
+      decidedAt: new Date(),
+    });
+
     return toJoinRequestData(updated);
   },
 
@@ -5602,7 +5715,8 @@ export const communityService = {
         await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           request.userId,
-          snapshotData
+          snapshotData,
+          existing.role
         );
       } else if (
         !existing ||
@@ -5696,6 +5810,18 @@ export const communityService = {
           },
           decidedAt: decidedAt.toISOString(),
         });
+
+        // Admin/moderator "Accept Requests" list realtime refresh (per request,
+        // so every removed row is individually addressable client-side).
+        void this.notifyJoinRequestDecided({
+          communityId: community.id,
+          requestId,
+          status: "APPROVED",
+          targetUserId: request.userId,
+          actorId: callerId,
+          decidedAt,
+          moderatorRecipientIds,
+        });
       }
 
       logger.info(
@@ -5749,6 +5875,12 @@ export const communityService = {
         ]);
       const callerSnapBulkReject = callerSnapsBulkReject.get(callerId);
 
+      const moderatorRecipientIds =
+        await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]);
+
       for (const requestId of pending) {
         const request = rowMap.get(requestId)!;
         void this.recordAudit({
@@ -5774,6 +5906,17 @@ export const communityService = {
             displayName: callerSnapBulkReject?.displayName ?? "Unknown",
           },
           decidedAt: decidedAt.toISOString(),
+        });
+
+        // Admin/moderator "Accept Requests" list realtime refresh.
+        void this.notifyJoinRequestDecided({
+          communityId: community.id,
+          requestId,
+          status: "REJECTED",
+          targetUserId: request.userId,
+          actorId: callerId,
+          decidedAt,
+          moderatorRecipientIds,
         });
       }
 
@@ -6192,7 +6335,8 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        }
+        },
+        targetMember.role
       );
     } else {
       await communityRepository.createMember({
@@ -7765,7 +7909,8 @@ export const communityService = {
             snapshotUsername: snap.username,
             snapshotDisplayName: snap.displayName,
             snapshotAvatarKey: snap.avatarObjectKey,
-          }
+          },
+          existing.role
         );
       } else {
         member = await communityRepository.createMember({

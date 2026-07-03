@@ -17,12 +17,34 @@ import request from "supertest";
 
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
+import { getCommunityReconcileClient } from "../../src/grpc/community.client.js";
 
 let app: import("express").Express;
 let mocks: BuiltMocks;
 
 const ROOM = "room-1";
 const BASE = "/api/chat/community";
+
+/**
+ * Role authorization for pin/unpin/delete-for-everyone-of-another's-message
+ * is sourced LIVE from community-service (`checkCommunityMembership`), not
+ * `RoomMember.role` — see access-guard.ts `assertCommunityRole`/
+ * `getCommunityLiveRole`. The global mock (tests/setup/global-mocks.ts)
+ * defaults this to ADMIN so most tests need no changes; a test that wants to
+ * exercise a DENIED scenario must override the next `checkCommunityMembership`
+ * call to return the intended (lower) role, mirroring whatever `RoomMember`
+ * role it also mocks so the two stay obviously in sync for the reader.
+ */
+function mockLiveRole(role: "ADMIN" | "MODERATOR" | "MEMBER" | ""): void {
+  (getCommunityReconcileClient as jest.Mock).mockReturnValueOnce({
+    checkCommunityMembership: jest.fn(async () => ({
+      isMember: role !== "",
+      isBanned: false,
+      status: role !== "" ? "ACTIVE" : "",
+      role,
+    })),
+  });
+}
 
 beforeEach(() => {
   ({ app, mocks } = buildApp());
@@ -57,6 +79,96 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.data).toHaveLength(1);
     expect(res.body.data.data[0].contentType).toBe("TEXT");
+  });
+
+  it("POSITIVE: pinnedMessage is null when the room has no active pin", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [],
+      hasMore: false,
+    });
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(0);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
+    mocks.communityMessagePinRepo.findActivePinByRoom.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.pinnedMessage).toBeNull();
+  });
+
+  it("POSITIVE: pinnedMessage carries the FE-header fields when a message is pinned, without touching the `messages` array shape", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m1",
+          roomId: ROOM,
+          sentBy: "u",
+          message: "hi",
+          messageType: "text",
+          createdAt: new Date(1),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(1);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
+
+    const pinnedAt = new Date("2026-07-01T10:00:00.000Z");
+    mocks.communityMessagePinRepo.findActivePinByRoom.mockResolvedValue({
+      messageId: "pinned-1",
+      roomId: ROOM,
+      communityId: ROOM,
+      pinnedBy: "mod-1",
+      pinnedAt,
+      unpinnedAt: null,
+      originalMessageDeletedAt: null,
+      messageCreatedAt: new Date("2026-06-30T09:00:00.000Z"),
+      senderId: "sender-1",
+      senderDisplayName: "",
+      senderAvatar: "",
+      contentPinned: { text: "", urls: [], files: [] },
+    });
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: "pinned-1",
+      roomId: ROOM,
+      sentBy: "sender-1",
+      senderName: "Pinned Sender",
+      senderAvatar: "",
+      message: "This is the pinned message",
+      messageType: "text",
+      attachments: [],
+      deletedForAll: false,
+      createdAt: new Date("2026-06-30T09:00:00.000Z"),
+    });
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    // Existing `messages` (`data`) array is unchanged — backward compatible.
+    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data[0].id).toBe("m1");
+    // New top-level field carries the pinned message.
+    expect(res.body.data.pinnedMessage).toMatchObject({
+      messageId: "pinned-1",
+      roomId: ROOM,
+      senderId: "sender-1",
+      senderName: "Pinned Sender",
+      messageType: "TEXT",
+      text: "This is the pinned message",
+      pinnedBy: "mod-1",
+      pinnedAt: pinnedAt.getTime(),
+      isAvailable: true,
+    });
   });
 
   it("POSITIVE: messages are returned in ascending (oldest→newest) order", async () => {
@@ -314,6 +426,52 @@ describe("GET /rooms/:roomId/messages/search (membership-gated)", () => {
     expect(res.body.data.data).toHaveLength(1);
   });
 
+  // Regression: `page` was parsed but never converted to a DB skip, so page 2
+  // silently returned the exact same window as page 1 and any match beyond
+  // the first `limit` results was unreachable.
+  it("REGRESSION: page 2 requests a distinct offset window, not page 1 again", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.searchByText.mockResolvedValue([]);
+    mocks.generalRoomMessageRepo.countSearchResults.mockResolvedValue(0);
+
+    await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages/search?q=hello&page=2&limit=10`)
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.generalRoomMessageRepo.searchByText).toHaveBeenCalledWith(
+      ROOM,
+      "hello",
+      10,
+      expect.any(String),
+      expect.anything(),
+      10
+    );
+  });
+
+  it("REGRESSION: countSearchResults reflects the requesting user's visibility, not a raw room count", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.searchByText.mockResolvedValue([]);
+    mocks.generalRoomMessageRepo.countSearchResults.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages/search?q=hello`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(
+      mocks.generalRoomMessageRepo.countSearchResults
+    ).toHaveBeenCalledWith(
+      ROOM,
+      "hello",
+      expect.any(String),
+      expect.anything()
+    );
+  });
+
   // AUDIT H2 — community search must be gated on active membership (IDOR).
   it("SECURITY: IDOR — 403 searching a community you're not a member of", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue(null);
@@ -499,6 +657,10 @@ describe("DELETE /messages/:messageId", () => {
       role: "member",
       status: "active",
     });
+    // Role is authorized LIVE against community-service, not RoomMember.role —
+    // the RoomMember mock above is status-only now; drive the actual denial
+    // via the live-role lookup.
+    mockLiveRole("MEMBER");
 
     const res = await request(app)
       .delete(`${BASE}/messages/m1?type=forEveryone`)
@@ -516,6 +678,27 @@ describe("DELETE /messages/:messageId", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(404);
+  });
+
+  it("NEGATIVE: 400 forEveryone on a message already tombstoned for everyone", async () => {
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: "m1",
+      sentBy: TEST_USER_ID,
+      roomId: ROOM,
+      messageType: "text",
+      deletedForAll: true,
+    });
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      role: "member",
+      status: "active",
+    });
+
+    const res = await request(app)
+      .delete(`${BASE}/messages/m1?type=forEveryone`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(400);
+    expect(mocks.generalRoomMessageRepo.deleteForAll).not.toHaveBeenCalled();
   });
 });
 
@@ -693,10 +876,81 @@ describe("pins: POST pin + DELETE unpin + GET list", () => {
     );
   });
 
-  it("SECURITY: 403 when a plain member tries to pin", async () => {
+  it("POSITIVE: pinning a different message auto-unpins the previous one (single active pin invariant)", async () => {
     mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
       status: "active",
-      role: "member",
+      role: "moderator",
+    });
+    // An active pin already exists on a DIFFERENT message.
+    mocks.communityMessagePinRepo.findActivePinByRoom.mockResolvedValue({
+      id: "pin-old",
+      messageId: "m-old",
+      roomId: ROOM,
+      unpinnedAt: null,
+    });
+    mocks.communityMessagePinRepo.softDeletePin.mockResolvedValue({
+      id: "pin-old",
+      messageId: "m-old",
+      roomId: ROOM,
+      unpinnedAt: new Date(3),
+    });
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: "m-new",
+      roomId: ROOM,
+      message: "new pin",
+      createdAt: new Date(1),
+    });
+    mocks.communityMessagePinRepo.createPin.mockResolvedValue({
+      id: "pin-new",
+      messageId: "m-new",
+      pinnedAt: new Date(2),
+    });
+    mocks.generalRoomRepo.incPinnedCount.mockResolvedValue({ pinnedCount: 1 });
+
+    const res = await request(app)
+      .post(`${BASE}/rooms/${ROOM}/messages/m-new/pin`)
+      .set(bearer(makeAccessToken()))
+      .send({ messageId: "m-new", communityId: "comm-1" });
+
+    expect(res.status).toBe(200);
+    // Reuses the existing repository methods — no duplicated business logic.
+    expect(mocks.communityMessagePinRepo.softDeletePin).toHaveBeenCalledWith(
+      "pin-old",
+      TEST_USER_ID,
+      expect.any(Date),
+      expect.anything()
+    );
+    expect(mocks.communityMessagePinRepo.createPin).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: "m-new" }),
+      expect.anything()
+    );
+    // Both realtime events are published: the previous pin's UNPIN first,
+    // then the new PIN — never leaving two pins visible at once.
+    const events = mocks.redis.publish.mock.calls.map(
+      (c: unknown[]) => JSON.parse(c[1] as string).event
+    );
+    expect(events).toEqual([
+      "community:message:unpinned",
+      "community:message:pinned",
+    ]);
+  });
+
+  it("POSITIVE: re-pinning the currently-active message is an idempotent no-op (no duplicate record, no events)", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+      role: "moderator",
+    });
+    mocks.communityMessagePinRepo.findActivePinByRoom.mockResolvedValue({
+      id: "pin1",
+      messageId: "m1",
+      roomId: ROOM,
+      unpinnedAt: null,
+    });
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: "m1",
+      roomId: ROOM,
+      message: "already pinned",
+      createdAt: new Date(1),
     });
 
     const res = await request(app)
@@ -704,7 +958,87 @@ describe("pins: POST pin + DELETE unpin + GET list", () => {
       .set(bearer(makeAccessToken()))
       .send({ messageId: "m1", communityId: "comm-1" });
 
+    expect(res.status).toBe(200);
+    expect(mocks.communityMessagePinRepo.createPin).not.toHaveBeenCalled();
+    expect(mocks.communityMessagePinRepo.softDeletePin).not.toHaveBeenCalled();
+    expect(mocks.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: 403 when a plain member tries to pin", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+      role: "member",
+    });
+    // Role is authorized LIVE against community-service, not RoomMember.role.
+    mockLiveRole("MEMBER");
+
+    const res = await request(app)
+      .post(`${BASE}/rooms/${ROOM}/messages/m1/pin`)
+      .set(bearer(makeAccessToken()))
+      .send({ messageId: "m1", communityId: "comm-1" });
+
     expect(res.status).toBe(403);
+  });
+
+  it("SECURITY: 403 when a plain member tries to unpin", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+      role: "member",
+    });
+    // Role is authorized LIVE against community-service, not RoomMember.role.
+    mockLiveRole("MEMBER");
+
+    const res = await request(app)
+      .delete(`${BASE}/rooms/${ROOM}/messages/m1/pin`)
+      .set(bearer(makeAccessToken()))
+      .send({ messageId: "m1" });
+
+    expect(res.status).toBe(403);
+    expect(mocks.communityMessagePinRepo.softDeletePin).not.toHaveBeenCalled();
+  });
+
+  it('POSITIVE: an admin can pin even when RoomMember.role is stale ("member") — proves community-service role is authoritative', async () => {
+    // The whole point of the fix: a stale/lagging RoomMember.role must NOT
+    // block (or wrongly allow) an action once community-service disagrees.
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+      role: "member", // stale local mirror — actually an ADMIN in community-service
+    });
+    mockLiveRole("ADMIN");
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: "m1",
+      roomId: ROOM,
+      message: "pin me",
+      createdAt: new Date(1),
+    });
+    mocks.communityMessagePinRepo.createPin.mockResolvedValue({
+      id: "pin1",
+      pinnedAt: new Date(2),
+    });
+    mocks.generalRoomRepo.incPinnedCount.mockResolvedValue({ pinnedCount: 1 });
+
+    const res = await request(app)
+      .post(`${BASE}/rooms/${ROOM}/messages/m1/pin`)
+      .set(bearer(makeAccessToken()))
+      .send({ messageId: "m1", communityId: "comm-1" });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('SECURITY: a stale RoomMember.role of "moderator" no longer authorizes pin once community-service says MEMBER (demotion took effect)', async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+      role: "moderator", // stale local mirror — community-service already demoted them
+    });
+    mockLiveRole("MEMBER");
+
+    const res = await request(app)
+      .post(`${BASE}/rooms/${ROOM}/messages/m1/pin`)
+      .set(bearer(makeAccessToken()))
+      .send({ messageId: "m1", communityId: "comm-1" });
+
+    expect(res.status).toBe(403);
+    expect(mocks.communityMessagePinRepo.createPin).not.toHaveBeenCalled();
   });
 
   it("NEGATIVE: 404 pinning when not a member of the room", async () => {

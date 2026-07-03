@@ -205,6 +205,10 @@ export const CHAT_MESSAGES = {
     vi: "Tin nhắn đã bị xóa",
     en: "Message already deleted",
   },
+  CHAT_SYSTEM_MESSAGE_IMMUTABLE: {
+    vi: "Không thể xóa tin nhắn hệ thống",
+    en: "System messages cannot be deleted",
+  },
   CHAT_REPORT_NOT_PARTICIPANT: {
     vi: "Bạn không phải là thành viên của cuộc trò chuyện này",
     en: "You are not a participant in this conversation",

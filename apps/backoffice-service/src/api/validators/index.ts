@@ -168,3 +168,18 @@ export {
   type ListAuditLogsQueryInput,
   type AuditLogIdParam,
 } from "./audit-log.validator.js";
+
+export {
+  roleKeyEnum,
+  adminAccountStatusEnum,
+  createAdminAccountSchema,
+  updateAdminAccountSchema,
+  updateAdminPermissionsSchema,
+  listAdminAccountsQuerySchema,
+  adminAccountIdParamSchema,
+  type CreateAdminAccountInput,
+  type UpdateAdminAccountInput,
+  type UpdateAdminPermissionsInput,
+  type ListAdminAccountsQueryInput,
+  type AdminAccountIdParam,
+} from "./admin-account.validator.js";

@@ -16,6 +16,18 @@ export type ObjectHead = {
   contentType?: string;
 };
 
+/**
+ * HEAD a bucket as a cheap reachability check (health probes). Resolves on
+ * success; rejects if the bucket is missing or the store is unreachable. Reads
+ * nothing and creates nothing.
+ */
+export async function bucketExists(
+  client: StorageClient,
+  bucket: string
+): Promise<void> {
+  await client.send(new HeadBucketCommand({ Bucket: bucket }));
+}
+
 /** HEAD an object; returns `{ exists: false }` on 404, rethrows other errors. */
 export async function headObject(
   client: StorageClient,

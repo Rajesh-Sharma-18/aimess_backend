@@ -522,13 +522,19 @@ export const communityRepository = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
-    }
+    },
+    // Role the member held before they LEFT. Callers read this off the
+    // existing (pre-reactivation) row and pass it through so rejoining
+    // preserves rank instead of silently resetting an ADMIN/MODERATOR to
+    // MEMBER. Defaults to MEMBER only for the (should-not-happen) case of no
+    // prior row.
+    priorRole: CommunityMemberRole = CommunityMemberRole.MEMBER
   ) {
     const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: {
         status: CommunityMemberStatus.ACTIVE,
-        role: CommunityMemberRole.MEMBER,
+        role: priorRole,
         // Rejoin starts a fresh membership: advance joinedAt to now so the member
         // list shows the LATEST join time, not the original (stale) one. joinedAt
         // is @default(now()) which only applies on create, so reactivation must
@@ -558,7 +564,7 @@ export const communityRepository = {
       communityId,
       userId,
       status: CommunityMemberStatus.ACTIVE,
-      role: CommunityMemberRole.MEMBER,
+      role: row.role as CommunityMemberRole,
     });
     return row;
   },
@@ -963,6 +969,36 @@ export const communityRepository = {
         // pair — a later non-reaction bump must clear a stale target preview too.
         lastActivityTargetUserId: targetUserId,
         lastActivityTargetPreview: targetPreview,
+      },
+    });
+  },
+
+  /**
+   * Personal "self-hide" overlay for delete-for-me: writes ONLY
+   * `lastActivityUserId`/`lastActivitySelfPreview` — the SAME columns already
+   * used to personalize a self-referential join/role-change line — so that
+   * ONLY the viewer whose id matches `lastActivityUserId` sees `preview` (via
+   * the existing `viewerId === lastActivityUserId` resolution in
+   * community.service.ts); every other member keeps resolving the untouched
+   * canonical `lastActivityPreview`. Unconditional overwrite (no forward-only
+   * guard, mirrors {@link setReactionActivity}) — a delete-for-me is a
+   * personal view change, not a community-wide event with its own ordering.
+   * Never touches `lastActivityAt`/Type/Preview/Username, so the community's
+   * list ordering and every other member's preview are completely unaffected.
+   * A subsequent real canonical bump (send/edit/delete-for-everyone) already
+   * always overwrites `lastActivityUserId`/`lastActivitySelfPreview` too (see
+   * `updateLastActivity` above), so a stale self-hide preview is naturally
+   * cleared the next time anything else happens in the room.
+   */
+  async setSelfLastActivityOverride(
+    communityId: string,
+    params: { userId: string; preview: string }
+  ): Promise<void> {
+    await prisma.community.updateMany({
+      where: { id: communityId },
+      data: {
+        lastActivityUserId: params.userId,
+        lastActivitySelfPreview: params.preview,
       },
     });
   },

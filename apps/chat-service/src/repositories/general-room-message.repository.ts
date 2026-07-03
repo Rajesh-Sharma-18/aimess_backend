@@ -820,10 +820,16 @@ export class GeneralRoomMessageRepository {
     query: string,
     limit: number,
     userId: string,
-    viewerIsActiveMember = true
+    viewerIsActiveMember = true,
+    skip = 0
   ): Promise<GeneralRoomMessage[]> {
     // `message` is a top-level String field, so a case-insensitive `contains`
-    // works directly.
+    // works directly. Per-user visibility (deletedBy/isVisibleToUser) can only
+    // be applied in memory (see isVisibleToUser above), so we over-fetch a
+    // window covering `skip + limit` plus a margin for filtered-out rows, then
+    // slice the requested page out of the survivors — NOT `take: limit` alone,
+    // which would silently drop every page beyond the first.
+    const OVERFETCH_MARGIN = 10;
     const messages = await this.prisma.generalRoomMessage.findMany({
       where: {
         roomId,
@@ -831,7 +837,7 @@ export class GeneralRoomMessageRepository {
         message: { contains: query, mode: "insensitive" },
       },
       orderBy: { createdAt: "desc" },
-      take: limit + 10,
+      take: skip + limit + OVERFETCH_MARGIN,
     });
 
     return messages
@@ -842,17 +848,39 @@ export class GeneralRoomMessageRepository {
           isVisibleToUser(msg, userId, viewerIsActiveMember)
         );
       })
-      .slice(0, limit);
+      .slice(skip, skip + limit);
   }
 
-  async countSearchResults(roomId: string, query: string): Promise<number> {
-    return this.prisma.generalRoomMessage.count({
+  async countSearchResults(
+    roomId: string,
+    query: string,
+    userId: string,
+    viewerIsActiveMember = true
+  ): Promise<number> {
+    // Mirrors searchByText's per-user filter (deletedBy/isVisibleToUser) so the
+    // reported total — and therefore totalPage/hasMore — matches what the user
+    // actually sees, instead of a raw room-wide match count.
+    const messages = await this.prisma.generalRoomMessage.findMany({
       where: {
         roomId,
         deletedForAll: false,
         message: { contains: query, mode: "insensitive" },
       },
+      select: {
+        deletedBy: true,
+        visibleToUserId: true,
+        systemMessageType: true,
+        systemMetadata: true,
+        sentBy: true,
+      },
     });
+    return messages.filter((msg) => {
+      const deletedBy = (msg.deletedBy ?? []) as string[];
+      return (
+        !deletedBy.includes(userId) &&
+        isVisibleToUser(msg, userId, viewerIsActiveMember)
+      );
+    }).length;
   }
 
   async countByRoom(roomId: string): Promise<number> {

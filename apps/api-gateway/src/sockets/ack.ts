@@ -91,17 +91,84 @@ export function ackOk(
   ack(callback, response);
 }
 
-/** Failure ack with the shared error taxonomy + retryable hint + localized message. */
+/**
+ * Failure ack with the shared error taxonomy + retryable hint + localized message.
+ *
+ * `detailKey` is an optional, more specific `MessageKey` (e.g. the messageKey off a
+ * caught `AppError`, such as "CHAT_MESSAGE_NOT_FOUND") that — when it resolves to
+ * real catalog copy — replaces the generic per-code default. This lets callers
+ * surface a scenario-specific, actionable message (e.g. "Message not found"
+ * instead of "Something went wrong, please try again") without introducing a new
+ * response shape: `success`/`error`/`retryable` are unaffected, only `message`.
+ * If `detailKey` is omitted, unresolved (not in the catalog — `t()` echoes the key
+ * back unchanged), or falsy, the existing generic per-code message is used as-is.
+ */
 export function ackError(
   callback: SocketAck,
   code: AckErrorCode,
-  locale: SupportedLocale
+  locale: SupportedLocale,
+  detailKey?: string
 ): void {
+  const resolvedDetail = detailKey
+    ? t(detailKey as MessageKey, locale)
+    : undefined;
+  const message =
+    resolvedDetail && resolvedDetail !== detailKey
+      ? resolvedDetail
+      : t(ACK_ERROR_MESSAGE[code], locale);
   const err: AckError = {
     success: false,
     error: code,
     retryable: ACK_RETRYABLE[code],
-    message: t(ACK_ERROR_MESSAGE[code], locale),
+    message,
   };
   ack(callback, err);
+}
+
+const GRPC_STATUS_TO_ACK_CODE: Partial<Record<number, AckErrorCode>> = {
+  3: "INVALID_PAYLOAD", // INVALID_ARGUMENT
+  5: "NOT_FOUND", // NOT_FOUND
+  6: "CONFLICT", // ALREADY_EXISTS
+  7: "FORBIDDEN", // PERMISSION_DENIED
+  8: "RATE_LIMITED", // RESOURCE_EXHAUSTED
+  9: "CONFLICT", // FAILED_PRECONDITION
+  16: "FORBIDDEN", // UNAUTHENTICATED
+};
+
+/** Matches the UPPER_SNAKE_CASE messageKey convention (e.g. "CHAT_MESSAGE_NOT_FOUND"). */
+const MESSAGE_KEY_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * Translate a caught gRPC error into `{ code, detailKey }` for `ackError`.
+ *
+ * A callee that throws an `AppError` (via `@aimess/errors`) and maps it to a
+ * gRPC status (see chat-service's `deleteCommunityMessage`) reaches here as a
+ * `grpc.ServiceError`-shaped object whose `details`/`message` is the original
+ * `AppError.messageKey` verbatim. Recognized gRPC status codes map to the
+ * matching `AckErrorCode`; anything else (network failure, circuit-breaker-open,
+ * a raw INTERNAL from the callee, or a non-gRPC error) falls back to
+ * `SERVICE_ERROR` with no detail key, which resolves to the existing generic
+ * "Something went wrong, please try again" — reserved for truly unexpected
+ * failures.
+ */
+export function resolveGrpcAckError(err: unknown): {
+  code: AckErrorCode;
+  detailKey?: string;
+} {
+  const grpcErr = err as
+    | { code?: number; details?: string; message?: string }
+    | null
+    | undefined;
+  const mappedCode =
+    typeof grpcErr?.code === "number"
+      ? GRPC_STATUS_TO_ACK_CODE[grpcErr.code]
+      : undefined;
+  if (!mappedCode) return { code: "SERVICE_ERROR" };
+
+  const candidate = grpcErr?.details ?? grpcErr?.message;
+  const detailKey =
+    typeof candidate === "string" && MESSAGE_KEY_PATTERN.test(candidate)
+      ? candidate
+      : undefined;
+  return { code: mappedCode, detailKey };
 }

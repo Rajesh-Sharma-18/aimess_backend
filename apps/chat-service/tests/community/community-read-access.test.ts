@@ -15,6 +15,24 @@ import { CommunityMessageService } from "../../src/services/community-message.se
 import { CommunitySystemMessageService } from "../../src/services/community-system-message.service.js";
 import { CommunityPinService } from "../../src/services/community-pin.service.js";
 import { GeneralRoomMessageRepository } from "../../src/repositories/general-room-message.repository.js";
+import { getCommunityReconcileClient } from "../../src/grpc/community.client.js";
+
+/** Role authorization for CommunityPinService.pin/unpin is sourced LIVE from
+ *  community-service, not RoomMember.role — see access-guard.ts
+ *  assertCommunityRole/getCommunityLiveRole. Mirror the intended live role
+ *  here so these tests exercise what they claim to, rather than relying on
+ *  the global mock's ADMIN default (which happens to satisfy
+ *  ["admin","moderator"] regardless of what `MOD`/`memberRepo` say below). */
+function mockLiveRole(role: "ADMIN" | "MODERATOR" | "MEMBER" | ""): void {
+  (getCommunityReconcileClient as jest.Mock).mockReturnValueOnce({
+    checkCommunityMembership: jest.fn(async () => ({
+      isMember: role !== "",
+      isBanned: false,
+      status: role !== "" ? "ACTIVE" : "",
+      role,
+    })),
+  });
+}
 
 const ROOM_ID = "c".repeat(24);
 const USER_ID = "11111111-1111-4111-8111-111111111111";
@@ -755,7 +773,8 @@ describe("Community pin/unpin → system messages", () => {
     const postReturnId = jest.fn().mockResolvedValue("sys-1");
     const svc = new CommunityPinService(
       {
-        countActivePinsByRoom: jest.fn().mockResolvedValue(0),
+        findActivePinByRoom: jest.fn().mockResolvedValue(null),
+        runTransaction: jest.fn((fn: (tx: unknown) => unknown) => fn({})),
         createPin: jest.fn().mockResolvedValue({ id: "p" }),
         setPinSystemMessageId: jest.fn().mockResolvedValue(undefined),
       } as never,
@@ -780,6 +799,7 @@ describe("Community pin/unpin → system messages", () => {
       { findByRoomAndUser: jest.fn().mockResolvedValue(MOD) } as never,
       { postReturnId } as never
     );
+    mockLiveRole("ADMIN");
 
     await svc.pin({
       roomId: ROOM_ID,
@@ -817,6 +837,7 @@ describe("Community pin/unpin → system messages", () => {
       { findByRoomAndUser: jest.fn().mockResolvedValue(MOD) } as never,
       { postReturnId } as never
     );
+    mockLiveRole("ADMIN");
 
     await svc.unpin({ roomId: ROOM_ID, messageId: MSG_ID, userId: USER_ID });
 

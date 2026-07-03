@@ -34,6 +34,20 @@ service CommunityService {
   // `setReactionActivity`/`clearReactionActivityIfCurrent` repository methods
   // the queue consumer already calls — no separate persistence logic.
   rpc UpdateReactionActivity (UpdateReactionActivityRequest) returns (UpdateReactionActivityResponse);
+  // Synchronous companion to chat-service's async `community.activity.queue`
+  // publish for the CANONICAL lastActivity (message send/edit/delete) — mirrors
+  // UpdateReactionActivity's role for reactions. Awaited BEFORE the caller's
+  // response so a client that re-fetches GET /communities/mine immediately
+  // after a delete never races ahead of the DB write; the queue publish
+  // remains the best-effort backstop. Two modes, discriminated by
+  // `self_user_id`:
+  //  - "" (empty): canonical forward-only bump (mirrors
+  //    communityRepository.updateLastActivity — same as the queue consumer).
+  //  - non-empty: personal self-hide overlay for delete-for-me — writes ONLY
+  //    lastActivityUserId/lastActivitySelfPreview (unconditional overwrite,
+  //    reusing the existing self-referential join/role-change columns), never
+  //    touching the canonical fields other members see.
+  rpc UpdateMessageActivity (UpdateMessageActivityRequest) returns (UpdateMessageActivityResponse);
 
   // ---- Backoffice (admin panel) Community Management ----
   // Read-through queries for the admin Community Management screen + the
@@ -206,6 +220,25 @@ message UpdateReactionActivityRequest {
   int64  reactedAt               = 9;  // epoch ms; only meaningful when added = true
 }
 message UpdateReactionActivityResponse {
+  bool ok = 1;
+}
+
+message UpdateMessageActivityRequest {
+  string communityId     = 1;
+  // Canonical bump fields — meaningful when selfUserId is "".
+  int64  lastMessageAt   = 2;  // epoch ms
+  string lastMessageId   = 3;
+  string senderUserId    = 4;
+  string senderUsername  = 5;
+  string messagePreview  = 6;
+  string activityType    = 7;  // "message" | "edited" | ... (default "message")
+  // Personal self-hide overlay — when non-empty, ONLY lastActivityUserId /
+  // lastActivitySelfPreview are written (see rpc doc above); fields above are
+  // ignored in this mode.
+  string selfUserId      = 8;
+  string selfPreview     = 9;
+}
+message UpdateMessageActivityResponse {
   bool ok = 1;
 }
 
@@ -496,6 +529,11 @@ message GetCommunityMessagesResponse {
   repeated CommunityMessageDto messages   = 1;
   string                       next_cursor = 2;
   bool                         has_more   = 3;
+  // JSON-encoded PinnedMessageSummary (chat-service CommunityPinService),
+  // or "" when the room has no active pin. Lets the FE always know the
+  // currently pinned message without depending on the PINNED_MESSAGE system
+  // line, which scrolls out of view as newer messages arrive.
+  string                       pinned_message_json = 4;
 }
 message CommunityMessageDto {
   string message_id          = 1;

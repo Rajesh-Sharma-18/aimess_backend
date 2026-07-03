@@ -5,6 +5,9 @@
 } from "../generated/prisma/index.js";
 import { withWriteConflictRetry } from "../lib/db-errors.js";
 
+/** A `PrismaClient` or the interactive-transaction client Prisma hands the callback in `$transaction(async (tx) => ...)`. */
+type PrismaOrTx = PrismaClient | Prisma.TransactionClient;
+
 export class GeneralRoomRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -193,9 +196,10 @@ export class GeneralRoomRepository {
 
   async incPinnedCount(
     roomId: string,
-    inc: number
+    inc: number,
+    client: PrismaOrTx = this.prisma
   ): Promise<GeneralRoom | null> {
-    return this.prisma.generalRoom.update({
+    return client.generalRoom.update({
       where: { id: roomId },
       data: {
         pinnedCount: { increment: inc },
