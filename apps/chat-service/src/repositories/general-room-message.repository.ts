@@ -644,6 +644,9 @@ export class GeneralRoomMessageRepository {
             // Hidden membership lines never count toward unread (consistency with
             // countUnreadBulk / conversationMatch).
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // No system message (livestream start/end, community updates, etc.)
+            // should ever inflate unread — only user-generated chat messages count.
+            messageType: { $ne: "SYSTEM" },
           },
         },
         { $count: "total" },
@@ -689,6 +692,9 @@ export class GeneralRoomMessageRepository {
             visibleToUserId: null,
             // Suppressed moderation lines never count toward unread either.
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // No system message (livestream start/end, community updates, etc.)
+            // should ever inflate unread — only user-generated chat messages count.
+            messageType: { $ne: "SYSTEM" },
           },
         },
         {
