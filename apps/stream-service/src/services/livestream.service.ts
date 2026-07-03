@@ -274,6 +274,9 @@ export class LivestreamService {
       params.communityId,
       params.creatorId,
       async () => {
+        // Both counts are LIVE-only — a PENDING stream (still setting up,
+        // never published) never blocks a new create and never occupies a
+        // community concurrency slot. Only an actually-broadcasting stream does.
         const [activeByCreator, activeByCommunity] = await Promise.all([
           this.streamRepo.countActiveByCommunityAndCreator(
             params.communityId,
@@ -316,10 +319,12 @@ export class LivestreamService {
 
     // Race-safe cap enforcement. The count check above has a small window where
     // two concurrent creates both pass at count = MAX-1 and produce MAX+1. After
-    // inserting, re-derive THIS stream's rank among the community's active
+    // inserting, re-derive THIS stream's rank among the community's LIVE
     // streams (deterministic createdAt + id tiebreak): if MAX or more were
     // created at-or-before it, this one lost the race — delete it and reject, so
-    // the community never keeps more than MAX concurrent streams.
+    // the community never keeps more than MAX concurrent LIVE streams. (The
+    // just-created row is always PENDING here, so in practice this only trips
+    // if MAX streams are already LIVE — PENDING never competes for the cap.)
     const priorActive = await this.streamRepo.countActiveCreatedBefore(
       created.communityId,
       created.createdAt,
@@ -745,10 +750,20 @@ export class LivestreamService {
 
   /**
    * Background sweeper: auto-end LIVE streams whose host hasn't heartbeated in
-   * `STREAM_HEARTBEAT_TIMEOUT_MS`. Called periodically from server.ts.
+   * `STREAM_HEARTBEAT_TIMEOUT_MS`, and auto-cancel PENDING streams that sat
+   * unpublished past `STREAM_PENDING_TIMEOUT_MS` (abandoned setup, crashed
+   * client, failed publish). A stuck PENDING row otherwise never clears —
+   * it permanently occupies that creator's one-active-stream-per-community
+   * slot and every subsequent create attempt 409s with STREAM_ALREADY_ACTIVE,
+   * even though nothing is actually live. Called periodically from server.ts.
    * Intentionally silent — a single stale stream failure does not block the rest.
    */
   async sweepStaleStreams(): Promise<void> {
+    await this.sweepStaleLiveStreams();
+    await this.sweepStalePendingStreams();
+  }
+
+  private async sweepStaleLiveStreams(): Promise<void> {
     const cutoff = new Date(Date.now() - env.STREAM_HEARTBEAT_TIMEOUT_MS);
     let stale: Awaited<ReturnType<typeof this.streamRepo.findStaleLiveStreams>>;
     try {
@@ -783,6 +798,52 @@ export class LivestreamService {
       } catch (err) {
         logger.warn(
           `sweepStaleStreams: failed to end stream=${stream.id} — ${String(err)}`
+        );
+      }
+    }
+  }
+
+  private async sweepStalePendingStreams(): Promise<void> {
+    const cutoff = new Date(Date.now() - env.STREAM_PENDING_TIMEOUT_MS);
+    let stale: Awaited<
+      ReturnType<typeof this.streamRepo.findStalePendingStreams>
+    >;
+    try {
+      stale = await this.streamRepo.findStalePendingStreams(cutoff);
+    } catch (err) {
+      logger.warn(`sweepStalePendingStreams: DB query failed — ${String(err)}`);
+      return;
+    }
+    if (!stale.length) return;
+
+    logger.info(
+      `sweepStalePendingStreams: cancelling ${stale.length} stale PENDING stream(s)`
+    );
+    for (const stream of stale) {
+      try {
+        const updated = await this.streamRepo.updateById(stream.id, {
+          status: "CANCELLED",
+          endedAt: new Date(),
+        });
+        // Best-effort — a PENDING stream never published, but a client may have
+        // gotten as far as opening the ingest connection.
+        await this.srsService.kickStream(stream.streamKey);
+        await this.publishStatus(updated.id, "ENDED", updated.communityId);
+        void this.publishCommunityStreamEnded(updated);
+        this.eventPublisher("stream.ended", {
+          streamId: updated.id,
+          communityId: updated.communityId,
+          creatorId: updated.creatorId,
+          endedAt: updated.endedAt?.getTime() ?? Date.now(),
+          durationSeconds: 0,
+          peakViewers: 0,
+        });
+        logger.info(
+          `sweepStalePendingStreams: cancelled stream=${stream.id} community=${stream.communityId}`
+        );
+      } catch (err) {
+        logger.warn(
+          `sweepStalePendingStreams: failed to cancel stream=${stream.id} — ${String(err)}`
         );
       }
     }

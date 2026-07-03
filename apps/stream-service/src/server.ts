@@ -29,6 +29,9 @@ import {
 import { userGrpcClient } from "./grpc/user.client.js";
 import { communityGrpcClient } from "./grpc/community.client.js";
 
+// -- Events --
+import { publishStreamEvent } from "./events/index.js";
+
 // -- Controllers --
 import { StreamController } from "./api/controllers/index.js";
 
@@ -67,6 +70,7 @@ async function start() {
       communityGrpcClient,
       redis,
       banRepo,
+      publishStreamEvent,
       userGrpcClient
     );
     const commentService = new LivestreamCommentService(

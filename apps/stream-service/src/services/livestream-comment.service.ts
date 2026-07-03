@@ -35,6 +35,10 @@ export interface CommentReportView {
   commentId: string;
   livestreamId: string;
   reportedBy: string;
+  /** Reporter's display-name/avatar snapshot (best-effort; "" fields on user-service outage). */
+  reporterUsername: string;
+  reporterDisplayName: string;
+  reporterAvatar: string;
   reason: string;
   details: string | null;
   createdAt: Date;
@@ -403,13 +407,33 @@ export class LivestreamCommentService {
     const comments = await this.commentRepo.findByIds(commentIds);
     const byId = new Map(comments.map((c) => [c.id, c]));
 
+    // Enrich each reporter's display-name/avatar snapshot (best-effort; degrades
+    // to empty strings on user-service outage — never blocks the reports list).
+    const reporterIds = [...new Set(page.map((r) => r.reportedBy))];
+    const reporterSnapshots = new Map<
+      string,
+      { username: string; displayName: string; avatarObjectKey: string }
+    >();
+    try {
+      const snaps = await this.userClient.bulkGetUserSnapshots(reporterIds);
+      for (const snap of snaps) reporterSnapshots.set(snap.userId, snap);
+    } catch (error) {
+      logger.warn(
+        `reporter snapshot enrichment failed for reports of stream=${params.livestreamId}: ${String(error)}`
+      );
+    }
+
     const items: CommentReportView[] = page.map((r) => {
       const c = byId.get(r.commentId);
+      const reporter = reporterSnapshots.get(r.reportedBy);
       return {
         id: r.id,
         commentId: r.commentId,
         livestreamId: r.livestreamId,
         reportedBy: r.reportedBy,
+        reporterUsername: reporter?.username ?? "",
+        reporterDisplayName: reporter?.displayName ?? "",
+        reporterAvatar: reporter?.avatarObjectKey ?? "",
         reason: r.reason,
         details: r.details ?? null,
         createdAt: r.createdAt,
