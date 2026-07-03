@@ -895,16 +895,15 @@ export const adminPaths = {
       "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/users/{id}/suspend": {
+  "/admin/v1/users/{userId}/suspend": {
     post: {
       tags: [adminTags.users],
       operationId: "adminSuspendUser",
-      summary: "Suspend a user",
+      summary: "Suspend a user (time-boxed, durationDays required)",
       description:
-        PLANNED +
-        "Temp suspend (with `reason`, `until`). Writes `ModerationAction` and emits `admin.user_suspended`. Audited. Requires `users.moderate`. (Step-up TOTP auth for sensitive mutations planned for Phase 2.)",
+        "Sets status SUSPENDED with suspendedUntil = now + durationDays (durationDays is REQUIRED here, unlike ban). Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_suspended (RabbitMQ admin.user.queue; consumed by auth-service). Requires users.moderate. TOTP step-up is a planned Phase-2 addition, NOT enforced today.",
       security: adminSecurity,
-      parameters: [idPathParam],
+      parameters: [{ ...idPathParam, name: "userId" }],
       requestBody: jsonBody("#/components/schemas/AdminSuspendRequest"),
       responses: {
         "200": okRes(
@@ -915,20 +914,20 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.moderate"),
         "404": errRes("User not found"),
+        "409": errRes("USER_ALREADY_BANNED — current status is already BANNED"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/users/{id}/ban": {
+  "/admin/v1/users/{userId}/ban": {
     post: {
       tags: [adminTags.users],
       operationId: "adminBanUser",
-      summary: "Ban a user",
+      summary: "Ban a user (permanent, or time-boxed via durationDays)",
       description:
-        PLANNED +
-        "Writes `ModerationAction` and emits `admin.user_banned`; auth-service locks the account. Audited. Requires `users.moderate`. (Step-up TOTP auth for sensitive mutations planned for Phase 2.)",
+        "If durationDays is omitted/null this is a PERMANENT ban (status BANNED); if durationDays > 0 it is treated as a time-boxed suspend instead (status SUSPENDED). Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_banned/admin.user_suspended (RabbitMQ admin.user.queue). No Socket.IO/real-time session kill is emitted by this service — forceLogout is threaded into the published event only. Requires users.moderate. TOTP step-up is a planned Phase-2 addition, NOT enforced today.",
       security: adminSecurity,
-      parameters: [idPathParam],
+      parameters: [{ ...idPathParam, name: "userId" }],
       requestBody: jsonBody("#/components/schemas/AdminBanRequest"),
       responses: {
         "200": okRes(
@@ -939,20 +938,21 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.moderate"),
         "404": errRes("User not found"),
+        "409": errRes("USER_ALREADY_BANNED or USER_DELETED"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/users/{id}/unban": {
+  "/admin/v1/users/{userId}/unban": {
     post: {
       tags: [adminTags.users],
       operationId: "adminUnbanUser",
-      summary: "Unban a user",
+      summary: "Unban / reinstate a user",
       description:
-        PLANNED +
-        "Emits `admin.user_unbanned`. Audited. Requires `users.moderate`.",
+        "Sets status ACTIVE, clears bannedAt/suspendedUntil/banReason. Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_unbanned. Requires users.moderate.",
       security: adminSecurity,
-      parameters: [idPathParam],
+      parameters: [{ ...idPathParam, name: "userId" }],
+      requestBody: jsonBody("#/components/schemas/AdminUnbanRequest", false),
       responses: {
         "200": okRes(
           "User unbanned",
@@ -961,8 +961,45 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.moderate"),
         "404": errRes("User not found"),
+        "409": errRes("USER_NOT_BANNED or USER_DELETED"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/bulk/ban": {
+    post: {
+      tags: [adminTags.users],
+      operationId: "adminBulkBanUsers",
+      summary: "Bulk ban/suspend users (max 100)",
+      description:
+        "Applies the same rules as single ban/suspend to up to 100 users in one call. Returns 207 Multi-Status. Writes ONE ModerationAction + ONE AuditLog (user.bulk_banned) + publishes ONE admin.user_banned/admin.user_suspended event PER succeeded user. Requires users.moderate.",
+      security: adminSecurity,
+      requestBody: jsonBody("#/components/schemas/AdminBulkBanRequest"),
+      responses: {
+        "207": okRes("Bulk result", "#/components/schemas/AdminBulkResult"),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.moderate"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/bulk/activate": {
+    post: {
+      tags: [adminTags.users],
+      operationId: "adminBulkActivateUsers",
+      summary: "Bulk reinstate/activate users (max 100)",
+      description:
+        "Applies the same rules as single unban to up to 100 users in one call. Returns 207 Multi-Status. Already-ACTIVE users are idempotently reported as succeeded but write no audit row and publish no event. Requires users.moderate.",
+      security: adminSecurity,
+      requestBody: jsonBody("#/components/schemas/AdminBulkActivateRequest"),
+      responses: {
+        "207": okRes("Bulk result", "#/components/schemas/AdminBulkResult"),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.moderate"),
+      },
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/users/{id}/force-logout": {
