@@ -259,6 +259,23 @@ export const openApiSchemas = {
     },
     required: ["id", "email", "avatarUrl", "role", "permissions"],
   },
+  AdminLogoutResponse: {
+    type: "object",
+    description:
+      "Successful admin logout — standard `{ success, message, data }` envelope confirming the current session was revoked.",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: { type: "string", example: "Logged out successfully" },
+      data: {
+        type: "object",
+        properties: {
+          loggedOut: { type: "boolean", example: true },
+        },
+        required: ["loggedOut"],
+      },
+    },
+    required: ["success", "data"],
+  },
   AdminChangePasswordRequest: {
     type: "object",
     required: ["current", "next"],
@@ -566,8 +583,10 @@ export const openApiSchemas = {
   // ---- User Management ----
   AdminUserListItem: {
     type: "object",
+    description:
+      "Source of truth: apps/backoffice-service/src/types/user-management.types.ts UserListItem.",
     properties: {
-      id: { type: "string", example: "u_8f3a" },
+      userId: { type: "string", example: "u_8f3a" },
       username: { type: "string", example: "brianna" },
       email: { type: "string", nullable: true, example: "b@x.com" },
       status: {
@@ -575,15 +594,13 @@ export const openApiSchemas = {
         enum: ["ACTIVE", "BANNED", "DELETED"],
         example: "ACTIVE",
       },
-      createdAt: { type: "string", format: "date-time" },
-      communities: { type: "integer", example: 4 },
-      lastActiveAt: {
-        type: "string",
-        format: "date-time",
-        nullable: true,
-      },
+      joinedAt: { type: "string", format: "date-time" },
+      reportCount: { type: "integer", example: 2 },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
     },
-    required: ["id", "username", "status"],
+    required: ["userId", "username", "status", "joinedAt", "reportCount"],
   },
   AdminCommunityMember: {
     type: "object",
@@ -717,7 +734,7 @@ export const openApiSchemas = {
   AdminUserReport: {
     type: "object",
     description:
-      "One row of the 'Reported Details' panel — a report filed against the user, with the reporter resolved.",
+      "One row of the 'Reported Details' panel — a report filed against the user, with the reporter resolved. Offset-only pagination (no cursor).",
     properties: {
       reportId: { type: "string", example: "r_12" },
       reason: { type: "string", example: "HARASSMENT" },
@@ -728,8 +745,8 @@ export const openApiSchemas = {
       },
       status: {
         type: "string",
-        enum: ["open", "reviewing", "resolved", "dismissed"],
-        example: "open",
+        enum: ["PENDING", "UNDER_REVIEW", "RESOLVED", "DISMISSED", "ESCALATED"],
+        example: "PENDING",
       },
       createdAt: { type: "string", format: "date-time" },
       reporter: {
@@ -749,27 +766,70 @@ export const openApiSchemas = {
   AdminUserDetail: {
     type: "object",
     description:
-      "Full user profile: identity (auth-service) + profile/stats (user-service) + moderation history (admin_db ModerationAction).",
+      "Full user profile: identity (auth-service) + profile/stats (user-service) + report/moderation summary (admin_db). Source of truth: apps/backoffice-service/src/types/user-management.types.ts UserDetail.",
     properties: {
-      id: { type: "string", example: "u_8f3a" },
-      username: { type: "string", example: "brianna" },
-      email: { type: "string", nullable: true },
-      status: {
-        type: "string",
-        enum: ["ACTIVE", "BANNED", "DELETED"],
-      },
       profile: {
         type: "object",
-        description: "Profile/stats projected from user-service.",
+        properties: {
+          userId: { type: "string", example: "u_8f3a" },
+          username: { type: "string", example: "brianna" },
+          email: { type: "string", nullable: true },
+          avatarUrl: { type: "string", nullable: true },
+          avatarUrlExpiresIn: { type: "integer", nullable: true },
+          avatar: { $ref: "#/components/schemas/MediaObject" },
+          joinedAt: { type: "string", format: "date-time" },
+          lastActiveAt: { type: "string", format: "date-time", nullable: true },
+        },
+        required: ["userId", "username", "joinedAt"],
       },
-      moderationHistory: {
-        type: "array",
-        items: { $ref: "#/components/schemas/AdminModerationAction" },
+      accountStatus: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["ACTIVE", "BANNED", "SUSPENDED", "DELETED"],
+          },
+          since: { type: "string", format: "date-time", nullable: true },
+          reason: { type: "string", nullable: true },
+          suspendedUntil: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+          },
+          appliedBy: {
+            type: "string",
+            nullable: true,
+            description: "actorId of the most recent moderation action.",
+          },
+        },
+        required: ["status"],
+      },
+      reportsSummary: {
+        type: "object",
+        properties: {
+          total: { type: "integer", example: 3 },
+          open: { type: "integer", example: 1 },
+          resolved: { type: "integer", example: 2 },
+          dismissed: { type: "integer", example: 0 },
+          topReasons: {
+            type: "array",
+            description: "Top 5 report reasons by count.",
+            items: {
+              type: "object",
+              properties: {
+                reason: { type: "string", example: "SPAM" },
+                count: { type: "integer", example: 3 },
+              },
+              required: ["reason", "count"],
+            },
+          },
+        },
+        required: ["total", "open", "resolved", "dismissed", "topReasons"],
       },
       reportCategories: {
         type: "array",
         description:
-          "Per-category report counts (all categories) for the 'Reported Details' chips.",
+          "Per-category report counts (ALL categories, not just top 5) for the 'Reported Details' chips.",
         items: {
           type: "object",
           properties: {
@@ -779,9 +839,27 @@ export const openApiSchemas = {
           required: ["reason", "count"],
         },
       },
-      createdAt: { type: "string", format: "date-time" },
+      moderationHistory: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminModerationAction" },
+      },
+      stats: {
+        type: "object",
+        description: "reportCount mirrors reportsSummary.total.",
+        properties: {
+          reportCount: { type: "integer", example: 3 },
+        },
+        required: ["reportCount"],
+      },
     },
-    required: ["id", "username", "status"],
+    required: [
+      "profile",
+      "accountStatus",
+      "reportsSummary",
+      "reportCategories",
+      "moderationHistory",
+      "stats",
+    ],
   },
   AdminModerationAction: {
     type: "object",
@@ -789,70 +867,139 @@ export const openApiSchemas = {
       id: { type: "string", example: "ma_77" },
       type: {
         type: "string",
+        description:
+          "Actual action-type strings written by backoffice-service (per module).",
         enum: [
-          "ban",
-          "unban",
-          "suspend",
-          "force_logout",
-          "delete",
-          "content_delete",
+          "ban_user",
+          "suspend_user",
+          "unban_user",
+          "suspend_community",
+          "reopen_community",
         ],
-        example: "ban",
+        example: "ban_user",
       },
       targetType: { type: "string", example: "user" },
       targetId: { type: "string", example: "u_8f3a" },
       reason: { type: "string", nullable: true },
-      actorId: { type: "string", example: "adm_1" },
+      note: { type: "string", nullable: true },
+      reportId: { type: "string", nullable: true },
+      expiresAt: { type: "string", format: "date-time", nullable: true },
+      actorId: {
+        type: "string",
+        example: "adm_1",
+        description:
+          "The acting admin's id. NOTE: currently the raw admin id, not a resolved display name (Phase-2 TODO in code).",
+      },
       createdAt: { type: "string", format: "date-time" },
     },
   },
+  AdminUserBanReasonCode: {
+    type: "string",
+    enum: [
+      "SPAM",
+      "HARASSMENT",
+      "HATE_SPEECH",
+      "NUDITY",
+      "VIOLENCE",
+      "IMPERSONATION",
+      "MISINFORMATION",
+      "ILLEGAL_CONTENT",
+      "OTHER",
+    ],
+    example: "HARASSMENT",
+  },
   AdminSuspendRequest: {
     type: "object",
-    required: ["reason"],
+    description:
+      "POST /admin/v1/users/{userId}/suspend. durationDays is REQUIRED here (no default) — unlike ban, where it is optional.",
+    required: ["reason", "durationDays"],
     properties: {
-      reason: { type: "string", example: "Repeated harassment" },
-      until: {
-        type: "string",
-        format: "date-time",
-        nullable: true,
-        description: "Suspension end. Omit/null for an indefinite suspend.",
-      },
+      reason: { $ref: "#/components/schemas/AdminUserBanReasonCode" },
       durationDays: {
         type: "integer",
-        nullable: true,
+        minimum: 1,
         example: 7,
-        description: "Alternative to `until`.",
+        description: "Required. suspendedUntil = now + durationDays.",
       },
-      notifyUser: { type: "boolean", example: true },
+      note: { type: "string", maxLength: 2000, nullable: true },
+      notifyUser: { type: "boolean", default: false },
     },
   },
   AdminBanRequest: {
     type: "object",
+    description:
+      "POST /admin/v1/users/{userId}/ban. If durationDays is omitted/null this is a PERMANENT ban; if durationDays > 0 it is treated as a time-boxed suspend (status becomes SUSPENDED, not BANNED).",
     required: ["reason"],
     properties: {
-      reason: { type: "string", example: "Repeated harassment" },
-      evidenceReportIds: {
-        type: "array",
-        items: { type: "string" },
-        example: ["r_12"],
+      reason: { $ref: "#/components/schemas/AdminUserBanReasonCode" },
+      note: { type: "string", maxLength: 2000, nullable: true },
+      durationDays: {
+        type: "integer",
+        minimum: 1,
+        nullable: true,
+        default: null,
+        description: "Omit/null = permanent ban. > 0 = time-boxed suspend.",
       },
-      notifyUser: { type: "boolean", example: true },
+      reportId: { type: "string", format: "uuid", nullable: true },
+      notifyUser: { type: "boolean", default: false },
+      forceLogout: { type: "boolean", default: true },
+    },
+  },
+  AdminUnbanRequest: {
+    type: "object",
+    description: "POST /admin/v1/users/{userId}/unban. Only field accepted.",
+    properties: {
+      note: { type: "string", maxLength: 2000, nullable: true },
     },
   },
   AdminModerationResult: {
     type: "object",
     description:
-      "Result of a moderation mutation. Writes a ModerationAction (admin trail) and emits the matching admin.* event.",
+      "Actual result shape returned by ban/suspend/unban (backoffice-service UserStatusResult). Writes a ModerationAction + AuditLog and fire-and-forgets an admin.user_* RabbitMQ event (queue admin.user.queue) — publish failures are only logged, never fail the request. No Socket.IO event is emitted by this service.",
     properties: {
-      id: { type: "string", example: "u_8f3a" },
-      status: { type: "string", example: "banned" },
-      moderationActionId: { type: "string", example: "ma_77" },
-      until: { type: "string", format: "date-time", nullable: true },
-      emittedEvent: {
+      userId: { type: "string", example: "u_8f3a" },
+      status: {
         type: "string",
-        nullable: true,
-        example: "admin.user_banned",
+        enum: ["ACTIVE", "BANNED", "SUSPENDED"],
+        example: "BANNED",
       },
+      suspendedUntil: { type: "string", format: "date-time", nullable: true },
+      bannedAt: { type: "string", format: "date-time", nullable: true },
+    },
+    required: ["userId", "status"],
+  },
+  AdminBulkBanRequest: {
+    type: "object",
+    description: "POST /admin/v1/users/bulk/ban.",
+    required: ["userIds", "reason"],
+    properties: {
+      userIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: { type: "string", minLength: 1, maxLength: 64 },
+      },
+      reason: { $ref: "#/components/schemas/AdminUserBanReasonCode" },
+      note: { type: "string", maxLength: 2000, nullable: true },
+      durationDays: { type: "integer", minimum: 1, nullable: true },
+      reportId: { type: "string", format: "uuid", nullable: true },
+      notifyUser: { type: "boolean", default: false },
+      forceLogout: { type: "boolean", default: true },
+    },
+  },
+  AdminBulkActivateRequest: {
+    type: "object",
+    description:
+      "POST /admin/v1/users/bulk/activate. Already-ACTIVE users are idempotently reported as succeeded (ok:true, changed:false) and do NOT write an audit row or publish an event.",
+    required: ["userIds"],
+    properties: {
+      userIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: { type: "string", minLength: 1, maxLength: 64 },
+      },
+      note: { type: "string", maxLength: 2000, nullable: true },
     },
   },
   AdminUserSession: {
@@ -8427,8 +8574,14 @@ export const openApiSchemas = {
           "Null when `hasMore` is false (last page reached).",
         example: "1782133100000_668f1a2b3c4d5e6f7a8b9c00",
       },
+      pinnedMessage: {
+        allOf: [{ $ref: "#/components/schemas/CommunityPinnedMessageSummary" }],
+        nullable: true,
+        description:
+          "The room's currently active pinned message, or null if none. See CommunityPinnedMessageSummary.",
+      },
     },
-    required: ["pagination", "data", "hasMore", "nextCursor"],
+    required: ["pagination", "data", "hasMore", "nextCursor", "pinnedMessage"],
     example: {
       pagination: {
         totalData: 142,
@@ -8440,6 +8593,23 @@ export const openApiSchemas = {
       },
       hasMore: true,
       nextCursor: "1782133100000_668f1a2b3c4d5e6f7a8b9c00",
+      pinnedMessage: {
+        messageId: "683abc000000000000000001",
+        roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+        communityId: "668f1a2b3c4d5e6f7a8b9c0d",
+        senderId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+        senderName: "Rajesh Sharma",
+        senderHandle: "rajesh_s",
+        senderAvatar:
+          "https://cdn.aimess.me/avatars/usr_rajesh.jpg?X-Amz-Expires=3600",
+        messageType: "TEXT",
+        text: "Meeting at 3pm tomorrow",
+        media: [],
+        createdAt: 1782133100000,
+        pinnedAt: 1782133200000,
+        pinnedBy: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+        isAvailable: true,
+      },
       data: [
         // ── Scenario 1: plain TEXT message ──────────────────────────────────
         {
@@ -8771,11 +8941,18 @@ export const openApiSchemas = {
           "Null when no items were returned.",
         example: "1782133650000",
       },
+      pinnedMessage: {
+        allOf: [{ $ref: "#/components/schemas/CommunityPinnedMessageSummary" }],
+        nullable: true,
+        description:
+          "The room's currently active pinned message, or null if none. See CommunityPinnedMessageSummary.",
+      },
     },
-    required: ["data", "hasMore", "nextCursor"],
+    required: ["data", "hasMore", "nextCursor", "pinnedMessage"],
     example: {
       hasMore: false,
       nextCursor: "1782133650000",
+      pinnedMessage: null,
       data: [
         // ── new message received while offline ──────────────────────────────
         {
@@ -9462,6 +9639,104 @@ export const openApiSchemas = {
   // ===========================================================================
   // chat-service · community-chat pins (raw persisted rows → epoch-ms dates)
   // ===========================================================================
+  CommunityPinnedMessageSummary: {
+    type: "object",
+    nullable: true,
+    description:
+      "FE-header-ready snapshot of the room's currently pinned message, embedded as a top-level `pinnedMessage` field on the Community Messages API response (both scroll/history and incremental-sync modes) — reusing the same `CommunityMessagePin` persistence as pin/unpin, no separate endpoint. " +
+      "`null` when the room has no active pin. Computed fresh on every call (never cached) — updates immediately after pin, unpin, or pinning a different message. " +
+      "Solves the problem where the `PINNED_MESSAGE` system message scrolls out of view as newer messages arrive, leaving the FE with no reliable way to know the currently pinned message from history alone.",
+    properties: {
+      messageId: { type: "string", description: "Pinned message ObjectId." },
+      roomId: { type: "string" },
+      communityId: { type: "string" },
+      senderId: { type: "string", format: "uuid" },
+      senderName: {
+        type: "string",
+        description:
+          "Sourced from the LIVE message row when available, so a display-name change after pinning is reflected.",
+      },
+      senderHandle: {
+        type: "string",
+        description:
+          "Resolved from the user snapshot cache; empty string if not resolvable.",
+      },
+      senderAvatar: {
+        type: "string",
+        description:
+          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h), or empty string.",
+      },
+      messageType: {
+        type: "string",
+        description:
+          "Canonical UPPER-CASE content type (e.g. TEXT, IMAGE, VIDEO) of the live message.",
+      },
+      text: {
+        type: "string",
+        description: "Live message text/preview.",
+      },
+      media: {
+        type: "array",
+        items: { type: "object" },
+        description:
+          "Resolved attachment array (presigned URLs) from the live message. Empty array if none, or if the original message was hard-deleted.",
+      },
+      createdAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms — the live message's own createdAt.",
+      },
+      pinnedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when this pin was created.",
+      },
+      pinnedBy: {
+        type: "string",
+        format: "uuid",
+        description: "User ID who pinned the message.",
+      },
+      isAvailable: {
+        type: "boolean",
+        description:
+          "False only if the pinned message was hard-deleted (deletedForAll). " +
+          "When false, `senderName`/`text` fall back to the pin's own frozen snapshot and `media` is `[]` — mirrors the existing pin-banner \"Message doesn't exist\" state.",
+      },
+    },
+    required: [
+      "messageId",
+      "roomId",
+      "communityId",
+      "senderId",
+      "senderName",
+      "senderHandle",
+      "senderAvatar",
+      "messageType",
+      "text",
+      "media",
+      "createdAt",
+      "pinnedAt",
+      "pinnedBy",
+      "isAvailable",
+    ],
+    example: {
+      messageId: "683abc000000000000000001",
+      roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+      communityId: "668f1a2b3c4d5e6f7a8b9c0d",
+      senderId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+      senderName: "Rajesh Sharma",
+      senderHandle: "rajesh_s",
+      senderAvatar:
+        "https://cdn.aimess.me/avatars/usr_rajesh.jpg?X-Amz-Expires=3600",
+      messageType: "TEXT",
+      text: "Meeting at 3pm tomorrow",
+      media: [],
+      createdAt: 1782133100000,
+      pinnedAt: 1782133200000,
+      pinnedBy: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+      isAvailable: true,
+    },
+  },
   CommunityMessagePin: {
     type: "object",
     description:

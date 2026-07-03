@@ -343,7 +343,7 @@ export const adminPaths = {
         "Revokes the current admin session (by session id) in Redis + DB. Audited. Requires a valid admin bearer.",
       security: adminSecurity,
       responses: {
-        "200": okRes("Signed out", "#/components/schemas/AdminProfile"),
+        "200": okRes("Signed out", "#/components/schemas/AdminLogoutResponse"),
         "401": errRes("Missing or invalid admin token"),
       },
       "x-implementation-status": "implemented",
@@ -560,7 +560,7 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.2 User Management  (PLANNED)
+  // §4.2 User Management  (IMPLEMENTED, except sessions/delete/force-logout)
   // ===========================================================================
   "/admin/v1/users": {
     get: {
@@ -568,7 +568,6 @@ export const adminPaths = {
       operationId: "adminListUsers",
       summary: "List / search users",
       description:
-        PLANNED +
         "Aggregates `AdminListUsers` (auth-service) + `AdminListProfiles` (user-service) via gRPC-live. " +
         "Filters: `status` (repeatable, case-insensitive), `reports` bucket, a join-date range " +
         "(`dateFrom`/`dateTo`, or `createdAfter`/`createdBefore` aliases), and `q` search " +
@@ -647,7 +646,7 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.read"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/users/{id}": {
@@ -656,8 +655,7 @@ export const adminPaths = {
       operationId: "adminGetUser",
       summary: "Get user detail",
       description:
-        PLANNED +
-        "Full profile: identity (auth) + profile/stats (user) + moderation history (admin_db `ModerationAction`). gRPC-live. Requires `users.read`.",
+        "Full profile: identity (auth) + profile/stats (user) + report summary + moderation history (admin_db `ModerationAction`). gRPC-live. Requires `users.read`.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
@@ -666,7 +664,7 @@ export const adminPaths = {
         "403": errRes("Missing users.read"),
         "404": errRes("User not found"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     delete: {
       tags: [adminTags.users],
