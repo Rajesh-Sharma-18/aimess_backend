@@ -2754,83 +2754,108 @@ export const openApiSchemas = {
   },
 
   // ---- Announcements ----
-  AdminAnnouncementTranslationInput: {
+  // Source of truth: apps/backoffice-service/src/types/announcement.types.ts +
+  // src/api/validators/announcement.validator.ts. NOTE: there is NO i18n
+  // (single flat title/description strings) and NO update endpoint — only
+  // create + read + list exist.
+  AdminAnnouncementTarget: {
+    type: "string",
+    enum: ["ALL", "COMMUNITY"],
+    example: "ALL",
+  },
+  AdminAnnouncementStatus: {
+    type: "string",
+    enum: ["SCHEDULED", "PROCESSING", "SENT", "FAILED"],
+    example: "SENT",
+  },
+  AdminAnnouncementListItem: {
     type: "object",
     properties: {
+      id: { type: "string", format: "uuid" },
       title: { type: "string", example: "Scheduled maintenance" },
-      body: { type: "string", example: "We will be down 02:00–03:00 UTC." },
+      target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+      communityId: { type: "string", nullable: true },
+      recipientCount: { type: "integer", example: 12000 },
+      status: { $ref: "#/components/schemas/AdminAnnouncementStatus" },
+      announcedAt: {
+        type: "string",
+        format: "date-time",
+        description: "sentAt if delivered, else createdAt.",
+      },
     },
-    required: ["title", "body"],
+    required: [
+      "id",
+      "title",
+      "target",
+      "recipientCount",
+      "status",
+      "announcedAt",
+    ],
   },
   AdminAnnouncement: {
     type: "object",
+    description:
+      "Full announcement detail (GET /admin/v1/announcements/{id} and the create response).",
     properties: {
-      id: { type: "string", example: "an_5" },
+      id: { type: "string", format: "uuid" },
+      title: { type: "string", example: "Scheduled maintenance" },
+      description: {
+        type: "string",
+        example: "We will be down 02:00-03:00 UTC.",
+      },
+      target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+      communityId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Required when target=COMMUNITY, must be absent when target=ALL.",
+      },
       status: {
-        type: "string",
-        enum: ["draft", "scheduled", "published"],
-        example: "draft",
+        allOf: [{ $ref: "#/components/schemas/AdminAnnouncementStatus" }],
+        description:
+          "SCHEDULED: not yet due. PROCESSING: in-flight delivery (poll to observe). " +
+          "SENT: fully delivered, recipientCount finalized. FAILED: gave up after 3 retries, see failureReason. " +
+          "No socket/webhook push exists for status changes — poll GET /announcements/{id} or the list.",
       },
-      audience: {
-        type: "string",
-        enum: ["all", "community", "role"],
-        example: "all",
-      },
-      publishAt: { type: "string", format: "date-time", nullable: true },
-      translations: {
-        type: "object",
-        properties: {
-          en: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-          vi: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-        },
-      },
+      scheduledAt: { type: "string", format: "date-time", nullable: true },
+      recipientCount: { type: "integer", example: 12000 },
+      failureReason: { type: "string", nullable: true, maxLength: 2000 },
+      createdById: { type: "string", format: "uuid" },
       createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+      sentAt: { type: "string", format: "date-time", nullable: true },
     },
-    required: ["id", "status"],
+    required: [
+      "id",
+      "title",
+      "description",
+      "target",
+      "status",
+      "recipientCount",
+      "createdAt",
+    ],
   },
   AdminAnnouncementCreateRequest: {
     type: "object",
-    required: ["translations", "audience"],
+    required: ["title", "description", "target"],
     properties: {
-      translations: {
-        type: "object",
-        properties: {
-          en: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-          vi: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-        },
-      },
-      audience: {
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      description: { type: "string", minLength: 1, maxLength: 5000 },
+      target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+      communityId: {
         type: "string",
-        enum: ["all", "community", "role"],
-        example: "all",
+        format: "uuid",
+        nullable: true,
+        description:
+          "REQUIRED when target=COMMUNITY (400 if missing); FORBIDDEN when target=ALL (400 if present). Validated against community-service (404 COMMUNITY_NOT_FOUND if it doesn't exist).",
       },
-      publishAt: { type: "string", format: "date-time", nullable: true },
-    },
-  },
-  AdminAnnouncementUpdateRequest: {
-    type: "object",
-    properties: {
-      translations: {
-        type: "object",
-        properties: {
-          en: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-          vi: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-        },
+      scheduledAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "Must be strictly in the future. Omit for immediate delivery (status becomes PROCESSING right away, never SENT immediately).",
       },
-      audience: { type: "string", enum: ["all", "community", "role"] },
-      publishAt: { type: "string", format: "date-time", nullable: true },
     },
   },
 
@@ -2891,126 +2916,277 @@ export const openApiSchemas = {
   },
 
   // ---- Audit Logs ----
+  // Source of truth: apps/backoffice-service/src/types/audit-log.types.ts.
   AdminAuditLog: {
     type: "object",
+    description:
+      "Full detail shape (GET /admin/v1/audit-logs/{id}). The list endpoint returns the same shape minus metadata/reason.",
     properties: {
-      id: { type: "string", example: "al_900" },
-      actorId: { type: "string", example: "adm_1" },
-      actorEmail: { type: "string", example: "ops@x.com" },
-      action: { type: "string", example: "user.ban" },
-      targetType: { type: "string", example: "user" },
-      targetId: { type: "string", example: "u_8f3a" },
-      before: { type: "object", nullable: true, example: { status: "active" } },
-      after: { type: "object", nullable: true, example: { status: "banned" } },
-      ip: { type: "string", example: "203.0.113.7" },
-      userAgent: { type: "string", nullable: true },
-      createdAt: { type: "string", format: "date-time" },
-    },
-    required: ["id", "actorId", "action", "targetType", "createdAt"],
-  },
-  AdminAuditLogExport: {
-    type: "object",
-    properties: {
-      format: { type: "string", enum: ["csv", "json"], example: "csv" },
-      downloadUrl: {
-        type: "string",
-        description: "Presigned MinIO URL (private bucket) for large exports.",
+      id: { type: "string", format: "uuid" },
+      performer: {
+        type: "object",
+        description:
+          "Resolved actor snapshot; fields are null if the actor row was later removed.",
+        properties: {
+          id: { type: "string", example: "adm_1" },
+          name: { type: "string", nullable: true, example: "Jane Admin" },
+          email: { type: "string", nullable: true, example: "ops@x.com" },
+          avatarUrl: { type: "string", nullable: true },
+        },
+        required: ["id"],
       },
-      expiresAt: { type: "string", format: "date-time" },
+      action: { type: "string", example: "user.banned" },
+      targetType: { type: "string", example: "user" },
+      targetId: { type: "string", nullable: true, example: "u_8f3a" },
+      createdAt: { type: "string", format: "date-time" },
+      reason: {
+        type: "string",
+        nullable: true,
+        description:
+          "Derived: scans metadata.after then metadata.before for the first non-empty string under reason/note/reasonNote/reasonCode. Detail endpoint only.",
+      },
+      metadata: {
+        type: "object",
+        description: "Detail endpoint only.",
+        properties: {
+          before: { type: "object", nullable: true, example: null },
+          after: {
+            type: "object",
+            nullable: true,
+            example: { status: "BANNED", reason: "SPAM" },
+          },
+          ip: { type: "string", nullable: true, example: "203.0.113.7" },
+          userAgent: { type: "string", nullable: true },
+        },
+      },
     },
+    required: ["id", "performer", "action", "targetType", "createdAt"],
   },
 
-  // ---- Admin Accounts & Roles ----
-  AdminAccount: {
+  // ---- Admin Accounts ----
+  // Source of truth: apps/backoffice-service/src/types/admin-account.types.ts.
+  // NOTE: no per-admin permission overrides and no TOTP/2FA enrolment flow
+  // exist today — the only mutable RBAC surface is swapping an admin's whole
+  // role (PATCH .../permissions with { roleKey }).
+  AdminRoleKey: {
+    type: "string",
+    enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
+    example: "MODERATOR",
+  },
+  AdminAccountRoleRef: {
     type: "object",
     properties: {
-      id: { type: "string", example: "adm_5" },
+      key: { $ref: "#/components/schemas/AdminRoleKey" },
+      name: { type: "string", example: "Moderator" },
+    },
+    required: ["key", "name"],
+  },
+  AdminAccount: {
+    type: "object",
+    description:
+      "Row shape for both the list endpoint and the single-account detail endpoint.",
+    properties: {
+      id: { type: "string", format: "uuid" },
       email: { type: "string", format: "email", example: "mod@aimess.io" },
       name: { type: "string", example: "Mod User" },
-      role: {
+      avatarUrl: {
         type: "string",
-        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
-        example: "MODERATOR",
+        description:
+          "Always a resolved string (custom avatar or a default), never null.",
       },
+      role: { $ref: "#/components/schemas/AdminAccountRoleRef" },
       status: {
         type: "string",
         enum: ["ACTIVE", "DISABLED", "INVITED"],
         example: "ACTIVE",
       },
-      totpEnabled: { type: "boolean", example: true },
       lastLoginAt: { type: "string", format: "date-time", nullable: true },
       createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
     },
-    required: ["id", "email", "role", "status"],
+    required: ["id", "email", "name", "role", "status"],
   },
   AdminAccountCreateRequest: {
     type: "object",
-    required: ["email", "name", "role"],
+    required: ["email", "password", "name", "roleKey"],
     properties: {
       email: { type: "string", format: "email", example: "mod@aimess.io" },
-      name: { type: "string", example: "Mod User" },
-      role: {
+      password: {
         type: "string",
-        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
-        example: "MODERATOR",
+        minLength: 6,
+        description:
+          "Must contain at least one uppercase, one lowercase, one digit, and one special character.",
+      },
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 100,
+        example: "Mod User",
+      },
+      roleKey: { $ref: "#/components/schemas/AdminRoleKey" },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        maxLength: 500,
+        nullable: true,
+      },
+    },
+  },
+  AdminAccountUpdateRequest: {
+    type: "object",
+    description:
+      "PATCH profile fields only — role changes go through .../permissions. At least one of name or avatarUrl must be provided.",
+    properties: {
+      name: { type: "string", minLength: 2, maxLength: 100, nullable: true },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        maxLength: 500,
+        nullable: true,
       },
     },
   },
   AdminAccountRoleRequest: {
     type: "object",
-    required: ["role"],
+    description:
+      "PATCH .../permissions body. This REPLACES the admin's whole role — there is no per-permission override.",
+    required: ["roleKey"],
     properties: {
-      role: {
-        type: "string",
-        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
-        example: "MODERATOR",
-      },
+      roleKey: { $ref: "#/components/schemas/AdminRoleKey" },
     },
   },
-  AdminRole: {
+  AdminPermissionCatalogueItem: {
     type: "object",
+    description:
+      "One row of the full permission catalogue (GET .../admin-accounts/permissions) — use this to build a permission-picker/reference UI. group comes from the DB, not derivable from a static enum.",
     properties: {
-      key: {
-        type: "string",
-        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
-        example: "MODERATOR",
-      },
-      name: { type: "string", example: "Moderator" },
-      description: { type: "string", nullable: true },
+      key: { type: "string", example: "users.read" },
+      group: { type: "string", example: "Users" },
+    },
+    required: ["key", "group"],
+  },
+  AdminAccountPermissionsView: {
+    type: "object",
+    description:
+      "Resolved (role-derived) permission set for one admin (GET/PATCH .../admin-accounts/{adminId}/permissions).",
+    properties: {
+      adminId: { type: "string", format: "uuid" },
+      role: { $ref: "#/components/schemas/AdminAccountRoleRef" },
       permissions: {
         type: "array",
         items: { type: "string" },
         example: ["dashboard.read", "users.read", "users.moderate"],
       },
     },
-    required: ["key", "permissions"],
+    required: ["adminId", "role", "permissions"],
   },
 
   // ---- System Health ----
-  AdminSystemQueues: {
+  // Source of truth: apps/backoffice-service/src/types/system-health.types.ts.
+  AdminServiceHealthItem: {
     type: "object",
     properties: {
-      queues: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            name: { type: "string", example: "aimess.events" },
-            depth: { type: "integer", example: 4 },
-            dlqDepth: { type: "integer", example: 0 },
-          },
-        },
+      key: {
+        type: "string",
+        enum: [
+          "auth",
+          "community",
+          "chat",
+          "media",
+          "notification",
+          "stream",
+          "user",
+        ],
+        example: "auth",
       },
-      checkedAt: { type: "string", format: "date-time" },
+      name: { type: "string", example: "Auth Service" },
+      status: {
+        type: "string",
+        enum: ["healthy", "degraded", "down", "unknown"],
+        example: "healthy",
+      },
+      monitored: {
+        type: "boolean",
+        description:
+          "false for media/notification/stream/user — no backoffice health probe is wired for them yet; status is always unknown and they are excluded from the overall/servicesUp roll-up.",
+      },
+      uptimePercent: { type: "number", nullable: true, example: 99.8 },
+      latencyMs: {
+        type: "integer",
+        nullable: true,
+        description:
+          "Only populated for the 3 monitored services (auth/community/chat).",
+      },
+      breaker: {
+        type: "string",
+        nullable: true,
+        enum: ["open", "half-open", null],
+      },
+      lastChecked: { type: "string", format: "date-time" },
+      note: { type: "string" },
     },
+    required: ["key", "name", "status", "monitored", "lastChecked"],
   },
-  AdminSystemMetrics: {
+  AdminInfraHealthItem: {
     type: "object",
-    description: "Aggregate platform metrics snapshot (read-model + redis).",
     properties: {
-      metrics: { type: "object" },
-      asOf: { type: "string", format: "date-time" },
+      key: {
+        type: "string",
+        enum: ["database", "redis", "message_queue", "object_storage"],
+        example: "database",
+      },
+      name: { type: "string", example: "PostgreSQL" },
+      status: {
+        type: "string",
+        enum: ["healthy", "degraded", "down"],
+        example: "healthy",
+      },
+      metrics: {
+        type: "object",
+        description:
+          "Component-specific bag (latencyMs, engine, connection, transport, bucket, ...).",
+        additionalProperties: true,
+      },
+      latencyMs: { type: "integer", nullable: true },
+      lastChecked: { type: "string", format: "date-time" },
+      note: { type: "string" },
     },
+    required: ["key", "name", "status", "lastChecked"],
+  },
+  AdminSystemHealth: {
+    type: "object",
+    description:
+      "GET /admin/v1/system-health. Cannot 500 by design — a partial outage still returns 200 with the affected component(s) marked down/degraded. Redis-cached, 5s TTL; lastUpdated is the true staleness indicator.",
+    properties: {
+      overall: { type: "string", enum: ["healthy", "degraded", "down"] },
+      servicesUp: {
+        type: "object",
+        description:
+          "Counts only MONITORED services; a degraded service still counts as up.",
+        properties: {
+          up: { type: "integer", example: 3 },
+          total: { type: "integer", example: 3 },
+          label: { type: "string", example: "3/3" },
+        },
+        required: ["up", "total", "label"],
+      },
+      lastUpdated: { type: "string", format: "date-time" },
+      services: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminServiceHealthItem" },
+      },
+      infrastructure: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminInfraHealthItem" },
+      },
+    },
+    required: [
+      "overall",
+      "servicesUp",
+      "lastUpdated",
+      "services",
+      "infrastructure",
+    ],
   },
 
   ApiSuccessResponse: {
