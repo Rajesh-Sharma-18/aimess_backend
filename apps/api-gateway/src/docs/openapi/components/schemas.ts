@@ -2353,6 +2353,20 @@ export const openApiSchemas = {
       reportedBy: {
         type: "string",
         example: "550e8400-e29b-41d4-a716-446655440000",
+        description: "userId who submitted the report.",
+      },
+      reporterUsername: {
+        type: "string",
+        description: 'Reporter\'s snapshot username; "" if unavailable.',
+      },
+      reporterDisplayName: {
+        type: "string",
+        description: 'Reporter\'s snapshot display name; "" if unavailable.',
+      },
+      reporterAvatar: {
+        type: "string",
+        description:
+          "Reporter's raw avatar object key; \"\" if none. Resolve like a comment's senderAvatar.",
       },
       reason: {
         type: "string",

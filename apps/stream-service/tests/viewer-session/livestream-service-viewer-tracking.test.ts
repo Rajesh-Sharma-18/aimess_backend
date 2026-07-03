@@ -158,13 +158,11 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
         findById: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "ENDED",
-            endedAt: new Date(),
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "ENDED",
+          endedAt: new Date(),
+        }),
       },
     });
 
@@ -182,13 +180,11 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
         findByStreamKey: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "ENDED",
-            endedAt: new Date(),
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "ENDED",
+          endedAt: new Date(),
+        }),
       },
     });
 
@@ -206,13 +202,11 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
         findById: jest.fn().mockResolvedValue(stream),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "ENDED",
-            endedAt: new Date(),
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "ENDED",
+          endedAt: new Date(),
+        }),
       },
     });
 
@@ -244,13 +238,11 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
         findStaleLiveStreams: jest.fn().mockResolvedValue([stream]),
-        updateById: jest
-          .fn()
-          .mockResolvedValue({
-            ...stream,
-            status: "ENDED",
-            endedAt: new Date(),
-          }),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "ENDED",
+          endedAt: new Date(),
+        }),
       },
     });
 

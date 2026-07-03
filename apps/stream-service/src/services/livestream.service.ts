@@ -23,6 +23,16 @@ import type { redis as RedisClient } from "../config/redis.js";
 import { publishStreamEvent } from "../events/index.js";
 import { userGrpcClient } from "../grpc/user.client.js";
 
+/** A single watching user, enriched for the owner-only viewers list. */
+export interface StreamViewerView {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarObjectKey: string;
+  /** Epoch ms of this viewer's first join; null if unknown (e.g. Redis miss). */
+  joinedAt: number | null;
+}
+
 /** Stream record enriched with a live viewer count + presentation helpers. */
 export interface StreamView {
   id: string;
@@ -189,6 +199,22 @@ function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
 }
 
 const sessionKey = (streamId: string) => `stream:session:users:${streamId}`;
+// Written by api-gateway's stream.ns.ts on stream:join (HSETNX, so a rejoin
+// never overwrites the original join time) — see that file for the write side.
+const sessionJoinedKey = (streamId: string) =>
+  `stream:session:joined:${streamId}`;
+const creatorStreamLockKey = (communityId: string, creatorId: string) =>
+  `stream:creator-active-lock:${communityId}:${creatorId}`;
+const CREATOR_STREAM_LOCK_TTL_SEC = 15;
+
+/** Map a community-service moderation `errorCode` to the matching AppError subclass. */
+function moderationErrorToAppError(errorCode: string): Error {
+  if (!errorCode) return new ForbiddenError("STREAM_MUTE_FORBIDDEN");
+  if (errorCode.includes("NOT_FOUND")) return new NotFoundError(errorCode);
+  if (errorCode.includes("CANNOT_MODIFY"))
+    return new BadRequestError(errorCode);
+  return new ForbiddenError(errorCode);
+}
 
 export class LivestreamService {
   constructor(
@@ -241,46 +267,66 @@ export class LivestreamService {
       }
     }
 
-    const active = await this.streamRepo.countActiveByCommunity(
-      params.communityId
-    );
-    if (active >= env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) {
-      throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
-    }
-
     const isYoutube = params.sourceType === "YOUTUBE";
     if ((params.sourceType === "URL" || isYoutube) && !params.sourceUrl) {
       throw new BadRequestError("STREAM_SOURCE_URL_REQUIRED");
     }
 
-    const streamKey = randomBytes(16).toString("hex");
+    const { created, streamKey } = await this.withCreatorStreamLock(
+      params.communityId,
+      params.creatorId,
+      async () => {
+        // Both counts are LIVE-only — a PENDING stream (still setting up,
+        // never published) never blocks a new create and never occupies a
+        // community concurrency slot. Only an actually-broadcasting stream does.
+        const [activeByCreator, activeByCommunity] = await Promise.all([
+          this.streamRepo.countActiveByCommunityAndCreator(
+            params.communityId,
+            params.creatorId
+          ),
+          this.streamRepo.countActiveByCommunity(params.communityId),
+        ]);
+        if (activeByCreator > 0) {
+          throw new ConflictError("STREAM_ALREADY_ACTIVE");
+        }
+        if (activeByCommunity >= env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) {
+          throw new ConflictError("STREAM_COMMUNITY_CONCURRENCY_LIMIT");
+        }
 
-    // YouTube streams embed a remote source — no SRS ingest/playback.
-    const playback = isYoutube
-      ? null
-      : this.srsService.buildPlaybackUrls(streamKey);
+        const streamKey = randomBytes(16).toString("hex");
 
-    const created = await this.streamRepo.create({
-      communityId: params.communityId,
-      creatorId: params.creatorId,
-      title: params.title,
-      description: params.description ?? "",
-      thumbnail: params.thumbnail ?? null,
-      sourceType: params.sourceType,
-      sourceUrl: params.sourceUrl ?? null,
-      streamKey,
-      status: "PENDING",
-      hlsUrl: playback?.hlsUrl ?? null,
-      flvUrl: playback?.flvUrl ?? null,
-      dashUrl: playback?.dashUrl ?? null,
-    });
+        // YouTube streams embed a remote source — no SRS ingest/playback.
+        const playback = isYoutube
+          ? null
+          : this.srsService.buildPlaybackUrls(streamKey);
+
+        const created = await this.streamRepo.create({
+          communityId: params.communityId,
+          creatorId: params.creatorId,
+          title: params.title,
+          description: params.description ?? "",
+          thumbnail: params.thumbnail ?? null,
+          sourceType: params.sourceType,
+          sourceUrl: params.sourceUrl ?? null,
+          streamKey,
+          status: "PENDING",
+          hlsUrl: playback?.hlsUrl ?? null,
+          flvUrl: playback?.flvUrl ?? null,
+          dashUrl: playback?.dashUrl ?? null,
+        });
+
+        return { created, streamKey };
+      }
+    );
 
     // Race-safe cap enforcement. The count check above has a small window where
     // two concurrent creates both pass at count = MAX-1 and produce MAX+1. After
-    // inserting, re-derive THIS stream's rank among the community's active
+    // inserting, re-derive THIS stream's rank among the community's LIVE
     // streams (deterministic createdAt + id tiebreak): if MAX or more were
     // created at-or-before it, this one lost the race — delete it and reject, so
-    // the community never keeps more than MAX concurrent streams.
+    // the community never keeps more than MAX concurrent LIVE streams. (The
+    // just-created row is always PENDING here, so in practice this only trips
+    // if MAX streams are already LIVE — PENDING never competes for the cap.)
     const priorActive = await this.streamRepo.countActiveCreatedBefore(
       created.communityId,
       created.createdAt,
@@ -343,6 +389,19 @@ export class LivestreamService {
       return true;
     }
 
+    const otherActiveStreams =
+      await this.streamRepo.countActiveByCommunityAndCreator(
+        stream.communityId,
+        stream.creatorId,
+        stream.id
+      );
+    if (otherActiveStreams > 0) {
+      logger.warn(
+        `on_publish denied for stream id=${stream.id}: creator=${stream.creatorId} already has an active stream in community=${stream.communityId}`
+      );
+      return false;
+    }
+
     const playback = this.srsService.buildPlaybackUrls(streamKey);
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "LIVE",
@@ -363,6 +422,7 @@ export class LivestreamService {
       streamId: updated.id,
       communityId: updated.communityId,
       creatorId: updated.creatorId,
+      title: updated.title,
       livedAt: updated.livedAt?.getTime() ?? Date.now(),
     });
 
@@ -486,6 +546,16 @@ export class LivestreamService {
       return toView(stream);
     }
 
+    const otherActiveStreams =
+      await this.streamRepo.countActiveByCommunityAndCreator(
+        stream.communityId,
+        stream.creatorId,
+        stream.id
+      );
+    if (otherActiveStreams > 0) {
+      throw new ConflictError("STREAM_ALREADY_ACTIVE");
+    }
+
     const playback = this.srsService.buildPlaybackUrls(stream.streamKey);
     const updated = await this.streamRepo.updateById(id, {
       status: "LIVE",
@@ -506,6 +576,7 @@ export class LivestreamService {
       streamId: updated.id,
       communityId: updated.communityId,
       creatorId: updated.creatorId,
+      title: updated.title,
       livedAt: updated.livedAt?.getTime() ?? Date.now(),
     });
 
@@ -693,10 +764,20 @@ export class LivestreamService {
 
   /**
    * Background sweeper: auto-end LIVE streams whose host hasn't heartbeated in
-   * `STREAM_HEARTBEAT_TIMEOUT_MS`. Called periodically from server.ts.
+   * `STREAM_HEARTBEAT_TIMEOUT_MS`, and auto-cancel PENDING streams that sat
+   * unpublished past `STREAM_PENDING_TIMEOUT_MS` (abandoned setup, crashed
+   * client, failed publish). A stuck PENDING row otherwise never clears —
+   * it permanently occupies that creator's one-active-stream-per-community
+   * slot and every subsequent create attempt 409s with STREAM_ALREADY_ACTIVE,
+   * even though nothing is actually live. Called periodically from server.ts.
    * Intentionally silent — a single stale stream failure does not block the rest.
    */
   async sweepStaleStreams(): Promise<void> {
+    await this.sweepStaleLiveStreams();
+    await this.sweepStalePendingStreams();
+  }
+
+  private async sweepStaleLiveStreams(): Promise<void> {
     const cutoff = new Date(Date.now() - env.STREAM_HEARTBEAT_TIMEOUT_MS);
     let stale: Awaited<ReturnType<typeof this.streamRepo.findStaleLiveStreams>>;
     try {
@@ -735,6 +816,52 @@ export class LivestreamService {
       } catch (err) {
         logger.warn(
           `sweepStaleStreams: failed to end stream=${stream.id} — ${String(err)}`
+        );
+      }
+    }
+  }
+
+  private async sweepStalePendingStreams(): Promise<void> {
+    const cutoff = new Date(Date.now() - env.STREAM_PENDING_TIMEOUT_MS);
+    let stale: Awaited<
+      ReturnType<typeof this.streamRepo.findStalePendingStreams>
+    >;
+    try {
+      stale = await this.streamRepo.findStalePendingStreams(cutoff);
+    } catch (err) {
+      logger.warn(`sweepStalePendingStreams: DB query failed — ${String(err)}`);
+      return;
+    }
+    if (!stale.length) return;
+
+    logger.info(
+      `sweepStalePendingStreams: cancelling ${stale.length} stale PENDING stream(s)`
+    );
+    for (const stream of stale) {
+      try {
+        const updated = await this.streamRepo.updateById(stream.id, {
+          status: "CANCELLED",
+          endedAt: new Date(),
+        });
+        // Best-effort — a PENDING stream never published, but a client may have
+        // gotten as far as opening the ingest connection.
+        await this.srsService.kickStream(stream.streamKey);
+        await this.publishStatus(updated.id, "ENDED", updated.communityId);
+        void this.publishCommunityStreamEnded(updated);
+        this.eventPublisher("stream.ended", {
+          streamId: updated.id,
+          communityId: updated.communityId,
+          creatorId: updated.creatorId,
+          endedAt: updated.endedAt?.getTime() ?? Date.now(),
+          durationSeconds: 0,
+          peakViewers: 0,
+        });
+        logger.info(
+          `sweepStalePendingStreams: cancelled stream=${stream.id} community=${stream.communityId}`
+        );
+      } catch (err) {
+        logger.warn(
+          `sweepStalePendingStreams: failed to cancel stream=${stream.id} — ${String(err)}`
         );
       }
     }
@@ -841,25 +968,68 @@ export class LivestreamService {
   }
 
   /**
-   * Owner lists the userIds currently watching the stream. The list is maintained
-   * by the api-gateway in Redis set `stream:session:users:<streamId>`.
+   * Owner lists the users currently watching the stream, enriched with
+   * username/display-name/avatar (best-effort, via user-service) and each
+   * viewer's join time (best-effort, from Redis — null if unavailable). The
+   * userId set and join-time hash are both maintained by api-gateway:
+   * `stream:session:users:<streamId>` (Set) and
+   * `stream:session:joined:<streamId>` (Hash, userId -> epoch ms).
    */
-  async getViewers(id: string, requesterId: string): Promise<string[]> {
+  async getViewers(
+    id: string,
+    requesterId: string
+  ): Promise<StreamViewerView[]> {
     const stream = await this.streamRepo.findById(id);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
     if (stream.creatorId !== requesterId) {
       throw new ForbiddenError("STREAM_NOT_OWNER");
     }
 
+    let userIds: string[];
     try {
-      const members = await this.redis.smembers(sessionKey(id));
-      return members;
+      userIds = await this.redis.smembers(sessionKey(id));
     } catch (error) {
       logger.warn(
         `getViewers Redis read failed for stream=${id}: ${String(error)}`
       );
       return [];
     }
+    if (userIds.length === 0) return [];
+
+    let joinedAtById = new Map<string, number>();
+    try {
+      const joined = await this.redis.hgetall(sessionJoinedKey(id));
+      joinedAtById = new Map(
+        Object.entries(joined).map(([userId, ts]) => [userId, Number(ts)])
+      );
+    } catch (error) {
+      logger.warn(
+        `getViewers join-time Redis read failed for stream=${id}: ${String(error)}`
+      );
+    }
+
+    let snapshots: Awaited<
+      ReturnType<typeof this.userClient.bulkGetUserSnapshots>
+    > = [];
+    try {
+      snapshots = await this.userClient.bulkGetUserSnapshots(userIds);
+    } catch (error) {
+      logger.warn(
+        `getViewers user enrichment failed for stream=${id}: ${String(error)}`
+      );
+    }
+    const snapshotById = new Map(snapshots.map((s) => [s.userId, s]));
+
+    return userIds.map((userId) => {
+      const snap = snapshotById.get(userId);
+      return {
+        userId,
+        username: snap?.username ?? "",
+        displayName: snap?.displayName ?? "",
+        avatarObjectKey: snap?.avatarObjectKey ?? "",
+        joinedAt: joinedAtById.get(userId) ?? null,
+      };
+    });
   }
 
   /**
@@ -1013,7 +1183,58 @@ export class LivestreamService {
       };
     }
 
+    // Community-wide ban (ADMIN-applied in community-service) is also a hard
+    // block — same shape as the local per-stream ban, including for the owner
+    // (a banned member loses the stream too, no exceptions). Fail-open on a
+    // community-service outage: consistent with every other community-service
+    // read in this method, an outage must not black out viewing on its own —
+    // the local ban above remains the always-available, synchronous hard gate.
+    try {
+      const communityBan = await this.communityClient.checkBan(
+        stream.communityId,
+        userId
+      );
+      if (communityBan.isBanned) {
+        return {
+          allowed: false,
+          isBanned: true,
+          status: "",
+          reason: "BANNED",
+          canComment: false,
+          streamStatus: "",
+          title: "",
+          description: "",
+          thumbnail: null,
+          creatorId: "",
+          hlsUrl: null,
+          flvUrl: null,
+        };
+      }
+    } catch (error) {
+      logger.warn(
+        `checkAccess: community ban check failed for stream=${streamId} user=${userId}: ${String(error)}`
+      );
+    }
+
     const canComment = stream.commentStatus;
+
+    // Moderator mute (community-level) blocks commenting/reacting regardless of
+    // membership requirement. Fail-open: a community-service outage must not
+    // silence chat for everyone.
+    const isMuted = await (async (): Promise<boolean> => {
+      try {
+        const mute = await this.communityClient.checkMute(
+          stream.communityId,
+          userId
+        );
+        return mute.isMuted;
+      } catch (error) {
+        logger.warn(
+          `checkAccess: mute check failed for stream=${streamId} user=${userId}: ${String(error)}`
+        );
+        return false; // fail-open
+      }
+    })();
 
     // Snapshot fields shared by all allowed=true paths.
     const snapshot = {
@@ -1040,7 +1261,7 @@ export class LivestreamService {
         isBanned: false,
         status: "OWNER",
         reason: "",
-        canComment,
+        canComment: canComment && !isMuted,
         ...snapshot,
       };
     }
@@ -1075,7 +1296,7 @@ export class LivestreamService {
         isBanned: false,
         status: "",
         reason: "",
-        canComment: isMember ? canComment : false,
+        canComment: (isMember ? canComment : false) && !isMuted,
         ...snapshot,
       };
     }
@@ -1092,7 +1313,7 @@ export class LivestreamService {
       isBanned: false,
       status: "",
       reason: "",
-      canComment,
+      canComment: canComment && !isMuted,
       ...snapshot,
     };
   }
@@ -1166,6 +1387,269 @@ export class LivestreamService {
       reason: b.reason,
       bannedAt: b.bannedAt,
     }));
+  }
+
+  /**
+   * Mute a member from the livestream. Writes through to the single community
+   * moderation mute record (community-service enforces MODERATOR+ authorization,
+   * self/admin guards) so muting from the stream and muting from the community
+   * screen are the same action, not two separate mute states. Broadcasts
+   * `stream:member_muted` so the gateway can push a real-time notice to the
+   * muted user's live socket(s).
+   */
+  async muteMember(
+    streamId: string,
+    requesterId: string,
+    targetUserId: string,
+    durationMinutes: number | null | undefined,
+    reason?: string
+  ): Promise<{ mutedUntil: number }> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+
+    const result = await this.communityClient.muteMember(
+      stream.communityId,
+      requesterId,
+      targetUserId,
+      durationMinutes && durationMinutes > 0 ? durationMinutes : 0,
+      reason ?? ""
+    );
+    if (!result.ok) {
+      throw moderationErrorToAppError(result.errorCode);
+    }
+
+    try {
+      await this.redis.publish(
+        `stream:${streamId}`,
+        JSON.stringify({
+          event: "stream:member_muted",
+          data: {
+            streamId,
+            userId: targetUserId,
+            mutedUntil: result.mutedUntil,
+            reason: reason ?? null,
+          },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `member_muted broadcast failed for stream=${streamId}: ${String(error)}`
+      );
+    }
+
+    return { mutedUntil: result.mutedUntil };
+  }
+
+  /** Unmute a member from the livestream — same write-through as {@link muteMember}. */
+  async unmuteMember(
+    streamId: string,
+    requesterId: string,
+    targetUserId: string
+  ): Promise<void> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+
+    const result = await this.communityClient.unmuteMember(
+      stream.communityId,
+      requesterId,
+      targetUserId
+    );
+    if (!result.ok) {
+      throw moderationErrorToAppError(result.errorCode);
+    }
+
+    try {
+      await this.redis.publish(
+        `stream:${streamId}`,
+        JSON.stringify({
+          event: "stream:member_unmuted",
+          data: { streamId, userId: targetUserId },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `member_unmuted broadcast failed for stream=${streamId}: ${String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Inbound push from community-service after a mute/unmute triggered from the
+   * community side (UI or socket): find this community's currently-LIVE streams
+   * where the target is present (viewer or owner) and relay the same
+   * `stream:member_muted`/`stream:member_unmuted` event so live viewers see it
+   * without needing to rejoin. Best-effort — never throws.
+   */
+  async broadcastMuteStatusForCommunity(
+    communityId: string,
+    userId: string,
+    isMuted: boolean,
+    mutedUntil: number
+  ): Promise<void> {
+    if (!communityId || !userId) return;
+
+    let liveStreams: StreamView[];
+    try {
+      ({ items: liveStreams } = await this.listStreams({
+        communityId,
+        status: "LIVE",
+        limit: 50,
+      }));
+    } catch (error) {
+      logger.warn(
+        `broadcastMuteStatusForCommunity: listStreams failed for community=${communityId}: ${String(error)}`
+      );
+      return;
+    }
+
+    for (const stream of liveStreams) {
+      let isPresent = stream.creatorId === userId;
+      if (!isPresent) {
+        try {
+          isPresent =
+            (await this.redis.sismember(sessionKey(stream.id), userId)) === 1;
+        } catch {
+          isPresent = false;
+        }
+      }
+      if (!isPresent) continue;
+
+      try {
+        await this.redis.publish(
+          `stream:${stream.id}`,
+          JSON.stringify({
+            event: isMuted ? "stream:member_muted" : "stream:member_unmuted",
+            data: { streamId: stream.id, userId, mutedUntil },
+          })
+        );
+      } catch (error) {
+        logger.warn(
+          `mute status broadcast failed for stream=${stream.id}: ${String(error)}`
+        );
+      }
+    }
+  }
+
+  /**
+   * ADMIN bans a member from the entire community — not just this stream.
+   * Writes through to the single community ban record (authorization —
+   * ADMIN-only, stricter than mute's MODERATOR+ — is enforced entirely on the
+   * community-service side). Distinct from {@link banUser}: this is a
+   * separate, community-wide tool; the local per-stream ban above is untouched
+   * and still works as an owner-only "kick from just this stream" action.
+   * Broadcasts the same `stream:banned` event as the local ban, so the
+   * gateway's existing kick logic applies with zero gateway changes.
+   */
+  async communityBanMember(
+    streamId: string,
+    requesterId: string,
+    targetUserId: string,
+    reason?: string
+  ): Promise<void> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+
+    const result = await this.communityClient.banMember(
+      stream.communityId,
+      requesterId,
+      targetUserId,
+      reason ?? ""
+    );
+    if (!result.ok) {
+      throw moderationErrorToAppError(result.errorCode);
+    }
+
+    try {
+      await this.redis.publish(
+        `stream:${streamId}`,
+        JSON.stringify({
+          event: "stream:banned",
+          data: { streamId, userId: targetUserId },
+        })
+      );
+    } catch (error) {
+      logger.warn(
+        `community ban broadcast failed for stream=${streamId}: ${String(error)}`
+      );
+    }
+  }
+
+  /** ADMIN lifts a community-wide ban — same write-through as {@link communityBanMember}. */
+  async communityUnbanMember(
+    streamId: string,
+    requesterId: string,
+    targetUserId: string
+  ): Promise<void> {
+    const stream = await this.streamRepo.findById(streamId);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+
+    const result = await this.communityClient.unbanMember(
+      stream.communityId,
+      requesterId,
+      targetUserId
+    );
+    if (!result.ok) {
+      throw moderationErrorToAppError(result.errorCode);
+    }
+    // No socket push on unban — matches the local per-stream unban's behavior
+    // (does not auto-rejoin the user; they rejoin manually).
+  }
+
+  /**
+   * Inbound push from community-service after an ADMIN bans/unbans a member
+   * from the *community* side (UI or socket): find this community's
+   * currently-LIVE streams where the target is present and, on ban, kick them
+   * the same way a stream-triggered ban does — reuses `stream:banned`, so no
+   * gateway changes are needed. Unban is a no-op here, mirroring the local
+   * per-stream unban (no auto-rejoin push). Best-effort — never throws.
+   */
+  async broadcastBanStatusForCommunity(
+    communityId: string,
+    userId: string,
+    isBanned: boolean
+  ): Promise<void> {
+    if (!communityId || !userId || !isBanned) return;
+
+    let liveStreams: StreamView[];
+    try {
+      ({ items: liveStreams } = await this.listStreams({
+        communityId,
+        status: "LIVE",
+        limit: 50,
+      }));
+    } catch (error) {
+      logger.warn(
+        `broadcastBanStatusForCommunity: listStreams failed for community=${communityId}: ${String(error)}`
+      );
+      return;
+    }
+
+    for (const stream of liveStreams) {
+      let isPresent = stream.creatorId === userId;
+      if (!isPresent) {
+        try {
+          isPresent =
+            (await this.redis.sismember(sessionKey(stream.id), userId)) === 1;
+        } catch {
+          isPresent = false;
+        }
+      }
+      if (!isPresent) continue;
+
+      try {
+        await this.redis.publish(
+          `stream:${stream.id}`,
+          JSON.stringify({
+            event: "stream:banned",
+            data: { streamId: stream.id, userId },
+          })
+        );
+      } catch (error) {
+        logger.warn(
+          `ban status broadcast failed for stream=${stream.id}: ${String(error)}`
+        );
+      }
+    }
   }
 
   /**
@@ -1245,6 +1729,54 @@ export class LivestreamService {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
     await this.streamRepo.updateById(streamId, { thumbnail });
+  }
+
+  private async withCreatorStreamLock<T>(
+    communityId: string,
+    creatorId: string,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    if (!env.REDIS_CACHE_ENABLED) {
+      return fn();
+    }
+
+    const key = creatorStreamLockKey(communityId, creatorId);
+    const token = randomBytes(8).toString("hex");
+
+    let locked: boolean;
+    try {
+      locked =
+        (await this.redis.set(
+          key,
+          token,
+          "EX",
+          CREATOR_STREAM_LOCK_TTL_SEC,
+          "NX"
+        )) === "OK";
+    } catch (error) {
+      logger.warn(
+        `creator stream lock unavailable for community=${communityId} creator=${creatorId}: ${String(error)}`
+      );
+      return fn();
+    }
+
+    if (!locked) {
+      throw new ConflictError("STREAM_ALREADY_ACTIVE");
+    }
+
+    try {
+      return await fn();
+    } finally {
+      try {
+        if ((await this.redis.get(key)) === token) {
+          await this.redis.del(key);
+        }
+      } catch (error) {
+        logger.warn(
+          `creator stream lock release failed for community=${communityId} creator=${creatorId}: ${String(error)}`
+        );
+      }
+    }
   }
 
   private async publishStatus(

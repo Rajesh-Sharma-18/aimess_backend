@@ -528,12 +528,12 @@ const getViewers = {
     operationId: "getStreamViewers",
     summary: "Get current viewers",
     description:
-      "Owner-only. Returns the set of userIds currently watching the stream, sourced from the Redis session set `stream:session:users:<id>`. Returns an empty array if Redis is unavailable.",
+      "Owner-only. Returns the users currently watching the stream, sourced from the Redis session set `stream:session:users:<id>` plus a join-time hash `stream:session:joined:<id>` and a best-effort user-service enrichment (username/displayName/avatar). `username`/`displayName`/`avatarObjectKey` are empty strings and `joinedAt` is `null` when the corresponding lookup is unavailable. Returns an empty array if the Redis session set itself is unavailable.",
     security: streamAuth,
     parameters: [streamIdParam],
     responses: {
       "200": {
-        description: "Viewer userId list",
+        description: "Viewer list",
         content: {
           "application/json": {
             schema: {
@@ -545,11 +545,34 @@ const getViewers = {
                   properties: {
                     items: {
                       type: "array" as const,
-                      items: { type: "string" as const },
-                      example: [
-                        "550e8400-e29b-41d4-a716-446655440000",
-                        "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
-                      ],
+                      items: {
+                        type: "object" as const,
+                        properties: {
+                          userId: {
+                            type: "string" as const,
+                            example: "550e8400-e29b-41d4-a716-446655440000",
+                          },
+                          username: {
+                            type: "string" as const,
+                            example: "jane_doe",
+                          },
+                          displayName: {
+                            type: "string" as const,
+                            example: "Jane Doe",
+                          },
+                          avatarObjectKey: {
+                            type: "string" as const,
+                            example: "avatars/jane.jpg",
+                          },
+                          joinedAt: {
+                            type: "integer" as const,
+                            nullable: true,
+                            description:
+                              "Epoch ms of first join; null if unknown.",
+                            example: 1751500000000,
+                          },
+                        },
+                      },
                     },
                   },
                 },

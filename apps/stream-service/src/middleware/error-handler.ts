@@ -5,6 +5,12 @@ import { AppError } from "@aimess/errors";
 import { logger } from "@aimess/logger";
 import { resolveLocaleFromRequest } from "@aimess/utils";
 
+function appErrorCode(error: AppError): string | undefined {
+  const key = error.messageKey;
+  if (key && /^[A-Z][A-Z0-9_]*$/.test(key)) return key;
+  return undefined;
+}
+
 export function errorHandler(
   error: unknown,
   req: Request,
@@ -14,11 +20,13 @@ export function errorHandler(
   const locale = req.locale ?? resolveLocaleFromRequest(req);
 
   if (error instanceof AppError) {
+    const code = appErrorCode(error);
     res.status(error.statusCode).json({
       success: false,
       message: error.messageKey
         ? t(error.messageKey as MessageKey, locale)
         : error.message,
+      ...(code ? { detail: { code } } : {}),
     });
     return;
   }

@@ -248,6 +248,34 @@ export type ListCommunityMembersQuery = {
 };
 
 // ---------------------------------------------------------------------------
+// Muted-members list (platform-admin view of a community's moderation mutes).
+// Read-through from community-service over gRPC — no community-membership gate.
+// ---------------------------------------------------------------------------
+
+/** A single row in the muted-members grid. */
+export type CommunityMutedMemberRow = {
+  userId: string;
+  /** Display name (falls back to the @handle when no display name). */
+  username: string;
+  /** The @handle (snapshot username). */
+  handle: string;
+  avatarUrl: string | null;
+  /** AuthUser.id of the moderator/admin who applied the mute. */
+  mutedBy: string;
+  reason: string | null;
+  /** ISO 8601. */
+  mutedAt: string;
+  /** ISO 8601, or null when the mute is indefinite. */
+  mutedUntil: string | null;
+};
+
+/** Normalized muted-members query (post-validation/coercion). */
+export type ListMutedMembersQuery = {
+  page: number;
+  limit: number;
+};
+
+// ---------------------------------------------------------------------------
 // User → Communities reverse lookup (the "Communities" grid on the admin User
 // Management detail screen). Read-through from community-service over gRPC.
 // ---------------------------------------------------------------------------

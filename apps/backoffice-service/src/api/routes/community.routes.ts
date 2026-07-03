@@ -8,6 +8,7 @@ import {
   getCommunityDetails,
   listCommunities,
   listCommunityMembers,
+  listCommunityMutedMembers,
   reopenCommunity,
 } from "../controllers/index.js";
 import {
@@ -24,6 +25,7 @@ import {
   communityIdParamSchema,
   listCommunitiesQuerySchema,
   listCommunityMembersQuerySchema,
+  listMutedMembersQuerySchema,
   reopenCommunitySchema,
 } from "../validators/index.js";
 
@@ -69,6 +71,13 @@ communityRoutes.get(
   validateParams(communityIdParamSchema),
   validateQuery(listCommunityMembersQuerySchema),
   listCommunityMembers
+);
+communityRoutes.get(
+  "/communities/:communityId/muted-members",
+  requirePermission(PERMISSIONS.COMMUNITIES_READ),
+  validateParams(communityIdParamSchema),
+  validateQuery(listMutedMembersQuerySchema),
+  listCommunityMutedMembers
 );
 communityRoutes.post(
   "/communities/:communityId/close",

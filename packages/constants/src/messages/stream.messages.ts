@@ -51,6 +51,14 @@ export const STREAM_MESSAGES = {
     en: "User ban lifted.",
     vi: "Gỡ lệnh cấm người dùng thành công.",
   },
+  STREAM_MEMBER_MUTED: {
+    en: "Member muted.",
+    vi: "Đã tắt tiếng thành viên.",
+  },
+  STREAM_MEMBER_UNMUTED: {
+    en: "Member unmuted.",
+    vi: "Đã bỏ tắt tiếng thành viên.",
+  },
   STREAM_BANS_FETCHED: {
     en: "Banned users fetched successfully.",
     vi: "Lấy danh sách người dùng bị cấm thành công.",
@@ -101,6 +109,10 @@ export const STREAM_MESSAGES = {
     en: "You must be a member of this community to start a stream.",
     vi: "Bạn phải là thành viên của cộng đồng này để phát trực tiếp.",
   },
+  STREAM_MUTE_FORBIDDEN: {
+    en: "You do not have permission to mute members in this community.",
+    vi: "Bạn không có quyền tắt tiếng thành viên trong cộng đồng này.",
+  },
   STREAM_BANNED: {
     en: "You have been banned from this stream.",
     vi: "Bạn đã bị cấm khỏi buổi phát trực tiếp này.",
@@ -112,6 +124,10 @@ export const STREAM_MESSAGES = {
   COMMENTS_DISABLED: {
     en: "Comments are disabled for this stream.",
     vi: "Bình luận đã bị tắt trong buổi phát trực tiếp này.",
+  },
+  COMMENTS_MUTED: {
+    en: "You have been muted by a moderator and cannot comment or react in this community's streams.",
+    vi: "Bạn đã bị quản trị viên tắt tiếng và không thể bình luận hoặc thả cảm xúc trong buổi phát trực tiếp của cộng đồng này.",
   },
   COMMENT_DELETE_FORBIDDEN: {
     en: "You are not allowed to delete this comment.",
@@ -126,6 +142,10 @@ export const STREAM_MESSAGES = {
   STREAM_COMMUNITY_CONCURRENCY_LIMIT: {
     en: "This community already has an active stream.",
     vi: "Cộng đồng này đã có một buổi phát trực tiếp đang hoạt động.",
+  },
+  STREAM_ALREADY_ACTIVE: {
+    en: "You already have an active stream in this community.",
+    vi: "Bạn đã có một buổi phát trực tiếp đang hoạt động trong cộng đồng này.",
   },
   STREAM_IS_LIVE: {
     en: "This stream is already live.",

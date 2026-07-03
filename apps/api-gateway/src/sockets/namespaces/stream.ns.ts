@@ -35,6 +35,11 @@ const roomKey = (streamId: string): string => `stream:${streamId}`;
 // so SCARD is always the accurate live viewer count — no separate INCR counter needed.
 const sessionKey = (streamId: string): string =>
   `stream:session:users:${streamId}`;
+// Join-time hash: userId -> epoch ms of first join. HSETNX so a heartbeat/
+// rejoin refresh never overwrites the original join time. Read by
+// stream-service's getViewers() alongside the session set above.
+const sessionJoinedKey = (streamId: string): string =>
+  `stream:session:joined:${streamId}`;
 
 // ─── Inbound payload schemas ────────────────────────────────────────────────
 const StreamJoinSchema = z.object({ streamId: z.string().min(1) });
@@ -133,6 +138,7 @@ export function registerStreamNamespace(
       // Remove banned user from the session set so getViewers reflects the kick.
       try {
         await redisPub.srem(sessionKey(streamId), bannedUserId);
+        await redisPub.hdel(sessionJoinedKey(streamId), bannedUserId);
       } catch (err) {
         logger.warn(
           `/stream ban session srem error for ${streamId}: ${String(err)}`
@@ -165,6 +171,33 @@ export function registerStreamNamespace(
     }
   };
 
+  // Handle a stream:member_muted / stream:member_unmuted event from
+  // stream-service: targeted push to the affected user's live socket(s) so
+  // their UI can disable/re-enable the composer without a rejoin. Unlike a
+  // ban, mute never removes the user from the room — they can keep watching.
+  // The write-path checks in stream-service remain authoritative regardless of
+  // whether this push arrives or is stale.
+  const notifyMuteStatus = async (
+    room: string,
+    event: "stream:member_muted" | "stream:member_unmuted",
+    data: unknown
+  ): Promise<void> => {
+    const { streamId, userId: targetUserId } = (data ?? {}) as {
+      streamId?: string;
+      userId?: string;
+    };
+    if (!streamId || !targetUserId) return;
+    try {
+      const sockets = await streamNs.in(room).fetchSockets();
+      for (const s of sockets) {
+        if (s.data.userId !== targetUserId) continue;
+        s.emit(event, data);
+      }
+    } catch (err) {
+      logger.warn(`/stream ${event} notify error for ${room}: ${String(err)}`);
+    }
+  };
+
   // Dedicated subscriber for livestream channels. stream-service is the sole
   // publisher of stream:comment:new and stream:status — the gateway NEVER emits
   // those itself; it only relays whatever lands on stream:<id>.
@@ -179,6 +212,15 @@ export function registerStreamNamespace(
         // only notify + kick the banned user instead of telling the whole room.
         if (parsed.event === "stream:banned") {
           void kickBannedUser(channel, parsed.data);
+          return;
+        }
+        // stream:member_muted / stream:member_unmuted are likewise targeted —
+        // only the affected user's socket(s) need it, not the whole room.
+        if (
+          parsed.event === "stream:member_muted" ||
+          parsed.event === "stream:member_unmuted"
+        ) {
+          void notifyMuteStatus(channel, parsed.event, parsed.data);
           return;
         }
         // Presign the senderAvatar object key before emitting live comments so
@@ -261,6 +303,12 @@ export function registerStreamNamespace(
     // timer means "an emit is already scheduled within the window" — we coalesce.
     const viewerCountTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+    // Per-socket cache of the join-time `canComment` gate (membership + mute +
+    // commentStatus), keyed by streamId. Reactions never round-trip to
+    // stream-service, so this cache is what blocks a muted user from reacting;
+    // comments are additionally enforced server-side at the gRPC write path.
+    const streamCommentPermissions = new Map<string, boolean>();
+
     // Read the live viewer count and broadcast it to the room, debounced to
     // ≤ 1 emit/sec per stream. The emit goes via the redis-adapter so every
     // gateway instance's sockets in the room receive it.
@@ -338,6 +386,7 @@ export function registerStreamNamespace(
           }
 
           void socket.join(roomKey(streamId));
+          streamCommentPermissions.set(streamId, canComment);
 
           // SADD is idempotent per userId — a rejoining user (whose old socket's
           // leave hasn't fired yet) won't inflate the count. SCARD then gives the
@@ -346,6 +395,18 @@ export function registerStreamNamespace(
           try {
             await redisPub.sadd(sessionKey(streamId), userId);
             await redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC);
+            // HSETNX: only stamps the join time on the *first* join — a
+            // rejoin (reconnect) must not reset how long this viewer has
+            // actually been watching.
+            await redisPub.hsetnx(
+              sessionJoinedKey(streamId),
+              userId,
+              String(Date.now())
+            );
+            await redisPub.expire(
+              sessionJoinedKey(streamId),
+              VIEWER_KEY_TTL_SEC
+            );
             viewerCount = await redisPub.scard(sessionKey(streamId));
           } catch (err) {
             logger.warn(
@@ -447,9 +508,11 @@ export function registerStreamNamespace(
           // from the unmounting Chat component is a no-op (SREM is idempotent).
           const wasInRoom = socket.rooms.has(roomKey(streamId));
           void socket.leave(roomKey(streamId));
+          streamCommentPermissions.delete(streamId);
           if (wasInRoom) {
             try {
               await redisPub.srem(sessionKey(streamId), userId);
+              await redisPub.hdel(sessionJoinedKey(streamId), userId);
             } catch (err) {
               logger.warn(
                 `/stream leave session srem error for ${streamId}: ${String(err)}`
@@ -480,6 +543,14 @@ export function registerStreamNamespace(
           return;
         }
         const { streamId, message, clientCommentId } = r.data;
+        // Fast pre-check using the join-time gate (membership + mute +
+        // commentStatus). The authoritative check still runs server-side in
+        // stream-service on every PostComment call — this only avoids a
+        // pointless round trip for a user we already know is blocked.
+        if (streamCommentPermissions.get(streamId) === false) {
+          ackError(callback, "FORBIDDEN", locale);
+          return;
+        }
         void (async () => {
           if (await isCommentRateLimited(streamId)) {
             ackError(callback, "RATE_LIMITED", locale);
@@ -497,8 +568,13 @@ export function registerStreamNamespace(
             // (stream-service publishes it) — we do NOT emit it here.
             ackOk(callback, "SOCKET_STREAM_COMMENT_POSTED", locale, result);
           } catch (err: unknown) {
-            logger.warn(`/stream stream:comment gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const code = (err as { code?: number }).code;
+            if (code === grpcStatus.PERMISSION_DENIED) {
+              ackError(callback, "FORBIDDEN", locale);
+            } else {
+              logger.warn(`/stream stream:comment gRPC error: ${String(err)}`);
+              ackError(callback, "SERVICE_ERROR", locale);
+            }
           }
         })();
       }
@@ -574,6 +650,16 @@ export function registerStreamNamespace(
           return;
         }
         const { streamId, emoji } = r.data;
+        // Same gate as comments: must be in the room and not blocked by the
+        // join-time membership/mute/commentStatus check. Reactions never call
+        // stream-service, so this cached flag is the only enforcement point.
+        if (
+          !socket.rooms.has(roomKey(streamId)) ||
+          !streamCommentPermissions.get(streamId)
+        ) {
+          ackError(callback, "FORBIDDEN", locale);
+          return;
+        }
         streamNs.to(roomKey(streamId)).emit("stream:react:new", {
           streamId,
           userId,
@@ -637,6 +723,19 @@ export function registerStreamNamespace(
       void redisPub
         .sadd(sessionKey(streamId), userId)
         .then(() => redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC))
+        .then(() =>
+          // HSETNX again: a no-op if this viewer already has a join time
+          // (the common case) — just keeps the hash's own TTL from expiring
+          // out from under a long-running heartbeat.
+          redisPub.hsetnx(
+            sessionJoinedKey(streamId),
+            userId,
+            String(Date.now())
+          )
+        )
+        .then(() =>
+          redisPub.expire(sessionJoinedKey(streamId), VIEWER_KEY_TTL_SEC)
+        )
         .catch((err: unknown) => {
           logger.warn(
             `/stream heartbeat Redis error for ${streamId}: ${String(err)}`
@@ -662,11 +761,13 @@ export function registerStreamNamespace(
         clearTimeout(timer);
       }
       viewerCountTimers.clear();
+      streamCommentPermissions.clear();
 
       for (const streamId of streamRooms) {
         void (async () => {
           try {
             await redisPub.srem(sessionKey(streamId), userId);
+            await redisPub.hdel(sessionJoinedKey(streamId), userId);
           } catch (err) {
             logger.warn(
               `/stream disconnect session srem error for ${streamId}: ${String(err)}`

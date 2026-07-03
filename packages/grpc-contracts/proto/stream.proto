@@ -28,6 +28,16 @@ service StreamService {
   rpc DeleteComment (DeleteCommentRequest) returns (DeleteCommentResponse);
   // Fetch the currently-LIVE streams for a single community (community detail enrichment).
   rpc GetLiveStreamsByCommunity (GetLiveStreamsByCommunityRequest) returns (GetLiveStreamsByCommunityResponse);
+  // Best-effort push: community-service calls this after a moderator mutes/
+  // unmutes a member so any of that member's currently-LIVE stream sessions
+  // in the community get a real-time `stream:member_muted`/`stream:member_unmuted`
+  // socket push. Never fails the caller — errors are swallowed on both ends.
+  rpc NotifyMemberMuteStatus (NotifyMemberMuteStatusRequest) returns (NotifyMemberMuteStatusResponse);
+  // Best-effort push: community-service calls this after an ADMIN bans/unbans a
+  // member so any of that member's currently-LIVE stream sessions in the
+  // community get kicked in real time (reuses the `stream:banned` socket event —
+  // same as a stream-local ban). Never fails the caller.
+  rpc NotifyMemberBanStatus (NotifyMemberBanStatusRequest) returns (NotifyMemberBanStatusResponse);
 
   // ---- Backoffice (admin panel) Livestream Management ----
   // Source-of-truth read path for the admin Livestream Management screen.
@@ -238,6 +248,25 @@ message AdminGetStreamRequest {
 message AdminGetStreamResponse {
   bool found = 1;
   AdminStreamRow stream = 2;
+}
+
+message NotifyMemberMuteStatusRequest {
+  string community_id = 1;
+  string user_id       = 2;
+  bool   is_muted       = 3;
+  int64  muted_until    = 4; // epoch ms; 0 = indefinite or not muted
+}
+message NotifyMemberMuteStatusResponse {
+  bool ok = 1;
+}
+
+message NotifyMemberBanStatusRequest {
+  string community_id = 1;
+  string user_id       = 2;
+  bool   is_banned      = 3;
+}
+message NotifyMemberBanStatusResponse {
+  bool ok = 1;
 }
 
 // ---- Viewer session tracking ------------------------------------------------

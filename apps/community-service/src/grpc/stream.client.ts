@@ -19,6 +19,27 @@ export interface StreamClient {
   /** communityId → LIVE-only stream count. Communities with 0 live streams are omitted. */
   getActiveStreamCounts(communityIds: string[]): Promise<Map<string, number>>;
   getLiveStreamsByCommunity(communityId: string): Promise<LiveStreamSummary[]>;
+  /**
+   * Best-effort push after a moderator mute/unmute: lets any of the target's
+   * currently-LIVE stream sessions in this community get a real-time socket
+   * notice. Never throws — a stream-service outage must not fail the mute.
+   */
+  notifyMemberMuteStatus(
+    communityId: string,
+    userId: string,
+    isMuted: boolean,
+    mutedUntil: number
+  ): Promise<void>;
+  /**
+   * Best-effort push after an ADMIN bans/unbans a member: lets any of the
+   * target's currently-LIVE stream sessions in this community get kicked in
+   * real time. Never throws — a stream-service outage must not fail the ban.
+   */
+  notifyMemberBanStatus(
+    communityId: string,
+    userId: string,
+    isBanned: boolean
+  ): Promise<void>;
 }
 
 export function createStreamClient(): StreamClient {
@@ -84,6 +105,35 @@ export function createStreamClient(): StreamClient {
   // Fail-open: if stream-service is down, community detail shows no live streams.
   liveStreamsBreaker.fallback(() => ({ streams: [] }));
 
+  const notifyMuteBreaker = makeBreaker(
+    "stream.notifyMemberMuteStatus",
+    (args: {
+      communityId: string;
+      userId: string;
+      isMuted: boolean;
+      mutedUntil: number;
+    }) =>
+      makeGrpcCall<unknown, { ok?: boolean }>(
+        client,
+        "notifyMemberMuteStatus",
+        args
+      )
+  );
+  // Fail-open: a stream-service outage must not fail (or even delay) the mute.
+  notifyMuteBreaker.fallback(() => ({ ok: false }));
+
+  const notifyBanBreaker = makeBreaker(
+    "stream.notifyMemberBanStatus",
+    (args: { communityId: string; userId: string; isBanned: boolean }) =>
+      makeGrpcCall<unknown, { ok?: boolean }>(
+        client,
+        "notifyMemberBanStatus",
+        args
+      )
+  );
+  // Fail-open: a stream-service outage must not fail (or even delay) the ban.
+  notifyBanBreaker.fallback(() => ({ ok: false }));
+
   return {
     getActiveCommunityIds: async (communityIds) => {
       if (!communityIds.length) return new Set();
@@ -133,6 +183,36 @@ export function createStreamClient(): StreamClient {
           `stream.getLiveStreamsByCommunity failed; degrading to no streams: ${String(err)}`
         );
         return [];
+      }
+    },
+
+    notifyMemberMuteStatus: async (
+      communityId,
+      userId,
+      isMuted,
+      mutedUntil
+    ) => {
+      try {
+        await notifyMuteBreaker.fire({
+          communityId,
+          userId,
+          isMuted,
+          mutedUntil,
+        });
+      } catch (err) {
+        logger.warn(
+          `stream.notifyMemberMuteStatus failed for community=${communityId} user=${userId}: ${String(err)}`
+        );
+      }
+    },
+
+    notifyMemberBanStatus: async (communityId, userId, isBanned) => {
+      try {
+        await notifyBanBreaker.fire({ communityId, userId, isBanned });
+      } catch (err) {
+        logger.warn(
+          `stream.notifyMemberBanStatus failed for community=${communityId} user=${userId}: ${String(err)}`
+        );
       }
     },
   };

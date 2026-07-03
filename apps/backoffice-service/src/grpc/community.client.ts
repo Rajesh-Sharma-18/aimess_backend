@@ -118,6 +118,31 @@ export interface AdminListCommunityMembersRes {
   total: string | number;
 }
 
+/** AdminListMutedMembersRequest (camelCase). */
+export interface AdminListMutedMembersReq {
+  communityId: string;
+  page: number;
+  limit: number;
+}
+
+/** AdminMutedMemberRow — avatar already presigned by community-service;
+ * muted_at/muted_until arrive as epoch-ms int64 STRINGS (longs: String). */
+interface RawAdminMutedMemberRow {
+  userId: string;
+  username: string;
+  handle: string;
+  avatarUrl: string;
+  mutedBy: string;
+  reason: string;
+  mutedAt: string | number;
+  mutedUntil: string | number;
+}
+
+export interface AdminListMutedMembersRes {
+  members: RawAdminMutedMemberRow[];
+  total: string | number;
+}
+
 /** AdminListUserCommunitiesRequest (camelCase; "" means "no filter"). */
 export interface AdminListUserCommunitiesReq {
   userId: string;
@@ -234,6 +259,7 @@ export interface AdminDeleteCategoryRes {
 export type {
   RawAdminCommunityRow,
   RawAdminCommunityMemberRow,
+  RawAdminMutedMemberRow,
   RawAdminUserCommunityRow,
 };
 
@@ -291,6 +317,18 @@ export const adminListCommunityMembersBreaker: Breaker<
   (req: AdminListCommunityMembersReq) =>
     call<AdminListCommunityMembersReq, AdminListCommunityMembersRes>(
       "adminListCommunityMembers",
+      req
+    )
+);
+
+export const adminListMutedMembersBreaker: Breaker<
+  AdminListMutedMembersReq,
+  AdminListMutedMembersRes
+> = makeBreaker(
+  "community.adminListMutedMembers",
+  (req: AdminListMutedMembersReq) =>
+    call<AdminListMutedMembersReq, AdminListMutedMembersRes>(
+      "adminListMutedMembers",
       req
     )
 );
@@ -415,6 +453,12 @@ export const communityClient = {
     req: AdminListCommunityMembersReq
   ): Promise<{ members: RawAdminCommunityMemberRow[]; total: number }> {
     const r = await adminListCommunityMembersBreaker.fire(req);
+    return { members: r.members, total: Number(r.total) };
+  },
+  async adminListMutedMembers(
+    req: AdminListMutedMembersReq
+  ): Promise<{ members: RawAdminMutedMemberRow[]; total: number }> {
+    const r = await adminListMutedMembersBreaker.fire(req);
     return { members: r.members, total: Number(r.total) };
   },
   async adminListUserCommunities(

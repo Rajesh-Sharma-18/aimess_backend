@@ -105,6 +105,7 @@ export type NotificationSettingsRow = {
   systemEnabled: boolean;
   communityEnabled: boolean;
   liveStreamEnabled: boolean;
+  showPreview: boolean;
   quietHoursEnabled: boolean;
   quietHoursStart: string | null;
   quietHoursEnd: string | null;
@@ -129,6 +130,7 @@ export const userSettingsRepository = {
         systemEnabled: true,
         communityEnabled: true,
         liveStreamEnabled: true,
+        showPreview: true,
         quietHoursEnabled: true,
         quietHoursStart: true,
         quietHoursEnd: true,

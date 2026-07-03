@@ -142,15 +142,12 @@ describe("POST /v1/announcements", () => {
 
   it("accepts a future scheduledAt → 201", async () => {
     const future = new Date(Date.now() + 60_000).toISOString();
-    const res = await request(app)
-      .post("/v1/announcements")
-      .set(auth())
-      .send({
-        title: "x",
-        description: "y",
-        target: "ALL",
-        scheduledAt: future,
-      });
+    const res = await request(app).post("/v1/announcements").set(auth()).send({
+      title: "x",
+      description: "y",
+      target: "ALL",
+      scheduledAt: future,
+    });
     expect(res.status).toBe(201);
   });
 
