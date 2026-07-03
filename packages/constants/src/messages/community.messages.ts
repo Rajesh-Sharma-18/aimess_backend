@@ -70,6 +70,30 @@ export const COMMUNITY_MESSAGES = {
     vi: "Danh mục cộng đồng không hợp lệ",
     en: "Invalid community category",
   },
+  CATEGORY_FETCHED: {
+    vi: "Lấy danh sách danh mục thành công",
+    en: "Categories fetched successfully",
+  },
+  CATEGORY_CREATED: {
+    vi: "Tạo danh mục thành công",
+    en: "Category created successfully",
+  },
+  CATEGORY_UPDATED: {
+    vi: "Cập nhật danh mục thành công",
+    en: "Category updated successfully",
+  },
+  CATEGORY_DELETED: {
+    vi: "Xóa danh mục thành công",
+    en: "Category deleted successfully",
+  },
+  CATEGORY_NOT_FOUND: {
+    vi: "Không tìm thấy danh mục",
+    en: "Category not found",
+  },
+  CATEGORY_NAME_TAKEN: {
+    vi: "Tên danh mục này đã được sử dụng",
+    en: "This category name is already taken",
+  },
   COMMUNITY_IMAGE_NOT_UPLOADED: {
     vi: "Chưa tải ảnh lên, vui lòng upload trước khi lưu",
     en: "Community image not uploaded yet",
