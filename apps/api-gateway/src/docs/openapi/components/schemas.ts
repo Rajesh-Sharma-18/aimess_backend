@@ -393,14 +393,14 @@ export const openApiSchemas = {
       },
       password: {
         type: "string",
-        minLength: 12,
+        minLength: 6,
         example: "N3w$trongPass99!",
         description:
-          "Min 12 chars, must include uppercase, lowercase, a digit and a special character.",
+          "Min 6 chars as CURRENTLY ENFORCED by password-reset.validator.ts (an in-code comment there and an earlier version of this doc both said 12 — that was never the enforced rule; confirm with backend before relying on either number). Must include uppercase, lowercase, a digit and a special character.",
       },
       confirmPassword: {
         type: "string",
-        minLength: 12,
+        minLength: 6,
         example: "N3w$trongPass99!",
         description: "Must match `password`.",
       },
@@ -2609,7 +2609,7 @@ export const openApiSchemas = {
   AdminLivestreamUserItem: {
     type: "object",
     description:
-      "A member of the stream's community (the Livestream User List row). `type` is the member's community role.",
+      "A viewer-session row for this stream (who watched, not the community roster — see the endpoint description).",
     properties: {
       userId: { type: "string" },
       username: { type: "string" },
@@ -2619,13 +2619,16 @@ export const openApiSchemas = {
         nullable: true,
         description: "Presigned avatar URL (full URL, never a key).",
       },
-      type: {
-        type: "string",
-        enum: ["ADMIN", "MODERATOR", "MEMBER"],
-      },
       joinedAt: { type: "string", format: "date-time" },
+      leftAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "null = still watching.",
+      },
+      watchDurationSeconds: { type: "integer", example: 340 },
     },
-    required: ["userId", "username", "type", "joinedAt"],
+    required: ["userId", "username", "joinedAt", "watchDurationSeconds"],
   },
 
   AdminEndLivestreamResult: {
