@@ -481,7 +481,7 @@ export const adminPaths = {
       operationId: "getDashboardStats",
       summary: "Dashboard stat cards",
       description:
-        "Stat-card section only. Returns `{ stats }` aggregated live over gRPC: user/active/banned counts from auth-service, communities from community-service, groups from chat-service. `totalLivestreams`, `openReports`, and `churnedUsers` are STATIC stubs (0) flagged in `stats.stale`; any unreachable service degrades its field to 0 + a `stale` flag rather than failing the call. Cached independently (10s). Requires `dashboard.read`.",
+        "Stat-card section only. Returns `{ stats }` aggregated live over gRPC: user/active/banned counts from auth-service, communities from community-service, groups from chat-service. `totalLivestreams`, `openReports`, and `churnedUsers` are STATIC stubs, always 0 — no backend source is wired for them yet. NOTE: there is no `stats.stale` field in the real response (an earlier version of this doc claimed one) — any unreachable upstream just silently degrades its own field to 0, with no stale flag exposed. Cached independently (10s). Requires `dashboard.read`.",
       security: adminSecurity,
       responses: {
         "200": okRes(
@@ -500,7 +500,7 @@ export const adminPaths = {
       summary:
         "Dashboard charts (active-vs-churned + communities/groups donut)",
       description:
-        "Chart section. Returns `{ activeVsChurned, communitiesGroups }`. `activeVsChurned` is a REAL per-day series whose date range is driven by `?period=` (daily=last 15 days, weekly=last 8 days, monthly=1st-of-month→last day), computed live from auth-service session activity; if auth-service is unreachable the series falls back to empty (flagged `stale.activeVsChurned`). `communitiesGroups` is the donut (`communities` from community-service, `groups` from chat-service, plus their `total`). Cached per-period (10s). Requires `dashboard.read`.",
+        "Chart section. Returns `{ activeVsChurned, communitiesGroups }`. `activeVsChurned` is a REAL per-day series whose date range is driven by `?period=` (daily=last 15 days, weekly=last 8 days, monthly=1st-of-month→last day), computed live from auth-service session activity; if auth-service is unreachable the series falls back to an empty array (no stale flag is exposed). `communitiesGroups` is the donut (`communities` from community-service, `groups` from chat-service, plus their `total`). `from`/`to` are accepted for forward-compat only — the service currently IGNORES them entirely and derives the window purely from `period` (do not rely on them yet). Cached per-period (10s). Requires `dashboard.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -519,13 +519,16 @@ export const adminPaths = {
           name: "from",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date" },
+          description:
+            "Currently unused by the service (accepted for forward-compat only). Must be a full ISO-8601 DATETIME string if sent — the validator requires z.string().datetime(), NOT date-only, despite the schema type below.",
+          schema: { type: "string", format: "date-time" },
         },
         {
           name: "to",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date" },
+          description: "Same caveats as `from`.",
+          schema: { type: "string", format: "date-time" },
         },
       ],
       responses: {
@@ -2246,13 +2249,13 @@ export const adminPaths = {
     get: {
       tags: [adminTags.livestreams],
       operationId: "adminListLivestreamUsers",
-      summary: "List livestream users (the stream's community members)",
+      summary: "List livestream viewer sessions",
       description:
-        "Paginated members of the stream's community — the Livestream User List " +
-        "(Username, User ID, Joined Date, Type). `type` filters by community role " +
-        "ADMIN|MODERATOR|MEMBER; `search` matches username/handle. Read through the " +
-        "community-members gRPC. Avatars are full presigned URLs. Requires " +
-        "`livestreams.read`.",
+        "Paginated VIEWER-SESSION HISTORY for this stream (who watched, when they " +
+        "joined/left, how long) — read from stream-service's durable " +
+        "LivestreamViewerSession records via streamClient.adminListViewerSessions. " +
+        "This is NOT the community roster — there is no `search` or role/`type` " +
+        "filter; sort only via sortField/sortDir. Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -2260,18 +2263,6 @@ export const adminPaths = {
           in: "path",
           required: true,
           schema: { type: "string" },
-        },
-        {
-          name: "search",
-          in: "query",
-          required: false,
-          schema: { type: "string", minLength: 1 },
-        },
-        {
-          name: "type",
-          in: "query",
-          required: false,
-          schema: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
         },
         {
           name: "page",
@@ -2285,10 +2276,25 @@ export const adminPaths = {
           required: false,
           schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
         },
+        {
+          name: "sortField",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["joinedAt", "watchDurationSeconds"],
+          },
+        },
+        {
+          name: "sortDir",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"] },
+        },
       ],
       responses: {
         "200": listRes(
-          "Livestream users (community members) page",
+          "Livestream viewer-session page",
           "#/components/schemas/AdminLivestreamUserItem"
         ),
         "400": errRes("Validation failed"),
