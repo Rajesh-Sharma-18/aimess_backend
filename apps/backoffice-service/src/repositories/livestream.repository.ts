@@ -596,9 +596,17 @@ import {
 import { userClient, type AdminProfileRecord } from "../grpc/user.client.js";
 import type {
   LivestreamReportType,
+  LivestreamViewerType,
   ReportSeverity,
   ReportsSummary,
 } from "../types/livestream.types.js";
+
+/** Community role (wire string) → the admin viewer-list "type" label. Defaults to Member. */
+function toViewerType(role: string | undefined): LivestreamViewerType {
+  if (role === "ADMIN") return "Admin";
+  if (role === "MODERATOR") return "Moderator";
+  return "Member";
+}
 
 const STREAM_BUCKET = env.MINIO_BUCKET_STREAM;
 
@@ -614,6 +622,21 @@ function toAdminStatus(s: string): LivestreamStatus {
 }
 function toStreamStatus(s: LivestreamStatus): string {
   return s === "SCHEDULED" ? "PENDING" : s;
+}
+
+/**
+ * Shared viewerCount resolution for the admin list/detail responses.
+ * LIVE reports the live count; ENDED reports the lifetime total (stream-service's
+ * `totalViews` counter — there is no separate `totalViewerCount` column). All
+ * other statuses (SCHEDULED/CANCELLED) keep the raw stored `viewerCount`.
+ */
+function resolveViewerCount(
+  status: LivestreamStatus,
+  s: Pick<AdminStreamRow, "viewerCount" | "totalViews">
+): number {
+  if (status === "LIVE") return s.viewerCount;
+  if (status === "ENDED") return s.totalViews;
+  return s.viewerCount;
 }
 
 function slugify(name: string): string {
@@ -632,7 +655,8 @@ function severityFromCount(n: number): ReportSeverity {
   return "HIGH";
 }
 
-function displayNameOf(u?: AdminProfileRecord | null): string {
+/** first+last name, falling back to username; "" when no profile at all. */
+export function displayNameOf(u?: AdminProfileRecord | null): string {
   if (!u) return "";
   const full = [u.firstName, u.lastName].filter(Boolean).join(" ").trim();
   return full || u.username;
@@ -886,6 +910,7 @@ async function toListItemEnriched(
   u: AdminProfileRecord | undefined,
   reportCount: number
 ): Promise<LivestreamListItem> {
+  const status = toAdminStatus(s.status);
   return {
     livestreamId: s.id,
     title: s.title,
@@ -913,8 +938,8 @@ async function toListItemEnriched(
         : new Date(s.createdAt).toISOString(),
     endedAt: s.endedAt > 0 ? new Date(s.endedAt).toISOString() : null,
     durationSeconds: s.durationSeconds,
-    status: toAdminStatus(s.status),
-    viewerCount: s.viewerCount,
+    status,
+    viewerCount: resolveViewerCount(status, s),
     reportCount,
     reportSeverity: severityFromCount(reportCount),
     thumbnailUrl: await resolveThumb(s.thumbnail || null),
@@ -1030,6 +1055,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     const summary = buildReportsSummary(reports);
     const createdAtIso = new Date(s.createdAt).toISOString();
     const endedAtIso = s.endedAt > 0 ? new Date(s.endedAt).toISOString() : null;
+    const status = toAdminStatus(s.status);
 
     return {
       livestreamId: s.id,
@@ -1062,15 +1088,15 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         s.livedAt > 0 ? new Date(s.livedAt).toISOString() : createdAtIso,
       endedAt: endedAtIso,
       durationSeconds: s.durationSeconds,
-      status: toAdminStatus(s.status),
-      viewerCount: s.viewerCount,
+      status,
+      viewerCount: resolveViewerCount(status, s),
       reportCount: reports.length,
       reportSeverity: severityFromCount(reports.length),
       thumbnailUrl,
       endReasonCode: null,
       endedBy: null,
       viewerStats: {
-        currentViewers: s.status === "LIVE" ? s.viewerCount : 0,
+        currentViewers: status === "LIVE" ? s.viewerCount : 0,
         peakViewers: s.peakViewers,
         totalUniqueViewers: 0,
         totalWatchTimeSeconds: 0,
@@ -1168,14 +1194,19 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     });
 
     const userIds = unique(sessions.map((v) => v.userId));
-    const profiles = userIds.length
-      ? await userClient.adminGetProfilesByIds(userIds)
-      : [];
+    const [profiles, roleMap] = await Promise.all([
+      userIds.length ? userClient.adminGetProfilesByIds(userIds) : [],
+      userIds.length
+        ? communityClient.adminGetMemberRoles(s.communityId, userIds)
+        : new Map<string, string>(),
+    ]);
     const profileMap = new Map(profiles.map((p) => [p.userId, p]));
+    const start = (query.page - 1) * query.limit;
 
-    const data: LivestreamUserItem[] = sessions.map((v) => {
+    const data: LivestreamUserItem[] = sessions.map((v, i) => {
       const p = profileMap.get(v.userId);
       return {
+        no: start + i + 1,
         userId: v.userId,
         username: p?.username ?? "",
         handle: p?.username ? `@${p.username}` : null,
@@ -1184,6 +1215,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         // 0 from the wire means "still watching" (see AdminViewerSessionRow).
         leftAt: v.leftAt > 0 ? new Date(v.leftAt).toISOString() : null,
         watchDurationSeconds: v.watchDurationSeconds,
+        type: toViewerType(roleMap.get(v.userId)),
       };
     });
 

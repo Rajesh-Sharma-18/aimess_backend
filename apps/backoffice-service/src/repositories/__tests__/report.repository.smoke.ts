@@ -99,7 +99,7 @@ async function main(): Promise<void> {
   {
     const repo = new MockReportRepository();
     // Search by a reporter username known to be unique in the fixtures.
-    const needle = firstOpen.reporterUser.username;
+    const needle = firstOpen.reporterUser!.username;
     const res = await repo.list(q({ search: needle, limit: 100 }));
     check("search returns at least one match", res.data.length >= 1);
     check(
@@ -107,10 +107,10 @@ async function main(): Promise<void> {
       res.data.every((r) =>
         [
           r.reportId,
-          r.reportedUser.username,
-          r.reportedUser.displayName,
-          r.reporterUser.username,
-          r.reporterUser.displayName,
+          r.reportedUser!.username,
+          r.reportedUser!.displayName,
+          r.reporterUser!.username,
+          r.reporterUser!.displayName,
         ]
           .join(" ")
           .toLowerCase()

@@ -6,6 +6,11 @@
  */
 import { ForbiddenError } from "@aimess/errors";
 
+// This suite tests the REAL policy module — bypass the global auto-mock
+// (tests/setup/global-mocks.ts stubs assertWritable/assertJoinable as no-ops
+// for every other suite so fixtures don't need to care about community status).
+jest.unmock("../../src/lib/community-access-policy.js");
+
 import {
   assertWritable,
   assertJoinable,

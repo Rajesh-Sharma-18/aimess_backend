@@ -5,6 +5,7 @@ import { getRequestContext } from "../../lib/request-context.js";
 import { userManagementService } from "../../services/index.js";
 import type { ListUsersQuery } from "../../types/user-management.types.js";
 import type { ListUserCommunitiesQuery } from "../../types/community.types.js";
+import { moderationReasonEnum } from "../validators/index.js";
 import type {
   BanUserInput,
   BulkActivateInput,
@@ -37,6 +38,25 @@ export const listUsers: RequestHandler = (req, res, next) => {
       next(error);
     }
   })();
+};
+
+/**
+ * GET /v1/users/ban-reasons — the predefined reason codes for the ban/suspend
+ * modal's dropdown. Read-only reference data (no DB/gRPC call): the codes are
+ * the source-of-truth `moderationReasonEnum` the ban/suspend validators
+ * already enforce as one accepted shape of `reason`. The admin can still type
+ * any custom free-text reason instead — this list is a convenience preset,
+ * not an exhaustive constraint.
+ */
+export const getBanReasons: RequestHandler = (req, res, next) => {
+  try {
+    res.status(HTTP_STATUS.OK).json({
+      success: true,
+      data: moderationReasonEnum.options,
+    });
+  } catch (error) {
+    next(error);
+  }
 };
 
 /** GET /v1/users/:userId — full detail. */

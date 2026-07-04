@@ -36,6 +36,7 @@ export {
 export {
   listUsers,
   getUserDetails,
+  getBanReasons,
   listUserReports,
   listUserCommunities,
   listOtherCommunityMembers,

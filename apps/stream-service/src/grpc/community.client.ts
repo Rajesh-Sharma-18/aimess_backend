@@ -16,6 +16,8 @@ interface ValidateMembershipResult {
   isMember: boolean;
   role: string;
   status: string;
+  /** True when the community is owner-CLOSED or platform-SUSPENDED. */
+  isCommunityClosed: boolean;
 }
 
 interface CheckMuteResult {
@@ -162,6 +164,7 @@ export const communityGrpcClient = {
       isMember: Boolean(result?.isMember),
       role: result?.role ?? "",
       status: result?.status ?? "",
+      isCommunityClosed: Boolean(result?.isCommunityClosed),
     };
   },
 

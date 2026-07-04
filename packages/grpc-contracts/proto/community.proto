@@ -64,6 +64,10 @@ service CommunityService {
   // community ids. Backs the backoffice Livestream Management list/detail join
   // (one round-trip per page). avatar_url is already presigned.
   rpc AdminGetCommunitiesByIds (AdminGetCommunitiesByIdsRequest) returns (AdminGetCommunitiesByIdsResponse);
+  // Batch role lookup for a set of userIds within one community. Backs the
+  // backoffice Livestream Viewer List "type" (Admin|Moderator|Member) column
+  // without an N+1 per-viewer lookup.
+  rpc AdminGetMemberRoles (AdminGetMemberRolesRequest) returns (AdminGetMemberRolesResponse);
   // Reverse lookup for the admin User Management detail screen: the communities a
   // given user is an ACTIVE member of. Searchable by community name/id, sortable.
   rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
@@ -385,6 +389,22 @@ message AdminGetCommunitiesByIdsResponse {
   repeated AdminCommunityBrief communities = 1;
 }
 
+// ---- Backoffice batch member-role enrichment (Livestream Viewer List) ----
+// Batch role lookup for a set of userIds within one community. Users not
+// found (e.g. left the community) are simply absent from the response — the
+// caller defaults them to MEMBER.
+message AdminGetMemberRolesRequest {
+  string community_id     = 1;
+  repeated string user_ids = 2;
+}
+message AdminMemberRoleRow {
+  string user_id = 1;
+  string role    = 2; // ADMIN|MODERATOR|MEMBER
+}
+message AdminGetMemberRolesResponse {
+  repeated AdminMemberRoleRow roles = 1;
+}
+
 // ---- Backoffice User → Communities reverse lookup ----
 // The "Communities" grid on the admin User Management detail screen: the
 // communities the given user is an ACTIVE member of. Driving filter is the
@@ -496,9 +516,13 @@ message ValidateMembershipRequest {
   string user_id      = 2;
 }
 message ValidateMembershipResponse {
-  bool   is_member = 1;  // true only when an ACTIVE member
-  string role      = 2;  // ADMIN | MODERATOR | MEMBER | "" when not a member
-  string status    = 3;  // ACTIVE | PENDING | BANNED | LEFT | "" when no row
+  bool   is_member           = 1;  // true only when an ACTIVE member
+  string role                = 2;  // ADMIN | MODERATOR | MEMBER | "" when not a member
+  string status               = 3;  // ACTIVE | PENDING | BANNED | LEFT | "" when no row
+  // True when the community is owner-CLOSED or platform-SUSPENDED (also true
+  // when the community can't be found) — callers use this to block go-live /
+  // commenting even for an otherwise-valid ACTIVE member.
+  bool   is_community_closed = 4;
 }
 
 message SendCommunityMessageRequest {
@@ -655,6 +679,9 @@ message CheckCommunityMembershipResponse {
   string status    = 3;
   // ACTIVE member's role (ADMIN|MODERATOR|MEMBER); empty when not a member.
   string role      = 4;
+  // True when the community is owner-CLOSED or platform-SUSPENDED. Lets the
+  // gateway block new socket writes (join/typing) into a closed community.
+  bool   is_community_closed = 5;
 }
 
 // ---- Moderation-mute check (notifications eligibility gate) ----

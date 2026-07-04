@@ -1694,6 +1694,26 @@ export const communityRepository = {
   },
 
   /**
+   * Batch role lookup for a set of userIds within one community — backs the
+   * backoffice Livestream Viewer List "type" (Admin|Moderator|Member) column
+   * without an N+1 per-viewer query. Users absent from the result (e.g. left
+   * the community, or a malformed communityId) simply have no entry; the
+   * caller defaults them to MEMBER.
+   */
+  async getMemberRolesByUserIds(
+    communityId: string,
+    userIds: string[]
+  ): Promise<Array<{ userId: string; role: CommunityMemberRole }>> {
+    if (userIds.length === 0 || !/^[a-fA-F0-9]{24}$/.test(communityId)) {
+      return [];
+    }
+    return prisma.communityMember.findMany({
+      where: { communityId, userId: { in: userIds } },
+      select: { userId: true, role: true },
+    });
+  },
+
+  /**
    * Admin User Management → Communities grid: the communities the given user is an
    * ACTIVE member of. The driving filter is the user's ACTIVE memberships (uses
    * `@@index([userId, status])`). Name search + sort live on the Community

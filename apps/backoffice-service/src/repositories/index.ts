@@ -17,6 +17,7 @@ export {
 } from "./livestream.repository.js";
 export {
   userDirectoryRepository,
+  deriveModerationStatus,
   type UserDirectoryRepository,
 } from "./user-directory.repository.js";
 export {

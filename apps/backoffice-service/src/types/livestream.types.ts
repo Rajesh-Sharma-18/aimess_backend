@@ -277,7 +277,12 @@ export type ListLivestreamReportsQuery = {
  * durable `LivestreamViewerSession` table. A user who rejoined has multiple
  * rows (one per join→leave session).
  */
+/** Community role of a viewer, as shown in the admin viewer-list "type" column. */
+export type LivestreamViewerType = "Admin" | "Moderator" | "Member";
+
 export type LivestreamUserItem = {
+  /** Pagination-based sequence number: (page - 1) * limit + index + 1. */
+  no: number;
   userId: string;
   username: string;
   handle: string | null;
@@ -288,6 +293,8 @@ export type LivestreamUserItem = {
   leftAt: string | null;
   /** Computed live (now - joinedAt) while still watching. */
   watchDurationSeconds: number;
+  /** Viewer's current community role; defaults to "Member" if not a member. */
+  type: LivestreamViewerType;
 };
 
 /** Normalized per-stream viewers list query (post-validation/coercion). */

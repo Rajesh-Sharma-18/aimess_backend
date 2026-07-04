@@ -577,7 +577,9 @@ export const adminPaths = {
         "(username/email). Sort via `sortBy` + `sortOrder` (default `joinedDate`/`desc`). " +
         "**Note:** `sortBy=reports` is DB-sorted on the read-model; in the live gRPC path it " +
         "falls back to join-date order — your `sortOrder` is still applied (report counts " +
-        "live in admin_db only). Requires `users.read`.",
+        "live in admin_db only). Each row also carries `moderationStatus`/`isBanned` " +
+        "(and `bannedAt`/`bannedBy`/`banReason` when banned) so the panel can pick the " +
+        "Ban/Unban row action without a follow-up call. Requires `users.read`.",
       security: adminSecurity,
       parameters: [
         ...listParams,
@@ -658,7 +660,7 @@ export const adminPaths = {
       operationId: "adminGetUser",
       summary: "Get user detail",
       description:
-        "Full profile: identity (auth) + profile/stats (user) + report summary + moderation history (admin_db `ModerationAction`). gRPC-live. Requires `users.read`.",
+        "Full profile: identity (auth) + profile/stats (user) + report summary + moderation history (admin_db `ModerationAction`). `accountStatus` also carries `moderationStatus`/`isBanned` alongside the existing `status`. gRPC-live. Requires `users.read`.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
@@ -928,7 +930,7 @@ export const adminPaths = {
       operationId: "adminBanUser",
       summary: "Ban a user (permanent, or time-boxed via durationDays)",
       description:
-        "If durationDays is omitted/null this is a PERMANENT ban (status BANNED); if durationDays > 0 it is treated as a time-boxed suspend instead (status SUSPENDED). Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_banned/admin.user_suspended (RabbitMQ admin.user.queue). No Socket.IO/real-time session kill is emitted by this service — forceLogout is threaded into the published event only. Requires users.moderate. TOTP step-up is a planned Phase-2 addition, NOT enforced today.",
+        "If durationDays is omitted/null this is a PERMANENT ban (status BANNED); if durationDays > 0 it is treated as a time-boxed suspend instead (status SUSPENDED). `reason` accepts either a predefined code (AdminUserBanReasonCode) or any custom free-text reason (max 200 chars) — whichever is sent is persisted verbatim into banReason/ModerationAction/AuditLog and threaded unchanged into the published admin.user_banned/admin.user_suspended event. Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_banned/admin.user_suspended (RabbitMQ admin.user.queue). No Socket.IO/real-time session kill is emitted by this service — forceLogout is threaded into the published event only. Requires users.moderate. TOTP step-up is a planned Phase-2 addition, NOT enforced today.",
       security: adminSecurity,
       parameters: [{ ...idPathParam, name: "userId" }],
       requestBody: jsonBody("#/components/schemas/AdminBanRequest"),
@@ -969,13 +971,89 @@ export const adminPaths = {
       "x-implementation-status": "implemented",
     },
   },
+  "/admin/v1/users/{userId}/activate": {
+    post: {
+      tags: [adminTags.users],
+      operationId: "adminActivateUser",
+      summary: "Activate / reinstate a user (alias of /unban)",
+      description:
+        "Identical to POST /admin/v1/users/{userId}/unban — same validator, controller, and service call, just an alternate path for callers that use an 'activate' verb. Sets status ACTIVE, clears bannedAt/suspendedUntil/banReason. Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_unbanned. Requires users.moderate.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "userId" }],
+      requestBody: jsonBody("#/components/schemas/AdminUnbanRequest", false),
+      responses: {
+        "200": okRes(
+          "User activated",
+          "#/components/schemas/AdminModerationResult"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.moderate"),
+        "404": errRes("User not found"),
+        "409": errRes("USER_NOT_BANNED or USER_DELETED"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/{userId}/details": {
+    get: {
+      tags: [adminTags.users],
+      operationId: "adminGetUserDetails",
+      summary: "Get user detail (alias of GET /admin/v1/users/{userId})",
+      description:
+        "Identical to GET /admin/v1/users/{userId} — community-less user detail: profile + report summary + moderation history. Does NOT include a community/members block (a user can belong to multiple communities, so there is no single implicit one to pick); use GET /admin/v1/users/{userId}/communities and GET /admin/v1/users/{userId}/communities/{communityId}/members when a specific community context is needed. Requires users.read.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "userId" }],
+      responses: {
+        "200": okRes("User detail", "#/components/schemas/AdminUserDetail"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.read"),
+        "404": errRes("User not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/ban-reasons": {
+    get: {
+      tags: [adminTags.users],
+      operationId: "adminListBanReasons",
+      summary: "List predefined ban/suspend reason codes",
+      description:
+        "Static reference data for the ban/suspend modal's reason dropdown — the same `AdminUserBanReasonCode` codes accepted by ban/suspend/bulk-ban. The admin can also type any custom free-text reason instead (max 200 chars); this list is a convenience preset, not an exhaustive constraint. Requires users.read.",
+      security: adminSecurity,
+      responses: {
+        "200": {
+          description: "Predefined reason codes",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: {
+                    type: "array",
+                    items: {
+                      $ref: "#/components/schemas/AdminUserBanReasonCode",
+                    },
+                  },
+                },
+                required: ["success", "data"],
+              },
+            },
+          },
+        },
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.read"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
   "/admin/v1/users/bulk/ban": {
     post: {
       tags: [adminTags.users],
       operationId: "adminBulkBanUsers",
       summary: "Bulk ban/suspend users (max 100)",
       description:
-        "Applies the same rules as single ban/suspend to up to 100 users in one call. Returns 207 Multi-Status. Writes ONE ModerationAction + ONE AuditLog (user.bulk_banned) + publishes ONE admin.user_banned/admin.user_suspended event PER succeeded user. Requires users.moderate.",
+        "Applies the same rules as single ban/suspend to up to 100 users in one call, including custom free-text `reason` support. Returns 207 Multi-Status. Writes ONE ModerationAction + ONE AuditLog (user.bulk_banned) + publishes ONE admin.user_banned/admin.user_suspended event PER succeeded user. Requires users.moderate.",
       security: adminSecurity,
       requestBody: jsonBody("#/components/schemas/AdminBulkBanRequest"),
       responses: {
@@ -2259,9 +2337,13 @@ export const adminPaths = {
       description:
         "Paginated VIEWER-SESSION HISTORY for this stream (who watched, when they " +
         "joined/left, how long) — read from stream-service's durable " +
-        "LivestreamViewerSession records via streamClient.adminListViewerSessions. " +
+        "LivestreamViewerSession records via streamClient.adminListViewerSessions, " +
+        "enriched per row with `no` (page-based sequence number) and `type` " +
+        "(the viewer's CURRENT community role — Admin|Moderator|Member, via a " +
+        "single batched communityClient.adminGetMemberRoles call keyed by the " +
+        "page's userIds; defaults to Member if they've since left the community). " +
         "This is NOT the community roster — there is no `search` or role/`type` " +
-        "filter; sort only via sortField/sortDir. Requires `livestreams.read`.",
+        "filter on the query; sort only via sortField/sortDir. Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
         {

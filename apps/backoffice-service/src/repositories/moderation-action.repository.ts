@@ -48,4 +48,43 @@ export const moderationActionRepository = {
       take: limit,
     });
   },
+
+  /** Offset-paginated, most-recent-first moderation-action rows for a report. */
+  async listByReportId(reportId: string, skip: number, take: number) {
+    const [total, rows] = await Promise.all([
+      prisma.moderationAction.count({ where: { reportId } }),
+      prisma.moderationAction.findMany({
+        where: { reportId },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+    ]);
+    return { total, rows };
+  },
+
+  /**
+   * The latest ban_user/suspend_user action per target, for a batch of
+   * targets — resolves "who currently holds this user's active restriction"
+   * (`bannedBy`) for a whole page of users in ONE query instead of N. Uses
+   * `distinct` + a matching `orderBy` so only the newest row per `targetId`
+   * survives. A target absent from the result has no recorded ban/suspend
+   * action (never restricted, or restricted by a path outside this table).
+   */
+  async latestBanActionsByTargets(
+    targetIds: string[]
+  ): Promise<Map<string, { actorId: string; createdAt: Date }>> {
+    if (targetIds.length === 0) return new Map();
+    const rows = await prisma.moderationAction.findMany({
+      where: {
+        targetType: "user",
+        targetId: { in: targetIds },
+        type: { in: ["ban_user", "suspend_user"] },
+      },
+      orderBy: [{ targetId: "asc" }, { createdAt: "desc" }],
+      distinct: ["targetId"],
+      select: { targetId: true, actorId: true, createdAt: true },
+    });
+    return new Map(rows.map((r) => [r.targetId, r]));
+  },
 };

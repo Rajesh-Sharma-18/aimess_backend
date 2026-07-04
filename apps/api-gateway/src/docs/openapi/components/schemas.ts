@@ -591,7 +591,7 @@ export const openApiSchemas = {
       email: { type: "string", nullable: true, example: "b@x.com" },
       status: {
         type: "string",
-        enum: ["ACTIVE", "BANNED", "DELETED"],
+        enum: ["ACTIVE", "BANNED", "SUSPENDED", "DELETED"],
         example: "ACTIVE",
       },
       joinedAt: { type: "string", format: "date-time" },
@@ -599,8 +599,46 @@ export const openApiSchemas = {
       avatarUrl: { type: "string", nullable: true },
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       avatar: { $ref: "#/components/schemas/MediaObject" },
+      moderationStatus: {
+        type: "string",
+        enum: ["ACTIVE", "BANNED"],
+        description:
+          "Simplified 2-value moderation view derived from `status` (BANNED covers both a permanent ban and a time-boxed suspension). Never replaces `status`.",
+        example: "ACTIVE",
+      },
+      isBanned: {
+        type: "boolean",
+        description:
+          "True iff the user is currently BANNED or SUSPENDED. Lets the admin panel pick the Ban/Unban row action without an extra request.",
+        example: false,
+      },
+      bannedAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "Present only when `isBanned` is true.",
+      },
+      bannedBy: {
+        type: "string",
+        nullable: true,
+        description:
+          "actorId of the admin who applied the currently active ban/suspend. Present only when `isBanned` is true.",
+      },
+      banReason: {
+        type: "string",
+        nullable: true,
+        description: "Present only when `isBanned` is true.",
+      },
     },
-    required: ["userId", "username", "status", "joinedAt", "reportCount"],
+    required: [
+      "userId",
+      "username",
+      "status",
+      "joinedAt",
+      "reportCount",
+      "moderationStatus",
+      "isBanned",
+    ],
   },
   AdminCommunityMember: {
     type: "object",
@@ -801,8 +839,18 @@ export const openApiSchemas = {
             nullable: true,
             description: "actorId of the most recent moderation action.",
           },
+          moderationStatus: {
+            type: "string",
+            enum: ["ACTIVE", "BANNED"],
+            description:
+              "Simplified 2-value moderation view derived from `status` (BANNED covers both a permanent ban and a time-boxed suspension). Never replaces `status`.",
+          },
+          isBanned: {
+            type: "boolean",
+            description: "True iff `status` is currently BANNED or SUSPENDED.",
+          },
         },
-        required: ["status"],
+        required: ["status", "moderationStatus", "isBanned"],
       },
       reportsSummary: {
         type: "object",
@@ -931,7 +979,20 @@ export const openApiSchemas = {
       "POST /admin/v1/users/{userId}/ban. If durationDays is omitted/null this is a PERMANENT ban; if durationDays > 0 it is treated as a time-boxed suspend (status becomes SUSPENDED, not BANNED).",
     required: ["reason"],
     properties: {
-      reason: { $ref: "#/components/schemas/AdminUserBanReasonCode" },
+      reason: {
+        oneOf: [
+          { $ref: "#/components/schemas/AdminUserBanReasonCode" },
+          {
+            type: "string",
+            minLength: 1,
+            maxLength: 200,
+            description: "Any free-text custom reason.",
+          },
+        ],
+        description:
+          "Either a predefined reason code, OR any custom free-text reason (max 200 chars) typed by the admin. Stored verbatim.",
+        example: "HARASSMENT",
+      },
       note: { type: "string", maxLength: 2000, nullable: true },
       durationDays: {
         type: "integer",
@@ -970,7 +1031,8 @@ export const openApiSchemas = {
   },
   AdminBulkBanRequest: {
     type: "object",
-    description: "POST /admin/v1/users/bulk/ban.",
+    description:
+      "POST /admin/v1/users/bulk/ban. `reason` accepts a predefined code or a custom free-text reason — same rules as the single ban endpoint.",
     required: ["userIds", "reason"],
     properties: {
       userIds: {
@@ -979,7 +1041,20 @@ export const openApiSchemas = {
         maxItems: 100,
         items: { type: "string", minLength: 1, maxLength: 64 },
       },
-      reason: { $ref: "#/components/schemas/AdminUserBanReasonCode" },
+      reason: {
+        oneOf: [
+          { $ref: "#/components/schemas/AdminUserBanReasonCode" },
+          {
+            type: "string",
+            minLength: 1,
+            maxLength: 200,
+            description: "Any free-text custom reason.",
+          },
+        ],
+        description:
+          "Either a predefined reason code, OR any custom free-text reason (max 200 chars). Applied to every user in the batch.",
+        example: "HARASSMENT",
+      },
       note: { type: "string", maxLength: 2000, nullable: true },
       durationDays: { type: "integer", minimum: 1, nullable: true },
       reportId: { type: "string", format: "uuid", nullable: true },
@@ -2625,6 +2700,12 @@ export const openApiSchemas = {
     description:
       "A viewer-session row for this stream (who watched, not the community roster — see the endpoint description).",
     properties: {
+      no: {
+        type: "integer",
+        description:
+          "Pagination-based sequence number: (page - 1) * limit + index + 1.",
+        example: 1,
+      },
       userId: { type: "string" },
       username: { type: "string" },
       handle: { type: "string", nullable: true },
@@ -2641,8 +2722,21 @@ export const openApiSchemas = {
         description: "null = still watching.",
       },
       watchDurationSeconds: { type: "integer", example: 340 },
+      type: {
+        type: "string",
+        enum: ["Admin", "Moderator", "Member"],
+        description:
+          "Viewer's CURRENT community role. Defaults to 'Member' if they are no longer a member of the stream's community.",
+      },
     },
-    required: ["userId", "username", "joinedAt", "watchDurationSeconds"],
+    required: [
+      "no",
+      "userId",
+      "username",
+      "joinedAt",
+      "watchDurationSeconds",
+      "type",
+    ],
   },
 
   AdminEndLivestreamResult: {

@@ -62,6 +62,7 @@ jest.mock("../../src/grpc/community.client.js", () => ({
   communityClient: {
     adminGetCommunitiesByIds: jest.fn(async () => new Map()),
     adminListCommunities: jest.fn(async () => ({ communities: [], total: 0 })),
+    adminGetMemberRoles: jest.fn(async () => new Map()),
   },
 }));
 // stream.client runs `import.meta.url` + a live gRPC dial at import; it is now
@@ -73,6 +74,7 @@ jest.mock("../../src/grpc/stream.client.js", () => ({
     adminForceEnd: jest.fn(async () => ({ success: true, status: "ENDED" })),
     getStreamStats: jest.fn(async () => ({ found: false })),
     adminUpdateThumbnail: jest.fn(async () => undefined),
+    adminListViewerSessions: jest.fn(async () => ({ sessions: [], total: 0 })),
   },
 }));
 jest.mock("../../src/grpc/chat.client.js", () => ({

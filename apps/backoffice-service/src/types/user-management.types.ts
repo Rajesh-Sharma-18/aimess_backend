@@ -16,6 +16,15 @@ export type { Paginated, PaginationMeta };
 /** Account status mirrored from auth-service (source of truth: AuthUser). */
 export type UserStatus = "ACTIVE" | "SUSPENDED" | "BANNED" | "DELETED";
 
+/**
+ * Simplified 2-value moderation view derived from `status`, separate from the
+ * full account-status taxonomy above (never replaces `status`). BANNED covers
+ * BOTH a permanent ban and a time-boxed suspension — the platform restricts
+ * the user in both cases, and this system has no auto-expiry that lapses a
+ * SUSPENDED row back to ACTIVE on its own (an admin must explicitly unban).
+ */
+export type ModerationStatus = "ACTIVE" | "BANNED";
+
 /** Reason taxonomy reused from the report reportType vocabulary (subset). */
 export type ModerationReason =
   | "SPAM"
@@ -46,6 +55,18 @@ export type UserListItem = {
    * presigned GET the legacy `avatarUrl` carries via the shared media layer.
    */
   avatar: MediaObject;
+  /** Derived from `status` — see {@link ModerationStatus}. Never replaces `status`. */
+  moderationStatus: ModerationStatus;
+  /** `true` iff the user is currently BANNED or SUSPENDED. Lets the panel pick
+   * the Ban/Unban row action with no extra request. */
+  isBanned: boolean;
+  /** Present only when `isBanned` is true. */
+  bannedAt?: string | null;
+  /** Present only when `isBanned` is true — the acting admin's id (same concept
+   * as the detail endpoint's `accountStatus.appliedBy`). */
+  bannedBy?: string | null;
+  /** Present only when `isBanned` is true. */
+  banReason?: string | null;
 };
 
 /**
@@ -111,6 +132,10 @@ export type AccountStatusBlock = {
   reason: string | null;
   suspendedUntil: string | null;
   appliedBy: string | null;
+  /** Derived from `status` — see {@link ModerationStatus}. Never replaces `status`. */
+  moderationStatus: ModerationStatus;
+  /** `true` iff the user is currently BANNED or SUSPENDED. */
+  isBanned: boolean;
 };
 
 /** Full user detail returned by GET /users/{userId}. */

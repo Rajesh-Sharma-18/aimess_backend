@@ -226,6 +226,16 @@ export function registerCommunityNamespace(
   const community: Namespace = io.of("/community");
   community.use(gatewaySocketAuthMiddleware);
 
+  // Process-local, best-effort cache of communities currently CLOSED/SUSPENDED.
+  // Populated reactively from the community:closed/community:reopened Redis
+  // relay below (so every gateway instance stays in sync in real time) and
+  // self-healed from the checkCommunityMembership response on community:join.
+  // Deliberately NOT a per-keystroke gRPC lookup — typing/recording indicators
+  // check this Set (O(1), zero network cost) before broadcasting. The
+  // authoritative, persisted-effect gate for community writes remains
+  // assertCommunityRoomWritable in chat-service; this is defense-in-depth only.
+  const closedCommunityIds = new Set<string>();
+
   // Dedicated subscriber for community channels.
   // Backend services publish: { event: "community:message:new"|"community:member:joined", data: {...} }
   // to Redis channel community:<communityId>.
@@ -327,6 +337,12 @@ export function registerCommunityNamespace(
       if (pattern !== "community:*") return;
       try {
         const parsed = JSON.parse(message) as RedisSocketEvent;
+        // Keep the local closed-community cache in sync in real time.
+        if (parsed.event === "community:closed") {
+          closedCommunityIds.add(channel.slice("community:".length));
+        } else if (parsed.event === "community:reopened") {
+          closedCommunityIds.delete(channel.slice("community:".length));
+        }
         // ── Stream live indicator debug logs ─────────────────────────────────
         if (
           parsed.event === "community:stream:started" ||
@@ -543,6 +559,10 @@ export function registerCommunityNamespace(
     const isAuthorizedForCommunity = async (
       communityId: string
     ): Promise<boolean> => {
+      // Single shared CLOSED guard for typing/recording — a CLOSED/SUSPENDED
+      // community must not receive new presence indicators. Sync Set lookup,
+      // zero overhead per keystroke (see closedCommunityIds above).
+      if (closedCommunityIds.has(communityId)) return false;
       if (hasTypingRoom(communityId)) return true;
       await typingRoomsReady;
       return hasTypingRoom(communityId);
@@ -710,6 +730,14 @@ export function registerCommunityNamespace(
             if (m.isBanned) {
               ackError(callback, "FORBIDDEN", locale);
               return;
+            }
+            // Self-heal the local closed-community cache — covers a gateway
+            // instance that (re)started while the community was already closed
+            // and so never observed the community:closed relay event.
+            if (m.isCommunityClosed) {
+              closedCommunityIds.add(communityId);
+            } else {
+              closedCommunityIds.delete(communityId);
             }
           } catch (err) {
             logger.warn(

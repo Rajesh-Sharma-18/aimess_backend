@@ -19,8 +19,10 @@ import {
   assertTransition,
   buildWhere,
   decodeCursor,
+  deriveModerationStatus,
   encodeCursor,
   parseSort,
+  resolveModerationStatus,
   type Cursor,
 } from "../user-directory.repository.js";
 import type {
@@ -242,6 +244,84 @@ function main(): void {
       "DELETED→BANNED rejected",
       transition("DELETED", "BANNED"),
       "USER_DELETED"
+    );
+  }
+
+  // --- 9. deriveModerationStatus — ban-status exposure (F2) ----------------
+  console.log("\n[9] deriveModerationStatus");
+  {
+    eq(
+      "ACTIVE → moderationStatus ACTIVE",
+      deriveModerationStatus("ACTIVE").moderationStatus,
+      "ACTIVE"
+    );
+    eq(
+      "ACTIVE → isBanned false",
+      deriveModerationStatus("ACTIVE").isBanned,
+      false
+    );
+
+    eq(
+      "BANNED → moderationStatus BANNED",
+      deriveModerationStatus("BANNED").moderationStatus,
+      "BANNED"
+    );
+    eq(
+      "BANNED → isBanned true",
+      deriveModerationStatus("BANNED").isBanned,
+      true
+    );
+
+    eq(
+      "SUSPENDED → moderationStatus BANNED (time-boxed ban counts as banned)",
+      deriveModerationStatus("SUSPENDED").moderationStatus,
+      "BANNED"
+    );
+    eq(
+      "SUSPENDED → isBanned true",
+      deriveModerationStatus("SUSPENDED").isBanned,
+      true
+    );
+
+    eq(
+      "DELETED → moderationStatus ACTIVE (not a ban state)",
+      deriveModerationStatus("DELETED").moderationStatus,
+      "ACTIVE"
+    );
+    eq(
+      "DELETED → isBanned false",
+      deriveModerationStatus("DELETED").isBanned,
+      false
+    );
+  }
+
+  // --- 10. resolveModerationStatus — mirror overrides live status (F3) -----
+  console.log("\n[10] resolveModerationStatus");
+  {
+    eq(
+      "no mirror row → falls back to live status (ACTIVE)",
+      resolveModerationStatus("ACTIVE", undefined),
+      "ACTIVE"
+    );
+    eq(
+      "mirror BANNED overrides live ACTIVE (auth-service never persists bans)",
+      resolveModerationStatus("ACTIVE", { status: "BANNED" }),
+      "BANNED"
+    );
+    eq(
+      "mirror SUSPENDED overrides live ACTIVE",
+      resolveModerationStatus("ACTIVE", { status: "SUSPENDED" }),
+      "SUSPENDED"
+    );
+    eq(
+      "mirror ACTIVE (post-unban) overrides a stale live BANNED",
+      resolveModerationStatus("BANNED", { status: "ACTIVE" }),
+      "ACTIVE"
+    );
+    eq(
+      "live DELETED always wins, even with a mirror row present",
+      resolveModerationStatus("DELETED", { status: "BANNED" }),
+      "DELETED"
     );
   }
 

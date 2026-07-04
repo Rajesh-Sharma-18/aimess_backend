@@ -140,8 +140,9 @@ export function publishCommunityDeletedSafe(
 }
 
 /**
- * Published when the owner CLOSES a community (status → CLOSED). All members
- * were auto-removed — notifications-service pushes "Community closed" to each.
+ * Published when the owner CLOSES a community (status → CLOSED). Members keep
+ * their rows (nothing is evicted) — notifications-service pushes
+ * "Community closed" to each currently-active member.
  */
 export function publishCommunityClosedSafe(
   data: CommunityClosedNotifyPayload
@@ -151,9 +152,8 @@ export function publishCommunityClosedSafe(
 
 /**
  * Published when the owner REOPENs a CLOSED community (status → ACTIVE).
- * The community was empty during closure (members evicted on close). The
- * notifications-service consumer handles only cross-device socket sync for the
- * owner — there is no former-member roster to push to.
+ * Members are never evicted on close, so `data.memberIds` is the full active
+ * roster — the notifications-service consumer pushes "reopened" to all of them.
  */
 export function publishCommunityReopenedSafe(
   data: CommunityReopenedNotifyPayload

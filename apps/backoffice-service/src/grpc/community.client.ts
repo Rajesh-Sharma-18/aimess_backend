@@ -192,6 +192,15 @@ interface RawAdminGetCommunitiesByIdsRes {
   communities: AdminCommunityBrief[];
 }
 
+/** AdminMemberRoleRow — role is a plain string (ADMIN|MODERATOR|MEMBER). */
+export interface AdminMemberRoleRow {
+  userId: string;
+  role: string;
+}
+interface RawAdminGetMemberRolesRes {
+  roles: AdminMemberRoleRow[];
+}
+
 export interface AdminSetModerationStatusReq {
   communityId: string;
   status: string;
@@ -369,6 +378,18 @@ export const adminGetCommunitiesByIdsBreaker: Breaker<
     )
 );
 
+export const adminGetMemberRolesBreaker: Breaker<
+  { communityId: string; userIds: string[] },
+  RawAdminGetMemberRolesRes
+> = makeBreaker(
+  "community.adminGetMemberRoles",
+  (req: { communityId: string; userIds: string[] }) =>
+    call<{ communityId: string; userIds: string[] }, RawAdminGetMemberRolesRes>(
+      "adminGetMemberRoles",
+      req
+    )
+);
+
 export const adminListCategoriesBreaker: Breaker<
   AdminListCategoriesReq,
   AdminListCategoriesRes
@@ -471,6 +492,19 @@ export const communityClient = {
     req: AdminSetModerationStatusReq
   ): Promise<AdminSetModerationStatusRes> {
     return adminSetModerationStatusBreaker.fire(req);
+  },
+  /**
+   * Batch role lookup for the Livestream Viewer List "type" column. Returns a
+   * map keyed by userId; users not currently a community member are absent
+   * (the caller defaults them to MEMBER). Empty input → no gRPC call.
+   */
+  async adminGetMemberRoles(
+    communityId: string,
+    userIds: string[]
+  ): Promise<Map<string, string>> {
+    if (userIds.length === 0) return new Map();
+    const r = await adminGetMemberRolesBreaker.fire({ communityId, userIds });
+    return new Map((r.roles ?? []).map((row) => [row.userId, row.role]));
   },
   async adminListCategories(
     req: AdminListCategoriesReq

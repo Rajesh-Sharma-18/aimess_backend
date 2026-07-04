@@ -9,12 +9,14 @@ import {
 import type { Prisma } from "../generated/prisma/client.js";
 import { authClient, type AdminListUsersRequest } from "../grpc/auth.client.js";
 import { userClient } from "../grpc/user.client.js";
+import { moderationActionRepository } from "./moderation-action.repository.js";
 import { logger } from "@aimess/logger";
 import * as grpc from "@grpc/grpc-js";
 import type {
   BulkResult,
   BulkResultItem,
   ListUsersQuery,
+  ModerationStatus,
   Paginated,
   PaginationMeta,
   StatusChange,
@@ -23,6 +25,48 @@ import type {
   UserStatus,
   UserStatusResult,
 } from "../types/user-management.types.js";
+
+/**
+ * Derive the simplified 2-value moderation view from the full `status`.
+ * BANNED and SUSPENDED both count as an active ban — see {@link ModerationStatus}.
+ */
+export function deriveModerationStatus(status: UserStatus): {
+  moderationStatus: ModerationStatus;
+  isBanned: boolean;
+} {
+  const isBanned = status === "BANNED" || status === "SUSPENDED";
+  return { moderationStatus: isBanned ? "BANNED" : "ACTIVE", isBanned };
+}
+
+/** The `UserIndex` columns needed to merge moderation state into a live-sourced row. */
+export type MirrorModerationRow = {
+  status: UserStatus;
+  bannedAt: Date | null;
+  banReason: string | null;
+  suspendedUntil: Date | null;
+};
+
+/**
+ * Resolve the authoritative status for a row sourced live from auth-service.
+ *
+ * auth-service's `AuthUser.status` is authoritative ONLY for DELETED
+ * (self-service account deletion writes it directly). It is NOT authoritative
+ * for BANNED/SUSPENDED: the `admin.user.queue` consumer auth-service runs for
+ * POST /ban|suspend|unban force-logs-out sessions and sends a notification,
+ * but never persists the status there — no code path in auth-service ever
+ * writes `AccountStatus.BANNED` or `AccountStatus.SUSPENDED`. The ONLY place
+ * that status is actually persisted is backoffice's own `UserIndex` mirror
+ * (admin_db), which is exactly what `setStatus`/`bulkSetStatus` write. So once
+ * a user has been moderated at least once (a mirror row exists), the mirror
+ * wins for anything except DELETED.
+ */
+export function resolveModerationStatus(
+  liveStatus: UserStatus,
+  mirror?: Pick<MirrorModerationRow, "status">
+): UserStatus {
+  if (liveStatus === "DELETED") return liveStatus;
+  return mirror?.status ?? liveStatus;
+}
 
 /**
  * Repository contract for the admin User Management read+decision model.
@@ -111,6 +155,20 @@ export function buildWhere(query: ListUsersQuery): Prisma.UserIndexWhereInput {
   return where;
 }
 
+/**
+ * True when `error` is a Prisma unique-constraint violation (P2002). Duck-typed
+ * instead of importing the error class, mirroring the pattern already used in
+ * `consume-admin-report-ingest.ts` / `admin-account.service.ts`.
+ */
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
 /** Whitelisted field + userId tiebreak → deterministic Prisma orderBy. */
 function buildOrderBy(
   sort: string
@@ -195,14 +253,20 @@ function toRow(r: {
   };
 }
 
-function toListItem(r: {
-  userId: string;
-  username: string;
-  email: string;
-  status: UserStatus;
-  reportCount: number;
-  joinedAt: Date;
-}): UserListItemRaw {
+function toListItem(
+  r: {
+    userId: string;
+    username: string;
+    email: string;
+    status: UserStatus;
+    reportCount: number;
+    joinedAt: Date;
+    bannedAt: Date | null;
+    banReason: string | null;
+  },
+  banAction?: { actorId: string }
+): UserListItemRaw {
+  const { moderationStatus, isBanned } = deriveModerationStatus(r.status);
   return {
     userId: r.userId,
     username: r.username,
@@ -212,6 +276,15 @@ function toListItem(r: {
     joinedAt: r.joinedAt.toISOString(),
     // UserIndex does not carry avatarUrl (user-service owns it); null for now.
     avatarUrl: null,
+    moderationStatus,
+    isBanned,
+    ...(isBanned
+      ? {
+          bannedAt: r.bannedAt?.toISOString() ?? null,
+          banReason: r.banReason,
+          bannedBy: banAction?.actorId ?? null,
+        }
+      : {}),
   };
 }
 
@@ -332,6 +405,20 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
   // -------------------------------------------------------------------------
   // Internals.
   // -------------------------------------------------------------------------
+  /**
+   * Map a page of UserIndex rows → list items, resolving `bannedBy` with ONE
+   * batched ModerationAction query for the whole page (not per-row).
+   */
+  private async toListItems(
+    rows: Parameters<typeof toListItem>[0][]
+  ): Promise<UserListItemRaw[]> {
+    const banActionMap =
+      await moderationActionRepository.latestBanActionsByTargets(
+        rows.map((r) => r.userId)
+      );
+    return rows.map((r) => toListItem(r, banActionMap.get(r.userId)));
+  }
+
   private async offsetPage(
     where: Prisma.UserIndexWhereInput,
     orderBy: Prisma.UserIndexOrderByWithRelationInput[],
@@ -367,7 +454,7 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
             })
           : null,
     };
-    return { data: rows.map(toListItem), pagination };
+    return { data: await this.toListItems(rows), pagination };
   }
 
   private async keysetPage(
@@ -431,7 +518,7 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
             })
           : null,
     };
-    return { data: rows.map(toListItem), pagination };
+    return { data: await this.toListItems(rows), pagination };
   }
 }
 
@@ -554,24 +641,45 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
     // 3. Identity list from auth-service.
     const { users, total } = await authClient.adminListUsers(req);
 
-    // 4. Enrich with display profiles (user-service) + reportCount (admin_db).
+    // 4. Enrich with display profiles (user-service) + reportCount (admin_db) +
+    //    the actor of each user's latest ban/suspend action (admin_db) + the
+    //    UserIndex mirror moderation columns (admin_db) — four batched calls
+    //    keyed by the page's userIds, never one call per row.
     const userIds = users.map((u) => u.id);
-    const [profiles, countMap] = await Promise.all([
+    const [profiles, countMap, banActionMap, mirrorMap] = await Promise.all([
       userClient.adminGetProfilesByIds(userIds),
       this.reportCountMap(userIds),
+      moderationActionRepository.latestBanActionsByTargets(userIds),
+      this.mirrorModerationMap(userIds),
     ]);
     const profileMap = new Map(profiles.map((p) => [p.userId, p]));
 
     let data: UserListItemRaw[] = users.map((u) => {
       const profile = profileMap.get(u.id);
+      const mirror = mirrorMap.get(u.id);
+      // auth-service's `u.status` is live but NEVER updated by ban/suspend/unban
+      // (see resolveModerationStatus) — the UserIndex mirror is what those
+      // actions actually write, so it wins whenever this user has one.
+      const status = resolveModerationStatus(u.status, mirror);
+      const { moderationStatus, isBanned } = deriveModerationStatus(status);
+      const banAction = banActionMap.get(u.id);
       return {
         userId: u.id,
         email: u.email,
-        status: u.status,
+        status,
         joinedAt: u.createdAt,
         username: profile?.username ?? u.account,
         avatarUrl: profile?.avatarUrl || null,
         reportCount: countMap.get(u.id) ?? 0,
+        moderationStatus,
+        isBanned,
+        ...(isBanned
+          ? {
+              bannedAt: mirror?.bannedAt?.toISOString() ?? null,
+              banReason: mirror?.banReason ?? null,
+              bannedBy: banAction?.actorId ?? null,
+            }
+          : {}),
       };
     });
 
@@ -604,34 +712,132 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       throw err;
     }
 
-    const profile = await userClient.adminGetProfile(userId);
+    const [profile, mirror] = await Promise.all([
+      userClient.adminGetProfile(userId),
+      this.mirrorModerationRow(userId),
+    ]);
+
+    // auth-service's `record.status` is live but NEVER updated by
+    // ban/suspend/unban (see resolveModerationStatus) — the UserIndex mirror is
+    // what those actions actually write, so it wins whenever this user has one.
+    const status = resolveModerationStatus(record.status, mirror ?? undefined);
 
     return {
       userId: record.id,
       username: profile?.username || record.account,
       email: record.email,
       avatarUrl: profile?.avatarUrl || null,
-      status: record.status,
+      status,
       joinedAt: record.createdAt,
       // auth-service does not expose a last-active timestamp on this contract.
       lastActiveAt: record.lastLoginAt || null,
       since:
-        record.status === "DELETED"
+        status === "DELETED"
           ? record.deletedAt || null
-          : record.suspendedAt || null,
-      reason: record.suspendedReason || null,
-      suspendedUntil: null,
+          : mirror?.bannedAt
+            ? mirror.bannedAt.toISOString()
+            : record.suspendedAt || null,
+      reason: mirror?.banReason || record.suspendedReason || null,
+      suspendedUntil: mirror?.suspendedUntil?.toISOString() || null,
     };
+  }
+
+  /** Single-user counterpart of {@link mirrorModerationMap}. */
+  private mirrorModerationRow(
+    userId: string
+  ): Promise<MirrorModerationRow | null> {
+    return prisma.userIndex.findUnique({
+      where: { userId },
+      select: {
+        status: true,
+        bannedAt: true,
+        banReason: true,
+        suspendedUntil: true,
+      },
+    });
+  }
+
+  /**
+   * Batch-fetch the local UserIndex mirror's moderation columns for a page of
+   * users — ONE extra query for the whole page, never one per row.
+   */
+  private async mirrorModerationMap(
+    userIds: string[]
+  ): Promise<Map<string, MirrorModerationRow>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await prisma.userIndex.findMany({
+      where: { userId: { in: userIds } },
+      select: {
+        userId: true,
+        status: true,
+        bannedAt: true,
+        banReason: true,
+        suspendedUntil: true,
+      },
+    });
+    return new Map(rows.map((r) => [r.userId, r]));
   }
 
   // Mutations still update the local mirror + publish admin.user_* events;
   // reflecting them in this live list requires auth-service to apply the event
   // (follow-up). Delegate to the Prisma read-model so ban/unban keep working.
-  setStatus(userId: string, change: StatusChange): Promise<UserStatusResult> {
+  //
+  // The `UserIndex` mirror is only ever populated by a ~40-row dev seed (the
+  // event consumers that would keep it fresh from user.registered/user.locked
+  // were never built — see project docs). Since list/detail now read LIVE from
+  // auth-service, any real user outside that seed is visible in the Users List
+  // but has no `UserIndex` row, so the fallback's existence check
+  // (`applyStatus` → `findUnique`) threw `USER_NOT_FOUND` even though the same
+  // `userId` the list returned does exist. Self-heal by mirroring the row from
+  // the SAME live source (`this.getById`, already used by list/detail) on
+  // first mutation, so ban/suspend/unban work for every user the panel shows.
+  async setStatus(
+    userId: string,
+    change: StatusChange
+  ): Promise<UserStatusResult> {
+    await this.ensureMirrored(userId);
     return this.fallback.setStatus(userId, change);
   }
-  bulkSetStatus(userIds: string[], change: StatusChange): Promise<BulkResult> {
+  async bulkSetStatus(
+    userIds: string[],
+    change: StatusChange
+  ): Promise<BulkResult> {
+    await Promise.all(userIds.map((id) => this.ensureMirrored(id)));
     return this.fallback.bulkSetStatus(userIds, change);
+  }
+
+  /**
+   * Create the `UserIndex` mirror row from the live source if it's missing.
+   * A no-op when the row already exists (never overwrites local ban/suspend
+   * state) or when the user truly doesn't exist anywhere (the fallback's own
+   * existence check then correctly reports `USER_NOT_FOUND`). Concurrent
+   * first-mutations racing to create the same row are resolved by swallowing
+   * the resulting P2002 — the row exists either way.
+   */
+  private async ensureMirrored(userId: string): Promise<void> {
+    const mirrored = await prisma.userIndex.findUnique({
+      where: { userId },
+      select: { userId: true },
+    });
+    if (mirrored) return;
+
+    const live = await this.getById(userId);
+    if (!live) return;
+
+    try {
+      await prisma.userIndex.create({
+        data: {
+          userId: live.userId,
+          username: live.username,
+          email: live.email,
+          status: live.status,
+          joinedAt: new Date(live.joinedAt),
+          lastActiveAt: live.lastActiveAt ? new Date(live.lastActiveAt) : null,
+        },
+      });
+    } catch (err) {
+      if (!isUniqueConstraintViolation(err)) throw err;
+    }
   }
 
   // -------------------------------------------------------------------------

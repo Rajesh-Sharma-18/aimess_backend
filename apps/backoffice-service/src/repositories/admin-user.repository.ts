@@ -102,6 +102,16 @@ export const adminUserRepository = {
     return prisma.adminRole.findUnique({ where: { key } });
   },
 
+  /** Batch id→name lookup (moderator-stamp enrichment). Empty input → no query. */
+  async findNamesByIds(ids: string[]): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
+    const rows = await prisma.adminUser.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, name: true },
+    });
+    return new Map(rows.map((r) => [r.id, r.name]));
+  },
+
   /** Paginated + filtered admin list (newest first by default). */
   async list(query: ListAdminAccountsQuery) {
     const { field, dir } = parseAdminAccountSort(query.sort);

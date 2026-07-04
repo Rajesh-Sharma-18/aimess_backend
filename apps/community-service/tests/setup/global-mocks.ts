@@ -130,6 +130,7 @@ jest.mock("../../src/messaging/publish-community.js", () => ({
   publishCommunityMemberLeftSafe: jest.fn(),
   publishCommunityAdminTransferredSafe: jest.fn(),
   publishCommunityClosedSafe: jest.fn(),
+  publishCommunityReopenedSafe: jest.fn(),
   publishCommunityDeletedSafe: jest.fn(),
   publishCommunityInviteAcceptedSafe: jest.fn(),
   publishCommunityInviteSentSafe: jest.fn(),
@@ -171,15 +172,35 @@ jest.mock("../../src/lib/community-cache.js", () => ({
   },
 }));
 
-// --- Community access policy: deterministic default -----------------------
-jest.mock("../../src/lib/community-access-policy.js", () => ({
-  communityAccessPolicy: {
-    deriveStatus: jest.fn().mockReturnValue("ACTIVE"),
-    assertWritable: jest.fn(),
-    assertReadable: jest.fn(),
-  },
-  assertCommunityReadAccess: jest.fn().mockResolvedValue(undefined),
-}));
+// --- Community access policy: real read-only formulas (pure fn of the passed
+// community row), no-op writable/joinable guards (most fixtures are ACTIVE
+// anyway, so this preserves existing suites while giving close/reopen-focused
+// suites correct isOwnerClosed/isEffectivelyClosed derivation) -------------
+jest.mock("../../src/lib/community-access-policy.js", () => {
+  const isOwnerClosed = (c) => (c?.status ?? "ACTIVE") === "CLOSED";
+  const isPlatformSuspended = (c) => c?.moderationStatus === "SUSPENDED";
+  const isEffectivelyClosed = (c) => isOwnerClosed(c) || isPlatformSuspended(c);
+  const deriveStatus = (c) => (isOwnerClosed(c) ? "CLOSED" : "ACTIVE");
+  const assertWritable = jest.fn();
+  const assertJoinable = jest.fn();
+  return {
+    communityAccessPolicy: {
+      isOwnerClosed: jest.fn(isOwnerClosed),
+      isPlatformSuspended: jest.fn(isPlatformSuspended),
+      isEffectivelyClosed: jest.fn(isEffectivelyClosed),
+      deriveStatus: jest.fn(deriveStatus),
+      assertWritable,
+      assertJoinable,
+    },
+    isOwnerClosed: jest.fn(isOwnerClosed),
+    isPlatformSuspended: jest.fn(isPlatformSuspended),
+    isEffectivelyClosed: jest.fn(isEffectivelyClosed),
+    deriveStatus: jest.fn(deriveStatus),
+    assertWritable,
+    assertJoinable,
+    assertCommunityReadAccess: jest.fn().mockResolvedValue(undefined),
+  };
+});
 
 // --- Invite rate limits: always pass in tests -----------------------------
 jest.mock("../../src/lib/invite-rate-limit.js", () => ({

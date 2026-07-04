@@ -10,6 +10,7 @@ import {
 } from "../messaging/publish-admin-user-event.js";
 import {
   communityMembersRepository,
+  deriveModerationStatus,
   moderationActionRepository,
   reportDetailRepository,
   userCommunitiesRepository,
@@ -233,6 +234,7 @@ export const userManagementService = {
         reason: row.reason,
         suspendedUntil: row.suspendedUntil,
         appliedBy: moderationHistory[0]?.actorId ?? null,
+        ...deriveModerationStatus(row.status),
       },
       reportsSummary,
       reportCategories,

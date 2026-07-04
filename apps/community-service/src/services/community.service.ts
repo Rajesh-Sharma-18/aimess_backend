@@ -4924,11 +4924,15 @@ export const communityService = {
   },
 
   /**
-   * CLOSE a community (owner lifecycle, status → CLOSED). Reversible disband:
-   * ALL members (including the admin) are auto-removed, memberCount → 0, and the
-   * chat room is suspended. Distinct from `deleteCommunity` (permanent) and from
-   * platform `moderationStatus=SUSPENDED` (which keeps members). Broadcasts
-   * `community:closed` so connected clients disable actions immediately.
+   * CLOSE a community (owner lifecycle, status → CLOSED). Reversible lockdown:
+   * members/roles/messages/reports/livestream history are ALL left untouched —
+   * only the community's `status` (+ close metadata) flips and the chat room is
+   * suspended. `assertWritable`/`assertCommunityRoomWritable` are what actually
+   * stop normal-user writes; nothing here deletes or detaches data, so Super
+   * Admin (and members, for reads) keep full visibility into everything that
+   * existed at close time. Distinct from `deleteCommunity` (permanent) and from
+   * platform `moderationStatus=SUSPENDED` (same write-lock, different actor).
+   * Broadcasts `community:closed` so connected clients disable actions immediately.
    */
   async closeCommunity(
     communityId: string,
@@ -4940,8 +4944,7 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // Only the ACTIVE admin (owner) may close. The admin is still an ACTIVE
-    // member here — eviction happens below.
+    // Only the ACTIVE admin (owner) may close.
     const callerMembership = await communityRepository.findMembership(
       communityId,
       callerId
@@ -4953,22 +4956,20 @@ export const communityService = {
       return;
     }
 
-    // Capture the active roster BEFORE eviction so the CLOSED event + push can
-    // reach everyone who was a member at close time.
+    // Roster for the CLOSED event + push fan-out. Members are NOT evicted, so
+    // this is simply "everyone currently active" — unchanged by this action.
     const memberIds =
       await communityRepository.findActiveMemberIds(communityId);
 
     const closedAt = new Date();
-    // ORDER MATTERS: flip status first so any concurrent writer hits
-    // COMMUNITY_IS_CLOSED, then evict the roster.
+    // Flip status only. No member/role/message/report/livestream data is
+    // touched — closing is a write-lock, not a teardown.
     await communityRepository.updateCommunity(communityId, {
       status: CommunityStatus.CLOSED,
       statusClosedAt: closedAt,
       statusClosedBy: callerId,
       statusClosedReason: reason,
     });
-    await communityRepository.markAllActiveMembersLeft(communityId);
-    await communityRepository.setMemberCount(communityId, 0);
 
     await this.recordAudit({
       communityId,
@@ -4978,7 +4979,7 @@ export const communityService = {
     });
 
     logger.info(
-      `Community closed: community=${communityId} by=${callerId} evicted=${String(memberIds.length)}`
+      `Community closed: community=${communityId} by=${callerId} members=${String(memberIds.length)}`
     );
 
     // Real-time: broadcast to the community room AND to every ex-member's
@@ -5025,10 +5026,11 @@ export const communityService = {
 
   /**
    * REOPEN a previously CLOSED community (status → ACTIVE). Authorized by
-   * community ownership (`adminId`), NOT active membership — the owner left the
-   * roster on close. Re-establishes the owner as the sole ACTIVE ADMIN
-   * (memberCount → 1); former members are NOT restored (they re-join normally).
-   * Broadcasts `community:reopened` and unsuspends the chat room.
+   * community ownership (`adminId`) — membership was never touched on close, so
+   * the owner (and every other member) is still an ACTIVE row throughout.
+   * Reopen is now a pure status flip: no member is created/reactivated and
+   * `memberCount` is untouched (it was never zeroed). Broadcasts
+   * `community:reopened` to the full existing roster and unsuspends the chat room.
    */
   async reopenCommunity(
     communityId: string,
@@ -5039,7 +5041,7 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // Ownership check (adminId) — the owner has no ACTIVE membership while CLOSED.
+    // Ownership check (adminId) — simpler and unaffected by membership state.
     if (community.adminId !== callerId) {
       throw new ForbiddenError("COMMUNITY_FORBIDDEN");
     }
@@ -5061,6 +5063,11 @@ export const communityService = {
       return toCommunityData(community, myRole, muteRow);
     }
 
+    // Roster for the REOPENED event + push fan-out — unchanged since close,
+    // since nobody was evicted.
+    const memberIds =
+      await communityRepository.findActiveMemberIds(communityId);
+
     const reopenedAt = new Date();
     const updated = await communityRepository.updateCommunity(communityId, {
       status: CommunityStatus.ACTIVE,
@@ -5068,39 +5075,6 @@ export const communityService = {
       statusClosedBy: null,
       statusClosedReason: null,
     });
-
-    // Re-establish the owner as the sole ACTIVE ADMIN so the community is usable
-    // again. Prefer a fresh user-service snapshot; fall back to the stored
-    // member snapshot if user-service is unavailable.
-    const existing = await communityRepository.findMemberByUserId(
-      communityId,
-      callerId
-    );
-    const snapshotMap = await fetchUserSnapshots([callerId]);
-    const ownerSnap = snapshotMap.get(callerId);
-    const ownerSnapshot = {
-      snapshotUsername: ownerSnap?.username ?? existing?.snapshotUsername ?? "",
-      snapshotDisplayName:
-        ownerSnap?.displayName ?? existing?.snapshotDisplayName ?? "",
-      snapshotAvatarKey:
-        ownerSnap?.avatarObjectKey ?? existing?.snapshotAvatarKey ?? null,
-    };
-    if (existing) {
-      await communityRepository.reactivateAdminMember(
-        communityId,
-        callerId,
-        ownerSnapshot
-      );
-    } else {
-      await communityRepository.createMember({
-        communityId,
-        userId: callerId,
-        role: CommunityMemberRole.ADMIN,
-        status: CommunityMemberStatus.ACTIVE,
-        ...ownerSnapshot,
-      });
-    }
-    await communityRepository.setMemberCount(communityId, 1);
 
     await this.recordAudit({
       communityId,
@@ -5111,13 +5085,9 @@ export const communityService = {
 
     logger.info(`Community reopened: community=${communityId} by=${callerId}`);
 
-    // Real-time: announce reopen to the community room AND to the owner's
-    // `user:<id>` channel. The room is EMPTY post-close (every member was evicted
-    // on close), and reopen does not restore the former roster — so a room-only
-    // emit reaches nobody. The owner is the sole ACTIVE member now; fan out to
-    // their user channel so their other tabs/devices flip the community back to
-    // ACTIVE live (the triggering tab already has the REST response). Mirrors the
-    // per-member fan-out in closeCommunity.
+    // Real-time: announce reopen to the community room AND to every member's
+    // `user:<id>` channel — the roster is intact, so this mirrors closeCommunity's
+    // fan-out exactly (everyone who was notified of the close gets the reopen too).
     const payload: CommunityReopenedPayload = {
       communityId,
       status: "ACTIVE",
@@ -5130,11 +5100,10 @@ export const communityService = {
         "community:reopened",
         payload
       );
-      await publishChatUserEvent(
-        redis,
-        callerId,
-        "community:reopened",
-        payload
+      await Promise.allSettled(
+        memberIds.map((memberId) =>
+          publishChatUserEvent(redis, memberId, "community:reopened", payload)
+        )
       );
     } catch (error) {
       logger.warn(
@@ -5142,14 +5111,14 @@ export const communityService = {
       );
     }
 
-    // Cross-service event: lets notifications-service perform cross-device
-    // sync for the owner. No push is sent to former members (they were evicted
-    // on close and there is no roster to fan out to).
+    // Cross-service event: notifications-service pushes "reopened" to every
+    // member, mirroring the CLOSED push (they were never evicted).
     publishCommunityReopenedSafe({
       communityId,
       actorId: callerId,
       communityName: updated.name,
       eventAt: reopenedAt.toISOString(),
+      memberIds,
     });
 
     // Chat-sync: unsuspend the general room so community chat writes resume.

@@ -265,6 +265,11 @@ export class LivestreamService {
       if (!membership.isMember) {
         throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
       }
+      // A CLOSED/SUSPENDED community blocks new go-lives even for an ACTIVE
+      // member — going live is a write operation like any other.
+      if (membership.isCommunityClosed) {
+        throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+      }
     }
 
     const isYoutube = params.sourceType === "YOUTUBE";
@@ -1269,20 +1274,23 @@ export class LivestreamService {
     if (env.STREAM_REQUIRE_MEMBERSHIP) {
       // Viewing is always allowed (ban check above is the only hard gate).
       // Membership only controls commenting: non-members can watch silently.
-      // A community-service outage (throw) is treated as "member" so viewers
-      // aren't locked out of live streams during infra hiccups.
+      // A community-service outage (throw) is treated as "member, not closed"
+      // so viewers aren't locked out of live streams during infra hiccups.
       let isMember: boolean;
+      let isCommunityClosed: boolean;
       try {
         const membership = await this.communityClient.validateMembership(
           stream.communityId,
           userId
         );
         isMember = membership.isMember;
+        isCommunityClosed = membership.isCommunityClosed;
       } catch (error) {
         logger.warn(
           `checkAccess: community service unavailable for stream=${streamId} user=${userId}: ${String(error)}`
         );
         isMember = true; // fail-open — don't black out live streams
+        isCommunityClosed = false;
       }
       this.streamRepo
         .incrementTotalViews(streamId)
@@ -1296,7 +1304,8 @@ export class LivestreamService {
         isBanned: false,
         status: "",
         reason: "",
-        canComment: (isMember ? canComment : false) && !isMuted,
+        canComment:
+          (isMember ? canComment : false) && !isMuted && !isCommunityClosed,
         ...snapshot,
       };
     }

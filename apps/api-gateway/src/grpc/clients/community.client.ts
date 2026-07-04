@@ -336,6 +336,8 @@ export interface CheckCommunityMembershipResult {
   isBanned: boolean;
   status: string;
   role: string;
+  /** True when the community is owner-CLOSED or platform-SUSPENDED. */
+  isCommunityClosed: boolean;
 }
 
 export interface GetUserActiveCommunityIdsResult {

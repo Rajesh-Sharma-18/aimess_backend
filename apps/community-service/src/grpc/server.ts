@@ -15,6 +15,7 @@ import { communityRepository } from "../repositories/community.repository.js";
 import { communityService } from "../services/community.service.js";
 import { communityImageService } from "../services/community-image.service.js";
 import { memberAvatarService } from "../services/member-avatar.service.js";
+import { communityAccessPolicy } from "../lib/community-access-policy.js";
 
 /** Resolve the admin moderation "status" string of a community row, treating an
  * unset moderationStatus (legacy rows) as ACTIVE. SUSPENDED → "CLOSED". */
@@ -134,19 +135,22 @@ const communityImpl: grpc.UntypedServiceImplementation = {
             isBanned: false,
             status: "",
             role: "",
+            isCommunityClosed: false,
           });
           return;
         }
-        const membership = await communityRepository.findMembership(
-          req.communityId,
-          req.userId
-        );
+        const [membership, community] = await Promise.all([
+          communityRepository.findMembership(req.communityId, req.userId),
+          communityRepository.findById(req.communityId),
+        ]);
         const status = membership ? String(membership.status) : "";
         callback(null, {
           isMember: status === "ACTIVE",
           isBanned: status === "BANNED",
           status,
           role: membership ? String(membership.role) : "",
+          isCommunityClosed:
+            !community || communityAccessPolicy.isEffectivelyClosed(community),
         });
       } catch (err) {
         logger.error("checkCommunityMembership gRPC handler failed", err);
@@ -215,8 +219,11 @@ const communityImpl: grpc.UntypedServiceImplementation = {
 
   // Membership gate for stream-service ("who can go live"): is_member is true
   // ONLY for an ACTIVE member. role/status are the raw membership enum strings
-  // ("" when there is no membership row). Fail-safe: any error → not-a-member
-  // (never throw to the gRPC layer, so a transient DB blip can't grant access).
+  // ("" when there is no membership row). is_community_closed additionally lets
+  // stream-service block go-live/commenting when the community itself is
+  // owner-CLOSED or platform-SUSPENDED, even for a valid ACTIVE member.
+  // Fail-safe: any error → not-a-member (never throw to the gRPC layer, so a
+  // transient DB blip can't grant access).
   validateMembership: (
     call: grpc.ServerUnaryCall<unknown, unknown>,
     callback: grpc.sendUnaryData<unknown>
@@ -228,18 +235,25 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         const userId = (req.userId ?? "").trim();
 
         if (!communityId || !userId) {
-          callback(null, { isMember: false, role: "", status: "" });
+          callback(null, {
+            isMember: false,
+            role: "",
+            status: "",
+            isCommunityClosed: false,
+          });
           return;
         }
 
-        const row = await communityRepository.findMembership(
-          communityId,
-          userId
-        );
+        const [row, community] = await Promise.all([
+          communityRepository.findMembership(communityId, userId),
+          communityRepository.findById(communityId),
+        ]);
         callback(null, {
           isMember: row?.status === CommunityMemberStatus.ACTIVE,
           role: row?.role ?? "",
           status: row?.status ?? "",
+          isCommunityClosed:
+            !community || communityAccessPolicy.isEffectivelyClosed(community),
         });
       } catch (err) {
         logger.error("validateMembership gRPC handler failed", err);
@@ -492,6 +506,40 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "adminGetCommunitiesByIds failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Batch role lookup for the backoffice Livestream Viewer List "type" column.
+  // Users not currently a member of the community are simply omitted — the
+  // caller defaults them to MEMBER.
+  adminGetMemberRoles: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          userIds?: string[];
+        };
+        const userIds = Array.isArray(req.userIds) ? req.userIds : [];
+        const rows = await communityRepository.getMemberRolesByUserIds(
+          (req.communityId || "").trim(),
+          userIds
+        );
+        callback(null, {
+          roles: rows.map((r) => ({
+            userId: r.userId,
+            role: String(r.role),
+          })),
+        });
+      } catch (err) {
+        logger.error("adminGetMemberRoles gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminGetMemberRoles failed",
         } as grpc.ServiceError);
       }
     })();
