@@ -150,9 +150,11 @@ export const userManagementService = {
           userAvatarService.resolveViewUrl(item.avatarUrl),
           userAvatarService.resolveMediaObject(item.avatarUrl),
         ]);
+        // `item.avatarUrl` is the raw internal object key (never a response
+        // field) — destructure it out so it can't leak via the spread below.
+        const { avatarUrl: _avatarUrl, ...rest } = item;
         return {
-          ...item,
-          avatarUrl: av?.url ?? null,
+          ...rest,
           avatarUrlExpiresIn: av?.expiresIn ?? null,
           avatar,
         };

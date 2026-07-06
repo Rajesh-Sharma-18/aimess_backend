@@ -45,8 +45,6 @@ export type UserListItem = {
   status: UserStatus;
   joinedAt: string;
   reportCount: number;
-  /** Presigned GET URL for the avatar, or null when unset / presign failed. */
-  avatarUrl?: string | null;
   /** Lifetime of `avatarUrl` in seconds; null when avatarUrl is null. */
   avatarUrlExpiresIn?: number | null;
   /**
