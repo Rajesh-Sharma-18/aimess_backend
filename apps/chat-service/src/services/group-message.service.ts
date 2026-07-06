@@ -453,12 +453,15 @@ export class GroupMessageService {
     userId: string;
     query: string;
     limit: number;
+    skip?: number;
   }): Promise<GroupMessage[]> {
     await assertGroupMember(this.memberRepo, params.roomId, params.userId);
     return this.messageRepo.searchByText(
       params.roomId,
       params.query,
-      params.limit
+      params.limit,
+      params.userId,
+      params.skip ?? 0
     );
   }
 
@@ -489,8 +492,12 @@ export class GroupMessageService {
     return this.messageRepo.countByRoom(roomId);
   }
 
-  async countSearchResults(roomId: string, query: string): Promise<number> {
-    return this.messageRepo.countSearchResults(roomId, query);
+  async countSearchResults(
+    roomId: string,
+    query: string,
+    userId: string
+  ): Promise<number> {
+    return this.messageRepo.countSearchResults(roomId, query, userId);
   }
 
   /**

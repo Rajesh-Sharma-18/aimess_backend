@@ -183,6 +183,7 @@ model ModerationAction {
 
   @@index([targetType, targetId])
   @@index([targetType, targetId, createdAt(sort: Desc)])
+  @@index([reportId, createdAt(sort: Desc)])
 }
 
 // -----------------------------------------------------------------------------
@@ -355,6 +356,15 @@ model Report {
   // unique indexes treat NULLs as distinct, so "unique where not null" holds.
   sourceReportId String? @unique
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  // Decision fields — populated once an admin resolves/dismisses the report.
+  // `assignedTo` doubles as the deciding moderator's id once actioned (no
+  // separate "assignee" concept exists yet, so we don't add a second column).
+  resolution    String? // ACTION_TAKEN | WARNING_ISSUED | CONTENT_REMOVED
+  dismissReason String? // NO_VIOLATION | INSUFFICIENT_EVIDENCE | DUPLICATE | FALSE_REPORT
+  decisionNote  String?
+  resolvedAt    DateTime? @db.Timestamptz(3)
 
   notes ReportNote[]
 

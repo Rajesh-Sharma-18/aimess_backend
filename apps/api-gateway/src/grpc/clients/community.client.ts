@@ -70,6 +70,8 @@ export interface GetCommunityMessagesResponse {
   messages: CommunityMessageDto[];
   nextCursor: string;
   hasMore: boolean;
+  /** JSON-encoded PinnedMessageSummary, or "" when the room has no active pin. */
+  pinnedMessageJson: string;
 }
 export interface CommunityMessageDto {
   messageId: string;
@@ -334,6 +336,8 @@ export interface CheckCommunityMembershipResult {
   isBanned: boolean;
   status: string;
   role: string;
+  /** True when the community is owner-CLOSED or platform-SUSPENDED. */
+  isCommunityClosed: boolean;
 }
 
 export interface GetUserActiveCommunityIdsResult {

@@ -207,6 +207,13 @@ const creatorStreamLockKey = (communityId: string, creatorId: string) =>
   `stream:creator-active-lock:${communityId}:${creatorId}`;
 const CREATOR_STREAM_LOCK_TTL_SEC = 15;
 
+// SRS accepts an RTMP/WHIP publish (on_publish fires / markLive is called)
+// before any media has actually flowed, so HLS/FLV can 404 for a moment right
+// after go-live. These bound the best-effort poll that watches for the first
+// real frame and tells viewers once playback will actually work.
+const PLAYABLE_POLL_INTERVAL_MS = 500;
+const PLAYABLE_POLL_MAX_ATTEMPTS = 10;
+
 /** Map a community-service moderation `errorCode` to the matching AppError subclass. */
 function moderationErrorToAppError(errorCode: string): Error {
   if (!errorCode) return new ForbiddenError("STREAM_MUTE_FORBIDDEN");
@@ -264,6 +271,11 @@ export class LivestreamService {
       }
       if (!membership.isMember) {
         throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
+      }
+      // A CLOSED/SUSPENDED community blocks new go-lives even for an ACTIVE
+      // member — going live is a write operation like any other.
+      if (membership.isCommunityClosed) {
+        throw new ForbiddenError("COMMUNITY_IS_CLOSED");
       }
     }
 
@@ -418,6 +430,7 @@ export class LivestreamService {
       startedAt: updated.livedAt?.getTime() ?? Date.now(),
     });
     void this.publishCommunityStreamStarted(updated);
+    this.notifyWhenPlayable(updated);
     this.eventPublisher("stream.started", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -572,6 +585,7 @@ export class LivestreamService {
       startedAt: updated.livedAt?.getTime() ?? Date.now(),
     });
     void this.publishCommunityStreamStarted(updated);
+    this.notifyWhenPlayable(updated);
     this.eventPublisher("stream.started", {
       streamId: updated.id,
       communityId: updated.communityId,
@@ -1269,20 +1283,23 @@ export class LivestreamService {
     if (env.STREAM_REQUIRE_MEMBERSHIP) {
       // Viewing is always allowed (ban check above is the only hard gate).
       // Membership only controls commenting: non-members can watch silently.
-      // A community-service outage (throw) is treated as "member" so viewers
-      // aren't locked out of live streams during infra hiccups.
+      // A community-service outage (throw) is treated as "member, not closed"
+      // so viewers aren't locked out of live streams during infra hiccups.
       let isMember: boolean;
+      let isCommunityClosed: boolean;
       try {
         const membership = await this.communityClient.validateMembership(
           stream.communityId,
           userId
         );
         isMember = membership.isMember;
+        isCommunityClosed = membership.isCommunityClosed;
       } catch (error) {
         logger.warn(
           `checkAccess: community service unavailable for stream=${streamId} user=${userId}: ${String(error)}`
         );
         isMember = true; // fail-open — don't black out live streams
+        isCommunityClosed = false;
       }
       this.streamRepo
         .incrementTotalViews(streamId)
@@ -1296,7 +1313,8 @@ export class LivestreamService {
         isBanned: false,
         status: "",
         reason: "",
-        canComment: (isMember ? canComment : false) && !isMuted,
+        canComment:
+          (isMember ? canComment : false) && !isMuted && !isCommunityClosed,
         ...snapshot,
       };
     }
@@ -1807,6 +1825,54 @@ export class LivestreamService {
         `status broadcast failed for stream=${streamId}: ${String(error)}`
       );
     }
+  }
+
+  /**
+   * Fire-and-forget: poll SRS for the first real frame after a stream goes
+   * LIVE and broadcast `stream:playable` once confirmed, so viewers who land
+   * on the watch page in the first instant (the broadcaster included) know to
+   * hold off mounting the player instead of racing an empty HLS/FLV source.
+   * Bounded to {@link PLAYABLE_POLL_MAX_ATTEMPTS} — if SRS never reports
+   * frames (e.g. the publisher dropped immediately), this simply gives up;
+   * the player's own retry/backoff logic remains the fallback either way.
+   * Skipped for sources SRS never ingests (URL/YOUTUBE embeds).
+   */
+  private notifyWhenPlayable(stream: Livestream): void {
+    if (stream.sourceType === "URL" || stream.sourceType === "YOUTUBE") return;
+    void (async () => {
+      for (let attempt = 0; attempt < PLAYABLE_POLL_MAX_ATTEMPTS; attempt++) {
+        let ready = false;
+        try {
+          ready = await this.srsService.hasFrames(stream.streamKey);
+        } catch (error) {
+          logger.warn(
+            `notifyWhenPlayable: hasFrames check failed for stream=${stream.id}: ${String(error)}`
+          );
+        }
+        if (ready) {
+          try {
+            await this.redis.publish(
+              `stream:${stream.id}`,
+              JSON.stringify({
+                event: "stream:playable",
+                data: { streamId: stream.id, communityId: stream.communityId },
+              })
+            );
+          } catch (error) {
+            logger.warn(
+              `stream:playable broadcast failed for stream=${stream.id}: ${String(error)}`
+            );
+          }
+          return;
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, PLAYABLE_POLL_INTERVAL_MS)
+        );
+      }
+      logger.info(
+        `notifyWhenPlayable: gave up waiting for frames on stream=${stream.id} after ${String(PLAYABLE_POLL_MAX_ATTEMPTS)} attempts`
+      );
+    })();
   }
 
   /**

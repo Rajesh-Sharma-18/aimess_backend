@@ -34,6 +34,20 @@ service CommunityService {
   // `setReactionActivity`/`clearReactionActivityIfCurrent` repository methods
   // the queue consumer already calls — no separate persistence logic.
   rpc UpdateReactionActivity (UpdateReactionActivityRequest) returns (UpdateReactionActivityResponse);
+  // Synchronous companion to chat-service's async `community.activity.queue`
+  // publish for the CANONICAL lastActivity (message send/edit/delete) — mirrors
+  // UpdateReactionActivity's role for reactions. Awaited BEFORE the caller's
+  // response so a client that re-fetches GET /communities/mine immediately
+  // after a delete never races ahead of the DB write; the queue publish
+  // remains the best-effort backstop. Two modes, discriminated by
+  // `self_user_id`:
+  //  - "" (empty): canonical forward-only bump (mirrors
+  //    communityRepository.updateLastActivity — same as the queue consumer).
+  //  - non-empty: personal self-hide overlay for delete-for-me — writes ONLY
+  //    lastActivityUserId/lastActivitySelfPreview (unconditional overwrite,
+  //    reusing the existing self-referential join/role-change columns), never
+  //    touching the canonical fields other members see.
+  rpc UpdateMessageActivity (UpdateMessageActivityRequest) returns (UpdateMessageActivityResponse);
 
   // ---- Backoffice (admin panel) Community Management ----
   // Read-through queries for the admin Community Management screen + the
@@ -50,10 +64,23 @@ service CommunityService {
   // community ids. Backs the backoffice Livestream Management list/detail join
   // (one round-trip per page). avatar_url is already presigned.
   rpc AdminGetCommunitiesByIds (AdminGetCommunitiesByIdsRequest) returns (AdminGetCommunitiesByIdsResponse);
+  // Batch role lookup for a set of userIds within one community. Backs the
+  // backoffice Livestream Viewer List "type" (Admin|Moderator|Member) column
+  // without an N+1 per-viewer lookup.
+  rpc AdminGetMemberRoles (AdminGetMemberRolesRequest) returns (AdminGetMemberRolesResponse);
   // Reverse lookup for the admin User Management detail screen: the communities a
   // given user is an ACTIVE member of. Searchable by community name/id, sortable.
   rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
   rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
+
+  // ---- Backoffice (admin panel) Category Management ----
+  // Categories are owned by community-service (CommunityCategory); the
+  // backoffice admin panel manages them exclusively through these RPCs — no
+  // duplicate category table exists on the backoffice side.
+  rpc AdminListCategories (AdminListCategoriesRequest) returns (AdminListCategoriesResponse);
+  rpc AdminCreateCategory (AdminCreateCategoryRequest) returns (AdminCategoryMutationResponse);
+  rpc AdminUpdateCategory (AdminUpdateCategoryRequest) returns (AdminCategoryMutationResponse);
+  rpc AdminDeleteCategory (AdminDeleteCategoryRequest) returns (AdminDeleteCategoryResponse);
 
   // Bulk community-chat summaries for GET /communities/mine: per-community unread
   // count + last-message preview for the calling user. Member-only previews.
@@ -200,6 +227,25 @@ message UpdateReactionActivityResponse {
   bool ok = 1;
 }
 
+message UpdateMessageActivityRequest {
+  string communityId     = 1;
+  // Canonical bump fields — meaningful when selfUserId is "".
+  int64  lastMessageAt   = 2;  // epoch ms
+  string lastMessageId   = 3;
+  string senderUserId    = 4;
+  string senderUsername  = 5;
+  string messagePreview  = 6;
+  string activityType    = 7;  // "message" | "edited" | ... (default "message")
+  // Personal self-hide overlay — when non-empty, ONLY lastActivityUserId /
+  // lastActivitySelfPreview are written (see rpc doc above); fields above are
+  // ignored in this mode.
+  string selfUserId      = 8;
+  string selfPreview     = 9;
+}
+message UpdateMessageActivityResponse {
+  bool ok = 1;
+}
+
 // ---- Backoffice Community Management ----
 // "status" = admin moderation lifecycle: ACTIVE | CLOSED (CLOSED == the
 // Community.moderationStatus SUSPENDED). Distinct from user soft-delete
@@ -343,6 +389,22 @@ message AdminGetCommunitiesByIdsResponse {
   repeated AdminCommunityBrief communities = 1;
 }
 
+// ---- Backoffice batch member-role enrichment (Livestream Viewer List) ----
+// Batch role lookup for a set of userIds within one community. Users not
+// found (e.g. left the community) are simply absent from the response — the
+// caller defaults them to MEMBER.
+message AdminGetMemberRolesRequest {
+  string community_id     = 1;
+  repeated string user_ids = 2;
+}
+message AdminMemberRoleRow {
+  string user_id = 1;
+  string role    = 2; // ADMIN|MODERATOR|MEMBER
+}
+message AdminGetMemberRolesResponse {
+  repeated AdminMemberRoleRow roles = 1;
+}
+
 // ---- Backoffice User → Communities reverse lookup ----
 // The "Communities" grid on the admin User Management detail screen: the
 // communities the given user is an ACTIVE member of. Driving filter is the
@@ -388,6 +450,61 @@ message AdminSetModerationStatusResponse {
   string error_code = 4;
 }
 
+// ---- Backoffice Category Management ----
+message AdminCategoryRow {
+  string id         = 1;
+  string name       = 2;
+  string slug       = 3;
+  bool   visible    = 4; // CommunityCategory.active
+  int32  order      = 5;
+  int64  created_at = 6; // epoch ms
+  int64  updated_at = 7; // epoch ms
+}
+
+message AdminListCategoriesRequest {
+  string search     = 1; // "" = no filter
+  string status     = 2; // "visible" | "hidden" | "" (= all)
+  int32  page       = 3;
+  int32  limit      = 4;
+  string sort_field = 5; // "name" | "order" | "createdAt" | "" (default "order")
+  string sort_dir    = 6; // "asc" | "desc" | "" (default "asc")
+}
+
+message AdminListCategoriesResponse {
+  repeated AdminCategoryRow categories = 1;
+  int64                     total      = 2;
+}
+
+message AdminCreateCategoryRequest {
+  string name = 1;
+}
+
+message AdminUpdateCategoryRequest {
+  string category_id  = 1;
+  string name         = 2; // "" = leave unchanged
+  bool   has_name      = 3; // true when `name` was provided in the request body
+  bool   visible       = 4; // ignored unless has_visible
+  bool   has_visible    = 5;
+}
+
+// "" on success, else CATEGORY_NOT_FOUND | CATEGORY_NAME_TAKEN
+message AdminCategoryMutationResponse {
+  bool             ok         = 1;
+  AdminCategoryRow category   = 2;
+  string           error_code = 3;
+}
+
+message AdminDeleteCategoryRequest {
+  string category_id = 1;
+}
+
+// "" on success, else CATEGORY_NOT_FOUND
+message AdminDeleteCategoryResponse {
+  bool   ok           = 1;
+  bool   soft_deleted  = 2; // true when the category was in use (soft-deleted, not removed)
+  string error_code    = 3;
+}
+
 message GetCommunityCountRequest {}
 message CommunityCount {
   int64 total = 1;
@@ -399,9 +516,13 @@ message ValidateMembershipRequest {
   string user_id      = 2;
 }
 message ValidateMembershipResponse {
-  bool   is_member = 1;  // true only when an ACTIVE member
-  string role      = 2;  // ADMIN | MODERATOR | MEMBER | "" when not a member
-  string status    = 3;  // ACTIVE | PENDING | BANNED | LEFT | "" when no row
+  bool   is_member           = 1;  // true only when an ACTIVE member
+  string role                = 2;  // ADMIN | MODERATOR | MEMBER | "" when not a member
+  string status               = 3;  // ACTIVE | PENDING | BANNED | LEFT | "" when no row
+  // True when the community is owner-CLOSED or platform-SUSPENDED (also true
+  // when the community can't be found) — callers use this to block go-live /
+  // commenting even for an otherwise-valid ACTIVE member.
+  bool   is_community_closed = 4;
 }
 
 message SendCommunityMessageRequest {
@@ -432,6 +553,11 @@ message GetCommunityMessagesResponse {
   repeated CommunityMessageDto messages   = 1;
   string                       next_cursor = 2;
   bool                         has_more   = 3;
+  // JSON-encoded PinnedMessageSummary (chat-service CommunityPinService),
+  // or "" when the room has no active pin. Lets the FE always know the
+  // currently pinned message without depending on the PINNED_MESSAGE system
+  // line, which scrolls out of view as newer messages arrive.
+  string                       pinned_message_json = 4;
 }
 message CommunityMessageDto {
   string message_id          = 1;
@@ -553,6 +679,9 @@ message CheckCommunityMembershipResponse {
   string status    = 3;
   // ACTIVE member's role (ADMIN|MODERATOR|MEMBER); empty when not a member.
   string role      = 4;
+  // True when the community is owner-CLOSED or platform-SUSPENDED. Lets the
+  // gateway block new socket writes (join/typing) into a closed community.
+  bool   is_community_closed = 5;
 }
 
 // ---- Moderation-mute check (notifications eligibility gate) ----

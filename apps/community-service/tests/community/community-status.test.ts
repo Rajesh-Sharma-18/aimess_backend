@@ -2,11 +2,13 @@
  * Suite: community-status (owner CLOSE / REOPEN lifecycle)
  *
  * Exercises communityService.closeCommunity / reopenCommunity:
- *   - close: status→CLOSED, all members evicted, memberCount→0, realtime
- *     `community:closed` to the room AND each ex-member's user room, chat-room
- *     suspend, push fan-out.
- *   - reopen: ownership (adminId) authz, status→ACTIVE, owner re-added as sole
- *     ADMIN (memberCount→1), realtime `community:reopened`, chat-room unsuspend.
+ *   - close: status→CLOSED ONLY — members/roles/memberCount are never touched;
+ *     realtime `community:closed` to the room AND each active member's user
+ *     room, chat-room suspend, push fan-out.
+ *   - reopen: ownership (adminId) authz, status→ACTIVE ONLY — no member is
+ *     created/reactivated and memberCount is untouched (it was never zeroed);
+ *     realtime `community:reopened` to the room AND every active member's user
+ *     room (roster is intact), chat-room unsuspend.
  *   - authz: non-admin can't close; non-owner can't reopen.
  *
  * Real communityService with only I/O boundaries mocked (mirrors
@@ -23,9 +25,11 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
   communityRepository: {
     findById: jest.fn(),
     findMembership: jest.fn(),
-    findMemberByUserId: jest.fn(),
     findActiveMemberIds: jest.fn(),
     updateCommunity: jest.fn(),
+    // Kept as mocks (never called by close/reopen) so tests can assert they
+    // stay untouched — the whole point of this refactor is that member/role
+    // data survives a close/reopen cycle unchanged.
     markAllActiveMembersLeft: jest.fn(),
     setMemberCount: jest.fn(),
     reactivateAdminMember: jest.fn(),
@@ -70,13 +74,17 @@ import { publishCommunityRoomEvent, publishChatUserEvent } from "@aimess/redis";
 
 import { communityService } from "../../src/services/community.service.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
-import { publishCommunityClosedSafe } from "../../src/messaging/publish-community.js";
+import {
+  publishCommunityClosedSafe,
+  publishCommunityReopenedSafe,
+} from "../../src/messaging/publish-community.js";
 import { publishCommunityStatusChangedForChatSafe } from "../../src/messaging/publish-community-chat.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const pubRoom = publishCommunityRoomEvent as jest.Mock;
 const pubUser = publishChatUserEvent as jest.Mock;
 const pubClosed = publishCommunityClosedSafe as jest.Mock;
+const pubReopened = publishCommunityReopenedSafe as jest.Mock;
 const pubChatStatus = publishCommunityStatusChangedForChatSafe as jest.Mock;
 
 const CID = "c".repeat(24);
@@ -123,18 +131,18 @@ describe("closeCommunity", () => {
     repo.createAuditLog.mockResolvedValue({});
   });
 
-  it("sets status=CLOSED, evicts all members, and zeroes memberCount", async () => {
+  it("sets status=CLOSED via a pure status flip — members/roles/memberCount are untouched", async () => {
     await communityService.closeCommunity(CID, ADMIN, "season over");
 
     expect(repo.updateCommunity).toHaveBeenCalledWith(
       CID,
       expect.objectContaining({ status: "CLOSED", statusClosedBy: ADMIN })
     );
-    expect(repo.markAllActiveMembersLeft).toHaveBeenCalledWith(CID);
-    expect(repo.setMemberCount).toHaveBeenCalledWith(CID, 0);
+    expect(repo.markAllActiveMembersLeft).not.toHaveBeenCalled();
+    expect(repo.setMemberCount).not.toHaveBeenCalled();
   });
 
-  it("broadcasts community:closed to the room AND to each ex-member's user room", async () => {
+  it("broadcasts community:closed to the room AND to each active member's user room", async () => {
     await communityService.closeCommunity(CID, ADMIN, "season over");
 
     expect(pubRoom).toHaveBeenCalledWith(
@@ -147,14 +155,14 @@ describe("closeCommunity", () => {
         reason: "season over",
       })
     );
-    // One user-room emit per ex-member (ADMIN, M1, M2).
+    // One user-room emit per active member (ADMIN, M1, M2) — nobody evicted.
     const userTargets = pubUser.mock.calls
       .filter((c) => c[2] === "community:closed")
       .map((c) => c[1]);
     expect(userTargets.sort()).toEqual([ADMIN, M1, M2].sort());
   });
 
-  it("suspends the chat room and pushes to ex-members", async () => {
+  it("suspends the chat room and pushes to every active member", async () => {
     await communityService.closeCommunity(CID, ADMIN, null);
 
     expect(pubChatStatus).toHaveBeenCalledWith(
@@ -188,44 +196,33 @@ describe("closeCommunity", () => {
 });
 
 describe("reopenCommunity", () => {
+  // memberCount stays at its pre-close value (3) — it was never zeroed, since
+  // nobody was evicted on close.
   const closedCommunity = {
     ...activeCommunity,
     status: "CLOSED",
-    memberCount: 0,
   };
 
   beforeEach(() => {
     repo.findById.mockResolvedValue({ ...closedCommunity });
+    repo.findActiveMemberIds.mockResolvedValue([ADMIN, M1, M2]);
     repo.updateCommunity.mockResolvedValue({
       ...activeCommunity,
       status: "ACTIVE",
     });
-    repo.findMemberByUserId.mockResolvedValue({
-      userId: ADMIN,
-      role: "ADMIN",
-      status: "LEFT",
-      snapshotUsername: "owner",
-      snapshotDisplayName: "Owner",
-      snapshotAvatarKey: null,
-    });
-    repo.reactivateAdminMember.mockResolvedValue({});
-    repo.setMemberCount.mockResolvedValue({});
     repo.createAuditLog.mockResolvedValue({});
   });
 
-  it("sets status=ACTIVE and re-establishes the owner as sole ADMIN", async () => {
+  it("sets status=ACTIVE via a pure status flip — no member is created/reactivated", async () => {
     const result = await communityService.reopenCommunity(CID, ADMIN);
 
     expect(repo.updateCommunity).toHaveBeenCalledWith(
       CID,
       expect.objectContaining({ status: "ACTIVE", statusClosedAt: null })
     );
-    expect(repo.reactivateAdminMember).toHaveBeenCalledWith(
-      CID,
-      ADMIN,
-      expect.objectContaining({ snapshotUsername: "owner" })
-    );
-    expect(repo.setMemberCount).toHaveBeenCalledWith(CID, 1);
+    expect(repo.reactivateAdminMember).not.toHaveBeenCalled();
+    expect(repo.createMember).not.toHaveBeenCalled();
+    expect(repo.setMemberCount).not.toHaveBeenCalled();
     expect(result.status).toBe("ACTIVE");
   });
 
@@ -243,17 +240,25 @@ describe("reopenCommunity", () => {
     );
   });
 
-  it("also fans out community:reopened to the owner's user:<id> channel (room is empty post-close)", async () => {
+  it("fans out community:reopened to every active member's user:<id> channel (roster is intact)", async () => {
     await communityService.reopenCommunity(CID, ADMIN);
 
-    // The community:<id> room was emptied on close and reopen does not restore
-    // members, so a room-only emit reaches nobody. The owner's user channel must
-    // get it so their other tabs/devices flip back to ACTIVE without a refresh.
-    expect(pubUser).toHaveBeenCalledWith(
-      expect.anything(),
-      ADMIN,
-      "community:reopened",
-      expect.objectContaining({ communityId: CID, status: "ACTIVE" })
+    // Nobody was evicted on close, so every member — not just the owner —
+    // gets the reopen notification.
+    const userTargets = pubUser.mock.calls
+      .filter((c) => c[2] === "community:reopened")
+      .map((c) => c[1]);
+    expect(userTargets.sort()).toEqual([ADMIN, M1, M2].sort());
+  });
+
+  it("pushes reopened notification to the full active roster", async () => {
+    await communityService.reopenCommunity(CID, ADMIN);
+
+    expect(pubReopened).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: CID,
+        memberIds: [ADMIN, M1, M2],
+      })
     );
   });
 

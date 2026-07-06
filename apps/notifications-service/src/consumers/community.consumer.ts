@@ -686,14 +686,11 @@ async function handleCommunityEvent(
     }
 
     case CommunityEvents.REOPENED: {
-      // The community was CLOSED (all members evicted); on reopen only the
-      // owner is reinstated — there is no former-member roster to push to.
-      // The socket broadcast in community.service.ts already notifies the
-      // owner's other connected devices via their `user:<id>` channel.
-      // A push to the owner is emitted so fully-offline devices also sync.
+      // Members are never evicted on close, so `memberIds` is the same full
+      // roster the CLOSED push reached — notify all of them, mirroring CLOSED.
       const p = data as CommunityReopenedNotifyPayload;
-      await pushToUser({
-        userId: p.actorId,
+      await pushToUsers(p.memberIds, (userId) => ({
+        userId,
         title: "Community reopened",
         body: `${p.communityName} is open again.`,
         ...base(
@@ -705,7 +702,7 @@ async function handleCommunityEvent(
           },
           buildDeepLink("community", p.communityId)
         ),
-      });
+      }));
       break;
     }
 

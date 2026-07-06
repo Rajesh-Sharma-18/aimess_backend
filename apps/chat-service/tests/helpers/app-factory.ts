@@ -157,6 +157,15 @@ export function buildApp(): BuiltApp {
   const groupInviteLinkRepo = repoMock();
   const groupMessagePinRepo = repoMock();
   const communityMessagePinRepo = repoMock();
+  // CommunityPinService.pin() runs its switch-pin logic inside
+  // `pinRepo.runTransaction(async (tx) => ...)`. There's no real Mongo
+  // transaction in unit tests, so just invoke the callback directly — the
+  // repo methods called inside it (createPin/softDeletePin/incPinnedCount)
+  // are the same mocked jest.fn()s a test already stubs, just called with an
+  // extra (ignored) `tx` arg.
+  communityMessagePinRepo.runTransaction = jest.fn(
+    (fn: (tx: unknown) => unknown) => fn({})
+  );
   const generalRoomRepo = repoMock();
   // Default: community general rooms are open/active. The community write gate
   // (`assertCommunityRoomWritable`) loads the room on send/edit/delete/react/pin;
@@ -269,7 +278,10 @@ export function buildApp(): BuiltApp {
     communityMessagePinRepo,
     generalRoomMessageRepo,
     generalRoomRepo,
-    roomMemberRepo
+    roomMemberRepo,
+    undefined,
+    userSnapshotService,
+    cacheRepo
   );
 
   const presenceService = new PresenceService(cacheRepo, redis);

@@ -123,6 +123,32 @@ export const ADMIN_MESSAGES = {
     vi: "Không tìm thấy báo cáo phát trực tiếp",
     en: "Livestream report not found.",
   },
+
+  // ── Admin Accounts ──────────────────────────────────────────────────────────
+  ADMIN_NOT_FOUND: {
+    vi: "Không tìm thấy quản trị viên",
+    en: "Admin not found.",
+  },
+  ADMIN_EMAIL_TAKEN: {
+    vi: "Email này đã được sử dụng bởi một quản trị viên khác",
+    en: "This email is already used by another admin.",
+  },
+  ADMIN_ROLE_NOT_FOUND: {
+    vi: "Không tìm thấy vai trò",
+    en: "Role not found.",
+  },
+  ADMIN_ALREADY_ACTIVE: {
+    vi: "Tài khoản quản trị này đã hoạt động",
+    en: "This admin account is already active.",
+  },
+  ADMIN_ALREADY_INACTIVE: {
+    vi: "Tài khoản quản trị này đã bị vô hiệu hóa",
+    en: "This admin account is already deactivated.",
+  },
+  ADMIN_CANNOT_DEACTIVATE_SELF: {
+    vi: "Bạn không thể tự vô hiệu hóa tài khoản của mình",
+    en: "You cannot deactivate your own account.",
+  },
 } as const satisfies MessageCatalog;
 
 export type AdminMessageKey = keyof typeof ADMIN_MESSAGES;

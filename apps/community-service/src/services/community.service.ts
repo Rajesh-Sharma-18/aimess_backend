@@ -14,6 +14,7 @@ import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 import type {
   CommunityAddedPayload,
   CommunityClosedPayload,
+  CommunityJoinRequestUpdatedSocketPayload,
   CommunityMemberAddedPayload,
   CommunityMemberJoinedSocketPayload,
   CommunityMemberMutedSocketPayload,
@@ -1481,6 +1482,8 @@ export const communityService = {
     status?: "visible" | "hidden" | "all";
     page: number;
     limit: number;
+    sortField?: "name" | "order" | "createdAt";
+    sortDir?: "asc" | "desc";
   }): Promise<AdminCategoryListResult> {
     const active =
       query.status === "visible"
@@ -1494,6 +1497,8 @@ export const communityService = {
       active,
       page: query.page,
       limit: query.limit,
+      sortField: query.sortField,
+      sortDir: query.sortDir,
     });
 
     const totalPages = total === 0 ? 0 : Math.ceil(total / query.limit);
@@ -1570,14 +1575,23 @@ export const communityService = {
     };
   },
 
-  async deleteCategory(id: string): Promise<void> {
+  /**
+   * Soft-delete (mirrors `Community.deletedAt`) when the category is still
+   * referenced by communities — the FK would otherwise dangle; hard-delete
+   * otherwise. Returns which branch was taken so callers can report it.
+   */
+  async deleteCategory(id: string): Promise<{ softDeleted: boolean }> {
     const category = await communityRepository.findCategoryByIdAdmin(id);
     if (!category) throw new NotFoundError("CATEGORY_NOT_FOUND");
 
     const inUse = await communityRepository.countCommunitiesWithCategory(id);
-    if (inUse > 0) throw new ConflictError("CATEGORY_IN_USE");
+    if (inUse > 0) {
+      await communityRepository.softDeleteCategoryById(id);
+      return { softDeleted: true };
+    }
 
     await communityRepository.deleteCategoryById(id);
+    return { softDeleted: false };
   },
 
   async checkNameAvailability(
@@ -3294,6 +3308,73 @@ export const communityService = {
     });
   },
 
+  /**
+   * Fan out `community:join_request:updated` so every open admin/moderator
+   * "Accept Requests" list adds, drops, or flips the affected request in real
+   * time — no manual page reload. Reused by:
+   *   - createJoinRequest (status "PENDING" — a new request just landed), and
+   *   - approve/reject and their bulk variants (status "APPROVED"/"REJECTED"),
+   * so the realtime side-effect stays DRY across all five call sites.
+   *
+   * Dual delivery, mirroring `community:added`'s reasoning above: the
+   * `community:<id>` room broadcast reaches admins who have the community
+   * open, while the per-moderator `user:<id>` emit reaches admins who only
+   * have the standalone requests screen mounted (never joined the room).
+   * Best-effort — a publish failure must never fail the calling request.
+   */
+  async notifyJoinRequestDecided(args: {
+    communityId: string;
+    requestId: string;
+    status: "PENDING" | "APPROVED" | "REJECTED";
+    targetUserId: string;
+    actorId: string;
+    decidedAt: Date;
+    /** Bulk callers hoist this once to avoid an N+1 of identical role reads. */
+    moderatorRecipientIds?: string[];
+  }): Promise<void> {
+    const { communityId, requestId, status, targetUserId, actorId, decidedAt } =
+      args;
+    try {
+      const moderatorRecipientIds =
+        args.moderatorRecipientIds ??
+        (await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]));
+
+      const payload = {
+        communityId,
+        requestId,
+        status,
+        userId: targetUserId,
+        actorId,
+        updatedAt: decidedAt.getTime(),
+      } satisfies CommunityJoinRequestUpdatedSocketPayload;
+
+      await Promise.all([
+        publishCommunityRoomEvent(
+          redis,
+          communityId,
+          "community:join_request:updated",
+          payload
+        ),
+        ...moderatorRecipientIds.map((modId) =>
+          publishChatUserEvent(
+            redis,
+            modId,
+            "community:join_request:updated",
+            payload
+          )
+        ),
+      ]);
+    } catch (error) {
+      logger.warn(
+        `community:join_request:updated broadcast failed for community=${communityId} request=${requestId}`
+      );
+      logger.warn(error);
+    }
+  },
+
   async addMembers(
     communityId: string,
     callerId: string,
@@ -3333,7 +3414,11 @@ export const communityService = {
     // Reactivated members keep their existing row in hand; the fresh joinedAt is
     // taken from the reactivation write below (it advances to now), so the DTO is
     // built without a re-read while still reporting the latest join time.
-    const toReactivate: { userId: string; joinedAt: Date }[] = [];
+    const toReactivate: {
+      userId: string;
+      joinedAt: Date;
+      role: CommunityMemberRole;
+    }[] = [];
     const toCreate: string[] = [];
 
     for (const userId of userIds) {
@@ -3358,8 +3443,13 @@ export const communityService = {
       } else if (member.status === CommunityMemberStatus.BANNED) {
         skipped.push({ userId, reason: "BANNED" });
       } else {
-        // LEFT (or any other inactive non-banned state) → reactivate.
-        toReactivate.push({ userId, joinedAt: member.joinedAt });
+        // LEFT (or any other inactive non-banned state) → reactivate,
+        // preserving the rank they held before leaving.
+        toReactivate.push({
+          userId,
+          joinedAt: member.joinedAt,
+          role: member.role,
+        });
       }
     }
 
@@ -3384,7 +3474,8 @@ export const communityService = {
               snapshotUsername: snap.username,
               snapshotDisplayName: snap.displayName,
               snapshotAvatarKey: snap.avatarObjectKey,
-            }
+            },
+            m.role
           );
           reactivatedJoinedAt.set(m.userId, row.joinedAt);
         }
@@ -4500,7 +4591,8 @@ export const communityService = {
         newRow = await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           callerId,
-          snapshotData
+          snapshotData,
+          existingMember!.role
         );
       } else {
         newRow = await communityRepository.createMember({
@@ -4832,11 +4924,15 @@ export const communityService = {
   },
 
   /**
-   * CLOSE a community (owner lifecycle, status → CLOSED). Reversible disband:
-   * ALL members (including the admin) are auto-removed, memberCount → 0, and the
-   * chat room is suspended. Distinct from `deleteCommunity` (permanent) and from
-   * platform `moderationStatus=SUSPENDED` (which keeps members). Broadcasts
-   * `community:closed` so connected clients disable actions immediately.
+   * CLOSE a community (owner lifecycle, status → CLOSED). Reversible lockdown:
+   * members/roles/messages/reports/livestream history are ALL left untouched —
+   * only the community's `status` (+ close metadata) flips and the chat room is
+   * suspended. `assertWritable`/`assertCommunityRoomWritable` are what actually
+   * stop normal-user writes; nothing here deletes or detaches data, so Super
+   * Admin (and members, for reads) keep full visibility into everything that
+   * existed at close time. Distinct from `deleteCommunity` (permanent) and from
+   * platform `moderationStatus=SUSPENDED` (same write-lock, different actor).
+   * Broadcasts `community:closed` so connected clients disable actions immediately.
    */
   async closeCommunity(
     communityId: string,
@@ -4848,8 +4944,7 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // Only the ACTIVE admin (owner) may close. The admin is still an ACTIVE
-    // member here — eviction happens below.
+    // Only the ACTIVE admin (owner) may close.
     const callerMembership = await communityRepository.findMembership(
       communityId,
       callerId
@@ -4861,22 +4956,20 @@ export const communityService = {
       return;
     }
 
-    // Capture the active roster BEFORE eviction so the CLOSED event + push can
-    // reach everyone who was a member at close time.
+    // Roster for the CLOSED event + push fan-out. Members are NOT evicted, so
+    // this is simply "everyone currently active" — unchanged by this action.
     const memberIds =
       await communityRepository.findActiveMemberIds(communityId);
 
     const closedAt = new Date();
-    // ORDER MATTERS: flip status first so any concurrent writer hits
-    // COMMUNITY_IS_CLOSED, then evict the roster.
+    // Flip status only. No member/role/message/report/livestream data is
+    // touched — closing is a write-lock, not a teardown.
     await communityRepository.updateCommunity(communityId, {
       status: CommunityStatus.CLOSED,
       statusClosedAt: closedAt,
       statusClosedBy: callerId,
       statusClosedReason: reason,
     });
-    await communityRepository.markAllActiveMembersLeft(communityId);
-    await communityRepository.setMemberCount(communityId, 0);
 
     await this.recordAudit({
       communityId,
@@ -4886,7 +4979,7 @@ export const communityService = {
     });
 
     logger.info(
-      `Community closed: community=${communityId} by=${callerId} evicted=${String(memberIds.length)}`
+      `Community closed: community=${communityId} by=${callerId} members=${String(memberIds.length)}`
     );
 
     // Real-time: broadcast to the community room AND to every ex-member's
@@ -4933,10 +5026,11 @@ export const communityService = {
 
   /**
    * REOPEN a previously CLOSED community (status → ACTIVE). Authorized by
-   * community ownership (`adminId`), NOT active membership — the owner left the
-   * roster on close. Re-establishes the owner as the sole ACTIVE ADMIN
-   * (memberCount → 1); former members are NOT restored (they re-join normally).
-   * Broadcasts `community:reopened` and unsuspends the chat room.
+   * community ownership (`adminId`) — membership was never touched on close, so
+   * the owner (and every other member) is still an ACTIVE row throughout.
+   * Reopen is now a pure status flip: no member is created/reactivated and
+   * `memberCount` is untouched (it was never zeroed). Broadcasts
+   * `community:reopened` to the full existing roster and unsuspends the chat room.
    */
   async reopenCommunity(
     communityId: string,
@@ -4947,7 +5041,7 @@ export const communityService = {
       throw new NotFoundError("COMMUNITY_NOT_FOUND");
     }
 
-    // Ownership check (adminId) — the owner has no ACTIVE membership while CLOSED.
+    // Ownership check (adminId) — simpler and unaffected by membership state.
     if (community.adminId !== callerId) {
       throw new ForbiddenError("COMMUNITY_FORBIDDEN");
     }
@@ -4969,6 +5063,11 @@ export const communityService = {
       return toCommunityData(community, myRole, muteRow);
     }
 
+    // Roster for the REOPENED event + push fan-out — unchanged since close,
+    // since nobody was evicted.
+    const memberIds =
+      await communityRepository.findActiveMemberIds(communityId);
+
     const reopenedAt = new Date();
     const updated = await communityRepository.updateCommunity(communityId, {
       status: CommunityStatus.ACTIVE,
@@ -4976,39 +5075,6 @@ export const communityService = {
       statusClosedBy: null,
       statusClosedReason: null,
     });
-
-    // Re-establish the owner as the sole ACTIVE ADMIN so the community is usable
-    // again. Prefer a fresh user-service snapshot; fall back to the stored
-    // member snapshot if user-service is unavailable.
-    const existing = await communityRepository.findMemberByUserId(
-      communityId,
-      callerId
-    );
-    const snapshotMap = await fetchUserSnapshots([callerId]);
-    const ownerSnap = snapshotMap.get(callerId);
-    const ownerSnapshot = {
-      snapshotUsername: ownerSnap?.username ?? existing?.snapshotUsername ?? "",
-      snapshotDisplayName:
-        ownerSnap?.displayName ?? existing?.snapshotDisplayName ?? "",
-      snapshotAvatarKey:
-        ownerSnap?.avatarObjectKey ?? existing?.snapshotAvatarKey ?? null,
-    };
-    if (existing) {
-      await communityRepository.reactivateAdminMember(
-        communityId,
-        callerId,
-        ownerSnapshot
-      );
-    } else {
-      await communityRepository.createMember({
-        communityId,
-        userId: callerId,
-        role: CommunityMemberRole.ADMIN,
-        status: CommunityMemberStatus.ACTIVE,
-        ...ownerSnapshot,
-      });
-    }
-    await communityRepository.setMemberCount(communityId, 1);
 
     await this.recordAudit({
       communityId,
@@ -5019,13 +5085,9 @@ export const communityService = {
 
     logger.info(`Community reopened: community=${communityId} by=${callerId}`);
 
-    // Real-time: announce reopen to the community room AND to the owner's
-    // `user:<id>` channel. The room is EMPTY post-close (every member was evicted
-    // on close), and reopen does not restore the former roster — so a room-only
-    // emit reaches nobody. The owner is the sole ACTIVE member now; fan out to
-    // their user channel so their other tabs/devices flip the community back to
-    // ACTIVE live (the triggering tab already has the REST response). Mirrors the
-    // per-member fan-out in closeCommunity.
+    // Real-time: announce reopen to the community room AND to every member's
+    // `user:<id>` channel — the roster is intact, so this mirrors closeCommunity's
+    // fan-out exactly (everyone who was notified of the close gets the reopen too).
     const payload: CommunityReopenedPayload = {
       communityId,
       status: "ACTIVE",
@@ -5038,11 +5100,10 @@ export const communityService = {
         "community:reopened",
         payload
       );
-      await publishChatUserEvent(
-        redis,
-        callerId,
-        "community:reopened",
-        payload
+      await Promise.allSettled(
+        memberIds.map((memberId) =>
+          publishChatUserEvent(redis, memberId, "community:reopened", payload)
+        )
       );
     } catch (error) {
       logger.warn(
@@ -5050,14 +5111,14 @@ export const communityService = {
       );
     }
 
-    // Cross-service event: lets notifications-service perform cross-device
-    // sync for the owner. No push is sent to former members (they were evicted
-    // on close and there is no roster to fan out to).
+    // Cross-service event: notifications-service pushes "reopened" to every
+    // member, mirroring the CLOSED push (they were never evicted).
     publishCommunityReopenedSafe({
       communityId,
       actorId: callerId,
       communityName: updated.name,
       eventAt: reopenedAt.toISOString(),
+      memberIds,
     });
 
     // Chat-sync: unsuspend the general room so community chat writes resume.
@@ -5191,6 +5252,19 @@ export const communityService = {
         moderatorRecipientIds,
         requesterDisplayName: requesterSnap?.displayName ?? "Unknown",
         requesterAvatarUrl: requesterAvatarMedia.downloadUrl,
+      });
+
+      // Admin/moderator "Accept Requests" list realtime refresh — a new
+      // request just landed, so every open admin panel should see it appear
+      // without a manual reload. Same broadcast used by approve/reject.
+      await this.notifyJoinRequestDecided({
+        communityId,
+        requestId: row.id,
+        status: "PENDING",
+        targetUserId: callerId,
+        actorId: callerId,
+        decidedAt: new Date(),
+        moderatorRecipientIds,
       });
     }
 
@@ -5364,7 +5438,8 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        }
+        },
+        targetMember.role
       );
     } else {
       await communityRepository.createMember({
@@ -5442,6 +5517,16 @@ export const communityService = {
         displayName: callerSnapApprove?.displayName ?? "Unknown",
       },
       decidedAt: new Date().toISOString(),
+    });
+
+    // Admin/moderator "Accept Requests" list realtime refresh.
+    await this.notifyJoinRequestDecided({
+      communityId: community.id,
+      requestId: request.id,
+      status: "APPROVED",
+      targetUserId: request.userId,
+      actorId: callerId,
+      decidedAt: new Date(),
     });
 
     // COMMUNITY_JOINED personal system message is now emitted inside
@@ -5525,6 +5610,16 @@ export const communityService = {
       visibleToUserId: request.userId,
     });
 
+    // Admin/moderator "Accept Requests" list realtime refresh.
+    await this.notifyJoinRequestDecided({
+      communityId: community.id,
+      requestId: request.id,
+      status: "REJECTED",
+      targetUserId: request.userId,
+      actorId: callerId,
+      decidedAt: new Date(),
+    });
+
     return toJoinRequestData(updated);
   },
 
@@ -5589,7 +5684,8 @@ export const communityService = {
         await communityRepository.reactivateMemberWithSnapshot(
           communityId,
           request.userId,
-          snapshotData
+          snapshotData,
+          existing.role
         );
       } else if (
         !existing ||
@@ -5683,6 +5779,18 @@ export const communityService = {
           },
           decidedAt: decidedAt.toISOString(),
         });
+
+        // Admin/moderator "Accept Requests" list realtime refresh (per request,
+        // so every removed row is individually addressable client-side).
+        void this.notifyJoinRequestDecided({
+          communityId: community.id,
+          requestId,
+          status: "APPROVED",
+          targetUserId: request.userId,
+          actorId: callerId,
+          decidedAt,
+          moderatorRecipientIds,
+        });
       }
 
       logger.info(
@@ -5736,6 +5844,12 @@ export const communityService = {
         ]);
       const callerSnapBulkReject = callerSnapsBulkReject.get(callerId);
 
+      const moderatorRecipientIds =
+        await communityRepository.findActiveMemberIdsByRoles(communityId, [
+          CommunityMemberRole.ADMIN,
+          CommunityMemberRole.MODERATOR,
+        ]);
+
       for (const requestId of pending) {
         const request = rowMap.get(requestId)!;
         void this.recordAudit({
@@ -5761,6 +5875,17 @@ export const communityService = {
             displayName: callerSnapBulkReject?.displayName ?? "Unknown",
           },
           decidedAt: decidedAt.toISOString(),
+        });
+
+        // Admin/moderator "Accept Requests" list realtime refresh.
+        void this.notifyJoinRequestDecided({
+          communityId: community.id,
+          requestId,
+          status: "REJECTED",
+          targetUserId: request.userId,
+          actorId: callerId,
+          decidedAt,
+          moderatorRecipientIds,
         });
       }
 
@@ -6179,7 +6304,8 @@ export const communityService = {
           snapshotUsername: snap.username,
           snapshotDisplayName: snap.displayName,
           snapshotAvatarKey: snap.avatarObjectKey,
-        }
+        },
+        targetMember.role
       );
     } else {
       await communityRepository.createMember({
@@ -7752,7 +7878,8 @@ export const communityService = {
             snapshotUsername: snap.username,
             snapshotDisplayName: snap.displayName,
             snapshotAvatarKey: snap.avatarObjectKey,
-          }
+          },
+          existing.role
         );
       } else {
         member = await communityRepository.createMember({

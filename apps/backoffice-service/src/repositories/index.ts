@@ -17,6 +17,7 @@ export {
 } from "./livestream.repository.js";
 export {
   userDirectoryRepository,
+  deriveModerationStatus,
   type UserDirectoryRepository,
 } from "./user-directory.repository.js";
 export {
@@ -45,3 +46,4 @@ export {
 } from "./group.grpc.repository.js";
 export { reportDetailRepository } from "./report-detail.repository.js";
 export { announcementRepository } from "./announcement.repository.js";
+export { categoryRepository } from "./category.repository.js";

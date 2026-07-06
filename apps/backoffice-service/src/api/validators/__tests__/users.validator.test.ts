@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  banUserSchema,
   listUsersQuerySchema,
   userReportsQuerySchema,
 } from "../users.validator.js";
@@ -243,6 +244,56 @@ describe("listUsersQuerySchema — sortBy / sortOrder", () => {
       sortBy: "username",
       sortOrder: "sideways",
     });
+    assert.equal(r.success, false);
+  });
+});
+
+describe("banUserSchema — reason (predefined code OR custom text)", () => {
+  it("accepts a predefined reason code", () => {
+    const r = banUserSchema.safeParse({ reason: "SPAM" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.reason, "SPAM");
+  });
+
+  it("accepts a custom free-text reason", () => {
+    const r = banUserSchema.safeParse({
+      reason: "Repeated harassment across multiple communities",
+    });
+    assert.equal(r.success, true);
+    assert.equal(
+      r.data?.reason,
+      "Repeated harassment across multiple communities"
+    );
+  });
+
+  it("trims a custom reason", () => {
+    const r = banUserSchema.safeParse({ reason: "  Custom reason  " });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.reason, "Custom reason");
+  });
+
+  it("rejects a missing reason", () => {
+    const r = banUserSchema.safeParse({});
+    assert.equal(r.success, false);
+  });
+
+  it("rejects an empty/whitespace-only reason", () => {
+    const r = banUserSchema.safeParse({ reason: "   " });
+    assert.equal(r.success, false);
+  });
+
+  it("rejects a reason over 200 characters", () => {
+    const r = banUserSchema.safeParse({ reason: "x".repeat(201) });
+    assert.equal(r.success, false);
+  });
+
+  it("accepts a reason at exactly the 200-character limit", () => {
+    const r = banUserSchema.safeParse({ reason: "x".repeat(200) });
+    assert.equal(r.success, true);
+  });
+
+  it("rejects a non-string (NoSQL-injection-shaped) reason", () => {
+    const r = banUserSchema.safeParse({ reason: { $ne: null } });
     assert.equal(r.success, false);
   });
 });

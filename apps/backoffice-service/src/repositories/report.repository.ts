@@ -1,12 +1,18 @@
 import { ConflictError, NotFoundError } from "@aimess/errors";
 
+import { prisma } from "../config/prisma.js";
+import type { Prisma } from "../generated/prisma/client.js";
+import { userClient, type AdminProfileRecord } from "../grpc/user.client.js";
 import {
   decodeCursor as decodeCursorRaw,
   encodeCursor as encodeCursorGeneric,
   parseSort as parseSortGeneric,
 } from "../lib/keyset-cursor.js";
+import { adminUserRepository } from "./admin-user.repository.js";
+import { moderationActionRepository } from "./moderation-action.repository.js";
 import { reportFixtures } from "./__fixtures__/reports.fixture.js";
 import type {
+  AccountStatus,
   ActionOnReportedUser,
   BulkResult,
   BulkResultItem,
@@ -23,10 +29,16 @@ import type {
   RelatedReport,
   ReportCore,
   ReportDetail,
+  ReportedUserProfile,
+  ReporterUserProfile,
   ReportListItem,
+  ReportPriority,
   ReportStatus,
+  ReportType,
   ResolutionType,
   ResolveResult,
+  TargetType,
+  UserRef,
   ListReportsQuery,
 } from "../types/moderation.types.js";
 
@@ -134,22 +146,26 @@ function decodeCursor(raw: string): Cursor | null {
   return decodeCursorRaw<Cursor>(raw, CURSOR_KEYS);
 }
 
-/** Project a full detail row to the list-table shape. */
+/**
+ * Project a full detail row to the list-table shape. Fixture rows always
+ * populate both user refs (unlike real ingested rows, which may target a
+ * non-user entity) — the `!` here is fixture-guaranteed, not a real-data assumption.
+ */
 function toListItem(r: ReportDetail): ReportListItem {
   return {
     reportId: r.reportId,
     reportedUser: {
-      id: r.reportedUser.id,
-      username: r.reportedUser.username,
-      displayName: r.reportedUser.displayName,
-      avatarUrl: r.reportedUser.avatarUrl,
-      accountStatus: r.reportedUser.accountStatus,
+      id: r.reportedUser!.id,
+      username: r.reportedUser!.username,
+      displayName: r.reportedUser!.displayName,
+      avatarUrl: r.reportedUser!.avatarUrl,
+      accountStatus: r.reportedUser!.accountStatus,
     },
     reporterUser: {
-      id: r.reporterUser.id,
-      username: r.reporterUser.username,
-      displayName: r.reporterUser.displayName,
-      avatarUrl: r.reporterUser.avatarUrl,
+      id: r.reporterUser!.id,
+      username: r.reporterUser!.username,
+      displayName: r.reporterUser!.displayName,
+      avatarUrl: r.reporterUser!.avatarUrl,
     },
     reportType: r.reportType,
     targetType: r.targetType,
@@ -339,7 +355,7 @@ export class MockReportRepository implements ReportRepository {
     return [
       {
         type: input.actionOnReportedUser,
-        targetUserId: row.reportedUser.id,
+        targetUserId: row.reportedUser!.id,
         effectiveUntil,
       },
     ];
@@ -439,10 +455,10 @@ export class MockReportRepository implements ReportRepository {
       if (search) {
         const haystack = [
           r.reportId,
-          r.reportedUser.username,
-          r.reportedUser.displayName,
-          r.reporterUser.username,
-          r.reporterUser.displayName,
+          r.reportedUser!.username,
+          r.reportedUser!.displayName,
+          r.reporterUser!.username,
+          r.reporterUser!.displayName,
         ]
           .join(" ")
           .toLowerCase();
@@ -536,5 +552,810 @@ export class MockReportRepository implements ReportRepository {
   }
 }
 
-/** Phase 1 singleton. Swap to `new PrismaReportRepository()` in Phase 2. */
-export const reportRepository: ReportRepository = new MockReportRepository();
+// ---------------------------------------------------------------------------
+// Phase 2: Prisma-backed implementation (admin_db.Report, real ingested rows).
+// ---------------------------------------------------------------------------
+//
+// Known, documented gaps vs. the full ReportDetail contract (tracked for a
+// follow-up, NOT faked here):
+//  - evidence[] / relatedReports[]: no ReportEvidence model and no duplicate-
+//    detection query yet — both endpoints return a real, empty paginated page.
+//  - target.snapshot / deepLink / conversationId: would need a live gRPC call
+//    to chat/community-service per targetType; not wired.
+//  - sourceService: AdminReportIngestPayload does not carry which upstream
+//    service published the row, and both chat-service and community-service
+//    can emit `type: "user"` — genuinely not derivable, so this is "unknown"
+//    rather than a guess.
+//  - reportType: upstream `reason` is a free-text field for community reports
+//    (chat-service reports use a fixed-but-different enum with e.g. "SCAM").
+//    We best-effort-match `reason` against the 12-value ReportType enum
+//    (case-insensitive) and fall back to OTHER — real data, not a fixture.
+
+const REPORT_TYPES: readonly ReportType[] = [
+  "SPAM",
+  "HARASSMENT",
+  "HATE_SPEECH",
+  "NUDITY",
+  "VIOLENCE",
+  "SELF_HARM",
+  "IMPERSONATION",
+  "MISINFORMATION",
+  "ILLEGAL_CONTENT",
+  "CSAM",
+  "TERRORISM",
+  "OTHER",
+];
+const KNOWN_REPORT_TYPES = REPORT_TYPES.filter((t) => t !== "OTHER");
+
+function toReportType(reason: string): ReportType {
+  const upper = reason
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_");
+  return (KNOWN_REPORT_TYPES as string[]).includes(upper)
+    ? (upper as ReportType)
+    : "OTHER";
+}
+
+function toPriority(priority: string): ReportPriority {
+  switch (priority.trim().toLowerCase()) {
+    case "low":
+      return "LOW";
+    case "high":
+      return "HIGH";
+    case "critical":
+    case "urgent":
+      return "CRITICAL";
+    default:
+      return "MEDIUM";
+  }
+}
+
+const DB_TYPE_TO_TARGET_TYPE: Record<string, TargetType> = {
+  user: "USER",
+  community: "COMMUNITY",
+  message: "MESSAGE",
+  stream: "STREAM",
+};
+const TARGET_TYPE_TO_DB_TYPE: Partial<Record<TargetType, string>> = {
+  USER: "user",
+  COMMUNITY: "community",
+  MESSAGE: "message",
+  STREAM: "stream",
+};
+function toTargetType(dbType: string): TargetType {
+  return DB_TYPE_TO_TARGET_TYPE[dbType] ?? "MEDIA";
+}
+
+const DB_STATUS_TO_STATUS: Record<string, ReportStatus> = {
+  open: "PENDING",
+  reviewing: "UNDER_REVIEW",
+  resolved: "RESOLVED",
+  dismissed: "DISMISSED",
+};
+// ESCALATED has no dedicated admin_db bucket yet — closest existing state.
+const STATUS_TO_DB_STATUS: Record<ReportStatus, string> = {
+  PENDING: "open",
+  UNDER_REVIEW: "reviewing",
+  RESOLVED: "resolved",
+  DISMISSED: "dismissed",
+  ESCALATED: "reviewing",
+};
+function toReportStatus(dbStatus: string): ReportStatus {
+  return DB_STATUS_TO_STATUS[dbStatus] ?? "PENDING";
+}
+
+const CLOSED_DB_STATUSES = new Set(["resolved", "dismissed"]);
+
+type RawReportRow = {
+  id: string;
+  type: string;
+  targetId: string;
+  reporterId: string;
+  reason: string;
+  details: string | null;
+  status: string;
+  priority: string;
+  assignedTo: string | null;
+  resolution: string | null;
+  dismissReason: string | null;
+  decisionNote: string | null;
+  resolvedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+/** Batched profile/status/moderator-name lookups for a page of report rows. */
+type EnrichmentContext = {
+  profiles: Map<string, AdminProfileRecord>;
+  statuses: Map<string, AccountStatus>;
+  moderatorNames: Map<string, string>;
+};
+
+async function buildListEnrichment(
+  rows: RawReportRow[]
+): Promise<EnrichmentContext> {
+  const userIds = new Set<string>();
+  const moderatorIds = new Set<string>();
+  for (const r of rows) {
+    if (r.type === "user") userIds.add(r.targetId);
+    userIds.add(r.reporterId);
+    if (r.assignedTo) moderatorIds.add(r.assignedTo);
+  }
+  const allUserIds = [...userIds];
+
+  const [profiles, userIndexRows, moderatorNames] = await Promise.all([
+    userClient.adminGetProfilesByIds(allUserIds),
+    allUserIds.length
+      ? prisma.userIndex.findMany({
+          where: { userId: { in: allUserIds } },
+          select: { userId: true, status: true },
+        })
+      : Promise.resolve([]),
+    adminUserRepository.findNamesByIds([...moderatorIds]),
+  ]);
+
+  return {
+    profiles: new Map(profiles.map((p) => [p.userId, p])),
+    statuses: new Map(
+      userIndexRows.map((u) => [u.userId, u.status as AccountStatus])
+    ),
+    moderatorNames,
+  };
+}
+
+function toUserRef(userId: string, ctx: EnrichmentContext): UserRef | null {
+  const profile = ctx.profiles.get(userId);
+  if (!profile) return null;
+  const displayName =
+    [profile.firstName, profile.lastName].filter(Boolean).join(" ").trim() ||
+    profile.username;
+  return {
+    id: userId,
+    username: profile.username,
+    displayName,
+    avatarUrl: profile.avatarUrl || null,
+    accountStatus: ctx.statuses.get(userId),
+  };
+}
+
+function toModeratorRef(
+  assignedTo: string | null,
+  ctx: Pick<EnrichmentContext, "moderatorNames">
+): ModeratorRef | null {
+  if (!assignedTo) return null;
+  return {
+    id: assignedTo,
+    name: ctx.moderatorNames.get(assignedTo) ?? assignedTo,
+  };
+}
+
+function toReportListItem(
+  r: RawReportRow,
+  ctx: EnrichmentContext
+): ReportListItem {
+  return {
+    reportId: r.id,
+    reportedUser: r.type === "user" ? toUserRef(r.targetId, ctx) : null,
+    reporterUser: toUserRef(r.reporterId, ctx),
+    reportType: toReportType(r.reason),
+    targetType: toTargetType(r.type),
+    status: toReportStatus(r.status),
+    priority: toPriority(r.priority),
+    createdAt: r.createdAt.toISOString(),
+    resolvedAt: r.resolvedAt?.toISOString() ?? null,
+    moderator: toModeratorRef(r.assignedTo, ctx),
+  };
+}
+
+/** Real, derived availableActions — no DB column, but not hardcoded either. */
+function toAvailableActions(status: ReportStatus): string[] {
+  return status === "RESOLVED" || status === "DISMISSED"
+    ? ["VIEW"]
+    : ["RESOLVE", "DISMISS", "ESCALATE"];
+}
+
+function toReportedProfile(
+  userId: string,
+  ctx: EnrichmentContext,
+  priorReportsCount: number,
+  priorActionsCount: number
+): ReportedUserProfile | null {
+  const ref = toUserRef(userId, ctx);
+  if (!ref) return null;
+  return {
+    ...ref,
+    accountStatus: ref.accountStatus ?? "ACTIVE",
+    joinedAt: ctx.profiles.get(userId)?.createdAt ?? new Date(0).toISOString(),
+    priorReportsCount,
+    priorActionsCount,
+  };
+}
+
+function toReporterProfile(
+  userId: string,
+  ctx: EnrichmentContext,
+  reportsFiledCount: number,
+  falseReportCount: number
+): ReporterUserProfile | null {
+  const ref = toUserRef(userId, ctx);
+  if (!ref) return null;
+  return {
+    ...ref,
+    accountStatus: ref.accountStatus ?? "ACTIVE",
+    reportsFiledCount,
+    falseReportRate:
+      reportsFiledCount > 0
+        ? Math.round((falseReportCount / reportsFiledCount) * 100) / 100
+        : 0,
+  };
+}
+
+/** reportType filter: match `reason` case-insensitively; OTHER = none of the 12 known values. */
+function reportTypeClause(types: ReportType[]): Prisma.ReportWhereInput {
+  const known = types.filter((t): t is ReportType => t !== "OTHER");
+  const wantsOther = types.includes("OTHER");
+  const clauses: Prisma.ReportWhereInput[] = [];
+  if (known.length) {
+    clauses.push({
+      OR: known.map((t) => ({
+        reason: { equals: t, mode: "insensitive" as const },
+      })),
+    });
+  }
+  if (wantsOther) {
+    clauses.push({
+      NOT: {
+        OR: KNOWN_REPORT_TYPES.map((t) => ({
+          reason: { equals: t, mode: "insensitive" as const },
+        })),
+      },
+    });
+  }
+  return clauses.length === 1 ? clauses[0]! : { OR: clauses };
+}
+
+function searchClause(search: string): Prisma.ReportWhereInput {
+  return {
+    OR: [
+      { id: { equals: search } },
+      { targetId: { contains: search, mode: "insensitive" as const } },
+      { reporterId: { contains: search, mode: "insensitive" as const } },
+      { reason: { contains: search, mode: "insensitive" as const } },
+      { details: { contains: search, mode: "insensitive" as const } },
+    ],
+  };
+}
+
+type ListSortField =
+  | "createdAt"
+  | "status"
+  | "reportType"
+  | "priority"
+  | "updatedAt";
+const PRISMA_SORT_COLUMN: Record<ListSortField, string> = {
+  createdAt: "createdAt",
+  status: "status",
+  // reportType has no dedicated column — `reason` is the closest real proxy.
+  reportType: "reason",
+  priority: "priority",
+  updatedAt: "updatedAt",
+};
+
+/** Shared bulk-op runner (resolve/dismiss loop with per-item error capture). */
+async function runBulkOp(
+  ids: string[],
+  op: (id: string) => Promise<{ reportId: string; status: ReportStatus }>
+): Promise<BulkResult> {
+  const results: BulkResultItem[] = [];
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const id of ids) {
+    try {
+      const r = await op(id);
+      results.push({ reportId: id, status: r.status, ok: true });
+      succeeded += 1;
+    } catch (err) {
+      failed += 1;
+      const code =
+        err instanceof ConflictError
+          ? "REPORT_ALREADY_RESOLVED"
+          : err instanceof NotFoundError
+            ? "REPORT_NOT_FOUND"
+            : "BULK_ITEM_FAILED";
+      const message =
+        err instanceof Error ? err.message : "Unexpected bulk item error";
+      results.push({ reportId: id, ok: false, error: { code, message } });
+    }
+  }
+
+  return { requested: ids.length, succeeded, failed, results };
+}
+
+function buildAppliedActionsFor(
+  targetUserId: string,
+  input: ResolveInput,
+  actor: ActorRef
+): ResolveResult["appliedActions"] {
+  if (input.actionOnReportedUser === "NONE") return [];
+  let effectiveUntil: string | null = null;
+  if (input.actionOnReportedUser === "SUSPEND_7D") {
+    effectiveUntil = addDaysIso(actor.at, 7);
+  } else if (input.actionOnReportedUser === "SUSPEND_30D") {
+    effectiveUntil = addDaysIso(actor.at, 30);
+  }
+  return [{ type: input.actionOnReportedUser, targetUserId, effectiveUntil }];
+}
+
+function addDaysIso(iso: string, days: number): string {
+  const d = new Date(iso);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString();
+}
+
+export class PrismaReportRepository implements ReportRepository {
+  async list(query: ListReportsQuery): Promise<Paginated<ReportListItem>> {
+    const where = this.buildWhere(query);
+    const orderBy = this.buildOrderBy(query.sort);
+    const cursorable =
+      parseSortGeneric<ListSortField>(query.sort).field === "createdAt";
+
+    if (query.cursor && cursorable) {
+      return this.keysetPage(where, orderBy, query);
+    }
+    return this.offsetPage(where, orderBy, query, cursorable);
+  }
+
+  async getById(id: string): Promise<ReportDetail | null> {
+    // Sub-resources (evidence/history/relatedReports) are served by their own
+    // endpoints; getCore() below is what the controller actually calls for
+    // GET /reports/:reportId. This full form is kept to satisfy the interface
+    // used internally by resolve/dismiss's "before" snapshot.
+    const core = await this.getCore(id);
+    if (!core) return null;
+    return { ...core, evidence: [], history: [], relatedReports: [] };
+  }
+
+  async getCore(id: string): Promise<ReportCore | null> {
+    const row = await prisma.report.findUnique({ where: { id } });
+    if (!row) return null;
+
+    const moderatorIds = row.assignedTo ? [row.assignedTo] : [];
+    const allIds = [
+      ...new Set(
+        [
+          row.type === "user" ? row.targetId : null,
+          row.reporterId,
+          ...moderatorIds,
+        ].filter((v): v is string => v !== null)
+      ),
+    ];
+
+    const [
+      profiles,
+      userIndexRows,
+      moderatorNames,
+      reportedPriorCount,
+      reportedPriorActions,
+      reporterFiledCount,
+      reporterFalseCount,
+    ] = await Promise.all([
+      userClient.adminGetProfilesByIds(allIds),
+      allIds.length
+        ? prisma.userIndex.findMany({
+            where: { userId: { in: allIds } },
+            select: { userId: true, status: true },
+          })
+        : Promise.resolve([]),
+      adminUserRepository.findNamesByIds(moderatorIds),
+      row.type === "user"
+        ? prisma.report.count({
+            where: {
+              type: "user",
+              targetId: row.targetId,
+              id: { not: row.id },
+            },
+          })
+        : Promise.resolve(0),
+      row.type === "user"
+        ? prisma.moderationAction.count({
+            where: { targetType: "user", targetId: row.targetId },
+          })
+        : Promise.resolve(0),
+      prisma.report.count({ where: { reporterId: row.reporterId } }),
+      prisma.report.count({
+        where: { reporterId: row.reporterId, dismissReason: "FALSE_REPORT" },
+      }),
+    ]);
+
+    const ctx: EnrichmentContext = {
+      profiles: new Map(profiles.map((p) => [p.userId, p])),
+      statuses: new Map(
+        userIndexRows.map((u) => [u.userId, u.status as AccountStatus])
+      ),
+      moderatorNames,
+    };
+
+    const status = toReportStatus(row.status);
+    return {
+      reportId: row.id,
+      reportType: toReportType(row.reason),
+      targetType: toTargetType(row.type),
+      status,
+      priority: toPriority(row.priority),
+      reason: row.reason,
+      reporterNote: row.details,
+      // Not carried by AdminReportIngestPayload — see file-header note.
+      sourceService: "unknown",
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      resolvedAt: row.resolvedAt?.toISOString() ?? null,
+      slaDueAt: null,
+      reportedUser:
+        row.type === "user"
+          ? toReportedProfile(
+              row.targetId,
+              ctx,
+              reportedPriorCount,
+              reportedPriorActions
+            )
+          : null,
+      reporterUser: toReporterProfile(
+        row.reporterId,
+        ctx,
+        reporterFiledCount,
+        reporterFalseCount
+      ),
+      target: { type: toTargetType(row.type), id: row.targetId },
+      availableActions: toAvailableActions(status),
+      resolution: row.resolution as ResolutionType | null,
+      dismissReason: row.dismissReason as DismissReason | null,
+      decisionNote: row.decisionNote,
+      moderator: toModeratorRef(row.assignedTo, ctx),
+    };
+  }
+
+  // Evidence storage doesn't exist yet (no ReportEvidence model) — real, empty page.
+  listEvidence(
+    _id: string,
+    query: ListReportEvidenceQuery
+  ): Promise<Paginated<EvidenceItem>> {
+    return Promise.resolve(this.emptyPage(query));
+  }
+
+  async listHistory(
+    id: string,
+    query: ListReportHistoryQuery
+  ): Promise<Paginated<HistoryItem>> {
+    const skip = (query.page - 1) * query.limit;
+    const { total, rows } = await moderationActionRepository.listByReportId(
+      id,
+      skip,
+      query.limit
+    );
+    const actorIds = [...new Set(rows.map((r) => r.actorId))];
+    const names = await adminUserRepository.findNamesByIds(actorIds);
+
+    const data: HistoryItem[] = rows.map((r) => ({
+      id: r.id,
+      action: r.type,
+      actorType: "ADMIN",
+      actorId: r.actorId,
+      actorName: names.get(r.actorId) ?? r.actorId,
+      at: r.createdAt.toISOString(),
+      note:
+        r.metadata && typeof r.metadata === "object" && "note" in r.metadata
+          ? ((r.metadata as { note: string | null }).note ?? null)
+          : null,
+    }));
+
+    return { data, pagination: this.offsetMeta(query, total, data.length) };
+  }
+
+  // No duplicate-detection query implemented yet — real, empty page.
+  listRelated(
+    _id: string,
+    query: ListReportRelatedQuery
+  ): Promise<Paginated<RelatedReport>> {
+    return Promise.resolve(this.emptyPage(query));
+  }
+
+  async resolve(
+    id: string,
+    input: ResolveInput,
+    actor: ActorRef
+  ): Promise<ResolveResult> {
+    const before = await prisma.report.findUnique({ where: { id } });
+    if (!before) throw new NotFoundError("REPORT_NOT_FOUND");
+    if (CLOSED_DB_STATUSES.has(before.status)) {
+      throw new ConflictError("REPORT_ALREADY_RESOLVED");
+    }
+
+    const resolvedAt = new Date(actor.at);
+    await prisma.$transaction(async (tx) => {
+      await tx.report.update({
+        where: { id },
+        data: {
+          status: "resolved",
+          resolution: input.resolution,
+          dismissReason: null,
+          decisionNote: input.note ?? null,
+          resolvedAt,
+          assignedTo: actor.moderator.id,
+        },
+      });
+      await moderationActionRepository.create(
+        {
+          actorId: actor.moderator.id,
+          type: "report_resolved",
+          targetType: before.type,
+          targetId: before.targetId,
+          reason: input.resolution,
+          metadata: {
+            note: input.note ?? null,
+            actionOnReportedUser: input.actionOnReportedUser,
+          },
+          reportId: id,
+        },
+        tx
+      );
+    });
+
+    return {
+      reportId: id,
+      status: "RESOLVED",
+      resolution: input.resolution,
+      resolvedAt: actor.at,
+      moderator: actor.moderator,
+      appliedActions: buildAppliedActionsFor(before.targetId, input, actor),
+    };
+  }
+
+  async dismiss(
+    id: string,
+    input: DismissInput,
+    actor: ActorRef
+  ): Promise<DismissResult> {
+    const before = await prisma.report.findUnique({ where: { id } });
+    if (!before) throw new NotFoundError("REPORT_NOT_FOUND");
+    if (CLOSED_DB_STATUSES.has(before.status)) {
+      throw new ConflictError("REPORT_ALREADY_RESOLVED");
+    }
+
+    const resolvedAt = new Date(actor.at);
+    await prisma.$transaction(async (tx) => {
+      await tx.report.update({
+        where: { id },
+        data: {
+          status: "dismissed",
+          dismissReason: input.reason,
+          resolution: null,
+          decisionNote: input.note ?? null,
+          resolvedAt,
+          assignedTo: actor.moderator.id,
+        },
+      });
+      await moderationActionRepository.create(
+        {
+          actorId: actor.moderator.id,
+          type: "report_dismissed",
+          targetType: before.type,
+          targetId: before.targetId,
+          reason: input.reason,
+          // flagFalseReport is captured in the audit log `after`; it is not
+          // persisted on the report itself (no reporter-reputation store yet).
+          metadata: {
+            note: input.note ?? null,
+            flagFalseReport: input.flagFalseReport ?? false,
+          },
+          reportId: id,
+        },
+        tx
+      );
+    });
+
+    return {
+      reportId: id,
+      status: "DISMISSED",
+      dismissReason: input.reason,
+      resolvedAt: actor.at,
+      moderator: actor.moderator,
+    };
+  }
+
+  async bulkResolve(
+    ids: string[],
+    input: ResolveInput,
+    actor: ActorRef
+  ): Promise<BulkResult> {
+    return runBulkOp(ids, (id) => this.resolve(id, input, actor));
+  }
+
+  async bulkDismiss(
+    ids: string[],
+    input: DismissInput,
+    actor: ActorRef
+  ): Promise<BulkResult> {
+    return runBulkOp(ids, (id) => this.dismiss(id, input, actor));
+  }
+
+  // -------------------------------------------------------------------------
+  // Internals.
+  // -------------------------------------------------------------------------
+  private buildWhere(query: ListReportsQuery): Prisma.ReportWhereInput {
+    const and: Prisma.ReportWhereInput[] = [];
+    if (query.status?.length) {
+      and.push({
+        status: { in: query.status.map((s) => STATUS_TO_DB_STATUS[s]) },
+      });
+    }
+    if (query.targetType) {
+      const dbType = TARGET_TYPE_TO_DB_TYPE[query.targetType];
+      if (dbType) and.push({ type: dbType });
+    }
+    if (query.assignedTo) {
+      and.push({
+        assignedTo: query.assignedTo === "unassigned" ? null : query.assignedTo,
+      });
+    }
+    if (query.dateFrom) {
+      and.push({
+        createdAt: { gte: new Date(`${query.dateFrom}T00:00:00.000Z`) },
+      });
+    }
+    if (query.dateTo) {
+      and.push({
+        createdAt: { lte: new Date(`${query.dateTo}T23:59:59.999Z`) },
+      });
+    }
+    if (query.reportType?.length) {
+      and.push(reportTypeClause(query.reportType));
+    }
+    if (query.search) {
+      and.push(searchClause(query.search));
+    }
+    return and.length ? { AND: and } : {};
+  }
+
+  private buildOrderBy(sort: string): Prisma.ReportOrderByWithRelationInput[] {
+    const { field, dir } = parseSortGeneric<ListSortField>(sort);
+    const column = PRISMA_SORT_COLUMN[field];
+    return [{ [column]: dir }, { id: dir }];
+  }
+
+  private async offsetPage(
+    where: Prisma.ReportWhereInput,
+    orderBy: Prisma.ReportOrderByWithRelationInput[],
+    query: ListReportsQuery,
+    cursorable: boolean
+  ): Promise<Paginated<ReportListItem>> {
+    const { page, limit } = query;
+    const skip = (page - 1) * limit;
+
+    const [total, rows] = await Promise.all([
+      prisma.report.count({ where }),
+      prisma.report.findMany({ where, orderBy, skip, take: limit }),
+    ]);
+    const ctx = await buildListEnrichment(rows);
+
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+    const hasNext = skip + rows.length < total;
+    const last = rows[rows.length - 1];
+
+    const pagination: PaginationMeta = {
+      mode: "offset",
+      page,
+      limit,
+      total,
+      totalApprox: total,
+      totalPages,
+      hasNext,
+      hasPrev: page > 1,
+      nextCursor:
+        cursorable && hasNext && last
+          ? encodeCursor({
+              createdAt: last.createdAt.toISOString(),
+              reportId: last.id,
+            })
+          : null,
+    };
+    return { data: rows.map((r) => toReportListItem(r, ctx)), pagination };
+  }
+
+  private async keysetPage(
+    where: Prisma.ReportWhereInput,
+    orderBy: Prisma.ReportOrderByWithRelationInput[],
+    query: ListReportsQuery
+  ): Promise<Paginated<ReportListItem>> {
+    const { limit } = query;
+    const cursor = query.cursor ? decodeCursor(query.cursor) : null;
+    const { dir } = parseSortGeneric<ListSortField>(query.sort);
+
+    let seekWhere = where;
+    if (cursor) {
+      const at = new Date(cursor.createdAt);
+      const op = dir === "asc" ? "gt" : "lt";
+      const cursorClause: Prisma.ReportWhereInput = {
+        OR: [
+          { createdAt: { [op]: at } },
+          { createdAt: at, id: { [op]: cursor.reportId } },
+        ],
+      };
+      const existing = where.AND
+        ? Array.isArray(where.AND)
+          ? where.AND
+          : [where.AND]
+        : [where];
+      seekWhere = { AND: [...existing, cursorClause] };
+    }
+
+    const [total, rows] = await Promise.all([
+      prisma.report.count({ where }),
+      prisma.report.findMany({ where: seekWhere, orderBy, take: limit }),
+    ]);
+    const ctx = await buildListEnrichment(rows);
+
+    const hasNext = rows.length === limit;
+    const last = rows[rows.length - 1];
+
+    const pagination: PaginationMeta = {
+      mode: "keyset",
+      page: 1,
+      limit,
+      total,
+      totalApprox: total,
+      totalPages: limit === 0 ? 0 : Math.ceil(total / limit),
+      hasNext,
+      hasPrev: cursor !== null,
+      nextCursor:
+        hasNext && last
+          ? encodeCursor({
+              createdAt: last.createdAt.toISOString(),
+              reportId: last.id,
+            })
+          : null,
+    };
+    return { data: rows.map((r) => toReportListItem(r, ctx)), pagination };
+  }
+
+  private emptyPage<T>(query: { page: number; limit: number }): Paginated<T> {
+    return {
+      data: [],
+      pagination: {
+        mode: "offset",
+        page: query.page,
+        limit: query.limit,
+        total: 0,
+        totalApprox: 0,
+        totalPages: 0,
+        hasNext: false,
+        hasPrev: query.page > 1,
+        nextCursor: null,
+      },
+    };
+  }
+
+  private offsetMeta(
+    query: { page: number; limit: number },
+    total: number,
+    pageLen: number
+  ): PaginationMeta {
+    const { page, limit } = query;
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+    return {
+      mode: "offset",
+      page,
+      limit,
+      total,
+      totalApprox: total,
+      totalPages,
+      hasNext: (page - 1) * limit + pageLen < total,
+      hasPrev: page > 1,
+      nextCursor: null,
+    };
+  }
+}
+
+/** Production singleton. `MockReportRepository` above stays for the smoke test. */
+export const reportRepository: ReportRepository = new PrismaReportRepository();

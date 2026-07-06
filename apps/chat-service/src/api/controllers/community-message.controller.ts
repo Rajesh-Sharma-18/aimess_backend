@@ -133,11 +133,12 @@ export class CommunityMessageController {
         false,
         null
       );
+      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
       res
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            paginated,
+            { ...paginated, pinnedMessage },
             items.length
               ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
@@ -178,6 +179,7 @@ export class CommunityMessageController {
         fromTs: new Date(afterTs),
         limit,
       });
+      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
       const msg = result.items.length
         ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
         : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
@@ -188,6 +190,7 @@ export class CommunityMessageController {
             hasMore: result.hasMore,
             // Store this as the next after_ts to page forward or re-sync.
             nextCursor: result.nextCursor,
+            pinnedMessage,
           },
           msg
         )
@@ -216,10 +219,13 @@ export class CommunityMessageController {
       result.hasMore,
       result.nextCursor
     );
+    const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse(paginated, msg));
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
   });
 
   getConversation = asyncHandler(async (req: Request, res: Response) => {
@@ -564,71 +570,45 @@ export class CommunityMessageController {
       );
     }
 
-    // When deleted for everyone: recalculate and broadcast the new last-message
-    // preview to all members so the community list never shows "Message deleted".
+    // lastActivity recalculation MUST complete (including the synchronous
+    // community-service confirmation below) BEFORE the response — mirrors
+    // reactToMessage's guaranteed-before-response pattern. Previously this
+    // ran fully detached (`void ... .then()`, never awaited by the request
+    // handler at all), so a client that re-fetched GET /communities/mine
+    // immediately after receiving 200 could race ahead of — or entirely miss
+    // — the fire-and-forget, no-DLQ async community.activity.queue publish
+    // and see stale lastActivity.
+
+    // When deleted for everyone: recalculate and persist to community-service
+    // so the list never shows "Message deleted"/stale preview.
     if (type === "forEveryone" && result.roomId) {
-      void this.service
-        .recalculateLastMessageAfterDelete(result.roomId, messageId)
-        .then((recalc) => {
-          if (recalc === null) return; // not the last message — no-op
-          publishCommunityUpdatedSafe({
-            redis: this.redis,
-            communityId: result.roomId,
-            roomId: result.roomId,
-            fetchMembers: () => this.service.getActiveMemberIds(result.roomId),
-            // Per-recipient correctness: a member who personally hid the new
-            // shared previous-visible message gets THEIR own preview instead.
-            resolveOverrides: (memberIds) =>
-              this.service
-                .resolveForEveryoneOverrides(
-                  result.roomId,
-                  recalc.prevMessageId,
-                  memberIds
-                )
-                .then((raw) => renderCommunityOverrides(raw)),
-            senderId: recalc.sentBy,
-            senderName: recalc.senderName,
-            lastMessageId: recalc.prevMessageId ?? "",
-            lastMessageAt: recalc.createdAt.getTime(),
-            preview: {
-              contentType: normalizeMessageType(recalc.messageType),
-              text: recalc.preview,
-            },
-          });
-          if (recalc.hasLastMessage) {
-            publishCommunityActivitySafe({
-              communityId: result.roomId,
-              lastMessageAt: new Date().toISOString(),
-              lastMessageId: recalc.prevMessageId ?? "",
-              senderUserId: recalc.sentBy,
-              senderUsername: recalc.senderName,
-              messagePreview: recalc.preview,
-              type: "message",
-            });
-          }
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            `deleteMessage|recalculate lastMessage failed roomId=${result.roomId}: ${String(err)}`
-          );
-        });
+      await this.recalcAndBroadcastLastMessageAfterDelete(
+        result.roomId,
+        messageId
+      );
     }
 
-    // When deleted for me: send a targeted community:updated ONLY to the
-    // deleting user so their community list shows the previous message they
-    // can see. The shared GeneralRoom snapshot and community-service
-    // lastActivityPreview are NOT changed — all other members are unaffected.
+    // When deleted for me: personalize the deleting user's own view only.
+    // Shared snapshot and canonical community-service lastActivity are NOT
+    // changed — every other member is unaffected. The self-hide overlay
+    // (lastActivityUserId/lastActivitySelfPreview) is the only path that
+    // persists this, since the async queue never carries it.
     if (type !== "forEveryone" && result.roomId) {
-      void this.service
-        .recalculateLastMessageAfterDeleteForMe(
-          result.roomId,
-          result.createdAt,
-          userId
-        )
-        .then((recalc) => {
-          // Skip unless the deleted message was the viewer's effective last
-          // visible message — hiding an older message changes nothing in their list.
-          if (recalc === null || !recalc.wasEffectiveLast) return;
+      try {
+        const recalc =
+          await this.service.recalculateLastMessageAfterDeleteForMe(
+            result.roomId,
+            result.createdAt,
+            userId
+          );
+        // Skip unless the deleted message was the viewer's effective last
+        // visible message — hiding an older message changes nothing in their list.
+        if (recalc !== null && recalc.wasEffectiveLast) {
+          await getCommunityReconcileClient().updateMessageActivity({
+            communityId: result.roomId,
+            selfUserId: userId,
+            selfPreview: recalc.preview,
+          });
           publishCommunityUpdatedSafe({
             redis: this.redis,
             communityId: result.roomId,
@@ -643,12 +623,12 @@ export class CommunityMessageController {
               text: recalc.preview,
             },
           });
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            `deleteMessage|recalculateForMe failed roomId=${result.roomId}: ${String(err)}`
-          );
-        });
+        }
+      } catch (err) {
+        logger.warn(
+          `deleteMessage|recalculateForMe failed roomId=${result.roomId}: ${String(err)}`
+        );
+      }
     }
 
     // When deleted for everyone, check if the message was actively pinned.
@@ -683,6 +663,82 @@ export class CommunityMessageController {
 
     res.status(HTTP_STATUS.OK).json(new ApiResponse(tombstone));
   });
+
+  /**
+   * Shared by deleteMessage (forEveryone) and unpinMessage/pinMessage (pin
+   * system-line retraction): after a message that MAY have been the room's
+   * current last message is hard-hidden, recalculate and broadcast the new
+   * last message so the community list never keeps showing a preview of a
+   * message that's no longer visible. No-op (via `recalc === null`) when the
+   * hidden message wasn't actually the last one.
+   */
+  private async recalcAndBroadcastLastMessageAfterDelete(
+    roomId: string,
+    deletedMessageId: string
+  ): Promise<void> {
+    try {
+      const recalc = await this.service.recalculateLastMessageAfterDelete(
+        roomId,
+        deletedMessageId
+      );
+      if (recalc === null) return;
+
+      if (recalc.hasLastMessage) {
+        publishCommunityActivitySafe({
+          communityId: roomId,
+          lastMessageAt: new Date().toISOString(),
+          lastMessageId: recalc.prevMessageId ?? "",
+          senderUserId: recalc.sentBy,
+          senderUsername: recalc.senderName,
+          messagePreview: recalc.preview,
+          type: "message",
+        });
+        // Synchronous companion — awaited before the response, same
+        // reasoning as reactToMessage's updateReactionActivity call.
+        // Never blocks the delete on failure; the queue publish above
+        // remains the backstop.
+        await getCommunityReconcileClient().updateMessageActivity({
+          communityId: roomId,
+          lastMessageAt: Date.now(),
+          lastMessageId: recalc.prevMessageId ?? "",
+          senderUserId: recalc.sentBy,
+          senderUsername: recalc.senderName,
+          messagePreview: recalc.preview,
+          activityType: "message",
+        });
+      }
+      // Realtime bump — fire-and-forget, the DB write above is already
+      // guaranteed by the time this fires.
+      publishCommunityUpdatedSafe({
+        redis: this.redis,
+        communityId: roomId,
+        roomId,
+        fetchMembers: () => this.service.getActiveMemberIds(roomId),
+        // Per-recipient correctness: a member who personally hid the new
+        // shared previous-visible message gets THEIR own preview instead.
+        resolveOverrides: (memberIds) =>
+          this.service
+            .resolveForEveryoneOverrides(
+              roomId,
+              recalc.prevMessageId,
+              memberIds
+            )
+            .then((raw) => renderCommunityOverrides(raw)),
+        senderId: recalc.sentBy,
+        senderName: recalc.senderName,
+        lastMessageId: recalc.prevMessageId ?? "",
+        lastMessageAt: recalc.createdAt.getTime(),
+        preview: {
+          contentType: normalizeMessageType(recalc.messageType),
+          text: recalc.preview,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        `recalcAndBroadcastLastMessageAfterDelete failed roomId=${roomId} messageId=${deletedMessageId}: ${String(err)}`
+      );
+    }
+  }
 
   /**
    * GET /rooms/:roomId/sync?since_ts=<ms>&limit=<n>
@@ -747,9 +803,10 @@ export class CommunityMessageController {
         );
       return;
     }
+    const skip = (page - 1) * limit;
     const [messages, totalCount] = await Promise.all([
-      this.service.searchMessages({ roomId, userId, query, limit }),
-      this.service.countSearchResults(roomId, query),
+      this.service.searchMessages({ roomId, userId, query, limit, skip }),
+      this.service.countSearchResults(roomId, query, userId),
     ]);
     const paginated = buildListResponse(messages, totalCount, page, limit);
     const msg = paginated.data.length
@@ -771,18 +828,37 @@ export class CommunityMessageController {
       userId,
       communityId,
     });
-    await this.redis.publish(
-      `community:${communityId}`,
-      JSON.stringify({
-        event: "community:message:pinned",
-        data: {
-          roomId,
-          communityId,
-          pin: result.pin,
-          pinnedCount: result.pinnedCount,
-        },
-      })
-    );
+    if (!result.idempotent) {
+      // Switching pins: publish the existing UNPIN event for the message that
+      // got replaced before announcing the new pin.
+      if (result.replacedPin) {
+        await this.redis.publish(
+          `community:${communityId}`,
+          JSON.stringify({
+            event: "community:message:unpinned",
+            data: {
+              roomId,
+              communityId,
+              messageId: result.replacedPin.messageId,
+              pin: result.replacedPin,
+              pinnedCount: null, // unchanged; the pinned event right after carries the settled count
+            },
+          })
+        );
+      }
+      await this.redis.publish(
+        `community:${communityId}`,
+        JSON.stringify({
+          event: "community:message:pinned",
+          data: {
+            roomId,
+            communityId,
+            pin: result.pin,
+            pinnedCount: result.pinnedCount,
+          },
+        })
+      );
+    }
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("CHAT_MESSAGE_PINNED", req.locale)));
@@ -807,6 +883,16 @@ export class CommunityMessageController {
         },
       })
     );
+    // The pin's "X pinned a message" system line was already retracted
+    // (best-effort, inside pinService.unpin) — if that line happened to be
+    // the room's current last message, recalculate lastActivity so the
+    // community list doesn't keep showing a preview of a now-removed line.
+    if (result.retractedSystemMessageId) {
+      await this.recalcAndBroadcastLastMessageAfterDelete(
+        roomId,
+        result.retractedSystemMessageId
+      );
+    }
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("CHAT_MESSAGE_UNPINNED", req.locale)));

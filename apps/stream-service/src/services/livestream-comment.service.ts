@@ -132,6 +132,29 @@ export class LivestreamCommentService {
     }
   }
 
+  /**
+   * True when the stream's community is owner-CLOSED or platform-SUSPENDED.
+   * Fail-open: consistent with {@link isMuted}/{@link isCommunityBanned} — a
+   * community-service outage must not silence the whole chat on its own.
+   */
+  private async isCommunityClosed(
+    communityId: string,
+    userId: string
+  ): Promise<boolean> {
+    try {
+      const membership = await this.communityClient.validateMembership(
+        communityId,
+        userId
+      );
+      return membership.isCommunityClosed;
+    } catch (error) {
+      logger.warn(
+        `community-closed check failed for community=${communityId} user=${userId}: ${String(error)}`
+      );
+      return false;
+    }
+  }
+
   /** True if requester is the stream owner or a community ADMIN/MODERATOR (fail-closed). */
   private async hasModeratorAccess(
     stream: { creatorId: string; communityId: string },
@@ -208,6 +231,12 @@ export class LivestreamCommentService {
     }
     if (stream && (await this.isMuted(stream.communityId, params.userId))) {
       throw new ForbiddenError("COMMENTS_MUTED");
+    }
+    if (
+      stream &&
+      (await this.isCommunityClosed(stream.communityId, params.userId))
+    ) {
+      throw new ForbiddenError("COMMUNITY_IS_CLOSED");
     }
 
     // Enrich author snapshot (best-effort; degrades to empty on user-service down).

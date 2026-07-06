@@ -259,6 +259,23 @@ export const openApiSchemas = {
     },
     required: ["id", "email", "avatarUrl", "role", "permissions"],
   },
+  AdminLogoutResponse: {
+    type: "object",
+    description:
+      "Successful admin logout — standard `{ success, message, data }` envelope confirming the current session was revoked.",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: { type: "string", example: "Logged out successfully" },
+      data: {
+        type: "object",
+        properties: {
+          loggedOut: { type: "boolean", example: true },
+        },
+        required: ["loggedOut"],
+      },
+    },
+    required: ["success", "data"],
+  },
   AdminChangePasswordRequest: {
     type: "object",
     required: ["current", "next"],
@@ -376,14 +393,14 @@ export const openApiSchemas = {
       },
       password: {
         type: "string",
-        minLength: 12,
+        minLength: 6,
         example: "N3w$trongPass99!",
         description:
-          "Min 12 chars, must include uppercase, lowercase, a digit and a special character.",
+          "Min 6 chars as CURRENTLY ENFORCED by password-reset.validator.ts (an in-code comment there and an earlier version of this doc both said 12 — that was never the enforced rule; confirm with backend before relying on either number). Must include uppercase, lowercase, a digit and a special character.",
       },
       confirmPassword: {
         type: "string",
-        minLength: 12,
+        minLength: 6,
         example: "N3w$trongPass99!",
         description: "Must match `password`.",
       },
@@ -566,24 +583,62 @@ export const openApiSchemas = {
   // ---- User Management ----
   AdminUserListItem: {
     type: "object",
+    description:
+      "Source of truth: apps/backoffice-service/src/types/user-management.types.ts UserListItem.",
     properties: {
-      id: { type: "string", example: "u_8f3a" },
+      userId: { type: "string", example: "u_8f3a" },
       username: { type: "string", example: "brianna" },
       email: { type: "string", nullable: true, example: "b@x.com" },
       status: {
         type: "string",
-        enum: ["ACTIVE", "BANNED", "DELETED"],
+        enum: ["ACTIVE", "BANNED", "SUSPENDED", "DELETED"],
         example: "ACTIVE",
       },
-      createdAt: { type: "string", format: "date-time" },
-      communities: { type: "integer", example: 4 },
-      lastActiveAt: {
+      joinedAt: { type: "string", format: "date-time" },
+      reportCount: { type: "integer", example: 2 },
+      avatarUrl: { type: "string", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
+      moderationStatus: {
+        type: "string",
+        enum: ["ACTIVE", "BANNED"],
+        description:
+          "Simplified 2-value moderation view derived from `status` (BANNED covers both a permanent ban and a time-boxed suspension). Never replaces `status`.",
+        example: "ACTIVE",
+      },
+      isBanned: {
+        type: "boolean",
+        description:
+          "True iff the user is currently BANNED or SUSPENDED. Lets the admin panel pick the Ban/Unban row action without an extra request.",
+        example: false,
+      },
+      bannedAt: {
         type: "string",
         format: "date-time",
         nullable: true,
+        description: "Present only when `isBanned` is true.",
+      },
+      bannedBy: {
+        type: "string",
+        nullable: true,
+        description:
+          "actorId of the admin who applied the currently active ban/suspend. Present only when `isBanned` is true.",
+      },
+      banReason: {
+        type: "string",
+        nullable: true,
+        description: "Present only when `isBanned` is true.",
       },
     },
-    required: ["id", "username", "status"],
+    required: [
+      "userId",
+      "username",
+      "status",
+      "joinedAt",
+      "reportCount",
+      "moderationStatus",
+      "isBanned",
+    ],
   },
   AdminCommunityMember: {
     type: "object",
@@ -717,7 +772,7 @@ export const openApiSchemas = {
   AdminUserReport: {
     type: "object",
     description:
-      "One row of the 'Reported Details' panel — a report filed against the user, with the reporter resolved.",
+      "One row of the 'Reported Details' panel — a report filed against the user, with the reporter resolved. Offset-only pagination (no cursor).",
     properties: {
       reportId: { type: "string", example: "r_12" },
       reason: { type: "string", example: "HARASSMENT" },
@@ -728,8 +783,8 @@ export const openApiSchemas = {
       },
       status: {
         type: "string",
-        enum: ["open", "reviewing", "resolved", "dismissed"],
-        example: "open",
+        enum: ["PENDING", "UNDER_REVIEW", "RESOLVED", "DISMISSED", "ESCALATED"],
+        example: "PENDING",
       },
       createdAt: { type: "string", format: "date-time" },
       reporter: {
@@ -749,27 +804,80 @@ export const openApiSchemas = {
   AdminUserDetail: {
     type: "object",
     description:
-      "Full user profile: identity (auth-service) + profile/stats (user-service) + moderation history (admin_db ModerationAction).",
+      "Full user profile: identity (auth-service) + profile/stats (user-service) + report/moderation summary (admin_db). Source of truth: apps/backoffice-service/src/types/user-management.types.ts UserDetail.",
     properties: {
-      id: { type: "string", example: "u_8f3a" },
-      username: { type: "string", example: "brianna" },
-      email: { type: "string", nullable: true },
-      status: {
-        type: "string",
-        enum: ["ACTIVE", "BANNED", "DELETED"],
-      },
       profile: {
         type: "object",
-        description: "Profile/stats projected from user-service.",
+        properties: {
+          userId: { type: "string", example: "u_8f3a" },
+          username: { type: "string", example: "brianna" },
+          email: { type: "string", nullable: true },
+          avatarUrl: { type: "string", nullable: true },
+          avatarUrlExpiresIn: { type: "integer", nullable: true },
+          avatar: { $ref: "#/components/schemas/MediaObject" },
+          joinedAt: { type: "string", format: "date-time" },
+          lastActiveAt: { type: "string", format: "date-time", nullable: true },
+        },
+        required: ["userId", "username", "joinedAt"],
       },
-      moderationHistory: {
-        type: "array",
-        items: { $ref: "#/components/schemas/AdminModerationAction" },
+      accountStatus: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["ACTIVE", "BANNED", "SUSPENDED", "DELETED"],
+          },
+          since: { type: "string", format: "date-time", nullable: true },
+          reason: { type: "string", nullable: true },
+          suspendedUntil: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+          },
+          appliedBy: {
+            type: "string",
+            nullable: true,
+            description: "actorId of the most recent moderation action.",
+          },
+          moderationStatus: {
+            type: "string",
+            enum: ["ACTIVE", "BANNED"],
+            description:
+              "Simplified 2-value moderation view derived from `status` (BANNED covers both a permanent ban and a time-boxed suspension). Never replaces `status`.",
+          },
+          isBanned: {
+            type: "boolean",
+            description: "True iff `status` is currently BANNED or SUSPENDED.",
+          },
+        },
+        required: ["status", "moderationStatus", "isBanned"],
+      },
+      reportsSummary: {
+        type: "object",
+        properties: {
+          total: { type: "integer", example: 3 },
+          open: { type: "integer", example: 1 },
+          resolved: { type: "integer", example: 2 },
+          dismissed: { type: "integer", example: 0 },
+          topReasons: {
+            type: "array",
+            description: "Top 5 report reasons by count.",
+            items: {
+              type: "object",
+              properties: {
+                reason: { type: "string", example: "SPAM" },
+                count: { type: "integer", example: 3 },
+              },
+              required: ["reason", "count"],
+            },
+          },
+        },
+        required: ["total", "open", "resolved", "dismissed", "topReasons"],
       },
       reportCategories: {
         type: "array",
         description:
-          "Per-category report counts (all categories) for the 'Reported Details' chips.",
+          "Per-category report counts (ALL categories, not just top 5) for the 'Reported Details' chips.",
         items: {
           type: "object",
           properties: {
@@ -779,9 +887,27 @@ export const openApiSchemas = {
           required: ["reason", "count"],
         },
       },
-      createdAt: { type: "string", format: "date-time" },
+      moderationHistory: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminModerationAction" },
+      },
+      stats: {
+        type: "object",
+        description: "reportCount mirrors reportsSummary.total.",
+        properties: {
+          reportCount: { type: "integer", example: 3 },
+        },
+        required: ["reportCount"],
+      },
     },
-    required: ["id", "username", "status"],
+    required: [
+      "profile",
+      "accountStatus",
+      "reportsSummary",
+      "reportCategories",
+      "moderationHistory",
+      "stats",
+    ],
   },
   AdminModerationAction: {
     type: "object",
@@ -789,70 +915,166 @@ export const openApiSchemas = {
       id: { type: "string", example: "ma_77" },
       type: {
         type: "string",
+        description:
+          "Actual action-type strings written by backoffice-service (per module).",
         enum: [
-          "ban",
-          "unban",
-          "suspend",
-          "force_logout",
-          "delete",
-          "content_delete",
+          "ban_user",
+          "suspend_user",
+          "unban_user",
+          "suspend_community",
+          "reopen_community",
         ],
-        example: "ban",
+        example: "ban_user",
       },
       targetType: { type: "string", example: "user" },
       targetId: { type: "string", example: "u_8f3a" },
       reason: { type: "string", nullable: true },
-      actorId: { type: "string", example: "adm_1" },
+      note: { type: "string", nullable: true },
+      reportId: { type: "string", nullable: true },
+      expiresAt: { type: "string", format: "date-time", nullable: true },
+      actorId: {
+        type: "string",
+        example: "adm_1",
+        description:
+          "The acting admin's id. NOTE: currently the raw admin id, not a resolved display name (Phase-2 TODO in code).",
+      },
       createdAt: { type: "string", format: "date-time" },
     },
   },
+  AdminUserBanReasonCode: {
+    type: "string",
+    enum: [
+      "SPAM",
+      "HARASSMENT",
+      "HATE_SPEECH",
+      "NUDITY",
+      "VIOLENCE",
+      "IMPERSONATION",
+      "MISINFORMATION",
+      "ILLEGAL_CONTENT",
+      "OTHER",
+    ],
+    example: "HARASSMENT",
+  },
   AdminSuspendRequest: {
     type: "object",
-    required: ["reason"],
+    description:
+      "POST /admin/v1/users/{userId}/suspend. durationDays is REQUIRED here (no default) — unlike ban, where it is optional.",
+    required: ["reason", "durationDays"],
     properties: {
-      reason: { type: "string", example: "Repeated harassment" },
-      until: {
-        type: "string",
-        format: "date-time",
-        nullable: true,
-        description: "Suspension end. Omit/null for an indefinite suspend.",
-      },
+      reason: { $ref: "#/components/schemas/AdminUserBanReasonCode" },
       durationDays: {
         type: "integer",
-        nullable: true,
+        minimum: 1,
         example: 7,
-        description: "Alternative to `until`.",
+        description: "Required. suspendedUntil = now + durationDays.",
       },
-      notifyUser: { type: "boolean", example: true },
+      note: { type: "string", maxLength: 2000, nullable: true },
+      notifyUser: { type: "boolean", default: false },
     },
   },
   AdminBanRequest: {
     type: "object",
+    description:
+      "POST /admin/v1/users/{userId}/ban. If durationDays is omitted/null this is a PERMANENT ban; if durationDays > 0 it is treated as a time-boxed suspend (status becomes SUSPENDED, not BANNED).",
     required: ["reason"],
     properties: {
-      reason: { type: "string", example: "Repeated harassment" },
-      evidenceReportIds: {
-        type: "array",
-        items: { type: "string" },
-        example: ["r_12"],
+      reason: {
+        oneOf: [
+          { $ref: "#/components/schemas/AdminUserBanReasonCode" },
+          {
+            type: "string",
+            minLength: 1,
+            maxLength: 200,
+            description: "Any free-text custom reason.",
+          },
+        ],
+        description:
+          "Either a predefined reason code, OR any custom free-text reason (max 200 chars) typed by the admin. Stored verbatim.",
+        example: "HARASSMENT",
       },
-      notifyUser: { type: "boolean", example: true },
+      note: { type: "string", maxLength: 2000, nullable: true },
+      durationDays: {
+        type: "integer",
+        minimum: 1,
+        nullable: true,
+        default: null,
+        description: "Omit/null = permanent ban. > 0 = time-boxed suspend.",
+      },
+      reportId: { type: "string", format: "uuid", nullable: true },
+      notifyUser: { type: "boolean", default: false },
+      forceLogout: { type: "boolean", default: true },
+    },
+  },
+  AdminUnbanRequest: {
+    type: "object",
+    description: "POST /admin/v1/users/{userId}/unban. Only field accepted.",
+    properties: {
+      note: { type: "string", maxLength: 2000, nullable: true },
     },
   },
   AdminModerationResult: {
     type: "object",
     description:
-      "Result of a moderation mutation. Writes a ModerationAction (admin trail) and emits the matching admin.* event.",
+      "Actual result shape returned by ban/suspend/unban (backoffice-service UserStatusResult). Writes a ModerationAction + AuditLog and fire-and-forgets an admin.user_* RabbitMQ event (queue admin.user.queue) — publish failures are only logged, never fail the request. No Socket.IO event is emitted by this service.",
     properties: {
-      id: { type: "string", example: "u_8f3a" },
-      status: { type: "string", example: "banned" },
-      moderationActionId: { type: "string", example: "ma_77" },
-      until: { type: "string", format: "date-time", nullable: true },
-      emittedEvent: {
+      userId: { type: "string", example: "u_8f3a" },
+      status: {
         type: "string",
-        nullable: true,
-        example: "admin.user_banned",
+        enum: ["ACTIVE", "BANNED", "SUSPENDED"],
+        example: "BANNED",
       },
+      suspendedUntil: { type: "string", format: "date-time", nullable: true },
+      bannedAt: { type: "string", format: "date-time", nullable: true },
+    },
+    required: ["userId", "status"],
+  },
+  AdminBulkBanRequest: {
+    type: "object",
+    description:
+      "POST /admin/v1/users/bulk/ban. `reason` accepts a predefined code or a custom free-text reason — same rules as the single ban endpoint.",
+    required: ["userIds", "reason"],
+    properties: {
+      userIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: { type: "string", minLength: 1, maxLength: 64 },
+      },
+      reason: {
+        oneOf: [
+          { $ref: "#/components/schemas/AdminUserBanReasonCode" },
+          {
+            type: "string",
+            minLength: 1,
+            maxLength: 200,
+            description: "Any free-text custom reason.",
+          },
+        ],
+        description:
+          "Either a predefined reason code, OR any custom free-text reason (max 200 chars). Applied to every user in the batch.",
+        example: "HARASSMENT",
+      },
+      note: { type: "string", maxLength: 2000, nullable: true },
+      durationDays: { type: "integer", minimum: 1, nullable: true },
+      reportId: { type: "string", format: "uuid", nullable: true },
+      notifyUser: { type: "boolean", default: false },
+      forceLogout: { type: "boolean", default: true },
+    },
+  },
+  AdminBulkActivateRequest: {
+    type: "object",
+    description:
+      "POST /admin/v1/users/bulk/activate. Already-ACTIVE users are idempotently reported as succeeded (ok:true, changed:false) and do NOT write an audit row or publish an event.",
+    required: ["userIds"],
+    properties: {
+      userIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: { type: "string", minLength: 1, maxLength: 64 },
+      },
+      note: { type: "string", maxLength: 2000, nullable: true },
     },
   },
   AdminUserSession: {
@@ -2476,8 +2698,14 @@ export const openApiSchemas = {
   AdminLivestreamUserItem: {
     type: "object",
     description:
-      "A member of the stream's community (the Livestream User List row). `type` is the member's community role.",
+      "A viewer-session row for this stream (who watched, not the community roster — see the endpoint description).",
     properties: {
+      no: {
+        type: "integer",
+        description:
+          "Pagination-based sequence number: (page - 1) * limit + index + 1.",
+        example: 1,
+      },
       userId: { type: "string" },
       username: { type: "string" },
       handle: { type: "string", nullable: true },
@@ -2486,13 +2714,29 @@ export const openApiSchemas = {
         nullable: true,
         description: "Presigned avatar URL (full URL, never a key).",
       },
+      joinedAt: { type: "string", format: "date-time" },
+      leftAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description: "null = still watching.",
+      },
+      watchDurationSeconds: { type: "integer", example: 340 },
       type: {
         type: "string",
-        enum: ["ADMIN", "MODERATOR", "MEMBER"],
+        enum: ["Admin", "Moderator", "Member"],
+        description:
+          "Viewer's CURRENT community role. Defaults to 'Member' if they are no longer a member of the stream's community.",
       },
-      joinedAt: { type: "string", format: "date-time" },
     },
-    required: ["userId", "username", "type", "joinedAt"],
+    required: [
+      "no",
+      "userId",
+      "username",
+      "joinedAt",
+      "watchDurationSeconds",
+      "type",
+    ],
   },
 
   AdminEndLivestreamResult: {
@@ -2607,240 +2851,439 @@ export const openApiSchemas = {
   },
 
   // ---- Announcements ----
-  AdminAnnouncementTranslationInput: {
+  // Source of truth: apps/backoffice-service/src/types/announcement.types.ts +
+  // src/api/validators/announcement.validator.ts. NOTE: there is NO i18n
+  // (single flat title/description strings) and NO update endpoint — only
+  // create + read + list exist.
+  AdminAnnouncementTarget: {
+    type: "string",
+    enum: ["ALL", "COMMUNITY"],
+    example: "ALL",
+  },
+  AdminAnnouncementStatus: {
+    type: "string",
+    enum: ["SCHEDULED", "PROCESSING", "SENT", "FAILED"],
+    example: "SENT",
+  },
+  AdminAnnouncementListItem: {
     type: "object",
     properties: {
+      id: { type: "string", format: "uuid" },
       title: { type: "string", example: "Scheduled maintenance" },
-      body: { type: "string", example: "We will be down 02:00–03:00 UTC." },
+      target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+      communityId: { type: "string", nullable: true },
+      recipientCount: { type: "integer", example: 12000 },
+      status: { $ref: "#/components/schemas/AdminAnnouncementStatus" },
+      announcedAt: {
+        type: "string",
+        format: "date-time",
+        description: "sentAt if delivered, else createdAt.",
+      },
     },
-    required: ["title", "body"],
+    required: [
+      "id",
+      "title",
+      "target",
+      "recipientCount",
+      "status",
+      "announcedAt",
+    ],
   },
   AdminAnnouncement: {
     type: "object",
+    description:
+      "Full announcement detail (GET /admin/v1/announcements/{id} and the create response).",
     properties: {
-      id: { type: "string", example: "an_5" },
+      id: { type: "string", format: "uuid" },
+      title: { type: "string", example: "Scheduled maintenance" },
+      description: {
+        type: "string",
+        example: "We will be down 02:00-03:00 UTC.",
+      },
+      target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+      communityId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Required when target=COMMUNITY, must be absent when target=ALL.",
+      },
       status: {
-        type: "string",
-        enum: ["draft", "scheduled", "published"],
-        example: "draft",
+        allOf: [{ $ref: "#/components/schemas/AdminAnnouncementStatus" }],
+        description:
+          "SCHEDULED: not yet due. PROCESSING: in-flight delivery (poll to observe). " +
+          "SENT: fully delivered, recipientCount finalized. FAILED: gave up after 3 retries, see failureReason. " +
+          "No socket/webhook push exists for status changes — poll GET /announcements/{id} or the list.",
       },
-      audience: {
-        type: "string",
-        enum: ["all", "community", "role"],
-        example: "all",
-      },
-      publishAt: { type: "string", format: "date-time", nullable: true },
-      translations: {
-        type: "object",
-        properties: {
-          en: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-          vi: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-        },
-      },
+      scheduledAt: { type: "string", format: "date-time", nullable: true },
+      recipientCount: { type: "integer", example: 12000 },
+      failureReason: { type: "string", nullable: true, maxLength: 2000 },
+      createdById: { type: "string", format: "uuid" },
       createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
+      sentAt: { type: "string", format: "date-time", nullable: true },
     },
-    required: ["id", "status"],
+    required: [
+      "id",
+      "title",
+      "description",
+      "target",
+      "status",
+      "recipientCount",
+      "createdAt",
+    ],
   },
   AdminAnnouncementCreateRequest: {
     type: "object",
-    required: ["translations", "audience"],
+    required: ["title", "description", "target"],
     properties: {
-      translations: {
-        type: "object",
-        properties: {
-          en: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-          vi: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-        },
-      },
-      audience: {
+      title: { type: "string", minLength: 1, maxLength: 200 },
+      description: { type: "string", minLength: 1, maxLength: 5000 },
+      target: { $ref: "#/components/schemas/AdminAnnouncementTarget" },
+      communityId: {
         type: "string",
-        enum: ["all", "community", "role"],
-        example: "all",
+        format: "uuid",
+        nullable: true,
+        description:
+          "REQUIRED when target=COMMUNITY (400 if missing); FORBIDDEN when target=ALL (400 if present). Validated against community-service (404 COMMUNITY_NOT_FOUND if it doesn't exist).",
       },
-      publishAt: { type: "string", format: "date-time", nullable: true },
-    },
-  },
-  AdminAnnouncementUpdateRequest: {
-    type: "object",
-    properties: {
-      translations: {
-        type: "object",
-        properties: {
-          en: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-          vi: {
-            $ref: "#/components/schemas/AdminAnnouncementTranslationInput",
-          },
-        },
+      scheduledAt: {
+        type: "string",
+        format: "date-time",
+        nullable: true,
+        description:
+          "Must be strictly in the future. Omit for immediate delivery (status becomes PROCESSING right away, never SENT immediately).",
       },
-      audience: { type: "string", enum: ["all", "community", "role"] },
-      publishAt: { type: "string", format: "date-time", nullable: true },
     },
   },
 
   // ---- Categories ----
+  // Owned by community-service's `CommunityCategory` (community_db); the
+  // admin panel manages it exclusively through a gRPC bridge — no duplicate
+  // category table exists in admin_db. Single plain-text `name` (no i18n).
   AdminCategory: {
     type: "object",
     properties: {
-      id: { type: "string", example: "cat_food" },
-      name: {
-        type: "object",
-        description: "Localized name per locale.",
-        example: { en: "Food", vi: "Ẩm thực" },
+      id: { type: "string", example: "665f1b2c3d4e5f6a7b8c9d0e" },
+      name: { type: "string", example: "Technology" },
+      slug: { type: "string", example: "technology" },
+      visible: {
+        type: "boolean",
+        description: "Shown in the create-community category picker.",
+        example: true,
       },
-      icon: { type: "string", nullable: true, example: "utensils" },
-      order: { type: "integer", example: 1 },
+      order: { type: "integer", example: 0 },
+      createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
     },
-    required: ["id", "name"],
+    required: [
+      "id",
+      "name",
+      "slug",
+      "visible",
+      "order",
+      "createdAt",
+      "updatedAt",
+    ],
   },
   AdminCategoryCreateRequest: {
     type: "object",
     required: ["name"],
     properties: {
-      name: { type: "object", example: { en: "Food", vi: "Ẩm thực" } },
-      icon: { type: "string", nullable: true, example: "utensils" },
-      order: { type: "integer", example: 1 },
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 80,
+        description: "Trimmed; must be unique case-insensitively.",
+        example: "Technology",
+      },
     },
   },
   AdminCategoryUpdateRequest: {
     type: "object",
+    description: "At least one of `name` or `visible` must be provided.",
     properties: {
-      name: { type: "object", example: { en: "Food", vi: "Ẩm thực" } },
-      icon: { type: "string", nullable: true },
-      order: { type: "integer" },
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 80,
+        example: "Renamed category",
+      },
+      visible: { type: "boolean", example: false },
     },
   },
 
   // ---- Audit Logs ----
+  // Source of truth: apps/backoffice-service/src/types/audit-log.types.ts.
   AdminAuditLog: {
     type: "object",
+    description:
+      "Full detail shape (GET /admin/v1/audit-logs/{id}). The list endpoint returns the same shape minus metadata/reason.",
     properties: {
-      id: { type: "string", example: "al_900" },
-      actorId: { type: "string", example: "adm_1" },
-      actorEmail: { type: "string", example: "ops@x.com" },
-      action: { type: "string", example: "user.ban" },
-      targetType: { type: "string", example: "user" },
-      targetId: { type: "string", example: "u_8f3a" },
-      before: { type: "object", nullable: true, example: { status: "active" } },
-      after: { type: "object", nullable: true, example: { status: "banned" } },
-      ip: { type: "string", example: "203.0.113.7" },
-      userAgent: { type: "string", nullable: true },
-      createdAt: { type: "string", format: "date-time" },
-    },
-    required: ["id", "actorId", "action", "targetType", "createdAt"],
-  },
-  AdminAuditLogExport: {
-    type: "object",
-    properties: {
-      format: { type: "string", enum: ["csv", "json"], example: "csv" },
-      downloadUrl: {
-        type: "string",
-        description: "Presigned MinIO URL (private bucket) for large exports.",
+      id: { type: "string", format: "uuid" },
+      performer: {
+        type: "object",
+        description:
+          "Resolved actor snapshot; fields are null if the actor row was later removed.",
+        properties: {
+          id: { type: "string", example: "adm_1" },
+          name: { type: "string", nullable: true, example: "Jane Admin" },
+          email: { type: "string", nullable: true, example: "ops@x.com" },
+          avatarUrl: { type: "string", nullable: true },
+        },
+        required: ["id"],
       },
-      expiresAt: { type: "string", format: "date-time" },
+      action: { type: "string", example: "user.banned" },
+      targetType: { type: "string", example: "user" },
+      targetId: { type: "string", nullable: true, example: "u_8f3a" },
+      createdAt: { type: "string", format: "date-time" },
+      reason: {
+        type: "string",
+        nullable: true,
+        description:
+          "Derived: scans metadata.after then metadata.before for the first non-empty string under reason/note/reasonNote/reasonCode. Detail endpoint only.",
+      },
+      metadata: {
+        type: "object",
+        description: "Detail endpoint only.",
+        properties: {
+          before: { type: "object", nullable: true, example: null },
+          after: {
+            type: "object",
+            nullable: true,
+            example: { status: "BANNED", reason: "SPAM" },
+          },
+          ip: { type: "string", nullable: true, example: "203.0.113.7" },
+          userAgent: { type: "string", nullable: true },
+        },
+      },
     },
+    required: ["id", "performer", "action", "targetType", "createdAt"],
   },
 
-  // ---- Admin Accounts & Roles ----
-  AdminAccount: {
+  // ---- Admin Accounts ----
+  // Source of truth: apps/backoffice-service/src/types/admin-account.types.ts.
+  // NOTE: no per-admin permission overrides and no TOTP/2FA enrolment flow
+  // exist today — the only mutable RBAC surface is swapping an admin's whole
+  // role (PATCH .../permissions with { roleKey }).
+  AdminRoleKey: {
+    type: "string",
+    enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
+    example: "MODERATOR",
+  },
+  AdminAccountRoleRef: {
     type: "object",
     properties: {
-      id: { type: "string", example: "adm_5" },
+      key: { $ref: "#/components/schemas/AdminRoleKey" },
+      name: { type: "string", example: "Moderator" },
+    },
+    required: ["key", "name"],
+  },
+  AdminAccount: {
+    type: "object",
+    description:
+      "Row shape for both the list endpoint and the single-account detail endpoint.",
+    properties: {
+      id: { type: "string", format: "uuid" },
       email: { type: "string", format: "email", example: "mod@aimess.io" },
       name: { type: "string", example: "Mod User" },
-      role: {
+      avatarUrl: {
         type: "string",
-        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
-        example: "MODERATOR",
+        description:
+          "Always a resolved string (custom avatar or a default), never null.",
       },
+      role: { $ref: "#/components/schemas/AdminAccountRoleRef" },
       status: {
         type: "string",
         enum: ["ACTIVE", "DISABLED", "INVITED"],
         example: "ACTIVE",
       },
-      totpEnabled: { type: "boolean", example: true },
       lastLoginAt: { type: "string", format: "date-time", nullable: true },
       createdAt: { type: "string", format: "date-time" },
+      updatedAt: { type: "string", format: "date-time" },
     },
-    required: ["id", "email", "role", "status"],
+    required: ["id", "email", "name", "role", "status"],
   },
   AdminAccountCreateRequest: {
     type: "object",
-    required: ["email", "name", "role"],
+    required: ["email", "password", "name", "roleKey"],
     properties: {
       email: { type: "string", format: "email", example: "mod@aimess.io" },
-      name: { type: "string", example: "Mod User" },
-      role: {
+      password: {
         type: "string",
-        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
-        example: "MODERATOR",
+        minLength: 6,
+        description:
+          "Must contain at least one uppercase, one lowercase, one digit, and one special character.",
+      },
+      name: {
+        type: "string",
+        minLength: 2,
+        maxLength: 100,
+        example: "Mod User",
+      },
+      roleKey: { $ref: "#/components/schemas/AdminRoleKey" },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        maxLength: 500,
+        nullable: true,
+      },
+    },
+  },
+  AdminAccountUpdateRequest: {
+    type: "object",
+    description:
+      "PATCH profile fields only — role changes go through .../permissions. At least one of name or avatarUrl must be provided.",
+    properties: {
+      name: { type: "string", minLength: 2, maxLength: 100, nullable: true },
+      avatarUrl: {
+        type: "string",
+        format: "uri",
+        maxLength: 500,
+        nullable: true,
       },
     },
   },
   AdminAccountRoleRequest: {
     type: "object",
-    required: ["role"],
+    description:
+      "PATCH .../permissions body. This REPLACES the admin's whole role — there is no per-permission override.",
+    required: ["roleKey"],
     properties: {
-      role: {
-        type: "string",
-        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
-        example: "MODERATOR",
-      },
+      roleKey: { $ref: "#/components/schemas/AdminRoleKey" },
     },
   },
-  AdminRole: {
+  AdminPermissionCatalogueItem: {
     type: "object",
+    description:
+      "One row of the full permission catalogue (GET .../admin-accounts/permissions) — use this to build a permission-picker/reference UI. group comes from the DB, not derivable from a static enum.",
     properties: {
-      key: {
-        type: "string",
-        enum: ["SUPER_ADMIN", "ADMIN", "MODERATOR", "SUPPORT_AGENT", "ANALYST"],
-        example: "MODERATOR",
-      },
-      name: { type: "string", example: "Moderator" },
-      description: { type: "string", nullable: true },
+      key: { type: "string", example: "users.read" },
+      group: { type: "string", example: "Users" },
+    },
+    required: ["key", "group"],
+  },
+  AdminAccountPermissionsView: {
+    type: "object",
+    description:
+      "Resolved (role-derived) permission set for one admin (GET/PATCH .../admin-accounts/{adminId}/permissions).",
+    properties: {
+      adminId: { type: "string", format: "uuid" },
+      role: { $ref: "#/components/schemas/AdminAccountRoleRef" },
       permissions: {
         type: "array",
         items: { type: "string" },
         example: ["dashboard.read", "users.read", "users.moderate"],
       },
     },
-    required: ["key", "permissions"],
+    required: ["adminId", "role", "permissions"],
   },
 
   // ---- System Health ----
-  AdminSystemQueues: {
+  // Source of truth: apps/backoffice-service/src/types/system-health.types.ts.
+  AdminServiceHealthItem: {
     type: "object",
     properties: {
-      queues: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            name: { type: "string", example: "aimess.events" },
-            depth: { type: "integer", example: 4 },
-            dlqDepth: { type: "integer", example: 0 },
-          },
-        },
+      key: {
+        type: "string",
+        enum: [
+          "auth",
+          "community",
+          "chat",
+          "media",
+          "notification",
+          "stream",
+          "user",
+        ],
+        example: "auth",
       },
-      checkedAt: { type: "string", format: "date-time" },
+      name: { type: "string", example: "Auth Service" },
+      status: {
+        type: "string",
+        enum: ["healthy", "degraded", "down", "unknown"],
+        example: "healthy",
+      },
+      monitored: {
+        type: "boolean",
+        description:
+          "false for media/notification/stream/user — no backoffice health probe is wired for them yet; status is always unknown and they are excluded from the overall/servicesUp roll-up.",
+      },
+      uptimePercent: { type: "number", nullable: true, example: 99.8 },
+      latencyMs: {
+        type: "integer",
+        nullable: true,
+        description:
+          "Only populated for the 3 monitored services (auth/community/chat).",
+      },
+      breaker: {
+        type: "string",
+        nullable: true,
+        enum: ["open", "half-open", null],
+      },
+      lastChecked: { type: "string", format: "date-time" },
+      note: { type: "string" },
     },
+    required: ["key", "name", "status", "monitored", "lastChecked"],
   },
-  AdminSystemMetrics: {
+  AdminInfraHealthItem: {
     type: "object",
-    description: "Aggregate platform metrics snapshot (read-model + redis).",
     properties: {
-      metrics: { type: "object" },
-      asOf: { type: "string", format: "date-time" },
+      key: {
+        type: "string",
+        enum: ["database", "redis", "message_queue", "object_storage"],
+        example: "database",
+      },
+      name: { type: "string", example: "PostgreSQL" },
+      status: {
+        type: "string",
+        enum: ["healthy", "degraded", "down"],
+        example: "healthy",
+      },
+      metrics: {
+        type: "object",
+        description:
+          "Component-specific bag (latencyMs, engine, connection, transport, bucket, ...).",
+        additionalProperties: true,
+      },
+      latencyMs: { type: "integer", nullable: true },
+      lastChecked: { type: "string", format: "date-time" },
+      note: { type: "string" },
     },
+    required: ["key", "name", "status", "lastChecked"],
+  },
+  AdminSystemHealth: {
+    type: "object",
+    description:
+      "GET /admin/v1/system-health. Cannot 500 by design — a partial outage still returns 200 with the affected component(s) marked down/degraded. Redis-cached, 5s TTL; lastUpdated is the true staleness indicator.",
+    properties: {
+      overall: { type: "string", enum: ["healthy", "degraded", "down"] },
+      servicesUp: {
+        type: "object",
+        description:
+          "Counts only MONITORED services; a degraded service still counts as up.",
+        properties: {
+          up: { type: "integer", example: 3 },
+          total: { type: "integer", example: 3 },
+          label: { type: "string", example: "3/3" },
+        },
+        required: ["up", "total", "label"],
+      },
+      lastUpdated: { type: "string", format: "date-time" },
+      services: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminServiceHealthItem" },
+      },
+      infrastructure: {
+        type: "array",
+        items: { $ref: "#/components/schemas/AdminInfraHealthItem" },
+      },
+    },
+    required: [
+      "overall",
+      "servicesUp",
+      "lastUpdated",
+      "services",
+      "infrastructure",
+    ],
   },
 
   ApiSuccessResponse: {
@@ -8418,8 +8861,14 @@ export const openApiSchemas = {
           "Null when `hasMore` is false (last page reached).",
         example: "1782133100000_668f1a2b3c4d5e6f7a8b9c00",
       },
+      pinnedMessage: {
+        allOf: [{ $ref: "#/components/schemas/CommunityPinnedMessageSummary" }],
+        nullable: true,
+        description:
+          "The room's currently active pinned message, or null if none. See CommunityPinnedMessageSummary.",
+      },
     },
-    required: ["pagination", "data", "hasMore", "nextCursor"],
+    required: ["pagination", "data", "hasMore", "nextCursor", "pinnedMessage"],
     example: {
       pagination: {
         totalData: 142,
@@ -8431,6 +8880,23 @@ export const openApiSchemas = {
       },
       hasMore: true,
       nextCursor: "1782133100000_668f1a2b3c4d5e6f7a8b9c00",
+      pinnedMessage: {
+        messageId: "683abc000000000000000001",
+        roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+        communityId: "668f1a2b3c4d5e6f7a8b9c0d",
+        senderId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+        senderName: "Rajesh Sharma",
+        senderHandle: "rajesh_s",
+        senderAvatar:
+          "https://cdn.aimess.me/avatars/usr_rajesh.jpg?X-Amz-Expires=3600",
+        messageType: "TEXT",
+        text: "Meeting at 3pm tomorrow",
+        media: [],
+        createdAt: 1782133100000,
+        pinnedAt: 1782133200000,
+        pinnedBy: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+        isAvailable: true,
+      },
       data: [
         // ── Scenario 1: plain TEXT message ──────────────────────────────────
         {
@@ -8762,11 +9228,18 @@ export const openApiSchemas = {
           "Null when no items were returned.",
         example: "1782133650000",
       },
+      pinnedMessage: {
+        allOf: [{ $ref: "#/components/schemas/CommunityPinnedMessageSummary" }],
+        nullable: true,
+        description:
+          "The room's currently active pinned message, or null if none. See CommunityPinnedMessageSummary.",
+      },
     },
-    required: ["data", "hasMore", "nextCursor"],
+    required: ["data", "hasMore", "nextCursor", "pinnedMessage"],
     example: {
       hasMore: false,
       nextCursor: "1782133650000",
+      pinnedMessage: null,
       data: [
         // ── new message received while offline ──────────────────────────────
         {
@@ -9453,6 +9926,104 @@ export const openApiSchemas = {
   // ===========================================================================
   // chat-service · community-chat pins (raw persisted rows → epoch-ms dates)
   // ===========================================================================
+  CommunityPinnedMessageSummary: {
+    type: "object",
+    nullable: true,
+    description:
+      "FE-header-ready snapshot of the room's currently pinned message, embedded as a top-level `pinnedMessage` field on the Community Messages API response (both scroll/history and incremental-sync modes) — reusing the same `CommunityMessagePin` persistence as pin/unpin, no separate endpoint. " +
+      "`null` when the room has no active pin. Computed fresh on every call (never cached) — updates immediately after pin, unpin, or pinning a different message. " +
+      "Solves the problem where the `PINNED_MESSAGE` system message scrolls out of view as newer messages arrive, leaving the FE with no reliable way to know the currently pinned message from history alone.",
+    properties: {
+      messageId: { type: "string", description: "Pinned message ObjectId." },
+      roomId: { type: "string" },
+      communityId: { type: "string" },
+      senderId: { type: "string", format: "uuid" },
+      senderName: {
+        type: "string",
+        description:
+          "Sourced from the LIVE message row when available, so a display-name change after pinning is reflected.",
+      },
+      senderHandle: {
+        type: "string",
+        description:
+          "Resolved from the user snapshot cache; empty string if not resolvable.",
+      },
+      senderAvatar: {
+        type: "string",
+        description:
+          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h), or empty string.",
+      },
+      messageType: {
+        type: "string",
+        description:
+          "Canonical UPPER-CASE content type (e.g. TEXT, IMAGE, VIDEO) of the live message.",
+      },
+      text: {
+        type: "string",
+        description: "Live message text/preview.",
+      },
+      media: {
+        type: "array",
+        items: { type: "object" },
+        description:
+          "Resolved attachment array (presigned URLs) from the live message. Empty array if none, or if the original message was hard-deleted.",
+      },
+      createdAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms — the live message's own createdAt.",
+      },
+      pinnedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms when this pin was created.",
+      },
+      pinnedBy: {
+        type: "string",
+        format: "uuid",
+        description: "User ID who pinned the message.",
+      },
+      isAvailable: {
+        type: "boolean",
+        description:
+          "False only if the pinned message was hard-deleted (deletedForAll). " +
+          "When false, `senderName`/`text` fall back to the pin's own frozen snapshot and `media` is `[]` — mirrors the existing pin-banner \"Message doesn't exist\" state.",
+      },
+    },
+    required: [
+      "messageId",
+      "roomId",
+      "communityId",
+      "senderId",
+      "senderName",
+      "senderHandle",
+      "senderAvatar",
+      "messageType",
+      "text",
+      "media",
+      "createdAt",
+      "pinnedAt",
+      "pinnedBy",
+      "isAvailable",
+    ],
+    example: {
+      messageId: "683abc000000000000000001",
+      roomId: "668f1a2b3c4d5e6f7a8b9c0d",
+      communityId: "668f1a2b3c4d5e6f7a8b9c0d",
+      senderId: "usr_01j8r5t2q3w4e5r6t7y8u9i0",
+      senderName: "Rajesh Sharma",
+      senderHandle: "rajesh_s",
+      senderAvatar:
+        "https://cdn.aimess.me/avatars/usr_rajesh.jpg?X-Amz-Expires=3600",
+      messageType: "TEXT",
+      text: "Meeting at 3pm tomorrow",
+      media: [],
+      createdAt: 1782133100000,
+      pinnedAt: 1782133200000,
+      pinnedBy: "usr_01j8r5t2q3w4e5r6t7y8u9i1",
+      isAvailable: true,
+    },
+  },
   CommunityMessagePin: {
     type: "object",
     description:

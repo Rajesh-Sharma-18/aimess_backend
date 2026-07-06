@@ -36,6 +36,7 @@ export {
 export {
   listUsers,
   getUserDetails,
+  getBanReasons,
   listUserReports,
   listUserCommunities,
   listOtherCommunityMembers,
@@ -65,3 +66,22 @@ export {
   listAnnouncements,
   getAnnouncementDetails,
 } from "./announcement.controller.js";
+export {
+  listCategories,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+} from "./category.controller.js";
+export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";
+export { getSystemHealth } from "./system-health.controller.js";
+export {
+  listAdminAccounts,
+  createAdminAccount,
+  getAdminAccountDetails,
+  updateAdminAccount,
+  activateAdminAccount,
+  deactivateAdminAccount,
+  listPermissions,
+  getAdminPermissions,
+  updateAdminPermissions,
+} from "./admin-account.controller.js";

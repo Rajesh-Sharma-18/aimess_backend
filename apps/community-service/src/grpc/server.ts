@@ -15,6 +15,7 @@ import { communityRepository } from "../repositories/community.repository.js";
 import { communityService } from "../services/community.service.js";
 import { communityImageService } from "../services/community-image.service.js";
 import { memberAvatarService } from "../services/member-avatar.service.js";
+import { communityAccessPolicy } from "../lib/community-access-policy.js";
 
 /** Resolve the admin moderation "status" string of a community row, treating an
  * unset moderationStatus (legacy rows) as ACTIVE. SUSPENDED → "CLOSED". */
@@ -134,19 +135,22 @@ const communityImpl: grpc.UntypedServiceImplementation = {
             isBanned: false,
             status: "",
             role: "",
+            isCommunityClosed: false,
           });
           return;
         }
-        const membership = await communityRepository.findMembership(
-          req.communityId,
-          req.userId
-        );
+        const [membership, community] = await Promise.all([
+          communityRepository.findMembership(req.communityId, req.userId),
+          communityRepository.findById(req.communityId),
+        ]);
         const status = membership ? String(membership.status) : "";
         callback(null, {
           isMember: status === "ACTIVE",
           isBanned: status === "BANNED",
           status,
           role: membership ? String(membership.role) : "",
+          isCommunityClosed:
+            !community || communityAccessPolicy.isEffectivelyClosed(community),
         });
       } catch (err) {
         logger.error("checkCommunityMembership gRPC handler failed", err);
@@ -215,8 +219,11 @@ const communityImpl: grpc.UntypedServiceImplementation = {
 
   // Membership gate for stream-service ("who can go live"): is_member is true
   // ONLY for an ACTIVE member. role/status are the raw membership enum strings
-  // ("" when there is no membership row). Fail-safe: any error → not-a-member
-  // (never throw to the gRPC layer, so a transient DB blip can't grant access).
+  // ("" when there is no membership row). is_community_closed additionally lets
+  // stream-service block go-live/commenting when the community itself is
+  // owner-CLOSED or platform-SUSPENDED, even for a valid ACTIVE member.
+  // Fail-safe: any error → not-a-member (never throw to the gRPC layer, so a
+  // transient DB blip can't grant access).
   validateMembership: (
     call: grpc.ServerUnaryCall<unknown, unknown>,
     callback: grpc.sendUnaryData<unknown>
@@ -228,18 +235,25 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         const userId = (req.userId ?? "").trim();
 
         if (!communityId || !userId) {
-          callback(null, { isMember: false, role: "", status: "" });
+          callback(null, {
+            isMember: false,
+            role: "",
+            status: "",
+            isCommunityClosed: false,
+          });
           return;
         }
 
-        const row = await communityRepository.findMembership(
-          communityId,
-          userId
-        );
+        const [row, community] = await Promise.all([
+          communityRepository.findMembership(communityId, userId),
+          communityRepository.findById(communityId),
+        ]);
         callback(null, {
           isMember: row?.status === CommunityMemberStatus.ACTIVE,
           role: row?.role ?? "",
           status: row?.status ?? "",
+          isCommunityClosed:
+            !community || communityAccessPolicy.isEffectivelyClosed(community),
         });
       } catch (err) {
         logger.error("validateMembership gRPC handler failed", err);
@@ -303,6 +317,65 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         callback(null, { ok: true });
       } catch (err) {
         logger.error("updateReactionActivity gRPC handler failed", err);
+        callback(null, { ok: false });
+      }
+    })();
+  },
+
+  /**
+   * Synchronous companion to the async `community.activity.queue` "message"
+   * event for the CANONICAL lastActivity bump (send/edit/delete-for-everyone),
+   * and the sole path for the delete-for-me personal self-hide overlay (which
+   * the queue never carries — see the proto doc). Delegates to the SAME
+   * repository methods the queue consumer calls
+   * (`updateLastActivity`/`setSelfLastActivityOverride`), so there is exactly
+   * one implementation of each. Fail-soft: any error still returns ok:false
+   * rather than throwing — the async queue publish (already sent by the
+   * caller beforehand, canonical mode only) remains the backstop.
+   */
+  updateMessageActivity: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          lastMessageAt?: number | string;
+          lastMessageId?: string;
+          senderUserId?: string;
+          senderUsername?: string;
+          messagePreview?: string;
+          activityType?: string;
+          selfUserId?: string;
+          selfPreview?: string;
+        };
+        const communityId = (req.communityId ?? "").trim();
+        if (!communityId) {
+          callback(null, { ok: false });
+          return;
+        }
+
+        const selfUserId = (req.selfUserId ?? "").trim();
+        if (selfUserId) {
+          await communityRepository.setSelfLastActivityOverride(communityId, {
+            userId: selfUserId,
+            preview: req.selfPreview ?? "",
+          });
+        } else {
+          const at = new Date(Number(req.lastMessageAt) || Date.now());
+          await communityRepository.updateLastActivity(
+            communityId,
+            at,
+            req.activityType ?? "message",
+            req.messagePreview ?? "",
+            req.senderUsername ?? null,
+            req.senderUserId ?? null
+          );
+        }
+        callback(null, { ok: true });
+      } catch (err) {
+        logger.error("updateMessageActivity gRPC handler failed", err);
         callback(null, { ok: false });
       }
     })();
@@ -433,6 +506,40 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "adminGetCommunitiesByIds failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // Batch role lookup for the backoffice Livestream Viewer List "type" column.
+  // Users not currently a member of the community are simply omitted — the
+  // caller defaults them to MEMBER.
+  adminGetMemberRoles: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          communityId?: string;
+          userIds?: string[];
+        };
+        const userIds = Array.isArray(req.userIds) ? req.userIds : [];
+        const rows = await communityRepository.getMemberRolesByUserIds(
+          (req.communityId || "").trim(),
+          userIds
+        );
+        callback(null, {
+          roles: rows.map((r) => ({
+            userId: r.userId,
+            role: String(r.role),
+          })),
+        });
+      } catch (err) {
+        logger.error("adminGetMemberRoles gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminGetMemberRoles failed",
         } as grpc.ServiceError);
       }
     })();
@@ -814,6 +921,193 @@ const communityImpl: grpc.UntypedServiceImplementation = {
         callback({
           code: grpc.status.INTERNAL,
           message: "adminSetModerationStatus failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  // ---- Backoffice Category Management (4 handlers) ----
+  // Thin gRPC wrappers around communityService's existing category CRUD —
+  // zero duplicated business logic. Business errors are returned via
+  // `errorCode` (not thrown), matching adminSetModerationStatus above.
+
+  adminListCategories: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          search?: string;
+          status?: string;
+          page?: number;
+          limit?: number;
+          sortField?: string;
+          sortDir?: string;
+        };
+        const status =
+          req.status === "visible" || req.status === "hidden"
+            ? req.status
+            : undefined;
+        const sortField =
+          req.sortField === "name" ||
+          req.sortField === "order" ||
+          req.sortField === "createdAt"
+            ? req.sortField
+            : undefined;
+        const sortDir = req.sortDir === "desc" ? "desc" : undefined;
+
+        const result = await communityService.listCategoriesAdmin({
+          search: req.search?.trim() || undefined,
+          status,
+          page: coercePage(req.page),
+          limit: coerceLimit(req.limit),
+          sortField,
+          sortDir,
+        });
+
+        callback(null, {
+          categories: result.categories.map((c) => ({
+            id: c.id,
+            name: c.name,
+            slug: c.slug,
+            visible: c.visible,
+            order: c.order,
+            createdAt: new Date(c.createdAt).getTime(),
+            updatedAt: new Date(c.updatedAt).getTime(),
+          })),
+          total: result.pagination.total,
+        });
+      } catch (err) {
+        logger.error("adminListCategories gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminListCategories failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  adminCreateCategory: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { name?: string };
+        const category = await communityService.createCategory({
+          name: (req.name ?? "").trim(),
+        });
+        callback(null, {
+          ok: true,
+          category: {
+            id: category.id,
+            name: category.name,
+            slug: category.slug,
+            visible: category.visible,
+            order: category.order,
+            createdAt: new Date(category.createdAt).getTime(),
+            updatedAt: new Date(category.updatedAt).getTime(),
+          },
+          errorCode: "",
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            category: undefined,
+            errorCode: err.messageKey,
+          });
+          return;
+        }
+        logger.error("adminCreateCategory gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminCreateCategory failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  adminUpdateCategory: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          categoryId?: string;
+          name?: string;
+          hasName?: boolean;
+          visible?: boolean;
+          hasVisible?: boolean;
+        };
+        const category = await communityService.updateCategory(
+          (req.categoryId ?? "").trim(),
+          {
+            ...(req.hasName ? { name: (req.name ?? "").trim() } : {}),
+            ...(req.hasVisible ? { visible: !!req.visible } : {}),
+          }
+        );
+        callback(null, {
+          ok: true,
+          category: {
+            id: category.id,
+            name: category.name,
+            slug: category.slug,
+            visible: category.visible,
+            order: category.order,
+            createdAt: new Date(category.createdAt).getTime(),
+            updatedAt: new Date(category.updatedAt).getTime(),
+          },
+          errorCode: "",
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            category: undefined,
+            errorCode: err.messageKey,
+          });
+          return;
+        }
+        logger.error("adminUpdateCategory gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminUpdateCategory failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  adminDeleteCategory: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as { categoryId?: string };
+        const result = await communityService.deleteCategory(
+          (req.categoryId ?? "").trim()
+        );
+        callback(null, {
+          ok: true,
+          softDeleted: result.softDeleted,
+          errorCode: "",
+        });
+      } catch (err) {
+        if (isAppError(err)) {
+          callback(null, {
+            ok: false,
+            softDeleted: false,
+            errorCode: err.messageKey,
+          });
+          return;
+        }
+        logger.error("adminDeleteCategory gRPC handler failed", err);
+        callback({
+          code: grpc.status.INTERNAL,
+          message: "adminDeleteCategory failed",
         } as grpc.ServiceError);
       }
     })();

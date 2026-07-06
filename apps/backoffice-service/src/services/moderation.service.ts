@@ -1,5 +1,8 @@
 import { AUDIT_ACTIONS } from "../constants/index.js";
-import { reportRepository } from "../repositories/index.js";
+import {
+  adminUserRepository,
+  reportRepository,
+} from "../repositories/index.js";
 import type {
   ActorRef,
   DismissInput,
@@ -29,10 +32,14 @@ import { auditService } from "./audit.service.js";
 /** Audit/request context derived from `getRequestContext(req)`. */
 type RequestCtx = { ip: string; userAgent: string | null };
 
-/** Map req.admin → the moderator stamp recorded on a decision. */
-function toModerator(actor: RequestAdmin): ModeratorRef {
-  // TODO Phase 2: RequestAdmin has no display name; stamp real name once token carries it.
-  return { id: actor.id, name: actor.id };
+/**
+ * Map req.admin → the moderator stamp recorded on a decision. RequestAdmin
+ * (the JWT claims) has no display name, but AdminUser.name is one same-DB
+ * lookup away — falls back to the id only if the admin row is somehow gone.
+ */
+async function toModerator(actor: RequestAdmin): Promise<ModeratorRef> {
+  const admin = await adminUserRepository.findById(actor.id);
+  return { id: actor.id, name: admin?.name ?? actor.id };
 }
 
 export const moderationService = {
@@ -84,7 +91,7 @@ export const moderationService = {
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<ResolveResult> {
-    const ref = buildActor(actor);
+    const ref = await buildActor(actor);
     const before = await reportRepository.getById(reportId);
     const result = await reportRepository.resolve(reportId, input, ref);
 
@@ -113,7 +120,7 @@ export const moderationService = {
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<DismissResult> {
-    const ref = buildActor(actor);
+    const ref = await buildActor(actor);
     const before = await reportRepository.getById(reportId);
     const result = await reportRepository.dismiss(reportId, input, ref);
 
@@ -144,7 +151,7 @@ export const moderationService = {
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<BulkResult> {
-    const ref = buildActor(actor);
+    const ref = await buildActor(actor);
     const result = await reportRepository.bulkResolve(reportIds, input, ref);
 
     await auditService.record({
@@ -173,7 +180,7 @@ export const moderationService = {
     actor: RequestAdmin,
     ctx: RequestCtx
   ): Promise<BulkResult> {
-    const ref = buildActor(actor);
+    const ref = await buildActor(actor);
     const result = await reportRepository.bulkDismiss(reportIds, input, ref);
 
     await auditService.record({
@@ -197,6 +204,6 @@ export const moderationService = {
 };
 
 /** Build the repository ActorRef (moderator stamp + decision timestamp). */
-function buildActor(actor: RequestAdmin): ActorRef {
-  return { moderator: toModerator(actor), at: new Date().toISOString() };
+async function buildActor(actor: RequestAdmin): Promise<ActorRef> {
+  return { moderator: await toModerator(actor), at: new Date().toISOString() };
 }

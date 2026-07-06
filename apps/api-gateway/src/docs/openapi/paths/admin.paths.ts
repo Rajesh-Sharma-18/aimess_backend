@@ -343,7 +343,7 @@ export const adminPaths = {
         "Revokes the current admin session (by session id) in Redis + DB. Audited. Requires a valid admin bearer.",
       security: adminSecurity,
       responses: {
-        "200": okRes("Signed out", "#/components/schemas/AdminProfile"),
+        "200": okRes("Signed out", "#/components/schemas/AdminLogoutResponse"),
         "401": errRes("Missing or invalid admin token"),
       },
       "x-implementation-status": "implemented",
@@ -481,7 +481,7 @@ export const adminPaths = {
       operationId: "getDashboardStats",
       summary: "Dashboard stat cards",
       description:
-        "Stat-card section only. Returns `{ stats }` aggregated live over gRPC: user/active/banned counts from auth-service, communities from community-service, groups from chat-service. `totalLivestreams`, `openReports`, and `churnedUsers` are STATIC stubs (0) flagged in `stats.stale`; any unreachable service degrades its field to 0 + a `stale` flag rather than failing the call. Cached independently (10s). Requires `dashboard.read`.",
+        "Stat-card section only. Returns `{ stats }` aggregated live over gRPC: user/active/banned counts from auth-service, communities from community-service, groups from chat-service. `totalLivestreams`, `openReports`, and `churnedUsers` are STATIC stubs, always 0 — no backend source is wired for them yet. NOTE: there is no `stats.stale` field in the real response (an earlier version of this doc claimed one) — any unreachable upstream just silently degrades its own field to 0, with no stale flag exposed. Cached independently (10s). Requires `dashboard.read`.",
       security: adminSecurity,
       responses: {
         "200": okRes(
@@ -500,7 +500,7 @@ export const adminPaths = {
       summary:
         "Dashboard charts (active-vs-churned + communities/groups donut)",
       description:
-        "Chart section. Returns `{ activeVsChurned, communitiesGroups }`. `activeVsChurned` is a REAL per-day series whose date range is driven by `?period=` (daily=last 15 days, weekly=last 8 days, monthly=1st-of-month→last day), computed live from auth-service session activity; if auth-service is unreachable the series falls back to empty (flagged `stale.activeVsChurned`). `communitiesGroups` is the donut (`communities` from community-service, `groups` from chat-service, plus their `total`). Cached per-period (10s). Requires `dashboard.read`.",
+        "Chart section. Returns `{ activeVsChurned, communitiesGroups }`. `activeVsChurned` is a REAL per-day series whose date range is driven by `?period=` (daily=last 15 days, weekly=last 8 days, monthly=1st-of-month→last day), computed live from auth-service session activity; if auth-service is unreachable the series falls back to an empty array (no stale flag is exposed). `communitiesGroups` is the donut (`communities` from community-service, `groups` from chat-service, plus their `total`). `from`/`to` are accepted for forward-compat only — the service currently IGNORES them entirely and derives the window purely from `period` (do not rely on them yet). Cached per-period (10s). Requires `dashboard.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -519,13 +519,16 @@ export const adminPaths = {
           name: "from",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date" },
+          description:
+            "Currently unused by the service (accepted for forward-compat only). Must be a full ISO-8601 DATETIME string if sent — the validator requires z.string().datetime(), NOT date-only, despite the schema type below.",
+          schema: { type: "string", format: "date-time" },
         },
         {
           name: "to",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date" },
+          description: "Same caveats as `from`.",
+          schema: { type: "string", format: "date-time" },
         },
       ],
       responses: {
@@ -560,7 +563,7 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.2 User Management  (PLANNED)
+  // §4.2 User Management  (IMPLEMENTED, except sessions/delete/force-logout)
   // ===========================================================================
   "/admin/v1/users": {
     get: {
@@ -568,14 +571,15 @@ export const adminPaths = {
       operationId: "adminListUsers",
       summary: "List / search users",
       description:
-        PLANNED +
         "Aggregates `AdminListUsers` (auth-service) + `AdminListProfiles` (user-service) via gRPC-live. " +
         "Filters: `status` (repeatable, case-insensitive), `reports` bucket, a join-date range " +
         "(`dateFrom`/`dateTo`, or `createdAfter`/`createdBefore` aliases), and `q` search " +
         "(username/email). Sort via `sortBy` + `sortOrder` (default `joinedDate`/`desc`). " +
         "**Note:** `sortBy=reports` is DB-sorted on the read-model; in the live gRPC path it " +
         "falls back to join-date order — your `sortOrder` is still applied (report counts " +
-        "live in admin_db only). Requires `users.read`.",
+        "live in admin_db only). Each row also carries `moderationStatus`/`isBanned` " +
+        "(and `bannedAt`/`bannedBy`/`banReason` when banned) so the panel can pick the " +
+        "Ban/Unban row action without a follow-up call. Requires `users.read`.",
       security: adminSecurity,
       parameters: [
         ...listParams,
@@ -647,7 +651,7 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.read"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/users/{id}": {
@@ -656,8 +660,7 @@ export const adminPaths = {
       operationId: "adminGetUser",
       summary: "Get user detail",
       description:
-        PLANNED +
-        "Full profile: identity (auth) + profile/stats (user) + moderation history (admin_db `ModerationAction`). gRPC-live. Requires `users.read`.",
+        "Full profile: identity (auth) + profile/stats (user) + report summary + moderation history (admin_db `ModerationAction`). `accountStatus` also carries `moderationStatus`/`isBanned` alongside the existing `status`. gRPC-live. Requires `users.read`.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
@@ -666,7 +669,7 @@ export const adminPaths = {
         "403": errRes("Missing users.read"),
         "404": errRes("User not found"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     delete: {
       tags: [adminTags.users],
@@ -897,16 +900,15 @@ export const adminPaths = {
       "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/users/{id}/suspend": {
+  "/admin/v1/users/{userId}/suspend": {
     post: {
       tags: [adminTags.users],
       operationId: "adminSuspendUser",
-      summary: "Suspend a user",
+      summary: "Suspend a user (time-boxed, durationDays required)",
       description:
-        PLANNED +
-        "Temp suspend (with `reason`, `until`). Writes `ModerationAction` and emits `admin.user_suspended`. Audited. Requires `users.moderate`. (Step-up TOTP auth for sensitive mutations planned for Phase 2.)",
+        "Sets status SUSPENDED with suspendedUntil = now + durationDays (durationDays is REQUIRED here, unlike ban). Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_suspended (RabbitMQ admin.user.queue; consumed by auth-service). Requires users.moderate. TOTP step-up is a planned Phase-2 addition, NOT enforced today.",
       security: adminSecurity,
-      parameters: [idPathParam],
+      parameters: [{ ...idPathParam, name: "userId" }],
       requestBody: jsonBody("#/components/schemas/AdminSuspendRequest"),
       responses: {
         "200": okRes(
@@ -917,20 +919,20 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.moderate"),
         "404": errRes("User not found"),
+        "409": errRes("USER_ALREADY_BANNED — current status is already BANNED"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/users/{id}/ban": {
+  "/admin/v1/users/{userId}/ban": {
     post: {
       tags: [adminTags.users],
       operationId: "adminBanUser",
-      summary: "Ban a user",
+      summary: "Ban a user (permanent, or time-boxed via durationDays)",
       description:
-        PLANNED +
-        "Writes `ModerationAction` and emits `admin.user_banned`; auth-service locks the account. Audited. Requires `users.moderate`. (Step-up TOTP auth for sensitive mutations planned for Phase 2.)",
+        "If durationDays is omitted/null this is a PERMANENT ban (status BANNED); if durationDays > 0 it is treated as a time-boxed suspend instead (status SUSPENDED). `reason` accepts either a predefined code (AdminUserBanReasonCode) or any custom free-text reason (max 200 chars) — whichever is sent is persisted verbatim into banReason/ModerationAction/AuditLog and threaded unchanged into the published admin.user_banned/admin.user_suspended event. Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_banned/admin.user_suspended (RabbitMQ admin.user.queue). No Socket.IO/real-time session kill is emitted by this service — forceLogout is threaded into the published event only. Requires users.moderate. TOTP step-up is a planned Phase-2 addition, NOT enforced today.",
       security: adminSecurity,
-      parameters: [idPathParam],
+      parameters: [{ ...idPathParam, name: "userId" }],
       requestBody: jsonBody("#/components/schemas/AdminBanRequest"),
       responses: {
         "200": okRes(
@@ -941,20 +943,21 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.moderate"),
         "404": errRes("User not found"),
+        "409": errRes("USER_ALREADY_BANNED or USER_DELETED"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/users/{id}/unban": {
+  "/admin/v1/users/{userId}/unban": {
     post: {
       tags: [adminTags.users],
       operationId: "adminUnbanUser",
-      summary: "Unban a user",
+      summary: "Unban / reinstate a user",
       description:
-        PLANNED +
-        "Emits `admin.user_unbanned`. Audited. Requires `users.moderate`.",
+        "Sets status ACTIVE, clears bannedAt/suspendedUntil/banReason. Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_unbanned. Requires users.moderate.",
       security: adminSecurity,
-      parameters: [idPathParam],
+      parameters: [{ ...idPathParam, name: "userId" }],
+      requestBody: jsonBody("#/components/schemas/AdminUnbanRequest", false),
       responses: {
         "200": okRes(
           "User unbanned",
@@ -963,8 +966,121 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing users.moderate"),
         "404": errRes("User not found"),
+        "409": errRes("USER_NOT_BANNED or USER_DELETED"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/{userId}/activate": {
+    post: {
+      tags: [adminTags.users],
+      operationId: "adminActivateUser",
+      summary: "Activate / reinstate a user (alias of /unban)",
+      description:
+        "Identical to POST /admin/v1/users/{userId}/unban — same validator, controller, and service call, just an alternate path for callers that use an 'activate' verb. Sets status ACTIVE, clears bannedAt/suspendedUntil/banReason. Writes a ModerationAction + AuditLog and fire-and-forgets admin.user_unbanned. Requires users.moderate.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "userId" }],
+      requestBody: jsonBody("#/components/schemas/AdminUnbanRequest", false),
+      responses: {
+        "200": okRes(
+          "User activated",
+          "#/components/schemas/AdminModerationResult"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.moderate"),
+        "404": errRes("User not found"),
+        "409": errRes("USER_NOT_BANNED or USER_DELETED"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/{userId}/details": {
+    get: {
+      tags: [adminTags.users],
+      operationId: "adminGetUserDetails",
+      summary: "Get user detail (alias of GET /admin/v1/users/{userId})",
+      description:
+        "Identical to GET /admin/v1/users/{userId} — community-less user detail: profile + report summary + moderation history. Does NOT include a community/members block (a user can belong to multiple communities, so there is no single implicit one to pick); use GET /admin/v1/users/{userId}/communities and GET /admin/v1/users/{userId}/communities/{communityId}/members when a specific community context is needed. Requires users.read.",
+      security: adminSecurity,
+      parameters: [{ ...idPathParam, name: "userId" }],
+      responses: {
+        "200": okRes("User detail", "#/components/schemas/AdminUserDetail"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.read"),
+        "404": errRes("User not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/ban-reasons": {
+    get: {
+      tags: [adminTags.users],
+      operationId: "adminListBanReasons",
+      summary: "List predefined ban/suspend reason codes",
+      description:
+        "Static reference data for the ban/suspend modal's reason dropdown — the same `AdminUserBanReasonCode` codes accepted by ban/suspend/bulk-ban. The admin can also type any custom free-text reason instead (max 200 chars); this list is a convenience preset, not an exhaustive constraint. Requires users.read.",
+      security: adminSecurity,
+      responses: {
+        "200": {
+          description: "Predefined reason codes",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: {
+                    type: "array",
+                    items: {
+                      $ref: "#/components/schemas/AdminUserBanReasonCode",
+                    },
+                  },
+                },
+                required: ["success", "data"],
+              },
+            },
+          },
+        },
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.read"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/bulk/ban": {
+    post: {
+      tags: [adminTags.users],
+      operationId: "adminBulkBanUsers",
+      summary: "Bulk ban/suspend users (max 100)",
+      description:
+        "Applies the same rules as single ban/suspend to up to 100 users in one call, including custom free-text `reason` support. Returns 207 Multi-Status. Writes ONE ModerationAction + ONE AuditLog (user.bulk_banned) + publishes ONE admin.user_banned/admin.user_suspended event PER succeeded user. Requires users.moderate.",
+      security: adminSecurity,
+      requestBody: jsonBody("#/components/schemas/AdminBulkBanRequest"),
+      responses: {
+        "207": okRes("Bulk result", "#/components/schemas/AdminBulkResult"),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.moderate"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/users/bulk/activate": {
+    post: {
+      tags: [adminTags.users],
+      operationId: "adminBulkActivateUsers",
+      summary: "Bulk reinstate/activate users (max 100)",
+      description:
+        "Applies the same rules as single unban to up to 100 users in one call. Returns 207 Multi-Status. Already-ACTIVE users are idempotently reported as succeeded but write no audit row and publish no event. Requires users.moderate.",
+      security: adminSecurity,
+      requestBody: jsonBody("#/components/schemas/AdminBulkActivateRequest"),
+      responses: {
+        "207": okRes("Bulk result", "#/components/schemas/AdminBulkResult"),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing users.moderate"),
+      },
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/users/{id}/force-logout": {
@@ -991,10 +1107,12 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.3 Communities  (Community Management module — IMPLEMENTED, Phase 1 mock
-  //      data behind the real contract; see docs/COMMUNITY-MANAGEMENT-API-SPEC.md.
-  //      Phase 2 swaps MockCommunityRepository → gRPC-backed repo, no contract
-  //      change. `communities.read` = list/detail; `communities.moderate` =
+  // §4.3 Communities  (Community Management module — IMPLEMENTED, live gRPC to
+  //      community-service via GrpcCommunityRepository; see
+  //      docs/COMMUNITY-MANAGEMENT-API-SPEC.md. A MockCommunityRepository still
+  //      exists in source for offline/demo use but is NOT the active
+  //      implementation — do not describe this module as mock data.
+  //      `communities.read` = list/detail; `communities.moderate` =
   //      close/reopen/bulk.)
   // ===========================================================================
   "/admin/v1/communities": {
@@ -1003,7 +1121,7 @@ export const adminPaths = {
       operationId: "adminListCommunities",
       summary: "List communities (community management table)",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Paginated, filtered communities list. " +
+        "Paginated, filtered communities list (live gRPC). " +
         "Filters: `search` (community name / admin name), `type`, `category` (slug or id), `status`, " +
         "`createdFrom`/`createdTo` (on createdAt, inclusive). Sort whitelist " +
         "`createdAt|name|memberCount|livestreamCount` with `:asc|:desc` (default `createdAt:desc`). " +
@@ -1094,7 +1212,7 @@ export const adminPaths = {
       operationId: "adminGetCommunity",
       summary: "Get community detail",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Full community detail: core entity, owner " +
+        "Full community detail (live gRPC): core entity, owner " +
         "profile + account standing, member stats, livestream stats (nullable; `stale` until " +
         "stream-service gRPC), moderation history timeline, and settings summary. `partial` is true " +
         "when an upstream source could not be reached. Requires `communities.read`.",
@@ -1185,7 +1303,7 @@ export const adminPaths = {
       operationId: "adminCloseCommunity",
       summary: "Close a community",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Move a community to CLOSED with a " +
+        "Move a community to CLOSED with a " +
         "`reasonCode` (+ optional `reasonNote`, `notifyOwner`). Records a ModerationAction + AuditLog. " +
         "Requires `communities.moderate`.",
       security: adminSecurity,
@@ -1218,7 +1336,7 @@ export const adminPaths = {
       operationId: "adminReopenCommunity",
       summary: "Reopen a community",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Move a CLOSED community back to ACTIVE " +
+        "Move a CLOSED community back to ACTIVE " +
         "(+ optional `reasonNote`, `notifyOwner`). Records a ModerationAction + AuditLog. " +
         "Requires `communities.moderate`.",
       security: adminSecurity,
@@ -1254,7 +1372,7 @@ export const adminPaths = {
       operationId: "adminBulkCloseCommunities",
       summary: "Bulk close communities",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Close up to 100 communities in one call. " +
+        "Close up to 100 communities in one call. " +
         "Returns **207 Multi-Status** with per-item outcome (partial success is normal). One " +
         "ModerationAction + AuditLog per succeeded item. Requires `communities.moderate`.",
       security: adminSecurity,
@@ -1279,7 +1397,7 @@ export const adminPaths = {
       operationId: "adminBulkReopenCommunities",
       summary: "Bulk reopen communities",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Reopen up to 100 communities in one call. " +
+        "Reopen up to 100 communities in one call. " +
         "Returns **207 Multi-Status** with per-item outcome. One ModerationAction + AuditLog per " +
         "succeeded item. Requires `communities.moderate`.",
       security: adminSecurity,
@@ -1747,9 +1865,12 @@ export const adminPaths = {
       summary: "Resolve a report",
       description:
         "**(Phase 1 — mock data behind the real contract)** Mark a report RESOLVED with a resolution " +
-        "+ optional enforcement action. The enforcement (`SUSPEND_7D`, `BAN`, …) is recorded as a " +
-        "decision and emitted as `moderation.action.requested` (RabbitMQ) — auth/user-service own " +
-        "actual account state (bounded-context rule). Audited. Idempotent via `Idempotency-Key`. " +
+        "+ optional enforcement action (`actionOnReportedUser`). **The enforcement action is currently " +
+        "RECORDED ONLY, not applied** — there is no RabbitMQ publish or call into the Users module in " +
+        "the current code, despite an earlier version of this doc claiming one (`moderation.action.requested`). " +
+        'Resolving with e.g. `actionOnReportedUser: "BAN"` returns `appliedActions` in the response but ' +
+        "does NOT actually ban the user — do not surface this as a completed enforcement action in the UI " +
+        "until backend wires the real enforcement call. Audited (writes an AuditLog row only, no ModerationAction). " +
         "Requires `reports.action`.",
       security: adminSecurity,
       parameters: [
@@ -2055,7 +2176,8 @@ export const adminPaths = {
       operationId: "adminBulkReviewStreamReports",
       summary: "Bulk review stream reports",
       description:
-        "Transition up to 100 stream reports to REVIEWING, RESOLVED, or DISMISSED in a single request. Returns 207 Multi-Status. Audited as `livestream.reports_bulk_reviewed`. Requires `livestreams.moderate`.",
+        "Transition up to 100 stream reports to REVIEWING, RESOLVED, or DISMISSED in a single request. Returns 207 Multi-Status. Audited as `livestream.reports_bulk_reviewed`. " +
+        "**NO-OP WARNING: the live implementation does not mutate any report row** — it unconditionally reports every item as succeeded without touching report state. Report status for livestream reports is intended to be owned by the Reports & Moderation module, which this endpoint does not call into. Do not rely on this endpoint to actually change report status today. Requires `livestreams.moderate`.",
       security: adminSecurity,
       requestBody: {
         required: true,
@@ -2211,13 +2333,17 @@ export const adminPaths = {
     get: {
       tags: [adminTags.livestreams],
       operationId: "adminListLivestreamUsers",
-      summary: "List livestream users (the stream's community members)",
+      summary: "List livestream viewer sessions",
       description:
-        "Paginated members of the stream's community — the Livestream User List " +
-        "(Username, User ID, Joined Date, Type). `type` filters by community role " +
-        "ADMIN|MODERATOR|MEMBER; `search` matches username/handle. Read through the " +
-        "community-members gRPC. Avatars are full presigned URLs. Requires " +
-        "`livestreams.read`.",
+        "Paginated VIEWER-SESSION HISTORY for this stream (who watched, when they " +
+        "joined/left, how long) — read from stream-service's durable " +
+        "LivestreamViewerSession records via streamClient.adminListViewerSessions, " +
+        "enriched per row with `no` (page-based sequence number) and `type` " +
+        "(the viewer's CURRENT community role — Admin|Moderator|Member, via a " +
+        "single batched communityClient.adminGetMemberRoles call keyed by the " +
+        "page's userIds; defaults to Member if they've since left the community). " +
+        "This is NOT the community roster — there is no `search` or role/`type` " +
+        "filter on the query; sort only via sortField/sortDir. Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -2225,18 +2351,6 @@ export const adminPaths = {
           in: "path",
           required: true,
           schema: { type: "string" },
-        },
-        {
-          name: "search",
-          in: "query",
-          required: false,
-          schema: { type: "string", minLength: 1 },
-        },
-        {
-          name: "type",
-          in: "query",
-          required: false,
-          schema: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
         },
         {
           name: "page",
@@ -2250,10 +2364,25 @@ export const adminPaths = {
           required: false,
           schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
         },
+        {
+          name: "sortField",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["joinedAt", "watchDurationSeconds"],
+          },
+        },
+        {
+          name: "sortDir",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"] },
+        },
       ],
       responses: {
         "200": listRes(
-          "Livestream users (community members) page",
+          "Livestream viewer-session page",
           "#/components/schemas/AdminLivestreamUserItem"
         ),
         "400": errRes("Validation failed"),
@@ -2590,7 +2719,11 @@ export const adminPaths = {
   },
 
   // ===========================================================================
-  // §4.8 Categories  (PLANNED) — requires `categories.manage`
+  // §4.8 Categories — requires `categories.manage`
+  //
+  // Owned by community-service's `CommunityCategory` (community_db) — the
+  // admin panel manages it exclusively through a gRPC bridge (no duplicate
+  // category table exists in admin_db). Plain-text `name`, no i18n/icon.
   // ===========================================================================
   "/admin/v1/categories": {
     get: {
@@ -2598,24 +2731,68 @@ export const adminPaths = {
       operationId: "adminListCategories",
       summary: "List categories",
       description:
-        PLANNED +
-        "Community categories (gRPC-live community-svc or admin_db OWN — ownership open question §6.2). Requires `categories.manage` (read uses the same perm group).",
+        "Paginated, searchable, sortable list (gRPC-live from community-service). " +
+        "`search` matches name (case-insensitive). `status` filters by visibility " +
+        "(`visible`/`hidden`/`all`, default `all`). Sort whitelist " +
+        "`name|order|createdAt` with `:asc|:desc` (default `order:asc`). Requires " +
+        "`categories.manage`.",
       security: adminSecurity,
-      parameters: [...listParams],
+      parameters: [
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Matches name (case-insensitive).",
+        },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["visible", "hidden", "all"],
+            default: "all",
+          },
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            pattern: "^(name|order|createdAt):(asc|desc)$",
+            default: "order:asc",
+          },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
       responses: {
         "200": listRes("Categories", "#/components/schemas/AdminCategory"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     post: {
       tags: [adminTags.categories],
       operationId: "adminCreateCategory",
       summary: "Create a category",
       description:
-        PLANNED +
-        "i18n name (en/vi), icon, order. Audited. Requires `categories.manage`.",
+        "`name` is trimmed and must be unique case-insensitively (community-service " +
+        "enforces this; concurrent duplicate creates race safely on the underlying " +
+        "unique index). Audited. Requires `categories.manage`.",
       security: adminSecurity,
       requestBody: jsonBody("#/components/schemas/AdminCategoryCreateRequest"),
       responses: {
@@ -2623,8 +2800,9 @@ export const adminPaths = {
         "400": errRes("Validation failed"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
+        "409": errRes("Category name already taken"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/categories/{id}": {
@@ -2632,7 +2810,10 @@ export const adminPaths = {
       tags: [adminTags.categories],
       operationId: "adminUpdateCategory",
       summary: "Update a category",
-      description: PLANNED + "Audited. Requires `categories.manage`.",
+      description:
+        "Update `name` and/or toggle `visible` — at least one must be provided. A new " +
+        "`name` is re-checked for case-insensitive uniqueness. Audited. Requires " +
+        "`categories.manage`.",
       security: adminSecurity,
       parameters: [idPathParam],
       requestBody: jsonBody("#/components/schemas/AdminCategoryUpdateRequest"),
@@ -2642,31 +2823,49 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
         "404": errRes("Category not found"),
+        "409": errRes("Category name already taken"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     delete: {
       tags: [adminTags.categories],
       operationId: "adminDeleteCategory",
       summary: "Delete a category",
       description:
-        PLANNED +
-        "Guard: blocked if the category is in use. 🔐 step-up TOTP. Audited. Requires `categories.manage`.",
+        "Hard-deletes the category when no community references it. When the category " +
+        "is still referenced by one or more communities, it is soft-deleted instead " +
+        "(permanently hidden from every category query, same `deletedAt` convention as " +
+        "`Community.deletedAt`) so existing communities keep a valid `categoryId`. " +
+        "Audited. Requires `categories.manage`.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
+      parameters: [idPathParam],
       responses: {
-        "200": okRes("Category deleted", "#/components/schemas/AdminCategory"),
-        "401": errRes("Unauthorized / invalid TOTP"),
+        "200": {
+          description: "Category deleted",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: { type: "null" },
+                },
+                required: ["success", "data"],
+              },
+            },
+          },
+        },
+        "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
         "404": errRes("Category not found"),
-        "409": errRes("Category in use"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 
   // ===========================================================================
-  // §4.9 Audit Logs  (PLANNED) — requires `auditlogs.read`
+  // §4.9 Audit Logs  (IMPLEMENTED) — requires `auditlogs.read`. Read-only;
+  // rows are written automatically by every other admin module.
   // ===========================================================================
   "/admin/v1/audit-logs": {
     get: {
@@ -2674,40 +2873,59 @@ export const adminPaths = {
       operationId: "adminListAuditLogs",
       summary: "List audit logs",
       description:
-        PLANNED +
-        "Append-only table (admin_db OWN) — no mutations. Filters: `actorId`, `action`, `targetType`, `from`, `to`. Requires `auditlogs.read`.",
+        "Append-only table (admin_db OWN) — no mutations, newest first. search matches performer name/email OR targetId. action is repeatable (?action=A&action=B). Sort whitelist createdAt|action with :asc|:desc (default createdAt:desc). dateFrom/dateTo are YYYY-MM-DD, applied as a whole-day range. Requires auditlogs.read.",
       security: adminSecurity,
       parameters: [
-        ...listParams,
         {
-          name: "actorId",
+          name: "search",
           in: "query",
           required: false,
           schema: { type: "string" },
+          description:
+            "Matches performer name/email OR targetId (case-insensitive).",
         },
         {
           name: "action",
           in: "query",
           required: false,
-          schema: { type: "string" },
+          style: "form",
+          explode: true,
+          schema: { type: "array", items: { type: "string", maxLength: 100 } },
+          description: "Repeatable action-name filter.",
         },
         {
-          name: "targetType",
+          name: "sort",
           in: "query",
           required: false,
-          schema: { type: "string" },
+          schema: {
+            type: "string",
+            pattern: "^(createdAt|action):(asc|desc)$",
+            default: "createdAt:desc",
+          },
         },
         {
-          name: "from",
+          name: "page",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date-time" },
+          schema: { type: "integer", minimum: 1, default: 1 },
         },
         {
-          name: "to",
+          name: "limit",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date-time" },
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+        {
+          name: "dateFrom",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date" },
+        },
+        {
+          name: "dateTo",
+          in: "query",
+          required: false,
+          schema: { type: "string", format: "date" },
         },
       ],
       responses: {
@@ -2715,47 +2933,7 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing auditlogs.read"),
       },
-      "x-implementation-status": "planned",
-    },
-  },
-  "/admin/v1/audit-logs/export": {
-    get: {
-      tags: [adminTags.auditLogs],
-      operationId: "adminExportAuditLogs",
-      summary: "Export audit logs",
-      description:
-        PLANNED +
-        "CSV/JSON export (presigned MinIO for large exports — private bucket). Requires `auditlogs.read`.",
-      security: adminSecurity,
-      parameters: [
-        {
-          name: "format",
-          in: "query",
-          required: false,
-          schema: { type: "string", enum: ["csv", "json"], default: "csv" },
-        },
-        {
-          name: "from",
-          in: "query",
-          required: false,
-          schema: { type: "string", format: "date-time" },
-        },
-        {
-          name: "to",
-          in: "query",
-          required: false,
-          schema: { type: "string", format: "date-time" },
-        },
-      ],
-      responses: {
-        "200": okRes(
-          "Export ready",
-          "#/components/schemas/AdminAuditLogExport"
-        ),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing auditlogs.read"),
-      },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
   "/admin/v1/audit-logs/{id}": {
@@ -2764,7 +2942,7 @@ export const adminPaths = {
       operationId: "adminGetAuditLog",
       summary: "Get audit log detail",
       description:
-        PLANNED + "Full diff detail (admin_db OWN). Requires `auditlogs.read`.",
+        "Full detail incl. before/after metadata diff and a derived reason (scans metadata.after then metadata.before for the first non-empty reason/note/reasonNote/reasonCode string). id must be a UUID. Requires auditlogs.read.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
@@ -2773,201 +2951,261 @@ export const adminPaths = {
         "403": errRes("Missing auditlogs.read"),
         "404": errRes("Audit log not found"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 
   // ===========================================================================
-  // §4.10 System Health  (PLANNED) — requires `systemhealth.read`
+  // §4.10 System Health  (IMPLEMENTED) — requires `systemhealth.read`. No
+  // request body/query params. Redis-cached, 5s TTL. Never 500s — a partial
+  // outage still returns 200 with the affected components marked down/degraded.
   // ===========================================================================
-  "/admin/v1/system/health": {
+  "/admin/v1/system-health": {
     get: {
       tags: [adminTags.systemHealth],
-      operationId: "adminGetServiceHealth",
-      summary: "Per-service health",
+      operationId: "adminGetSystemHealth",
+      summary: "Live system health snapshot",
       description:
-        PLANNED +
-        "Per-service status (Chat/Media/Livestream/Notification + auth/user/community). Probes gRPC health + circuit-breaker state (redis + gRPC-live). Requires `systemhealth.read`.",
+        "Overall status + services-up tally + per-service health (gRPC ping + circuit-breaker stats for auth/community/chat; media/notification/stream/user report status:'unknown', monitored:false — no probe wired for them yet) + infrastructure health (Postgres/Redis/RabbitMQ/MinIO). lastUpdated is the true staleness indicator (cache TTL 5s). Requires systemhealth.read.",
       security: adminSecurity,
       responses: {
-        "200": okRes(
-          "Service health",
-          "#/components/schemas/AdminServiceStatus"
-        ),
+        "200": okRes("System health", "#/components/schemas/AdminSystemHealth"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing systemhealth.read"),
       },
-      "x-implementation-status": "planned",
-    },
-  },
-  "/admin/v1/system/queues": {
-    get: {
-      tags: [adminTags.systemHealth],
-      operationId: "adminGetQueueDepths",
-      summary: "Queue depths",
-      description:
-        PLANNED +
-        "RabbitMQ/Bull queue depths, DLQ counts (redis). Requires `systemhealth.read`.",
-      security: adminSecurity,
-      responses: {
-        "200": okRes("Queue depths", "#/components/schemas/AdminSystemQueues"),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing systemhealth.read"),
-      },
-      "x-implementation-status": "planned",
-    },
-  },
-  "/admin/v1/system/metrics": {
-    get: {
-      tags: [adminTags.systemHealth],
-      operationId: "adminGetPlatformMetrics",
-      summary: "Platform metrics snapshot",
-      description:
-        PLANNED +
-        "Aggregate platform metrics snapshot (read-model + redis). Requires `systemhealth.read`.",
-      security: adminSecurity,
-      responses: {
-        "200": okRes(
-          "Metrics snapshot",
-          "#/components/schemas/AdminSystemMetrics"
-        ),
-        "401": errRes("Unauthorized"),
-        "403": errRes("Missing systemhealth.read"),
-      },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 
   // ===========================================================================
-  // §4.11 Admin Accounts  (PLANNED) — requires `admins.manage` (SUPER_ADMIN)
+  // §4.11 Admin Accounts  (IMPLEMENTED) — requires `admins.manage`
+  // (SUPER_ADMIN-gated for SUPER_ADMIN-targeting mutations). NOTE: there is no
+  // TOTP/2FA step-up flow implemented today — do not send X-Totp-Code.
   // ===========================================================================
-  "/admin/v1/admins": {
+  "/admin/v1/admin-accounts/permissions": {
+    get: {
+      tags: [adminTags.adminAccounts],
+      operationId: "adminListPermissionCatalogue",
+      summary: "List the full permission catalogue",
+      description:
+        "Every permission key + its group, for building a permission-picker/reference UI. Requires admins.manage.",
+      security: adminSecurity,
+      responses: {
+        "200": listRes(
+          "Permission catalogue",
+          "#/components/schemas/AdminPermissionCatalogueItem"
+        ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/admin-accounts": {
     get: {
       tags: [adminTags.adminAccounts],
       operationId: "adminListAdminAccounts",
       summary: "List admin accounts",
       description:
-        PLANNED +
-        "List admin accounts + roles (admin_db OWN). Requires `admins.manage` (SUPER_ADMIN only).",
+        "Paginated, searchable, filtered admin list (admin_db OWN). search matches name OR email. status enum ACTIVE|DISABLED|INVITED|all (default all). roleKey enum or all (default all). Sort whitelist name|email|createdAt|lastLoginAt with :asc|:desc (default createdAt:desc). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [...listParams],
+      parameters: [
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+        },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["ACTIVE", "DISABLED", "INVITED", "all"],
+            default: "all",
+          },
+        },
+        {
+          name: "roleKey",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: [
+              "SUPER_ADMIN",
+              "ADMIN",
+              "MODERATOR",
+              "SUPPORT_AGENT",
+              "ANALYST",
+              "all",
+            ],
+            default: "all",
+          },
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            pattern: "^(name|email|createdAt|lastLoginAt):(asc|desc)$",
+            default: "createdAt:desc",
+          },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
       responses: {
         "200": listRes("Admin accounts", "#/components/schemas/AdminAccount"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
     post: {
       tags: [adminTags.adminAccounts],
       operationId: "adminCreateAdminAccount",
       summary: "Create an admin account",
       description:
-        PLANNED +
-        "Create admin (invite + initial TOTP enrolment). 🔐 step-up TOTP. Audited. Requires `admins.manage` (SUPER_ADMIN only).",
+        "Only a SUPER_ADMIN actor may create a SUPER_ADMIN target (else 403 ADMIN_FORBIDDEN). Audited (admin.created). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [totpHeaderParam],
       requestBody: jsonBody("#/components/schemas/AdminAccountCreateRequest"),
       responses: {
         "201": okRes("Admin created", "#/components/schemas/AdminAccount"),
         "400": errRes("Validation failed"),
-        "401": errRes("Unauthorized / invalid TOTP"),
-        "403": errRes("Missing admins.manage"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
+        "404": errRes("ADMIN_ROLE_NOT_FOUND (defensive)"),
+        "409": errRes("ADMIN_EMAIL_TAKEN"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/admins/{id}": {
+  "/admin/v1/admin-accounts/{id}": {
     get: {
       tags: [adminTags.adminAccounts],
       operationId: "adminGetAdminAccount",
       summary: "Get an admin account",
-      description: PLANNED + "Requires `admins.manage` (SUPER_ADMIN only).",
+      description: "Requires admins.manage.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
         "200": okRes("Admin account", "#/components/schemas/AdminAccount"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage"),
-        "404": errRes("Admin not found"),
+        "404": errRes("ADMIN_NOT_FOUND"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
-  },
-  "/admin/v1/admins/{id}/role": {
     patch: {
       tags: [adminTags.adminAccounts],
-      operationId: "adminChangeAdminRole",
-      summary: "Change an admin's role",
+      operationId: "adminUpdateAdminAccount",
+      summary: "Update an admin's profile (name/avatarUrl only)",
       description:
-        PLANNED +
-        "Change role/permissions. 🔐 step-up TOTP. Audited. Requires `admins.manage` (SUPER_ADMIN only).",
+        "Cannot edit an existing SUPER_ADMIN target unless the actor is SUPER_ADMIN. Role changes are NOT accepted here — use .../permissions. Audited (admin.updated). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
-      requestBody: jsonBody("#/components/schemas/AdminAccountRoleRequest"),
+      parameters: [idPathParam],
+      requestBody: jsonBody("#/components/schemas/AdminAccountUpdateRequest"),
       responses: {
-        "200": okRes("Role changed", "#/components/schemas/AdminAccount"),
+        "200": okRes("Admin updated", "#/components/schemas/AdminAccount"),
         "400": errRes("Validation failed"),
-        "401": errRes("Unauthorized / invalid TOTP"),
-        "403": errRes("Missing admins.manage"),
-        "404": errRes("Admin not found"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
+        "404": errRes("ADMIN_NOT_FOUND"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/admins/{id}/disable": {
+  "/admin/v1/admin-accounts/{id}/activate": {
     post: {
       tags: [adminTags.adminAccounts],
-      operationId: "adminDisableAdminAccount",
-      summary: "Disable an admin account",
+      operationId: "adminActivateAdminAccount",
+      summary: "Activate a disabled admin account",
       description:
-        PLANNED +
-        "Deactivate. 🔐 step-up TOTP. Audited. Requires `admins.manage` (SUPER_ADMIN only).",
+        "No request body. Audited (admin.activated). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
+      parameters: [idPathParam],
       responses: {
-        "200": okRes("Admin disabled", "#/components/schemas/AdminAccount"),
-        "401": errRes("Unauthorized / invalid TOTP"),
-        "403": errRes("Missing admins.manage"),
-        "404": errRes("Admin not found"),
+        "200": okRes("Admin activated", "#/components/schemas/AdminAccount"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
+        "404": errRes("ADMIN_NOT_FOUND"),
+        "409": errRes("ADMIN_ALREADY_ACTIVE"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/admins/{id}/reset-totp": {
+  "/admin/v1/admin-accounts/{id}/deactivate": {
     post: {
       tags: [adminTags.adminAccounts],
-      operationId: "adminResetAdminTotp",
-      summary: "Reset an admin's TOTP",
+      operationId: "adminDeactivateAdminAccount",
+      summary: "Deactivate an admin account",
       description:
-        PLANNED +
-        "Force 2FA re-enrolment. 🔐 step-up TOTP. Audited. Requires `admins.manage` (SUPER_ADMIN only).",
+        "No request body. Immediately revokes ALL active sessions for the target admin. 403 ADMIN_CANNOT_DEACTIVATE_SELF if id === actor.id. Audited (admin.deactivated). Requires admins.manage.",
       security: adminSecurity,
-      parameters: [idPathParam, totpHeaderParam],
+      parameters: [idPathParam],
       responses: {
-        "200": okRes("TOTP reset", "#/components/schemas/AdminAccount"),
-        "401": errRes("Unauthorized / invalid TOTP"),
-        "403": errRes("Missing admins.manage"),
-        "404": errRes("Admin not found"),
+        "200": okRes("Admin deactivated", "#/components/schemas/AdminAccount"),
+        "401": errRes("Unauthorized"),
+        "403": errRes(
+          "Missing admins.manage, ADMIN_FORBIDDEN, or ADMIN_CANNOT_DEACTIVATE_SELF"
+        ),
+        "404": errRes("ADMIN_NOT_FOUND"),
+        "409": errRes("ADMIN_ALREADY_INACTIVE"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
-  "/admin/v1/roles": {
+  "/admin/v1/admin-accounts/{id}/permissions": {
     get: {
       tags: [adminTags.adminAccounts],
-      operationId: "adminListRoles",
-      summary: "List roles",
-      description:
-        PLANNED +
-        "List roles + permission sets (admin_db OWN). Requires `admins.manage` (SUPER_ADMIN only).",
+      operationId: "adminGetAdminAccountPermissions",
+      summary: "Get an admin's resolved (role-derived) permissions",
+      description: "Requires admins.manage.",
       security: adminSecurity,
+      parameters: [idPathParam],
       responses: {
-        "200": listRes("Roles", "#/components/schemas/AdminRole"),
+        "200": okRes(
+          "Permissions view",
+          "#/components/schemas/AdminAccountPermissionsView"
+        ),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage"),
+        "404": errRes("ADMIN_NOT_FOUND"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
+    },
+    patch: {
+      tags: [adminTags.adminAccounts],
+      operationId: "adminSetAdminAccountRole",
+      summary: "Reassign an admin's role",
+      description:
+        "There is NO per-permission override in this service — this REPLACES the admin's whole role. Both the existing role and the incoming roleKey are checked against the SUPER_ADMIN gate; either can 403. Audited (admin.permissions_updated). Requires admins.manage.",
+      security: adminSecurity,
+      parameters: [idPathParam],
+      requestBody: jsonBody("#/components/schemas/AdminAccountRoleRequest"),
+      responses: {
+        "200": okRes(
+          "Permissions view",
+          "#/components/schemas/AdminAccountPermissionsView"
+        ),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
+        "404": errRes("ADMIN_NOT_FOUND or ADMIN_ROLE_NOT_FOUND"),
+      },
+      "x-implementation-status": "implemented",
     },
   },
 

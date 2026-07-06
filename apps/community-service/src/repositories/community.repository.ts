@@ -20,7 +20,7 @@ export const communityRepository = {
   // ---------------------------------------------------------------------------
   listActiveCategories() {
     return prisma.communityCategory.findMany({
-      where: { active: true },
+      where: { active: true, deletedAt: { isSet: false } },
       orderBy: [{ order: "asc" }, { name: "asc" }],
       select: { id: true, name: true, slug: true },
     });
@@ -28,7 +28,7 @@ export const communityRepository = {
 
   findActiveCategoryById(categoryId: string) {
     return prisma.communityCategory.findFirst({
-      where: { id: categoryId, active: true },
+      where: { id: categoryId, active: true, deletedAt: { isSet: false } },
       select: { id: true, name: true },
     });
   },
@@ -65,8 +65,12 @@ export const communityRepository = {
     active?: boolean;
     page: number;
     limit: number;
+    sortField?: "name" | "order" | "createdAt";
+    sortDir?: "asc" | "desc";
   }) {
-    const where: Prisma.CommunityCategoryWhereInput = {};
+    const where: Prisma.CommunityCategoryWhereInput = {
+      deletedAt: { isSet: false },
+    };
     if (params.search) {
       where.name = { contains: params.search, mode: "insensitive" };
     }
@@ -74,10 +78,16 @@ export const communityRepository = {
       where.active = params.active;
     }
     const skip = (params.page - 1) * params.limit;
+    const sortField = params.sortField ?? "order";
+    const sortDir = params.sortDir ?? "asc";
+    const orderBy: Prisma.CommunityCategoryOrderByWithRelationInput[] =
+      sortField === "order"
+        ? [{ order: sortDir }, { name: "asc" }]
+        : [{ [sortField]: sortDir }];
     return Promise.all([
       prisma.communityCategory.findMany({
         where,
-        orderBy: [{ order: "asc" }, { name: "asc" }],
+        orderBy,
         skip,
         take: params.limit,
         select: {
@@ -96,7 +106,7 @@ export const communityRepository = {
 
   findCategoryByIdAdmin(id: string) {
     return prisma.communityCategory.findFirst({
-      where: { id },
+      where: { id, deletedAt: { isSet: false } },
       select: {
         id: true,
         name: true,
@@ -113,6 +123,7 @@ export const communityRepository = {
     return prisma.communityCategory.findFirst({
       where: {
         name: { equals: name, mode: "insensitive" },
+        deletedAt: { isSet: false },
         ...(excludeId ? { id: { not: excludeId } } : {}),
       },
       select: { id: true },
@@ -156,6 +167,20 @@ export const communityRepository = {
   deleteCategoryById(id: string) {
     return prisma.communityCategory.delete({
       where: { id },
+      select: { id: true, name: true, slug: true },
+    });
+  },
+
+  /**
+   * Permanent soft-delete for a category still referenced by communities —
+   * same idiom as `Community.deletedAt`. Hides the category from every
+   * category query (`deletedAt: { isSet: false }`) without breaking the
+   * `categoryId` FK on communities still pointing at it.
+   */
+  softDeleteCategoryById(id: string) {
+    return prisma.communityCategory.update({
+      where: { id },
+      data: { active: false, deletedAt: new Date() },
       select: { id: true, name: true, slug: true },
     });
   },
@@ -497,13 +522,19 @@ export const communityRepository = {
       snapshotUsername: string;
       snapshotDisplayName: string;
       snapshotAvatarKey: string | null;
-    }
+    },
+    // Role the member held before they LEFT. Callers read this off the
+    // existing (pre-reactivation) row and pass it through so rejoining
+    // preserves rank instead of silently resetting an ADMIN/MODERATOR to
+    // MEMBER. Defaults to MEMBER only for the (should-not-happen) case of no
+    // prior row.
+    priorRole: CommunityMemberRole = CommunityMemberRole.MEMBER
   ) {
     const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
       data: {
         status: CommunityMemberStatus.ACTIVE,
-        role: CommunityMemberRole.MEMBER,
+        role: priorRole,
         // Rejoin starts a fresh membership: advance joinedAt to now so the member
         // list shows the LATEST join time, not the original (stale) one. joinedAt
         // is @default(now()) which only applies on create, so reactivation must
@@ -533,7 +564,7 @@ export const communityRepository = {
       communityId,
       userId,
       status: CommunityMemberStatus.ACTIVE,
-      role: CommunityMemberRole.MEMBER,
+      role: row.role as CommunityMemberRole,
     });
     return row;
   },
@@ -938,6 +969,36 @@ export const communityRepository = {
         // pair — a later non-reaction bump must clear a stale target preview too.
         lastActivityTargetUserId: targetUserId,
         lastActivityTargetPreview: targetPreview,
+      },
+    });
+  },
+
+  /**
+   * Personal "self-hide" overlay for delete-for-me: writes ONLY
+   * `lastActivityUserId`/`lastActivitySelfPreview` — the SAME columns already
+   * used to personalize a self-referential join/role-change line — so that
+   * ONLY the viewer whose id matches `lastActivityUserId` sees `preview` (via
+   * the existing `viewerId === lastActivityUserId` resolution in
+   * community.service.ts); every other member keeps resolving the untouched
+   * canonical `lastActivityPreview`. Unconditional overwrite (no forward-only
+   * guard, mirrors {@link setReactionActivity}) — a delete-for-me is a
+   * personal view change, not a community-wide event with its own ordering.
+   * Never touches `lastActivityAt`/Type/Preview/Username, so the community's
+   * list ordering and every other member's preview are completely unaffected.
+   * A subsequent real canonical bump (send/edit/delete-for-everyone) already
+   * always overwrites `lastActivityUserId`/`lastActivitySelfPreview` too (see
+   * `updateLastActivity` above), so a stale self-hide preview is naturally
+   * cleared the next time anything else happens in the room.
+   */
+  async setSelfLastActivityOverride(
+    communityId: string,
+    params: { userId: string; preview: string }
+  ): Promise<void> {
+    await prisma.community.updateMany({
+      where: { id: communityId },
+      data: {
+        lastActivityUserId: params.userId,
+        lastActivitySelfPreview: params.preview,
       },
     });
   },
@@ -1630,6 +1691,26 @@ export const communityRepository = {
     ]);
 
     return { rows, total };
+  },
+
+  /**
+   * Batch role lookup for a set of userIds within one community — backs the
+   * backoffice Livestream Viewer List "type" (Admin|Moderator|Member) column
+   * without an N+1 per-viewer query. Users absent from the result (e.g. left
+   * the community, or a malformed communityId) simply have no entry; the
+   * caller defaults them to MEMBER.
+   */
+  async getMemberRolesByUserIds(
+    communityId: string,
+    userIds: string[]
+  ): Promise<Array<{ userId: string; role: CommunityMemberRole }>> {
+    if (userIds.length === 0 || !/^[a-fA-F0-9]{24}$/.test(communityId)) {
+      return [];
+    }
+    return prisma.communityMember.findMany({
+      where: { communityId, userId: { in: userIds } },
+      select: { userId: true, role: true },
+    });
   },
 
   /**

@@ -26,7 +26,8 @@ export type TargetType =
   | "COMMUNITY"
   | "POST"
   | "COMMENT"
-  | "MEDIA";
+  | "MEDIA"
+  | "STREAM";
 
 export type ReportStatus =
   | "PENDING"
@@ -85,8 +86,10 @@ export type ModeratorRef = {
 /** A single row in the reports table (list projection). */
 export type ReportListItem = {
   reportId: string;
-  reportedUser: UserRef;
-  reporterUser: UserRef;
+  // null when the report target isn't a user (e.g. a COMMUNITY/STREAM report)
+  // or the user-service profile lookup came back empty.
+  reportedUser: UserRef | null;
+  reporterUser: UserRef | null;
   reportType: ReportType;
   targetType: TargetType;
   status: ReportStatus;
@@ -163,8 +166,8 @@ export type ReportDetail = {
   updatedAt: string;
   resolvedAt: string | null;
   slaDueAt: string | null;
-  reportedUser: ReportedUserProfile;
-  reporterUser: ReporterUserProfile;
+  reportedUser: ReportedUserProfile | null;
+  reporterUser: ReporterUserProfile | null;
   target: ReportTarget;
   evidence: EvidenceItem[];
   history: HistoryItem[];

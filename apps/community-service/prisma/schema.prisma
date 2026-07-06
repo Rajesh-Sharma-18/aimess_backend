@@ -25,16 +25,21 @@ datasource db {
 // Seeded idempotently via prisma/seed/categories.seed.ts.
 // -----------------------------------------------------------------------------
 model CommunityCategory {
-  id          String      @id @default(auto()) @map("_id") @db.ObjectId
-  name        String      @unique
-  slug        String      @unique
-  order       Int         @default(0)
-  active      Boolean     @default(true)
+  id        String @id @default(auto()) @map("_id") @db.ObjectId
+  name      String @unique
+  slug      String @unique
+  order     Int    @default(0)
+  active    Boolean @default(true)
+  // Permanent soft-delete, same idiom as `Community.deletedAt` below: set when
+  // an admin deletes a category that is still referenced by communities
+  // (queried via `deletedAt: { isSet: false }`, never physically removed).
+  deletedAt   DateTime?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
   communities Community[]
 
   @@index([active, order])
+  @@index([deletedAt])
   @@map("community_categories")
 }
 

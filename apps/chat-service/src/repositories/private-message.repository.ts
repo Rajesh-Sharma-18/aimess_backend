@@ -427,19 +427,25 @@ export class PrivateMessageRepository {
   async searchByText(
     roomId: string,
     query: string,
-    limit: number
+    limit: number,
+    userId: string,
+    skip = 0
   ): Promise<PrivateMessage[]> {
     // content.text lives inside a Json column, which Prisma's `contains` can't
     // target — use a raw regex query to find matching ids, then re-fetch via
-    // the typed client so results have the normal message shape.
+    // the typed client so results have the normal message shape. `deletedFor.
+    // <userId>` mirrors the exact filter findPreviousVisibleForUser/the main
+    // timeline reads use to hide messages this user deleted-for-me — without
+    // it, search resurrects messages the user can no longer see anywhere else.
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const raw = (await this.prisma.privateMessage.findRaw({
       filter: {
         roomId,
         isDeleted: false,
+        [`deletedFor.${userId}`]: { $exists: false },
         "content.text": { $regex: escaped, $options: "i" },
       },
-      options: { sort: { createdAt: -1 }, limit },
+      options: { sort: { createdAt: -1 }, skip, limit },
     })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
 
     const ids = raw
@@ -447,10 +453,15 @@ export class PrivateMessageRepository {
       .filter((id): id is string => Boolean(id));
     if (!ids.length) return [];
 
-    return this.prisma.privateMessage.findMany({
+    const rows = await this.prisma.privateMessage.findMany({
       where: { id: { in: ids } },
-      orderBy: { createdAt: "desc" },
     });
+    // findRaw already returned the correctly ordered/paged id window — the
+    // typed re-fetch above is an unordered `IN` lookup, so re-apply that same
+    // order here rather than re-sorting by createdAt (which would silently
+    // undo the pagination window on same-timestamp rows).
+    const order = new Map(ids.map((id, i) => [id, i]));
+    return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
   }
 
   async addReactions(
@@ -584,7 +595,11 @@ export class PrivateMessageRepository {
     });
   }
 
-  async countSearchResults(roomId: string, query: string): Promise<number> {
+  async countSearchResults(
+    roomId: string,
+    query: string,
+    userId: string
+  ): Promise<number> {
     const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const result = (await this.prisma.privateMessage.aggregateRaw({
       pipeline: [
@@ -592,6 +607,7 @@ export class PrivateMessageRepository {
           $match: {
             roomId,
             isDeleted: false,
+            [`deletedFor.${userId}`]: { $exists: false },
             "content.text": { $regex: escaped, $options: "i" },
           },
         },

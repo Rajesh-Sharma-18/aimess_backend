@@ -131,6 +131,52 @@ describe("GET /rooms/:roomId/messages/search", () => {
     expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
+  // Regression: `page` was parsed but never converted to a DB skip, so page 2
+  // silently returned the exact same window as page 1 and any match beyond
+  // the first `limit` results was unreachable.
+  it("REGRESSION: page 2 requests a distinct offset window, not page 1 again", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+    });
+    mocks.privateMessageRepo.searchByText.mockResolvedValue([]);
+    mocks.privateMessageRepo.countSearchResults.mockResolvedValue(0);
+
+    await request(app)
+      .get(
+        `/api/chat/private/rooms/${ROOM}/messages/search?q=hello&page=2&limit=10`
+      )
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.privateMessageRepo.searchByText).toHaveBeenCalledWith(
+      ROOM,
+      "hello",
+      10,
+      expect.any(String),
+      10
+    );
+  });
+
+  it("REGRESSION: countSearchResults is scoped to the requesting user (deleted-for-me parity)", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+    });
+    mocks.privateMessageRepo.searchByText.mockResolvedValue([]);
+    mocks.privateMessageRepo.countSearchResults.mockResolvedValue(0);
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages/search?q=hello`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.privateMessageRepo.countSearchResults).toHaveBeenCalledWith(
+      ROOM,
+      "hello",
+      expect.any(String)
+    );
+  });
+
   // AUDIT H2 — search must be gated on participation (IDOR on history).
   it("SECURITY: IDOR — 403 searching a room you're not a participant of", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue({

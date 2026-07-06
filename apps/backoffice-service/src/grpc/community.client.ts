@@ -192,6 +192,15 @@ interface RawAdminGetCommunitiesByIdsRes {
   communities: AdminCommunityBrief[];
 }
 
+/** AdminMemberRoleRow — role is a plain string (ADMIN|MODERATOR|MEMBER). */
+export interface AdminMemberRoleRow {
+  userId: string;
+  role: string;
+}
+interface RawAdminGetMemberRolesRes {
+  roles: AdminMemberRoleRow[];
+}
+
 export interface AdminSetModerationStatusReq {
   communityId: string;
   status: string;
@@ -203,6 +212,55 @@ export interface AdminSetModerationStatusRes {
   ok: boolean;
   status: string;
   closedAt: string;
+  errorCode: string;
+}
+
+// ---- Category Management (backoffice admin panel) -------------------------
+
+/** AdminCategoryRow — int64 timestamps arrive as strings (longs: String). */
+export interface RawAdminCategoryRow {
+  id: string;
+  name: string;
+  slug: string;
+  visible: boolean;
+  order: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminListCategoriesReq {
+  search: string;
+  status: string; // "visible" | "hidden" | ""
+  page: number;
+  limit: number;
+  sortField: string; // "name" | "order" | "createdAt" | ""
+  sortDir: string; // "asc" | "desc" | ""
+}
+
+export interface AdminListCategoriesRes {
+  categories: RawAdminCategoryRow[];
+  total: string | number;
+}
+
+export interface AdminCreateCategoryReq {
+  name: string;
+}
+
+export interface AdminUpdateCategoryReq {
+  categoryId: string;
+  name?: string;
+  visible?: boolean;
+}
+
+export interface AdminCategoryMutationRes {
+  ok: boolean;
+  category?: RawAdminCategoryRow;
+  errorCode: string;
+}
+
+export interface AdminDeleteCategoryRes {
+  ok: boolean;
+  softDeleted: boolean;
   errorCode: string;
 }
 
@@ -320,6 +378,74 @@ export const adminGetCommunitiesByIdsBreaker: Breaker<
     )
 );
 
+export const adminGetMemberRolesBreaker: Breaker<
+  { communityId: string; userIds: string[] },
+  RawAdminGetMemberRolesRes
+> = makeBreaker(
+  "community.adminGetMemberRoles",
+  (req: { communityId: string; userIds: string[] }) =>
+    call<{ communityId: string; userIds: string[] }, RawAdminGetMemberRolesRes>(
+      "adminGetMemberRoles",
+      req
+    )
+);
+
+export const adminListCategoriesBreaker: Breaker<
+  AdminListCategoriesReq,
+  AdminListCategoriesRes
+> = makeBreaker(
+  "community.adminListCategories",
+  (req: AdminListCategoriesReq) =>
+    call<AdminListCategoriesReq, AdminListCategoriesRes>(
+      "adminListCategories",
+      req
+    )
+);
+
+export const adminCreateCategoryBreaker: Breaker<
+  AdminCreateCategoryReq,
+  AdminCategoryMutationRes
+> = makeBreaker(
+  "community.adminCreateCategory",
+  (req: AdminCreateCategoryReq) =>
+    call<AdminCreateCategoryReq, AdminCategoryMutationRes>(
+      "adminCreateCategory",
+      req
+    )
+);
+
+export const adminUpdateCategoryBreaker: Breaker<
+  {
+    categoryId: string;
+    name: string;
+    hasName: boolean;
+    visible: boolean;
+    hasVisible: boolean;
+  },
+  AdminCategoryMutationRes
+> = makeBreaker(
+  "community.adminUpdateCategory",
+  (req: {
+    categoryId: string;
+    name: string;
+    hasName: boolean;
+    visible: boolean;
+    hasVisible: boolean;
+  }) => call<typeof req, AdminCategoryMutationRes>("adminUpdateCategory", req)
+);
+
+export const adminDeleteCategoryBreaker: Breaker<
+  { categoryId: string },
+  AdminDeleteCategoryRes
+> = makeBreaker(
+  "community.adminDeleteCategory",
+  (req: { categoryId: string }) =>
+    call<{ categoryId: string }, AdminDeleteCategoryRes>(
+      "adminDeleteCategory",
+      req
+    )
+);
+
 export const communityClient = {
   async getCommunityCount(): Promise<number> {
     const r = await getCommunityCountBreaker.fire();
@@ -366,5 +492,43 @@ export const communityClient = {
     req: AdminSetModerationStatusReq
   ): Promise<AdminSetModerationStatusRes> {
     return adminSetModerationStatusBreaker.fire(req);
+  },
+  /**
+   * Batch role lookup for the Livestream Viewer List "type" column. Returns a
+   * map keyed by userId; users not currently a community member are absent
+   * (the caller defaults them to MEMBER). Empty input → no gRPC call.
+   */
+  async adminGetMemberRoles(
+    communityId: string,
+    userIds: string[]
+  ): Promise<Map<string, string>> {
+    if (userIds.length === 0) return new Map();
+    const r = await adminGetMemberRolesBreaker.fire({ communityId, userIds });
+    return new Map((r.roles ?? []).map((row) => [row.userId, row.role]));
+  },
+  async adminListCategories(
+    req: AdminListCategoriesReq
+  ): Promise<{ categories: RawAdminCategoryRow[]; total: number }> {
+    const r = await adminListCategoriesBreaker.fire(req);
+    return { categories: r.categories ?? [], total: Number(r.total) };
+  },
+  adminCreateCategory(
+    req: AdminCreateCategoryReq
+  ): Promise<AdminCategoryMutationRes> {
+    return adminCreateCategoryBreaker.fire(req);
+  },
+  adminUpdateCategory(
+    req: AdminUpdateCategoryReq
+  ): Promise<AdminCategoryMutationRes> {
+    return adminUpdateCategoryBreaker.fire({
+      categoryId: req.categoryId,
+      name: req.name ?? "",
+      hasName: req.name !== undefined,
+      visible: req.visible ?? false,
+      hasVisible: req.visible !== undefined,
+    });
+  },
+  adminDeleteCategory(categoryId: string): Promise<AdminDeleteCategoryRes> {
+    return adminDeleteCategoryBreaker.fire({ categoryId });
   },
 };

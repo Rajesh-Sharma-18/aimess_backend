@@ -5,6 +5,7 @@ import {
   banUser,
   bulkActivateUsers,
   bulkBanUsers,
+  getBanReasons,
   getUserDetails,
   listOtherCommunityMembers,
   listUserCommunities,
@@ -63,9 +64,27 @@ usersRoutes.post(
   bulkActivateUsers
 );
 
+// Static reference data — MUST be declared before `/:userId` so Express does
+// not capture "ban-reasons" as a userId path param.
+usersRoutes.get(
+  "/users/ban-reasons",
+  requirePermission(PERMISSIONS.USERS_READ),
+  getBanReasons
+);
+
 // Single-user detail + actions.
 usersRoutes.get(
   "/users/:userId",
+  requirePermission(PERMISSIONS.USERS_READ),
+  validateParams(userIdParamSchema),
+  getUserDetails
+);
+// Alias of the route above (community-less user detail: profile + reports +
+// moderation history, no community/members block). Reuses the same
+// controller/service — added for callers that expect an explicit `/details`
+// path.
+usersRoutes.get(
+  "/users/:userId/details",
   requirePermission(PERMISSIONS.USERS_READ),
   validateParams(userIdParamSchema),
   getUserDetails
@@ -108,8 +127,11 @@ usersRoutes.post(
   validateBody(suspendUserSchema),
   suspendUser
 );
+// `/activate` is an alias of `/unban` (same reinstate logic) for callers that
+// expect an "activate" verb — kept as one registration so both paths share
+// the exact same validator + controller, no duplicated logic.
 usersRoutes.post(
-  "/users/:userId/unban",
+  ["/users/:userId/unban", "/users/:userId/activate"],
   requirePermission(PERMISSIONS.USERS_MODERATE),
   validateParams(userIdParamSchema),
   validateBody(unbanUserSchema),

@@ -304,14 +304,16 @@ export type CommunityMemberLeftPayload = CommunityEventBase & {
 
 /**
  * Published when the owner REOPENs a previously-CLOSED community
- * (community-service → notifications-service). The community was empty during
- * the CLOSED period (all members were evicted on close), so there is no former-
- * member roster to fan push out to — the consumer is socket-only.
+ * (community-service → notifications-service). Members are never evicted on
+ * close, so `memberIds` is the same full roster the CLOSED push reached —
+ * notify every one of them the community is open again.
  */
 export type CommunityReopenedNotifyPayload = CommunityEventBase & {
   /** Owner who triggered the reopen. */
   actorId: string;
   communityName: string;
+  /** All members currently active — notify each. */
+  memberIds: string[];
 };
 
 /**

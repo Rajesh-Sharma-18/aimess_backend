@@ -265,8 +265,29 @@ export type UserReportsQueryInput = z.infer<typeof userReportsQuerySchema>;
 // ---------------------------------------------------------------------------
 // Ban.
 // ---------------------------------------------------------------------------
+/** Max length for a free-text custom ban reason (predefined codes are far shorter). */
+const CUSTOM_BAN_REASON_MAX_LEN = 200;
+
+/**
+ * Ban reason: either one of the predefined `moderationReasonEnum` codes (kept
+ * for backward compatibility with existing callers/panel builds) OR any
+ * free-text reason the admin types in. Both shapes are plain strings, so a
+ * single trimmed-string schema accepts either without a union — the
+ * predefined codes are just a subset of valid strings. The service/repository
+ * layer already types `reason` as a plain `string`, so the custom value is
+ * persisted verbatim with no further changes downstream.
+ */
+const banReasonInput = z
+  .string()
+  .trim()
+  .min(1, "Reason is required")
+  .max(
+    CUSTOM_BAN_REASON_MAX_LEN,
+    `Reason must be at most ${CUSTOM_BAN_REASON_MAX_LEN} characters`
+  );
+
 export const banUserSchema = z.object({
-  reason: moderationReasonEnum,
+  reason: banReasonInput,
   note: z.string().max(2000).optional(),
   // durationDays>0 turns a "ban" into a time-boxed suspend (see service docs).
   durationDays: z.number().int().positive().nullable().default(null),
