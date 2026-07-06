@@ -63,6 +63,13 @@ const envSchema = z.object({
   SRS_WHIP_BASE: z.string().url().default("http://localhost:1985"),
   /** Shared secret the SRS http_hooks endpoint validates (header, required). */
   SRS_HOOK_SECRET: z.string().min(1),
+  /**
+   * Basic Auth credentials for SRS's http_api (`auth {}` block in srs.conf).
+   * Optional — omit both when the target SRS instance has no auth enabled
+   * (e.g. local Docker SRS without an `auth {}` block).
+   */
+  SRS_API_USERNAME: z.string().optional(),
+  SRS_API_PASSWORD: z.string().optional(),
 
   /** ffmpeg binary path for URL re-stream ingest (host prerequisite in dev). */
   FFMPEG_PATH: z.string().default("ffmpeg"),
