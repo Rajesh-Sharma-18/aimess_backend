@@ -671,6 +671,8 @@ export class PrivateMessageService {
         reporterId: params.reporterId,
         reason: params.reason,
         details: params.description?.trim() ? params.description.trim() : null,
+        // Private (1-to-1) messages are never community-scoped.
+        communityId: null,
         eventAt: new Date().toISOString(),
         sourceReportId: report.id,
       });
@@ -1044,6 +1046,28 @@ export class PrivateMessageService {
         urlFromMap(urlMap, key)
       );
 
+      // Message-info parity with community's toWire(): `deliveredTo` was a
+      // stored field (populated by markDelivered) that was never surfaced on
+      // read — dead on the read side. Shape matches community's
+      // `Array<{userId, deliveredAt}>` convention. `readBy` is intentionally
+      // NOT added here: unlike community/group (which track a per-member
+      // lastReadAt this can be computed from), private read state lives on
+      // PrivateRoom.lastReadAtByUser, which isn't loaded by enrichMessages'
+      // current callers — deferred rather than threading a room fetch through
+      // every call site for a half-correct result.
+      const deliveredAtMap = (message.deliveredAt ?? {}) as Record<
+        string,
+        string
+      >;
+      const deliveredTo = Array.isArray(message.deliveredTo)
+        ? (message.deliveredTo as string[]).map((userId) => ({
+            userId,
+            deliveredAt: deliveredAtMap[userId]
+              ? new Date(deliveredAtMap[userId]).getTime()
+              : 0,
+          }))
+        : [];
+
       return {
         ...wire,
         content: resolvedContent,
@@ -1057,6 +1081,7 @@ export class PrivateMessageService {
         conversationType: "PRIVATE",
         quoteData: buildCanonicalQuote(wire.quoteData),
         reactionGroups,
+        deliveredTo,
         clientTs: Number(
           (wire.clientInfo as Record<string, unknown> | null)?.clientTs ?? 0
         ),

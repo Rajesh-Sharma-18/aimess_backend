@@ -491,7 +491,9 @@ const startServer = async () => {
       communityMessageService,
       userSnapshotService,
       cacheRepo,
-      redis
+      redis,
+      privatePinService,
+      groupPinService
     );
 
     // Start gRPC server with real service delegates
@@ -512,6 +514,7 @@ const startServer = async () => {
       communityMessageService,
       communityPinService,
       notificationRepo,
+      chatMessageOrchestrator,
     });
 
     // 4. Instantiate controllers

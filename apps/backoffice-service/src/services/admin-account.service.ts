@@ -4,7 +4,7 @@ import { AUDIT_ACTIONS, ROLE_KEYS } from "../constants/index.js";
 import type { RoleKey } from "../generated/prisma/client.js";
 import { hashPassword } from "../lib/password.js";
 import { markAdminSessionsRevoked } from "../lib/admin-session-cache.js";
-import { resolveAdminAvatarUrl } from "../lib/admin-avatar.js";
+import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 import {
   adminSessionRepository,
   adminUserRepository,
@@ -43,12 +43,12 @@ type AdminRow = {
   role: { key: RoleKey; name: string };
 };
 
-function toListItem(row: AdminRow): AdminAccountListItem {
+async function toListItem(row: AdminRow): Promise<AdminAccountListItem> {
   return {
     id: row.id,
     email: row.email,
     name: row.name,
-    avatarUrl: resolveAdminAvatarUrl(row),
+    avatar: await resolveAvatarOrNull(row.avatarUrl),
     role: { key: row.role.key, name: row.role.name },
     status: row.status as AdminAccountListItem["status"],
     lastLoginAt: row.lastLoginAt ? row.lastLoginAt.toISOString() : null,
@@ -79,7 +79,7 @@ export const adminAccountService = {
     const { rows, total } = await adminUserRepository.list(query);
     const totalPages = total === 0 ? 0 : Math.ceil(total / query.limit);
     return {
-      data: rows.map(toListItem),
+      data: await Promise.all(rows.map(toListItem)),
       pagination: {
         page: query.page,
         limit: query.limit,

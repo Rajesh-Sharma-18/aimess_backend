@@ -1,4 +1,5 @@
 import { AUDIT_ACTIONS } from "../constants/index.js";
+import { communityClient } from "../grpc/community.client.js";
 import {
   adminUserRepository,
   reportRepository,
@@ -11,6 +12,7 @@ import type {
 import type { RequestAdmin } from "../types/index.js";
 import type {
   BulkResult,
+  CommunityReportBlock,
   DismissResult,
   EvidenceItem,
   HistoryItem,
@@ -24,10 +26,14 @@ import type {
   ReportCore,
   ReportDetail,
   ReportListItem,
+  ReportModerationDetail,
+  ReportModerationUserRef,
+  ReportTarget,
   PaginationMeta,
   ResolveResult,
 } from "../types/moderation.types.js";
 import { auditService } from "./audit.service.js";
+import { userAvatarService } from "./user-avatar.service.js";
 
 /** Audit/request context derived from `getRequestContext(req)`. */
 type RequestCtx = { ip: string; userAgent: string | null };
@@ -40,6 +46,57 @@ type RequestCtx = { ip: string; userAgent: string | null };
 async function toModerator(actor: RequestAdmin): Promise<ModeratorRef> {
   const admin = await adminUserRepository.findById(actor.id);
   return { id: actor.id, name: admin?.name ?? actor.id };
+}
+
+/**
+ * Reshape an already-enriched report-core user ref (id/username/displayName/
+ * avatar — populated by {@link reportRepository.getCore} via user-service)
+ * into the Reports & Moderation Details page's compact shape. No new profile
+ * lookup or re-presign — the avatar is already resolved.
+ */
+function toModerationUserRef(
+  ref: {
+    id: string;
+    username: string;
+    displayName: string;
+    avatar: import("@aimess/shared-types").MediaObject | null;
+  } | null
+): ReportModerationUserRef | null {
+  if (!ref) return null;
+  return {
+    id: ref.id,
+    username: ref.username,
+    fullName: ref.displayName,
+    avatar: ref.avatar,
+  };
+}
+
+/**
+ * "Community Report Details" block: name/avatar/category from the existing
+ * batch `adminGetCommunitiesByIds` gRPC (community-service). Avatar is presigned
+ * via the user-avatar service. `reportedMessage` carries only the message id —
+ * no admin RPC exists to fetch message content by id, so it is not fabricated here.
+ */
+async function buildCommunityReportBlock(
+  communityId: string,
+  reportedDate: string,
+  target: ReportTarget
+): Promise<CommunityReportBlock> {
+  const communities = await communityClient.adminGetCommunitiesByIds([
+    communityId,
+  ]);
+  const c = communities.get(communityId);
+  const avatar = await userAvatarService.resolveAvatarOrNull(
+    c?.avatarUrl || null
+  );
+  return {
+    id: communityId,
+    name: c?.name ?? "",
+    avatar,
+    category: { id: c?.categoryId ?? "", name: c?.categoryName ?? "" },
+    reportedDate,
+    reportedMessage: target.type === "MESSAGE" ? { id: target.id } : null,
+  };
 }
 
 export const moderationService = {
@@ -62,6 +119,46 @@ export const moderationService = {
 
   getReportCore(reportId: string): Promise<ReportCore | null> {
     return reportRepository.getCore(reportId);
+  },
+
+  /**
+   * "Reports & Moderation Details" page aggregate for GET /reports/{reportId}:
+   * the report block and the "Community Report Details" block — reusing
+   * {@link reportRepository.getCore} (already enriches reportedUser/reporterUser
+   * via user-service) and `communityClient` (community name/avatar/category).
+   * Null (→ 404) when the report doesn't exist. `community` is null when the
+   * report has no associated community.
+   */
+  async getReportModerationDetail(
+    reportId: string
+  ): Promise<ReportModerationDetail | null> {
+    const core = await reportRepository.getCore(reportId);
+    if (!core) return null;
+
+    const reportedUser = toModerationUserRef(core.reportedUser);
+    const reporter = toModerationUserRef(core.reporterUser);
+    const community = core.communityId
+      ? await buildCommunityReportBlock(
+          core.communityId,
+          core.createdAt,
+          core.target
+        )
+      : null;
+
+    return {
+      report: {
+        id: core.reportId,
+        type: core.reportType,
+        status: core.status,
+        createdAt: core.createdAt,
+        ...(core.reportType === "OTHER"
+          ? { otherReason: core.reporterNote }
+          : {}),
+        reportedUser,
+        reporter,
+      },
+      community,
+    };
   },
 
   listReportEvidence(

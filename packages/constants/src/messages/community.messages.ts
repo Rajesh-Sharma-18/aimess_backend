@@ -94,6 +94,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Tên danh mục này đã được sử dụng",
     en: "This category name is already taken",
   },
+  CATEGORY_HAS_ACTIVE_COMMUNITIES: {
+    vi: "Không thể xóa danh mục vì đang được gán cho các cộng đồng đang hoạt động",
+    en: "Category cannot be deleted because it is assigned to active communities.",
+  },
   COMMUNITY_IMAGE_NOT_UPLOADED: {
     vi: "Chưa tải ảnh lên, vui lòng upload trước khi lưu",
     en: "Community image not uploaded yet",
@@ -340,6 +344,10 @@ export const COMMUNITY_MESSAGES = {
   COMMUNITY_REPORT_CANNOT_TARGET_SELF: {
     vi: "Bạn không thể báo cáo chính mình",
     en: "You cannot report yourself",
+  },
+  COMMUNITY_REPORT_OTHER_REASON_REQUIRED: {
+    vi: "Vui lòng nhập mô tả khi chọn lý do 'Khác'",
+    en: "A description is required when reason is OTHER",
   },
   COMMUNITY_REPORT_INVALID_TRANSITION: {
     vi: "Không thể chuyển trạng thái báo cáo này",

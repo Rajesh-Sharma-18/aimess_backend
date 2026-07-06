@@ -1,8 +1,9 @@
 /**
  * Unit tests for the pure logic of {@link GrpcCommunityMembersRepository}: the
- * raw gRPC row → DTO mapping (`toRow`: avatarUrl "" → null, role/status pass
- * through) and the offset PaginationMeta math (totalPages / hasNext / hasPrev /
- * totalApprox) across the empty, middle, and last-page cases.
+ * raw gRPC row → DTO mapping (`toRow`: avatarUrl → avatar MediaObject, "" →
+ * null, role/status pass through) and the offset PaginationMeta math
+ * (totalPages / hasNext / hasPrev / totalApprox) across the empty, middle, and
+ * last-page cases.
  *
  * The repo imports the `communityClient` singleton directly. `communityClient`
  * is a plain exported object whose RPC methods only open a gRPC connection when
@@ -103,6 +104,35 @@ describe("GrpcCommunityMembersRepository.listMembers — empty result set", () =
     assert.equal(lastReq?.search, "bob");
     assert.equal(lastReq?.role, "MODERATOR");
   });
+
+  it("forwards empty sortField/sortDir as '' when omitted", async () => {
+    nextMembers = [];
+    nextTotal = 0;
+
+    await repo.listMembers("c_1", { page: 1, limit: 20 });
+
+    assert.equal(lastReq?.sortField, "");
+    assert.equal(lastReq?.sortDir, "");
+  });
+
+  for (const field of ["username", "handle", "joinedAt"]) {
+    for (const dir of ["asc", "desc"]) {
+      it(`forwards sortField=${field}/sortDir=${dir} unchanged`, async () => {
+        nextMembers = [];
+        nextTotal = 0;
+
+        await repo.listMembers("c_1", {
+          page: 1,
+          limit: 20,
+          sortField: field,
+          sortDir: dir,
+        });
+
+        assert.equal(lastReq?.sortField, field);
+        assert.equal(lastReq?.sortDir, dir);
+      });
+    }
+  }
 });
 
 describe("GrpcCommunityMembersRepository.listMembers — row mapping (toRow)", () => {
@@ -117,20 +147,30 @@ describe("GrpcCommunityMembersRepository.listMembers — row mapping (toRow)", (
       userId: "u_1",
       username: "Alice",
       handle: "alice",
-      avatarUrl: "https://cdn/a.png",
+      avatar: {
+        fileId: null,
+        objectKey: null,
+        fileName: null,
+        contentType: null,
+        size: null,
+        downloadUrl: "https://cdn/a.png",
+        downloadUrlExpiresIn: null,
+        uploadUrl: null,
+        uploadUrlExpiresIn: null,
+      },
       role: "MEMBER",
       status: "ACTIVE",
       joinedAt: "2026-01-01T00:00:00.000Z",
     });
   });
 
-  it("coerces an empty avatarUrl ('') to null", async () => {
+  it("coerces an empty avatarUrl ('') to a null avatar", async () => {
     nextMembers = [rawMemberRow({ avatarUrl: "" })];
     nextTotal = 1;
 
     const { data } = await repo.listMembers("c_1", { page: 1, limit: 20 });
 
-    assert.equal(data[0]?.avatarUrl, null);
+    assert.equal(data[0]?.avatar, null);
   });
 });
 

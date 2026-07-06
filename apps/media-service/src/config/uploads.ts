@@ -66,39 +66,51 @@ const CHAT_MIME = {
  * Per-MIME byte caps for chat attachments. Each value is the hard maximum
  * enforced at upload-url time (Content-Length check). The effective limit is
  * min(category.maxBytes, this[mime]) so a high category ceiling cannot be
- * exploited for smaller document types. MIMEs absent here use the category
+ * exploited for smaller media types. MIMEs absent here use the category
  * ceiling.
  *
- * Document caps follow the user-specified requirements:
- *   DOC/DOCX/XLS/XLSX/CSV  → 50 MB
- *   PPT/PPTX/ZIP            → 100 MB
+ * Image/audio/document values come from `env.CHAT_IMAGE_MAX_BYTES` /
+ * `env.CHAT_AUDIO_MAX_BYTES` / `env.CHAT_DOCUMENT_MAX_BYTES` — the SAME env
+ * vars (same names, same defaults) chat-service reads for its message-send-
+ * time guard (apps/chat-service/src/constants/media-limits.ts), so the two
+ * independent enforcement points can never silently drift apart. Video has no
+ * entry here — it already shares `env.CHAT_VIDEO_MAX_BYTES` with the category
+ * ceiling below, which chat-service also reads verbatim.
  */
 const CHAT_MAX_BYTES_BY_MIME: Record<string, number> = {
   // Images
-  "image/jpeg": 25 * MB,
-  "image/png": 25 * MB,
-  "image/webp": 25 * MB,
+  "image/jpeg": env.CHAT_IMAGE_MAX_BYTES,
+  "image/png": env.CHAT_IMAGE_MAX_BYTES,
+  "image/webp": env.CHAT_IMAGE_MAX_BYTES,
   "image/gif": 30 * MB,
-  // Legacy Office formats
-  "application/msword": 50 * MB,
-  "application/vnd.ms-excel": 50 * MB,
-  "application/vnd.ms-powerpoint": 100 * MB,
-  // Modern Office (OOXML) — same caps
+  // Audio + voice notes
+  "audio/mpeg": env.CHAT_AUDIO_MAX_BYTES,
+  "audio/ogg": env.CHAT_AUDIO_MAX_BYTES,
+  "audio/wav": env.CHAT_AUDIO_MAX_BYTES,
+  "audio/mp4": env.CHAT_AUDIO_MAX_BYTES,
+  "audio/x-m4a": env.CHAT_AUDIO_MAX_BYTES,
+  "audio/aac": env.CHAT_AUDIO_MAX_BYTES,
+  "audio/flac": env.CHAT_AUDIO_MAX_BYTES,
+  // Documents — legacy + modern (OOXML) Office formats
+  "application/msword": env.CHAT_DOCUMENT_MAX_BYTES,
+  "application/vnd.ms-excel": env.CHAT_DOCUMENT_MAX_BYTES,
+  "application/vnd.ms-powerpoint": env.CHAT_DOCUMENT_MAX_BYTES,
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-    50 * MB,
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": 50 * MB,
+    env.CHAT_DOCUMENT_MAX_BYTES,
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+    env.CHAT_DOCUMENT_MAX_BYTES,
   "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-    100 * MB,
+    env.CHAT_DOCUMENT_MAX_BYTES,
   // Text/data documents
-  "application/pdf": 50 * MB,
-  "text/plain": 10 * MB,
-  "text/csv": 25 * MB,
-  "application/json": 10 * MB,
-  "application/xml": 10 * MB,
-  "text/xml": 10 * MB,
+  "application/pdf": env.CHAT_DOCUMENT_MAX_BYTES,
+  "text/plain": env.CHAT_DOCUMENT_MAX_BYTES,
+  "text/csv": env.CHAT_DOCUMENT_MAX_BYTES,
+  "application/json": env.CHAT_DOCUMENT_MAX_BYTES,
+  "application/xml": env.CHAT_DOCUMENT_MAX_BYTES,
+  "text/xml": env.CHAT_DOCUMENT_MAX_BYTES,
   // Archives
-  "application/zip": 100 * MB,
-  "application/x-zip-compressed": 100 * MB,
+  "application/zip": env.CHAT_DOCUMENT_MAX_BYTES,
+  "application/x-zip-compressed": env.CHAT_DOCUMENT_MAX_BYTES,
 };
 
 /** Avatars / covers are images only. */

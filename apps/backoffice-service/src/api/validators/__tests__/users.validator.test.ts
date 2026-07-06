@@ -131,6 +131,18 @@ describe("listUsersQuerySchema — status filter (case-insensitive)", () => {
     const r = listUsersQuerySchema.safeParse({ status: "suspended" });
     assert.equal(r.success, false);
   });
+
+  it("status=ALL clears the filter (case-insensitive)", () => {
+    const r = listUsersQuerySchema.safeParse({ status: "all" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.status, undefined);
+  });
+
+  it("status=ALL wins even when mixed with other values", () => {
+    const r = listUsersQuerySchema.safeParse({ status: ["active", "ALL"] });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.status, undefined);
+  });
 });
 
 describe("listUsersQuerySchema — sortBy / sortOrder", () => {

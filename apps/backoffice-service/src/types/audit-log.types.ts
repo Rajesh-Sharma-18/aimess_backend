@@ -6,6 +6,8 @@
  * `AuditLog` rows into. Field names + casing are the stable API contract.
  */
 
+import type { MediaObject } from "@aimess/shared-types";
+
 /** Who performed the action (resolved from the AuditLog.actor relation). */
 export type AuditPerformer = {
   id: string;
@@ -13,7 +15,9 @@ export type AuditPerformer = {
   name: string | null;
   /** Admin email; null when the actor row was removed. */
   email: string | null;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
 };
 
 /** A single row in the audit-logs table (list projection). */

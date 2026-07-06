@@ -26,6 +26,28 @@ import type {
   ResolutionType,
   TargetType,
 } from "../../types/moderation.types.js";
+import type { MediaObject } from "@aimess/shared-types";
+
+/**
+ * Fixture data stores a fully-resolved URL (no raw object key to presign in
+ * Phase 1 mock mode) — wrap it in the standard MediaObject shape so the mock
+ * repository satisfies the same `avatar: MediaObject | null` contract as the
+ * live Prisma repository.
+ */
+function fixtureAvatar(url: string | null): MediaObject | null {
+  if (!url) return null;
+  return {
+    fileId: null,
+    objectKey: null,
+    fileName: null,
+    contentType: null,
+    size: null,
+    downloadUrl: url,
+    downloadUrlExpiresIn: null,
+    uploadUrl: null,
+    uploadUrlExpiresIn: null,
+  };
+}
 
 // --- deterministic time helpers (operate on fixed ISO strings — no Date.now) ---
 const HOUR = 3_600_000;
@@ -399,6 +421,8 @@ function build(seed: Seed, i: number): ReportDetail {
     sourceService: isCommunity(seed.targetType)
       ? "community-service"
       : "messaging-service",
+    communityId: isCommunity(seed.targetType) ? `comm_${n}` : null,
+    communityName: isCommunity(seed.targetType) ? `Community ${n}` : null,
     createdAt: seed.createdAt,
     updatedAt: shift(seed.createdAt, HOUR),
     resolvedAt,
@@ -407,7 +431,9 @@ function build(seed: Seed, i: number): ReportDetail {
       id: `u_rd_${n}`,
       username: slug(seed.reported),
       displayName: seed.reported,
-      avatarUrl: i % 3 === 0 ? null : `https://cdn.aimess.app/av/u_rd_${n}.jpg`,
+      avatar: fixtureAvatar(
+        i % 3 === 0 ? null : `https://cdn.aimess.app/av/u_rd_${n}.jpg`
+      ),
       accountStatus: seed.reportedStatus,
       joinedAt: "2025-06-01T08:00:00Z",
       priorReportsCount: i % 6,
@@ -417,7 +443,9 @@ function build(seed: Seed, i: number): ReportDetail {
       id: `u_rp_${n}`,
       username: slug(seed.reporter),
       displayName: seed.reporter,
-      avatarUrl: i % 2 === 0 ? `https://cdn.aimess.app/av/u_rp_${n}.jpg` : null,
+      avatar: fixtureAvatar(
+        i % 2 === 0 ? `https://cdn.aimess.app/av/u_rp_${n}.jpg` : null
+      ),
       accountStatus: "ACTIVE",
       reportsFiledCount: 1 + (i % 4),
       falseReportRate: Number(((i % 5) / 10).toFixed(1)),

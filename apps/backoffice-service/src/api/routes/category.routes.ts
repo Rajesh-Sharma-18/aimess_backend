@@ -6,6 +6,7 @@ import {
   deleteCategory,
   listCategories,
   updateCategory,
+  updateCategoryVisibility,
 } from "../controllers/index.js";
 import {
   adminAuth,
@@ -19,6 +20,7 @@ import {
   createCategorySchema,
   listCategoriesQuerySchema,
   updateCategorySchema,
+  updateCategoryVisibilitySchema,
 } from "../validators/index.js";
 
 /** Category Management admin API — self-prefixed `/categories`. */
@@ -44,6 +46,13 @@ categoryRoutes.patch(
   validateParams(categoryIdParamSchema),
   validateBody(updateCategorySchema),
   updateCategory
+);
+categoryRoutes.patch(
+  "/categories/:categoryId/visibility",
+  requirePermission(PERMISSIONS.CATEGORIES_MANAGE),
+  validateParams(categoryIdParamSchema),
+  validateBody(updateCategoryVisibilitySchema),
+  updateCategoryVisibility
 );
 categoryRoutes.delete(
   "/categories/:categoryId",

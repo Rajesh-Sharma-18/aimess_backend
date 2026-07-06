@@ -70,6 +70,7 @@ export {
   listCategories,
   createCategory,
   updateCategory,
+  updateCategoryVisibility,
   deleteCategory,
 } from "./category.controller.js";
 export { listAuditLogs, getAuditLogDetails } from "./audit-log.controller.js";

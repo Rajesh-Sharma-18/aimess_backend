@@ -160,7 +160,10 @@ describe("CommunityMessageService.deleteForAll mute guard", () => {
     mockLiveRole("MODERATOR");
     await service.deleteForAll(MSG_ID, USER_ID).catch(() => undefined);
     // Mute gate skipped because this is a moderation action on another user's content
-    expect(messageRepo.deleteForAll).toHaveBeenCalledWith(MSG_ID);
+    expect(messageRepo.deleteForAll).toHaveBeenCalledWith(MSG_ID, {
+      deletedType: "ADMIN_DELETE",
+      deletedBy: USER_ID,
+    });
   });
 
   it('blocks a muted PLAIN MEMBER from deleting another member\'s message even if RoomMember.role is stale ("moderator")', async () => {
@@ -184,6 +187,9 @@ describe("CommunityMessageService.deleteForAll mute guard", () => {
       messageSentBy: USER_ID,
     });
     await service.deleteForAll(MSG_ID, USER_ID).catch(() => undefined);
-    expect(messageRepo.deleteForAll).toHaveBeenCalledWith(MSG_ID);
+    expect(messageRepo.deleteForAll).toHaveBeenCalledWith(MSG_ID, {
+      deletedType: "SELF_DELETE",
+      deletedBy: USER_ID,
+    });
   });
 });

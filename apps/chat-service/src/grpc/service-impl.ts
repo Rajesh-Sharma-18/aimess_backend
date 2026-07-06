@@ -44,6 +44,7 @@ import type { PresenceService } from "../services/presence.service.js";
 import type { CommunityMessageService } from "../services/community-message.service.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
 import type { NotificationRepository } from "../repositories/notification.repository.js";
+import type { ChatMessageOrchestrator } from "../services/chat-message-orchestrator.js";
 import {
   buildChatMessageEvent,
   buildCanonicalQuote,
@@ -138,6 +139,7 @@ export interface GrpcDeps {
   communityMessageService: CommunityMessageService;
   communityPinService: CommunityPinService;
   notificationRepo: NotificationRepository;
+  chatMessageOrchestrator: ChatMessageOrchestrator;
 }
 
 function parseMessageContent(req: {
@@ -1139,6 +1141,134 @@ export function createMessagingImpl(
       })();
     },
 
+    // Parity with community's DeleteCommunityMessage — reuses the same
+    // deleteDirect effects (tombstone broadcast + bump) the REST delete
+    // controllers run, via the orchestrator, so the gateway's /chat socket
+    // namespace can offer message:delete like /community's message:delete.
+    deleteMessage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            conversationId: string;
+            messageId: string;
+            userId: string;
+            deleteType?: string;
+            conversationType?: string;
+          };
+          const conversationType =
+            typeof req.conversationType === "string" &&
+            req.conversationType.toUpperCase() === "GROUP"
+              ? "GROUP"
+              : "PRIVATE";
+          const scope: "forMe" | "forEveryone" =
+            req.deleteType === "forEveryone" ? "forEveryone" : "forMe";
+
+          const { tombstone } = await deps.chatMessageOrchestrator.deleteDirect(
+            {
+              conversationType,
+              roomId: req.conversationId,
+              messageId: req.messageId,
+              userId: req.userId,
+              scope,
+            }
+          );
+
+          callback(null, {
+            messageId: (tombstone as { messageId?: string }).messageId ?? "",
+            conversationId: req.conversationId,
+            deleteType: scope,
+          });
+        } catch (err) {
+          logger.error(`gRPC deleteMessage error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
+    // Parity with community's PinCommunityMessage.
+    pinMessage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            conversationId: string;
+            messageId: string;
+            userId: string;
+            conversationType?: string;
+          };
+          const conversationType =
+            typeof req.conversationType === "string" &&
+            req.conversationType.toUpperCase() === "GROUP"
+              ? "GROUP"
+              : "PRIVATE";
+
+          const result = await deps.chatMessageOrchestrator.pinDirect({
+            conversationType,
+            roomId: req.conversationId,
+            messageId: req.messageId,
+            userId: req.userId,
+          });
+
+          const pin = result.pin as { pinnedAt?: unknown };
+          const pinnedAt =
+            pin.pinnedAt instanceof Date ? pin.pinnedAt.getTime() : Date.now();
+
+          callback(null, {
+            messageId: req.messageId,
+            conversationId: req.conversationId,
+            pinnedCount: result.pinnedCount,
+            pinnedAt,
+          });
+        } catch (err) {
+          logger.error(`gRPC pinMessage error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
+    // Parity with community's UnpinCommunityMessage.
+    unpinMessage: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            conversationId: string;
+            messageId: string;
+            userId: string;
+            conversationType?: string;
+          };
+          const conversationType =
+            typeof req.conversationType === "string" &&
+            req.conversationType.toUpperCase() === "GROUP"
+              ? "GROUP"
+              : "PRIVATE";
+
+          const result = await deps.chatMessageOrchestrator.unpinDirect({
+            conversationType,
+            roomId: req.conversationId,
+            messageId: req.messageId,
+            userId: req.userId,
+          });
+
+          callback(null, {
+            messageId: req.messageId,
+            conversationId: req.conversationId,
+            pinnedCount: result.pinnedCount,
+          });
+        } catch (err) {
+          logger.error(`gRPC unpinMessage error: ${String(err)}`);
+          callback(toGrpcCallbackError(err));
+        }
+      })();
+    },
+
     getMessageReactions: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -1876,7 +2006,7 @@ export function createCommunityImpl(
           });
         } catch (err) {
           logger.error(`gRPC sendCommunityMessage error: ${String(err)}`);
-          callback({ code: grpc.status.INTERNAL, message: String(err) });
+          callback(toGrpcCallbackError(err));
         }
       })();
     },

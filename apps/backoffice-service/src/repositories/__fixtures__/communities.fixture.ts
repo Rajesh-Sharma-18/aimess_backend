@@ -23,6 +23,28 @@ import type {
   CommunityModerationStatus,
   CommunityType,
 } from "../../types/community.types.js";
+import type { MediaObject } from "@aimess/shared-types";
+
+/**
+ * Fixture data stores a fully-resolved URL (no raw object key to presign in
+ * Phase 1 mock mode) — wrap it in the standard MediaObject shape so the mock
+ * repository satisfies the same `avatar: MediaObject | null` contract as the
+ * live gRPC repository.
+ */
+function fixtureAvatar(url: string | null): MediaObject | null {
+  if (!url) return null;
+  return {
+    fileId: null,
+    objectKey: null,
+    fileName: null,
+    contentType: null,
+    size: null,
+    downloadUrl: url,
+    downloadUrlExpiresIn: null,
+    uploadUrl: null,
+    uploadUrlExpiresIn: null,
+  };
+}
 
 // --- deterministic helpers (operate on fixed ISO strings — no Date.now) ---
 const slug = (name: string): string =>
@@ -387,7 +409,9 @@ function buildRow(seed: Seed, index: number): CommunityDetail {
       type: seed.type,
       category,
       status: seed.status,
-      avatarUrl: `community/avatar/${seed.ownerUserId}/${slug(seed.name)}.png`,
+      avatar: fixtureAvatar(
+        `community/avatar/${seed.ownerUserId}/${slug(seed.name)}.png`
+      ),
       coverUrl: null,
       createdAt: seed.createdAt,
       // Deterministic "last activity" 2 days after creation.
@@ -399,7 +423,7 @@ function buildRow(seed: Seed, index: number): CommunityDetail {
       userId: seed.ownerUserId,
       displayName: seed.ownerName,
       username,
-      avatarUrl: `user/avatar/${seed.ownerUserId}.png`,
+      avatar: fixtureAvatar(`user/avatar/${seed.ownerUserId}.png`),
       email: `${username}@example.com`,
       accountStatus: seed.ownerStatus,
     },

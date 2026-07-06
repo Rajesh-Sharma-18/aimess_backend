@@ -64,7 +64,8 @@ export interface AdminListStreamsArgs {
   /** epoch ms inclusive; 0/undefined = no bound. */
   dateFrom?: number;
   dateTo?: number;
-  sortField?: "createdAt" | "viewerCount" | "duration";
+  /** Native stream-service columns only — cross-service fields are sorted in backoffice. */
+  sortField?: "createdAt" | "viewerCount" | "duration" | "title" | "status";
   sortDir?: "asc" | "desc";
   page: number;
   limit: number;
@@ -92,6 +93,8 @@ export interface AdminStreamRow {
   livedAt: number;
   endedAt: number;
   createdAt: number;
+  /** Distinct-user count from LivestreamViewerSession — matches AdminListViewerSessions' total. */
+  uniqueViewerCount: number;
 }
 
 /** Raw wire row (longs arrive as strings under longs:String). */
@@ -114,6 +117,7 @@ interface RawAdminStreamRow {
   livedAt: string | number;
   endedAt: string | number;
   createdAt: string | number;
+  uniqueViewerCount: string | number;
 }
 
 interface RawAdminListStreamsRes {
@@ -167,6 +171,7 @@ function toAdminStreamRow(r: RawAdminStreamRow): AdminStreamRow {
     livedAt: Number(r.livedAt ?? 0),
     endedAt: Number(r.endedAt ?? 0),
     createdAt: Number(r.createdAt ?? 0),
+    uniqueViewerCount: Number(r.uniqueViewerCount ?? 0),
   };
 }
 

@@ -180,4 +180,41 @@ export class LivestreamViewerSessionRepository {
 
     return { rows, total: distinctUsers.length };
   }
+
+  /**
+   * Distinct-viewer count for one stream — the SAME dedupe `listByStream`
+   * already does for `total`, without paging through the rows. This is the
+   * number that must equal the admin viewer list's total, so callers needing
+   * a "viewer count" for a single stream (e.g. the detail screen) should use
+   * this instead of the raw `totalViews` join-attempt counter.
+   */
+  async countDistinctUsers(livestreamId: string): Promise<number> {
+    const distinctUsers = await this.prisma.livestreamViewerSession.findMany({
+      where: { livestreamId },
+      distinct: ["userId"],
+      select: { userId: true },
+    });
+    return distinctUsers.length;
+  }
+
+  /**
+   * Batch distinct-viewer counts, keyed by livestreamId — used by the admin
+   * list screen so `viewerCount` matches the per-stream viewer list total
+   * without an N+1 query per row.
+   */
+  async countDistinctUsersByStreamIds(
+    livestreamIds: string[]
+  ): Promise<Map<string, number>> {
+    if (livestreamIds.length === 0) return new Map();
+    const rows = await this.prisma.livestreamViewerSession.findMany({
+      where: { livestreamId: { in: livestreamIds } },
+      distinct: ["livestreamId", "userId"],
+      select: { livestreamId: true },
+    });
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      counts.set(r.livestreamId, (counts.get(r.livestreamId) ?? 0) + 1);
+    }
+    return counts;
+  }
 }

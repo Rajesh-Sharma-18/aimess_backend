@@ -252,7 +252,12 @@ export class LivestreamRepository {
    */
   async adminList(
     filter: AdminStreamFilter,
-    sortField: "createdAt" | "viewerCount" | "durationSeconds",
+    sortField:
+      | "createdAt"
+      | "viewerCount"
+      | "durationSeconds"
+      | "title"
+      | "status",
     sortDir: "asc" | "desc",
     skip: number,
     take: number

@@ -74,6 +74,12 @@ export class GroupMemberService {
     if (existing && existing.status === "ACTIVE") {
       throw new ConflictError("CHAT_ALREADY_MEMBER");
     }
+    // A banned member cannot rejoin (mirrors community's assertNotBanned join
+    // gate) — without this, `ban` had no effect since upsert would silently
+    // reactivate them on the next add/invite-link redemption.
+    if (existing && existing.status === "BANNED") {
+      throw new ForbiddenError("CHAT_BANNED_FROM_ROOM");
+    }
 
     const member = await this.memberRepo.upsert(params.roomId, params.userId, {
       role: params.role || "MEMBER",
@@ -186,6 +192,130 @@ export class GroupMemberService {
     });
 
     return updated;
+  }
+
+  /**
+   * Ban a member: same permission/role-order rules as `kick`, but the target's
+   * `status` becomes `"BANNED"` (not `"KICKED"`) and `bannedAt`/`bannedBy` are
+   * populated — those two Prisma columns previously existed on the schema but
+   * were never written or checked anywhere, so a "banned" group member was
+   * functionally identical to an active one. `findActiveByRoomAndUser`'s
+   * `status: "ACTIVE"` filter (used by every send/read/access-guard check)
+   * already excludes non-ACTIVE members, so this closes both the write/read
+   * gate AND (via `addMember`'s new check above) the rejoin gate, matching
+   * community's hardened ban enforcement.
+   */
+  async ban(params: {
+    roomId: string;
+    targetUserId: string;
+    bannedBy: string;
+    reason?: string;
+  }): Promise<GroupMember | null> {
+    const actor = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.bannedBy
+    );
+    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    }
+
+    const target = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.targetUserId
+    );
+    if (!target) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+
+    const roleOrder = ["OWNER", "ADMIN", "MODERATOR", "MEMBER"];
+    if (roleOrder.indexOf(actor.role) >= roleOrder.indexOf(target.role)) {
+      throw new BadRequestError("CHAT_CANNOT_KICK_HIGHER_ROLE");
+    }
+
+    const updated = await this.memberRepo.updateStatus(
+      params.roomId,
+      params.targetUserId,
+      "BANNED",
+      {
+        bannedAt: new Date(),
+        bannedBy: params.bannedBy,
+        kickReason: params.reason || null,
+      }
+    );
+    await this.roomRepo.incMemberCount(params.roomId, -1);
+
+    await this.sysMsg.post({
+      roomId: params.roomId,
+      actorId: params.bannedBy,
+      systemEvent: SystemEvent.MEMBER_REMOVED,
+      systemData: { targetUserId: params.targetUserId },
+    });
+
+    return updated;
+  }
+
+  /**
+   * Lift a ban. Actor must be OWNER/ADMIN/MODERATOR (same gate as `ban`). Does
+   * NOT re-add the user as a member — it only clears the ban so a future
+   * add/invite-link redemption is no longer rejected by `addMember`'s check.
+   */
+  async unban(params: {
+    roomId: string;
+    targetUserId: string;
+    unbannedBy: string;
+  }): Promise<GroupMember | null> {
+    const actor = await this.memberRepo.findActiveByRoomAndUser(
+      params.roomId,
+      params.unbannedBy
+    );
+    if (!actor) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    if (!["OWNER", "ADMIN", "MODERATOR"].includes(actor.role)) {
+      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    }
+
+    const target = await this.memberRepo.findByRoomAndUser(
+      params.roomId,
+      params.targetUserId
+    );
+    if (!target || target.status !== "BANNED") {
+      throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    }
+
+    return this.memberRepo.updateStatus(
+      params.roomId,
+      params.targetUserId,
+      "LEFT",
+      { bannedAt: null, bannedBy: null }
+    );
+  }
+
+  /**
+   * Mute/unmute personal notifications for this group — mirrors
+   * PrivateRoomService.muteRoom/unmuteRoom. Private already has this; Group had
+   * the storage field (`notificationSettings`) and even read it in the inbox
+   * list, but no route ever wrote it.
+   */
+  async muteRoom(
+    roomId: string,
+    userId: string,
+    muteUntil: Date | null
+  ): Promise<GroupMember> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    const updated = await this.memberRepo.setMuted(roomId, userId, muteUntil);
+    return updated ?? member;
+  }
+
+  async unmuteRoom(roomId: string, userId: string): Promise<GroupMember> {
+    const member = await this.memberRepo.findActiveByRoomAndUser(
+      roomId,
+      userId
+    );
+    if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
+    const updated = await this.memberRepo.setUnmuted(roomId, userId);
+    return updated ?? member;
   }
 
   async updateRole(params: {

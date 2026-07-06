@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { logger } from "@aimess/logger";
+import { NotFoundError } from "@aimess/errors";
 
 import type { Redis, Cluster } from "ioredis";
 
@@ -35,7 +36,12 @@ import type { GroupMessageService } from "./group-message.service.js";
 import type { GroupMemberService } from "./group-member.service.js";
 import type { CommunityMessageService } from "./community-message.service.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { PrivatePinService } from "./private-pin.service.js";
+import type { GroupPinService } from "./group-pin.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
+import { buildDeletePayload } from "../lib/chat-message.serializer.js";
+import { renderConvOverrides } from "../lib/recipient-override-render.js";
+import { buildMessagePreview } from "../events/publish-message-sent.js";
 
 /**
  * Structured message content as it travels through the send path: the body text
@@ -116,6 +122,64 @@ export interface SendCommunityResult {
   message: Record<string, unknown>;
 }
 
+export interface ForwardCommunityParams {
+  sourceMessageId: string;
+  /** community-service Community.id the source message actually belongs to. */
+  sourceCommunityId: string;
+  /** community-service Community.id — used for the broadcast + activity bump. */
+  targetCommunityId: string;
+  /** chat-service GeneralRoom.id — used for the message persist. */
+  targetRoomId: string;
+  senderId: string;
+  /** Sender display name; resolved from the user snapshot when omitted. */
+  senderName?: string;
+  /** Sender avatar object-key/URL; resolved from the user snapshot when omitted. */
+  senderAvatar?: string;
+  /** Idempotency key; defaulted to a fresh UUID when omitted. */
+  clientMessageId?: string | null;
+}
+
+export interface ForwardCommunityResult {
+  messageId: string;
+  roomId: string;
+  /** epoch ms server-authoritative time. */
+  sentAt: number;
+  /** True when the service collapsed this onto a pre-existing message (replay). */
+  alreadySent: boolean;
+  sequenceNumber: number;
+  /** Canonical wire event — byte-identical to the socket `community:message:new`. */
+  message: Record<string, unknown>;
+}
+
+export interface DeleteDirectParams {
+  conversationType: "PRIVATE" | "GROUP";
+  roomId: string;
+  messageId: string;
+  userId: string;
+  scope: "forMe" | "forEveryone";
+}
+
+export interface DeleteDirectResult {
+  /** Canonical tombstone — byte-identical to the REST delete response / socket message:delete. */
+  tombstone: Record<string, unknown>;
+}
+
+export interface PinDirectParams {
+  conversationType: "PRIVATE" | "GROUP";
+  roomId: string;
+  messageId: string;
+  userId: string;
+}
+
+export interface PinDirectResult {
+  pin: Record<string, unknown>;
+  pinnedCount: number;
+}
+
+export interface UnpinDirectResult {
+  pinnedCount: number;
+}
+
 export interface MarkReadDirectParams {
   conversationType: "PRIVATE" | "GROUP";
   roomId: string;
@@ -163,7 +227,9 @@ export class ChatMessageOrchestrator {
     private readonly communityMessageService: CommunityMessageService,
     private readonly userSnapshotService: UserSnapshotService,
     private readonly cacheRepo: CacheRepository,
-    private readonly redis: Redis | Cluster
+    private readonly redis: Redis | Cluster,
+    private readonly privatePinService: PrivatePinService,
+    private readonly groupPinService: GroupPinService
   ) {}
 
   /**
@@ -578,6 +644,395 @@ export class ChatMessageOrchestrator {
       sequenceNumber: saved.sequenceNumber,
       message: wireEvent,
     };
+  }
+
+  /**
+   * Forward a COMMUNITY message and run the SAME `community:message:new`
+   * broadcast / activity-denormalization / `community:updated` bump / FCM-push
+   * effects `sendCommunity` runs — mirrors the private/group REST forward
+   * controllers (which build their own broadcast rather than routing through a
+   * generic "send"), so community forward gets identical real-time parity
+   * instead of being REST-only with no live update. `communityMessageService
+   * .forwardMessage` owns the source-room-membership IDOR guard, the
+   * target-membership check, and idempotency (via its internal `sendMessage`).
+   */
+  async forwardCommunity(
+    params: ForwardCommunityParams
+  ): Promise<ForwardCommunityResult> {
+    const clientMessageId = params.clientMessageId || randomUUID();
+
+    const { senderName, senderAvatar } = await this.resolveSenderIdentity(
+      params.senderId,
+      params.senderName,
+      params.senderAvatar
+    );
+
+    const saved = await this.communityMessageService.forwardMessage({
+      sourceMessageId: params.sourceMessageId,
+      sourceCommunityId: params.sourceCommunityId,
+      targetCommunityId: params.targetCommunityId,
+      targetRoomId: params.targetRoomId,
+      senderId: params.senderId,
+      clientMessageId,
+    });
+
+    const sentAt =
+      saved.createdAt instanceof Date ? saved.createdAt.getTime() : Date.now();
+    const alreadySent = isIdempotentReplay(saved);
+
+    const attachments = Array.isArray(saved.attachments)
+      ? (saved.attachments as Array<Record<string, unknown>>)
+      : [];
+    const location = this.firstAttachmentOfType(attachments, "location");
+    const contact = this.firstAttachmentOfType(attachments, "contact");
+    const sticker = this.firstAttachmentOfType(attachments, "sticker");
+    const [bcastSenderAvatar, bcastFiles] = await Promise.all([
+      resolveMediaUrl(saved.senderAvatar || senderAvatar || ""),
+      resolveContentFiles(attachments as MediaFileLike[]),
+    ]);
+
+    const wireEvent: Record<string, unknown> = {
+      id: saved.id,
+      messageId: saved.id,
+      communityId: params.targetCommunityId,
+      roomId: saved.roomId,
+      senderId: saved.sentBy,
+      senderName: saved.senderName || senderName,
+      senderAvatar: bcastSenderAvatar,
+      parentMessageId: saved.parentMessageId ?? "",
+      quoteData: buildCanonicalQuote(saved.quoteData),
+      content: {
+        text: saved.message ?? "",
+        files: bcastFiles,
+        ...(location ? { location } : {}),
+        ...(contact ? { contact } : {}),
+        ...(sticker ? { sticker } : {}),
+      },
+      reactions: [],
+      message: saved.message ?? "",
+      contentType: normalizeMessageType(saved.messageType),
+      clientMessageId,
+      isForwarded: true,
+      serverTs: sentAt,
+      sentAt,
+      sequenceNumber: saved.sequenceNumber,
+    };
+
+    if (!alreadySent) {
+      await this.redis.publish(
+        `community:${params.targetCommunityId}`,
+        JSON.stringify({ event: "community:message:new", data: wireEvent })
+      );
+
+      const preview = convertMessageToPreview(saved.messageType, {
+        text: saved.message ?? "",
+        files: attachments,
+        ...(location ? { location } : {}),
+        ...(contact ? { contact } : {}),
+      });
+
+      publishCommunityActivitySafe({
+        communityId: params.targetCommunityId,
+        lastMessageAt: new Date(sentAt).toISOString(),
+        lastMessageId: saved.id,
+        senderUserId: params.senderId,
+        senderUsername: senderName,
+        messagePreview: preview,
+      });
+
+      publishCommunityUpdatedSafe({
+        redis: this.redis,
+        communityId: params.targetCommunityId,
+        roomId: saved.roomId,
+        fetchMembers: () =>
+          this.communityMessageService.getActiveMemberIds(params.targetRoomId),
+        senderId: params.senderId,
+        senderName,
+        lastMessageId: saved.id,
+        lastMessageAt: sentAt,
+        preview: {
+          contentType: normalizeMessageType(saved.messageType),
+          text: preview,
+        },
+      });
+
+      publishMessageSentSafe({
+        conversationId: params.targetCommunityId,
+        conversationType: "COMMUNITY",
+        communityId: params.targetCommunityId,
+        messageId: saved.id,
+        clientMessageId,
+        senderId: params.senderId,
+        senderName: senderName || "",
+        senderAvatar: senderAvatar || "",
+        preview: buildPushPreview(saved.messageType, saved.message ?? ""),
+        messageType: normalizeMessageType(saved.messageType),
+        sentAt,
+        fetchRecipients: () =>
+          this.communityMessageService.getActiveMemberIds(params.targetRoomId),
+      });
+    }
+
+    return {
+      messageId: saved.id,
+      roomId: saved.roomId,
+      sentAt,
+      alreadySent,
+      sequenceNumber: saved.sequenceNumber,
+      message: wireEvent,
+    };
+  }
+
+  /**
+   * Delete a PRIVATE or GROUP message (for-me or for-everyone) and run the
+   * identical post-write effects the REST delete controllers perform: canonical
+   * tombstone broadcast (`message:delete` on `conv:<roomId>`) + best-effort
+   * list-preview recalculation/bump. Single new entry point so the socket
+   * `message:delete` handler (added for parity with community's
+   * `community:message:delete` socket RPC) gets the SAME effects as REST instead
+   * of a thinner duplicate. Authorization/business rules are enforced INSIDE the
+   * called service — not duplicated here.
+   */
+  async deleteDirect(params: DeleteDirectParams): Promise<DeleteDirectResult> {
+    const conversationType: "PRIVATE" | "GROUP" =
+      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+
+    let result: {
+      id: string;
+      roomId: string;
+      sequenceNumber: number;
+      createdAt: Date;
+      senderId?: string | null;
+      receiverId?: string | null;
+      deletedType?: string | null;
+    } | null;
+
+    if (conversationType === "GROUP") {
+      result =
+        params.scope === "forMe"
+          ? await this.groupMessageService.deleteForMe(
+              params.messageId,
+              params.userId,
+              params.roomId
+            )
+          : await this.groupMessageService.deleteMessage(
+              params.messageId,
+              params.userId,
+              params.roomId
+            );
+    } else {
+      result =
+        params.scope === "forMe"
+          ? await this.privateMessageService.deleteForMe(
+              params.messageId,
+              params.userId
+            )
+          : await this.privateMessageService.deleteForEveryone(
+              params.messageId,
+              params.userId
+            );
+    }
+    if (!result) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    const tombstone = buildDeletePayload({
+      conversationType,
+      messageId: result.id,
+      roomId: result.roomId,
+      scope: params.scope,
+      deletedBy: params.userId,
+      sequenceNumber: result.sequenceNumber,
+      deletedType:
+        params.scope === "forMe"
+          ? "SELF_DELETE"
+          : (result.deletedType ?? "SELF_DELETE"),
+    });
+
+    if (result.roomId) {
+      await this.redis.publish(
+        `conv:${result.roomId}`,
+        JSON.stringify({ event: "message:delete", data: tombstone })
+      );
+    }
+
+    if (params.scope === "forEveryone" && result.roomId) {
+      const rId = result.roomId;
+      const recalcPromise =
+        conversationType === "GROUP"
+          ? this.groupMessageService.recalculateLastMessageAfterDelete(
+              rId,
+              params.messageId
+            )
+          : this.privateMessageService.recalculateLastMessageAfterDelete(
+              rId,
+              params.messageId
+            );
+      void recalcPromise
+        .then((recalc) => {
+          if (recalc === null) return; // not the last message — no-op
+          const preview = buildMessagePreview(
+            recalc.messageType,
+            recalc.content
+          );
+          if (conversationType === "GROUP") {
+            publishConvUpdatedSafe({
+              redis: this.redis,
+              type: "GROUP",
+              roomId: rId,
+              fetchRecipients: () =>
+                this.groupMessageService.getActiveMemberIds(rId),
+              resolveOverrides: (recipientIds) =>
+                this.groupMessageService
+                  .resolveForEveryoneOverrides(
+                    rId,
+                    recalc.prevMessageId,
+                    recipientIds
+                  )
+                  .then((raw) => renderConvOverrides(raw)),
+              senderId: recalc.senderId ?? "",
+              lastMessageId: recalc.prevMessageId ?? "",
+              lastMessageAt: recalc.createdAt.getTime(),
+              preview: { contentType: recalc.messageType, text: preview },
+            });
+          } else {
+            const participants = [
+              result.senderId ?? params.userId,
+              result.receiverId ?? "",
+            ].filter(Boolean) as string[];
+            publishConvUpdatedSafe({
+              redis: this.redis,
+              type: "PRIVATE",
+              roomId: rId,
+              recipientIds: participants,
+              resolveOverrides: (recipientIds) =>
+                this.privateMessageService
+                  .resolveForEveryoneOverrides(
+                    rId,
+                    recalc.prevMessageId,
+                    recipientIds
+                  )
+                  .then((raw) => renderConvOverrides(raw)),
+              senderId: recalc.senderId ?? "",
+              lastMessageId: recalc.prevMessageId ?? "",
+              lastMessageAt: recalc.createdAt.getTime(),
+              preview: { contentType: recalc.messageType, text: preview },
+            });
+          }
+        })
+        .catch(() => {
+          // Best-effort: a preview recalculation failure must never surface to
+          // the user. The list will self-correct on next load.
+        });
+    }
+
+    if (params.scope === "forMe" && result.roomId) {
+      const rId = result.roomId;
+      const recalcPromise =
+        conversationType === "GROUP"
+          ? this.groupMessageService.recalculateLastMessageAfterDeleteForMe(
+              rId,
+              result.createdAt,
+              params.userId
+            )
+          : this.privateMessageService.recalculateLastMessageAfterDeleteForMe(
+              rId,
+              result.createdAt,
+              params.userId
+            );
+      void recalcPromise
+        .then((recalc) => {
+          if (recalc === null || !recalc.wasEffectiveLast) return;
+          const preview = recalc.hasLastMessage
+            ? buildMessagePreview(recalc.messageType, recalc.content)
+            : "";
+          publishConvUpdatedSafe({
+            redis: this.redis,
+            type: conversationType,
+            roomId: rId,
+            recipientIds: [params.userId],
+            senderId: recalc.senderId ?? "",
+            lastMessageId: recalc.prevMessageId ?? "",
+            lastMessageAt: recalc.createdAt.getTime(),
+            preview: { contentType: recalc.messageType, text: preview },
+          });
+        })
+        .catch(() => {});
+    }
+
+    return { tombstone };
+  }
+
+  /**
+   * Pin/unpin a PRIVATE or GROUP message and broadcast `pin:updated` to
+   * `conv:<roomId>` — identical effect to the REST pin/unpin controllers (which
+   * are byte-for-byte identical between Private and Group). New entry point for
+   * the socket `message:pin`/`message:unpin` handlers, added for parity with
+   * community's `community:message:pin`/`unpin` socket RPCs.
+   */
+  async pinDirect(params: PinDirectParams): Promise<PinDirectResult> {
+    const conversationType: "PRIVATE" | "GROUP" =
+      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+    const pinArgs = {
+      roomId: params.roomId,
+      messageId: params.messageId,
+      userId: params.userId,
+    };
+    const result =
+      conversationType === "GROUP"
+        ? await this.groupPinService.pin(pinArgs)
+        : await this.privatePinService.pin(pinArgs);
+
+    const pinnedAt =
+      result.pin.pinnedAt instanceof Date
+        ? result.pin.pinnedAt.getTime()
+        : Date.now();
+    await this.redis.publish(
+      `conv:${params.roomId}`,
+      JSON.stringify({
+        event: "pin:updated",
+        data: {
+          roomId: params.roomId,
+          conversationId: params.roomId,
+          messageId: params.messageId,
+          pinnedBy: params.userId,
+          pinnedAt,
+          action: "pinned",
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+
+    return result as unknown as PinDirectResult;
+  }
+
+  async unpinDirect(params: PinDirectParams): Promise<UnpinDirectResult> {
+    const conversationType: "PRIVATE" | "GROUP" =
+      params.conversationType === "GROUP" ? "GROUP" : "PRIVATE";
+    const pinArgs = {
+      roomId: params.roomId,
+      messageId: params.messageId,
+      userId: params.userId,
+    };
+    const result =
+      conversationType === "GROUP"
+        ? await this.groupPinService.unpin(pinArgs)
+        : await this.privatePinService.unpin(pinArgs);
+
+    await this.redis.publish(
+      `conv:${params.roomId}`,
+      JSON.stringify({
+        event: "pin:updated",
+        data: {
+          roomId: params.roomId,
+          conversationId: params.roomId,
+          messageId: params.messageId,
+          unpinnedBy: params.userId,
+          action: "unpinned",
+          pinnedCount: result.pinnedCount,
+        },
+      })
+    );
+
+    return result;
   }
 
   /**

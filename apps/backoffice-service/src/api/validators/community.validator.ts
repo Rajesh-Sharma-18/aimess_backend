@@ -176,18 +176,42 @@ export type CommunityIdParam = z.infer<typeof communityIdParamSchema>;
 export const communityMemberRoleEnum = z.enum(["ADMIN", "MODERATOR", "MEMBER"]);
 
 /**
+ * Whitelisted sort fields for the member grid, mirroring the response's
+ * `username`/`handle`/`joinedAt` columns. Passed through to community-service
+ * as `sortField`/`sortDir` (applied at the DB query level there).
+ */
+const MEMBER_SORT_FIELDS = ["username", "handle", "joinedAt"] as const;
+const MEMBER_SORT_PATTERN = new RegExp(
+  `^(${MEMBER_SORT_FIELDS.join("|")}):(asc|desc)$`
+);
+const DEFAULT_MEMBER_SORT = "joinedAt:desc";
+
+/**
  * `q` is the UI search box alias (mirrors the users list); it maps to `search`.
  * Pass either `q` or `search` — `q` wins when both are present.
+ *
+ * `sort` is `<field>:<order>` (e.g. `username:asc`). An invalid or omitted
+ * value silently falls back to `joinedAt:desc` rather than 400ing — matches
+ * the tolerant-filter philosophy used elsewhere in this file.
  */
 export const listCommunityMembersQuerySchema = z
   .object({
     q: z.string().trim().min(1).optional(),
     search: z.string().trim().min(1).optional(),
     role: communityMemberRoleEnum.optional(),
+    sort: z.string().trim().optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
   })
-  .transform(({ q, ...rest }) => ({ ...rest, search: q ?? rest.search }));
+  .transform(({ q, sort, ...rest }) => {
+    const resolvedSort =
+      sort && MEMBER_SORT_PATTERN.test(sort) ? sort : DEFAULT_MEMBER_SORT;
+    const [sortField, sortDir] = resolvedSort.split(":") as [
+      (typeof MEMBER_SORT_FIELDS)[number],
+      "asc" | "desc",
+    ];
+    return { ...rest, search: q ?? rest.search, sortField, sortDir };
+  });
 export type ListCommunityMembersQueryInput = z.infer<
   typeof listCommunityMembersQuerySchema
 >;

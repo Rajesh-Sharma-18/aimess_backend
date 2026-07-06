@@ -154,6 +154,79 @@ export const devicesPaths = {
     },
   },
 
+  "/notifications/fcm-token": {
+    post: {
+      tags: ["Devices"],
+      operationId: "registerFcmToken",
+      summary: "Register FCM token (alias of POST /devices)",
+      description: [
+        "Stable alias of `POST /devices` for clients that target the legacy",
+        "`/notifications/fcm-token` path. The request is forwarded verbatim to the",
+        "same notifications-service endpoint — identical auth, validation, upsert",
+        "behaviour and response envelope. Prefer `POST /devices` for new clients.",
+        "",
+        "**Body:** same as `POST /devices` (`token`, `platform`, optional",
+        "`deviceId`). For convenience the aliases `fcmToken` (→ `token`) and",
+        "`deviceType` (→ `platform`) are also accepted, and `platform` values are",
+        "upper-cased (`android` → `ANDROID`).",
+        "",
+        "**Rate limit:** 10 registrations per minute per IP (shared with `/devices`).",
+      ].join("\n"),
+      security: [{ bearerAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object" as const,
+              required: ["token", "platform"],
+              properties: {
+                token: {
+                  type: "string" as const,
+                  description:
+                    "FCM registration token (Android / Web) or APNs device token (iOS). `fcmToken` is accepted as an alias.",
+                  example: "fCG3k7p2Rn2:APA91bH8q...",
+                },
+                platform: {
+                  type: "string" as const,
+                  enum: ["ANDROID", "IOS", "WEB"],
+                  description:
+                    "Device platform. `deviceType` is accepted as an alias; values are upper-cased.",
+                  example: "ANDROID",
+                },
+                deviceId: {
+                  type: "string" as const,
+                  description:
+                    "Optional stable device identifier used to deduplicate tokens across re-logins on the same device.",
+                  example: "a1b2c3d4e5f6",
+                },
+              },
+            },
+            example: {
+              token: "fCG3k7p2Rn2:APA91bH8qE3...",
+              platform: "ANDROID",
+              deviceId: "a1b2c3d4e5f6",
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Token registered (or updated)",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true },
+            },
+          },
+        },
+        "400": badRequest,
+        "401": unauthorized,
+        "429": tooManyRequests,
+      },
+    },
+  },
+
   "/devices/{token}": {
     delete: {
       tags: ["Devices"],

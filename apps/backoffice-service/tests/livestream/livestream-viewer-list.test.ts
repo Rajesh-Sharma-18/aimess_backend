@@ -41,6 +41,7 @@ function baseStream(overrides: Partial<Record<string, unknown>> = {}) {
     viewerCount: 1,
     peakViewers: 1,
     totalViews: 1,
+    uniqueViewerCount: 1,
     totalComments: 0,
     durationSeconds: 60,
     livedAt: 1000,

@@ -20,6 +20,7 @@ jest.mock("../../src/services/index.js", () => {
       listCategories: jest.fn(),
       createCategory: jest.fn(),
       updateCategory: jest.fn(),
+      updateCategoryVisibility: jest.fn(),
       deleteCategory: jest.fn(),
     },
   };
@@ -77,6 +78,7 @@ beforeEach(() => {
   svc.listCategories.mockResolvedValue(PAGE);
   svc.createCategory.mockResolvedValue(catDetail());
   svc.updateCategory.mockResolvedValue(catDetail({ name: "Renamed" }));
+  svc.updateCategoryVisibility.mockResolvedValue(catDetail({ visible: false }));
   svc.deleteCategory.mockResolvedValue(undefined);
 });
 
@@ -333,6 +335,87 @@ describe("PATCH /v1/categories/:categoryId (update)", () => {
   });
 });
 
+describe("PATCH /v1/categories/:categoryId/visibility", () => {
+  it("sets HIDDEN → 200", async () => {
+    const res = await request(app)
+      .patch(`/v1/categories/${CAT}/visibility`)
+      .set(auth())
+      .send({ status: "HIDDEN" });
+    expect(res.status).toBe(200);
+    expect(svc.updateCategoryVisibility).toHaveBeenCalledWith(
+      CAT,
+      "HIDDEN",
+      expect.any(String)
+    );
+  });
+
+  it("sets VISIBLE → 200", async () => {
+    const res = await request(app)
+      .patch(`/v1/categories/${CAT}/visibility`)
+      .set(auth())
+      .send({ status: "VISIBLE" });
+    expect(res.status).toBe(200);
+    expect(svc.updateCategoryVisibility).toHaveBeenCalledWith(
+      CAT,
+      "VISIBLE",
+      expect.any(String)
+    );
+  });
+
+  it("returns 400 for an invalid status value", async () => {
+    const res = await request(app)
+      .patch(`/v1/categories/${CAT}/visibility`)
+      .set(auth())
+      .send({ status: "hidden" });
+    expect(res.status).toBe(400);
+    expect(svc.updateCategoryVisibility).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when status is missing", async () => {
+    const res = await request(app)
+      .patch(`/v1/categories/${CAT}/visibility`)
+      .set(auth())
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for an invalid categoryId param", async () => {
+    const res = await request(app)
+      .patch("/v1/categories/not-an-id/visibility")
+      .set(auth())
+      .send({ status: "HIDDEN" });
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when the category does not exist", async () => {
+    svc.updateCategoryVisibility.mockRejectedValue(
+      new NotFoundError("CATEGORY_NOT_FOUND")
+    );
+    const res = await request(app)
+      .patch(`/v1/categories/${CAT}/visibility`)
+      .set(auth())
+      .send({ status: "HIDDEN" });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 401 without a token", async () => {
+    const res = await request(app)
+      .patch(`/v1/categories/${CAT}/visibility`)
+      .send({ status: "HIDDEN" });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 without categories.manage", async () => {
+    grantPermissions(perms, []);
+    const res = await request(app)
+      .patch(`/v1/categories/${CAT}/visibility`)
+      .set(auth())
+      .send({ status: "HIDDEN" });
+    expect(res.status).toBe(403);
+    expect(svc.updateCategoryVisibility).not.toHaveBeenCalled();
+  });
+});
+
 describe("DELETE /v1/categories/:categoryId", () => {
   it("hard-deletes when unreferenced → 200 null data", async () => {
     svc.deleteCategory.mockResolvedValue(undefined);
@@ -354,6 +437,17 @@ describe("DELETE /v1/categories/:categoryId", () => {
     );
     const res = await request(app).delete(`/v1/categories/${CAT}`).set(auth());
     expect(res.status).toBe(404);
+  });
+
+  it("returns 409 when the category is assigned to active communities", async () => {
+    svc.deleteCategory.mockRejectedValue(
+      new ConflictError("CATEGORY_HAS_ACTIVE_COMMUNITIES")
+    );
+    const res = await request(app).delete(`/v1/categories/${CAT}`).set(auth());
+    expect(res.status).toBe(409);
+    expect(res.body.message).toBe(
+      "Category cannot be deleted because it is assigned to active communities."
+    );
   });
 
   it("returns 400 for an invalid categoryId", async () => {

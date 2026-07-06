@@ -52,6 +52,26 @@ export const categoryService = {
     return category;
   },
 
+  async updateCategoryVisibility(
+    id: string,
+    status: "VISIBLE" | "HIDDEN",
+    actorId: string
+  ): Promise<CategoryDetail> {
+    const category = await categoryRepository.update(id, {
+      visible: status === "VISIBLE",
+    });
+
+    await auditService.record({
+      actorId,
+      action: AUDIT_ACTIONS.CATEGORY_UPDATED,
+      targetType: "category",
+      targetId: category.id,
+      after: { visible: category.visible },
+    });
+
+    return category;
+  },
+
   async deleteCategory(id: string, actorId: string): Promise<void> {
     const result = await categoryRepository.delete(id);
 

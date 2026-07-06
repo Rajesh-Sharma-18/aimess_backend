@@ -390,7 +390,7 @@ describe("POST /v1/users/:userId/suspend", () => {
 });
 
 describe("POST /v1/users/:userId/unban", () => {
-  it("reinstates a user → 200", async () => {
+  it("reinstates a user with a note → 200", async () => {
     const res = await request(app)
       .post(`/v1/users/${USER_ID}/unban`)
       .set(auth())
@@ -399,12 +399,29 @@ describe("POST /v1/users/:userId/unban", () => {
     expect(res.body.data.status).toBe("ACTIVE");
   });
 
-  it("accepts an empty body (note is optional)", async () => {
+  it("reinstates a user with NO request body at all → 200", async () => {
+    const res = await request(app)
+      .post(`/v1/users/${USER_ID}/unban`)
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe("ACTIVE");
+    // No Content-Type/body sent → req.body is undefined; the controller
+    // defaults it to {} before calling the service.
+    expect(svc.unbanUser).toHaveBeenCalledWith(
+      USER_ID,
+      {},
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it("reinstates a user with an empty body ({}) → 200", async () => {
     const res = await request(app)
       .post(`/v1/users/${USER_ID}/unban`)
       .set(auth())
       .send({});
     expect(res.status).toBe(200);
+    expect(svc.unbanUser).toHaveBeenCalled();
   });
 });
 

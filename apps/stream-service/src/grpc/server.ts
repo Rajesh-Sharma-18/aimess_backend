@@ -32,6 +32,7 @@ function toAdminStreamWire(r: AdminStreamRow): Record<string, unknown> {
     livedAt: r.livedAt ? r.livedAt.getTime() : 0,
     endedAt: r.endedAt ? r.endedAt.getTime() : 0,
     createdAt: r.createdAt.getTime(),
+    uniqueViewerCount: r.uniqueViewerCount,
   };
 }
 
@@ -303,12 +304,21 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             page?: number;
             limit?: number;
           };
-          const sortField: "createdAt" | "viewerCount" | "durationSeconds" =
+          const sortField:
+            | "createdAt"
+            | "viewerCount"
+            | "durationSeconds"
+            | "title"
+            | "status" =
             req.sortField === "viewerCount"
               ? "viewerCount"
               : req.sortField === "duration"
                 ? "durationSeconds"
-                : "createdAt";
+                : req.sortField === "title"
+                  ? "title"
+                  : req.sortField === "status"
+                    ? "status"
+                    : "createdAt";
           const dateFrom = Number(req.dateFrom ?? 0);
           const dateTo = Number(req.dateTo ?? 0);
           const { items, total } =

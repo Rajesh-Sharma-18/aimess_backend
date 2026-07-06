@@ -297,7 +297,9 @@ export function buildApp(): BuiltApp {
     communityMessageService,
     userSnapshotService,
     cacheRepo,
-    redis
+    redis,
+    privatePinService,
+    groupPinService
   );
 
   // -- Real controllers --

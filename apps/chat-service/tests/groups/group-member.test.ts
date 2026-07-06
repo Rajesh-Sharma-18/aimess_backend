@@ -288,3 +288,69 @@ describe("GET /api/chat/group-members/:roomId", () => {
     expect(res.status).toBe(401);
   });
 });
+
+// Parity with Private's /private/rooms/:roomId/mute — Group had the storage
+// field (notificationSettings) but no route to ever write it.
+describe("POST /api/chat/group-members/:roomId/mute", () => {
+  it("POSITIVE: an active member mutes the group", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      role: "MEMBER",
+    });
+    mocks.groupMemberRepo.setMuted.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      notificationSettings: { mute: true, muteUntil: null },
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/mute`)
+      .set(bearer(makeAccessToken()))
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupMemberRepo.setMuted).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID,
+      null
+    );
+  });
+
+  it("NEGATIVE: 404 when the caller is not a member", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/mute`)
+      .set(bearer(makeAccessToken()))
+      .send({});
+
+    expect(res.status).toBe(404);
+    expect(mocks.groupMemberRepo.setMuted).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/chat/group-members/:roomId/unmute", () => {
+  it("POSITIVE: an active member unmutes the group", async () => {
+    mocks.groupMemberRepo.findActiveByRoomAndUser.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      role: "MEMBER",
+    });
+    mocks.groupMemberRepo.setUnmuted.mockResolvedValue({
+      roomId: ROOM,
+      userId: TEST_USER_ID,
+      notificationSettings: { mute: false, muteUntil: null },
+    });
+
+    const res = await request(app)
+      .post(`/api/chat/group-members/${ROOM}/unmute`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(mocks.groupMemberRepo.setUnmuted).toHaveBeenCalledWith(
+      ROOM,
+      TEST_USER_ID
+    );
+  });
+});

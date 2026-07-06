@@ -95,6 +95,7 @@ export const listReportsQuerySchema = z.object({
   status: repeatableEnum(reportStatusEnum),
   targetType: targetTypeEnum.optional(),
   assignedTo: z.string().trim().min(1).optional(),
+  communityId: z.string().trim().min(1).optional(),
   sort: z
     .string()
     .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")

@@ -35,17 +35,21 @@ export const listReports: RequestHandler = (req, res, next) => {
   })();
 };
 
-/** GET /v1/moderation/reports/:reportId — full detail. */
+/**
+ * GET /v1/moderation/reports/:reportId — Reports & Moderation Details page:
+ * report block + Community Report Details.
+ */
 export const getReportDetails: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       // Narrowed by reportIdParamSchema on the route.
       const reportId = req.params.reportId as string;
-      const report = await moderationService.getReportCore(reportId);
-      if (!report) throw new NotFoundError("REPORT_NOT_FOUND");
+      const detail =
+        await moderationService.getReportModerationDetail(reportId);
+      if (!detail) throw new NotFoundError("REPORT_NOT_FOUND");
       res.status(HTTP_STATUS.OK).json({
         success: true,
-        data: report,
+        data: detail,
       });
     } catch (error) {
       next(error);

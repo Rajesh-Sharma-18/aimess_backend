@@ -20,6 +20,7 @@ jest.mock("../../src/services/index.js", () => {
     moderationService: {
       listReports: jest.fn(),
       getReportCore: jest.fn(),
+      getReportModerationDetail: jest.fn(),
       listReportEvidence: jest.fn(),
       listReportHistory: jest.fn(),
       listReportRelated: jest.fn(),
@@ -63,6 +64,17 @@ beforeEach(() => {
   svc.getReportCore.mockResolvedValue({
     reportId: "RPT-2026-0000001",
     status: "PENDING",
+  });
+  svc.getReportModerationDetail.mockResolvedValue({
+    report: {
+      id: "RPT-2026-0000001",
+      type: "USER",
+      status: "PENDING",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      reportedUser: null,
+      reporter: null,
+    },
+    community: null,
   });
   svc.listReportEvidence.mockResolvedValue(PAGE);
   svc.listReportHistory.mockResolvedValue(PAGE);
@@ -135,16 +147,32 @@ describe("GET /v1/reports", () => {
 });
 
 describe("GET /v1/reports/:reportId", () => {
-  it("returns 200 with the report core", async () => {
+  it("returns 200 with the report and community blocks", async () => {
     const res = await request(app)
       .get("/v1/reports/RPT-2026-0000001")
       .set(auth());
     expect(res.status).toBe(200);
-    expect(res.body.data.reportId).toBe("RPT-2026-0000001");
+    expect(res.body.data.report.id).toBe("RPT-2026-0000001");
+    expect(res.body.data.community).toBeNull();
+    expect(res.body.data).not.toHaveProperty("members");
+  });
+
+  it("ignores page/limit/search/role query parameters (members list no longer returned)", async () => {
+    const res = await request(app)
+      .get(
+        "/v1/reports/RPT-2026-0000001?page=2&limit=10&search=alice&role=MODERATOR"
+      )
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.getReportModerationDetail).toHaveBeenCalledWith(
+      "RPT-2026-0000001"
+    );
+    // Verify no second argument (members query) is passed
+    expect(svc.getReportModerationDetail.mock.calls[0].length).toBe(1);
   });
 
   it("returns 404 when the report does not exist", async () => {
-    svc.getReportCore.mockResolvedValue(null);
+    svc.getReportModerationDetail.mockResolvedValue(null);
     const res = await request(app)
       .get("/v1/reports/RPT-DOES-NOT-EXIST")
       .set(auth());
@@ -159,8 +187,16 @@ describe("GET /v1/reports/:reportId", () => {
     expect(res.status).toBe(400);
   });
 
+  it("ignores invalid role filter (members list no longer returned)", async () => {
+    const res = await request(app)
+      .get("/v1/reports/RPT-2026-0000001?role=GUEST")
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.getReportModerationDetail).toHaveBeenCalled();
+  });
+
   it("safely handles a path-traversal/injection-shaped reportId (no crash)", async () => {
-    svc.getReportCore.mockResolvedValue(null);
+    svc.getReportModerationDetail.mockResolvedValue(null);
     const res = await request(app)
       .get(`/v1/reports/${encodeURIComponent("'; DROP TABLE--")}`)
       .set(auth());
@@ -297,12 +333,12 @@ describe("bulk report actions (207 Multi-Status)", () => {
   });
 
   it("bulk routes are matched before /:reportId (bulk is not captured as an id)", async () => {
-    // If "bulk" were captured as :reportId, this would call getReportCore.
+    // If "bulk" were captured as :reportId, this would call getReportModerationDetail.
     await request(app)
       .post("/v1/reports/bulk/resolve")
       .set(auth())
       .send({ reportIds: ["RPT-1"], resolution: "ACTION_TAKEN" });
-    expect(svc.getReportCore).not.toHaveBeenCalled();
+    expect(svc.getReportModerationDetail).not.toHaveBeenCalled();
     expect(svc.bulkResolve).toHaveBeenCalledTimes(1);
   });
 });

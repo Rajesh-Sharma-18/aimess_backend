@@ -146,10 +146,11 @@ function toListItem(c: CommunityDetail): CommunityListItem {
   return {
     communityId: c.community.communityId,
     communityName: c.community.name,
+    avatar: c.community.avatar,
     admin: {
       userId: c.owner.userId,
       name: c.owner.displayName,
-      avatarUrl: c.owner.avatarUrl,
+      avatar: c.owner.avatar,
     },
     type: c.community.type,
     category: c.community.category,

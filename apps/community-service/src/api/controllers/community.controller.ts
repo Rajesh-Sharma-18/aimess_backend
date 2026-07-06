@@ -854,6 +854,7 @@ export const createCommunityReport = asyncHandler(
     const {
       targetUserId,
       reason,
+      otherReason,
       reportedMessageId,
       reportedContentType,
       reportedContentText,
@@ -863,6 +864,7 @@ export const createCommunityReport = asyncHandler(
     const result = await communityService.createReport(id, req.auth.userId, {
       targetUserId,
       reason,
+      otherReason,
       reportedMessageId,
       reportedContentType,
       reportedContentText,

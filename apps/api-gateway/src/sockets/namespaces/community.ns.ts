@@ -501,17 +501,41 @@ export function registerCommunityNamespace(
       try {
         const { communityIds } =
           await communityClient.getUserActiveCommunityIds({ userId });
-        if (communityIds.length > 0) {
-          await Promise.all(
-            communityIds.map((id) => socket.join(`community-typing:${id}`))
-          );
-          logger.debug(
-            `/community auto-joined ${communityIds.length} typing rooms userId=${userId}`
-          );
+        if (communityIds.length === 0) return;
+
+        // allSettled (not all): one bad room id must not stop the rest from
+        // joining, and we need the per-room outcome to log which ids failed.
+        const results = await Promise.allSettled(
+          communityIds.map((id) => socket.join(`community-typing:${id}`))
+        );
+        const failedCommunityIds = communityIds.filter(
+          (_id, i) => results[i]!.status === "rejected"
+        );
+        const joinedCount = communityIds.length - failedCommunityIds.length;
+
+        logger.info(
+          `/community auto-join on connect socketId=${socket.id} userId=${userId} joinedRoomCount=${joinedCount}` +
+            (failedCommunityIds.length > 0
+              ? ` failedRoomIds=${JSON.stringify(failedCommunityIds)}`
+              : "")
+        );
+        if (failedCommunityIds.length > 0) {
+          for (let i = 0; i < communityIds.length; i++) {
+            const result = results[i]!;
+            if (result.status === "rejected") {
+              logger.warn(
+                `/community auto-join typing room failed socketId=${socket.id} userId=${userId} communityId=${communityIds[i]}: ${String(result.reason)}`
+              );
+            }
+          }
         }
       } catch (err) {
+        // gRPC lookup itself failed — fail-open: the socket misses this
+        // connection's auto-join entirely, but the client can still fall back
+        // to an explicit community:join and the NEXT reconnect retries the
+        // lookup from scratch.
         logger.warn(
-          `/community auto-join typing rooms failed (fail-open) userId=${userId}: ${String(err)}`
+          `/community auto-join typing rooms failed (fail-open) socketId=${socket.id} userId=${userId}: ${String(err)}`
         );
       }
     })();
@@ -524,13 +548,14 @@ export function registerCommunityNamespace(
     // Events:
     //   client→server: typing:start | community:typing:start (new canonical alias)
     //   client→server: typing:stop  | community:typing:stop  (new canonical alias)
-    //   server→client: typing:start (broadcast to both rooms, sender excluded)
-    //   server→client: typing:stop  (broadcast to both rooms, sender excluded)
+    //   server→client: typing:start (direct per-recipient delivery, sender excluded)
+    //   server→client: typing:stop  (direct per-recipient delivery, sender excluded)
     //
-    // Broadcast targets both community:<id> (open-chat room) AND
-    // community-typing:<id> (always-on membership room) so members see
-    // sidebar indicators regardless of which community they currently have open.
-    // Socket.IO de-duplicates recipients, so no double delivery.
+    // ROOM-INDEPENDENT BY DESIGN (unlike recording/livestream below, which are
+    // unchanged and still room-based): typing no longer relies on
+    // community:<id> or community-typing:<id> room membership at all — a
+    // member receives typing events whether or not their socket has ever
+    // joined either room. See getActiveCommunityMemberIds/emitDirectToUsers.
     const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
     const clearTyping = (communityId: string): void => {
       const t = typingTimers.get(communityId);
@@ -540,12 +565,67 @@ export function registerCommunityNamespace(
       }
     };
 
-    // Authorization gate for presence events: reuses room membership already
-    // established at connect (ban-gated getUserActiveCommunityIds auto-join)
-    // or via community:join (ban-gated gRPC check). Without this, socket.to(room)
-    // would happily broadcast to a communityId the sender was never authorized
-    // to join, letting any authenticated user inject a fake presence indicator
-    // into any community.
+    // ── Room-independent recipient resolution (typing only) ────────────────
+    // Reuses communityClient.getCommunityActiveMemberIds, which is itself a
+    // thin gRPC wrapper around community-service's existing
+    // communityRepository.findActiveMemberIds — the SAME repository method
+    // already used to build notification rosters (community deletion,
+    // livestream lifecycle). One query, select userId only — no N+1.
+    //
+    // The returned list does double duty: (1) membership validation for the
+    // sender — a BANNED/LEFT/PENDING user never appears in an ACTIVE-only
+    // list, so `memberIds.includes(userId)` is equivalent to the ACTIVE-status
+    // check `checkCommunityMembership` performs elsewhere, without a second
+    // gRPC round trip — and (2) the recipient roster. The CLOSED/SUSPENDED
+    // community gate is unrelated to membership and stays a separate, cheap
+    // Set lookup (closedCommunityIds), consistent with how it already gates
+    // community:join and the recording indicator below.
+    const getActiveCommunityMemberIds = async (
+      communityId: string
+    ): Promise<string[]> => {
+      try {
+        const { userIds } = await communityClient.getCommunityActiveMemberIds({
+          communityId,
+        });
+        return userIds;
+      } catch (err) {
+        logger.warn(
+          `/community typing: failed to resolve active members communityId=${communityId}: ${String(err)}`
+        );
+        return [];
+      }
+    };
+
+    // Direct, per-recipient delivery: resolves every recipient's already-
+    // connected sockets via their `user:<id>` room — the project's existing
+    // per-user socket registry (every socket auto-joins it at connect for
+    // unrelated reasons: DM/notification relay, community:added, etc.) — NOT a
+    // community-scoped room. `community.in(rooms)` + per-socket `.emit()`
+    // mirrors the same fetchSockets()-then-emit pattern already used above for
+    // personalized community:message:new delivery — no new tracking
+    // introduced. A user with multiple open devices/tabs has multiple sockets
+    // in that same room and all of them receive the event in this one pass;
+    // an offline recipient simply isn't in the fetched set (skipped for free).
+    const emitDirectToUsers = async (
+      userIds: string[],
+      event: string,
+      payload: unknown
+    ): Promise<number> => {
+      if (userIds.length === 0) return 0;
+      const sockets = await community
+        .in(userIds.map((id) => `user:${id}`))
+        .fetchSockets();
+      for (const s of sockets) s.emit(event, payload);
+      return sockets.length;
+    };
+
+    // Authorization gate for the recording indicator (typing no longer uses
+    // this — see getActiveCommunityMemberIds above): reuses room membership
+    // already established at connect (ban-gated getUserActiveCommunityIds
+    // auto-join) or via community:join (ban-gated gRPC check). Without this,
+    // socket.to(room) would happily broadcast to a communityId the sender was
+    // never authorized to join, letting any authenticated user inject a fake
+    // presence indicator into any community.
     //
     // Fast path: the rooms are already joined (steady state, or an explicit
     // community:join happened) — pure sync lookup, zero overhead per keystroke.
@@ -582,29 +662,39 @@ export function registerCommunityNamespace(
     });
 
     // Shared handler for both the new canonical name and the legacy alias.
-    // Uses socket.to() (NOT community.to()) so the sender's own socket is
-    // excluded from the broadcast — FE never sees its own typing indicator.
+    // Room-independent: validates + resolves recipients from the active
+    // member list (see getActiveCommunityMemberIds) and delivers directly to
+    // each recipient's socket(s) (see emitDirectToUsers) — the sender is
+    // excluded by never including their own userId in the recipient set.
     const handleTypingStart = (payload: unknown): void => {
       const r = CommunityTypingSchema.safeParse(payload);
       if (!r.success) return;
       const { communityId } = r.data;
       void (async () => {
-        if (!(await isAuthorizedForCommunity(communityId))) return;
+        if (closedCommunityIds.has(communityId)) return;
+        const memberIds = await getActiveCommunityMemberIds(communityId);
+        if (!memberIds.includes(userId)) return; // sender not an active member
         clearTyping(communityId);
-        // socket.to() excludes the sender; chain both rooms — Socket.IO de-dupes.
-        socket
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("typing:start", communityTypingPayload(communityId));
+        const recipientIds = memberIds.filter((id) => id !== userId);
+        await emitDirectToUsers(
+          recipientIds,
+          "typing:start",
+          communityTypingPayload(communityId)
+        );
         typingTimers.set(
           communityId,
           setTimeout(() => {
             typingTimers.delete(communityId);
-            // TTL expiry: use community.to() — timer fires outside socket context.
-            community
-              .to(`community:${communityId}`)
-              .to(`community-typing:${communityId}`)
-              .emit("typing:stop", communityTypingPayload(communityId));
+            // TTL expiry: re-resolve membership at fire time (fires outside
+            // the request context, and membership may have changed since).
+            void (async () => {
+              const ids = await getActiveCommunityMemberIds(communityId);
+              await emitDirectToUsers(
+                ids.filter((id) => id !== userId),
+                "typing:stop",
+                communityTypingPayload(communityId)
+              );
+            })();
           }, 6000)
         );
       })();
@@ -615,12 +705,16 @@ export function registerCommunityNamespace(
       if (!r.success) return;
       const { communityId } = r.data;
       void (async () => {
-        if (!(await isAuthorizedForCommunity(communityId))) return;
+        if (closedCommunityIds.has(communityId)) return;
+        const memberIds = await getActiveCommunityMemberIds(communityId);
+        if (!memberIds.includes(userId)) return; // sender not an active member
         clearTyping(communityId);
-        socket
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("typing:stop", communityTypingPayload(communityId));
+        const recipientIds = memberIds.filter((id) => id !== userId);
+        await emitDirectToUsers(
+          recipientIds,
+          "typing:stop",
+          communityTypingPayload(communityId)
+        );
       })();
     };
 
@@ -796,7 +890,12 @@ export function registerCommunityNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/community message:send gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            // Preserve the specific failure reason (file too large, too many
+            // images, unsupported type, community not found, muted/banned,
+            // etc.) when chat-service mapped it from an AppError; anything
+            // unrecognized falls back to the generic SERVICE_ERROR message.
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -1439,15 +1538,20 @@ export function registerCommunityNamespace(
       // Clear session expiry timers.
       clearSessionTimers();
 
-      // Flush all pending typing-expiry timers and broadcast stop so members are
-      // never stuck with a "typing…" indicator after the socket closes.
-      // Use community.to() (not socket.to()) — the socket has already left rooms.
+      // Flush all pending typing-expiry timers and deliver stop directly to
+      // each active member (room-independent — see handleTypingStart/Stop
+      // above) so members are never stuck with a "typing…" indicator after
+      // the socket closes.
       for (const [communityId, timer] of typingTimers) {
         clearTimeout(timer);
-        community
-          .to(`community:${communityId}`)
-          .to(`community-typing:${communityId}`)
-          .emit("typing:stop", communityTypingPayload(communityId));
+        void (async () => {
+          const ids = await getActiveCommunityMemberIds(communityId);
+          await emitDirectToUsers(
+            ids.filter((id) => id !== userId),
+            "typing:stop",
+            communityTypingPayload(communityId)
+          );
+        })();
       }
       typingTimers.clear();
 

@@ -348,32 +348,52 @@ const reportStatusEnum = z.enum([
   "WITHDRAWN",
 ]);
 
-export const createReportSchema = z.object({
-  targetUserId: z.string().trim().uuid("User ID is invalid").optional(),
-  reason: z
-    .string()
-    .trim()
-    .min(3, "Reason must be at least 3 characters")
-    .max(1000, "Reason must be at most 1000 characters"),
-  // --- Optional reported-content snapshot (client-captured at report time) ---
-  reportedMessageId: z.string().trim().min(1).max(100).optional(),
-  reportedContentType: z.string().trim().min(1).max(40).optional(),
-  reportedContentText: z.string().trim().max(4000).optional(),
-  /** ISO-8601 string → Date; when the reported content was posted. */
-  reportedContentPostedAt: z.coerce.date().optional(),
-  /** RAW object keys only — server resolves to presigned URLs on read. */
-  reportedContentMedia: z
-    .array(
-      z.object({
-        objectKey: z.string().trim().min(1).max(512),
-        contentType: z.string().trim().max(100).nullish(),
-        fileName: z.string().trim().max(255).nullish(),
-        size: z.number().int().nonnegative().nullish(),
-      })
-    )
-    .max(10, "At most 10 attachments may be reported")
-    .optional(),
-});
+export const createReportSchema = z
+  .object({
+    targetUserId: z.string().trim().uuid("User ID is invalid").optional(),
+    reason: z
+      .string()
+      .trim()
+      .min(3, "Reason must be at least 3 characters")
+      .max(1000, "Reason must be at most 1000 characters"),
+    /**
+     * Mandatory custom description when `reason` is the "OTHER" category;
+     * ignored (and cleared server-side) for every predefined reason.
+     */
+    otherReason: z
+      .string()
+      .trim()
+      .min(1, "Description is required when reason is OTHER")
+      .max(1000, "Description must be at most 1000 characters")
+      .optional(),
+    // --- Optional reported-content snapshot (client-captured at report time) ---
+    reportedMessageId: z.string().trim().min(1).max(100).optional(),
+    reportedContentType: z.string().trim().min(1).max(40).optional(),
+    reportedContentText: z.string().trim().max(4000).optional(),
+    /** ISO-8601 string → Date; when the reported content was posted. */
+    reportedContentPostedAt: z.coerce.date().optional(),
+    /** RAW object keys only — server resolves to presigned URLs on read. */
+    reportedContentMedia: z
+      .array(
+        z.object({
+          objectKey: z.string().trim().min(1).max(512),
+          contentType: z.string().trim().max(100).nullish(),
+          fileName: z.string().trim().max(255).nullish(),
+          size: z.number().int().nonnegative().nullish(),
+        })
+      )
+      .max(10, "At most 10 attachments may be reported")
+      .optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.reason.toUpperCase() === "OTHER" && !data.otherReason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Description is required when reason is OTHER",
+        path: ["otherReason"],
+      });
+    }
+  });
 export type CreateReportInput = z.infer<typeof createReportSchema>;
 
 export const reportIdParamsSchema = z.object({

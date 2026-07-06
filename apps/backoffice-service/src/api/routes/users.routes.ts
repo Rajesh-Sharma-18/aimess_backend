@@ -29,7 +29,6 @@ import {
   listUserCommunitiesQuerySchema,
   listUsersQuerySchema,
   suspendUserSchema,
-  unbanUserSchema,
   userCommunityMembersParamSchema,
   userIdParamSchema,
   userReportsQuerySchema,
@@ -129,11 +128,12 @@ usersRoutes.post(
 );
 // `/activate` is an alias of `/unban` (same reinstate logic) for callers that
 // expect an "activate" verb — kept as one registration so both paths share
-// the exact same validator + controller, no duplicated logic.
+// the exact same controller, no duplicated logic. No body validation: the
+// admin can unban with no request body at all (an optional `note` is read
+// straight off `req.body` in the controller if present).
 usersRoutes.post(
   ["/users/:userId/unban", "/users/:userId/activate"],
   requirePermission(PERMISSIONS.USERS_MODERATE),
   validateParams(userIdParamSchema),
-  validateBody(unbanUserSchema),
   unbanUser
 );

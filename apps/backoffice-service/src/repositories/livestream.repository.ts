@@ -150,12 +150,13 @@ function toListItem(r: LivestreamDetail): LivestreamListItem {
       id: r.community.id,
       name: r.community.name,
       slug: r.community.slug,
+      avatar: r.community.avatar,
     },
     creator: {
       id: r.creator.id,
       username: r.creator.username,
       displayName: r.creator.displayName,
-      avatarUrl: r.creator.avatarUrl,
+      avatar: r.creator.avatar,
     },
     category: r.category,
     createdAt: r.createdAt,
@@ -585,6 +586,8 @@ function compareBy(
 // old PrismaLivestreamRepository that read the chronically-empty LivestreamIndex.
 // ---------------------------------------------------------------------------
 
+import { logger } from "@aimess/logger";
+
 import { prisma } from "../config/prisma.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
@@ -594,6 +597,10 @@ import {
   type AdminCommunityBrief,
 } from "../grpc/community.client.js";
 import { userClient, type AdminProfileRecord } from "../grpc/user.client.js";
+import {
+  resolveAvatarOrNull,
+  resolveCommunityImageOrNull,
+} from "../lib/avatar-media.js";
 import type {
   LivestreamReportType,
   LivestreamViewerType,
@@ -626,16 +633,21 @@ function toStreamStatus(s: LivestreamStatus): string {
 
 /**
  * Shared viewerCount resolution for the admin list/detail responses.
- * LIVE reports the live count; ENDED reports the lifetime total (stream-service's
- * `totalViews` counter — there is no separate `totalViewerCount` column). All
- * other statuses (SCHEDULED/CANCELLED) keep the raw stored `viewerCount`.
+ * LIVE reports the live count (currently watching, from Redis — intentionally
+ * NOT the same number as the "who ever watched" viewer list). ENDED reports
+ * `uniqueViewerCount` — the distinct-user count from `LivestreamViewerSession`,
+ * the SAME source `/livestreams/:id/users` (AdminListViewerSessions) dedupes
+ * to, so the two endpoints always agree for an ended stream. Deliberately NOT
+ * `totalViews`: that column increments on every `checkAccess` call (each join
+ * attempt/reconnect), so it over-counts and is not deduped by user. All other
+ * statuses (SCHEDULED/CANCELLED) keep the raw stored `viewerCount`.
  */
 function resolveViewerCount(
   status: LivestreamStatus,
-  s: Pick<AdminStreamRow, "viewerCount" | "totalViews">
+  s: Pick<AdminStreamRow, "viewerCount" | "uniqueViewerCount">
 ): number {
   if (status === "LIVE") return s.viewerCount;
-  if (status === "ENDED") return s.totalViews;
+  if (status === "ENDED") return s.uniqueViewerCount;
   return s.viewerCount;
 }
 
@@ -728,35 +740,35 @@ async function resolveThumb(key: string | null): Promise<string | null> {
 
 // --- search/filter resolution (push everything down to a paginated query) --
 
-/** Community-name search → matching community ids (best-effort, degrades to []). */
+/**
+ * Community-name search → matching community ids (best-effort, degrades to
+ * []). Uses the purpose-built `adminSearchCommunityIds` (name-only, capped at
+ * 500 — same helper `report.repository.ts` uses), NOT the paginated
+ * `adminListCommunities` list endpoint (that one is for the community list
+ * screen, not id-set resolution, and was capped at an arbitrary 50).
+ */
 async function resolveCommunityIdsByName(search: string): Promise<string[]> {
   try {
-    const r = await communityClient.adminListCommunities({
-      search,
-      type: "",
-      category: "",
-      status: "",
-      createdFrom: "",
-      createdTo: "",
-      sortField: "createdAt",
-      sortDir: "desc",
-      page: 1,
-      limit: 50,
-    });
-    return r.communities.map((c) => c.communityId);
+    return await communityClient.adminSearchCommunityIds(search);
   } catch {
     return [];
   }
 }
 
-/** Creator-name search → matching creator ids (admin_db UserIndex). */
+/**
+ * Creator search → matching creator ids by username, first name, last name,
+ * OR full name (user-service `adminSearchProfileIds` — same helper
+ * `report.repository.ts` uses). Replaces the previous admin_db `UserIndex`
+ * lookup, which only has a `username` column (no first/last name) and could
+ * never match a creator's full name — root cause of "creator name search
+ * doesn't work".
+ */
 async function resolveCreatorIdsByName(search: string): Promise<string[]> {
-  const rows = await prisma.userIndex.findMany({
-    where: { username: { contains: search, mode: "insensitive" } },
-    select: { userId: true },
-    take: 50,
-  });
-  return rows.map((r) => r.userId);
+  try {
+    return await userClient.adminSearchProfileIds(search);
+  } catch {
+    return [];
+  }
 }
 
 /** Category filter → community ids in that category (matched by slug/id/name). */
@@ -777,6 +789,35 @@ async function resolveCommunityIdsByCategory(
       limit: 200,
     });
     return r.communities.map((c) => c.communityId);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Category-NAME search → matching community ids. Resolves the search term to
+ * matching categories (bounded — category names are few and near-unique),
+ * then fans out to each matched category's community ids via the same
+ * restrict-by-category path. Previously category name was not searchable at
+ * all — `search` only ever matched title/community-name/creator-name.
+ */
+async function resolveCommunityIdsByCategoryName(
+  search: string
+): Promise<string[]> {
+  try {
+    const { categories } = await communityClient.adminListCategories({
+      search,
+      status: "",
+      page: 1,
+      limit: 20,
+      sortField: "",
+      sortDir: "",
+    });
+    if (categories.length === 0) return [];
+    const idSets = await Promise.all(
+      categories.map((c) => resolveCommunityIdsByCategory(c.id))
+    );
+    return unique(idSets.flat());
   } catch {
     return [];
   }
@@ -911,6 +952,10 @@ async function toListItemEnriched(
   reportCount: number
 ): Promise<LivestreamListItem> {
   const status = toAdminStatus(s.status);
+  const [communityAvatar, creatorAvatar] = await Promise.all([
+    resolveCommunityImageOrNull(c?.avatarUrl),
+    resolveAvatarOrNull(u?.avatarUrl),
+  ]);
   return {
     livestreamId: s.id,
     title: s.title,
@@ -918,13 +963,13 @@ async function toListItemEnriched(
       id: s.communityId,
       name: c?.name ?? "",
       slug: slugify(c?.name ?? ""),
-      avatarUrl: c?.avatarUrl || null,
+      avatar: communityAvatar,
     },
     creator: {
       id: s.creatorId,
       username: u?.username ?? "",
       displayName: displayNameOf(u),
-      avatarUrl: u?.avatarUrl || null,
+      avatar: creatorAvatar,
     },
     category: {
       id: c?.categoryId ?? "",
@@ -946,21 +991,54 @@ async function toListItemEnriched(
   };
 }
 
+/** Sort fields resolved cross-service (no backing column in stream-service). */
+const EXTERNAL_SORT_FIELDS = new Set([
+  "communityName",
+  "creatorName",
+  "category",
+  "reportCount",
+]);
+type ExternalSortField =
+  | "communityName"
+  | "creatorName"
+  | "category"
+  | "reportCount";
+
+/**
+ * Bounded candidate-set size for cross-service sorting (communityName/
+ * creatorName/category/reportCount). These fields have no backing column on
+ * the stream-service Livestream document, so a single-query DB-level ORDER BY
+ * across services isn't possible without a shared read model. Instead we pull
+ * every row matching the current filters (capped here), resolve the external
+ * sort key for the WHOLE set via batched (not per-row) lookups, sort BEFORE
+ * paginating, then slice to the requested page — never sort a page that was
+ * already cut. `total` for pagination still comes from stream-service's own
+ * count, so it stays correct even past this cap; only the ORDER can degrade
+ * (falls back to createdAt) beyond it, which is logged.
+ */
+const EXTERNAL_SORT_CANDIDATE_CAP = 2000;
+
 export class GrpcLivestreamRepository implements LivestreamRepository {
   async list(
     query: ListLivestreamsQuery
   ): Promise<Paginated<LivestreamListItem>> {
     const [field, dir] = query.sort.split(":") as [string, "asc" | "desc"];
+    const sortDir: "asc" | "desc" = dir === "asc" ? "asc" : "desc";
 
-    // Name search → OR-ed community/creator id sets (title match is added in
+    // Name search → OR-ed community/creator id sets, plus category-name
+    // matches resolved to their communities (title match is added in
     // stream-service). Resolution failures degrade to a title-only search.
     let searchCommunityIds: string[] | undefined;
     let searchCreatorIds: string[] | undefined;
     if (query.search) {
-      [searchCommunityIds, searchCreatorIds] = await Promise.all([
-        resolveCommunityIdsByName(query.search),
-        resolveCreatorIdsByName(query.search),
-      ]);
+      const [communityIds, creatorIds, categoryCommunityIds] =
+        await Promise.all([
+          resolveCommunityIdsByName(query.search),
+          resolveCreatorIdsByName(query.search),
+          resolveCommunityIdsByCategoryName(query.search),
+        ]);
+      searchCommunityIds = unique([...communityIds, ...categoryCommunityIds]);
+      searchCreatorIds = creatorIds;
     }
 
     // Category filter → AND-restrict to that category's communities.
@@ -983,14 +1061,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       if (restrictStreamIds.length === 0) return emptyListPage(query);
     }
 
-    const sortField =
-      field === "viewerCount"
-        ? "viewerCount"
-        : field === "duration"
-          ? "duration"
-          : "createdAt";
-
-    const { streams, total } = await streamClient.adminListStreams({
+    const commonArgs = {
       search: query.search,
       communityIds: searchCommunityIds,
       creatorIds: searchCreatorIds,
@@ -1005,13 +1076,116 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       dateTo: query.dateTo
         ? Date.parse(`${query.dateTo}T23:59:59.999Z`)
         : undefined,
+    };
+
+    if (EXTERNAL_SORT_FIELDS.has(field)) {
+      return this.listWithExternalSort(
+        query,
+        field as ExternalSortField,
+        sortDir,
+        commonArgs
+      );
+    }
+
+    // Native stream-service columns — sorted at the DB level.
+    const sortField =
+      field === "viewerCount"
+        ? "viewerCount"
+        : field === "duration"
+          ? "duration"
+          : field === "title"
+            ? "title"
+            : field === "status"
+              ? "status"
+              : "createdAt";
+
+    const { streams, total } = await streamClient.adminListStreams({
+      ...commonArgs,
       sortField,
-      sortDir: dir === "asc" ? "asc" : "desc",
+      sortDir,
       page: query.page,
       limit: query.limit,
     });
 
     const data = await this.enrichListItems(streams);
+    return { data, pagination: offsetMeta(query.page, query.limit, total) };
+  }
+
+  /**
+   * Sort by a cross-service field (community name, creator name, category
+   * name, or report count) — see {@link EXTERNAL_SORT_CANDIDATE_CAP} for why
+   * this can't be a single DB-level ORDER BY. Sorts the full (bounded)
+   * candidate set BEFORE slicing to the page, so pagination never operates on
+   * a mis-sorted page.
+   */
+  private async listWithExternalSort(
+    query: ListLivestreamsQuery,
+    field: ExternalSortField,
+    dir: "asc" | "desc",
+    commonArgs: Omit<
+      Parameters<typeof streamClient.adminListStreams>[0],
+      "sortField" | "sortDir" | "page" | "limit"
+    >
+  ): Promise<Paginated<LivestreamListItem>> {
+    const { streams: candidates, total } = await streamClient.adminListStreams({
+      ...commonArgs,
+      sortField: "createdAt",
+      sortDir: "desc",
+      page: 1,
+      limit: EXTERNAL_SORT_CANDIDATE_CAP,
+    });
+
+    if (total > EXTERNAL_SORT_CANDIDATE_CAP) {
+      logger.warn(
+        `Livestream external sort (${field}) candidate set truncated: total=${total} cap=${EXTERNAL_SORT_CANDIDATE_CAP}; pages beyond the cap fall back to createdAt order`
+      );
+    }
+
+    const communityIds = unique(candidates.map((s) => s.communityId));
+    const creatorIds = unique(candidates.map((s) => s.creatorId));
+    const streamIds = candidates.map((s) => s.id);
+
+    // Batched (not per-row) lookups — only the ONE map needed for this field.
+    const [communityMap, creators, reportCounts] = await Promise.all([
+      field === "communityName" || field === "category"
+        ? communityClient.adminGetCommunitiesByIds(communityIds)
+        : Promise.resolve(new Map<string, AdminCommunityBrief>()),
+      field === "creatorName"
+        ? userClient.adminGetProfilesByIds(creatorIds)
+        : Promise.resolve([]),
+      field === "reportCount"
+        ? reportCountsByStream(streamIds)
+        : Promise.resolve(new Map<string, number>()),
+    ]);
+    const creatorMap = new Map(creators.map((c) => [c.userId, c]));
+
+    const sortKeyOf = (s: AdminStreamRow): string | number => {
+      if (field === "communityName")
+        return communityMap.get(s.communityId)?.name ?? "";
+      if (field === "category")
+        return communityMap.get(s.communityId)?.categoryName ?? "";
+      if (field === "creatorName")
+        return displayNameOf(creatorMap.get(s.creatorId));
+      return reportCounts.get(s.id) ?? 0;
+    };
+
+    const sorted = [...candidates].sort((a, b) => {
+      const ka = sortKeyOf(a);
+      const kb = sortKeyOf(b);
+      const cmp =
+        typeof ka === "number" && typeof kb === "number"
+          ? ka - kb
+          : String(ka).localeCompare(String(kb), undefined, {
+              sensitivity: "base",
+            });
+      if (cmp !== 0) return dir === "asc" ? cmp : -cmp;
+      // Stable tiebreaker so paging is deterministic across requests.
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+
+    const start = (query.page - 1) * query.limit;
+    const pageStreams = sorted.slice(start, start + query.limit);
+    const data = await this.enrichListItems(pageStreams);
     return { data, pagination: offsetMeta(query.page, query.limit, total) };
   }
 
@@ -1050,7 +1224,11 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     ]);
     const c = communityMap.get(s.communityId);
     const u = creators[0];
-    const thumbnailUrl = await resolveThumb(s.thumbnail || null);
+    const [thumbnailUrl, communityAvatar, creatorAvatar] = await Promise.all([
+      resolveThumb(s.thumbnail || null),
+      resolveCommunityImageOrNull(c?.avatarUrl),
+      resolveAvatarOrNull(u?.avatarUrl),
+    ]);
     const reports = await toReportItems(id, reportRows);
     const summary = buildReportsSummary(reports);
     const createdAtIso = new Date(s.createdAt).toISOString();
@@ -1065,7 +1243,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         id: s.communityId,
         name: c?.name ?? "",
         slug: slugify(c?.name ?? ""),
-        avatarUrl: c?.avatarUrl || null,
+        avatar: communityAvatar,
         memberCount: c?.memberCount ?? 0,
         creatorRole: "",
       },
@@ -1073,7 +1251,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         id: s.creatorId,
         username: u?.username ?? "",
         displayName: displayNameOf(u),
-        avatarUrl: u?.avatarUrl || null,
+        avatar: creatorAvatar,
         accountStatus: "ACTIVE",
         totalStreams: 0,
         priorStrikes: 0,
@@ -1203,21 +1381,23 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     const profileMap = new Map(profiles.map((p) => [p.userId, p]));
     const start = (query.page - 1) * query.limit;
 
-    const data: LivestreamUserItem[] = sessions.map((v, i) => {
-      const p = profileMap.get(v.userId);
-      return {
-        no: start + i + 1,
-        userId: v.userId,
-        username: p?.username ?? "",
-        handle: p?.username ? `@${p.username}` : null,
-        avatarUrl: p?.avatarUrl || null,
-        joinedAt: new Date(v.joinedAt).toISOString(),
-        // 0 from the wire means "still watching" (see AdminViewerSessionRow).
-        leftAt: v.leftAt > 0 ? new Date(v.leftAt).toISOString() : null,
-        watchDurationSeconds: v.watchDurationSeconds,
-        type: toViewerType(roleMap.get(v.userId)),
-      };
-    });
+    const data: LivestreamUserItem[] = await Promise.all(
+      sessions.map(async (v, i) => {
+        const p = profileMap.get(v.userId);
+        return {
+          no: start + i + 1,
+          userId: v.userId,
+          username: p?.username ?? "",
+          handle: p?.username ? `@${p.username}` : null,
+          avatar: await resolveAvatarOrNull(p?.avatarUrl),
+          joinedAt: new Date(v.joinedAt).toISOString(),
+          // 0 from the wire means "still watching" (see AdminViewerSessionRow).
+          leftAt: v.leftAt > 0 ? new Date(v.leftAt).toISOString() : null,
+          watchDurationSeconds: v.watchDurationSeconds,
+          type: toViewerType(roleMap.get(v.userId)),
+        };
+      })
+    );
 
     return { data, pagination: offsetMeta(query.page, query.limit, total) };
   }

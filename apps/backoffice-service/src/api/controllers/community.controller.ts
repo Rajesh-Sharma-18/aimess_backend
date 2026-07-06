@@ -4,6 +4,8 @@ import type { RequestHandler } from "express";
 import { getRequestContext } from "../../lib/request-context.js";
 import { communityService } from "../../services/index.js";
 import type {
+  CommunityDetail,
+  CommunityDetailResponse,
   ListCommunitiesQuery,
   ListCommunityMembersQuery,
   ListMutedMembersQuery,
@@ -40,6 +42,25 @@ export const listCommunities: RequestHandler = (req, res, next) => {
   })();
 };
 
+/**
+ * Reshape the repository's internal {@link CommunityDetail} into the
+ * GET /communities/{communityId} wire response: the `community` sub-object
+ * is flattened onto the root (no `community` wrapper), `memberStats`/
+ * `livestreamStats` collapse from an object to a single number, and
+ * `moderationHistory`/`settingsSummary`/`partial` are dropped. No new
+ * queries — pure projection of data the repository already fetched.
+ */
+function toCommunityDetailResponse(
+  community: CommunityDetail
+): CommunityDetailResponse {
+  return {
+    ...community.community,
+    owner: community.owner,
+    memberStats: community.memberStats.total,
+    livestreamStats: community.livestreamStats?.total ?? 0,
+  };
+}
+
 /** GET /v1/communities/:communityId — full detail. */
 export const getCommunityDetails: RequestHandler = (req, res, next) => {
   void (async () => {
@@ -50,7 +71,7 @@ export const getCommunityDetails: RequestHandler = (req, res, next) => {
       if (!community) throw new NotFoundError("COMMUNITY_NOT_FOUND");
       res.status(HTTP_STATUS.OK).json({
         success: true,
-        data: community,
+        data: toCommunityDetailResponse(community),
       });
     } catch (error) {
       next(error);

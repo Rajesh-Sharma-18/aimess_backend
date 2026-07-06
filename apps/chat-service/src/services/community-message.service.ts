@@ -14,6 +14,7 @@ import {
 } from "../constants/media-limits.js";
 import {
   buildCommunitySystemFallbackText,
+  isCommunityContentType,
   sanitizeCommunitySystemMetadata,
   type CommunitySystemMessageType,
 } from "@aimess/constants";
@@ -261,10 +262,19 @@ export class CommunityMessageService {
     parentMessageId?: string | null;
     clientMessageId?: string | null;
     attachments?: Array<Record<string, unknown>>;
+    /** Set by `forwardMessage` so the row keeps forward provenance, matching
+     * Private/Group's `isForwarded`/`forwardData` — never set on a regular send. */
+    forwardData?: Record<string, unknown> | null;
   }): Promise<GeneralRoomMessage> {
-    // Defensive caps (the gRPC/socket send path doesn't run the Zod validators).
+    // Defensive caps (the gRPC/socket send path doesn't run the Zod validators,
+    // including the `.refine(isCommunityContentType)` the REST schema carries
+    // — mirror it here so an unrecognized type is rejected the same way on
+    // every send path, not just REST).
     if ((params.message?.length ?? 0) > CHAT_TEXT_MAX_CHARS) {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
+    }
+    if (!isCommunityContentType(params.messageType || "")) {
+      throw new BadRequestError("CHAT_UNSUPPORTED_CONTENT_TYPE");
     }
     assertAttachmentsValid(params.messageType, params.attachments);
 
@@ -370,6 +380,9 @@ export class CommunityMessageService {
         sequenceNumber,
         ...(part.attachments.length ? { attachments: part.attachments } : {}),
         ...(i === 0 && quoteData ? { quoteData } : {}),
+        ...(params.forwardData
+          ? { isForwarded: true, forwardData: params.forwardData }
+          : {}),
       };
 
       try {
@@ -1783,18 +1796,27 @@ export class CommunityMessageService {
     // community-service (source of truth), not the possibly-stale
     // RoomMember.role `member` carries. roomId === communityId for community
     // general rooms.
+    let deletedType: "SELF_DELETE" | "ADMIN_DELETE";
     if (message.sentBy !== userId) {
       const liveRole = await getCommunityLiveRole(message.roomId, userId);
       if (!["admin", "moderator"].includes(liveRole)) {
         throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
       }
       // Admin/mod deleting someone else's message is moderation — not gated by mute.
+      deletedType = "ADMIN_DELETE";
     } else {
       // Muted member cannot delete their own messages.
       assertCommunityMemberNotMuted(member);
+      deletedType = "SELF_DELETE";
     }
 
-    return this.messageRepo.deleteForAll(messageId);
+    // Audit trail (deletedForAllType/At/By) mirrors GroupMessage's tombstone —
+    // previously this was a bare boolean with no record of who deleted it or
+    // when, unlike Group's fully-audited equivalent.
+    return this.messageRepo.deleteForAll(messageId, {
+      deletedType,
+      deletedBy: userId,
+    });
   }
 
   /**
@@ -2237,11 +2259,27 @@ export class CommunityMessageService {
     targetRoomId: string;
     senderId: string;
     clientMessageId: string;
-  }): Promise<{ messageId: string; roomId: string; sentAt: number }> {
+  }): Promise<
+    GeneralRoomMessage & { messageId: string; roomId: string; sentAt: number }
+  > {
     const source = await this.messageRepo.findById(params.sourceMessageId);
     if (!source) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     if (source.deletedForAll)
       throw new BadRequestError("CHAT_MESSAGE_ALREADY_DELETED");
+
+    // The caller's asserted source room must match the message's actual room,
+    // and the caller must be an ACTIVE member of THAT room — without this, a
+    // caller could exfiltrate any community message by claiming an arbitrary
+    // sourceCommunityId. Mirrors private/group's `assertCallerInMessageRoom`,
+    // closing the cross-community forward read-IDOR.
+    if (source.roomId !== params.sourceCommunityId) {
+      throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+    }
+    await assertCommunityMember(
+      this.memberRepo,
+      source.roomId,
+      params.senderId
+    );
 
     // Validate sender is ACTIVE member of the target room.
     const targetMember = await this.memberRepo.findByRoomAndUser(
@@ -2272,12 +2310,19 @@ export class CommunityMessageService {
       attachments: Array.isArray(source.attachments)
         ? (source.attachments as Array<Record<string, unknown>>)
         : undefined,
+      forwardData: {
+        originalMessageId: source.id,
+        originalRoomId: source.roomId,
+        originalSenderId: source.sentBy ?? "",
+        originalCreatedAt: source.createdAt.toISOString(),
+        originalMessageType: source.messageType,
+      },
     });
 
     const sentAt =
       saved.createdAt instanceof Date ? saved.createdAt.getTime() : Date.now();
 
-    return { messageId: saved.id, roomId: saved.roomId, sentAt };
+    return { ...saved, messageId: saved.id, roomId: saved.roomId, sentAt };
   }
 
   async unpinMessage(params: {

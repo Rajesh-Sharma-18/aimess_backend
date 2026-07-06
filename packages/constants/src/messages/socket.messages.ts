@@ -55,6 +55,18 @@ export const SOCKET_MESSAGES = {
     vi: "Đã chuyển tiếp tin nhắn",
     en: "Message forwarded successfully",
   },
+  SOCKET_MESSAGE_DELETED: {
+    vi: "Đã xóa tin nhắn",
+    en: "Message deleted",
+  },
+  SOCKET_MESSAGE_PINNED: {
+    vi: "Đã ghim tin nhắn",
+    en: "Message pinned",
+  },
+  SOCKET_MESSAGE_UNPINNED: {
+    vi: "Đã bỏ ghim tin nhắn",
+    en: "Message unpinned",
+  },
   SOCKET_REACTIONS_FETCHED: {
     vi: "Lấy danh sách cảm xúc thành công",
     en: "Reactions fetched successfully",

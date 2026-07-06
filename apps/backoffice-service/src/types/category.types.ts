@@ -11,6 +11,8 @@ export type CategoryListItem = {
   order: number;
   createdAt: string;
   updatedAt: string;
+  /** Communities in this category with status=ACTIVE and deletedAt unset. */
+  communityCount: number;
 };
 
 /** Same shape as the list item — create/update return the full row. */
@@ -25,6 +27,11 @@ export type CreateCategoryInput = {
 export type UpdateCategoryInput = {
   name?: string;
   visible?: boolean;
+};
+
+/** Normalized input for PATCH /categories/:id/visibility (post-validation). */
+export type UpdateCategoryVisibilityInput = {
+  status: "VISIBLE" | "HIDDEN";
 };
 
 /** Normalized list query (post-validation/coercion). */

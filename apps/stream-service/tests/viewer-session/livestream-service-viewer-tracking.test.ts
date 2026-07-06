@@ -57,6 +57,8 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     recordLeave: jest.fn().mockResolvedValue(true),
     closeAllOpenForStream: jest.fn().mockResolvedValue(0),
     listByStream: jest.fn().mockResolvedValue({ rows: [], total: 0 }),
+    countDistinctUsers: jest.fn().mockResolvedValue(0),
+    countDistinctUsersByStreamIds: jest.fn().mockResolvedValue(new Map()),
     ...(overrides.viewerSessionRepo as object),
   };
   const eventPublisher = jest.fn();
@@ -308,6 +310,56 @@ describe("LivestreamService — admin viewerCount overlay (fixes the stale-count
 
     expect(items[0].viewerCount).toBe(42);
     expect(redis.scard).not.toHaveBeenCalled();
+  });
+
+  it("adminGetStream.uniqueViewerCount is the distinct-viewer count, NOT the raw totalViews join-attempt counter (the reported mismatch)", async () => {
+    // totalViews=5 (checkAccess ran 5 times — reconnects/retries), but only 2
+    // distinct users ever actually joined per LivestreamViewerSession.
+    const stream = makeStream({ status: "ENDED", totalViews: 5 });
+    const { service } = makeDeps({
+      streamRepo: { findById: jest.fn().mockResolvedValue(stream) },
+      viewerSessionRepo: {
+        countDistinctUsers: jest.fn().mockResolvedValue(2),
+      },
+    });
+
+    const row = await service.adminGetStream("stream-1");
+
+    expect(row?.totalViews).toBe(5);
+    expect(row?.uniqueViewerCount).toBe(2);
+  });
+
+  it("adminListStreams.uniqueViewerCount is batched per stream id (no N+1)", async () => {
+    const s1 = makeStream({ id: "stream-1", status: "ENDED" });
+    const s2 = makeStream({ id: "stream-2", status: "ENDED" });
+    const countDistinctUsersByStreamIds = jest.fn().mockResolvedValue(
+      new Map([
+        ["stream-1", 2],
+        ["stream-2", 5],
+      ])
+    );
+    const { service } = makeDeps({
+      streamRepo: {
+        adminList: jest.fn().mockResolvedValue([s1, s2]),
+        adminCount: jest.fn().mockResolvedValue(2),
+      },
+      viewerSessionRepo: { countDistinctUsersByStreamIds },
+    });
+
+    const { items } = await service.adminListStreams({
+      sortField: "createdAt",
+      sortDir: "desc",
+      page: 1,
+      limit: 20,
+    });
+
+    expect(countDistinctUsersByStreamIds).toHaveBeenCalledTimes(1);
+    expect(countDistinctUsersByStreamIds).toHaveBeenCalledWith([
+      "stream-1",
+      "stream-2",
+    ]);
+    expect(items.find((i) => i.id === "stream-1")?.uniqueViewerCount).toBe(2);
+    expect(items.find((i) => i.id === "stream-2")?.uniqueViewerCount).toBe(5);
   });
 });
 

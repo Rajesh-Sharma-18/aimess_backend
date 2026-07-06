@@ -25,11 +25,14 @@ datasource db {
 // Seeded idempotently via prisma/seed/categories.seed.ts.
 // -----------------------------------------------------------------------------
 model CommunityCategory {
-  id        String @id @default(auto()) @map("_id") @db.ObjectId
-  name      String @unique
-  slug      String @unique
-  order     Int    @default(0)
-  active    Boolean @default(true)
+  id          String  @id @default(auto()) @map("_id") @db.ObjectId
+  name        String  @unique
+  slug        String  @unique
+  // Optional admin-facing description; included in the admin list search
+  // (name OR description) alongside name. Never shown to end users.
+  description String?
+  order       Int     @default(0)
+  active      Boolean @default(true)
   // Permanent soft-delete, same idiom as `Community.deletedAt` below: set when
   // an admin deletes a category that is still referenced by communities
   // (queried via `deletedAt: { isSet: false }`, never physically removed).
@@ -181,11 +184,11 @@ model CommunityMember {
   @@unique([communityId, userId])
   @@index([userId, status])
   @@index([communityId, status])
-  // Backs the admin member list's username sort (orderBy snapshotUsername within a
+  // Backs the admin member list's handle sort (orderBy snapshotUsername within a
   // community); the exclusion + role/search filter is covered by [communityId, status].
   @@index([communityId, status, snapshotUsername])
   // Banned-members list: default sort is bannedAt within [communityId, status=BANNED];
-  // the displayName index backs the alphabetical displayName sort option.
+  // also backs the admin member list's username (display name) sort.
   @@index([communityId, status, bannedAt])
   @@index([communityId, status, snapshotDisplayName])
   @@map("community_members")
@@ -259,6 +262,10 @@ model CommunityReport {
   reporterId   String
   targetUserId String?
   reason       String
+  // Mandatory free-text description when `reason` is the custom "OTHER"
+  // category; null for every predefined reason. Stored separately so `reason`
+  // itself is never overwritten with the reporter's free text.
+  otherReason  String?
   status       CommunityReportStatus @default(OPEN)
   reviewedBy   String?
   reviewedAt   DateTime?

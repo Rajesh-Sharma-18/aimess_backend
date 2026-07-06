@@ -124,6 +124,25 @@ export function startUserGrpcServer(): grpc.Server {
       })();
     },
 
+    // Admin Panel (Reports search): match userIds by name/username.
+    adminSearchProfileIds: (
+      call: grpc.ServerUnaryCall<{ search: string }, unknown>,
+      callback: grpc.sendUnaryData<{ userIds: string[] }>
+    ) => {
+      void (async () => {
+        try {
+          const { search } = call.request;
+          const userIds = await userProfileRepository.adminSearchProfileIds(
+            search ?? ""
+          );
+          callback(null, { userIds });
+        } catch (err) {
+          logger.error(`gRPC adminSearchProfileIds error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // Admin Panel: single profile lookup by id.
     adminGetProfile: (
       call: grpc.ServerUnaryCall<{ userId: string }, unknown>,

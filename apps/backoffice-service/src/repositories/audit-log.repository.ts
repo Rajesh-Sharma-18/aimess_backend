@@ -8,6 +8,7 @@ import type {
   Paginated,
   PaginationMeta,
 } from "../types/audit-log.types.js";
+import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 
 export type AuditLogInput = {
   actorId: string;
@@ -38,12 +39,12 @@ type AuditLogWithActor = AuditLog & {
   } | null;
 };
 
-function toPerformer(row: AuditLogWithActor): AuditPerformer {
+async function toPerformer(row: AuditLogWithActor): Promise<AuditPerformer> {
   return {
     id: row.actorId,
     name: row.actor?.name ?? null,
     email: row.actor?.email ?? null,
-    avatarUrl: row.actor?.avatarUrl ?? null,
+    avatar: await resolveAvatarOrNull(row.actor?.avatarUrl ?? null),
   };
 }
 
@@ -66,10 +67,10 @@ function extractReason(row: AuditLog): string | null {
   return null;
 }
 
-function toListItem(row: AuditLogWithActor): AuditLogListItem {
+async function toListItem(row: AuditLogWithActor): Promise<AuditLogListItem> {
   return {
     id: row.id,
-    performer: toPerformer(row),
+    performer: await toPerformer(row),
     action: row.action,
     targetType: row.targetType,
     targetId: row.targetId,
@@ -77,10 +78,10 @@ function toListItem(row: AuditLogWithActor): AuditLogListItem {
   };
 }
 
-function toDetail(row: AuditLogWithActor): AuditLogDetail {
+async function toDetail(row: AuditLogWithActor): Promise<AuditLogDetail> {
   return {
     id: row.id,
-    performer: toPerformer(row),
+    performer: await toPerformer(row),
     action: row.action,
     targetType: row.targetType,
     targetId: row.targetId,
@@ -169,7 +170,7 @@ export const auditLogRepository = {
       hasPrev: query.page > 1,
     };
     return {
-      data: (rows as AuditLogWithActor[]).map(toListItem),
+      data: await Promise.all((rows as AuditLogWithActor[]).map(toListItem)),
       pagination,
     };
   },
@@ -180,6 +181,6 @@ export const auditLogRepository = {
       where: { id },
       include: { actor: ACTOR_SELECT },
     });
-    return row ? toDetail(row as AuditLogWithActor) : null;
+    return row ? await toDetail(row as AuditLogWithActor) : null;
   },
 };

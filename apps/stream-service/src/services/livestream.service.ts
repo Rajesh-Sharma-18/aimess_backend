@@ -129,6 +129,8 @@ export interface AdminStreamRow {
   livedAt: Date | null;
   endedAt: Date | null;
   createdAt: Date;
+  /** Distinct-user count from LivestreamViewerSession — matches AdminListViewerSessions' total. */
+  uniqueViewerCount: number;
 }
 
 /**
@@ -169,6 +171,8 @@ function toAdminRow(s: Livestream): AdminStreamRow {
     livedAt: s.livedAt,
     endedAt: s.endedAt,
     createdAt: s.createdAt,
+    // Populated by the caller (needs a DB round-trip); toAdminRow stays pure.
+    uniqueViewerCount: 0,
   };
 }
 
@@ -907,7 +911,12 @@ export class LivestreamService {
     restrictStreamIds?: string[];
     dateFrom?: Date;
     dateTo?: Date;
-    sortField: "createdAt" | "viewerCount" | "durationSeconds";
+    sortField:
+      | "createdAt"
+      | "viewerCount"
+      | "durationSeconds"
+      | "title"
+      | "status";
     sortDir: "asc" | "desc";
     page: number;
     limit: number;
@@ -935,7 +944,15 @@ export class LivestreamService {
       ),
       this.streamRepo.adminCount(filter),
     ]);
-    const items = await Promise.all(rows.map((r) => this.toAdminRowLive(r)));
+    const [items, uniqueCounts] = await Promise.all([
+      Promise.all(rows.map((r) => this.toAdminRowLive(r))),
+      this.viewerSessionRepo.countDistinctUsersByStreamIds(
+        rows.map((r) => r.id)
+      ),
+    ]);
+    for (const item of items) {
+      item.uniqueViewerCount = uniqueCounts.get(item.id) ?? 0;
+    }
     return { items, total };
   }
 
@@ -969,7 +986,10 @@ export class LivestreamService {
   async adminGetStream(streamId: string): Promise<AdminStreamRow | null> {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) return null;
-    return this.toAdminRowLive(stream);
+    const row = await this.toAdminRowLive(stream);
+    row.uniqueViewerCount =
+      await this.viewerSessionRepo.countDistinctUsers(streamId);
+    return row;
   }
 
   /**
