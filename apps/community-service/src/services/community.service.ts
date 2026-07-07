@@ -2313,6 +2313,14 @@ export const communityService = {
     const pageRows = rows.slice(0, params.limit);
 
     const communityIds = pageRows.map((row) => row.id);
+    logger.info(
+      `[LIVE-SIDEBAR:COMMUNITY] listMine rawPage userId=${userId} direction=${params.direction} ts=${params.ts.toISOString()} limit=${params.limit} rowCount=${pageRows.length} rows=${pageRows
+        .map(
+          (row) =>
+            `${row.id}@${row.lastActivityAt.getTime()}:${row.lastActivityType ?? "unknown"}`
+        )
+        .join(",")}`
+    );
 
     // Resolve the last-activity sender name from the LIVE member snapshot — the
     // same fresh source the chat room renders — overriding the denormalized
@@ -2429,6 +2437,21 @@ export const communityService = {
     // Inclusive boundary (as specified) → consecutive pages can share the
     // boundary community; clients de-duplicate by id. nextCursor is epoch-ms to
     // feed straight back as before_ts/after_ts.
+    logger.info(
+      `[LIVE-SIDEBAR:COMMUNITY] listMine userId=${userId} direction=${params.direction} ts=${params.ts.toISOString()} limit=${params.limit} returned=${communities.length} total=${total} ids=${communities
+        .map((community) => community.id)
+        .join(",")} liveIds=${communities
+        .filter((community) => community.isLive)
+        .map((community) => community.id)
+        .join(",")} top=${communities
+        .slice(0, 5)
+        .map(
+          (community) =>
+            `${community.id}@${community.lastActivityAt}:${community.isLive ? "live" : "not-live"}`
+        )
+        .join(",")}`
+    );
+
     const lastRow = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && lastRow ? String(lastRow.lastActivityAt.getTime()) : null;
