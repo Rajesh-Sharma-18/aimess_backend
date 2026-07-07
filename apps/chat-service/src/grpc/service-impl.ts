@@ -865,16 +865,31 @@ export function createMessagingImpl(
               ? deps.groupMessageService
               : deps.privateMessageService;
 
+          // Authorize the caller against the room BEFORE binding/mutating the
+          // message: unlike the socket comment previously assumed, message:react
+          // is NOT gated by a prior room-join on the socket, so this gRPC
+          // boundary is the only enforcement point. Without this, any
+          // authenticated user who learns a messageId+conversationId for a
+          // room they aren't in could react to (and broadcast into) it.
+          //
           // Bind message↔room BEFORE the react: react() mutates/broadcasts by
-          // messageId ALONE, so a socket caller in room A could otherwise react
-          // to (and re-broadcast) a message from room B. assertMessageInRoom
+          // messageId ALONE, so a caller authorized for room A could otherwise
+          // react to (and re-broadcast) a message from room B. assertMessageInRoom
           // throws NotFound on mismatch (the catch below maps it to gRPC INTERNAL).
           if (reactConversationType === "GROUP") {
+            await deps.groupMessageService.assertMember(
+              req.conversationId,
+              req.userId
+            );
             await deps.groupMessageService.assertMessageInRoom(
               req.conversationId,
               req.messageId
             );
           } else {
+            await deps.privateMessageService.assertParticipant(
+              req.conversationId,
+              req.userId
+            );
             await deps.privateMessageService.assertMessageInRoom(
               req.conversationId,
               req.messageId
@@ -1286,6 +1301,22 @@ export function createMessagingImpl(
             typeof req.conversationType === "string"
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
+
+          // Authorize the caller against the room before reading reactor
+          // identities: without this, any authenticated user who learns a
+          // messageId+conversationId for a room they aren't in could fetch
+          // the full reactor list (userId/displayName/avatar) — an IDOR.
+          if (conversationType === "GROUP") {
+            await deps.groupMessageService.assertMember(
+              req.conversationId ?? "",
+              req.requesterId ?? ""
+            );
+          } else {
+            await deps.privateMessageService.assertParticipant(
+              req.conversationId ?? "",
+              req.requesterId ?? ""
+            );
+          }
 
           const result =
             conversationType === "GROUP"

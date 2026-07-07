@@ -491,8 +491,15 @@ export class LivestreamCommentService {
    */
   async getComments(
     livestreamId: string,
-    options: { limit: number; before?: string; after?: string }
+    options: { limit: number; before?: string; after?: string },
+    userId?: string
   ): Promise<GetCommentsResult> {
+    // Mirror the ban gate `getStream` enforces: a user banned from this stream
+    // must not be able to read its comment history over REST.
+    if (userId && (await this.banRepo.isBanned(livestreamId, userId))) {
+      throw new ForbiddenError("STREAM_BANNED");
+    }
+
     const rows = await this.commentRepo.findByLivestreamId(livestreamId, {
       limit: options.limit + 1,
       before: options.before,

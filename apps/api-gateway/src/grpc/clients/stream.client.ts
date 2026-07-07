@@ -44,6 +44,8 @@ export interface GetCommentsParams {
   before?: string;
   /** Exclusive cursor — fetch newer comments (id > after); used for reconnect catch-up. */
   after?: string;
+  /** Authenticated caller — enforces the stream ban gate server-side. */
+  requesterId?: string;
 }
 export interface GetCommentsResult {
   comments: StreamComment[];
@@ -150,6 +152,7 @@ export function createStreamClient(): StreamClient {
         limit: p.limit ?? 0,
         before: p.before ?? "",
         after: p.after ?? "",
+        requesterId: p.requesterId ?? "",
       }).then((r) => ({
         ...r,
         comments: (r.comments ?? []).map(normalizeComment),

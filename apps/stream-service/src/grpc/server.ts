@@ -104,6 +104,7 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             limit?: number;
             before?: string;
             after?: string;
+            requesterId?: string;
           };
           const limit = req.limit && req.limit > 0 ? req.limit : 30;
           const result = await deps.commentService.getComments(
@@ -112,7 +113,8 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
               limit,
               before: req.before || undefined,
               after: req.after || undefined,
-            }
+            },
+            req.requesterId || undefined
           );
           callback(null, {
             comments: result.items.map((c) => ({

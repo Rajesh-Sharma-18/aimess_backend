@@ -23,7 +23,7 @@
     "@aimess/redis": "workspace:*",
     "@aimess/shared-types": "workspace:*",
     "@aimess/utils": "workspace:*",
-    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1",
     "@prisma/client": "^7.8.0",
     "amqplib": "^2.0.1",
@@ -38,7 +38,7 @@
     "jose": "^6.1.0",
     "mongoose": "^9.6.1",
     "pg": "^8.20.0",
-    "ua-parser-js": "^2.0.9",
+    "ua-parser-js": "^2.0.10",
     "zod": "^4.4.3"
   },
   "devDependencies": {

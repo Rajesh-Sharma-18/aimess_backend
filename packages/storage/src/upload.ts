@@ -48,6 +48,20 @@ export interface UploadUrlResult {
 }
 
 /**
+ * Effective byte cap for a category+MIME pair: the smaller of the category
+ * ceiling and any per-MIME cap. Shared by upload-time (declared Content-Length)
+ * and confirm-time (actual MinIO-reported size) enforcement so the two can't
+ * silently drift apart.
+ */
+export function effectiveMaxBytes(
+  def: Pick<UploadTypeDef, "maxBytes" | "maxBytesByMime">,
+  contentType: string
+): number {
+  const perMime = def.maxBytesByMime?.[contentType];
+  return perMime != null ? Math.min(def.maxBytes, perMime) : def.maxBytes;
+}
+
+/**
  * Validates the upload, builds an owned object key, and returns a presigned PUT
  * envelope. Throws {@link StorageValidationError} (specific code) on validation
  * failure — callers map the code to their own HTTP error.
@@ -70,9 +84,7 @@ export async function createUploadUrl(
   }
 
   // Effective cap: the smaller of the category ceiling and any per-MIME cap.
-  const perMime = def.maxBytesByMime?.[contentType];
-  const effectiveMax =
-    perMime != null ? Math.min(def.maxBytes, perMime) : def.maxBytes;
+  const effectiveMax = effectiveMaxBytes(def, contentType);
   assertFileSize(contentLength, effectiveMax);
 
   const objectKey = buildObjectKey({

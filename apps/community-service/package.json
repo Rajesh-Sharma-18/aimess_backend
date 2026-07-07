@@ -32,7 +32,7 @@
     "@aimess/shared-types": "workspace:*",
     "@aimess/storage": "workspace:*",
     "@aimess/utils": "workspace:*",
-    "@grpc/grpc-js": "^1.14.3",
+    "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1",
     "@prisma/client": "^6.19.0",
     "amqplib": "^2.0.1",

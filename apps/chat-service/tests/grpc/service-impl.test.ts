@@ -344,8 +344,11 @@ describe("createMessagingImpl — broadcast media resolve-on-read", () => {
     const deps = makeDeps({
       privateMessageService: {
         // Cross-room IDOR bind (fix 01a131f): sendReaction now calls
-        // assertMessageInRoom(conversationId, messageId) BEFORE react() — a no-op
-        // here means the message belongs to the conversation and the toggle proceeds.
+        // assertParticipant(conversationId, userId) then
+        // assertMessageInRoom(conversationId, messageId) BEFORE react() — no-ops
+        // here mean the caller is a participant and the message belongs to the
+        // conversation, so the toggle proceeds.
+        assertParticipant: jest.fn(async () => undefined),
         assertMessageInRoom: jest.fn(async () => undefined),
         react: jest.fn(async () => ({
           reactions: { "👍": [{ userId: "u2" }] },

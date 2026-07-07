@@ -52,7 +52,9 @@ export function verifyAccessToken(
   let payload: AccessTokenPayload;
 
   try {
-    payload = jwt.verify(token, secret) as AccessTokenPayload;
+    payload = jwt.verify(token, secret, {
+      algorithms: ["HS256"],
+    }) as AccessTokenPayload;
   } catch (error) {
     if (error instanceof UnauthorizedError) {
       throw error;

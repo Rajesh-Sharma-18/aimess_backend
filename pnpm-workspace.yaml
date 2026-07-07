@@ -18,3 +18,22 @@ packages:
   - apps/*
   - packages/*
   - tooling/service-template
+
+# Force minimum-safe versions of transitive-only deps carrying known CVEs
+# (pulled in via firebase-admin/google-gax, @grpc/proto-loader, prisma's dev
+# CLI, jest/istanbul, and tsx) that this repo never imports directly.
+overrides:
+  "@grpc/grpc-js": ">=1.14.4"
+  ws: ">=8.21.0"
+  form-data: ">=4.0.6"
+  protobufjs: ">=7.6.3"
+  hono: ">=4.12.25"
+  "@hono/node-server": ">=1.19.13"
+  # Pinned to the 11.x line (not a bare >=11.1.1 range): uuid v12+ dropped the
+  # CommonJS build (ESM-only), which breaks every CJS consumer here (bull,
+  # jest-transpiled TS) with "Unexpected token 'export'". 11.1.1 is where the
+  # buffer-bounds-check CVE was actually fixed.
+  uuid: "^11.1.1"
+  qs: ">=6.15.2"
+  js-yaml: ">=3.15.0"
+  esbuild: ">=0.28.1"

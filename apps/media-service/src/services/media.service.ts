@@ -7,6 +7,7 @@ import {
   assertObjectKeyOwnedBy,
   deleteObject,
   headObject,
+  effectiveMaxBytes,
   StorageValidationError,
 } from "@aimess/storage";
 import {
@@ -217,6 +218,7 @@ export const mediaService = {
       bucket: def.bucket,
       objectKey: params.objectKey,
       declaredMime: params.contentType,
+      maxBytes: effectiveMaxBytes(def, params.contentType),
     });
 
     // Structural rejection (magic-byte / ZIP bomb / OOXML mismatch) is terminal:

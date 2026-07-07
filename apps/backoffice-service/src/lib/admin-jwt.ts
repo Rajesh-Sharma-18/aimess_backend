@@ -61,10 +61,9 @@ export function verifyAdminAccessToken(
 ): VerifiedAdminAccessToken {
   let payload: AdminAccessTokenPayload;
   try {
-    payload = jwt.verify(
-      token,
-      env.JWT_ADMIN_SECRET
-    ) as AdminAccessTokenPayload;
+    payload = jwt.verify(token, env.JWT_ADMIN_SECRET, {
+      algorithms: ["HS256"],
+    }) as AdminAccessTokenPayload;
   } catch (error) {
     throw toUnauthorized(error);
   }

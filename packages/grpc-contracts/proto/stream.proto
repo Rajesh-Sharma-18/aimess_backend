@@ -87,6 +87,7 @@ message GetCommentsRequest {
   int32  limit         = 2; // page size; 0 = server default
   string before        = 3; // exclusive cursor — fetch older comments (id < before); "" = latest page
   string after         = 4; // exclusive cursor — fetch newer comments (id > after); used for reconnect catch-up
+  string requester_id  = 5; // authenticated caller; "" only for trusted internal callers — used to enforce the stream ban gate
 }
 message GetCommentsResponse {
   repeated Comment comments = 1;
