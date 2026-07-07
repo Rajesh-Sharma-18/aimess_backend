@@ -4987,19 +4987,58 @@ export const openApiSchemas = {
       "isOnline",
     ],
   },
-  UserDiscoveryResponseData: {
+  UserDiscoverySplitData: {
     type: "object",
+    description:
+      "Response shape when no `type` param is given. Up to 5 users per group; no pagination.",
+    properties: {
+      friends: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserDiscoveryItem" },
+        description: "Accepted friends matching the query (max 5).",
+      },
+      otherPeople: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserDiscoveryItem" },
+        description:
+          "Non-friends matching the query, excluding blocked users (max 5).",
+      },
+    },
+    required: ["friends", "otherPeople"],
+  },
+  UserDiscoveryPaginatedData: {
+    type: "object",
+    description:
+      "Response shape when `type=friends` or `type=others` is given.",
     properties: {
       users: {
         type: "array",
         items: { $ref: "#/components/schemas/UserDiscoveryItem" },
       },
-      total: {
-        type: "integer",
-        description: "Total matching users (across all pages).",
+      pagination: {
+        type: "object",
+        properties: {
+          total: {
+            type: "integer",
+            description: "Total matching users across all pages.",
+          },
+          page: { type: "integer" },
+          limit: { type: "integer" },
+          totalPages: { type: "integer" },
+          hasNext: { type: "boolean" },
+          hasPrevious: { type: "boolean" },
+        },
+        required: [
+          "total",
+          "page",
+          "limit",
+          "totalPages",
+          "hasNext",
+          "hasPrevious",
+        ],
       },
     },
-    required: ["users", "total"],
+    required: ["users", "pagination"],
   },
 
   // ===========================================================================

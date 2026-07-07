@@ -51,22 +51,125 @@ async function resolveAvatarMedia(
   });
 }
 
+const SPLIT_LIMIT = 5;
+
 export const userDiscoveryService = {
-  async searchUsers(
+  /**
+   * Split mode: runs friends and non-friends queries in parallel, returns
+   * up to SPLIT_LIMIT results in each bucket. No pagination metadata.
+   */
+  async searchUsersSplit(
+    viewerId: string,
+    q: string | undefined
+  ): Promise<{
+    friends: UserDiscoveryResult[];
+    otherPeople: UserDiscoveryResult[];
+  }> {
+    const [friendsResult, othersResult] = await Promise.all([
+      userDiscoveryService._queryFriends(viewerId, q, 0, SPLIT_LIMIT),
+      userDiscoveryService._queryOthers(viewerId, q, 0, SPLIT_LIMIT),
+    ]);
+    return { friends: friendsResult.users, otherPeople: othersResult.users };
+  },
+
+  async searchUsersGrouped(
     viewerId: string,
     params: SearchUsersQuery
-  ): Promise<{ users: UserDiscoveryResult[]; total: number }> {
-    const { section, q, page, limit } = params;
+  ): Promise<{
+    friends: UserDiscoveryResult[];
+    otherPeople: UserDiscoveryResult[];
+    total: number;
+  }> {
+    const { q, page, limit } = params;
     const skip = (page - 1) * limit;
 
-    if (section === "friends") {
-      return userDiscoveryService._queryFriends(viewerId, q, skip, limit);
-    }
-    if (section === "all") {
-      return userDiscoveryService._queryAll(viewerId, q, skip, limit);
+    const [allRelationships, allBlocks] = await Promise.all([
+      friendshipRepository.findAllForUser(viewerId),
+      friendshipRepository.findAllBlocks(viewerId),
+    ]);
+
+    const acceptedFriendIds = new Set<string>();
+    const friendshipIdByPeer = new Map<string, string>();
+    const pendingRelMap = new Map<
+      string,
+      { friendshipId: string; isRequester: boolean }
+    >();
+
+    for (const f of allRelationships) {
+      const peerId = f.requesterId === viewerId ? f.addresseeId : f.requesterId;
+      if (f.status === "ACCEPTED") {
+        acceptedFriendIds.add(peerId);
+        friendshipIdByPeer.set(peerId, f.id);
+      } else if (f.status === "PENDING") {
+        pendingRelMap.set(peerId, {
+          friendshipId: f.id,
+          isRequester: f.requesterId === viewerId,
+        });
+      }
     }
 
-    return userDiscoveryService._queryOthers(viewerId, q, skip, limit);
+    const blockedIds = new Set<string>(
+      allBlocks.map((b) =>
+        b.blockerId === viewerId ? b.blockedId : b.blockerId
+      )
+    );
+    const excludeIds = [viewerId, ...Array.from(blockedIds)];
+
+    const [profiles, total] = await Promise.all([
+      userProfileRepository.findUsersNotInList(excludeIds, q, skip, limit),
+      userProfileRepository.countUsersNotInList(excludeIds, q),
+    ]);
+
+    const resolved = await Promise.all(
+      profiles.map(async (p) => {
+        const { url, expiresIn } = await resolveAvatarUrl(p.avatarUrl);
+        const avatar = await resolveAvatarMedia(p.avatarUrl);
+        const base = {
+          userId: p.userId,
+          username: p.username,
+          firstName: p.firstName,
+          lastName: p.lastName,
+          bio: p.bio,
+          avatarUrl: url,
+          avatarUrlExpiresIn: expiresIn,
+          avatar,
+          isOnline: p.isOnline,
+        };
+
+        if (acceptedFriendIds.has(p.userId)) {
+          return {
+            ...base,
+            isFriend: true,
+            relationshipStatus: "FRIEND" as RelationshipStatus,
+            friendshipId: friendshipIdByPeer.get(p.userId) ?? null,
+          };
+        }
+        const pending = pendingRelMap.get(p.userId);
+        return {
+          ...base,
+          isFriend: false,
+          relationshipStatus: (pending
+            ? pending.isRequester
+              ? "PENDING_OUT"
+              : "PENDING_IN"
+            : "NONE") as RelationshipStatus,
+          friendshipId: pending?.friendshipId ?? null,
+        };
+      })
+    );
+
+    const friends: UserDiscoveryResult[] = [];
+    const otherPeople: UserDiscoveryResult[] = [];
+    for (const item of resolved) {
+      const { isFriend, ...result } = item;
+      if (isFriend) {
+        friends.push(result);
+      } else {
+        otherPeople.push(result);
+      }
+    }
+
+    return { friends, otherPeople, total };
   },
 
   async _queryFriends(
