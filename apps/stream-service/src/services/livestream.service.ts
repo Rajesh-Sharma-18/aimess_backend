@@ -48,6 +48,7 @@ export interface StreamView {
   hlsUrl: string | null;
   flvUrl: string | null;
   dashUrl: string | null;
+  youtubeVideoId: string | null;
   viewerCount: number;
   peakViewers: number;
   totalViews: number;
@@ -136,7 +137,8 @@ export interface AdminStreamRow {
 /**
  * Stream duration in seconds.
  *  - never went live (no livedAt) → 0
- *  - LIVE → now − livedAt
+ *  - LIVE or RECONNECTING → now − livedAt (a reconnect-grace blip is still
+ *    part of the same ongoing session, not a pause in its runtime)
  *  - ENDED/CANCELLED → endedAt − livedAt (0 if it ended before going live)
  */
 function computeDurationSeconds(s: Livestream): number {
@@ -144,7 +146,7 @@ function computeDurationSeconds(s: Livestream): number {
   const start = s.livedAt.getTime();
   const end = s.endedAt
     ? s.endedAt.getTime()
-    : s.status === "LIVE"
+    : s.status === "LIVE" || s.status === "RECONNECTING"
       ? Date.now()
       : start;
   return Math.max(0, Math.round((end - start) / 1000));
@@ -176,6 +178,15 @@ function toAdminRow(s: Livestream): AdminStreamRow {
   };
 }
 
+function extractYoutubeVideoId(url: string | null): string | null {
+  if (!url) return null;
+  const short = url.match(/youtu\.be\/([^?&/]+)/);
+  if (short) return short[1];
+  const long = url.match(/[?&]v=([^?&]+)/);
+  if (long) return long[1];
+  return null;
+}
+
 function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
   return {
     id: s.id,
@@ -191,6 +202,7 @@ function toView(s: Livestream & { dashUrl?: string | null }): StreamView {
     hlsUrl: s.hlsUrl,
     flvUrl: s.flvUrl,
     dashUrl: s.dashUrl ?? null,
+    youtubeVideoId: extractYoutubeVideoId(s.sourceUrl),
     viewerCount: s.viewerCount,
     peakViewers: s.peakViewers,
     totalViews: s.totalViews,
@@ -382,6 +394,12 @@ export class LivestreamService {
    * SRS on_publish hook: the publisher came online. Flip to LIVE, stamp livedAt
    * and playback URLs, broadcast status + emit `stream.started`. Returns whether
    * to allow the publish (false = unknown stream key → SRS rejects).
+   *
+   * A stream in RECONNECTING (mid reconnect-grace after a prior on_unpublish)
+   * resumes LIVE here instead of starting fresh: `livedAt` is preserved (same
+   * broadcast session, continuous duration) and `stream.started` /
+   * `community:stream:started` are NOT re-emitted, since the community-facing
+   * "this stream is live" state never actually changed during the blip.
    */
   async handlePublish(streamKey: string): Promise<boolean> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
@@ -405,6 +423,8 @@ export class LivestreamService {
       return true;
     }
 
+    const isResume = stream.status === "RECONNECTING";
+
     const otherActiveStreams =
       await this.streamRepo.countActiveByCommunityAndCreator(
         stream.communityId,
@@ -421,7 +441,10 @@ export class LivestreamService {
     const playback = this.srsService.buildPlaybackUrls(streamKey);
     const updated = await this.streamRepo.updateById(stream.id, {
       status: "LIVE",
-      livedAt: new Date(),
+      disconnectedAt: null,
+      // Resume: keep the original livedAt so duration/history stay continuous
+      // across the blip. Fresh publish: stamp it for the first time.
+      ...(isResume ? {} : { livedAt: new Date() }),
       hlsUrl: playback.hlsUrl,
       flvUrl: playback.flvUrl,
       dashUrl: playback.dashUrl,
@@ -433,22 +456,48 @@ export class LivestreamService {
       flvUrl: updated.flvUrl,
       startedAt: updated.livedAt?.getTime() ?? Date.now(),
     });
-    void this.publishCommunityStreamStarted(updated);
+    // Media may need a moment to re-establish after a reconnect too, so
+    // re-poll for the first frame on resume just as on a fresh publish.
     this.notifyWhenPlayable(updated);
-    this.eventPublisher("stream.started", {
-      streamId: updated.id,
-      communityId: updated.communityId,
-      creatorId: updated.creatorId,
-      title: updated.title,
-      livedAt: updated.livedAt?.getTime() ?? Date.now(),
-    });
+
+    if (isResume) {
+      logger.info(
+        `on_publish: stream id=${stream.id} resumed within reconnect grace window`
+      );
+    } else {
+      void this.publishCommunityStreamStarted(updated);
+      this.eventPublisher("stream.started", {
+        streamId: updated.id,
+        communityId: updated.communityId,
+        creatorId: updated.creatorId,
+        title: updated.title,
+        livedAt: updated.livedAt?.getTime() ?? Date.now(),
+      });
+    }
 
     return true;
   }
 
   /**
-   * SRS on_unpublish hook: the publisher dropped. Flip to ENDED (idempotent),
-   * broadcast status + emit `stream.ended`.
+   * SRS on_unpublish hook: the publisher dropped.
+   *
+   * LIVE → RECONNECTING: don't declare the stream over yet. SRS can't tell a
+   * deliberate stop from a page refresh or a mobile-data blip — both fire this
+   * identical webhook — so a LIVE stream is given a grace window
+   * (`STREAM_RECONNECT_GRACE_MS`) to republish on the same streamKey before
+   * being finalized. See {@link handlePublish} for the resume path and
+   * {@link sweepStaleReconnectingStreams} for the grace-expiry finalize path.
+   *
+   * RECONNECTING/ENDED/CANCELLED → no-op: idempotent against a duplicate or
+   * retried on_unpublish. Critically, a second unpublish while already
+   * RECONNECTING must NOT reset `disconnectedAt` — a flapping connection that
+   * keeps failing to fully republish must not indefinitely extend its own
+   * grace window.
+   *
+   * Anything else (PENDING — an unpublish with no preceding on_publish, e.g. a
+   * malformed/out-of-order webhook) has no live session to preserve — ends
+   * outright via {@link finalizeAsEnded}, matching this hook's original
+   * unconditional-end behavior for that edge case.
    */
   async handleUnpublish(streamKey: string): Promise<void> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
@@ -458,27 +507,27 @@ export class LivestreamService {
       );
       return;
     }
-    if (stream.status === "ENDED" || stream.status === "CANCELLED") return;
+    if (
+      stream.status === "ENDED" ||
+      stream.status === "CANCELLED" ||
+      stream.status === "RECONNECTING"
+    ) {
+      return;
+    }
 
-    const updated = await this.streamRepo.updateById(stream.id, {
-      status: "ENDED",
-      endedAt: new Date(),
-    });
+    if (stream.status === "LIVE") {
+      const updated = await this.streamRepo.updateById(stream.id, {
+        status: "RECONNECTING",
+        disconnectedAt: new Date(),
+      });
+      await this.publishStatus(updated.id, "RECONNECTING", updated.communityId);
+      logger.info(
+        `on_unpublish: stream id=${stream.id} entering RECONNECTING grace window`
+      );
+      return;
+    }
 
-    await this.publishStatus(updated.id, "ENDED", updated.communityId);
-    void this.publishCommunityStreamEnded(updated);
-    void this.closeOpenViewerSessions(
-      updated.id,
-      updated.endedAt ?? new Date()
-    );
-    this.eventPublisher("stream.ended", {
-      streamId: updated.id,
-      communityId: updated.communityId,
-      creatorId: updated.creatorId,
-      endedAt: updated.endedAt?.getTime() ?? Date.now(),
-      durationSeconds: computeDurationSeconds(updated),
-      peakViewers: updated.peakViewers,
-    });
+    await this.finalizeAsEnded(stream);
   }
 
   /**
@@ -503,28 +552,23 @@ export class LivestreamService {
   }
 
   /**
-   * Manual stop by the owner. Ends the stream, asks SRS to drop the publisher,
-   * and broadcasts the ENDED status. SRS will also fire on_unpublish, which is
-   * a no-op once ENDED.
+   * Common tail for any transition INTO ENDED: flips status, best-effort kicks
+   * the SRS publisher, broadcasts the ENDED status, closes out open viewer
+   * sessions, and emits `stream.ended`. Shared by {@link stopStream},
+   * {@link adminForceEnd}, {@link sweepStaleLiveStreams}, and
+   * {@link sweepStaleReconnectingStreams} — each arrives at "this stream is
+   * over" from a different trigger but must finish the same way. `kickStream`
+   * is always safe to call even if the stream never had (or no longer has) an
+   * active SRS publisher: it's a no-op lookup-then-DELETE, bounded and
+   * swallows its own errors (see SrsService.kickStream).
    */
-  async stopStream(id: string, requesterId: string): Promise<StreamView> {
-    const stream = await this.streamRepo.findById(id);
-    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
-    if (stream.creatorId !== requesterId) {
-      throw new ForbiddenError("STREAM_NOT_OWNER");
-    }
-
-    if (stream.status === "ENDED" || stream.status === "CANCELLED") {
-      return toView(stream);
-    }
-
-    const updated = await this.streamRepo.updateById(id, {
+  private async finalizeAsEnded(stream: Livestream): Promise<Livestream> {
+    const updated = await this.streamRepo.updateById(stream.id, {
       status: "ENDED",
       endedAt: new Date(),
     });
 
-    // Best-effort terminate the SRS publisher.
-    await this.srsService.kickStream(stream.streamKey);
+    await this.srsService.kickStream(stream.streamKey, stream.sourceType);
 
     await this.publishStatus(updated.id, "ENDED", updated.communityId);
     void this.publishCommunityStreamEnded(updated);
@@ -541,7 +585,27 @@ export class LivestreamService {
       peakViewers: updated.peakViewers,
     });
 
-    return toView(updated);
+    return updated;
+  }
+
+  /**
+   * Manual stop by the owner. Ends the stream (including one mid
+   * reconnect-grace — an explicit stop always overrides the grace window),
+   * asks SRS to drop the publisher, and broadcasts the ENDED status. SRS will
+   * also fire on_unpublish, which is a no-op once ENDED.
+   */
+  async stopStream(id: string, requesterId: string): Promise<StreamView> {
+    const stream = await this.streamRepo.findById(id);
+    if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
+    if (stream.creatorId !== requesterId) {
+      throw new ForbiddenError("STREAM_NOT_OWNER");
+    }
+
+    if (stream.status === "ENDED" || stream.status === "CANCELLED") {
+      return toView(stream);
+    }
+
+    return toView(await this.finalizeAsEnded(stream));
   }
 
   /**
@@ -549,6 +613,11 @@ export class LivestreamService {
    * hosted SRS without callback support). Flips PENDING→LIVE, stamps playback
    * URLs, broadcasts stream:status, and emits stream.started. Idempotent if
    * already LIVE.
+   *
+   * A stream in RECONNECTING resumes the same way {@link handlePublish} does
+   * on a webhook-driven resume: `livedAt` is preserved and `stream.started` /
+   * `community:stream:started` are not re-emitted, since this is a mixed
+   * webhook/manual environment resuming the same session, not a fresh go-live.
    */
   async markLive(id: string, requesterId: string): Promise<StreamView> {
     const stream = await this.streamRepo.findById(id);
@@ -563,6 +632,8 @@ export class LivestreamService {
       return toView(stream);
     }
 
+    const isResume = stream.status === "RECONNECTING";
+
     const otherActiveStreams =
       await this.streamRepo.countActiveByCommunityAndCreator(
         stream.communityId,
@@ -576,7 +647,8 @@ export class LivestreamService {
     const playback = this.srsService.buildPlaybackUrls(stream.streamKey);
     const updated = await this.streamRepo.updateById(id, {
       status: "LIVE",
-      livedAt: new Date(),
+      disconnectedAt: null,
+      ...(isResume ? {} : { livedAt: new Date() }),
       hlsUrl: playback.hlsUrl,
       flvUrl: playback.flvUrl,
       dashUrl: playback.dashUrl,
@@ -588,23 +660,31 @@ export class LivestreamService {
       flvUrl: updated.flvUrl,
       startedAt: updated.livedAt?.getTime() ?? Date.now(),
     });
-    void this.publishCommunityStreamStarted(updated);
     this.notifyWhenPlayable(updated);
-    this.eventPublisher("stream.started", {
-      streamId: updated.id,
-      communityId: updated.communityId,
-      creatorId: updated.creatorId,
-      title: updated.title,
-      livedAt: updated.livedAt?.getTime() ?? Date.now(),
-    });
+
+    if (isResume) {
+      logger.info(
+        `markLive: stream id=${id} resumed within reconnect grace window`
+      );
+    } else {
+      void this.publishCommunityStreamStarted(updated);
+      this.eventPublisher("stream.started", {
+        streamId: updated.id,
+        communityId: updated.communityId,
+        creatorId: updated.creatorId,
+        title: updated.title,
+        livedAt: updated.livedAt?.getTime() ?? Date.now(),
+      });
+    }
 
     return toView(updated);
   }
 
   /**
    * Admin: force-end a stream. Idempotent — already ENDED/CANCELLED streams
-   * return { success: false } without error. Kicks SRS if stream was LIVE,
-   * then broadcasts ENDED status and emits stream.ended event.
+   * return { success: false } without error. Otherwise finalizes it ENDED
+   * (kicks SRS, broadcasts ENDED status, emits stream.ended) regardless of
+   * whether it was LIVE, RECONNECTING, or PENDING.
    */
   async adminForceEnd(
     streamId: string,
@@ -616,32 +696,58 @@ export class LivestreamService {
       return { success: false, status: stream.status };
     }
 
-    const updated = await this.streamRepo.updateById(streamId, {
-      status: "ENDED",
-      endedAt: new Date(),
-    });
-
-    if (stream.status === "LIVE") {
-      // Best-effort — kick SRS publisher if stream was live. Errors are swallowed.
-      await this.srsService.kickStream(stream.streamKey);
-    }
-
-    await this.publishStatus(updated.id, "ENDED", updated.communityId);
-    void this.publishCommunityStreamEnded(updated);
-    void this.closeOpenViewerSessions(
-      updated.id,
-      updated.endedAt ?? new Date()
-    );
-    this.eventPublisher("stream.ended", {
-      streamId: updated.id,
-      communityId: updated.communityId,
-      creatorId: updated.creatorId,
-      endedAt: updated.endedAt?.getTime() ?? Date.now(),
-      durationSeconds: computeDurationSeconds(updated),
-      peakViewers: updated.peakViewers,
-    });
+    await this.finalizeAsEnded(stream);
 
     return { success: true, status: "ENDED" };
+  }
+
+  /**
+   * Best-effort bulk force-end: every non-terminal (PENDING/LIVE/RECONNECTING)
+   * stream owned by `creatorId`, optionally scoped to one `communityId`.
+   * Called (via gRPC) when the creator's account is banned/suspended/deleted
+   * (unscoped — end every stream everywhere) or when a community-wide
+   * ban/kick removes their membership in ONE community (scoped — leave any
+   * stream they're legitimately still broadcasting in a different community
+   * untouched). Same `finalizeAsEnded` tail as {@link adminForceEnd} — a
+   * PENDING stream ends up ENDED here too, not CANCELLED, matching
+   * adminForceEnd's existing "deliberate moderation action" precedent (only
+   * the *automatic* timeout sweeper uses CANCELLED for an abandoned PENDING
+   * stream). One failure never blocks the rest; never throws to the caller.
+   */
+  async forceEndStreamsByCreator(
+    creatorId: string,
+    communityId: string | undefined,
+    reason: string
+  ): Promise<{ endedCount: number }> {
+    let streams: Livestream[];
+    try {
+      streams = await this.streamRepo.findActiveByCreator(
+        creatorId,
+        communityId
+      );
+    } catch (err) {
+      logger.warn(
+        `forceEndStreamsByCreator: query failed for creator=${creatorId}: ${String(err)}`
+      );
+      return { endedCount: 0 };
+    }
+    if (!streams.length) return { endedCount: 0 };
+
+    let endedCount = 0;
+    for (const stream of streams) {
+      try {
+        await this.finalizeAsEnded(stream);
+        endedCount++;
+        logger.info(
+          `forceEndStreamsByCreator: ended stream=${stream.id} creator=${creatorId} community=${stream.communityId} reason=${reason}`
+        );
+      } catch (err) {
+        logger.warn(
+          `forceEndStreamsByCreator: failed to end stream=${stream.id}: ${String(err)}`
+        );
+      }
+    }
+    return { endedCount };
   }
 
   /** Owner updates editable stream metadata (title, description, thumbnail). */
@@ -701,7 +807,8 @@ export class LivestreamService {
 
   /**
    * Owner deletes the stream record. Only PENDING, ENDED, and CANCELLED streams
-   * may be deleted — a LIVE stream must be stopped first.
+   * may be deleted — a LIVE stream (or one mid reconnect-grace, still the same
+   * ongoing session) must be stopped first.
    */
   async deleteStream(id: string, requesterId: string): Promise<void> {
     const stream = await this.streamRepo.findById(id);
@@ -709,7 +816,7 @@ export class LivestreamService {
     if (stream.creatorId !== requesterId) {
       throw new ForbiddenError("STREAM_NOT_OWNER");
     }
-    if (stream.status === "LIVE") {
+    if (stream.status === "LIVE" || stream.status === "RECONNECTING") {
       throw new ConflictError("STREAM_IS_LIVE");
     }
 
@@ -766,7 +873,10 @@ export class LivestreamService {
   /**
    * Record a keep-alive heartbeat from the stream host. Updates `lastHeartbeatAt`
    * so the sweeper knows the host is still connected. Called every ~30 s from the
-   * client while the stream is LIVE.
+   * client while the stream is LIVE — also accepted during RECONNECTING, since
+   * the heartbeat signals "the owner's client is alive", which remains true
+   * during a brief publisher blip and keeps `lastHeartbeatAt` fresh for when
+   * the stream resumes LIVE.
    */
   async recordHeartbeat(id: string, requesterId: string): Promise<void> {
     const stream = await this.streamRepo.findById(id);
@@ -774,7 +884,7 @@ export class LivestreamService {
     if (stream.creatorId !== requesterId) {
       throw new ForbiddenError("STREAM_NOT_OWNER");
     }
-    if (stream.status !== "LIVE") {
+    if (stream.status !== "LIVE" && stream.status !== "RECONNECTING") {
       throw new BadRequestError("STREAM_NOT_LIVE");
     }
     await this.streamRepo.updateById(id, { lastHeartbeatAt: new Date() });
@@ -782,16 +892,19 @@ export class LivestreamService {
 
   /**
    * Background sweeper: auto-end LIVE streams whose host hasn't heartbeated in
-   * `STREAM_HEARTBEAT_TIMEOUT_MS`, and auto-cancel PENDING streams that sat
-   * unpublished past `STREAM_PENDING_TIMEOUT_MS` (abandoned setup, crashed
-   * client, failed publish). A stuck PENDING row otherwise never clears —
-   * it permanently occupies that creator's one-active-stream-per-community
-   * slot and every subsequent create attempt 409s with STREAM_ALREADY_ACTIVE,
-   * even though nothing is actually live. Called periodically from server.ts.
+   * `STREAM_HEARTBEAT_TIMEOUT_MS`, auto-end RECONNECTING streams whose
+   * reconnect-grace window (`STREAM_RECONNECT_GRACE_MS`) expired without a
+   * republish, and auto-cancel PENDING streams that sat unpublished past
+   * `STREAM_PENDING_TIMEOUT_MS` (abandoned setup, crashed client, failed
+   * publish). A stuck PENDING row otherwise never clears — it permanently
+   * occupies that creator's one-active-stream-per-community slot and every
+   * subsequent create attempt 409s with STREAM_ALREADY_ACTIVE, even though
+   * nothing is actually live. Called periodically from server.ts.
    * Intentionally silent — a single stale stream failure does not block the rest.
    */
   async sweepStaleStreams(): Promise<void> {
     await this.sweepStaleLiveStreams();
+    await this.sweepStaleReconnectingStreams();
     await this.sweepStalePendingStreams();
   }
 
@@ -809,31 +922,52 @@ export class LivestreamService {
     logger.info(`sweepStaleStreams: ending ${stale.length} stale stream(s)`);
     for (const stream of stale) {
       try {
-        const updated = await this.streamRepo.updateById(stream.id, {
-          status: "ENDED",
-          endedAt: new Date(),
-        });
-        await this.srsService.kickStream(stream.streamKey);
-        await this.publishStatus(updated.id, "ENDED", updated.communityId);
-        void this.publishCommunityStreamEnded(updated);
-        void this.closeOpenViewerSessions(
-          updated.id,
-          updated.endedAt ?? new Date()
-        );
-        this.eventPublisher("stream.ended", {
-          streamId: updated.id,
-          communityId: updated.communityId,
-          creatorId: updated.creatorId,
-          endedAt: updated.endedAt?.getTime() ?? Date.now(),
-          durationSeconds: computeDurationSeconds(updated),
-          peakViewers: updated.peakViewers,
-        });
+        await this.finalizeAsEnded(stream);
         logger.info(
           `sweepStaleStreams: ended stream=${stream.id} community=${stream.communityId}`
         );
       } catch (err) {
         logger.warn(
           `sweepStaleStreams: failed to end stream=${stream.id} — ${String(err)}`
+        );
+      }
+    }
+  }
+
+  /**
+   * Finalizes RECONNECTING streams whose publisher never republished within
+   * `STREAM_RECONNECT_GRACE_MS` of the on_unpublish that started the grace
+   * window. This is the one place a reconnect-grace stream is actually
+   * declared over — see {@link handleUnpublish} (enters the grace window) and
+   * {@link handlePublish} (resumes LIVE within it).
+   */
+  private async sweepStaleReconnectingStreams(): Promise<void> {
+    const cutoff = new Date(Date.now() - env.STREAM_RECONNECT_GRACE_MS);
+    let stale: Awaited<
+      ReturnType<typeof this.streamRepo.findStaleReconnectingStreams>
+    >;
+    try {
+      stale = await this.streamRepo.findStaleReconnectingStreams(cutoff);
+    } catch (err) {
+      logger.warn(
+        `sweepStaleReconnectingStreams: DB query failed — ${String(err)}`
+      );
+      return;
+    }
+    if (!stale.length) return;
+
+    logger.info(
+      `sweepStaleReconnectingStreams: finalizing ${stale.length} stream(s) whose reconnect grace expired`
+    );
+    for (const stream of stale) {
+      try {
+        await this.finalizeAsEnded(stream);
+        logger.info(
+          `sweepStaleReconnectingStreams: ended stream=${stream.id} community=${stream.communityId}`
+        );
+      } catch (err) {
+        logger.warn(
+          `sweepStaleReconnectingStreams: failed to end stream=${stream.id} — ${String(err)}`
         );
       }
     }
@@ -863,7 +997,7 @@ export class LivestreamService {
         });
         // Best-effort — a PENDING stream never published, but a client may have
         // gotten as far as opening the ingest connection.
-        await this.srsService.kickStream(stream.streamKey);
+        await this.srsService.kickStream(stream.streamKey, stream.sourceType);
         await this.publishStatus(updated.id, "ENDED", updated.communityId);
         void this.publishCommunityStreamEnded(updated);
         this.eventPublisher("stream.ended", {
@@ -894,8 +1028,9 @@ export class LivestreamService {
 
   /**
    * Backs `activeLivestreamCount`/`hasActiveLivestream` on GET /communities/mine
-   * and the chat-service community rooms list. Returns the LIVE-only count per
-   * community (communities with 0 live streams are omitted). Fail-open caller side.
+   * and the chat-service community rooms list. Returns the LIVE-or-RECONNECTING
+   * count per community (communities with 0 such streams are omitted).
+   * Fail-open caller side.
    */
   async getActiveStreamCountsByCommunityIds(
     communityIds: string[]
@@ -966,16 +1101,18 @@ export class LivestreamService {
   }
 
   /**
-   * {@link toAdminRow} plus a live Redis overlay for LIVE rows — mirrors
-   * {@link adminGetStream}. Without this, `viewerCount` on a LIVE row is the
-   * stored DB column, which `incrementViewer` only nudges via the coarse SRS
-   * on_play/on_stop hook (a rough per-hit counter, not a unique-viewer count)
-   * and can drift far from the real number of people currently watching.
-   * Bounded per call to one page of rows, so the extra Redis round-trips are cheap.
+   * {@link toAdminRow} plus a live Redis overlay for LIVE (or reconnect-grace)
+   * rows — mirrors {@link adminGetStream}. Without this, `viewerCount` on such
+   * a row is the stored DB column, which `incrementViewer` only nudges via the
+   * coarse SRS on_play/on_stop hook (a rough per-hit counter, not a
+   * unique-viewer count) and can drift far from the real number of people
+   * currently watching. RECONNECTING is included because viewers typically
+   * haven't left during a brief publisher blip — Bounded per call to one page
+   * of rows, so the extra Redis round-trips are cheap.
    */
   private async toAdminRowLive(s: Livestream): Promise<AdminStreamRow> {
     const row = toAdminRow(s);
-    if (s.status === "LIVE") {
+    if (s.status === "LIVE" || s.status === "RECONNECTING") {
       try {
         row.viewerCount = await this.redis.scard(sessionKey(s.id));
       } catch (error) {

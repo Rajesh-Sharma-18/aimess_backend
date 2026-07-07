@@ -40,6 +40,18 @@ export interface StreamClient {
     userId: string,
     isBanned: boolean
   ): Promise<void>;
+  /**
+   * Best-effort: force-ends every non-terminal stream `userId` owns in THIS
+   * community (not their streams in other communities). Called after a
+   * community-wide ban or a kick — losing membership means they no longer
+   * satisfy the membership gate that let them go live in the first place.
+   * Never throws — a stream-service outage must not fail the ban/kick.
+   */
+  forceEndStreamsByCreator(
+    communityId: string,
+    userId: string,
+    reason: string
+  ): Promise<void>;
 }
 
 export function createStreamClient(): StreamClient {
@@ -134,6 +146,22 @@ export function createStreamClient(): StreamClient {
   // Fail-open: a stream-service outage must not fail (or even delay) the ban.
   notifyBanBreaker.fallback(() => ({ ok: false }));
 
+  const forceEndBreaker = makeBreaker(
+    "stream.forceEndStreamsByCreator",
+    (args: { communityId: string; userId: string; reason: string }) =>
+      makeGrpcCall<unknown, { ok?: boolean; endedCount?: number }>(
+        client,
+        "forceEndStreamsByCreator",
+        {
+          creatorId: args.userId,
+          communityId: args.communityId,
+          reason: args.reason,
+        }
+      )
+  );
+  // Fail-open: a stream-service outage must not fail (or even delay) the ban/kick.
+  forceEndBreaker.fallback(() => ({ ok: false, endedCount: 0 }));
+
   return {
     getActiveCommunityIds: async (communityIds) => {
       if (!communityIds.length) return new Set();
@@ -212,6 +240,16 @@ export function createStreamClient(): StreamClient {
       } catch (err) {
         logger.warn(
           `stream.notifyMemberBanStatus failed for community=${communityId} user=${userId}: ${String(err)}`
+        );
+      }
+    },
+
+    forceEndStreamsByCreator: async (communityId, userId, reason) => {
+      try {
+        await forceEndBreaker.fire({ communityId, userId, reason });
+      } catch (err) {
+        logger.warn(
+          `stream.forceEndStreamsByCreator failed for community=${communityId} user=${userId}: ${String(err)}`
         );
       }
     },

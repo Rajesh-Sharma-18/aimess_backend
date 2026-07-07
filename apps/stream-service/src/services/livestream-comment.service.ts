@@ -1,5 +1,6 @@
 import { logger } from "@aimess/logger";
 import { ForbiddenError, NotFoundError } from "@aimess/errors";
+import { env } from "../config/env.js";
 import type { communityGrpcClient as CommunityGrpcClient } from "../grpc/community.client.js";
 
 import type { LivestreamComment } from "../generated/prisma/index.js";
@@ -133,25 +134,30 @@ export class LivestreamCommentService {
   }
 
   /**
-   * True when the stream's community is owner-CLOSED or platform-SUSPENDED.
-   * Fail-open: consistent with {@link isMuted}/{@link isCommunityBanned} — a
-   * community-service outage must not silence the whole chat on its own.
+   * Membership + community-closed snapshot for the comment write path. Single
+   * `validateMembership` call backing both {@link addComment} checks below —
+   * mirrors `LivestreamService.checkAccess`'s exact fail-open semantics: a
+   * community-service outage must not silence the whole chat, so it degrades
+   * to "member, not closed" rather than throwing/denying.
    */
-  private async isCommunityClosed(
+  private async checkMembership(
     communityId: string,
     userId: string
-  ): Promise<boolean> {
+  ): Promise<{ isMember: boolean; isCommunityClosed: boolean }> {
     try {
       const membership = await this.communityClient.validateMembership(
         communityId,
         userId
       );
-      return membership.isCommunityClosed;
+      return {
+        isMember: membership.isMember,
+        isCommunityClosed: membership.isCommunityClosed,
+      };
     } catch (error) {
       logger.warn(
-        `community-closed check failed for community=${communityId} user=${userId}: ${String(error)}`
+        `membership check failed for community=${communityId} user=${userId}: ${String(error)}`
       );
-      return false;
+      return { isMember: true, isCommunityClosed: false };
     }
   }
 
@@ -232,11 +238,28 @@ export class LivestreamCommentService {
     if (stream && (await this.isMuted(stream.communityId, params.userId))) {
       throw new ForbiddenError("COMMENTS_MUTED");
     }
+    // Membership gate — mirrors LivestreamService.checkAccess's canComment logic
+    // exactly: only enforced when STREAM_REQUIRE_MEMBERSHIP is on, and skipped
+    // for the stream owner (checkAccess short-circuits the owner before this
+    // check too). Without this, a non-member who merely knows the streamId
+    // could post a comment without ever joining — the socket layer's join-time
+    // cache is a pre-check optimization, not a substitute for this server-side
+    // enforcement (a never-joined caller isn't gated by it either).
     if (
       stream &&
-      (await this.isCommunityClosed(stream.communityId, params.userId))
+      env.STREAM_REQUIRE_MEMBERSHIP &&
+      stream.creatorId !== params.userId
     ) {
-      throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+      const { isMember, isCommunityClosed } = await this.checkMembership(
+        stream.communityId,
+        params.userId
+      );
+      if (!isMember) {
+        throw new ForbiddenError("STREAM_NOT_A_COMMUNITY_MEMBER");
+      }
+      if (isCommunityClosed) {
+        throw new ForbiddenError("COMMUNITY_IS_CLOSED");
+      }
     }
 
     // Enrich author snapshot (best-effort; degrades to empty on user-service down).
@@ -488,16 +511,31 @@ export class LivestreamCommentService {
    * - `before`: newest-first (history scroll). nextCursor = oldest item's id.
    * - `after`:  oldest-first (reconnect catch-up). nextCursor = newest item's id.
    * Pass nextCursor back as the same cursor direction for the next page.
+   *
+   * `userId` is optional — matches `LivestreamService.getStream`'s pattern —
+   * because the gRPC path (api-gateway's `stream:join`/`stream:load_more`)
+   * doesn't carry one and doesn't need this gate: a banned user is already
+   * rejected earlier, at the `stream:join` access check. The REST route
+   * (`GET /streams/:id/comments`) always passes the authenticated caller,
+   * closing the gap where a banned user could read chat history by hitting
+   * the REST endpoint directly instead of joining the socket room.
    */
   async getComments(
     livestreamId: string,
     options: { limit: number; before?: string; after?: string },
     userId?: string
   ): Promise<GetCommentsResult> {
-    // Mirror the ban gate `getStream` enforces: a user banned from this stream
-    // must not be able to read its comment history over REST.
-    if (userId && (await this.banRepo.isBanned(livestreamId, userId))) {
-      throw new ForbiddenError("STREAM_BANNED");
+    if (userId) {
+      if (await this.banRepo.isBanned(livestreamId, userId)) {
+        throw new ForbiddenError("STREAM_BANNED");
+      }
+      const stream = await this.streamRepo.findById(livestreamId);
+      if (
+        stream &&
+        (await this.isCommunityBanned(stream.communityId, userId))
+      ) {
+        throw new ForbiddenError("STREAM_BANNED");
+      }
     }
 
     const rows = await this.commentRepo.findByLivestreamId(livestreamId, {

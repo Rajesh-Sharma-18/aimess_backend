@@ -23,7 +23,14 @@ datasource db {
 // -----------------------------------------------------------------------------
 // Livestream — one go-live session for a community, either ingest mode.
 //   sourceType: PHONE_CAMERA (WebRTC/WHIP) | URL (backend ffmpeg re-stream)
-//   status:     PENDING | LIVE | ENDED | CANCELLED
+//   status:     PENDING | LIVE | RECONNECTING | ENDED | CANCELLED
+//
+//   RECONNECTING is a transient sub-state of a LIVE session: SRS reported
+//   on_unpublish (publisher dropped — refresh, mobile blip, network hiccup),
+//   but the stream is given a grace window (STREAM_RECONNECT_GRACE_MS) to
+//   republish on the same streamKey before being finalized ENDED. See
+//   LivestreamService.handleUnpublish/handlePublish and the stale-stream
+//   sweeper's sweepStaleReconnectingStreams.
 // -----------------------------------------------------------------------------
 model Livestream {
   id            String    @id @default(auto()) @map("_id") @db.ObjectId
@@ -46,6 +53,10 @@ model Livestream {
   totalComments Int       @default(0)
   livedAt          DateTime?
   endedAt          DateTime?
+  // Stamped when a LIVE stream enters RECONNECTING (on_unpublish); cleared on
+  // resume. Drives the grace-window cutoff — distinct from lastHeartbeatAt,
+  // which tracks the separate "owner's client is alive" signal.
+  disconnectedAt   DateTime?
   lastHeartbeatAt  DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
@@ -53,6 +64,7 @@ model Livestream {
   @@index([communityId])
   @@index([status])
   @@index([status, lastHeartbeatAt])
+  @@index([status, disconnectedAt])
   @@map("livestreams")
 }
 

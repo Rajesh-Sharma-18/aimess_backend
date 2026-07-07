@@ -25,6 +25,8 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
     findByStreamKey: jest.fn(),
     updateById: jest.fn(),
     findStaleLiveStreams: jest.fn().mockResolvedValue([]),
+    findStaleReconnectingStreams: jest.fn().mockResolvedValue([]),
+    countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),
     countLiveByCommunity: jest.fn().mockResolvedValue(0),
     adminList: jest.fn().mockResolvedValue([]),
     adminCount: jest.fn().mockResolvedValue(0),
@@ -37,6 +39,10 @@ function makeDeps(overrides: Partial<Record<string, unknown>> = {}) {
       flvUrl: "",
       dashUrl: "",
     }),
+    // Resolves true on the first poll so notifyWhenPlayable's fire-and-forget
+    // loop (triggered by every LIVE transition) exits immediately instead of
+    // scheduling real setTimeout retries that would outlive the test.
+    hasFrames: jest.fn().mockResolvedValue(true),
     ...(overrides.srsService as object),
   };
   const communityClient = {
@@ -177,8 +183,8 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
     );
   });
 
-  it("handleUnpublish (SRS webhook) closes open viewer sessions", async () => {
-    const stream = makeStream();
+  it("handleUnpublish (SRS webhook) on a PENDING stream (no live session to preserve) ends outright and closes viewer sessions", async () => {
+    const stream = makeStream({ status: "PENDING", livedAt: null });
     const { service, viewerSessionRepo } = makeDeps({
       streamRepo: {
         findByStreamKey: jest.fn().mockResolvedValue(stream),
@@ -255,6 +261,223 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
       "stream-1",
       expect.any(Date)
     );
+  });
+});
+
+describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () => {
+  it("handleUnpublish on a LIVE stream enters RECONNECTING instead of ending it — no viewer sessions closed, no stream.ended emitted", async () => {
+    const stream = makeStream({ status: "LIVE" });
+    const { service, streamRepo, viewerSessionRepo, eventPublisher } = makeDeps(
+      {
+        streamRepo: {
+          findByStreamKey: jest.fn().mockResolvedValue(stream),
+          updateById: jest.fn().mockResolvedValue({
+            ...stream,
+            status: "RECONNECTING",
+            disconnectedAt: new Date(),
+          }),
+        },
+      }
+    );
+
+    await service.handleUnpublish("key-1");
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ status: "RECONNECTING" })
+    );
+    expect(viewerSessionRepo.closeAllOpenForStream).not.toHaveBeenCalled();
+    expect(eventPublisher).not.toHaveBeenCalledWith(
+      "stream.ended",
+      expect.anything()
+    );
+  });
+
+  it("handleUnpublish is idempotent while already RECONNECTING — does not reset disconnectedAt or re-run any side effects", async () => {
+    const stream = makeStream({
+      status: "RECONNECTING",
+      disconnectedAt: new Date(Date.now() - 5_000),
+    });
+    const { service, streamRepo } = makeDeps({
+      streamRepo: { findByStreamKey: jest.fn().mockResolvedValue(stream) },
+    });
+
+    await service.handleUnpublish("key-1");
+    await flushMicrotasks();
+
+    expect(streamRepo.updateById).not.toHaveBeenCalled();
+  });
+
+  it("handlePublish resumes a RECONNECTING stream to LIVE, preserving the original livedAt and NOT re-emitting stream.started", async () => {
+    const originalLivedAt = new Date(Date.now() - 120_000);
+    const stream = makeStream({
+      status: "RECONNECTING",
+      livedAt: originalLivedAt,
+      disconnectedAt: new Date(Date.now() - 5_000),
+    });
+    const { service, streamRepo, eventPublisher } = makeDeps({
+      streamRepo: {
+        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        countActiveByCommunityAndCreator: jest.fn().mockResolvedValue(0),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "LIVE",
+          disconnectedAt: null,
+        }),
+      },
+    });
+
+    const allowed = await service.handlePublish("key-1");
+    await flushMicrotasks();
+
+    expect(allowed).toBe(true);
+    expect(streamRepo.updateById).toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ status: "LIVE", disconnectedAt: null })
+    );
+    // Resume must not stamp a new livedAt — the update payload should omit it.
+    expect(streamRepo.updateById).not.toHaveBeenCalledWith(
+      "stream-1",
+      expect.objectContaining({ livedAt: expect.anything() })
+    );
+    expect(eventPublisher).not.toHaveBeenCalledWith(
+      "stream.started",
+      expect.anything()
+    );
+  });
+
+  it("sweepStaleReconnectingStreams finalizes a stream whose grace window expired — ends it and closes viewer sessions", async () => {
+    const stream = makeStream({
+      status: "RECONNECTING",
+      disconnectedAt: new Date(Date.now() - 120_000),
+    });
+    const { service, viewerSessionRepo, eventPublisher } = makeDeps({
+      streamRepo: {
+        findStaleReconnectingStreams: jest.fn().mockResolvedValue([stream]),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "ENDED",
+          endedAt: new Date(),
+        }),
+      },
+    });
+
+    await service.sweepStaleStreams();
+    await flushMicrotasks();
+
+    expect(viewerSessionRepo.closeAllOpenForStream).toHaveBeenCalledWith(
+      "stream-1",
+      expect.any(Date)
+    );
+    expect(eventPublisher).toHaveBeenCalledWith(
+      "stream.ended",
+      expect.objectContaining({ streamId: "stream-1" })
+    );
+  });
+});
+
+describe("LivestreamService.forceEndStreamsByCreator — account/membership-loss bulk force-end", () => {
+  it("ends every active stream returned for the creator and closes their viewer sessions", async () => {
+    const streamA = makeStream({ id: "stream-a", status: "LIVE" });
+    const streamB = makeStream({ id: "stream-b", status: "RECONNECTING" });
+    const { service, streamRepo, viewerSessionRepo, eventPublisher } = makeDeps(
+      {
+        streamRepo: {
+          findActiveByCreator: jest.fn().mockResolvedValue([streamA, streamB]),
+          updateById: jest
+            .fn()
+            .mockImplementation((id: string, data: Record<string, unknown>) =>
+              Promise.resolve({
+                ...(id === "stream-a" ? streamA : streamB),
+                ...data,
+              })
+            ),
+        },
+      }
+    );
+
+    const result = await service.forceEndStreamsByCreator(
+      "creator-1",
+      undefined,
+      "ACCOUNT_BANNED"
+    );
+
+    expect(result).toEqual({ endedCount: 2 });
+    expect(streamRepo.findActiveByCreator).toHaveBeenCalledWith(
+      "creator-1",
+      undefined
+    );
+    expect(viewerSessionRepo.closeAllOpenForStream).toHaveBeenCalledWith(
+      "stream-a",
+      expect.any(Date)
+    );
+    expect(viewerSessionRepo.closeAllOpenForStream).toHaveBeenCalledWith(
+      "stream-b",
+      expect.any(Date)
+    );
+    expect(eventPublisher).toHaveBeenCalledWith(
+      "stream.ended",
+      expect.objectContaining({ streamId: "stream-a" })
+    );
+    expect(eventPublisher).toHaveBeenCalledWith(
+      "stream.ended",
+      expect.objectContaining({ streamId: "stream-b" })
+    );
+  });
+
+  it("passes the communityId through unchanged when scoping to one community", async () => {
+    const { service, streamRepo } = makeDeps({
+      streamRepo: { findActiveByCreator: jest.fn().mockResolvedValue([]) },
+    });
+
+    const result = await service.forceEndStreamsByCreator(
+      "creator-1",
+      "comm-1",
+      "COMMUNITY_BANNED"
+    );
+
+    expect(result).toEqual({ endedCount: 0 });
+    expect(streamRepo.findActiveByCreator).toHaveBeenCalledWith(
+      "creator-1",
+      "comm-1"
+    );
+  });
+
+  it("one stream failing to end does not stop the rest from being ended", async () => {
+    const streamA = makeStream({ id: "stream-a", status: "LIVE" });
+    const streamB = makeStream({ id: "stream-b", status: "LIVE" });
+    const { service } = makeDeps({
+      streamRepo: {
+        findActiveByCreator: jest.fn().mockResolvedValue([streamA, streamB]),
+        updateById: jest
+          .fn()
+          .mockImplementationOnce(() => Promise.reject(new Error("db down")))
+          .mockImplementationOnce((id: string, data: Record<string, unknown>) =>
+            Promise.resolve({ ...streamB, ...data })
+          ),
+      },
+    });
+
+    const result = await service.forceEndStreamsByCreator(
+      "creator-1",
+      undefined,
+      "ACCOUNT_DELETED"
+    );
+
+    expect(result).toEqual({ endedCount: 1 });
+  });
+
+  it("never throws — swallows a repo query failure and returns endedCount: 0", async () => {
+    const { service } = makeDeps({
+      streamRepo: {
+        findActiveByCreator: jest.fn().mockRejectedValue(new Error("db down")),
+      },
+    });
+
+    await expect(
+      service.forceEndStreamsByCreator("creator-1", undefined, "ACCOUNT_BANNED")
+    ).resolves.toEqual({ endedCount: 0 });
   });
 });
 

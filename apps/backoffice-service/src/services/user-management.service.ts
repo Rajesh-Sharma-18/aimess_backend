@@ -18,6 +18,7 @@ import {
 } from "../repositories/index.js";
 import { authClient } from "../grpc/auth.client.js";
 import { communityClient } from "../grpc/community.client.js";
+import { streamClient } from "../grpc/stream.client.js";
 import type { RequestAdmin } from "../types/index.js";
 import type {
   ListCommunityMembersQuery,
@@ -512,6 +513,12 @@ export const userManagementService = {
         at: ref.at,
       });
     }
+    // Best-effort: an account ban/suspend must not leave an existing
+    // broadcast running on a still-valid access token until it expires.
+    void streamClient.forceEndStreamsByCreator(
+      userId,
+      timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
+    );
 
     return result;
   },
@@ -568,6 +575,8 @@ export const userManagementService = {
       actorId: ref.actorId,
       at: ref.at,
     });
+    // Best-effort — see banUser's identical call for why.
+    void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
 
     return result;
   },
@@ -690,6 +699,11 @@ export const userManagementService = {
           at: ref.at,
         });
       }
+      // Best-effort — see banUser's identical call for why.
+      void streamClient.forceEndStreamsByCreator(
+        item.userId,
+        timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
+      );
     }
 
     return result;

@@ -45,6 +45,14 @@ const envSchema = z.object({
    */
   STREAM_HEARTBEAT_TIMEOUT_MS: z.coerce.number().positive().default(300_000),
   /**
+   * How long (ms) a RECONNECTING stream (publisher dropped — refresh, mobile
+   * blip, network hiccup) may sit before the sweeper finalizes it ENDED. A
+   * republish on the same streamKey within this window resumes LIVE instead.
+   * Kept well under STREAM_HEARTBEAT_TIMEOUT_MS so a resume never immediately
+   * re-trips the heartbeat-timeout sweep. Default: 45 seconds.
+   */
+  STREAM_RECONNECT_GRACE_MS: z.coerce.number().positive().default(45_000),
+  /**
    * How long (ms) a PENDING stream (created but never went LIVE — abandoned
    * setup, crashed client, failed publish) may sit before the sweeper
    * auto-cancels it. Without this a stuck PENDING row permanently occupies the
@@ -55,6 +63,14 @@ const envSchema = z.object({
   // ---- SRS (OSSRS) media server endpoints ----
   /** SRS HTTP API base (clients DELETE, GET /api/v1/streams, etc.). */
   SRS_API_URL: z.string().url().default("http://localhost:1985"),
+  /**
+   * HTTP API base for the SRS instance that receives the OBS/RTMP publisher
+   * directly (distinct from SRS_API_URL, which on the hosted 3-instance setup
+   * only sees a forwarded copy). Optional — falls back to SRS_API_URL when
+   * unset (correct for local Docker SRS, a single all-in-one instance).
+   * kickStream uses this for OBS_RTMP streams, SRS_API_URL for everything else.
+   */
+  SRS_INGEST_API_URL: z.string().url().optional(),
   /** SRS RTMP host (ffmpeg push target for URL mode). */
   SRS_RTMP_HOST: z.string().default("localhost"),
   /** Base for HLS/FLV playback URLs minted for viewers. */

@@ -30,6 +30,11 @@ export interface AdminForceEndResult {
   status: string;
 }
 
+export interface ForceEndStreamsByCreatorResult {
+  ok: boolean;
+  endedCount: number;
+}
+
 /** One viewer session row from AdminListViewerSessions. */
 export interface AdminViewerSessionRow {
   userId: string;
@@ -212,6 +217,24 @@ const adminForceEndBreaker = makeBreaker(
     ).then((r) => ({ success: r.success ?? false, status: r.status ?? "" }))
 );
 
+// Best-effort — a stream-service outage must not fail an account ban/suspend.
+const forceEndByCreatorBreaker = makeBreaker(
+  "stream.forceEndStreamsByCreator",
+  (args: { creatorId: string; reason: string }) =>
+    call<
+      { creatorId: string; communityId: string; reason: string },
+      { ok?: boolean; endedCount?: number }
+    >("forceEndStreamsByCreator", {
+      creatorId: args.creatorId,
+      communityId: "", // unscoped — account-level action ends every stream everywhere
+      reason: args.reason,
+    }).then((r) => ({
+      ok: r.ok ?? false,
+      endedCount: Number(r.endedCount ?? 0),
+    }))
+);
+forceEndByCreatorBreaker.fallback(() => ({ ok: false, endedCount: 0 }));
+
 const getStreamStatsBreaker = makeBreaker(
   "stream.getStreamStats",
   (args: { streamId: string }) =>
@@ -333,5 +356,23 @@ export const streamClient = {
     reason: string
   ): Promise<AdminForceEndResult> {
     return await adminForceEndBreaker.fire({ streamId, reason });
+  },
+
+  /**
+   * Best-effort: force-ends every non-terminal stream `creatorId` owns,
+   * across every community. Called after an account ban/suspend — an admin
+   * action that means "this account shouldn't be usable right now" must not
+   * leave an existing broadcast running. Fail-open: a stream-service outage
+   * must not fail the ban/suspend itself.
+   */
+  async forceEndStreamsByCreator(
+    creatorId: string,
+    reason: string
+  ): Promise<ForceEndStreamsByCreatorResult> {
+    try {
+      return await forceEndByCreatorBreaker.fire({ creatorId, reason });
+    } catch {
+      return { ok: false, endedCount: 0 };
+    }
   },
 };

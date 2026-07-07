@@ -38,6 +38,8 @@ const envSchema = z
     JWT_ACCESS_SECRET: z.string().min(1),
 
     AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),
+    /** stream-service gRPC endpoint — force-ends a deleted account's active streams. */
+    STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
 
     MINIO_ENDPOINT: z.string().url(),
     /**

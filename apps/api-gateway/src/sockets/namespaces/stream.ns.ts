@@ -548,7 +548,14 @@ export function registerStreamNamespace(
         // commentStatus). The authoritative check still runs server-side in
         // stream-service on every PostComment call — this only avoids a
         // pointless round trip for a user we already know is blocked.
-        if (streamCommentPermissions.get(streamId) === false) {
+        // Must also require room membership: `.get(streamId) === false` alone
+        // passes (undefined !== false) for a socket that never called
+        // stream:join at all, since it never got an entry in this map — same
+        // shape as the stream:react/stream:comment:delete room checks below.
+        if (
+          !socket.rooms.has(roomKey(streamId)) ||
+          streamCommentPermissions.get(streamId) === false
+        ) {
           ackError(callback, "FORBIDDEN", locale);
           return;
         }
