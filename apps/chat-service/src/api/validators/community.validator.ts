@@ -103,12 +103,14 @@ export const sendCommunityMessageBodySchema = z
   });
 
 /**
- * REST body for `POST /community/rooms/:roomId/read`. The body accepts
- * `upToMessageId` for parity with private/group, but community read is COARSER:
- * it advances the member's read pointer to "now" (no per-message high-water
- * mark) and has no socket broadcast — see CommunityMessageController.markRead.
+ * REST body for `POST /community/rooms/:roomId/read`. `communityId` is
+ * required so the read-receipt broadcast reaches the right /community room
+ * (clients join community:<communityId>, mirroring send/edit); `upToMessageId`
+ * gives a per-message high-water mark, matching private/group's live read
+ * receipt instead of community's previous read-to-now-only behavior.
  */
 export const markCommunityReadBodySchema = z.object({
+  communityId: z.string().min(1),
   upToMessageId: z.string().min(1).max(150),
 });
 
@@ -164,4 +166,17 @@ export const unpinCommunityMessageSchema = z.object({
 
 export const unpinCommunityMessageQuerySchema = z.object({
   communityId: z.string().min(1),
+});
+
+/**
+ * REST body for `POST /community/rooms/:roomId/messages/:messageId/forward`.
+ * roomId (path) is the SOURCE room — bound in the service to the message's
+ * actual room, closing the cross-community forward read-IDOR (mirrors
+ * private/group's forward route). targetCommunityId/targetRoomId identify the
+ * destination community + its chat room.
+ */
+export const forwardCommunityMessageBodySchema = z.object({
+  targetCommunityId: z.string().min(1),
+  targetRoomId: z.string().min(1),
+  clientMessageId: z.string().min(1).max(100).nullish(),
 });

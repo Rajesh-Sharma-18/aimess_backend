@@ -38,6 +38,13 @@ service StreamService {
   // community get kicked in real time (reuses the `stream:banned` socket event —
   // same as a stream-local ban). Never fails the caller.
   rpc NotifyMemberBanStatus (NotifyMemberBanStatusRequest) returns (NotifyMemberBanStatusResponse);
+  // Best-effort bulk force-end: every non-terminal (PENDING/LIVE/RECONNECTING)
+  // stream owned by creator_id. community_id="" = unscoped (account-level
+  // ban/suspend/deletion — end every stream everywhere); community_id set =
+  // scoped to just that community (community-wide ban/kick — the creator may
+  // still be legitimately live in a different community). Never fails the
+  // caller — same contract as NotifyMemberBanStatus above.
+  rpc ForceEndStreamsByCreator (ForceEndStreamsByCreatorRequest) returns (ForceEndStreamsByCreatorResponse);
 
   // ---- Backoffice (admin panel) Livestream Management ----
   // Source-of-truth read path for the admin Livestream Management screen.
@@ -125,7 +132,7 @@ message CheckStreamAccessResponse {
   bool   can_comment = 5; // reflects stream.commentStatus; false = chat disabled
   // Stream snapshot — populated when allowed=true so the gateway can enrich the
   // join ack without a second round-trip. Clients use this for reconnect recovery.
-  string stream_status = 6; // PENDING | LIVE | ENDED | CANCELLED
+  string stream_status = 6; // PENDING | LIVE | RECONNECTING | ENDED | CANCELLED
   string title         = 7;
   string description   = 8;
   string thumbnail     = 9;  // raw object key; "" if none
@@ -139,8 +146,8 @@ message GetStreamStatsRequest {
 }
 message GetStreamStatsResponse {
   bool   found          = 1; // false if stream_id not found
-  string status         = 2; // PENDING | LIVE | ENDED | CANCELLED | ""
-  int64  viewer_count   = 3; // current live viewer count (from Redis when LIVE)
+  string status         = 2; // PENDING | LIVE | RECONNECTING | ENDED | CANCELLED | ""
+  int64  viewer_count   = 3; // current live viewer count (from Redis when LIVE/RECONNECTING)
   int64  peak_viewers   = 4;
   int64  total_views    = 5;
   int64  total_comments = 6;
@@ -205,10 +212,10 @@ message AdminStreamRow {
   string description     = 5;
   string thumbnail       = 6;  // raw object key; "" if none
   string source_type     = 7;  // PHONE_CAMERA | URL | YOUTUBE
-  string status          = 8;  // PENDING | LIVE | ENDED | CANCELLED
+  string status          = 8;  // PENDING | LIVE | RECONNECTING | ENDED | CANCELLED
   string hls_url         = 9;  // "" if none
   string flv_url         = 10; // "" if none
-  int64  viewer_count    = 11; // live count for LIVE streams, else stored
+  int64  viewer_count    = 11; // live count for LIVE/RECONNECTING streams, else stored
   int64  peak_viewers    = 12;
   int64  total_views     = 13;
   int64  total_comments  = 14;
@@ -216,6 +223,11 @@ message AdminStreamRow {
   int64  lived_at        = 16; // epoch ms; 0 if never went live
   int64  ended_at        = 17; // epoch ms; 0 if not ended
   int64  created_at      = 18; // epoch ms
+  // Distinct-user count from LivestreamViewerSession — the SAME source of
+  // truth AdminListViewerSessions dedupes to. Use this (not total_views,
+  // which is a raw join-attempt/checkAccess-call counter that double-counts
+  // reconnects) whenever a viewer count must match the admin viewer list.
+  int64  unique_viewer_count = 19;
 }
 
 message AdminListStreamsRequest {
@@ -267,6 +279,16 @@ message NotifyMemberBanStatusRequest {
 }
 message NotifyMemberBanStatusResponse {
   bool ok = 1;
+}
+
+message ForceEndStreamsByCreatorRequest {
+  string creator_id   = 1;
+  string community_id = 2; // "" = unscoped (every community)
+  string reason       = 3; // free-text, logged only (e.g. "ACCOUNT_BANNED")
+}
+message ForceEndStreamsByCreatorResponse {
+  bool  ok          = 1; // always true — best-effort, never fails the caller
+  int64 ended_count = 2;
 }
 
 // ---- Viewer session tracking ------------------------------------------------

@@ -57,7 +57,28 @@ beforeEach(() => {
     PERMISSIONS.COMMUNITIES_MODERATE,
   ]);
   svc.listCommunities.mockResolvedValue(PAGE);
-  svc.getCommunity.mockResolvedValue({ communityId: CID, name: "Builders" });
+  svc.getCommunity.mockResolvedValue({
+    community: { communityId: CID, name: "Builders" },
+    owner: { userId: "u_1", displayName: "Owner" },
+    memberStats: {
+      total: 21,
+      active: 20,
+      pending: 0,
+      banned: 1,
+      moderators: 2,
+      joinedLast7d: 3,
+    },
+    livestreamStats: {
+      total: 4,
+      live: 1,
+      scheduled: 0,
+      maxConcurrent: 5,
+      stale: true,
+    },
+    moderationHistory: [{ id: "mh_1", type: "suspend_community" }],
+    settingsSummary: { joinPolicy: "OPEN", memberCount: 21 },
+    partial: false,
+  });
   svc.listCommunityMembers.mockResolvedValue(PAGE);
   svc.closeCommunity.mockResolvedValue({ communityId: CID, status: "CLOSED" });
   svc.reopenCommunity.mockResolvedValue({ communityId: CID, status: "ACTIVE" });
@@ -102,10 +123,39 @@ describe("GET /v1/communities", () => {
 });
 
 describe("GET /v1/communities/:communityId", () => {
-  it("returns 200 with the detail", async () => {
+  it("returns 200 with the detail, numeric memberStats/livestreamStats, and no dropped fields", async () => {
     const res = await request(app).get(`/v1/communities/${CID}`).set(auth());
     expect(res.status).toBe(200);
+    // Community fields are flattened onto the root — no `community` wrapper.
+    expect(res.body.data).not.toHaveProperty("community");
     expect(res.body.data.communityId).toBe(CID);
+    expect(res.body.data.owner).toEqual({
+      userId: "u_1",
+      displayName: "Owner",
+    });
+    // memberStats/livestreamStats collapse from an object to a number.
+    expect(res.body.data.memberStats).toBe(21);
+    expect(res.body.data.livestreamStats).toBe(4);
+    // These fields must never appear in the response.
+    expect(res.body.data).not.toHaveProperty("moderationHistory");
+    expect(res.body.data).not.toHaveProperty("settingsSummary");
+    expect(res.body.data).not.toHaveProperty("partial");
+  });
+
+  it("livestreamStats defaults to 0 when the repository has no livestream data", async () => {
+    svc.getCommunity.mockResolvedValue({
+      community: { communityId: CID, name: "Builders" },
+      owner: { userId: "u_1", displayName: "Owner" },
+      memberStats: { total: 5 },
+      livestreamStats: null,
+      moderationHistory: [],
+      settingsSummary: { joinPolicy: "OPEN", memberCount: 5 },
+      partial: true,
+    });
+    const res = await request(app).get(`/v1/communities/${CID}`).set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.data.memberStats).toBe(5);
+    expect(res.body.data.livestreamStats).toBe(0);
   });
 
   it("returns 404 when the community is unknown", async () => {
@@ -127,6 +177,66 @@ describe("GET /v1/communities/:communityId", () => {
       .get(`/v1/communities/${CID}/members?role=GOD`)
       .set(auth());
     expect(res.status).toBe(400);
+  });
+
+  it("members list defaults to sortField=joinedAt/sortDir=desc when sort is omitted", async () => {
+    const res = await request(app)
+      .get(`/v1/communities/${CID}/members`)
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listCommunityMembers.mock.calls[0][1]).toMatchObject({
+      sortField: "joinedAt",
+      sortDir: "desc",
+    });
+  });
+
+  it.each([
+    ["username:asc", "username", "asc"],
+    ["username:desc", "username", "desc"],
+    ["handle:asc", "handle", "asc"],
+    ["handle:desc", "handle", "desc"],
+    ["joinedAt:asc", "joinedAt", "asc"],
+    ["joinedAt:desc", "joinedAt", "desc"],
+  ])(
+    "members list maps sort=%s to sortField/sortDir",
+    async (token, field, dir) => {
+      const res = await request(app)
+        .get(`/v1/communities/${CID}/members?sort=${token}`)
+        .set(auth());
+      expect(res.status).toBe(200);
+      expect(svc.listCommunityMembers.mock.calls[0][1]).toMatchObject({
+        sortField: field,
+        sortDir: dir,
+      });
+    }
+  );
+
+  it("members list falls back to joinedAt:desc for an invalid sort token", async () => {
+    const res = await request(app)
+      .get(`/v1/communities/${CID}/members?sort=avatarUrl:asc`)
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listCommunityMembers.mock.calls[0][1]).toMatchObject({
+      sortField: "joinedAt",
+      sortDir: "desc",
+    });
+  });
+
+  it("members list still honors page/limit/role/search alongside sort", async () => {
+    const res = await request(app)
+      .get(
+        `/v1/communities/${CID}/members?sort=username:asc&page=2&limit=10&role=MODERATOR&q=alice`
+      )
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(svc.listCommunityMembers.mock.calls[0][1]).toMatchObject({
+      sortField: "username",
+      sortDir: "asc",
+      page: 2,
+      limit: 10,
+      role: "MODERATOR",
+      search: "alice",
+    });
   });
 });
 

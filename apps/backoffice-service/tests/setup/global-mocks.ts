@@ -54,6 +54,7 @@ jest.mock("../../src/grpc/user.client.js", () => ({
   userClient: {
     adminGetProfilesByIds: jest.fn(async () => []),
     adminGetProfile: jest.fn(async () => null),
+    adminSearchProfileIds: jest.fn(async () => []),
   },
   adminGetProfilesByIdsBreaker: { fire: jest.fn() },
   adminGetProfileBreaker: { fire: jest.fn() },
@@ -63,6 +64,8 @@ jest.mock("../../src/grpc/community.client.js", () => ({
     adminGetCommunitiesByIds: jest.fn(async () => new Map()),
     adminListCommunities: jest.fn(async () => ({ communities: [], total: 0 })),
     adminGetMemberRoles: jest.fn(async () => new Map()),
+    adminSearchCommunityIds: jest.fn(async () => []),
+    adminListCategories: jest.fn(async () => ({ categories: [], total: 0 })),
   },
 }));
 // stream.client runs `import.meta.url` + a live gRPC dial at import; it is now

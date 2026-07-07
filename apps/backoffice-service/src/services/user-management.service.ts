@@ -18,6 +18,7 @@ import {
 } from "../repositories/index.js";
 import { authClient } from "../grpc/auth.client.js";
 import { communityClient } from "../grpc/community.client.js";
+import { streamClient } from "../grpc/stream.client.js";
 import type { RequestAdmin } from "../types/index.js";
 import type {
   ListCommunityMembersQuery,
@@ -38,7 +39,6 @@ import type {
   ModerationHistoryItem,
   PaginationMeta,
   ReportRow,
-  ReportsSummary,
   StatusChange,
   UserDetail,
   UserListItem,
@@ -72,7 +72,9 @@ type OtherCommunityMemberRow = {
   username: string;
   /** Email hydrated from auth-service; null when unavailable. */
   email: string | null;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   role: string;
   joinedAt: string;
 };
@@ -88,17 +90,13 @@ type UserReportRow = Omit<ReportRow, "reporter"> & {
   reporter: {
     userId: string;
     username: string | null;
-    /** Presigned GET URL for the reporter's avatar, or null. */
-    avatarUrl: string | null;
-    /** Lifetime of `avatarUrl` in seconds; null when avatarUrl is null. */
-    avatarUrlExpiresIn: number | null;
+    /** firstName + lastName (trimmed, single-spaced); null when both are absent. */
+    fullname: string | null;
     /**
-     * Nested media descriptor for the reporter's avatar (additive, always
-     * present). Inner fields are null when the avatar is unset / presign
-     * failed. Wraps the same presigned GET the legacy `avatarUrl` carries via
-     * the shared media layer.
+     * Standard avatar object (see @aimess/shared-types MediaObject); null
+     * when no avatar is set. Replaces the legacy bare avatarUrl string.
      */
-    avatar: MediaObject;
+    avatar: MediaObject | null;
   };
 };
 
@@ -143,17 +141,16 @@ export const userManagementService = {
     // the page — bounded by `limit` — is not an N+1.
     const data = await Promise.all(
       page.data.map(async (item) => {
-        // Legacy flat fields + the additive nested `avatar: MediaObject` are
-        // resolved from the SAME stored value. Both are presign-only (no HEAD),
-        // so this stays a local-signing map (bounded by `limit`), not an N+1.
-        const [av, avatar] = await Promise.all([
-          userAvatarService.resolveViewUrl(item.avatarUrl),
-          userAvatarService.resolveMediaObject(item.avatarUrl),
-        ]);
+        // Presign-only (no HEAD), so this stays a local-signing map (bounded
+        // by `limit`), not an N+1.
+        const avatar = await userAvatarService.resolveAvatarOrNull(
+          item.avatarUrl
+        );
+        // `item.avatarUrl` is the raw internal object key (never a response
+        // field) — destructure it out so it can't leak via the spread below.
+        const { avatarUrl: _avatarUrl, ...rest } = item;
         return {
-          ...item,
-          avatarUrl: av?.url ?? null,
-          avatarUrlExpiresIn: av?.expiresIn ?? null,
+          ...rest,
           avatar,
         };
       })
@@ -199,31 +196,36 @@ export const userManagementService = {
     if (!row) return null;
 
     const [
-      reportsSummary,
-      reportCategories,
+      categoryCounts,
+      otherReasons,
+      latestReportPage,
       moderationHistory,
-      avatarView,
       avatar,
     ] = await Promise.all([
-      buildReportsSummary(userId),
+      // Single source of truth for report-reason counts (ALL reasons,
+      // predefined + "OTHER") — topReasons/reportCount are both derived from
+      // this ONE query below instead of each re-aggregating the Report table.
       reportDetailRepository.categoryCounts(userId),
+      reportDetailRepository.otherReasonNotes(userId),
+      // page 1, limit 1 → just the single most recent report. Reuses the
+      // same paginated + gRPC-reporter-enriched query the "Reported
+      // Details" list endpoint uses, instead of a bespoke lookup.
+      reportDetailRepository.listForUser(userId, 1, 1),
       buildModerationHistory(userId),
-      // Legacy flat fields: presign the raw avatar key (from user-service via
-      // gRPC) into a GET URL.
-      userAvatarService.resolveViewUrl(row.avatarUrl),
-      // Additive nested descriptor from the SAME stored value (presign-only).
-      userAvatarService.resolveMediaObject(row.avatarUrl),
+      // Nested media descriptor for the avatar (presign-only, no HEAD).
+      userAvatarService.resolveAvatarOrNull(row.avatarUrl),
     ]);
+
+    const topReasons = categoryCounts.filter((c) => c.reason !== "OTHER");
+    const reportCount = categoryCounts.reduce((sum, c) => sum + c.count, 0);
+    const latestReport = latestReportPage.data[0];
 
     return {
       profile: {
         userId: row.userId,
         username: row.username,
+        fullName: row.fullName,
         email: row.email,
-        // Presigned GET URL (null when unset / presign unavailable).
-        avatarUrl: avatarView?.url ?? null,
-        avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-        // Additive nested media descriptor wrapping the same presigned GET.
         avatar,
         joinedAt: row.joinedAt,
         lastActiveAt: row.lastActiveAt,
@@ -233,15 +235,18 @@ export const userManagementService = {
         since: row.since,
         reason: row.reason,
         suspendedUntil: row.suspendedUntil,
+        // moderationHistory is composed here for `appliedBy` only — it is no
+        // longer part of the public response (removed per UI requirements).
         appliedBy: moderationHistory[0]?.actorId ?? null,
         ...deriveModerationStatus(row.status),
       },
-      reportsSummary,
-      reportCategories,
-      moderationHistory,
-      // reportCount mirrors the aggregated reports total (admin_db); the live
-      // directory row no longer carries a denormalized count.
-      stats: { reportCount: reportsSummary.total },
+      reportDetails: {
+        reporter: latestReport?.reporter.username ?? null,
+        reportDate: latestReport?.createdAt ?? null,
+        reportCount,
+        topReasons,
+        otherReasons,
+      },
     };
   },
 
@@ -265,21 +270,16 @@ export const userManagementService = {
     );
     const data = await Promise.all(
       result.data.map(async (row) => {
-        // Legacy flat fields + the additive nested `avatar: MediaObject` are
-        // resolved from the SAME raw stored avatar key. Both are presign-only
-        // (no HEAD), so this stays a local-signing map (bounded by `limit`),
-        // not an N+1 — same justification as `listUsers`.
-        const [av, avatar] = await Promise.all([
-          userAvatarService.resolveViewUrl(row.reporter.avatarKey),
-          userAvatarService.resolveMediaObject(row.reporter.avatarKey),
-        ]);
+        // Presign-only (no HEAD), so this stays a local-signing map (bounded
+        // by `limit`), not an N+1 — same justification as `listUsers`.
+        const avatar = await userAvatarService.resolveAvatarOrNull(
+          row.reporter.avatarKey
+        );
         const { avatarKey: _avatarKey, ...reporter } = row.reporter;
         return {
           ...row,
           reporter: {
             ...reporter,
-            avatarUrl: av?.url ?? null,
-            avatarUrlExpiresIn: av?.expiresIn ?? null,
             avatar,
           },
         };
@@ -400,7 +400,7 @@ export const userManagementService = {
       userId: m.userId,
       username: m.username,
       email: emailMap.get(m.userId) ?? null,
-      avatarUrl: m.avatarUrl,
+      avatar: m.avatar,
       role: m.role,
       joinedAt: m.joinedAt,
     }));
@@ -513,6 +513,12 @@ export const userManagementService = {
         at: ref.at,
       });
     }
+    // Best-effort: an account ban/suspend must not leave an existing
+    // broadcast running on a still-valid access token until it expires.
+    void streamClient.forceEndStreamsByCreator(
+      userId,
+      timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
+    );
 
     return result;
   },
@@ -569,6 +575,8 @@ export const userManagementService = {
       actorId: ref.actorId,
       at: ref.at,
     });
+    // Best-effort — see banUser's identical call for why.
+    void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
 
     return result;
   },
@@ -691,6 +699,11 @@ export const userManagementService = {
           at: ref.at,
         });
       }
+      // Best-effort — see banUser's identical call for why.
+      void streamClient.forceEndStreamsByCreator(
+        item.userId,
+        timeBoxed ? "ACCOUNT_SUSPENDED" : "ACCOUNT_BANNED"
+      );
     }
 
     return result;
@@ -843,42 +856,6 @@ async function snapshotStatuses(
     select: { userId: true, status: true },
   });
   return new Map(rows.map((r) => [r.userId, r.status as UserStatus]));
-}
-
-/** Aggregate Reports filed against a user (type='user', targetId=userId). */
-async function buildReportsSummary(userId: string): Promise<ReportsSummary> {
-  const grouped = await prisma.report.groupBy({
-    by: ["status"],
-    where: { type: "user", targetId: userId },
-    _count: { _all: true },
-  });
-
-  const byStatus = new Map<string, number>();
-  let total = 0;
-  for (const g of grouped) {
-    const c = g._count._all;
-    byStatus.set(g.status, c);
-    total += c;
-  }
-
-  const topGrouped = await prisma.report.groupBy({
-    by: ["reason"],
-    where: { type: "user", targetId: userId },
-    _count: { _all: true },
-    orderBy: { _count: { reason: "desc" } },
-    take: 5,
-  });
-
-  return {
-    total,
-    open: byStatus.get("open") ?? 0,
-    resolved: byStatus.get("resolved") ?? 0,
-    dismissed: byStatus.get("dismissed") ?? 0,
-    topReasons: topGrouped.map((g) => ({
-      reason: g.reason,
-      count: g._count._all,
-    })),
-  };
 }
 
 /** Moderation trail for a user, newest first. */

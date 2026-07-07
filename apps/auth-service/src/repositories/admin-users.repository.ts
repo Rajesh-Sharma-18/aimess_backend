@@ -26,6 +26,7 @@ export interface AdminListUsersParams {
   limit: number;
   offset: number;
   userIds: string[];
+  excludeUserIds: string[];
 }
 
 /**
@@ -98,9 +99,29 @@ export const adminUsersRepository = {
       and.push({ createdAt });
     }
 
-    // user_ids: when non-empty, constrain to these ids.
-    if (params.userIds.length > 0) {
-      and.push({ id: { in: params.userIds } });
+    // user_ids: when non-empty, constrain to these ids. `AuthUser.id` is a
+    // `@db.Uuid` column — a non-UUID-shaped value (e.g. the backoffice
+    // UserIndex mirror's dev-seed ids like "u_seed_29"; that table has no
+    // cross-DB FK to this one, so nothing guarantees its ids stay valid
+    // UUIDs) makes Postgres throw `invalid input syntax for type uuid`
+    // instead of just matching zero rows. Filtering to well-formed UUIDs
+    // first is behavior-preserving: a malformed id could never have matched
+    // a real row anyway, so dropping it changes nothing about which rows
+    // `in`/`notIn` select — it only avoids handing Postgres a value it can't
+    // even parse as the column's type.
+    const userIds = params.userIds.filter(isUuid);
+    const excludeUserIds = params.excludeUserIds.filter(isUuid);
+
+    if (userIds.length > 0) {
+      and.push({ id: { in: userIds } });
+    }
+
+    // exclude_user_ids: when non-empty, drop these ids (used by the backoffice
+    // status=ACTIVE filter to exclude users the UserIndex mirror has banned —
+    // this table's own `status` column is never flipped to BANNED/SUSPENDED by
+    // the admin ban/suspend flows, so it can't express that exclusion itself).
+    if (excludeUserIds.length > 0) {
+      and.push({ id: { notIn: excludeUserIds } });
     }
 
     const where: Prisma.AuthUserWhereInput = and.length > 0 ? { AND: and } : {};
@@ -140,6 +161,15 @@ export const adminUsersRepository = {
     return prisma.authUser.findUnique({ where: { id: userId } });
   },
 };
+
+/** RFC-4122-shaped UUID (any version/variant) — matches Postgres' own `uuid` input check. */
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether `value` is well-formed enough for `AuthUser.id` (a `@db.Uuid` column). */
+function isUuid(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
 
 /** Parse an ISO datetime string; returns undefined for empty/invalid input. */
 function parseIso(value: string): Date | undefined {

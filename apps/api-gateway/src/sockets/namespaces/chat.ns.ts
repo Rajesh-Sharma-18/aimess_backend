@@ -3,7 +3,7 @@ import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
-import { ackOk, ackError } from "../ack.js";
+import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
@@ -275,6 +275,25 @@ export function registerChatNamespace(
     conversationId: z.string().min(1),
     upToMessageId: z.string().min(1),
   });
+  // Parity with /community's community:message:delete / pin / unpin — private/
+  // group previously had no socket RPC for these (REST-only).
+  const MessageDeleteSchema = z.object({
+    conversationId: z.string().min(1),
+    messageId: z.string().min(1),
+    type: z.enum(["forMe", "forEveryone"]).default("forMe"),
+    conversationType: z.preprocess(
+      (v) => (typeof v === "string" ? v.toLowerCase() : v),
+      z.enum(["private", "group"]).default("private")
+    ),
+  });
+  const MessagePinSchema = z.object({
+    conversationId: z.string().min(1),
+    messageId: z.string().min(1),
+    conversationType: z.preprocess(
+      (v) => (typeof v === "string" ? v.toLowerCase() : v),
+      z.enum(["private", "group"]).default("private")
+    ),
+  });
   const PresenceSubscribeSchema = z.object({
     peerIds: z.array(z.string().min(1)).max(500),
   });
@@ -416,7 +435,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:send gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -436,7 +456,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:read gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -456,7 +477,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:react gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -476,7 +498,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat messages:fetch gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -564,7 +587,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:edit gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -585,7 +609,8 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:delivered gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -780,7 +805,11 @@ export function registerChatNamespace(
         conversationId,
         setTimeout(() => {
           recordingTimers.delete(conversationId);
-          chat
+          // socket.to() (sender excluded) — matches the manual start/stop
+          // broadcasts above so the sender never receives its own recording
+          // indicator, regardless of whether the stop was auto-expired or
+          // client-initiated.
+          socket
             .to(`conv:${conversationId}`)
             .emit("recording:stop", recordingPayload(conversationId));
         }, 6000)
@@ -823,7 +852,93 @@ export function registerChatNamespace(
           )
           .catch((err: unknown) => {
             logger.warn(`/chat message:forward gRPC error: ${String(err)}`);
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
+          });
+      }
+    );
+
+    // Delete a message (for me / for everyone) over the socket — parity with
+    // /community's community:message:delete. Broadcast (message:delete on
+    // conv:<id>) is published by the gRPC handler via the shared orchestrator,
+    // same as the REST delete endpoint.
+    socket.on(
+      "message:delete",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = MessageDeleteSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        messagingClient
+          .deleteMessage({
+            conversationId: r.data.conversationId,
+            messageId: r.data.messageId,
+            userId,
+            deleteType: r.data.type,
+            conversationType: r.data.conversationType,
+          })
+          .then((result) =>
+            ackOk(callback, "SOCKET_MESSAGE_DELETED", locale, result)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/chat message:delete gRPC error: ${String(err)}`);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
+          });
+      }
+    );
+
+    // Pin/unpin a message over the socket — parity with /community's
+    // community:message:pin/unpin.
+    socket.on(
+      "message:pin",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = MessagePinSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        messagingClient
+          .pinMessage({
+            conversationId: r.data.conversationId,
+            messageId: r.data.messageId,
+            userId,
+            conversationType: r.data.conversationType,
+          })
+          .then((result) =>
+            ackOk(callback, "SOCKET_MESSAGE_PINNED", locale, result)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/chat message:pin gRPC error: ${String(err)}`);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
+          });
+      }
+    );
+
+    socket.on(
+      "message:unpin",
+      (payload: unknown, callback?: (res: unknown) => void) => {
+        const r = MessagePinSchema.safeParse(payload);
+        if (!r.success) {
+          ackError(callback, "INVALID_PAYLOAD", locale);
+          return;
+        }
+        messagingClient
+          .unpinMessage({
+            conversationId: r.data.conversationId,
+            messageId: r.data.messageId,
+            userId,
+            conversationType: r.data.conversationType,
+          })
+          .then((result) =>
+            ackOk(callback, "SOCKET_MESSAGE_UNPINNED", locale, result)
+          )
+          .catch((err: unknown) => {
+            logger.warn(`/chat message:unpin gRPC error: ${String(err)}`);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );
@@ -846,7 +961,8 @@ export function registerChatNamespace(
             logger.warn(
               `/chat message:reactions:get gRPC error: ${String(err)}`
             );
-            ackError(callback, "SERVICE_ERROR", locale);
+            const { code, detailKey } = resolveGrpcAckError(err);
+            ackError(callback, code, locale, detailKey);
           });
       }
     );

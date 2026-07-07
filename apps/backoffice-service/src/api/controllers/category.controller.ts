@@ -7,6 +7,7 @@ import type {
   CreateCategoryInput,
   ListCategoriesQueryInput,
   UpdateCategoryInput,
+  UpdateCategoryVisibilityInput,
 } from "../validators/index.js";
 
 /** GET /v1/categories — paginated, searchable, sortable list. */
@@ -50,6 +51,24 @@ export const updateCategory: RequestHandler = (req, res, next) => {
       const result = await categoryService.updateCategory(
         categoryId,
         body,
+        req.admin!.id
+      );
+      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** PATCH /v1/categories/:categoryId/visibility */
+export const updateCategoryVisibility: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const categoryId = req.params.categoryId as string;
+      const body = req.body as UpdateCategoryVisibilityInput;
+      const result = await categoryService.updateCategoryVisibility(
+        categoryId,
+        body.status,
         req.admin!.id
       );
       res.status(HTTP_STATUS.OK).json({ success: true, data: result });

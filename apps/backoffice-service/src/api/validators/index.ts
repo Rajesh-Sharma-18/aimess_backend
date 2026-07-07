@@ -82,7 +82,6 @@ export {
   userReportsQuerySchema,
   banUserSchema,
   suspendUserSchema,
-  unbanUserSchema,
   bulkBanSchema,
   bulkActivateSchema,
   listUserCommunitiesQuerySchema,
@@ -153,11 +152,13 @@ export {
 export {
   createCategorySchema,
   updateCategorySchema,
+  updateCategoryVisibilitySchema,
   listCategoriesQuerySchema,
   categoryIdParamSchema,
   categoryStatusEnum,
   type CreateCategoryInput,
   type UpdateCategoryInput,
+  type UpdateCategoryVisibilityInput,
   type ListCategoriesQueryInput,
   type CategoryIdParam,
 } from "./category.validator.js";

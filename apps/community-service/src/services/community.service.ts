@@ -1069,6 +1069,7 @@ async function toReportData(
     reporterId: row.reporterId,
     targetUserId: row.targetUserId,
     reason: row.reason,
+    otherReason: row.otherReason ?? null,
     status: row.status,
     reviewedBy: row.reviewedBy,
     reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : null,
@@ -1482,7 +1483,7 @@ export const communityService = {
     status?: "visible" | "hidden" | "all";
     page: number;
     limit: number;
-    sortField?: "name" | "order" | "createdAt";
+    sortField?: "name" | "order" | "createdAt" | "communityCount";
     sortDir?: "asc" | "desc";
   }): Promise<AdminCategoryListResult> {
     const active =
@@ -1511,6 +1512,7 @@ export const communityService = {
         order: c.order,
         createdAt: c.createdAt.toISOString(),
         updatedAt: c.updatedAt.toISOString(),
+        communityCount: c.communityCount,
       })),
       pagination: {
         page: query.page,
@@ -1539,6 +1541,7 @@ export const communityService = {
       order: category.order,
       createdAt: category.createdAt.toISOString(),
       updatedAt: category.updatedAt.toISOString(),
+      communityCount: 0, // brand new — no community can reference it yet
     };
   },
 
@@ -1563,7 +1566,10 @@ export const communityService = {
       updates.active = input.visible;
     }
 
-    const updated = await communityRepository.updateCategoryById(id, updates);
+    const [updated, communityCount] = await Promise.all([
+      communityRepository.updateCategoryById(id, updates),
+      communityRepository.countActiveCommunitiesWithCategory(id),
+    ]);
     return {
       id: updated.id,
       name: updated.name,
@@ -1572,17 +1578,26 @@ export const communityService = {
       order: updated.order,
       createdAt: updated.createdAt.toISOString(),
       updatedAt: updated.updatedAt.toISOString(),
+      communityCount,
     };
   },
 
   /**
    * Soft-delete (mirrors `Community.deletedAt`) when the category is still
-   * referenced by communities — the FK would otherwise dangle; hard-delete
-   * otherwise. Returns which branch was taken so callers can report it.
+   * referenced by (non-active) communities — the FK would otherwise dangle;
+   * hard-delete otherwise. Returns which branch was taken so callers can
+   * report it. Blocked entirely (409) while any ACTIVE, non-deleted
+   * community still points at this category.
    */
   async deleteCategory(id: string): Promise<{ softDeleted: boolean }> {
     const category = await communityRepository.findCategoryByIdAdmin(id);
     if (!category) throw new NotFoundError("CATEGORY_NOT_FOUND");
+
+    const activeCount =
+      await communityRepository.countActiveCommunitiesWithCategory(id);
+    if (activeCount > 0) {
+      throw new ConflictError("CATEGORY_HAS_ACTIVE_COMMUNITIES");
+    }
 
     const inUse = await communityRepository.countCommunitiesWithCategory(id);
     if (inUse > 0) {
@@ -2880,6 +2895,18 @@ export const communityService = {
     // MEMBER_REMOVED is in HIDDEN_SYSTEM_MESSAGE_TYPES (packages/constants) as
     // the authoritative policy. Moderation history lives in the audit log only.
 
+    // Best-effort: a kick removes ACTIVE membership the same as a ban — if the
+    // target is currently broadcasting in this community, they no longer
+    // satisfy the membership gate that let them go live, so end it. Scoped to
+    // this community only. Unlike ban, kick has no existing viewer-kick
+    // notify call (kicked members aren't rejected at CheckStreamAccess the way
+    // banned ones are), so this is the only stream-service touch point here.
+    void getStreamClient().forceEndStreamsByCreator(
+      communityId,
+      targetUserId,
+      "COMMUNITY_KICKED"
+    );
+
     return toMemberData(updated);
   },
 
@@ -3023,6 +3050,17 @@ export const communityService = {
       communityId,
       targetUserId,
       true
+    );
+    // Best-effort: also force-end any stream the target is currently
+    // BROADCASTING in this community — kicking their viewer/chat socket above
+    // doesn't stop their SRS publish, so without this a banned streamer keeps
+    // broadcasting to the community they were just banned from. Scoped to
+    // this community only — they may still be a legitimate member (and
+    // legitimately live) elsewhere.
+    void getStreamClient().forceEndStreamsByCreator(
+      communityId,
+      targetUserId,
+      "COMMUNITY_BANNED"
     );
 
     return toMemberData(updated);
@@ -6418,6 +6456,8 @@ export const communityService = {
     input: {
       targetUserId?: string;
       reason: string;
+      /** Mandatory custom description when `reason` is "OTHER"; ignored otherwise. */
+      otherReason?: string;
       reportedMessageId?: string;
       reportedContentType?: string;
       reportedContentText?: string;
@@ -6448,6 +6488,17 @@ export const communityService = {
     }
 
     const targetUserId = input.targetUserId ?? null;
+
+    // A1.5: "OTHER" requires a non-empty custom description (defense-in-depth —
+    // the validator already rejects empty/whitespace-only values). Predefined
+    // reasons never persist a description, even if the client sent one.
+    const isOtherReason = input.reason.toUpperCase() === "OTHER";
+    const otherReason = isOtherReason
+      ? (input.otherReason ?? "").trim() || null
+      : null;
+    if (isOtherReason && !otherReason) {
+      throw new BadRequestError("COMMUNITY_REPORT_OTHER_REASON_REQUIRED");
+    }
 
     // A2: cannot self-report.
     if (targetUserId && targetUserId === callerId) {
@@ -6521,6 +6572,7 @@ export const communityService = {
       reporterId: callerId,
       targetUserId,
       reason: input.reason,
+      otherReason,
       reportedMessageId: input.reportedMessageId ?? null,
       reportedContentType,
       reportedContentText,
@@ -6554,7 +6606,8 @@ export const communityService = {
       targetId: targetUserId ?? communityId,
       reporterId: callerId,
       reason: input.reason,
-      details: null,
+      details: otherReason,
+      communityId,
       eventAt: reportEventAt,
       sourceReportId: row.id,
     });

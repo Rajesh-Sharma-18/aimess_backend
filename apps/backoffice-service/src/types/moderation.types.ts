@@ -5,6 +5,8 @@
  * controllers serialize — stable across Phase 1 (mock) and Phase 2 (Prisma).
  */
 
+import type { MediaObject } from "@aimess/shared-types";
+
 export type ReportType =
   | "SPAM"
   | "HARASSMENT"
@@ -73,7 +75,9 @@ export type UserRef = {
   id: string;
   username: string;
   displayName: string;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   accountStatus?: AccountStatus;
 };
 
@@ -97,6 +101,10 @@ export type ReportListItem = {
   createdAt: string;
   resolvedAt: string | null;
   moderator: ModeratorRef | null;
+  // Name of the community the report was filed in, resolved live from
+  // community-service via communityId; null for community-less reports
+  // (e.g. private-message reports).
+  communityName: string | null;
 };
 
 /** Full reported-user profile with moderation signals (detail view). */
@@ -162,6 +170,13 @@ export type ReportDetail = {
   reason: string;
   reporterNote: string | null;
   sourceService: string;
+  // Community the report was filed in (community-service member/community
+  // reports only); null for community-less reports (e.g. chat-service
+  // private-message reports). Mirrors Report.communityId in admin_db.
+  communityId: string | null;
+  // Resolved live from community-service via communityId on every read —
+  // never persisted, so it can't go stale.
+  communityName: string | null;
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;
@@ -266,10 +281,79 @@ export type ListReportsQuery = {
   status?: ReportStatus[];
   targetType?: TargetType;
   assignedTo?: string;
+  communityId?: string;
   sort: string;
   page: number;
   limit: number;
   cursor?: string;
   dateFrom?: string;
   dateTo?: string;
+};
+
+// ---------------------------------------------------------------------------
+// Reports & Moderation Details page — GET /reports/{reportId} aggregate.
+// ---------------------------------------------------------------------------
+
+/** Compact user reference for the Reports & Moderation Details page. */
+export type ReportModerationUserRef = {
+  id: string;
+  username: string;
+  fullName: string;
+  avatar: MediaObject | null;
+};
+
+/**
+ * The reported message reference. No admin RPC exists to fetch a chat/community
+ * message's content by id (out of scope for this endpoint — reuse-only), so
+ * only the id is carried; null when the report isn't message-based.
+ */
+export type ReportedMessageRef = {
+  id: string;
+};
+
+/** "Community Report Details" block. Null when the report has no associated community. */
+export type CommunityReportBlock = {
+  id: string;
+  name: string;
+  avatar: MediaObject | null;
+  category: { id: string; name: string };
+  reportedDate: string;
+  reportedMessage: ReportedMessageRef | null;
+};
+
+/**
+ * One row in the "Community Members" grid on the Reports & Moderation Details
+ * page. Reuses `communityMembersRepository.listMembers` for pagination/search/
+ * role-filter/sort, enriched with `fullname` (user-service) and `sequenceNo`
+ * (page-relative row number).
+ */
+export type ReportModerationMemberRow = {
+  sequenceNo: number;
+  id: string;
+  username: string;
+  fullname: string | null;
+  avatar: string | null;
+  joinedAt: string;
+  role: import("./community.types.js").CommunityMemberRole;
+};
+
+/** "Community Member List" block — reuses `communityMembersRepository.listMembers`. */
+export type CommunityMembersBlock = {
+  items: ReportModerationMemberRow[];
+  pagination: PaginationMeta;
+};
+
+/** Full aggregate returned by GET /reports/{reportId} for the admin Reports & Moderation Details page. */
+export type ReportModerationDetail = {
+  report: {
+    id: string;
+    type: ReportType;
+    status: ReportStatus;
+    createdAt: string;
+    // Only present when `type === "OTHER"` — the reporter's free-text reason.
+    otherReason?: string | null;
+    reportedUser: ReportModerationUserRef | null;
+    reporter: ReportModerationUserRef | null;
+  };
+  community: CommunityReportBlock | null;
 };

@@ -73,6 +73,9 @@ export type AdminReportEventType =
  * Normalized report payload written to admin_db.Report by the backoffice
  * consumer. `details` is upstream free-text (null when the source has none).
  * `sourceReportId` is the upstream report row's own id (traceability).
+ * `communityId` is the community the report was filed in (community-service
+ * member/community reports only; null/omitted for community-less reports
+ * such as chat-service private-message reports).
  */
 export type AdminReportIngestPayload = {
   type: "user" | "community" | "message" | "stream";
@@ -80,6 +83,7 @@ export type AdminReportIngestPayload = {
   reporterId: string;
   reason: string;
   details: string | null;
+  communityId?: string | null;
   /** ISO-8601 timestamp captured at publish time. */
   eventAt: string;
   sourceReportId: string;

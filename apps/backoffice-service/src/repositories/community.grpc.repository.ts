@@ -1,5 +1,4 @@
 import { ConflictError, NotFoundError } from "@aimess/errors";
-import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
 
 import {
   communityClient,
@@ -30,62 +29,40 @@ import {
 } from "./community.repository.js";
 import { moderationActionRepository } from "./moderation-action.repository.js";
 import { msToIso, orNull } from "../lib/grpc-view.js";
-import { mediaUrlStrategy } from "../config/storage.js";
-import { env } from "../config/env.js";
+import {
+  resolveAvatarOrNull,
+  resolveCommunityImageOrNull,
+  resolveCommunityImageUrl,
+} from "../lib/avatar-media.js";
 
-/**
- * Community admin/owner snapshot avatars live in the SHARED avatars bucket
- * (`avatars/<userId>/…`). community-service now resolves these on its admin RPCs;
- * backoffice resolves AGAIN at its own OUTPUT boundary as defense-in-depth, so the
- * admin API can never leak a raw key even if an upstream path regresses.
- * `toMediaObject` passes an already-signed http(s) URL through unchanged, so this
- * is an idempotent safety net, not a re-sign. Presigned URLs expire — never
- * persist them.
- */
-const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
-const AVATAR_PREFIXES = MEDIA_PREFIXES.avatars;
-
-/** Stored avatar key/url → presigned download URL (null when absent). */
-async function resolveAvatarUrl(
-  stored: string | null | undefined
-): Promise<string | null> {
-  const media = await toMediaObject({
-    bucket: AVATAR_BUCKET,
-    stored: stored ?? null,
-    prefixes: AVATAR_PREFIXES,
-    strategy: mediaUrlStrategy,
-  });
-  return media.downloadUrl;
-}
-
-const COMMUNITY_BUCKET = env.MINIO_BUCKET_COMMUNITY;
-const COMMUNITY_IMAGE_PREFIXES = MEDIA_PREFIXES.community;
-
-/** Stored community avatar/cover key/url → presigned download URL (null when absent). */
-async function resolveCommunityImageUrl(
-  stored: string | null | undefined
-): Promise<string | null> {
-  const media = await toMediaObject({
-    bucket: COMMUNITY_BUCKET,
-    stored: stored ?? null,
-    prefixes: COMMUNITY_IMAGE_PREFIXES,
-    strategy: mediaUrlStrategy,
-  });
-  return media.downloadUrl;
-}
+// Community admin/owner snapshot avatars live in the SHARED avatars bucket
+// (`avatars/<userId>/…`). community-service now resolves these on its admin
+// RPCs; backoffice resolves AGAIN at its own OUTPUT boundary as
+// defense-in-depth (via @link resolveAvatarMediaObject / @link
+// resolveCommunityImageMediaObject in lib/avatar-media.ts), so the admin API
+// can never leak a raw key even if an upstream path regresses. Presigned URLs
+// expire — never persist them.
 
 /** Map an AdminCommunityRow → the list-table view model. */
 async function rowToListItem(
   r: RawAdminCommunityRow
 ): Promise<CommunityListItem> {
   const status = r.status as CommunityModerationStatus;
+  const [adminAvatar, avatar] = await Promise.all([
+    resolveAvatarOrNull(r.adminAvatarUrl),
+    resolveCommunityImageOrNull(r.communityAvatarUrl),
+  ]);
   return {
     communityId: r.communityId,
     communityName: r.name,
+    // Community's own avatar/profile image (community bucket) —
+    // project-standard MediaObject, same shape as admin.avatar. Resolve-on-read
+    // defense-in-depth.
+    avatar,
     admin: {
       userId: r.adminId,
       name: r.adminName,
-      avatarUrl: await resolveAvatarUrl(r.adminAvatarUrl),
+      avatar: adminAvatar,
     },
     type: r.type as CommunityType,
     category: { id: r.categoryId, name: r.categoryName, slug: r.categorySlug },
@@ -263,8 +240,11 @@ export class GrpcCommunityRepository implements CommunityRepository {
 
     // Resolve-on-read: the detail RPC echoes the RAW admin snapshot avatar key
     // (shared avatars bucket), unlike adminListCommunities which presigns it.
-    const [ownerAvatarUrl, coverUrl] = await Promise.all([
-      resolveAvatarUrl(row.adminAvatarUrl),
+    // Community avatar is resolved with the SAME helper as rowToListItem
+    // (resolveCommunityImageOrNull) so list and detail return identical shapes.
+    const [ownerAvatar, avatar, coverUrl] = await Promise.all([
+      resolveAvatarOrNull(row.adminAvatarUrl),
+      resolveCommunityImageOrNull(row.communityAvatarUrl),
       resolveCommunityImageUrl(res.coverUrl),
     ]);
 
@@ -277,9 +257,9 @@ export class GrpcCommunityRepository implements CommunityRepository {
         type,
         category,
         status,
-        // The proto AdminCommunityRow carries no community avatar; only the
-        // cover_url is sent on the detail payload.
-        avatarUrl: null,
+        // Community's own avatar/profile image — same field + same
+        // resolveCommunityImageOrNull helper as rowToListItem (list API).
+        avatar,
         // Defense-in-depth: community-service resolves the cover on its admin RPC;
         // resolve again here (idempotent passthrough when already a URL) so the
         // admin API can't leak a raw key. Community bucket; never persisted.
@@ -296,7 +276,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
         userId: row.adminId,
         displayName: row.adminName,
         username: row.adminUsername,
-        avatarUrl: ownerAvatarUrl,
+        avatar: ownerAvatar,
         email: orNull(res.ownerEmail),
         accountStatus: (res.ownerAccountStatus || "ACTIVE") as AccountStatus,
       },

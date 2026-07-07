@@ -20,6 +20,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     deleteCategoryById: jest.fn(),
     softDeleteCategoryById: jest.fn(),
     countCommunitiesWithCategory: jest.fn(),
+    countActiveCommunitiesWithCategory: jest.fn(),
     listCategoriesAdmin: jest.fn(),
   },
 }));
@@ -45,6 +46,7 @@ const row = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  repo.countActiveCommunitiesWithCategory.mockResolvedValue(0);
 });
 
 describe("communityService.createCategory", () => {
@@ -95,6 +97,7 @@ describe("communityService.updateCategory", () => {
   it("updates visibility without touching the name/slug", async () => {
     repo.findCategoryByIdAdmin.mockResolvedValue(row());
     repo.updateCategoryById.mockResolvedValue(row({ active: false }));
+    repo.countActiveCommunitiesWithCategory.mockResolvedValue(2);
 
     const result = await communityService.updateCategory(CAT, {
       visible: false,
@@ -105,6 +108,7 @@ describe("communityService.updateCategory", () => {
       active: false,
     });
     expect(result.visible).toBe(false);
+    expect(result.communityCount).toBe(2);
   });
 });
 
@@ -130,8 +134,9 @@ describe("communityService.deleteCategory", () => {
     expect(repo.softDeleteCategoryById).not.toHaveBeenCalled();
   });
 
-  it("soft-deletes (deletedAt) when the category is still referenced", async () => {
+  it("soft-deletes (deletedAt) when the category is still referenced by CLOSED/DELETED communities only", async () => {
     repo.findCategoryByIdAdmin.mockResolvedValue(row());
+    repo.countActiveCommunitiesWithCategory.mockResolvedValue(0);
     repo.countCommunitiesWithCategory.mockResolvedValue(3);
     repo.softDeleteCategoryById.mockResolvedValue(row({ active: false }));
 
@@ -139,6 +144,18 @@ describe("communityService.deleteCategory", () => {
 
     expect(result).toEqual({ softDeleted: true });
     expect(repo.softDeleteCategoryById).toHaveBeenCalledWith(CAT);
+    expect(repo.deleteCategoryById).not.toHaveBeenCalled();
+  });
+
+  it("throws ConflictError (blocked) when an ACTIVE community still uses the category", async () => {
+    repo.findCategoryByIdAdmin.mockResolvedValue(row());
+    repo.countActiveCommunitiesWithCategory.mockResolvedValue(1);
+
+    await expect(communityService.deleteCategory(CAT)).rejects.toThrow(
+      ConflictError
+    );
+    expect(repo.countCommunitiesWithCategory).not.toHaveBeenCalled();
+    expect(repo.softDeleteCategoryById).not.toHaveBeenCalled();
     expect(repo.deleteCategoryById).not.toHaveBeenCalled();
   });
 });

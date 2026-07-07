@@ -46,6 +46,14 @@ const envSchema = z.object({
   CHAT_VIDEO_MAX_BYTES: z.coerce.number().positive().default(104857600),
   COMMUNITY_CHAT_MAX_BYTES: z.coerce.number().positive().default(104857600),
   GROUP_CHAT_MAX_BYTES: z.coerce.number().positive().default(104857600),
+  // Per-MIME overrides for the chat-attachment categories below (see
+  // config/uploads.ts CHAT_MAX_BYTES_BY_MIME). Same var names + defaults as
+  // chat-service's env (config/env.ts) so the presigned-upload-time guard
+  // here and the message-send-time guard there can never silently drift
+  // apart — see @aimess/constants media/limits.ts.
+  CHAT_IMAGE_MAX_BYTES: z.coerce.number().positive().default(26214400), // 25 MB
+  CHAT_AUDIO_MAX_BYTES: z.coerce.number().positive().default(26214400), // 25 MB
+  CHAT_DOCUMENT_MAX_BYTES: z.coerce.number().positive().default(26214400), // 25 MB
 
   // Redis — used for scan-status cache and rate-limit store
   REDIS_HOST: z.string().default("127.0.0.1"),

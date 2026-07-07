@@ -34,15 +34,25 @@ const STATUS_ALIASES: Record<string, z.infer<typeof userStatusEnum>> = {
   PENDING_DELETION: "DELETED",
 };
 
+/**
+ * `status=ALL` (or any list containing it) means "no status filter" — the
+ * panel's dropdown uses it to clear the filter rather than omitting the param.
+ * Normalized away to `undefined` before the enum check, same as the alias
+ * tolerance above, so it never 400s.
+ */
+const STATUS_ALL_VALUE = "ALL";
+
 const userStatusFilter = z
   .preprocess((v) => {
     if (v == null) return undefined;
     const arr = Array.isArray(v) ? v : [v];
-    return arr.map((s) => {
-      if (typeof s !== "string") return s;
-      const norm = s.trim().toUpperCase();
-      return STATUS_ALIASES[norm] ?? norm;
-    });
+    const norm = arr.map((s) =>
+      typeof s === "string" ? s.trim().toUpperCase() : s
+    );
+    if (norm.includes(STATUS_ALL_VALUE)) return undefined;
+    return norm.map((s) =>
+      typeof s === "string" ? (STATUS_ALIASES[s] ?? s) : s
+    );
   }, z.array(userStatusEnum).optional())
   .optional();
 
@@ -269,6 +279,20 @@ export type UserReportsQueryInput = z.infer<typeof userReportsQuerySchema>;
 const CUSTOM_BAN_REASON_MAX_LEN = 200;
 
 /**
+ * Shared shape for a required, free-text moderation field: trimmed, must be
+ * non-empty AFTER trimming (so whitespace-only input is rejected), bounded by
+ * `maxLen`. Reused by the ban reason and the unban note below so both admin
+ * moderation actions enforce the same "no blank justification" rule via one
+ * definition.
+ */
+const requiredTrimmedText = (label: string, maxLen: number) =>
+  z
+    .string()
+    .trim()
+    .min(1, `${label} is required`)
+    .max(maxLen, `${label} must be at most ${maxLen} characters`);
+
+/**
  * Ban reason: either one of the predefined `moderationReasonEnum` codes (kept
  * for backward compatibility with existing callers/panel builds) OR any
  * free-text reason the admin types in. Both shapes are plain strings, so a
@@ -277,14 +301,7 @@ const CUSTOM_BAN_REASON_MAX_LEN = 200;
  * layer already types `reason` as a plain `string`, so the custom value is
  * persisted verbatim with no further changes downstream.
  */
-const banReasonInput = z
-  .string()
-  .trim()
-  .min(1, "Reason is required")
-  .max(
-    CUSTOM_BAN_REASON_MAX_LEN,
-    `Reason must be at most ${CUSTOM_BAN_REASON_MAX_LEN} characters`
-  );
+const banReasonInput = requiredTrimmedText("Reason", CUSTOM_BAN_REASON_MAX_LEN);
 
 export const banUserSchema = z.object({
   reason: banReasonInput,
@@ -311,10 +328,13 @@ export type SuspendUserInput = z.infer<typeof suspendUserSchema>;
 // ---------------------------------------------------------------------------
 // Unban.
 // ---------------------------------------------------------------------------
-export const unbanUserSchema = z.object({
-  note: z.string().max(2000).optional(),
-});
-export type UnbanUserInput = z.infer<typeof unbanUserSchema>;
+/**
+ * No request body is required to unban a user — the route registers no
+ * `validateBody` for this action, so `req.body` is whatever Express parsed
+ * (`{}` when no body is sent). `note` is an optional free-text justification
+ * the service falls back on a default reason when it is absent.
+ */
+export type UnbanUserInput = { note?: string };
 
 // ---------------------------------------------------------------------------
 // Bulk.

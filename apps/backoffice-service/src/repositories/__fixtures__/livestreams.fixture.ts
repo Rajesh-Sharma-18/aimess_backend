@@ -12,6 +12,8 @@
  * varying viewerCount / reportCount / reportSeverity, and dates Jan–Jun 2026.
  * The first rows are realistic, fully-populated livestreams.
  */
+import type { MediaObject } from "@aimess/shared-types";
+
 import type {
   AccountStatus,
   EndReasonCode,
@@ -23,6 +25,21 @@ import type {
   LivestreamStatus,
   ReportSeverity,
 } from "../../types/livestream.types.js";
+
+/** Deterministic mock MediaObject — fixtures never hit real storage. */
+function mockAvatar(url: string | null): MediaObject {
+  return {
+    fileId: null,
+    objectKey: null,
+    fileName: null,
+    contentType: null,
+    size: null,
+    downloadUrl: url,
+    downloadUrlExpiresIn: url ? 3600 : null,
+    uploadUrl: null,
+    uploadUrlExpiresIn: null,
+  };
+}
 
 // --- deterministic time helpers (operate on fixed ISO strings — no Date.now) ---
 const MINUTE = 60_000;
@@ -497,6 +514,11 @@ function build(seed: Seed, i: number): LivestreamDetail {
       id: `comm_${slug(seed.community)}`,
       name: seed.community,
       slug: slug(seed.community),
+      avatar: mockAvatar(
+        i % 4 === 0
+          ? null
+          : `https://cdn.aimess.app/community/comm_${slug(seed.community)}.jpg`
+      ),
       memberCount: 1_000 + n * 137,
       creatorRole: i % 4 === 0 ? "OWNER" : "MODERATOR",
     },
@@ -504,7 +526,9 @@ function build(seed: Seed, i: number): LivestreamDetail {
       id: `u_cr_${n}`,
       username: slug(seed.creator),
       displayName: seed.creator,
-      avatarUrl: i % 3 === 0 ? null : `https://cdn.aimess.app/av/u_cr_${n}.jpg`,
+      avatar: mockAvatar(
+        i % 3 === 0 ? null : `https://cdn.aimess.app/av/u_cr_${n}.jpg`
+      ),
       accountStatus: seed.creatorStatus,
       totalStreams: 3 + (i % 12),
       priorStrikes: i % 3,

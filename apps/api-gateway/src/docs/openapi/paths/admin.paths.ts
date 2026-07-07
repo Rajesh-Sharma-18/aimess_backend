@@ -660,7 +660,7 @@ export const adminPaths = {
       operationId: "adminGetUser",
       summary: "Get user detail",
       description:
-        "Full profile: identity (auth) + profile/stats (user) + report summary + moderation history (admin_db `ModerationAction`). `accountStatus` also carries `moderationStatus`/`isBanned` alongside the existing `status`. gRPC-live. Requires `users.read`.",
+        "Full profile: identity (auth) + profile (user, incl. `fullName`) + report summary (admin_db). `accountStatus` also carries `moderationStatus`/`isBanned` alongside the existing `status`. `reportDetails` is the single source for report data on this screen — no `moderationHistory`/`stats`/`reportCategories`/flat `avatarUrl` fields. gRPC-live. Requires `users.read`.",
       security: adminSecurity,
       parameters: [idPathParam],
       responses: {
@@ -1000,7 +1000,7 @@ export const adminPaths = {
       operationId: "adminGetUserDetails",
       summary: "Get user detail (alias of GET /admin/v1/users/{userId})",
       description:
-        "Identical to GET /admin/v1/users/{userId} — community-less user detail: profile + report summary + moderation history. Does NOT include a community/members block (a user can belong to multiple communities, so there is no single implicit one to pick); use GET /admin/v1/users/{userId}/communities and GET /admin/v1/users/{userId}/communities/{communityId}/members when a specific community context is needed. Requires users.read.",
+        "Identical to GET /admin/v1/users/{userId} — community-less user detail: profile (incl. `fullName`) + `reportDetails` report summary. Does NOT include a community/members block (a user can belong to multiple communities, so there is no single implicit one to pick); use GET /admin/v1/users/{userId}/communities and GET /admin/v1/users/{userId}/communities/{communityId}/members when a specific community context is needed. Requires users.read.",
       security: adminSecurity,
       parameters: [{ ...idPathParam, name: "userId" }],
       responses: {
@@ -1245,8 +1245,8 @@ export const adminPaths = {
       description:
         "Paginated member roster for a community (community-service gRPC, " +
         "denormalized snapshot fields — no user-service round-trip). Supports " +
-        "`q`/`search` (username, display name, or exact userId) and a `role` " +
-        "filter. Requires `communities.read`.",
+        "`q`/`search` (username, display name, or exact userId), a `role` " +
+        "filter, and `sort` (applied at the DB query level). Requires `communities.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -1283,6 +1283,27 @@ export const adminPaths = {
             enum: ["ADMIN", "MODERATOR", "MEMBER"],
           },
           description: "Filter by member role (the 'Select Type' filter).",
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: [
+              "username:asc",
+              "username:desc",
+              "handle:asc",
+              "handle:desc",
+              "joinedAt:asc",
+              "joinedAt:desc",
+            ],
+            default: "joinedAt:desc",
+          },
+          description:
+            "`<field>:<order>` — sortable on `username` (display name), " +
+            "`handle` (@handle), or `joinedAt`. An invalid or omitted value " +
+            "falls back to `joinedAt:desc`.",
         },
       ],
       responses: {
@@ -1531,11 +1552,15 @@ export const adminPaths = {
       description:
         "**(Phase 1 — mock data behind the real contract)** Paginated moderation queue " +
         "(admin_db OWN). Hybrid pagination: offset by default (`page`/`limit`), opt-in keyset " +
-        "(`cursor`). Filters: `search` (reportId / reported / reporter), `reportType` & `status` " +
-        "(both repeatable → OR within, AND across), `targetType`, `assignedTo`, `dateFrom`/`dateTo` " +
-        "(on createdAt). Sort whitelist `createdAt|status|reportType|priority|updatedAt` with " +
-        "`:asc|:desc` (default `createdAt:desc`). Response = `{ data[], pagination, meta }`. " +
-        "Requires `reports.read`.",
+        "(`cursor`). Filters: `search` (reportId / reported / reporter / community name), " +
+        "`reportType` & `status` (both repeatable → OR within, AND across), `targetType`, " +
+        "`assignedTo`, `communityId` (exact), `communityName` (contains, case-insensitive), " +
+        "`dateFrom`/`dateTo` (on createdAt). `communityName` is denormalized onto the report row " +
+        "at ingest time, so filtering/searching/sorting by it is a plain indexed DB query — no " +
+        "per-request cross-service join. Sort whitelist " +
+        "`createdAt|status|reportType|priority|updatedAt|communityName` with `:asc|:desc` " +
+        "(default `createdAt:desc`), applied at the database level. Response = " +
+        "`{ data[], pagination, meta }`. Requires `reports.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -1598,6 +1623,20 @@ export const adminPaths = {
           description: "Admin id, `me`, or `unassigned`.",
         },
         {
+          name: "communityId",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Exact match on the community the report was filed in.",
+        },
+        {
+          name: "communityName",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Contains, case-insensitive match on community name.",
+        },
+        {
           name: "dateFrom",
           in: "query",
           required: false,
@@ -1616,9 +1655,11 @@ export const adminPaths = {
           schema: {
             type: "string",
             pattern:
-              "^(createdAt|status|reportType|priority|updatedAt):(asc|desc)$",
+              "^(createdAt|status|reportType|priority|updatedAt|communityName):(asc|desc)$",
             default: "createdAt:desc",
           },
+          description:
+            "e.g. `?sort=communityName:asc` or `?sort=communityName:desc`. Sorted at the database level.",
         },
         {
           name: "page",
@@ -1657,13 +1698,17 @@ export const adminPaths = {
     get: {
       tags: [adminTags.reports],
       operationId: "adminGetReport",
-      summary: "Get report detail",
+      summary: "Get Reports & Moderation Details",
       description:
-        "**(Phase 1 — mock data behind the real contract)** Core report detail: enriched " +
-        "reported/reporter users (with moderation signals), the reported target snapshot + deep link, " +
-        "status/priority/resolution fields, and `availableActions[]` (server-computed from status + RBAC). " +
-        "Sub-resources are served by dedicated paginated sub-routes: evidence → `/evidence`, action " +
-        "history → `/history`, related reports → `/related`. Requires `reports.read`.",
+        "Aggregate for the admin Reports & Moderation Details page, composed in one call: " +
+        "(1) the report block — id/type/status/createdAt + enriched `reportedUser`/`reporter` " +
+        "(id/username/fullName/avatar); (2) `community` — the Community Report Details block " +
+        "(id/name/avatar/category/reportedDate/`reportedMessage`), null when the report has no " +
+        "associated community; (3) `members` — the community's member list (`items`/`pagination`), " +
+        "reusing the same read-through as GET /admin/v1/communities/{communityId}/members " +
+        "(supports `page`/`limit`/`search`/`role`), null when there is no community. " +
+        "`reportedMessage` is null for non-message-based reports, and only carries the message id " +
+        "(no admin RPC exists yet to fetch message content). Requires `reports.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -1673,12 +1718,43 @@ export const adminPaths = {
           schema: { type: "string" },
           description: "Public report id, e.g. RPT-2026-0001284.",
         },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+          description:
+            "Community member list page (ignored when the report has no community).",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+          description: "Community member list page size.",
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Community member search by username, display name, or exact userId.",
+        },
+        {
+          name: "role",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
+          description: "Filter the community member list by role.",
+        },
       ],
       responses: {
         "200": okRes(
-          "Report detail",
-          "#/components/schemas/AdminModerationReportDetail"
+          "Reports & Moderation Details",
+          "#/components/schemas/AdminReportModerationDetail"
         ),
+        "400": errRes("Validation failed (bad page/limit/role)"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing reports.read"),
         "404": errRes("Report not found"),
@@ -2732,9 +2808,11 @@ export const adminPaths = {
       summary: "List categories",
       description:
         "Paginated, searchable, sortable list (gRPC-live from community-service). " +
-        "`search` matches name (case-insensitive). `status` filters by visibility " +
-        "(`visible`/`hidden`/`all`, default `all`). Sort whitelist " +
-        "`name|order|createdAt` with `:asc|:desc` (default `order:asc`). Requires " +
+        "`search` matches name OR description (case-insensitive). `status` filters " +
+        "by visibility (`visible`/`hidden`/`all`, default `all`). Sort whitelist " +
+        "`name|order|createdAt|communityCount` with `:asc|:desc` (default " +
+        "`order:asc`). `communityCount` on each row is a DB count of communities in " +
+        "that category with status=ACTIVE and deletedAt unset. Requires " +
         "`categories.manage`.",
       security: adminSecurity,
       parameters: [
@@ -2743,7 +2821,7 @@ export const adminPaths = {
           in: "query",
           required: false,
           schema: { type: "string" },
-          description: "Matches name (case-insensitive).",
+          description: "Matches name OR description (case-insensitive).",
         },
         {
           name: "status",
@@ -2761,7 +2839,7 @@ export const adminPaths = {
           required: false,
           schema: {
             type: "string",
-            pattern: "^(name|order|createdAt):(asc|desc)$",
+            pattern: "^(name|order|createdAt|communityCount):(asc|desc)$",
             default: "order:asc",
           },
         },
@@ -2832,10 +2910,12 @@ export const adminPaths = {
       operationId: "adminDeleteCategory",
       summary: "Delete a category",
       description:
-        "Hard-deletes the category when no community references it. When the category " +
-        "is still referenced by one or more communities, it is soft-deleted instead " +
-        "(permanently hidden from every category query, same `deletedAt` convention as " +
-        "`Community.deletedAt`) so existing communities keep a valid `categoryId`. " +
+        "Blocked (409) while any community assigned to this category is still " +
+        "ACTIVE and not (soft-)deleted. Otherwise: hard-deletes the category when no " +
+        "community references it at all; when it's still referenced only by " +
+        "CLOSED and/or deleted communities, it is soft-deleted instead (permanently " +
+        "hidden from every category query, same `deletedAt` convention as " +
+        "`Community.deletedAt`) so those communities keep a valid `categoryId`. " +
         "Audited. Requires `categories.manage`.",
       security: adminSecurity,
       parameters: [idPathParam],
@@ -2855,6 +2935,37 @@ export const adminPaths = {
             },
           },
         },
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing categories.manage"),
+        "404": errRes("Category not found"),
+        "409": errRes(
+          "Category cannot be deleted because it is assigned to active communities."
+        ),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/categories/{id}/visibility": {
+    patch: {
+      tags: [adminTags.categories],
+      operationId: "adminUpdateCategoryVisibility",
+      summary: "Show or hide a category",
+      description:
+        "Dedicated visibility toggle — validates the category exists and updates " +
+        "only its visibility status (`VISIBLE` maps to `visible=true`, `HIDDEN` to " +
+        "`visible=false`); `name` and every other field are left untouched. " +
+        "Audited. Requires `categories.manage`.",
+      security: adminSecurity,
+      parameters: [idPathParam],
+      requestBody: jsonBody(
+        "#/components/schemas/AdminCategoryVisibilityUpdateRequest"
+      ),
+      responses: {
+        "200": okRes(
+          "Category visibility updated",
+          "#/components/schemas/AdminCategory"
+        ),
+        "400": errRes("Validation failed"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing categories.manage"),
         "404": errRes("Category not found"),

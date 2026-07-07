@@ -10,6 +10,7 @@ import type {
   Paginated,
   PaginationMeta,
 } from "../types/community.types.js";
+import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 
 /**
  * Read-through repository for the admin Community Member List (the "Community
@@ -26,12 +27,17 @@ export interface CommunityMembersRepository {
 }
 
 /** Map a gRPC row → the API-facing member view type. */
-function toRow(r: RawAdminCommunityMemberRow): CommunityMemberRow {
+async function toRow(
+  r: RawAdminCommunityMemberRow
+): Promise<CommunityMemberRow> {
   return {
     userId: r.userId,
     username: r.username,
     handle: r.handle,
-    avatarUrl: r.avatarUrl || null,
+    // Resolve-on-read defense-in-depth (see community.grpc.repository.ts) —
+    // the avatar arrives already presigned from community-service, and
+    // resolveAvatarOrNull idempotently passes an already-signed URL through.
+    avatar: await resolveAvatarOrNull(r.avatarUrl),
     role: r.role as CommunityMemberRole,
     status: r.status as CommunityMemberStatus,
     joinedAt: r.joinedAt,
@@ -54,12 +60,14 @@ export class GrpcCommunityMembersRepository implements CommunityMembersRepositor
       // DB-level exclusion of the viewed user from their own co-member grid;
       // "" = no exclusion. Never filtered in memory (see proto contract).
       excludeUserId: query.excludeUserId ?? "",
-      // "" = community-service default order (role asc then joinedAt asc).
+      // "username" | "handle" | "joinedAt" | "" (community-service default:
+      // role asc then joinedAt asc). Sorting is applied at the DB query level
+      // in community-service — never done in memory here.
       sortField: query.sortField ?? "",
       sortDir: query.sortDir ?? "",
     });
 
-    const data = members.map(toRow);
+    const data = await Promise.all(members.map(toRow));
     const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
     const pagination: PaginationMeta = {

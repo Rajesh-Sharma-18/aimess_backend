@@ -274,6 +274,25 @@ async function main(): Promise<void> {
     );
   }
 
+  // --- 9. communityId filtering ------------------------------------------
+  // communityName is resolved live from communityId (never stored/queried),
+  // so it has no filter/search/sort support of its own — only communityId does.
+  console.log("\n[9] list — communityId filter");
+  {
+    const repo = new MockReportRepository();
+    const communityRow = reportFixtures.find((r) => r.communityId !== null)!;
+
+    // Filter by exact communityId.
+    const byId = await repo.list(
+      q({ communityId: communityRow.communityId!, limit: 100 })
+    );
+    check(
+      "communityId filter returns only that community's reports",
+      byId.data.length > 0 &&
+        byId.data.every((r) => r.communityName === communityRow.communityName)
+    );
+  }
+
   // ---------------------------------------------------------------------------
   console.log(`\n=== RESULT: ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {

@@ -346,6 +346,13 @@ model Report {
   reporterId String
   reason     String
   details    String? // reporter free-text ("Other Reason")
+  // Community the report was filed in (community-service member/community
+  // reports only). Null for community-less reports (e.g. chat-service
+  // private-message reports). Carried on the admin.report.ingest event.
+  // The community's name is intentionally NOT denormalized here — it's
+  // resolved live from community-service via this id on every read, so it's
+  // never stale (see report.repository.ts buildListEnrichment).
+  communityId String?
   status     String   @default("open") // open | reviewing | resolved | dismissed
   priority   String   @default("normal")
   assignedTo String?  @db.Uuid
@@ -371,6 +378,7 @@ model Report {
   @@index([status, type])
   @@index([type, targetId, createdAt(sort: Desc)])
   @@index([reporterId])
+  @@index([communityId])
 }
 
 model ReportNote {

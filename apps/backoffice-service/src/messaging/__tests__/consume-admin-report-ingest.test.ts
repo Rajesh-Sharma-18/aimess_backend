@@ -10,6 +10,10 @@
  * no live Postgres, no `prisma generate`. Style mirrors the existing *.test.ts
  * files (node:test + node:assert/strict, runtime singleton patching).
  *
+ * The community name is intentionally NOT resolved/stored at ingest time —
+ * it's resolved live from communityId on every read (see
+ * report.repository.ts), so this handler only ever persists communityId.
+ *
  * Run via `tsx --test "src/**\/*.test.ts"`.
  */
 import assert from "node:assert/strict";
@@ -81,9 +85,20 @@ describe("handleReportIngest — happy path", () => {
       reporterId: "u_reporter",
       reason: "spam",
       details: null,
+      communityId: null,
       status: "open",
       sourceReportId: "src_1",
     });
+  });
+
+  it("forwards a provided communityId unchanged", async () => {
+    await handleReportIngest(validPayload({ communityId: "comm_1" }));
+    assert.equal(createCalls[0]!.data.communityId, "comm_1");
+  });
+
+  it("omitted communityId defaults to null", async () => {
+    await handleReportIngest(validPayload());
+    assert.equal(createCalls[0]!.data.communityId, null);
   });
 
   it("forwards sourceReportId (idempotency key) but NOT eventAt to the Report row", async () => {

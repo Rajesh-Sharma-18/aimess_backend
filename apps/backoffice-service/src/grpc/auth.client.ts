@@ -51,6 +51,7 @@ export interface AdminListUsersRequest {
   limit?: number;
   offset?: number;
   userIds?: string[];
+  excludeUserIds?: string[];
 }
 export interface ActiveUserCounts {
   dailyActive: number;

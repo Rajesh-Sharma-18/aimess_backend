@@ -26,5 +26,8 @@ process.env.AVATAR_MAX_UPLOAD_BYTES = String(5 * 1024 * 1024);
 process.env.COMMUNITY_IMAGE_MAX_UPLOAD_BYTES = String(5 * 1024 * 1024);
 process.env.CHAT_VIDEO_MAX_BYTES = String(104857600);
 process.env.COMMUNITY_CHAT_MAX_BYTES = String(104857600);
+process.env.CHAT_IMAGE_MAX_BYTES = String(26214400);
+process.env.CHAT_AUDIO_MAX_BYTES = String(26214400);
+process.env.CHAT_DOCUMENT_MAX_BYTES = String(26214400);
 
 export {};

@@ -33,6 +33,13 @@ export class GroupPinService {
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
+    // Only owner/admin/moderator may pin — matches unpin's role gate below and
+    // community's admin/moderator-only pin model. Previously any active member
+    // could pin, unlike unpin (which was already role-gated).
+    if (!["OWNER", "ADMIN", "MODERATOR"].includes(member.role)) {
+      throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
+    }
+
     const totalPins = await this.pinRepo.countPinsByRoom(roomId);
     if (totalPins >= env.PIN_LIMIT_PER_ROOM) {
       throw new BadRequestError("CHAT_PIN_LIMIT_REACHED");
@@ -80,7 +87,8 @@ export class GroupPinService {
     );
     if (!member) throw new NotFoundError("CHAT_NOT_A_MEMBER");
 
-    // Only admins/owner or original pinner can unpin
+    // Only owner/admin/moderator can unpin (role-gated only — there is no
+    // "original pinner" exception, despite what an earlier comment claimed).
     if (!["OWNER", "ADMIN", "MODERATOR"].includes(member.role)) {
       throw new BadRequestError("CHAT_INSUFFICIENT_PERMISSIONS");
     }

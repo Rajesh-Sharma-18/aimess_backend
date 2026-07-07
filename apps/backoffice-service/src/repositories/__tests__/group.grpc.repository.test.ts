@@ -169,14 +169,14 @@ describe("GrpcGroupRepository.list — row → DTO mapping", () => {
     const item = items[0]!;
     assert.equal(item.id, "grp_1");
     assert.equal(item.name, "Acme");
-    assert.equal(item.avatarUrl, "https://cdn/a.png");
+    assert.equal(item.avatar?.downloadUrl, "https://cdn/a.png");
     assert.equal(item.description, "An acme group");
     assert.equal(item.memberCount, 42);
     assert.equal(item.createdAt, "2023-11-14T22:13:20.000Z"); // ISO of 1700000000000
     assert.equal(item.admin.userId, "u_admin");
     assert.equal(item.admin.username, "boss");
     assert.equal(item.admin.email, "boss@acme.io");
-    assert.equal(item.admin.avatarUrl, "https://cdn/admin.png");
+    assert.equal(item.admin.avatar?.downloadUrl, "https://cdn/admin.png");
   });
 
   it('normalises "" avatarUrl/email and admin "" fields to null', async () => {
@@ -201,9 +201,9 @@ describe("GrpcGroupRepository.list — row → DTO mapping", () => {
       limit: 20,
     });
     const item = items[0]!;
-    assert.equal(item.avatarUrl, null);
+    assert.equal(item.avatar, null);
     assert.equal(item.admin.email, null);
-    assert.equal(item.admin.avatarUrl, null);
+    assert.equal(item.admin.avatar, null);
   });
 
   it("defaults a missing description to empty string", async () => {
@@ -275,7 +275,7 @@ describe("GrpcGroupRepository.listMembers", () => {
     const m = res.items[0]!;
     assert.equal(m.userId, "u_1");
     assert.equal(m.email, null);
-    assert.equal(m.avatarUrl, null);
+    assert.equal(m.avatar, null);
     assert.equal(m.role, "MEMBER");
     assert.equal(m.joinedAt, "2023-11-14T22:13:20.000Z");
     assert.equal(res.pagination.totalPages, 2); // ceil(30/20)

@@ -229,6 +229,9 @@ jest.mock("../../src/grpc/stream.client.js", () => ({
     getActiveCommunityIds: jest.fn().mockResolvedValue(new Set()),
     getActiveStreamCounts: jest.fn().mockResolvedValue(new Map()),
     getLiveStreamsByCommunity: jest.fn().mockResolvedValue([]),
+    notifyMemberMuteStatus: jest.fn().mockResolvedValue(undefined),
+    notifyMemberBanStatus: jest.fn().mockResolvedValue(undefined),
+    forceEndStreamsByCreator: jest.fn().mockResolvedValue(undefined),
   }),
 }));
 

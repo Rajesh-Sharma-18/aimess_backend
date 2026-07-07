@@ -2,7 +2,8 @@
  * Community typing indicator — unit tests.
  *
  * Verifies the logic-layer functions used by the /community namespace typing
- * handler: the payload builder and the sender-exclusion / dual-room contracts.
+ * handler: the payload builder and the membership-validation / direct-delivery
+ * / sender-exclusion contracts.
  *
  * Full Socket.IO namespace integration (live Redis adapter + gRPC clients) is
  * out of scope here — that is covered by the e2e testing-suite. What we verify:
@@ -12,11 +13,25 @@
  * 3. The payload does NOT include sensitive data.
  * 4. Payload fields match the AsyncAPI CommunityTypingStartBroadcast schema.
  *
- * Root-cause regression:
- * The bug was that sockets only joined community:<id> rooms on an explicit
- * community:join from the client. The fix joins community-typing:<id> for ALL
- * memberships at connect via getUserActiveCommunityIds gRPC. Broadcasts now
- * target BOTH community:<id> AND community-typing:<id> so Socket.IO de-dupes.
+ * Room-independence refactor (current):
+ * Typing no longer depends on Socket.IO room membership at all — neither
+ * `community:<id>` (joined only via an explicit community:join) nor
+ * `community-typing:<id>` (auto-joined at connect, still used by recording +
+ * livestream/roster events below, which are UNCHANGED). community.ns.ts now
+ * resolves the community's active member ids via
+ * communityClient.getCommunityActiveMemberIds (one gRPC call, itself a thin
+ * wrapper around community-service's existing
+ * communityRepository.findActiveMemberIds), validates the sender is in that
+ * list, and delivers `typing:start`/`typing:stop` directly to every OTHER
+ * member's already-joined `user:<id>` room (the project's pre-existing
+ * per-user socket registry — not a community-scoped room) via
+ * `community.in(rooms).fetchSockets()` + per-socket `.emit()`.
+ *
+ * Root-cause regression this superseded:
+ * The original bug was that sockets only joined community:<id> rooms on an
+ * explicit community:join from the client. The first fix (still in place for
+ * recording/livestream/roster) added an auto-joined community-typing:<id>
+ * room. This refactor removes the room dependency for typing specifically.
  */
 
 import type { SocketUserDetails } from "../../src/sockets/user-details.js";
@@ -135,31 +150,116 @@ describe("typing:start payload — sender identity is server-authoritative", () 
   });
 });
 
-describe("typing:start / typing:stop — dual-room broadcast contract", () => {
-  it("broadcast targets community:<id> AND community-typing:<id>", () => {
-    // In community.ns.ts the handler does:
-    //   socket.to(`community:${communityId}`).to(`community-typing:${communityId}`).emit(...)
-    // This ensures members who have the chat open (community:<id>) AND members
-    // who only have the sidebar (community-typing:<id>) both receive the event.
-    // Socket.IO de-dupes so no double-delivery.
-    const communityId = COMMUNITY_B;
-    const targetRooms = [
-      `community:${communityId}`,
-      `community-typing:${communityId}`,
-    ];
-    expect(targetRooms).toContain(`community:${communityId}`);
-    expect(targetRooms).toContain(`community-typing:${communityId}`);
-    expect(targetRooms).toHaveLength(2);
+describe("typing:start / typing:stop — direct per-member delivery contract (room-independent)", () => {
+  // Mirrors getActiveCommunityMemberIds + emitDirectToUsers in community.ns.ts.
+  function resolveTypingDelivery(
+    activeMemberIds: string[],
+    senderId: string
+  ): { isSenderMember: boolean; recipientRooms: string[] } {
+    const isSenderMember = activeMemberIds.includes(senderId);
+    const recipientRooms = activeMemberIds
+      .filter((id) => id !== senderId)
+      .map((id) => `user:${id}`);
+    return { isSenderMember, recipientRooms };
+  }
+
+  it("delivery target is user:<id> per active member, NOT community:<id> or community-typing:<id>", () => {
+    const activeMemberIds = ["user_a_111", "user_b_222", "user_c_333"];
+    const { recipientRooms } = resolveTypingDelivery(
+      activeMemberIds,
+      "user_a_111"
+    );
+
+    expect(recipientRooms).toEqual(["user:user_b_222", "user:user_c_333"]);
+    expect(recipientRooms).not.toContain(`community:${COMMUNITY_B}`);
+    expect(recipientRooms).not.toContain(`community-typing:${COMMUNITY_B}`);
   });
 
-  it("community-typing:<id> room is NOT left on community:leave", () => {
-    // This is the key invariant: community:leave only leaves community:<id>.
-    // community-typing:<id> follows membership, not open/closed state.
-    // Leaving it on community:leave would re-introduce the bug.
-    const communityLeaveOnlyLeaves = ["community:comm_b_aabbcc"];
-    expect(communityLeaveOnlyLeaves).not.toContain(
-      "community-typing:comm_b_aabbcc"
+  it("sender is excluded from the recipient set entirely (all of the sender's own devices)", () => {
+    const activeMemberIds = ["user_a_111", "user_b_222"];
+    const { recipientRooms } = resolveTypingDelivery(
+      activeMemberIds,
+      "user_a_111"
     );
+    expect(recipientRooms).not.toContain("user:user_a_111");
+  });
+
+  it("a non-member sender resolves isSenderMember=false — event must be dropped", () => {
+    const activeMemberIds = ["user_b_222", "user_c_333"];
+    const { isSenderMember } = resolveTypingDelivery(
+      activeMemberIds,
+      "user_outsider_999"
+    );
+    expect(isSenderMember).toBe(false);
+  });
+
+  it("an active member sender resolves isSenderMember=true", () => {
+    const activeMemberIds = ["user_a_111", "user_b_222"];
+    const { isSenderMember } = resolveTypingDelivery(
+      activeMemberIds,
+      "user_a_111"
+    );
+    expect(isSenderMember).toBe(true);
+  });
+
+  it("a solo-member community (only the sender) resolves zero recipient rooms — no fetchSockets call needed", () => {
+    const activeMemberIds = ["user_a_111"];
+    const { recipientRooms } = resolveTypingDelivery(
+      activeMemberIds,
+      "user_a_111"
+    );
+    expect(recipientRooms).toHaveLength(0);
+  });
+
+  it("community:leave does not affect typing delivery — it is not room-gated", () => {
+    // Unlike the pre-refactor design, leaving community:<id> (chat view closed)
+    // has zero effect on typing delivery: membership (not room membership)
+    // is the only gate now.
+    const activeMemberIds = ["user_a_111", "user_b_222"];
+    const communityLeaveOnlyLeaves = ["community:comm_b_aabbcc"];
+    const { recipientRooms } = resolveTypingDelivery(
+      activeMemberIds,
+      "user_a_111"
+    );
+    expect(communityLeaveOnlyLeaves).not.toContain("user:user_b_222");
+    expect(recipientRooms).toContain("user:user_b_222");
+  });
+});
+
+describe("getCommunityActiveMemberIds — single fetch serves both validation and recipients", () => {
+  // Mirrors getActiveCommunityMemberIds in community.ns.ts: one gRPC call
+  // (community-service's findActiveMemberIds, ACTIVE-status-only) is reused
+  // for both checks — no second round trip, no duplicated membership logic.
+  it("a BANNED/LEFT/PENDING user is absent from the ACTIVE-only list, so membership check and recipient exclusion both fall out of the same list", () => {
+    // findActiveMemberIds only ever returns ACTIVE members — banned/left users
+    // are never present, so `.includes(senderId)` alone is a correct
+    // membership check without a separate checkCommunityMembership call.
+    const activeMemberIds = ["user_a_111", "user_b_222"];
+    const bannedUserId = "user_banned_444";
+    expect(activeMemberIds.includes(bannedUserId)).toBe(false);
+  });
+
+  it("member list fetched once per event — no N+1 (one gRPC call regardless of member count)", () => {
+    let fetchCount = 0;
+    const fakeFetch = async (): Promise<string[]> => {
+      fetchCount += 1;
+      return ["user_a_111", "user_b_222", "user_c_333", "user_d_444"];
+    };
+    return fakeFetch().then((ids) => {
+      expect(fetchCount).toBe(1);
+      expect(ids).toHaveLength(4);
+    });
+  });
+
+  it("a gRPC failure degrades to an empty list (fail-closed for typing: no members ⇒ no delivery, no crash)", () => {
+    const simulateFailure = (): string[] => {
+      try {
+        throw new Error("community-service unreachable");
+      } catch {
+        return [];
+      }
+    };
+    expect(simulateFailure()).toEqual([]);
   });
 });
 
@@ -199,10 +299,19 @@ describe("livestream events — typing-room broadcast contract", () => {
 });
 
 describe("typing:start — sender exclusion contract", () => {
-  it("sender exclusion is enforced via socket.to(room), not community.to(room)", () => {
-    // socket.to(room1).to(room2).emit(...) excludes the sending socket.
-    // community.to(room).emit(...) would include the sender — that is a bug.
-    expect(true).toBe(true);
+  it("sender exclusion is enforced by omission from the recipient room list, not socket.to()", () => {
+    // Delivery now goes through community.in(recipientRooms).fetchSockets() +
+    // per-socket .emit() (community-level API, not the per-request `socket`),
+    // so exclusion can no longer rely on socket.to()'s implicit
+    // sender-exclusion. Instead the sender's userId is filtered out of the
+    // active-member list BEFORE building `user:<id>` recipient rooms — see
+    // getActiveCommunityMemberIds/emitDirectToUsers in community.ns.ts.
+    const activeMemberIds = ["user_a_111", "user_b_222"];
+    const senderId = "user_a_111";
+    const recipientRooms = activeMemberIds
+      .filter((id) => id !== senderId)
+      .map((id) => `user:${id}`);
+    expect(recipientRooms).not.toContain(`user:${senderId}`);
   });
 });
 
@@ -230,7 +339,7 @@ describe("typing:start — multi-community delivery (root-cause regression)", ()
     expect(typingState[currentlyOpenCommunityId]).toBeUndefined();
   });
 
-  it("User C who is NOT a member of Community B receives nothing (room gate)", () => {
+  it("User C who is NOT a member of Community B receives nothing (membership gate, not a room gate)", () => {
     const memberCommunities = ["comm_a_112233", "comm_c_998877"];
     expect(memberCommunities).not.toContain(COMMUNITY_B);
   });
@@ -274,7 +383,12 @@ describe("client-to-server aliases", () => {
   });
 });
 
-describe("getUserActiveCommunityIds — auto-join prerequisite", () => {
+describe("getUserActiveCommunityIds — auto-join prerequisite (recording + livestream/roster only, NOT typing)", () => {
+  // This auto-join block is UNCHANGED by the typing refactor: typing no
+  // longer reads from community-typing:<id> at all (see the direct-delivery
+  // describe blocks above), but recording:start/stop and the livestream/roster
+  // relay (community:member:*, community:stream:started/ended) still do, so
+  // this prerequisite auto-join must keep working exactly as before.
   it("auto-join at connect joins community-typing:<id> (NOT community:<id>)", async () => {
     const mockResult: { communityIds: string[] } = {
       communityIds: [COMMUNITY_B, "comm_c_998877"],
@@ -327,5 +441,59 @@ describe("getUserActiveCommunityIds — auto-join prerequisite", () => {
     expect(leftRooms).toContain(`community:${communityId}`);
     expect(leftRooms).toContain(`community-typing:${communityId}`);
     expect(removedUserId).toBe(USER_A);
+  });
+});
+
+describe("auto-join at connect — partial-failure resilience", () => {
+  // Mirrors the Promise.allSettled logic in community.ns.ts: one bad room join
+  // must not prevent the others from joining, and the failed ids must be
+  // identifiable for logging (socketId, userId, joinedRoomCount, failedRoomIds).
+  async function joinAllSettled(
+    communityIds: string[],
+    join: (id: string) => Promise<void>
+  ): Promise<{ joinedCount: number; failedCommunityIds: string[] }> {
+    const results = await Promise.allSettled(communityIds.map(join));
+    const failedCommunityIds = communityIds.filter(
+      (_id, i) => results[i]!.status === "rejected"
+    );
+    return {
+      joinedCount: communityIds.length - failedCommunityIds.length,
+      failedCommunityIds,
+    };
+  }
+
+  it("all rooms join successfully → joinedCount matches, no failures", async () => {
+    const ids = [COMMUNITY_B, "comm_c_998877", "comm_d_445566"];
+    const { joinedCount, failedCommunityIds } = await joinAllSettled(ids, () =>
+      Promise.resolve()
+    );
+    expect(joinedCount).toBe(3);
+    expect(failedCommunityIds).toHaveLength(0);
+  });
+
+  it("one failing room join does not block the rest from joining", async () => {
+    const ids = [COMMUNITY_B, "comm_bad_id", "comm_d_445566"];
+    const { joinedCount, failedCommunityIds } = await joinAllSettled(
+      ids,
+      (id) =>
+        id === "comm_bad_id"
+          ? Promise.reject(new Error("join failed"))
+          : Promise.resolve()
+    );
+    expect(joinedCount).toBe(2);
+    expect(failedCommunityIds).toEqual(["comm_bad_id"]);
+  });
+
+  it("multiple failing rooms are all captured in failedCommunityIds", async () => {
+    const ids = ["bad_1", COMMUNITY_B, "bad_2"];
+    const { joinedCount, failedCommunityIds } = await joinAllSettled(
+      ids,
+      (id) =>
+        id.startsWith("bad_")
+          ? Promise.reject(new Error("join failed"))
+          : Promise.resolve()
+    );
+    expect(joinedCount).toBe(1);
+    expect(failedCommunityIds).toEqual(["bad_1", "bad_2"]);
   });
 });

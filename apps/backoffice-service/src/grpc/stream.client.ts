@@ -30,6 +30,11 @@ export interface AdminForceEndResult {
   status: string;
 }
 
+export interface ForceEndStreamsByCreatorResult {
+  ok: boolean;
+  endedCount: number;
+}
+
 /** One viewer session row from AdminListViewerSessions. */
 export interface AdminViewerSessionRow {
   userId: string;
@@ -64,7 +69,8 @@ export interface AdminListStreamsArgs {
   /** epoch ms inclusive; 0/undefined = no bound. */
   dateFrom?: number;
   dateTo?: number;
-  sortField?: "createdAt" | "viewerCount" | "duration";
+  /** Native stream-service columns only — cross-service fields are sorted in backoffice. */
+  sortField?: "createdAt" | "viewerCount" | "duration" | "title" | "status";
   sortDir?: "asc" | "desc";
   page: number;
   limit: number;
@@ -92,6 +98,8 @@ export interface AdminStreamRow {
   livedAt: number;
   endedAt: number;
   createdAt: number;
+  /** Distinct-user count from LivestreamViewerSession — matches AdminListViewerSessions' total. */
+  uniqueViewerCount: number;
 }
 
 /** Raw wire row (longs arrive as strings under longs:String). */
@@ -114,6 +122,7 @@ interface RawAdminStreamRow {
   livedAt: string | number;
   endedAt: string | number;
   createdAt: string | number;
+  uniqueViewerCount: string | number;
 }
 
 interface RawAdminListStreamsRes {
@@ -167,6 +176,7 @@ function toAdminStreamRow(r: RawAdminStreamRow): AdminStreamRow {
     livedAt: Number(r.livedAt ?? 0),
     endedAt: Number(r.endedAt ?? 0),
     createdAt: Number(r.createdAt ?? 0),
+    uniqueViewerCount: Number(r.uniqueViewerCount ?? 0),
   };
 }
 
@@ -206,6 +216,24 @@ const adminForceEndBreaker = makeBreaker(
       args
     ).then((r) => ({ success: r.success ?? false, status: r.status ?? "" }))
 );
+
+// Best-effort — a stream-service outage must not fail an account ban/suspend.
+const forceEndByCreatorBreaker = makeBreaker(
+  "stream.forceEndStreamsByCreator",
+  (args: { creatorId: string; reason: string }) =>
+    call<
+      { creatorId: string; communityId: string; reason: string },
+      { ok?: boolean; endedCount?: number }
+    >("forceEndStreamsByCreator", {
+      creatorId: args.creatorId,
+      communityId: "", // unscoped — account-level action ends every stream everywhere
+      reason: args.reason,
+    }).then((r) => ({
+      ok: r.ok ?? false,
+      endedCount: Number(r.endedCount ?? 0),
+    }))
+);
+forceEndByCreatorBreaker.fallback(() => ({ ok: false, endedCount: 0 }));
 
 const getStreamStatsBreaker = makeBreaker(
   "stream.getStreamStats",
@@ -328,5 +356,23 @@ export const streamClient = {
     reason: string
   ): Promise<AdminForceEndResult> {
     return await adminForceEndBreaker.fire({ streamId, reason });
+  },
+
+  /**
+   * Best-effort: force-ends every non-terminal stream `creatorId` owns,
+   * across every community. Called after an account ban/suspend — an admin
+   * action that means "this account shouldn't be usable right now" must not
+   * leave an existing broadcast running. Fail-open: a stream-service outage
+   * must not fail the ban/suspend itself.
+   */
+  async forceEndStreamsByCreator(
+    creatorId: string,
+    reason: string
+  ): Promise<ForceEndStreamsByCreatorResult> {
+    try {
+      return await forceEndByCreatorBreaker.fire({ creatorId, reason });
+    } catch {
+      return { ok: false, endedCount: 0 };
+    }
   },
 };

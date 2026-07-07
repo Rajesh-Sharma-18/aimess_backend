@@ -8,6 +8,7 @@ import type {
   Paginated,
   PaginationMeta,
 } from "../types/community.types.js";
+import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 
 /**
  * Read-through repository for the admin Muted-Members list — a platform-admin
@@ -24,13 +25,15 @@ export interface CommunityMutesRepository {
 }
 
 /** Map a gRPC row → the API-facing muted-member view type. */
-function toRow(r: RawAdminMutedMemberRow): CommunityMutedMemberRow {
+async function toRow(
+  r: RawAdminMutedMemberRow
+): Promise<CommunityMutedMemberRow> {
   const mutedUntil = Number(r.mutedUntil);
   return {
     userId: r.userId,
     username: r.username,
     handle: r.handle,
-    avatarUrl: r.avatarUrl || null,
+    avatar: await resolveAvatarOrNull(r.avatarUrl),
     mutedBy: r.mutedBy,
     reason: r.reason || null,
     mutedAt: new Date(Number(r.mutedAt)).toISOString(),
@@ -51,7 +54,7 @@ export class GrpcCommunityMutesRepository implements CommunityMutesRepository {
       limit,
     });
 
-    const data = members.map(toRow);
+    const data = await Promise.all(members.map(toRow));
     const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
     const pagination: PaginationMeta = {

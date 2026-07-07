@@ -4,8 +4,17 @@ import type {
   Prisma,
 } from "../generated/prisma/index.js";
 
+/**
+ * Statuses under which a stream is still "going" from a concurrency/live-count
+ * perspective — a genuinely broadcasting LIVE stream, or one mid-reconnect-grace
+ * after a publisher drop (RECONNECTING). Deliberately excludes PENDING (still
+ * setting up, never published — never occupies a live slot) and the terminal
+ * ENDED/CANCELLED statuses.
+ */
+const LIVE_STATUSES = ["LIVE", "RECONNECTING"] as const;
+
 /** Statuses considered "occupying a concurrency slot" for a community. */
-const ACTIVE_STATUSES = ["PENDING", "LIVE"] as const;
+const ACTIVE_STATUSES = ["PENDING", ...LIVE_STATUSES] as const;
 
 export class LivestreamRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -94,20 +103,23 @@ export class LivestreamRepository {
   }
 
   /**
-   * Count of LIVE streams for a community (concurrency cap). PENDING streams
-   * (still setting up, never published) never occupy a slot — only a genuinely
-   * broadcasting stream counts.
+   * Count of LIVE (or reconnect-grace) streams for a community (concurrency
+   * cap). PENDING streams (still setting up, never published) never occupy a
+   * slot; a RECONNECTING stream still does — it's the same broadcast session,
+   * just mid-blip, and must keep blocking a same-creator duplicate go-live and
+   * counting toward the community's concurrent-stream cap until it either
+   * resumes or the grace window finalizes it ENDED.
    */
   async countActiveByCommunity(communityId: string): Promise<number> {
     return this.prisma.livestream.count({
-      where: { communityId, status: "LIVE" },
+      where: { communityId, status: { in: [...LIVE_STATUSES] } },
     });
   }
 
   /**
-   * Count of LIVE streams by one creator in one community. PENDING streams
-   * never block a new create/go-live — only an already-broadcasting stream
-   * from the same creator does.
+   * Count of LIVE/RECONNECTING streams by one creator in one community.
+   * PENDING streams never block a new create/go-live — only an
+   * already-broadcasting (or reconnecting) stream from the same creator does.
    */
   async countActiveByCommunityAndCreator(
     communityId: string,
@@ -118,25 +130,31 @@ export class LivestreamRepository {
       where: {
         communityId,
         creatorId,
-        status: "LIVE",
+        status: { in: [...LIVE_STATUSES] },
         ...(excludeStreamId ? { NOT: { id: excludeStreamId } } : {}),
       },
     });
   }
 
-  /** Count of LIVE-only streams for a community (post-end check for last-live broadcast). */
+  /**
+   * Count of LIVE/RECONNECTING streams for a community (post-end check for
+   * last-live broadcast, and the "is anything still going" badge count). A
+   * RECONNECTING stream counts as still active so the community badge doesn't
+   * flicker off during a brief publisher blip.
+   */
   async countLiveByCommunity(communityId: string): Promise<number> {
     return this.prisma.livestream.count({
-      where: { communityId, status: "LIVE" },
+      where: { communityId, status: { in: [...LIVE_STATUSES] } },
     });
   }
 
   /**
-   * Race-safe cap helper: count LIVE streams in a community created
-   * at-or-before the given (createdAt, id) — i.e. THIS stream's 0-based rank.
-   * Deterministic createdAt + id tiebreak so two same-millisecond creates
-   * resolve to distinct ranks. The just-created row is excluded from the prior
-   * count (strictly before by createdAt, or equal createdAt with a lower id).
+   * Race-safe cap helper: count LIVE/RECONNECTING streams in a community
+   * created at-or-before the given (createdAt, id) — i.e. THIS stream's
+   * 0-based rank. Deterministic createdAt + id tiebreak so two
+   * same-millisecond creates resolve to distinct ranks. The just-created row
+   * is excluded from the prior count (strictly before by createdAt, or equal
+   * createdAt with a lower id).
    */
   async countActiveCreatedBefore(
     communityId: string,
@@ -146,7 +164,7 @@ export class LivestreamRepository {
     return this.prisma.livestream.count({
       where: {
         communityId,
-        status: "LIVE",
+        status: { in: [...LIVE_STATUSES] },
         OR: [
           { createdAt: { lt: createdAt } },
           { AND: [{ createdAt }, { id: { lt: id } }] },
@@ -166,7 +184,10 @@ export class LivestreamRepository {
   ): Promise<Array<{ communityId: string; count: number }>> {
     if (communityIds.length === 0) return [];
     const rows = await this.prisma.livestream.findMany({
-      where: { communityId: { in: communityIds }, status: "LIVE" },
+      where: {
+        communityId: { in: communityIds },
+        status: { in: [...LIVE_STATUSES] },
+      },
       select: { communityId: true },
     });
     const counts = new Map<string, number>();
@@ -192,11 +213,18 @@ export class LivestreamRepository {
     });
   }
 
-  /** Distinct communityIds (subset of input) that currently have a LIVE stream. */
+  /**
+   * Distinct communityIds (subset of input) that currently have a LIVE or
+   * RECONNECTING stream — a mid-blip stream still counts as "live" for this
+   * badge so it doesn't flicker off during the grace window.
+   */
   async findLiveCommunityIds(communityIds: string[]): Promise<string[]> {
     if (communityIds.length === 0) return [];
     const rows = await this.prisma.livestream.findMany({
-      where: { communityId: { in: communityIds }, status: "LIVE" },
+      where: {
+        communityId: { in: communityIds },
+        status: { in: [...LIVE_STATUSES] },
+      },
       select: { communityId: true },
       distinct: ["communityId"],
     });
@@ -209,6 +237,10 @@ export class LivestreamRepository {
    *  - `lastHeartbeatAt < cutoff` (host was sending, then stopped), and
    *  - `lastHeartbeatAt == null && livedAt < cutoff` (stream went LIVE before
    *    heartbeats were implemented, or the client never started sending them).
+   *
+   * Deliberately scoped to `status: "LIVE"` only — a RECONNECTING stream is
+   * governed by the separate, shorter reconnect-grace window (see
+   * {@link findStaleReconnectingStreams}), not this heartbeat timeout.
    */
   async findStaleLiveStreams(cutoff: Date): Promise<Livestream[]> {
     return this.prisma.livestream.findMany({
@@ -220,6 +252,41 @@ export class LivestreamRepository {
         ],
       },
     } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+
+  /**
+   * Reconnect-grace sweeper input: RECONNECTING streams whose publisher
+   * dropped (`disconnectedAt`) more than `cutoff` ago without republishing.
+   * These are finalized ENDED by the caller — see
+   * {@link LivestreamService.sweepStaleReconnectingStreams}.
+   */
+  async findStaleReconnectingStreams(cutoff: Date): Promise<Livestream[]> {
+    return this.prisma.livestream.findMany({
+      where: {
+        status: "RECONNECTING",
+        disconnectedAt: { lt: cutoff },
+      },
+    } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+
+  /**
+   * Every non-terminal (PENDING/LIVE/RECONNECTING) stream owned by one
+   * creator — optionally scoped to a single community. Backs the bulk
+   * force-end triggered by an account ban/suspend/deletion (unscoped: every
+   * community) or a community-wide ban/kick (scoped: only that community,
+   * since the creator may still be legitimately live elsewhere).
+   */
+  async findActiveByCreator(
+    creatorId: string,
+    communityId?: string
+  ): Promise<Livestream[]> {
+    return this.prisma.livestream.findMany({
+      where: {
+        creatorId,
+        status: { in: [...ACTIVE_STATUSES] },
+        ...(communityId ? { communityId } : {}),
+      },
+    });
   }
 
   /**
@@ -252,7 +319,12 @@ export class LivestreamRepository {
    */
   async adminList(
     filter: AdminStreamFilter,
-    sortField: "createdAt" | "viewerCount" | "durationSeconds",
+    sortField:
+      | "createdAt"
+      | "viewerCount"
+      | "durationSeconds"
+      | "title"
+      | "status",
     sortDir: "asc" | "desc",
     skip: number,
     take: number

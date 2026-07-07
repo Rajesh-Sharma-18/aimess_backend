@@ -54,13 +54,25 @@ export const reviewReportStatusEnum = z.enum([
   "DISMISSED",
 ]);
 
-/** Whitelisted sort fields + direction (always tiebroken on livestreamId in repo). */
+/**
+ * Whitelisted sort fields + direction (always tiebroken on livestreamId in
+ * repo). `createdAt`/`viewerCount`/`duration`/`title`/`status` map to real
+ * stream-service columns and are sorted at the DB level; `communityName`/
+ * `creatorName`/`category`/`reportCount` are cross-service fields resolved by
+ * the repository over a bounded candidate set (see GrpcLivestreamRepository).
+ */
 const SORT_FIELDS = [
   "createdAt",
   "viewerCount",
   "reportCount",
   "duration",
+  "title",
+  "communityName",
+  "creatorName",
+  "category",
+  "status",
 ] as const;
+const sortFieldEnum = z.enum(SORT_FIELDS);
 const SORT_PATTERN = new RegExp(`^(${SORT_FIELDS.join("|")}):(asc|desc)$`);
 
 /** Reports list sorts on createdAt only. */
@@ -69,24 +81,34 @@ const REPORT_SORT_PATTERN = /^createdAt:(asc|desc)$/;
 // ---------------------------------------------------------------------------
 // List query.
 // ---------------------------------------------------------------------------
-export const listLivestreamsQuerySchema = z.object({
-  search: z.string().trim().min(1).optional(),
-  category: z.string().trim().min(1).optional(),
-  status: livestreamStatusEnum.optional(),
-  hasReports: z.coerce.boolean().optional(),
-  minReports: z.coerce.number().int().min(0).optional(),
-  communityId: z.string().trim().min(1).optional(),
-  creatorId: z.string().trim().min(1).optional(),
-  sort: z
-    .string()
-    .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
-    .default("createdAt:desc"),
-  page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-  cursor: z.string().trim().min(1).optional(),
-  dateFrom: z.iso.date().optional(),
-  dateTo: z.iso.date().optional(),
-});
+export const listLivestreamsQuerySchema = z
+  .object({
+    search: z.string().trim().min(1).optional(),
+    category: z.string().trim().min(1).optional(),
+    status: livestreamStatusEnum.optional(),
+    hasReports: z.coerce.boolean().optional(),
+    minReports: z.coerce.number().int().min(0).optional(),
+    communityId: z.string().trim().min(1).optional(),
+    creatorId: z.string().trim().min(1).optional(),
+    // `sort=field:dir` (existing convention) is still accepted; `sortBy` +
+    // `order` is an additive alternative that composes into the same `sort`
+    // string below — both funnel into one canonical field for the repository.
+    sort: z
+      .string()
+      .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
+      .optional(),
+    sortBy: sortFieldEnum.optional(),
+    order: z.enum(["asc", "desc"]).optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    cursor: z.string().trim().min(1).optional(),
+    dateFrom: z.iso.date().optional(),
+    dateTo: z.iso.date().optional(),
+  })
+  .transform(({ sortBy, order, sort, ...rest }) => ({
+    ...rest,
+    sort: sortBy ? `${sortBy}:${order ?? "desc"}` : (sort ?? "createdAt:desc"),
+  }));
 export type ListLivestreamsQueryInput = z.infer<
   typeof listLivestreamsQuerySchema
 >;

@@ -40,7 +40,24 @@ export function createPostgresPrismaClient<
     logger.info("Prisma: connecting to PostgreSQL (invalid URL for display)");
   }
 
-  const adapter = new PrismaPg({ connectionString });
+  const adapter = new PrismaPg(
+    {
+      connectionString,
+      // Recycle idle clients well before common managed-Postgres/proxy idle
+      // cutoffs (e.g. PgBouncer, RDS Proxy) close the socket out from under
+      // the pool — that mismatch is what surfaces as "Connection terminated
+      // unexpectedly" on the next query to reuse a client the server already
+      // dropped. keepAlive lets the OS detect a dead socket sooner too.
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 10_000,
+      keepAlive: true,
+    },
+    {
+      onPoolError: (err: Error) => {
+        logger.debug(`Prisma: idle pool client error — ${err.message}`);
+      },
+    }
+  );
   const isDev = nodeEnv === "development";
 
   const client = new PrismaClient({

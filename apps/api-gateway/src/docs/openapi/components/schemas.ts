@@ -233,12 +233,11 @@ export const openApiSchemas = {
       id: { type: "string", example: "adm_1" },
       email: { type: "string", format: "email", example: "ops@aimess.io" },
       name: { type: "string", example: "Ops Admin" },
-      avatarUrl: {
-        type: "string",
-        format: "uri",
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
         description:
-          "Always present. Custom avatar URL if set, otherwise a system-generated default avatar derived from the admin's name/id.",
-        example: "https://api.dicebear.com/9.x/initials/svg?seed=Ops%20Admin",
+          "Standard avatar object (see MediaObject) — matches the shape used across every other admin API. `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
       },
       role: {
         type: "string",
@@ -257,7 +256,7 @@ export const openApiSchemas = {
       },
       lastLoginAt: { type: "string", format: "date-time", nullable: true },
     },
-    required: ["id", "email", "avatarUrl", "role", "permissions"],
+    required: ["id", "email", "avatar", "role", "permissions"],
   },
   AdminLogoutResponse: {
     type: "object",
@@ -588,6 +587,13 @@ export const openApiSchemas = {
     properties: {
       userId: { type: "string", example: "u_8f3a" },
       username: { type: "string", example: "brianna" },
+      fullName: {
+        type: "string",
+        nullable: true,
+        description:
+          "firstName + lastName (trimmed, single-spaced). Null when both are absent.",
+        example: "Brianna Doe",
+      },
       email: { type: "string", nullable: true, example: "b@x.com" },
       status: {
         type: "string",
@@ -596,9 +602,12 @@ export const openApiSchemas = {
       },
       joinedAt: { type: "string", format: "date-time" },
       reportCount: { type: "integer", example: 2 },
-      avatarUrl: { type: "string", nullable: true },
-      avatarUrlExpiresIn: { type: "integer", nullable: true },
-      avatar: { $ref: "#/components/schemas/MediaObject" },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description:
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+      },
       moderationStatus: {
         type: "string",
         enum: ["ACTIVE", "BANNED"],
@@ -652,8 +661,12 @@ export const openApiSchemas = {
         example: "John Doe",
       },
       handle: { type: "string", example: "john_doe_02" },
-      avatarUrl: { type: "string", nullable: true },
-      avatar: { $ref: "#/components/schemas/MediaObject" },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description:
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+      },
       role: {
         type: "string",
         enum: ["ADMIN", "MODERATOR", "MEMBER"],
@@ -671,7 +684,12 @@ export const openApiSchemas = {
     properties: {
       communityId: { type: "string", example: "comm_001" },
       name: { type: "string", example: "Indie Game Devs" },
-      avatarUrl: { type: "string", nullable: true },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description:
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+      },
       category: {
         type: "object",
         properties: {
@@ -728,7 +746,12 @@ export const openApiSchemas = {
       userId: { type: "string", example: "u_8f3a" },
       username: { type: "string", example: "John Doe" },
       email: { type: "string", nullable: true, example: "john@example.com" },
-      avatarUrl: { type: "string", nullable: true },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description:
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+      },
       role: {
         type: "string",
         enum: ["ADMIN", "MODERATOR", "MEMBER"],
@@ -781,40 +804,94 @@ export const openApiSchemas = {
         nullable: true,
         description: "Reporter free-text ('Other Reason').",
       },
+      otherReason: {
+        type: "string",
+        nullable: true,
+        description:
+          'Custom description when `reason` is "OTHER"; null for every predefined reason.',
+        example: "User continuously shares phishing links.",
+      },
       status: {
         type: "string",
         enum: ["PENDING", "UNDER_REVIEW", "RESOLVED", "DISMISSED", "ESCALATED"],
         example: "PENDING",
       },
       createdAt: { type: "string", format: "date-time" },
+      communityId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Community the report was filed in; null for community-less reports (e.g. private-message reports).",
+      },
+      communityName: {
+        type: "string",
+        nullable: true,
+        description:
+          "Name of `communityId`'s community; null when absent/unresolved.",
+        example: "Tech Community",
+      },
       reporter: {
         type: "object",
         properties: {
           userId: { type: "string", example: "u_aa" },
           username: { type: "string", nullable: true },
-          avatarUrl: { type: "string", nullable: true },
-          avatarUrlExpiresIn: { type: "integer", nullable: true },
-          avatar: { $ref: "#/components/schemas/MediaObject" },
+          fullname: {
+            type: "string",
+            nullable: true,
+            description:
+              "firstName + lastName (trimmed, single-spaced). Null when both are absent.",
+            example: "John Doe",
+          },
+          avatar: {
+            allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+            nullable: true,
+            description:
+              "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+          },
         },
         required: ["userId"],
       },
     },
-    required: ["reportId", "reason", "status", "createdAt", "reporter"],
+    required: [
+      "reportId",
+      "reason",
+      "otherReason",
+      "status",
+      "createdAt",
+      "communityId",
+      "communityName",
+      "reporter",
+    ],
   },
   AdminUserDetail: {
     type: "object",
     description:
-      "Full user profile: identity (auth-service) + profile/stats (user-service) + report/moderation summary (admin_db). Source of truth: apps/backoffice-service/src/types/user-management.types.ts UserDetail.",
+      "Full user profile: identity (auth-service) + profile (user-service) + report summary (admin_db). Source of truth: apps/backoffice-service/src/types/user-management.types.ts UserDetail.",
     properties: {
       profile: {
         type: "object",
         properties: {
           userId: { type: "string", example: "u_8f3a" },
           username: { type: "string", example: "brianna" },
-          email: { type: "string", nullable: true },
-          avatarUrl: { type: "string", nullable: true },
-          avatarUrlExpiresIn: { type: "integer", nullable: true },
-          avatar: { $ref: "#/components/schemas/MediaObject" },
+          fullName: {
+            type: "string",
+            nullable: true,
+            description:
+              "firstName + lastName (trimmed, single-spaced). Null when both are absent.",
+            example: "Brianna Doe",
+          },
+          email: {
+            type: "string",
+            nullable: true,
+            description:
+              "Null when the user has no email on file (never an empty string).",
+          },
+          avatar: {
+            allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+            nullable: true,
+            description:
+              "Standard avatar object; `null` when no avatar is set. Only avatar field this endpoint returns (no flat avatarUrl/avatarUrlExpiresIn siblings).",
+          },
           joinedAt: { type: "string", format: "date-time" },
           lastActiveAt: { type: "string", format: "date-time", nullable: true },
         },
@@ -852,16 +929,35 @@ export const openApiSchemas = {
         },
         required: ["status", "moderationStatus", "isBanned"],
       },
-      reportsSummary: {
+      reportDetails: {
         type: "object",
+        description:
+          "'Report Details' panel. Single source for report data on the detail screen — no other field duplicates this data.",
         properties: {
-          total: { type: "integer", example: 3 },
-          open: { type: "integer", example: 1 },
-          resolved: { type: "integer", example: 2 },
-          dismissed: { type: "integer", example: 0 },
+          reporter: {
+            type: "string",
+            nullable: true,
+            description:
+              "Username of the most recent reporter, or null when the user has no reports.",
+            example: "alice",
+          },
+          reportDate: {
+            type: "string",
+            format: "date-time",
+            nullable: true,
+            description:
+              "createdAt of the most recent report, or null when the user has no reports.",
+          },
+          reportCount: {
+            type: "integer",
+            example: 9,
+            description:
+              "Total reports filed against this user, across every reason (predefined + custom).",
+          },
           topReasons: {
             type: "array",
-            description: "Top 5 report reasons by count.",
+            description:
+              'Predefined report reasons only (excludes "OTHER"), aggregated to one count per reason. Empty array when the user has no reports.',
             items: {
               type: "object",
               properties: {
@@ -871,75 +967,42 @@ export const openApiSchemas = {
               required: ["reason", "count"],
             },
           },
-        },
-        required: ["total", "open", "resolved", "dismissed", "topReasons"],
-      },
-      reportCategories: {
-        type: "array",
-        description:
-          "Per-category report counts (ALL categories, not just top 5) for the 'Reported Details' chips.",
-        items: {
-          type: "object",
-          properties: {
-            reason: { type: "string", example: "SPAM" },
-            count: { type: "integer", example: 3 },
+          otherReasons: {
+            type: "array",
+            description:
+              'Reports filed under the custom "OTHER" reason (one entry per report), each with its free-text description, reporter, and timestamp. Never mixed into `topReasons`. Empty array when none exist.',
+            items: {
+              type: "object",
+              properties: {
+                description: {
+                  type: "string",
+                  example: "Fake profile pictures",
+                  description:
+                    "Reporter-supplied free-text description (mandatory when filing an OTHER report).",
+                },
+                reportedBy: {
+                  type: "string",
+                  nullable: true,
+                  description:
+                    "Username of the reporter, or null when unresolved.",
+                  example: "alice",
+                },
+                reportedAt: { type: "string", format: "date-time" },
+              },
+              required: ["description", "reportedBy", "reportedAt"],
+            },
           },
-          required: ["reason", "count"],
         },
-      },
-      moderationHistory: {
-        type: "array",
-        items: { $ref: "#/components/schemas/AdminModerationAction" },
-      },
-      stats: {
-        type: "object",
-        description: "reportCount mirrors reportsSummary.total.",
-        properties: {
-          reportCount: { type: "integer", example: 3 },
-        },
-        required: ["reportCount"],
-      },
-    },
-    required: [
-      "profile",
-      "accountStatus",
-      "reportsSummary",
-      "reportCategories",
-      "moderationHistory",
-      "stats",
-    ],
-  },
-  AdminModerationAction: {
-    type: "object",
-    properties: {
-      id: { type: "string", example: "ma_77" },
-      type: {
-        type: "string",
-        description:
-          "Actual action-type strings written by backoffice-service (per module).",
-        enum: [
-          "ban_user",
-          "suspend_user",
-          "unban_user",
-          "suspend_community",
-          "reopen_community",
+        required: [
+          "reporter",
+          "reportDate",
+          "reportCount",
+          "topReasons",
+          "otherReasons",
         ],
-        example: "ban_user",
       },
-      targetType: { type: "string", example: "user" },
-      targetId: { type: "string", example: "u_8f3a" },
-      reason: { type: "string", nullable: true },
-      note: { type: "string", nullable: true },
-      reportId: { type: "string", nullable: true },
-      expiresAt: { type: "string", format: "date-time", nullable: true },
-      actorId: {
-        type: "string",
-        example: "adm_1",
-        description:
-          "The acting admin's id. NOTE: currently the raw admin id, not a resolved display name (Phase-2 TODO in code).",
-      },
-      createdAt: { type: "string", format: "date-time" },
     },
+    required: ["profile", "accountStatus", "reportDetails"],
   },
   AdminUserBanReasonCode: {
     type: "string",
@@ -1128,13 +1191,14 @@ export const openApiSchemas = {
     properties: {
       userId: { type: "string", example: "u_8f3a" },
       name: { type: "string", example: "John Doe" },
-      avatarUrl: {
-        type: "string",
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
         nullable: true,
-        example: "https://cdn.aimess.app/av/8f3.jpg",
+        description:
+          "Standard avatar object — matches the shape used across User APIs / Community Details. `null` when no avatar is set. Replaces the legacy avatarUrl string field.",
       },
     },
-    required: ["userId", "name", "avatarUrl"],
+    required: ["userId", "name", "avatar"],
   },
   AdminCommunityLivestreamCounter: {
     type: "object",
@@ -1169,6 +1233,12 @@ export const openApiSchemas = {
     properties: {
       communityId: { type: "string", example: "comm_001" },
       communityName: { type: "string", example: "Hanoi Foodies" },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description:
+          "Community's own avatar/profile image — same MediaObject structure as GET /api/v1/communities/{communityId}. `null` when no avatar is set.",
+      },
       admin: { $ref: "#/components/schemas/AdminCommunityAdminRef" },
       type: { $ref: "#/components/schemas/AdminCommunityType" },
       category: { $ref: "#/components/schemas/AdminCommunityCategoryRef" },
@@ -1183,6 +1253,7 @@ export const openApiSchemas = {
     required: [
       "communityId",
       "communityName",
+      "avatar",
       "admin",
       "type",
       "category",
@@ -1215,7 +1286,12 @@ export const openApiSchemas = {
       userId: { type: "string", example: "u_8f3a" },
       displayName: { type: "string", example: "John Doe" },
       username: { type: "string", example: "john_doe" },
-      avatarUrl: { type: "string", nullable: true },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description:
+          "Standard avatar object — matches the shape used across User APIs / Community Details. `null` when no avatar is set. Replaces the legacy avatarUrl string field.",
+      },
       email: { type: "string", nullable: true, example: "john@aimess.io" },
       accountStatus: {
         type: "string",
@@ -1227,7 +1303,7 @@ export const openApiSchemas = {
       "userId",
       "displayName",
       "username",
-      "avatarUrl",
+      "avatar",
       "email",
       "accountStatus",
     ],
@@ -1328,7 +1404,12 @@ export const openApiSchemas = {
           status: {
             $ref: "#/components/schemas/AdminCommunityModerationStatus",
           },
-          avatarUrl: { type: "string", nullable: true },
+          avatar: {
+            allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+            nullable: true,
+            description:
+              "Standard avatar object — matches the shape used across User APIs / Community Details. `null` when no avatar is set. Replaces the legacy avatarUrl string field.",
+          },
           coverUrl: { type: "string", nullable: true },
           createdAt: { type: "string", format: "date-time" },
           lastActivityAt: { type: "string", format: "date-time" },
@@ -1341,43 +1422,25 @@ export const openApiSchemas = {
           "type",
           "category",
           "status",
-          "avatarUrl",
+          "avatar",
           "coverUrl",
           "createdAt",
           "lastActivityAt",
         ],
       },
       owner: { $ref: "#/components/schemas/AdminCommunityOwner" },
-      memberStats: { $ref: "#/components/schemas/AdminCommunityMemberStats" },
+      memberStats: {
+        type: "integer",
+        description: "Current total community members.",
+        example: 21,
+      },
       livestreamStats: {
-        oneOf: [{ $ref: "#/components/schemas/AdminCommunityLivestreamStats" }],
-        nullable: true,
-      },
-      moderationHistory: {
-        type: "array",
-        items: {
-          $ref: "#/components/schemas/AdminCommunityModerationHistoryItem",
-        },
-      },
-      settingsSummary: {
-        $ref: "#/components/schemas/AdminCommunitySettingsSummary",
-      },
-      partial: {
-        type: "boolean",
-        description:
-          "True when one or more upstream sources (stream/user) could not be reached.",
-        example: false,
+        type: "integer",
+        description: "Total livestreams associated with the community.",
+        example: 0,
       },
     },
-    required: [
-      "community",
-      "owner",
-      "memberStats",
-      "livestreamStats",
-      "moderationHistory",
-      "settingsSummary",
-      "partial",
-    ],
+    required: ["community", "owner", "memberStats", "livestreamStats"],
   },
   AdminCommunityDetailResponse: {
     type: "object",
@@ -1559,7 +1622,7 @@ export const openApiSchemas = {
   AdminGroupAdmin: {
     type: "object",
     description:
-      "Group owner identity, composed from the chat-service group (role=OWNER member, fallback createdBy) + user-service (username/avatar) + auth-service (email). email/avatarUrl are null when the upstream identity could not be resolved.",
+      "Group owner identity, composed from the chat-service group (role=OWNER member, fallback createdBy) + user-service (username/avatar) + auth-service (email). email/avatar are null when the upstream identity could not be resolved.",
     properties: {
       userId: {
         type: "string",
@@ -1572,12 +1635,11 @@ export const openApiSchemas = {
         nullable: true,
         example: "ada@aimess.io",
       },
-      avatarUrl: {
-        type: "string",
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
         nullable: true,
         description:
-          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). The client renders it directly — never construct it from a key or call a separate download endpoint.",
-        example: "https://cdn.aimess.app/avatars/u_9f3a.webp",
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
       },
     },
     required: ["userId", "username"],
@@ -1589,12 +1651,11 @@ export const openApiSchemas = {
     properties: {
       id: { type: "string", example: "grp_9a" },
       name: { type: "string", example: "Project X" },
-      avatarUrl: {
-        type: "string",
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
         nullable: true,
         description:
-          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). The client renders it directly — never construct it from a key or call a separate download endpoint.",
-        example: "https://cdn.aimess.app/group-avatars/grp_9a.webp",
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
       },
       description: { type: "string", example: "Sprint coordination room" },
       memberCount: { type: "integer", example: 1250 },
@@ -1618,12 +1679,11 @@ export const openApiSchemas = {
         nullable: true,
         example: "ada@aimess.io",
       },
-      avatarUrl: {
-        type: "string",
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
         nullable: true,
         description:
-          "Fully-qualified, ready-to-use presigned GET URL (time-limited, ~1h). The client renders it directly — never construct it from a key or call a separate download endpoint.",
-        example: "https://cdn.aimess.app/avatars/u_9f3a.webp",
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
       },
       role: {
         type: "string",
@@ -1793,10 +1853,11 @@ export const openApiSchemas = {
       id: { type: "string", example: "u_8f3" },
       username: { type: "string", example: "john_doe" },
       displayName: { type: "string", example: "John Doe" },
-      avatarUrl: {
-        type: "string",
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
         nullable: true,
-        example: "https://cdn.aimess.app/av/8f3.jpg",
+        description:
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
       },
       accountStatus: { type: "string", nullable: true, example: "ACTIVE" },
     },
@@ -1858,6 +1919,13 @@ export const openApiSchemas = {
       createdAt: { type: "string", format: "date-time" },
       resolvedAt: { type: "string", format: "date-time", nullable: true },
       moderator: { $ref: "#/components/schemas/AdminModeratorRef" },
+      communityName: {
+        type: "string",
+        nullable: true,
+        description:
+          "Name of the community the report was filed in; null for community-less reports (e.g. private-message reports).",
+        example: "Design Lovers",
+      },
     },
     required: [
       "reportId",
@@ -1868,6 +1936,7 @@ export const openApiSchemas = {
       "status",
       "priority",
       "createdAt",
+      "communityName",
     ],
   },
   AdminModerationListResponse: {
@@ -2009,6 +2078,125 @@ export const openApiSchemas = {
       "history",
       "availableActions",
     ],
+  },
+  AdminReportModerationUserRef: {
+    type: "object",
+    description:
+      "Compact user reference on the Reports & Moderation Details page.",
+    properties: {
+      id: { type: "string", example: "u_8f3a" },
+      username: { type: "string", example: "jdoe" },
+      fullName: { type: "string", example: "John Doe" },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description:
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+      },
+    },
+    required: ["id", "username", "fullName", "avatar"],
+  },
+  AdminReportModerationDetail: {
+    type: "object",
+    description:
+      "Aggregate for the admin Reports & Moderation Details page: `{ success, data: { report, community, members } }`.",
+    properties: {
+      success: { type: "boolean", example: true },
+      data: {
+        type: "object",
+        properties: {
+          report: {
+            type: "object",
+            description: "Report Details.",
+            properties: {
+              id: { type: "string", example: "RPT-2026-0001284" },
+              type: { $ref: "#/components/schemas/AdminModerationTargetType" },
+              status: { $ref: "#/components/schemas/AdminModerationStatus" },
+              createdAt: { type: "string", format: "date-time" },
+              reportedUser: {
+                allOf: [
+                  { $ref: "#/components/schemas/AdminReportModerationUserRef" },
+                ],
+                nullable: true,
+              },
+              reporter: {
+                allOf: [
+                  { $ref: "#/components/schemas/AdminReportModerationUserRef" },
+                ],
+                nullable: true,
+              },
+            },
+            required: [
+              "id",
+              "type",
+              "status",
+              "createdAt",
+              "reportedUser",
+              "reporter",
+            ],
+          },
+          community: {
+            type: "object",
+            nullable: true,
+            description:
+              "Community Report Details. Null when the report has no associated community.",
+            properties: {
+              id: { type: "string", example: "comm_001" },
+              name: { type: "string", example: "Indie Game Devs" },
+              avatar: {
+                allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+                nullable: true,
+                description:
+                  "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+              },
+              category: {
+                type: "object",
+                properties: {
+                  id: { type: "string", example: "cat_07" },
+                  name: { type: "string", example: "Gaming" },
+                },
+                required: ["id", "name"],
+              },
+              reportedDate: { type: "string", format: "date-time" },
+              reportedMessage: {
+                type: "object",
+                nullable: true,
+                description:
+                  "Only the message id — null for non-message-based reports. No admin RPC exists yet to fetch message content.",
+                properties: {
+                  id: { type: "string", example: "msg_42" },
+                },
+                required: ["id"],
+              },
+            },
+            required: [
+              "id",
+              "name",
+              "avatar",
+              "category",
+              "reportedDate",
+              "reportedMessage",
+            ],
+          },
+          members: {
+            type: "object",
+            nullable: true,
+            description:
+              "Community Member List — identical shape/filters to GET /admin/v1/communities/{communityId}/members. Null when there is no community.",
+            properties: {
+              items: {
+                type: "array",
+                items: { $ref: "#/components/schemas/AdminCommunityMember" },
+              },
+              pagination: { $ref: "#/components/schemas/AdminPagination" },
+            },
+            required: ["items", "pagination"],
+          },
+        },
+        required: ["report", "community", "members"],
+      },
+    },
+    required: ["success", "data"],
   },
   AdminResolveReportRequest: {
     type: "object",
@@ -2521,11 +2709,11 @@ export const openApiSchemas = {
           id: { type: "string" },
           name: { type: "string" },
           slug: { type: "string" },
-          avatarUrl: {
-            type: "string",
+          avatar: {
+            allOf: [{ $ref: "#/components/schemas/MediaObject" }],
             nullable: true,
             description:
-              "Presigned community avatar URL (full URL, never a key).",
+              "Standard avatar object (see MediaObject) — matches the shape used across User APIs / Community Details. `null` when no avatar is set. Replaces the legacy avatarUrl string field.",
           },
         },
       },
@@ -2535,11 +2723,11 @@ export const openApiSchemas = {
           id: { type: "string" },
           username: { type: "string" },
           displayName: { type: "string" },
-          avatarUrl: {
-            type: "string",
+          avatar: {
+            allOf: [{ $ref: "#/components/schemas/MediaObject" }],
             nullable: true,
             description:
-              "Presigned creator avatar URL (full URL, never a key).",
+              "Standard avatar object (see MediaObject) — matches the shape used across User APIs / Community Details. `null` when no avatar is set. Replaces the legacy avatarUrl string field.",
           },
         },
       },
@@ -2593,6 +2781,12 @@ export const openApiSchemas = {
           id: { type: "string" },
           name: { type: "string" },
           slug: { type: "string" },
+          avatar: {
+            allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+            nullable: true,
+            description:
+              "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+          },
           memberCount: { type: "integer" },
           creatorRole: { type: "string" },
         },
@@ -2603,7 +2797,12 @@ export const openApiSchemas = {
           id: { type: "string" },
           username: { type: "string" },
           displayName: { type: "string" },
-          avatarUrl: { type: "string", nullable: true },
+          avatar: {
+            allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+            nullable: true,
+            description:
+              "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+          },
           accountStatus: { type: "string" },
           totalStreams: { type: "integer" },
           priorStrikes: { type: "integer" },
@@ -2709,10 +2908,11 @@ export const openApiSchemas = {
       userId: { type: "string" },
       username: { type: "string" },
       handle: { type: "string", nullable: true },
-      avatarUrl: {
-        type: "string",
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
         nullable: true,
-        description: "Presigned avatar URL (full URL, never a key).",
+        description:
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
       },
       joinedAt: { type: "string", format: "date-time" },
       leftAt: {
@@ -2974,6 +3174,12 @@ export const openApiSchemas = {
       order: { type: "integer", example: 0 },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
+      communityCount: {
+        type: "integer",
+        description:
+          "Communities in this category with status=ACTIVE and deletedAt unset.",
+        example: 12,
+      },
     },
     required: [
       "id",
@@ -2983,6 +3189,7 @@ export const openApiSchemas = {
       "order",
       "createdAt",
       "updatedAt",
+      "communityCount",
     ],
   },
   AdminCategoryCreateRequest: {
@@ -3011,6 +3218,17 @@ export const openApiSchemas = {
       visible: { type: "boolean", example: false },
     },
   },
+  AdminCategoryVisibilityUpdateRequest: {
+    type: "object",
+    required: ["status"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["VISIBLE", "HIDDEN"],
+        example: "HIDDEN",
+      },
+    },
+  },
 
   // ---- Audit Logs ----
   // Source of truth: apps/backoffice-service/src/types/audit-log.types.ts.
@@ -3028,7 +3246,12 @@ export const openApiSchemas = {
           id: { type: "string", example: "adm_1" },
           name: { type: "string", nullable: true, example: "Jane Admin" },
           email: { type: "string", nullable: true, example: "ops@x.com" },
-          avatarUrl: { type: "string", nullable: true },
+          avatar: {
+            allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+            nullable: true,
+            description:
+              "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
+          },
         },
         required: ["id"],
       },
@@ -3086,10 +3309,11 @@ export const openApiSchemas = {
       id: { type: "string", format: "uuid" },
       email: { type: "string", format: "email", example: "mod@aimess.io" },
       name: { type: "string", example: "Mod User" },
-      avatarUrl: {
-        type: "string",
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
         description:
-          "Always a resolved string (custom avatar or a default), never null.",
+          "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
       },
       role: { $ref: "#/components/schemas/AdminAccountRoleRef" },
       status: {
@@ -5099,6 +5323,12 @@ export const openApiSchemas = {
       },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
+      communityCount: {
+        type: "integer",
+        description:
+          "Communities in this category with status=ACTIVE and deletedAt unset.",
+        example: 12,
+      },
     },
     required: [
       "id",
@@ -5108,6 +5338,7 @@ export const openApiSchemas = {
       "order",
       "createdAt",
       "updatedAt",
+      "communityCount",
     ],
   },
   AdminCategoryListResult: {
@@ -6213,6 +6444,13 @@ export const openApiSchemas = {
         maxLength: 1000,
         description: "Reporter-supplied reason text.",
       },
+      otherReason: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1000,
+        description:
+          'Mandatory custom description when `reason` is "OTHER" (rejects empty/whitespace-only values, 400). Ignored for every predefined reason.',
+      },
       reportedMessageId: {
         type: "string",
         minLength: 1,
@@ -6281,6 +6519,12 @@ export const openApiSchemas = {
       reporterId: { type: "string", format: "uuid" },
       targetUserId: { type: "string", format: "uuid", nullable: true },
       reason: { type: "string" },
+      otherReason: {
+        type: "string",
+        nullable: true,
+        description:
+          'Custom description when `reason` is "OTHER"; null for every predefined reason.',
+      },
       status: {
         type: "string",
         enum: ["OPEN", "REVIEWED", "ACTIONED", "DISMISSED", "WITHDRAWN"],

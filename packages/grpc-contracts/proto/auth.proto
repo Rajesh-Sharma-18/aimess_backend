@@ -54,6 +54,7 @@ message AdminListUsersRequest {
   int32  limit = 7;             // page size (default 20, clamp 1..100)
   int32  offset = 8;            // offset pagination
   repeated string user_ids = 9; // OPTIONAL: when non-empty, constrain to these ids (used by backoffice reports-bucket prefilter)
+  repeated string exclude_user_ids = 10; // OPTIONAL: when non-empty, exclude these ids (used by backoffice status=ACTIVE filter to drop UserIndex-mirror-banned users; auth's own status column never reflects BANNED/SUSPENDED)
 }
 message AdminUserRecord {
   string id = 1;

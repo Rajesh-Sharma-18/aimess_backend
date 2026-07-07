@@ -9,6 +9,7 @@ import { logger } from "@aimess/logger";
 
 import { mediaUrlStrategy, presignClient } from "../config/storage.js";
 import { env } from "../config/env.js";
+import { toAvatarOrNull } from "../lib/avatar-media.js";
 
 const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
 
@@ -80,6 +81,17 @@ export class UserAvatarService {
       prefixes: AVATAR_PREFIXES,
       strategy: mediaUrlStrategy,
     });
+  }
+
+  /**
+   * {@link resolveMediaObject} collapsed to `null` when no avatar is set — the
+   * project-wide `"avatar": null` response contract (see
+   * {@link toAvatarOrNull}).
+   */
+  async resolveAvatarOrNull(
+    stored: string | null | undefined
+  ): Promise<MediaObject | null> {
+    return toAvatarOrNull(await this.resolveMediaObject(stored));
   }
 }
 

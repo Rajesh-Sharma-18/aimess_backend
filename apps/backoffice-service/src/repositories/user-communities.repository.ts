@@ -8,6 +8,7 @@ import type {
   PaginationMeta,
   UserCommunityRow,
 } from "../types/community.types.js";
+import { resolveCommunityImageOrNull } from "../lib/avatar-media.js";
 
 /**
  * Read-through repository for the admin "Communities" grid on the User
@@ -25,11 +26,11 @@ export interface UserCommunitiesRepository {
 }
 
 /** Map a gRPC row → the API-facing user-community view type. */
-function toRow(r: RawAdminUserCommunityRow): UserCommunityRow {
+async function toRow(r: RawAdminUserCommunityRow): Promise<UserCommunityRow> {
   return {
     communityId: r.communityId,
     name: r.name,
-    avatarUrl: r.avatarUrl || null,
+    avatar: await resolveCommunityImageOrNull(r.avatarUrl),
     category: { id: r.categoryId, name: r.categoryName },
     description: r.description,
     memberCount: r.memberCount,
@@ -58,7 +59,7 @@ export class GrpcUserCommunitiesRepository implements UserCommunitiesRepository 
         limit,
       });
 
-    const data = communities.map(toRow);
+    const data = await Promise.all(communities.map(toRow));
     const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
     const pagination: PaginationMeta = {

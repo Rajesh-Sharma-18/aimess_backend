@@ -19,6 +19,7 @@ import {
   unpinCommunityMessageQuerySchema,
   sendCommunityMessageBodySchema,
   markCommunityReadBodySchema,
+  forwardCommunityMessageBodySchema,
 } from "../validators/community.validator.js";
 import type { CommunityController } from "../controllers/community.controller.js";
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
@@ -127,6 +128,16 @@ export function createCommunityRoutes(
     messageLimit,
     validateBody(reactCommunityMessageBodySchema),
     messageCtrl.reactToMessage
+  );
+
+  // Forward a community message into another community room (roomId path
+  // param = SOURCE room, bound server-side to the message's actual room)
+  router.post(
+    "/rooms/:roomId/messages/:messageId/forward",
+    authenticate,
+    messageLimit,
+    validateBody(forwardCommunityMessageBodySchema),
+    messageCtrl.forwardMessage
   );
 
   // Pin a community message (MODERATOR+)

@@ -242,6 +242,8 @@ export type AdminCategoryData = {
   order: number;
   createdAt: string;
   updatedAt: string;
+  /** Communities in this category with status=ACTIVE and deletedAt unset. */
+  communityCount: number;
 };
 
 export type AdminCategoryListResult = {
@@ -760,6 +762,8 @@ export type CommunityReportData = {
   reporterId: string;
   targetUserId: string | null;
   reason: string;
+  /** Mandatory custom description when `reason` is "OTHER"; null otherwise. */
+  otherReason: string | null;
   status: CommunityReportStatus;
   reviewedBy: string | null;
   /** ISO-8601 */

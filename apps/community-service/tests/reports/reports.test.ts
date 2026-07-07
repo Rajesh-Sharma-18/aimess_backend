@@ -183,6 +183,64 @@ describe("POST /:id/reports (create)", () => {
       });
     expect(res.status).toBe(400);
   });
+
+  it("returns 400 when reason is OTHER and otherReason is missing", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/reports`)
+      .set(auth())
+      .send({ targetUserId: TARGET, reason: "OTHER" });
+    expect(res.status).toBe(400);
+    expect(svc.createReport).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when reason is OTHER and otherReason is whitespace-only", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/reports`)
+      .set(auth())
+      .send({ targetUserId: TARGET, reason: "OTHER", otherReason: "   " });
+    expect(res.status).toBe(400);
+    expect(svc.createReport).not.toHaveBeenCalled();
+  });
+
+  it("creates a report when reason is OTHER and otherReason is provided → 201", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/reports`)
+      .set(auth())
+      .send({
+        targetUserId: TARGET,
+        reason: "OTHER",
+        otherReason: "They keep sending me spam links off-platform",
+      });
+    expect(res.status).toBe(201);
+    expect(svc.createReport).toHaveBeenCalledWith(
+      CID,
+      SELF,
+      expect.objectContaining({
+        reason: "OTHER",
+        otherReason: "They keep sending me spam links off-platform",
+      })
+    );
+  });
+
+  it("otherReason is optional (and ignored downstream) when reason is not OTHER", async () => {
+    const res = await request(app)
+      .post(`/api/v1/communities/${CID}/reports`)
+      .set(auth())
+      .send({
+        targetUserId: TARGET,
+        reason: "harassment in chat",
+        otherReason: "should be ignored",
+      });
+    expect(res.status).toBe(201);
+    expect(svc.createReport).toHaveBeenCalledWith(
+      CID,
+      SELF,
+      expect.objectContaining({
+        reason: "harassment in chat",
+        otherReason: "should be ignored",
+      })
+    );
+  });
 });
 
 describe("GET report lists", () => {

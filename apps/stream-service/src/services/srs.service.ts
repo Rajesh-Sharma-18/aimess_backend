@@ -107,12 +107,24 @@ export class SrsService {
    * Best-effort: ask SRS to drop the publisher for `streamKey`. Resolves the
    * publisher's connection id by name via the clients API, then DELETEs it.
    * Swallows all errors (logs a warning) — bounded by a 5s AbortController.
+   *
+   * `sourceType` picks which SRS instance to hit: OBS_RTMP publishes directly
+   * into the instance behind SRS_INGEST_API_URL (falls back to SRS_API_URL
+   * when unset, e.g. local Docker SRS's single all-in-one instance); every
+   * other source (PHONE_CAMERA/WHIP, URL, YOUTUBE) publishes into the
+   * instance behind SRS_API_URL. Hitting the wrong instance finds nothing (or
+   * a forwarded copy) and silently no-ops instead of kicking the real
+   * publisher — see the hosted 3-instance topology this was built for.
    */
-  async kickStream(streamKey: string): Promise<void> {
+  async kickStream(streamKey: string, sourceType: string): Promise<void> {
+    const apiBase =
+      sourceType === "OBS_RTMP"
+        ? (env.SRS_INGEST_API_URL ?? env.SRS_API_URL)
+        : env.SRS_API_URL;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
     try {
-      const listRes = await fetch(`${env.SRS_API_URL}/api/v1/clients/`, {
+      const listRes = await fetch(`${apiBase}/api/v1/clients/`, {
         method: "GET",
         headers: this.apiAuthHeaders,
         signal: controller.signal,
@@ -133,14 +145,11 @@ export class SrsService {
         // No live publisher under that key — nothing to kick.
         return;
       }
-      const delRes = await fetch(
-        `${env.SRS_API_URL}/api/v1/clients/${match.id}`,
-        {
-          method: "DELETE",
-          headers: this.apiAuthHeaders,
-          signal: controller.signal,
-        }
-      );
+      const delRes = await fetch(`${apiBase}/api/v1/clients/${match.id}`, {
+        method: "DELETE",
+        headers: this.apiAuthHeaders,
+        signal: controller.signal,
+      });
       if (!delRes.ok) {
         logger.warn(
           `SRS kickStream: delete returned ${String(delRes.status)} for key=${streamKey}`

@@ -90,6 +90,10 @@ export class GeneralRoomMessageRepository {
         deletedBy: (data.deletedBy as object) ?? [],
         deletedForAll: (data.deletedForAll as boolean) ?? false,
         reports: (data.reports as object) ?? [],
+        isForwarded: (data.isForwarded as boolean) ?? false,
+        ...(data.forwardData
+          ? { forwardData: data.forwardData as object }
+          : {}),
       },
     });
   }
@@ -923,10 +927,22 @@ export class GeneralRoomMessageRepository {
     });
   }
 
-  async deleteForAll(messageId: string): Promise<GeneralRoomMessage | null> {
+  async deleteForAll(
+    messageId: string,
+    params?: { deletedType: "SELF_DELETE" | "ADMIN_DELETE"; deletedBy: string }
+  ): Promise<GeneralRoomMessage | null> {
     return this.prisma.generalRoomMessage.update({
       where: { id: messageId },
-      data: { deletedForAll: true },
+      data: {
+        deletedForAll: true,
+        ...(params
+          ? {
+              deletedForAllType: params.deletedType,
+              deletedForAllAt: new Date(),
+              deletedForAllBy: params.deletedBy,
+            }
+          : {}),
+      },
     });
   }
 

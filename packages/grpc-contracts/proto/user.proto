@@ -7,6 +7,9 @@ service UserService {
   rpc GetNotificationSettings (GetNotificationSettingsRequest) returns (NotificationSettings);
   rpc AdminGetProfilesByIds (AdminGetProfilesRequest) returns (AdminProfilesResponse);
   rpc AdminGetProfile (AdminGetProfileRequest) returns (AdminProfileRecord);
+  // Admin Panel: search profiles by first/last/full name or username; returns
+  // matching userIds only (capped) for the caller to combine into an id-set filter.
+  rpc AdminSearchProfileIds (AdminSearchProfileIdsRequest) returns (AdminSearchProfileIdsResponse);
   rpc BulkGetUserSnapshots (BulkGetUserSnapshotsRequest) returns (BulkGetUserSnapshotsResponse);
   rpc CheckFriendships (CheckFriendshipsRequest) returns (CheckFriendshipsResponse);
 }
@@ -61,6 +64,14 @@ message AdminProfilesResponse {
 
 message AdminGetProfileRequest {
   string user_id = 1;
+}
+
+message AdminSearchProfileIdsRequest {
+  string search = 1;
+}
+
+message AdminSearchProfileIdsResponse {
+  repeated string user_ids = 1;
 }
 
 // Internal: community-service + chat-service fetch profiles in bulk (replaces HTTP GET /api/v1/users/internal/bulk-snapshot)
