@@ -48,8 +48,14 @@ const envSchema = z.object({
   /** Presigned PUT lifetime for upload URLs (seconds). */
   MINIO_PRESIGN_EXPIRES_IN: z.coerce.number().positive().default(300),
   MINIO_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
-  CHAT_UPLOAD_MAX_BYTES: z.coerce.number().positive().default(52_428_800), // 50 MB (generic cap)
+  CHAT_UPLOAD_MAX_BYTES: z.coerce.number().positive().default(52_428_800), // 50 MB (generic cap — GIF/legacy CUSTOM only)
   CHAT_VIDEO_MAX_BYTES: z.coerce.number().positive().default(104_857_600), // 100 MB (video cap)
+  // Same var name + default as media-service's env (config/env.ts) so the
+  // message-send-time guard here and the presigned-upload-time guard there
+  // can never silently drift apart — see @aimess/constants media/limits.ts.
+  CHAT_IMAGE_MAX_BYTES: z.coerce.number().positive().default(26_214_400), // 25 MB (image cap)
+  CHAT_AUDIO_MAX_BYTES: z.coerce.number().positive().default(26_214_400), // 25 MB (audio cap)
+  CHAT_DOCUMENT_MAX_BYTES: z.coerce.number().positive().default(26_214_400), // 25 MB (document cap)
   CHAT_TEXT_MAX_CHARS: z.coerce.number().positive().default(4000),
 
   MESSAGE_PAGE_SIZE: z.coerce.number().positive().default(30),

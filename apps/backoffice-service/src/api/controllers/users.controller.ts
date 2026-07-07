@@ -220,7 +220,10 @@ export const unbanUser: RequestHandler = (req, res, next) => {
   void (async () => {
     try {
       const userId = req.params.userId as string;
-      const body = req.body as UnbanUserInput;
+      // No `validateBody` on this route — a request with no body at all (no
+      // Content-Type) leaves `req.body` undefined, not `{}`. Default it so the
+      // service's `input.note` read is always safe.
+      const body = (req.body ?? {}) as UnbanUserInput;
       const result = await userManagementService.unbanUser(
         userId,
         body,

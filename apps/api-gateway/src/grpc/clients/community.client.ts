@@ -344,10 +344,21 @@ export interface GetUserActiveCommunityIdsResult {
   communityIds: string[];
 }
 
+// ---- Room-independent typing indicator fan-out ----
+export interface GetCommunityActiveMemberIdsParams {
+  communityId: string;
+}
+export interface GetCommunityActiveMemberIdsResult {
+  userIds: string[];
+}
+
 export interface CommunityClient {
   getUserActiveCommunityIds(p: {
     userId: string;
   }): Promise<GetUserActiveCommunityIdsResult>;
+  getCommunityActiveMemberIds(
+    p: GetCommunityActiveMemberIdsParams
+  ): Promise<GetCommunityActiveMemberIdsResult>;
   checkCommunityMembership(
     p: CheckCommunityMembershipParams
   ): Promise<CheckCommunityMembershipResult>;
@@ -647,6 +658,15 @@ export function createCommunityClient(): CommunityClient {
       )
   );
 
+  const getCommunityActiveMemberIdsBreaker = makeBreaker(
+    "community.getCommunityActiveMemberIds",
+    (p: GetCommunityActiveMemberIdsParams) =>
+      call<unknown, GetCommunityActiveMemberIdsResult>(
+        "getCommunityActiveMemberIds",
+        { communityId: p.communityId }
+      )
+  );
+
   const markDeliveredBreaker = makeBreaker(
     "community.markCommunityMessageDelivered",
     (p: MarkCommunityMessageDeliveredParams) =>
@@ -663,6 +683,8 @@ export function createCommunityClient(): CommunityClient {
 
   return {
     getUserActiveCommunityIds: (p) => getUserActiveCommunityIdsBreaker.fire(p),
+    getCommunityActiveMemberIds: (p) =>
+      getCommunityActiveMemberIdsBreaker.fire(p),
     checkCommunityMembership: (p) => checkMembershipBreaker.fire(p),
     markCommunityMessageRead: (p) => markReadBreaker.fire(p),
     getCommunityMessageReactions: (p) => getReactionsBreaker.fire(p),

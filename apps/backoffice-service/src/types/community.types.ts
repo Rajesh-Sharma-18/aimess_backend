@@ -5,6 +5,8 @@
  * stable across Phase 1 (mock fixtures) and Phase 2 (gRPC → community/stream/user).
  */
 
+import type { MediaObject } from "@aimess/shared-types";
+
 import type { PaginationMeta, Paginated } from "./moderation.types.js";
 
 // Re-export the shared pagination shapes so the community module reads them
@@ -37,7 +39,10 @@ export type CategoryRef = {
 export type CommunityAdminRef = {
   userId: string;
   name: string;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject) — matches
+  // the shape used across User APIs / Community Details. Replaces the legacy
+  // bare avatarUrl string; null when no avatar is set.
+  avatar: MediaObject | null;
 };
 
 /** Livestream counter projected onto the list ("x/5" in the UI). */
@@ -59,6 +64,8 @@ export type CommunityActions = {
 export type CommunityListItem = {
   communityId: string;
   communityName: string;
+  /** Community's own avatar/profile image (project-standard MediaObject); null when unset. */
+  avatar: MediaObject | null;
   admin: CommunityAdminRef;
   type: CommunityType;
   category: CategoryRef;
@@ -74,7 +81,9 @@ export type CommunityOwner = {
   userId: string;
   displayName: string;
   username: string;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // the owner has no avatar. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   email: string | null;
   accountStatus: AccountStatus;
 };
@@ -134,13 +143,21 @@ export type CommunityCore = {
   type: CommunityType;
   category: CategoryRef;
   status: CommunityModerationStatus;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // the community has no avatar. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   coverUrl: string | null;
   createdAt: string;
   lastActivityAt: string;
 };
 
-/** The full community detail returned by GET /communities/{communityId}. */
+/**
+ * The full community detail composed by the repository layer. This is the
+ * internal domain shape — it also backs the list projection (`toListItem`
+ * reads `settingsSummary.memberCount` / `livestreamStats`) and the Mock
+ * repository's close/reopen history mutations. NOT the wire response for
+ * GET /communities/{communityId} — see {@link CommunityDetailResponse}.
+ */
 export type CommunityDetail = {
   community: CommunityCore;
   owner: CommunityOwner;
@@ -150,6 +167,22 @@ export type CommunityDetail = {
   settingsSummary: CommunitySettingsSummary;
   /** True when one or more upstream sources (stream/user) could not be reached. */
   partial: boolean;
+};
+
+/**
+ * The wire response for GET /communities/{communityId}. Reshapes
+ * {@link CommunityDetail} at the API boundary: the `community` sub-object is
+ * flattened directly onto the root (no `community` wrapper) alongside
+ * `owner`; `memberStats`/`livestreamStats` collapse to a single number
+ * (current total members / total livestreams); `moderationHistory`/
+ * `settingsSummary`/`partial` are dropped entirely.
+ */
+export type CommunityDetailResponse = CommunityCore & {
+  owner: CommunityOwner;
+  /** Current total community members (`memberStats.total`). */
+  memberStats: number;
+  /** Total livestreams associated with the community (`livestreamStats.total`, 0 when absent). */
+  livestreamStats: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -223,7 +256,9 @@ export type CommunityMemberRow = {
   username: string;
   /** The @handle (snapshot username). */
   handle: string;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // the member has no avatar. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   role: CommunityMemberRole;
   status: CommunityMemberStatus;
   joinedAt: string;
@@ -241,7 +276,7 @@ export type ListCommunityMembersQuery = {
    * Absent/"" on the standalone `/communities/:id/members` endpoint.
    */
   excludeUserId?: string;
-  /** "username" | "joinedAt" — passed through to community-service ("" = default). */
+  /** "username" | "handle" | "joinedAt" — passed through to community-service ("" = default). */
   sortField?: string;
   /** "asc" | "desc" — passed through to community-service ("" = default asc). */
   sortDir?: string;
@@ -259,7 +294,9 @@ export type CommunityMutedMemberRow = {
   username: string;
   /** The @handle (snapshot username). */
   handle: string;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // the member has no avatar. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   /** AuthUser.id of the moderator/admin who applied the mute. */
   mutedBy: string;
   reason: string | null;
@@ -284,8 +321,9 @@ export type ListMutedMembersQuery = {
 export type UserCommunityRow = {
   communityId: string;
   name: string;
-  /** Presigned community avatar GET URL (already signed by community-service), or null. */
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // the community has no avatar. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   category: { id: string; name: string };
   description: string;
   memberCount: number;

@@ -5,7 +5,10 @@ import { validateBody } from "../middleware/validate-body.js";
 import {
   addMemberSchema,
   kickMemberSchema,
+  banMemberSchema,
+  unbanMemberSchema,
   updateRoleSchema,
+  muteGroupSchema,
 } from "../validators/group-member.validator.js";
 import type { GroupMemberController } from "../controllers/group-member.controller.js";
 
@@ -20,6 +23,13 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
   );
   router.post("/:roomId/leave", authenticate, ctrl.leave);
   router.post("/kick", authenticate, validateBody(kickMemberSchema), ctrl.kick);
+  router.post("/ban", authenticate, validateBody(banMemberSchema), ctrl.ban);
+  router.post(
+    "/unban",
+    authenticate,
+    validateBody(unbanMemberSchema),
+    ctrl.unban
+  );
   router.post(
     "/role",
     authenticate,
@@ -27,6 +37,16 @@ export function createGroupMemberRoutes(ctrl: GroupMemberController): Router {
     ctrl.updateRole
   );
   router.get("/:roomId", authenticate, ctrl.getMembers);
+
+  // Mute / unmute personal notifications for this group (parity with Private's
+  // /private/rooms/:roomId/mute — Group had the storage field but no route).
+  router.post(
+    "/:roomId/mute",
+    authenticate,
+    validateBody(muteGroupSchema),
+    ctrl.muteRoom
+  );
+  router.post("/:roomId/unmute", authenticate, ctrl.unmuteRoom);
 
   return router;
 }

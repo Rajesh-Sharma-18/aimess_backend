@@ -14,5 +14,6 @@ process.env.REDIS_CACHE_ENABLED = "false";
 process.env.JWT_ACCESS_SECRET = "test-access-secret-do-not-use-in-prod";
 process.env.USER_GRPC_URL = "localhost:4002";
 process.env.COMMUNITY_GRPC_URL = "localhost:4003";
+process.env.SRS_HOOK_SECRET = "test-srs-hook-secret-do-not-use-in-prod";
 
 export {};

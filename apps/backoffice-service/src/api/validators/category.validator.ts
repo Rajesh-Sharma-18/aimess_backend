@@ -10,7 +10,7 @@ import { z } from "zod";
 
 export const categoryStatusEnum = z.enum(["visible", "hidden", "all"]);
 
-const SORT_FIELDS = ["name", "order", "createdAt"] as const;
+const SORT_FIELDS = ["name", "order", "createdAt", "communityCount"] as const;
 const SORT_PATTERN = new RegExp(`^(${SORT_FIELDS.join("|")}):(asc|desc)$`);
 
 const categoryNameSchema = z
@@ -39,6 +39,16 @@ export const updateCategorySchema = z
     message: "At least one of name or visible must be provided",
   });
 export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>;
+
+// ---------------------------------------------------------------------------
+// Visibility (dedicated endpoint).
+// ---------------------------------------------------------------------------
+export const updateCategoryVisibilitySchema = z.object({
+  status: z.enum(["VISIBLE", "HIDDEN"]),
+});
+export type UpdateCategoryVisibilityInput = z.infer<
+  typeof updateCategoryVisibilitySchema
+>;
 
 // ---------------------------------------------------------------------------
 // List query.

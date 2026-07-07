@@ -493,7 +493,10 @@ describe("pins: GET list + POST pin + DELETE unpin", () => {
   });
 
   it("POSITIVE: pin a message returns 201 and publishes pin:updated", async () => {
-    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({ roomId: ROOM });
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+    });
     mocks.privateMessagePinRepo.countPinsByRoom.mockResolvedValue(0);
     mocks.privateMessageRepo.findMessageMeta.mockResolvedValue({
       id: "m1",

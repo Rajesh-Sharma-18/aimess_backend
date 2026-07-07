@@ -72,6 +72,9 @@ service CommunityService {
   // given user is an ACTIVE member of. Searchable by community name/id, sortable.
   rpc AdminListUserCommunities (AdminListUserCommunitiesRequest) returns (AdminListUserCommunitiesResponse);
   rpc AdminSetModerationStatus (AdminSetModerationStatusRequest) returns (AdminSetModerationStatusResponse);
+  // Admin Reports search: community name lookup, returns matching communityIds
+  // only (capped) for the caller to combine into an id-set filter.
+  rpc AdminSearchCommunityIds (AdminSearchCommunityIdsRequest) returns (AdminSearchCommunityIdsResponse);
 
   // ---- Backoffice (admin panel) Category Management ----
   // Categories are owned by community-service (CommunityCategory); the
@@ -106,6 +109,14 @@ service CommunityService {
   // community events to reach users regardless of which community is open.
   // Read-only, lightweight single-user membership scan.
   rpc GetUserActiveCommunityIds (GetUserActiveCommunityIdsRequest) returns (GetUserActiveCommunityIdsResponse);
+
+  // Room-independent typing indicator fan-out: lets the gateway resolve BOTH
+  // "is the sender an active member" (membership: sender in the returned list)
+  // AND the direct recipient roster in a single call, so community:typing:start
+  // /stop can be delivered straight to each active member's `user:<id>` socket
+  // room without requiring anyone to join a community-scoped room first.
+  // Read-only, single query (select userId only) — no N+1.
+  rpc GetCommunityActiveMemberIds (GetCommunityActiveMemberIdsRequest) returns (GetCommunityActiveMemberIdsResponse);
 
   // Moderation-mute oracle for notifications-service: lets the notification
   // eligibility gate suppress community-action notifications from a member who
@@ -281,6 +292,8 @@ message AdminCommunityRow {
   int32  member_count     = 13;
   int32  livestream_count = 14; // STUB (0) until stream-service is wired
   int64  created_at       = 15; // epoch ms
+  string community_avatar_url = 16; // presigned community avatar/profile image URL (community bucket); "" if none
+  string community_cover_url  = 17; // presigned community cover/banner image URL (community bucket); "" if none
 }
 
 message AdminListCommunitiesResponse {
@@ -330,7 +343,8 @@ message AdminListCommunityMembersRequest {
   // NEVER appear in the page (used to hide the user being viewed from their own
   // co-member grid). Never filtered in memory.
   string exclude_user_id = 6;
-  // "username" | "joinedAt" | "" (default). Default order is role asc then joinedAt asc.
+  // "username" | "handle" | "joinedAt" | "" (default). Default order is role asc
+  // then joinedAt asc. "username" sorts on the display name, "handle" on the @handle.
   string sort_field      = 7;
   // "asc" | "desc" | "" (default asc).
   string sort_dir        = 8;
@@ -387,6 +401,13 @@ message AdminCommunityBrief {
 }
 message AdminGetCommunitiesByIdsResponse {
   repeated AdminCommunityBrief communities = 1;
+}
+
+message AdminSearchCommunityIdsRequest {
+  string search = 1;
+}
+message AdminSearchCommunityIdsResponse {
+  repeated string community_ids = 1;
 }
 
 // ---- Backoffice batch member-role enrichment (Livestream Viewer List) ----
@@ -452,21 +473,24 @@ message AdminSetModerationStatusResponse {
 
 // ---- Backoffice Category Management ----
 message AdminCategoryRow {
-  string id         = 1;
-  string name       = 2;
-  string slug       = 3;
-  bool   visible    = 4; // CommunityCategory.active
-  int32  order      = 5;
-  int64  created_at = 6; // epoch ms
-  int64  updated_at = 7; // epoch ms
+  string id              = 1;
+  string name            = 2;
+  string slug            = 3;
+  bool   visible         = 4; // CommunityCategory.active
+  int32  order           = 5;
+  int64  created_at      = 6; // epoch ms
+  int64  updated_at      = 7; // epoch ms
+  // Count of communities in this category with status=ACTIVE and deletedAt
+  // unset (i.e. "active/non-deleted"). 0 for a just-created category.
+  int32  community_count = 8;
 }
 
 message AdminListCategoriesRequest {
-  string search     = 1; // "" = no filter
+  string search     = 1; // "" = no filter; matches name OR description
   string status     = 2; // "visible" | "hidden" | "" (= all)
   int32  page       = 3;
   int32  limit      = 4;
-  string sort_field = 5; // "name" | "order" | "createdAt" | "" (default "order")
+  string sort_field = 5; // "name" | "order" | "createdAt" | "communityCount" | "" (default "order")
   string sort_dir    = 6; // "asc" | "desc" | "" (default "asc")
 }
 
@@ -570,6 +594,15 @@ message CommunityMessageDto {
   string system_message_type = 8;  // e.g. COMMUNITY_JOINED (empty for normal messages)
   string system_metadata     = 9;  // JSON string of the system metadata map
   bool   is_personal         = 10; // true = user-scoped SYSTEM message ("You joined")
+  // Denormalized sender snapshot — the gateway's socket messages:fetch mapper
+  // reads these directly (no separate user lookup) to build the FE message shape.
+  string sender_name         = 11;
+  string sender_avatar       = 12; // pre-resolved presigned URL (already resolved by toWire)
+  // JSON-encoded attachment array (URLs already resolved). Supersedes media_key
+  // for the api-gateway's content.files mapping — see SendCommunityMessageRequest.
+  string attachments_json    = 13;
+  string reactions_json      = 14; // JSON-encoded reaction summary array
+  string quote_data_json     = 15; // JSON-encoded quoted-message snapshot, "" if none
 }
 
 // ---- Single message fetch for moderation report snapshots ----
@@ -913,4 +946,12 @@ message GetUserActiveCommunityIdsRequest {
 }
 message GetUserActiveCommunityIdsResponse {
   repeated string community_ids = 1;
+}
+
+// ---- GetCommunityActiveMemberIds ----
+message GetCommunityActiveMemberIdsRequest {
+  string community_id = 1;
+}
+message GetCommunityActiveMemberIdsResponse {
+  repeated string user_ids = 1;
 }

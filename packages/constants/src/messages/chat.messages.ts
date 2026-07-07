@@ -119,6 +119,10 @@ export const CHAT_MESSAGES = {
     vi: "Đã chỉnh sửa tin nhắn",
     en: "Message edited",
   },
+  CHAT_MESSAGE_REACTED: {
+    vi: "Đã thả cảm xúc",
+    en: "Reaction updated",
+  },
   CHAT_MESSAGE_PINNED: {
     vi: "Đã ghim tin nhắn",
     en: "Message pinned",
@@ -325,6 +329,44 @@ export const CHAT_MESSAGES = {
   CHAT_INVALID_OBJECT_KEY: {
     vi: "Khóa đối tượng không hợp lệ",
     en: "Invalid object key",
+  },
+
+  // --- Media attachment limits (private / group / community send) ---
+  CHAT_IMAGE_COUNT_EXCEEDED: {
+    vi: "Chỉ được gửi tối đa 10 ảnh",
+    en: "Maximum 10 images allowed",
+  },
+  CHAT_IMAGE_TOO_LARGE: {
+    vi: "Ảnh vượt quá dung lượng cho phép (25 MB)",
+    en: "Image exceeds 25 MB",
+  },
+  CHAT_VIDEO_TOO_LARGE: {
+    vi: "Video vượt quá dung lượng cho phép (100 MB)",
+    en: "Video exceeds 100 MB",
+  },
+  CHAT_VIDEO_TOO_LONG: {
+    vi: "Video vượt quá thời lượng cho phép",
+    en: "Video exceeds the maximum allowed duration",
+  },
+  CHAT_VOICE_TOO_LONG: {
+    vi: "Tin nhắn thoại vượt quá thời lượng cho phép",
+    en: "Voice note exceeds the maximum allowed duration",
+  },
+  CHAT_AUDIO_TOO_LARGE: {
+    vi: "Tệp âm thanh vượt quá dung lượng cho phép (25 MB)",
+    en: "Audio exceeds 25 MB",
+  },
+  CHAT_DOCUMENT_TOO_LARGE: {
+    vi: "Tài liệu vượt quá dung lượng cho phép (25 MB)",
+    en: "Document exceeds 25 MB",
+  },
+  CHAT_FILE_TOO_LARGE: {
+    vi: "Tệp vượt quá dung lượng cho phép",
+    en: "File exceeds the maximum allowed size",
+  },
+  CHAT_UNSUPPORTED_CONTENT_TYPE: {
+    vi: "Loại tệp không được hỗ trợ",
+    en: "Unsupported file type",
   },
 
   // --- Generic / error-handler ---

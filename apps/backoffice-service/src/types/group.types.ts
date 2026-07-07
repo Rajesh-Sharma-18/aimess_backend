@@ -5,6 +5,8 @@
  * AdminGroup* gRPC RPCs.
  */
 
+import type { MediaObject } from "@aimess/shared-types";
+
 export type GroupRole = "OWNER" | "ADMIN" | "MODERATOR" | "MEMBER";
 
 /** Owner of a group (role=OWNER, fallback GroupRoom.createdBy). */
@@ -12,14 +14,18 @@ export interface GroupAdmin {
   userId: string;
   username: string;
   email: string | null;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
 }
 
 /** A row in the group list / the detail payload. */
 export interface GroupItem {
   id: string;
   name: string;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   description: string;
   memberCount: number;
   createdAt: string;
@@ -31,7 +37,9 @@ export interface GroupMemberItem {
   userId: string;
   username: string;
   email: string | null;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   role: string;
   joinedAt: string;
 }

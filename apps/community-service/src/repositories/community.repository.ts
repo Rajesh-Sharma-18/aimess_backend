@@ -57,51 +57,129 @@ export const communityRepository = {
     });
   },
 
+  /**
+   * Admin Reports search: community ids whose name matches the search term
+   * (case-insensitive, partial). Capped at 500 — the caller only needs an
+   * id-set to filter by, not a page of results. Soft-deleted communities are
+   * still matched (a report can reference a since-deleted community).
+   */
+  async adminSearchCommunityIds(search: string): Promise<string[]> {
+    const term = search.trim();
+    if (!term) return [];
+    const rows = await prisma.community.findMany({
+      where: { name: { contains: term, mode: "insensitive" } },
+      select: { id: true },
+      take: 500,
+    });
+    return rows.map((r) => r.id);
+  },
+
   // ---------------------------------------------------------------------------
   // Admin category CRUD
   // ---------------------------------------------------------------------------
+  /**
+   * `communityCount` (per category: communities with status=ACTIVE and
+   * deletedAt unset) is a cross-collection aggregate, so it's computed via
+   * {@link countActiveCommunitiesByCategoryIds} and merged in after the
+   * category page/set is resolved rather than joined at the DB level.
+   */
   async listCategoriesAdmin(params: {
     search?: string;
     active?: boolean;
     page: number;
     limit: number;
-    sortField?: "name" | "order" | "createdAt";
+    sortField?: "name" | "order" | "createdAt" | "communityCount";
     sortDir?: "asc" | "desc";
   }) {
     const where: Prisma.CommunityCategoryWhereInput = {
       deletedAt: { isSet: false },
     };
     if (params.search) {
-      where.name = { contains: params.search, mode: "insensitive" };
+      where.OR = [
+        { name: { contains: params.search, mode: "insensitive" } },
+        { description: { contains: params.search, mode: "insensitive" } },
+      ];
     }
     if (params.active !== undefined) {
       where.active = params.active;
     }
-    const skip = (params.page - 1) * params.limit;
-    const sortField = params.sortField ?? "order";
     const sortDir = params.sortDir ?? "asc";
+    const selectFields = {
+      id: true,
+      name: true,
+      slug: true,
+      active: true,
+      order: true,
+      createdAt: true,
+      updatedAt: true,
+    } satisfies Prisma.CommunityCategorySelect;
+
+    // communityCount can't be sorted at the DB level (no denormalized field,
+    // MongoDB can't orderBy an aggregated relation count) — fetch every
+    // matching category, merge counts, sort, then paginate in-memory. Category
+    // lists are curated/small (tens of rows), so this stays cheap.
+    if (params.sortField === "communityCount") {
+      const rows = await prisma.communityCategory.findMany({
+        where,
+        orderBy: [{ name: "asc" }],
+        select: selectFields,
+      });
+      const counts = await this.countActiveCommunitiesByCategoryIds(
+        rows.map((r) => r.id)
+      );
+      const withCount = rows
+        .map((r) => ({ ...r, communityCount: counts.get(r.id) ?? 0 }))
+        .sort((a, b) =>
+          sortDir === "asc"
+            ? a.communityCount - b.communityCount
+            : b.communityCount - a.communityCount
+        );
+      const total = withCount.length;
+      const skip = (params.page - 1) * params.limit;
+      return [withCount.slice(skip, skip + params.limit), total] as const;
+    }
+
+    const sortField = params.sortField ?? "order";
     const orderBy: Prisma.CommunityCategoryOrderByWithRelationInput[] =
       sortField === "order"
         ? [{ order: sortDir }, { name: "asc" }]
         : [{ [sortField]: sortDir }];
-    return Promise.all([
+    const skip = (params.page - 1) * params.limit;
+    const [rows, total] = await Promise.all([
       prisma.communityCategory.findMany({
         where,
         orderBy,
         skip,
         take: params.limit,
-        select: {
-          id: true,
-          name: true,
-          slug: true,
-          active: true,
-          order: true,
-          createdAt: true,
-          updatedAt: true,
-        },
+        select: selectFields,
       }),
       prisma.communityCategory.count({ where }),
     ]);
+    const counts = await this.countActiveCommunitiesByCategoryIds(
+      rows.map((r) => r.id)
+    );
+    const withCount = rows.map((r) => ({
+      ...r,
+      communityCount: counts.get(r.id) ?? 0,
+    }));
+    return [withCount, total] as const;
+  },
+
+  /** Bulk per-category count of active/non-deleted communities — avoids N+1. */
+  async countActiveCommunitiesByCategoryIds(
+    categoryIds: string[]
+  ): Promise<Map<string, number>> {
+    if (categoryIds.length === 0) return new Map();
+    const groups = await prisma.community.groupBy({
+      by: ["categoryId"],
+      where: {
+        categoryId: { in: categoryIds },
+        status: CommunityStatus.ACTIVE,
+        deletedAt: { isSet: false },
+      },
+      _count: { _all: true },
+    });
+    return new Map(groups.map((g) => [g.categoryId, g._count._all]));
   },
 
   findCategoryByIdAdmin(id: string) {
@@ -188,6 +266,20 @@ export const communityRepository = {
   countCommunitiesWithCategory(categoryId: string) {
     return prisma.community.count({
       where: { categoryId, deletedAt: { isSet: false } },
+    });
+  },
+
+  /**
+   * Count of communities in this category that are neither CLOSED nor
+   * (soft-)deleted — the gate for the admin category-delete endpoint.
+   */
+  countActiveCommunitiesWithCategory(categoryId: string) {
+    return prisma.community.count({
+      where: {
+        categoryId,
+        status: CommunityStatus.ACTIVE,
+        deletedAt: { isSet: false },
+      },
     });
   },
 
@@ -1482,6 +1574,7 @@ export const communityRepository = {
           adminId: true,
           moderationStatus: true,
           avatarUrl: true,
+          coverUrl: true,
           category: { select: { id: true, name: true, slug: true } },
         },
       }),
@@ -1636,7 +1729,7 @@ export const communityRepository = {
     search?: string;
     role?: CommunityMemberRole;
     excludeUserId?: string;
-    sortField?: string;
+    sortField?: "username" | "handle" | "joinedAt";
     sortDir?: "asc" | "desc";
     page: number;
     limit: number;
@@ -1668,11 +1761,18 @@ export const communityRepository = {
       ];
     }
 
-    // Dynamic sort. "username" sorts on the snapshot @handle then joinedAt;
-    // "joinedAt" sorts on join time then role; default is role asc → joinedAt asc.
+    // Dynamic sort. "username" sorts on the display name (with @handle as a
+    // tiebreak); "handle" sorts on the snapshot @handle; "joinedAt" sorts on
+    // join time then role; default is role asc → joinedAt asc.
     const dir: Prisma.SortOrder = params.sortDir === "desc" ? "desc" : "asc";
     let orderBy: Prisma.CommunityMemberOrderByWithRelationInput[];
     if (params.sortField === "username") {
+      orderBy = [
+        { snapshotDisplayName: dir },
+        { snapshotUsername: dir },
+        { joinedAt: "asc" },
+      ];
+    } else if (params.sortField === "handle") {
       orderBy = [{ snapshotUsername: dir }, { joinedAt: "asc" }];
     } else if (params.sortField === "joinedAt") {
       orderBy = [{ joinedAt: dir }, { role: "asc" }];
@@ -2283,6 +2383,8 @@ export const communityRepository = {
     reporterId: string;
     targetUserId: string | null;
     reason: string;
+    /** Mandatory custom description when `reason` is "OTHER"; null otherwise. */
+    otherReason?: string | null;
     reportedMessageId?: string | null;
     reportedContentType?: string | null;
     reportedContentText?: string | null;
@@ -2302,6 +2404,7 @@ export const communityRepository = {
         reporterId: data.reporterId,
         targetUserId: data.targetUserId,
         reason: data.reason,
+        otherReason: data.otherReason ?? null,
         status: CommunityReportStatus.OPEN,
         reportedMessageId: data.reportedMessageId ?? null,
         reportedContentType: data.reportedContentType ?? null,

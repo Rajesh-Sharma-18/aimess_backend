@@ -17,6 +17,13 @@ service MessagingService {
   rpc PresenceHeartbeat       (PresenceHeartbeatRequest)       returns (PresenceAck);
   rpc SendReaction            (SendReactionRequest)            returns (SendReactionResponse);
   rpc ForwardMessage          (ForwardMessageRequest)          returns (ForwardMessageResponse);
+  // Parity with community's DeleteCommunityMessage/PinCommunityMessage/
+  // UnpinCommunityMessage — private/group delete/pin/unpin were REST-only with
+  // no gRPC exposure, so the gateway's /chat socket namespace had no way to
+  // offer message:delete/message:pin/message:unpin the way /community does.
+  rpc DeleteMessage           (DeleteMessageRequest)           returns (DeleteMessageResponse);
+  rpc PinMessage              (PinMessageRequest)              returns (PinMessageResponse);
+  rpc UnpinMessage            (UnpinMessageRequest)            returns (UnpinMessageResponse);
   rpc GetMessageReactions     (GetMessageReactionsRequest)     returns (GetMessageReactionsResponse);
   rpc InitiateCall            (InitiateCallRequest)            returns (InitiateCallResponse);
   rpc AnswerCall              (AnswerCallRequest)              returns (AnswerCallResponse);
@@ -248,6 +255,45 @@ message ForwardMessageResponse {
   string conversation_id = 2;
   int64  sent_at         = 3;
   int64  sequence_number = 4;
+}
+
+message DeleteMessageRequest {
+  string           conversation_id   = 1;
+  string           message_id        = 2;
+  string           user_id           = 3;
+  // "forMe" | "forEveryone"
+  string           delete_type       = 4;
+  ConversationType conversation_type = 5;
+}
+message DeleteMessageResponse {
+  string message_id      = 1;
+  string conversation_id = 2;
+  string delete_type     = 3;
+}
+
+message PinMessageRequest {
+  string           conversation_id   = 1;
+  string           message_id        = 2;
+  string           user_id           = 3;
+  ConversationType conversation_type = 4;
+}
+message PinMessageResponse {
+  string message_id      = 1;
+  string conversation_id = 2;
+  int64  pinned_count    = 3;
+  int64  pinned_at       = 4;
+}
+
+message UnpinMessageRequest {
+  string           conversation_id   = 1;
+  string           message_id        = 2;
+  string           user_id           = 3;
+  ConversationType conversation_type = 4;
+}
+message UnpinMessageResponse {
+  string message_id      = 1;
+  string conversation_id = 2;
+  int64  pinned_count    = 3;
 }
 
 message GetMessageReactionsRequest {

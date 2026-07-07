@@ -1,5 +1,3 @@
-import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
-
 import {
   chatClient,
   type AdminListGroupsReq,
@@ -15,44 +13,25 @@ import type {
   ListGroupsQuery,
 } from "../types/group.types.js";
 import { msToIso, orNull } from "../lib/grpc-view.js";
-import { mediaUrlStrategy } from "../config/storage.js";
-import { env } from "../config/env.js";
+import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 
-/**
- * Group + user avatars (group logo, owner/member snapshot avatars) live in the
- * SHARED avatars bucket. chat-service echoes RAW MinIO object keys for these
- * over the AdminGroup* gRPC wire (see admin-group.service.ts toGroupRow /
- * toMemberRow), so we resolve-on-read at the backoffice OUTPUT boundary via the
- * shared media layer. `group-avatars/<roomId>/…` (logo) and `avatars/<userId>/…`
- * (member snapshots) both resolve against this bucket; legacy/external http(s)
- * values pass through unchanged. Presigned URLs expire — never persist them.
- */
-const AVATAR_BUCKET = env.MINIO_BUCKET_AVATARS;
-const AVATAR_PREFIXES = MEDIA_PREFIXES.avatars;
-
-/** Stored avatar key/url → presigned download URL (null when absent). */
-async function resolveAvatarUrl(
-  stored: string | null | undefined
-): Promise<string | null> {
-  const media = await toMediaObject({
-    bucket: AVATAR_BUCKET,
-    stored: stored ?? null,
-    prefixes: AVATAR_PREFIXES,
-    strategy: mediaUrlStrategy,
-  });
-  return media.downloadUrl;
-}
+// Group + user avatars (group logo, owner/member snapshot avatars) live in the
+// SHARED avatars bucket. chat-service echoes RAW MinIO object keys for these
+// over the AdminGroup* gRPC wire (see admin-group.service.ts toGroupRow /
+// toMemberRow), so we resolve-on-read at the backoffice OUTPUT boundary via
+// the shared `resolveAvatarOrNull` helper (lib/avatar-media.ts) — the same
+// resolver used by every other avatar-bearing admin API, not a duplicate.
 
 /** Map an AdminGroupRow → the list/detail view model. */
 async function rowToGroupItem(r: RawAdminGroupRow): Promise<GroupItem> {
-  const [avatarUrl, adminAvatarUrl] = await Promise.all([
-    resolveAvatarUrl(r.avatarUrl),
-    resolveAvatarUrl(r.admin?.avatarUrl),
+  const [avatar, adminAvatar] = await Promise.all([
+    resolveAvatarOrNull(r.avatarUrl),
+    resolveAvatarOrNull(r.admin?.avatarUrl),
   ]);
   return {
     id: r.id,
     name: r.name,
-    avatarUrl,
+    avatar,
     description: r.description ?? "",
     memberCount: r.memberCount,
     createdAt: msToIso(r.createdAt),
@@ -60,7 +39,7 @@ async function rowToGroupItem(r: RawAdminGroupRow): Promise<GroupItem> {
       userId: r.admin?.userId ?? "",
       username: r.admin?.username ?? "",
       email: orNull(r.admin?.email),
-      avatarUrl: adminAvatarUrl,
+      avatar: adminAvatar,
     },
   };
 }
@@ -73,7 +52,7 @@ async function rowToMemberItem(
     userId: r.userId,
     username: r.username,
     email: orNull(r.email),
-    avatarUrl: await resolveAvatarUrl(r.avatarUrl),
+    avatar: await resolveAvatarOrNull(r.avatarUrl),
     role: r.role,
     joinedAt: msToIso(r.joinedAt),
   };

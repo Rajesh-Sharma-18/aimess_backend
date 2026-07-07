@@ -7,6 +7,8 @@
  * Pagination + AccountStatus are reused from moderation.types to avoid
  * duplicating the shared envelope/enum across slices.
  */
+import type { MediaObject } from "@aimess/shared-types";
+
 import type {
   AccountStatus,
   Paginated,
@@ -60,8 +62,10 @@ export type CommunityRef = {
   id: string;
   name: string;
   slug: string;
-  /** Presigned community avatar URL (null if none). Optional for fixtures. */
-  avatarUrl?: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject) — matches the
+  // shape used across User APIs / Community Details. Replaces the legacy bare
+  // avatarUrl string; null when no avatar is set.
+  avatar: MediaObject | null;
 };
 
 /** Compact creator reference shown in the list table. */
@@ -69,7 +73,10 @@ export type CreatorRef = {
   id: string;
   username: string;
   displayName: string;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject) — matches the
+  // shape used across User APIs / Community Details. Replaces the legacy bare
+  // avatarUrl string; null when no avatar is set.
+  avatar: MediaObject | null;
 };
 
 /** A single row in the livestreams table (list projection). */
@@ -286,7 +293,9 @@ export type LivestreamUserItem = {
   userId: string;
   username: string;
   handle: string | null;
-  avatarUrl: string | null;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   /** ISO-8601 — when this viewing session started. */
   joinedAt: string;
   /** ISO-8601; null = still watching. */

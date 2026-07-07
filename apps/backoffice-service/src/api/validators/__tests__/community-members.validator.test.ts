@@ -111,3 +111,76 @@ describe("listCommunityMembersQuerySchema — role enum", () => {
     assert.equal(r.data?.role, undefined);
   });
 });
+
+describe("listCommunityMembersQuerySchema — sort", () => {
+  it("defaults to joinedAt:desc when sort is omitted", () => {
+    const r = listCommunityMembersQuerySchema.safeParse({});
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sortField, "joinedAt");
+    assert.equal(r.data?.sortDir, "desc");
+  });
+
+  for (const field of ["username", "handle", "joinedAt"] as const) {
+    for (const dir of ["asc", "desc"] as const) {
+      it(`accepts sort=${field}:${dir}`, () => {
+        const r = listCommunityMembersQuerySchema.safeParse({
+          sort: `${field}:${dir}`,
+        });
+        assert.equal(r.success, true);
+        assert.equal(r.data?.sortField, field);
+        assert.equal(r.data?.sortDir, dir);
+      });
+    }
+  }
+
+  it("falls back to joinedAt:desc for an unknown sort field", () => {
+    const r = listCommunityMembersQuerySchema.safeParse({
+      sort: "avatarUrl:asc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sortField, "joinedAt");
+    assert.equal(r.data?.sortDir, "desc");
+  });
+
+  it("falls back to joinedAt:desc for an invalid order", () => {
+    const r = listCommunityMembersQuerySchema.safeParse({
+      sort: "username:sideways",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sortField, "joinedAt");
+    assert.equal(r.data?.sortDir, "desc");
+  });
+
+  it("falls back to joinedAt:desc for a malformed sort token", () => {
+    const r = listCommunityMembersQuerySchema.safeParse({ sort: "username" });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sortField, "joinedAt");
+    assert.equal(r.data?.sortDir, "desc");
+  });
+
+  it("is case-sensitive (rejects uppercase field/order, falls back to default)", () => {
+    const r = listCommunityMembersQuerySchema.safeParse({
+      sort: "Username:ASC",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.sortField, "joinedAt");
+    assert.equal(r.data?.sortDir, "desc");
+  });
+
+  it("combines sort with search/role/pagination in one call", () => {
+    const r = listCommunityMembersQuerySchema.safeParse({
+      q: "alice",
+      role: "MODERATOR",
+      page: "2",
+      limit: "10",
+      sort: "handle:asc",
+    });
+    assert.equal(r.success, true);
+    assert.equal(r.data?.search, "alice");
+    assert.equal(r.data?.role, "MODERATOR");
+    assert.equal(r.data?.page, 2);
+    assert.equal(r.data?.limit, 10);
+    assert.equal(r.data?.sortField, "handle");
+    assert.equal(r.data?.sortDir, "asc");
+  });
+});

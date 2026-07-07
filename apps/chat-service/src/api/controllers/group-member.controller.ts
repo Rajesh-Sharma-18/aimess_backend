@@ -41,6 +41,29 @@ export class GroupMemberController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
+  ban = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: bannedBy } = req.auth;
+    const { roomId, userId, reason } = req.body;
+    const result = await this.service.ban({
+      roomId,
+      targetUserId: userId,
+      bannedBy,
+      reason,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  unban = asyncHandler(async (req: Request, res: Response) => {
+    const { userId: unbannedBy } = req.auth;
+    const { roomId, userId } = req.body;
+    const result = await this.service.unban({
+      roomId,
+      targetUserId: userId,
+      unbannedBy,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
   updateRole = asyncHandler(async (req: Request, res: Response) => {
     const { userId: actorUserId } = req.auth;
     const { roomId, userId, role } = req.body;
@@ -51,6 +74,29 @@ export class GroupMemberController {
       actorUserId,
     });
     res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
+  });
+
+  muteRoom = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const { muteUntil } = req.body as { muteUntil?: string | null };
+    const result = await this.service.muteRoom(
+      roomId,
+      userId,
+      muteUntil ? new Date(muteUntil) : null
+    );
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_ROOM_MUTED", req.locale)));
+  });
+
+  unmuteRoom = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const result = await this.service.unmuteRoom(roomId, userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("CHAT_ROOM_UNMUTED", req.locale)));
   });
 
   getMembers = asyncHandler(async (req: Request, res: Response) => {

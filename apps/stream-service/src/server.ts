@@ -2,6 +2,7 @@ import { logger } from "@aimess/logger";
 
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
+import { connectDatabase } from "./config/db.js";
 import { prisma } from "./config/prisma.js";
 import {
   connectStreamRedis,
@@ -41,8 +42,7 @@ import { startStreamSweeper } from "./jobs/stream-sweeper.js";
 
 async function start() {
   try {
-    await prisma.$connect();
-    logger.info("MongoDB connected");
+    await connectDatabase();
 
     if (env.REDIS_CACHE_ENABLED) {
       try {

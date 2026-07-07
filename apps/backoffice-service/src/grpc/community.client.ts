@@ -58,6 +58,10 @@ interface RawAdminCommunityRow {
   memberCount: number;
   livestreamCount: number;
   createdAt: string;
+  /** Presigned community avatar/profile image URL (community bucket); "" if none. */
+  communityAvatarUrl: string;
+  /** Presigned community cover/banner image URL (community bucket); "" if none. */
+  communityCoverUrl: string;
 }
 
 export interface AdminListCommunitiesRes {
@@ -226,6 +230,7 @@ export interface RawAdminCategoryRow {
   order: number;
   createdAt: string;
   updatedAt: string;
+  communityCount: number;
 }
 
 export interface AdminListCategoriesReq {
@@ -233,7 +238,7 @@ export interface AdminListCategoriesReq {
   status: string; // "visible" | "hidden" | ""
   page: number;
   limit: number;
-  sortField: string; // "name" | "order" | "createdAt" | ""
+  sortField: string; // "name" | "order" | "createdAt" | "communityCount" | ""
   sortDir: string; // "asc" | "desc" | ""
 }
 
@@ -378,6 +383,18 @@ export const adminGetCommunitiesByIdsBreaker: Breaker<
     )
 );
 
+export const adminSearchCommunityIdsBreaker: Breaker<
+  { search: string },
+  { communityIds: string[] }
+> = makeBreaker(
+  "community.adminSearchCommunityIds",
+  (req: { search: string }) =>
+    call<{ search: string }, { communityIds: string[] }>(
+      "adminSearchCommunityIds",
+      req
+    )
+);
+
 export const adminGetMemberRolesBreaker: Breaker<
   { communityId: string; userIds: string[] },
   RawAdminGetMemberRolesRes
@@ -492,6 +509,12 @@ export const communityClient = {
     req: AdminSetModerationStatusReq
   ): Promise<AdminSetModerationStatusRes> {
     return adminSetModerationStatusBreaker.fire(req);
+  },
+  // Admin Reports search: communityIds matching a name search term. Empty term → no call.
+  async adminSearchCommunityIds(search: string): Promise<string[]> {
+    if (!search.trim()) return [];
+    const r = await adminSearchCommunityIdsBreaker.fire({ search });
+    return r.communityIds ?? [];
   },
   /**
    * Batch role lookup for the Livestream Viewer List "type" column. Returns a

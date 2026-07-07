@@ -1,7 +1,8 @@
 /**
  * Admin livestream list/detail must derive `viewerCount` from status:
- * LIVE -> live viewerCount, ENDED -> lifetime totalViews (there is no
- * separate totalViewerCount column), everything else -> stored viewerCount.
+ * LIVE -> live viewerCount, ENDED -> uniqueViewerCount (the distinct-user
+ * count from LivestreamViewerSession, the same source /users dedupes to),
+ * everything else -> stored viewerCount.
  */
 jest.mock("../../src/config/prisma.js", () => ({
   prisma: {
@@ -32,6 +33,7 @@ function baseStream(overrides: Partial<Record<string, unknown>> = {}) {
     viewerCount: 42,
     peakViewers: 100,
     totalViews: 777,
+    uniqueViewerCount: 3,
     totalComments: 0,
     durationSeconds: 60,
     livedAt: 1000,
@@ -54,13 +56,13 @@ describe("admin livestream viewerCount derivation", () => {
     expect(detail?.viewerCount).toBe(42);
   });
 
-  it("detail: ENDED uses totalViews as the lifetime total", async () => {
+  it("detail: ENDED uses uniqueViewerCount (matches the /users total)", async () => {
     adminGetStream.mockResolvedValueOnce(
       baseStream({ status: "ENDED", endedAt: 5000 })
     );
     const detail = await livestreamRepository.getById("LS-1");
     expect(detail?.status).toBe("ENDED");
-    expect(detail?.viewerCount).toBe(777);
+    expect(detail?.viewerCount).toBe(3);
   });
 
   it("detail: SCHEDULED preserves the stored viewerCount", async () => {
@@ -81,6 +83,7 @@ describe("admin livestream viewerCount derivation", () => {
           status: "ENDED",
           endedAt: 5000,
           totalViews: 999,
+          uniqueViewerCount: 7,
         }),
       ],
       total: 2,
@@ -95,6 +98,6 @@ describe("admin livestream viewerCount derivation", () => {
     const live = page.data.find((r) => r.livestreamId === "LS-1");
     const ended = page.data.find((r) => r.livestreamId === "LS-2");
     expect(live?.viewerCount).toBe(42);
-    expect(ended?.viewerCount).toBe(999);
+    expect(ended?.viewerCount).toBe(7);
   });
 });

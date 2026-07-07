@@ -146,6 +146,45 @@ export interface ForwardMessageResult {
   sequenceNumber: number;
 }
 
+export interface DeleteMessageParams {
+  conversationId: string;
+  messageId: string;
+  userId: string;
+  /** "forMe" | "forEveryone" */
+  deleteType?: string;
+  conversationType?: string;
+}
+export interface DeleteMessageResult {
+  messageId: string;
+  conversationId: string;
+  deleteType: string;
+}
+
+export interface PinMessageParams {
+  conversationId: string;
+  messageId: string;
+  userId: string;
+  conversationType?: string;
+}
+export interface PinMessageResult {
+  messageId: string;
+  conversationId: string;
+  pinnedCount: number;
+  pinnedAt: number;
+}
+
+export interface UnpinMessageParams {
+  conversationId: string;
+  messageId: string;
+  userId: string;
+  conversationType?: string;
+}
+export interface UnpinMessageResult {
+  messageId: string;
+  conversationId: string;
+  pinnedCount: number;
+}
+
 export interface CatchupRoomParams {
   conversationId: string;
   requesterId: string;
@@ -281,6 +320,9 @@ export interface MessagingClient {
   presenceHeartbeat(p: PresenceHeartbeatParams): Promise<PresenceAck>;
   sendReaction(p: SendReactionParams): Promise<SendReactionResult>;
   forwardMessage(p: ForwardMessageParams): Promise<ForwardMessageResult>;
+  deleteMessage(p: DeleteMessageParams): Promise<DeleteMessageResult>;
+  pinMessage(p: PinMessageParams): Promise<PinMessageResult>;
+  unpinMessage(p: UnpinMessageParams): Promise<UnpinMessageResult>;
   getMessageReactions(
     p: GetMessageReactionsParams
   ): Promise<GetMessageReactionsResult>;
@@ -496,6 +538,59 @@ export function createMessagingClient(): MessagingClient {
     }
   );
 
+  const deleteMessageBreaker = makeBreaker(
+    "messaging.deleteMessage",
+    (p: DeleteMessageParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, DeleteMessageResult>("deleteMessage", {
+        conversationId: p.conversationId,
+        messageId: p.messageId,
+        userId: p.userId,
+        deleteType: p.deleteType ?? "forMe",
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+      });
+    }
+  );
+
+  const pinMessageBreaker = makeBreaker(
+    "messaging.pinMessage",
+    (p: PinMessageParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, PinMessageResult>("pinMessage", {
+        conversationId: p.conversationId,
+        messageId: p.messageId,
+        userId: p.userId,
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+      }).then((r) => ({
+        ...r,
+        pinnedCount: Number(r.pinnedCount),
+        pinnedAt: Number(r.pinnedAt),
+      }));
+    }
+  );
+
+  const unpinMessageBreaker = makeBreaker(
+    "messaging.unpinMessage",
+    (p: UnpinMessageParams) => {
+      const conversationType = String(
+        p.conversationType ?? "private"
+      ).toUpperCase();
+      return call<unknown, UnpinMessageResult>("unpinMessage", {
+        conversationId: p.conversationId,
+        messageId: p.messageId,
+        userId: p.userId,
+        conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+      }).then((r) => ({
+        ...r,
+        pinnedCount: Number(r.pinnedCount),
+      }));
+    }
+  );
+
   const getMessageReactionsBreaker = makeBreaker(
     "messaging.getMessageReactions",
     (p: GetMessageReactionsParams) => {
@@ -602,6 +697,9 @@ export function createMessagingClient(): MessagingClient {
     presenceHeartbeat: (p) => presenceHeartbeatBreaker.fire(p),
     sendReaction: (p) => sendReactionBreaker.fire(p),
     forwardMessage: (p) => forwardMessageBreaker.fire(p),
+    deleteMessage: (p) => deleteMessageBreaker.fire(p),
+    pinMessage: (p) => pinMessageBreaker.fire(p),
+    unpinMessage: (p) => unpinMessageBreaker.fire(p),
     getMessageReactions: (p) => getMessageReactionsBreaker.fire(p),
     initiateCall: (p) => initiateCallBreaker.fire(p),
     answerCall: (p) => answerCallBreaker.fire(p),

@@ -79,6 +79,13 @@ export const adminGetProfileBreaker: Breaker<
   notFoundIsBenign
 );
 
+export const adminSearchProfileIdsBreaker: Breaker<
+  { search: string },
+  { userIds: string[] }
+> = makeBreaker("user.adminSearchProfileIds", (args: { search: string }) =>
+  call<{ search: string }, { userIds: string[] }>("adminSearchProfileIds", args)
+);
+
 export const userClient = {
   // Empty input → no gRPC call (avoids a needless round-trip).
   async adminGetProfilesByIds(
@@ -98,5 +105,11 @@ export const userClient = {
       }
       throw err;
     }
+  },
+  // Admin Reports search: userIds matching name/username. Empty term → no call.
+  async adminSearchProfileIds(search: string): Promise<string[]> {
+    if (!search.trim()) return [];
+    const r = await adminSearchProfileIdsBreaker.fire({ search });
+    return r.userIds ?? [];
   },
 };

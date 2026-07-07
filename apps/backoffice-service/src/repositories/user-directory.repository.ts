@@ -6,6 +6,7 @@ import {
   encodeCursor as encodeCursorGeneric,
   parseSort as parseSortGeneric,
 } from "../lib/keyset-cursor.js";
+import { buildFullName, orNull } from "../lib/grpc-view.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { authClient, type AdminListUsersRequest } from "../grpc/auth.client.js";
 import { userClient } from "../grpc/user.client.js";
@@ -115,7 +116,13 @@ export function buildWhere(query: ListUsersQuery): Prisma.UserIndexWhereInput {
   const where: Prisma.UserIndexWhereInput = {};
 
   if (query.status && query.status.length > 0) {
-    where.status = { in: query.status };
+    // BANNED means isBanned=true regardless of the finer-grained status value
+    // (see deriveModerationStatus) — SUSPENDED is an active ban too, even
+    // though it isn't a status the API exposes as a filter option.
+    const statuses = query.status.includes("BANNED")
+      ? [...new Set([...query.status, "SUSPENDED" as UserStatus])]
+      : query.status;
+    where.status = { in: statuses };
   }
 
   // Report buckets → reportCount filters.
@@ -241,7 +248,10 @@ function toRow(r: {
   return {
     userId: r.userId,
     username: r.username,
-    email: r.email,
+    // UserIndex (admin_db mirror) does not carry firstName/lastName — those
+    // live on user-service's UserProfile, only joined in on the live gRPC path.
+    fullName: null,
+    email: orNull(r.email),
     // UserIndex does not carry avatarUrl (user-service owns it); null for now.
     avatarUrl: null,
     status: r.status,
@@ -270,7 +280,10 @@ function toListItem(
   return {
     userId: r.userId,
     username: r.username,
-    email: r.email,
+    // UserIndex (admin_db mirror) does not carry firstName/lastName — those
+    // live on user-service's UserProfile, only joined in on the live gRPC path.
+    fullName: null,
+    email: orNull(r.email),
     status: r.status,
     reportCount: r.reportCount,
     joinedAt: r.joinedAt.toISOString(),
@@ -599,10 +612,11 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       );
     }
 
-    // 1. Base request mapping.
+    // 1. Base request mapping. `status` is deliberately left unset here — see
+    // step 2b below, which resolves it against the UserIndex mirror instead of
+    // forwarding the raw filter straight to auth-service.
     const req: AdminListUsersRequest = {
       search: query.search,
-      status: query.status as string[] | undefined,
       sortField: toAuthSortField(field),
       sortDir: dir,
       limit,
@@ -638,6 +652,59 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       req.userIds = reportedIds;
     }
 
+    // 2b. Status filter (admin_db-aware). auth-service's own `AuthUser.status`
+    //    column is authoritative ONLY for ACTIVE/DELETED — no admin flow (ban,
+    //    suspend, unban) ever writes BANNED/SUSPENDED there (see
+    //    resolveModerationStatus). Forwarding a BANNED/SUSPENDED filter straight
+    //    through would either match nothing (auth never sets it) or, for
+    //    ACTIVE, silently include mirror-banned users whose live status is
+    //    still ACTIVE — exactly the reported bug. Resolve against the
+    //    UserIndex mirror instead of trusting the live column for that case.
+    let statusPostFilter: Set<UserStatus> | null = null;
+    if (query.status && query.status.length > 0) {
+      const wantsBanned = query.status.some(
+        (s) => s === "BANNED" || s === "SUSPENDED"
+      );
+      const reliable = query.status.filter(
+        (s) => s === "ACTIVE" || s === "DELETED"
+      );
+
+      if (wantsBanned && reliable.length === 0) {
+        // BANNED-only filter: the mirror is the only place this is ever true.
+        const bannedIds = await this.mirrorIdsByStatus(["BANNED", "SUSPENDED"]);
+        const constrained = req.userIds
+          ? bannedIds.filter((id) => req.userIds!.includes(id))
+          : bannedIds;
+        if (constrained.length === 0) {
+          // No user matches this filter → empty page (skip the auth round-trip).
+          return {
+            data: [],
+            pagination: this.offsetMeta(page, limit, 0, 0, offset),
+          };
+        }
+        req.userIds = constrained;
+        // Deliberately NOT forwarding status=BANNED/SUSPENDED to auth — its own
+        // status column would never match and zero out this otherwise-correct
+        // id constraint.
+      } else if (!wantsBanned && reliable.length > 0) {
+        req.status = reliable;
+        if (reliable.includes("ACTIVE")) {
+          const bannedIds = await this.mirrorIdsByStatus([
+            "BANNED",
+            "SUSPENDED",
+          ]);
+          if (bannedIds.length > 0) req.excludeUserIds = bannedIds;
+        }
+      } else {
+        // Mixed selection (e.g. ACTIVE+BANNED together) — auth's status column
+        // can't express that combination reliably in one query. Leave it
+        // unfiltered upstream and narrow the page after resolving each row's
+        // true (mirror-aware) status below — bounded to this page, not the
+        // whole table, same documented approximation as reports=none above.
+        statusPostFilter = new Set(query.status);
+      }
+    }
+
     // 3. Identity list from auth-service.
     const { users, total } = await authClient.adminListUsers(req);
 
@@ -665,10 +732,11 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       const banAction = banActionMap.get(u.id);
       return {
         userId: u.id,
-        email: u.email,
+        email: orNull(u.email),
         status,
         joinedAt: u.createdAt,
         username: profile?.username ?? u.account,
+        fullName: buildFullName(profile?.firstName, profile?.lastName),
         avatarUrl: profile?.avatarUrl || null,
         reportCount: countMap.get(u.id) ?? 0,
         moderationStatus,
@@ -683,7 +751,18 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       };
     });
 
-    // 5. `none` bucket: drop rows that actually have reports (see note above).
+    // 5. Mixed status selection (see 2b): narrow to the resolved status set.
+    if (statusPostFilter) {
+      const before = data.length;
+      data = data.filter((d) => statusPostFilter!.has(d.status));
+      if (data.length !== before) {
+        logger.warn(
+          "status: mixed selection narrowed client-side; pagination total is approximate"
+        );
+      }
+    }
+
+    // 6. `none` bucket: drop rows that actually have reports (see note above).
     const pageTotal = total;
     if (query.reports === "none") {
       const before = data.length;
@@ -725,7 +804,8 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
     return {
       userId: record.id,
       username: profile?.username || record.account,
-      email: record.email,
+      fullName: buildFullName(profile?.firstName, profile?.lastName),
+      email: orNull(record.email),
       avatarUrl: profile?.avatarUrl || null,
       status,
       joinedAt: record.createdAt,
@@ -776,6 +856,21 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       },
     });
     return new Map(rows.map((r) => [r.userId, r]));
+  }
+
+  /**
+   * userIds whose UserIndex mirror `status` is one of the given values — the
+   * mirror is the only place BANNED/SUSPENDED is ever actually persisted (see
+   * resolveModerationStatus), so this is the real DB-level source for a
+   * BANNED/SUSPENDED status filter (used both to constrain a banned-only query
+   * and to exclude those ids from an ACTIVE-only query).
+   */
+  private async mirrorIdsByStatus(statuses: UserStatus[]): Promise<string[]> {
+    const rows = await prisma.userIndex.findMany({
+      where: { status: { in: statuses } },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
   }
 
   // Mutations still update the local mirror + publish admin.user_* events;
@@ -829,7 +924,9 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
         data: {
           userId: live.userId,
           username: live.username,
-          email: live.email,
+          // UserIndex.email is a non-nullable mirror column; live.email is the
+          // response-layer normalized value (null when absent).
+          email: live.email ?? "",
           status: live.status,
           joinedAt: new Date(live.joinedAt),
           lastActiveAt: live.lastActiveAt ? new Date(live.lastActiveAt) : null,

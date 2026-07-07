@@ -3,6 +3,8 @@
  * management). Field names + casing are the stable API contract.
  */
 
+import type { MediaObject } from "@aimess/shared-types";
+
 export type AdminAccountStatus = "ACTIVE" | "DISABLED" | "INVITED";
 
 export type AdminAccountRole = {
@@ -15,7 +17,9 @@ export type AdminAccountListItem = {
   id: string;
   email: string;
   name: string;
-  avatarUrl: string;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   role: AdminAccountRole;
   status: AdminAccountStatus;
   lastLoginAt: string | null;

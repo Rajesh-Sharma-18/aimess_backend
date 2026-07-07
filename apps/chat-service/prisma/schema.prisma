@@ -333,6 +333,20 @@ model GeneralRoomMessage {
   sequenceNumber  Int      @default(0)
   deletedBy       Json     @default("[]")
   deletedForAll   Boolean  @default(false)
+  // Audit trail for delete-for-everyone, mirroring GroupMessage's deletedType/
+  // deletedAt/deletedBy (a single actor id — NOT the same field as `deletedBy`
+  // above, which is the per-user delete-FOR-ME list). "SELF_DELETE" when the
+  // sender deleted their own message; "ADMIN_DELETE" for a moderator/admin
+  // deleting someone else's.
+  deletedForAllType String?
+  deletedForAllAt   DateTime?
+  deletedForAllBy   String?
+  // Forward provenance, mirroring PrivateMessage/GroupMessage's isForwarded/
+  // forwardData — previously absent, so a forwarded community message had no
+  // record of its original message/room/sender despite the ForwardCommunity-
+  // Message RPC and service method already existing.
+  isForwarded     Boolean  @default(false)
+  forwardData     Json?
   reports         Json     @default("[]")
   editedAt           DateTime?
   editHistory        Json     @default("[]")

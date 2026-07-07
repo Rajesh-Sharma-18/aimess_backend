@@ -99,18 +99,26 @@ export class CommunityMessageController {
   });
 
   /**
-   * POST /community/rooms/:roomId/read — mark this community room read.
-   * Community read is COARSER than private/group: it advances the member's read
-   * pointer to "now" (read-to-now) rather than to a specific message, and has NO
-   * socket broadcast today — so this stays thin and calls bulkMarkRead directly
-   * instead of routing through the orchestrator. The body's `upToMessageId` is
-   * accepted (request parity) but not used for a per-message high-water mark.
+   * POST /community/rooms/:roomId/read — mark this community room read up to
+   * `upToMessageId`, broadcasting `community:message:read` to the room (and
+   * `community:read_sync` to the reader's own other devices) — matching
+   * private/group's live per-message read receipt instead of the previous
+   * read-to-now-only, no-broadcast behavior.
    */
   markRead = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    await this.service.bulkMarkRead(userId, [roomId]);
-    res.status(HTTP_STATUS.OK).json(new ApiResponse({ ok: true }));
+    const { communityId, upToMessageId } = req.body as {
+      communityId: string;
+      upToMessageId: string;
+    };
+    const result = await this.service.markMessageRead({
+      communityId,
+      roomId,
+      readerId: userId,
+      upToMessageId,
+    });
+    res.status(HTTP_STATUS.OK).json(new ApiResponse(result));
   });
 
   getMessages = asyncHandler(async (req: Request, res: Response) => {
@@ -319,6 +327,38 @@ export class CommunityMessageController {
       .status(HTTP_STATUS.OK)
       .json(
         new ApiResponse(editedPayload, t("CHAT_MESSAGE_EDITED", req.locale))
+      );
+  });
+
+  /**
+   * POST /community/rooms/:roomId/messages/:messageId/forward — forward a
+   * community message into another community room. Delegates to the
+   * orchestrator's `forwardCommunity` (source-room-membership IDOR guard +
+   * target-membership check + `community:message:new` broadcast + activity
+   * bump + FCM push), matching the private/group forward contract instead of
+   * leaving community forward REST-only-missing while gRPC/socket already work.
+   */
+  forwardMessage = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const messageId = req.params.messageId as string;
+    const sourceRoomId = req.params.roomId as string;
+    const { targetCommunityId, targetRoomId, clientMessageId } = req.body as {
+      targetCommunityId: string;
+      targetRoomId: string;
+      clientMessageId?: string | null;
+    };
+    const result = await this.orchestrator.forwardCommunity({
+      sourceMessageId: messageId,
+      sourceCommunityId: sourceRoomId,
+      targetCommunityId,
+      targetRoomId,
+      senderId: userId,
+      clientMessageId: clientMessageId ?? null,
+    });
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(
+        new ApiResponse(result.message, t("CHAT_MESSAGE_FORWARDED", req.locale))
       );
   });
 
@@ -538,7 +578,7 @@ export class CommunityMessageController {
 
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(result, t("CHAT_MESSAGE_EDITED", req.locale))); // TODO: add CHAT_MESSAGE_REACTED key to @aimess/constants
+      .json(new ApiResponse(result, t("CHAT_MESSAGE_REACTED", req.locale)));
   });
 
   deleteMessage = asyncHandler(async (req: Request, res: Response) => {
@@ -555,13 +595,22 @@ export class CommunityMessageController {
       throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
     }
 
-    // Emit real-time deletion event to the community room.
+    // Emit real-time deletion event to the community room. deletedType rides
+    // along for forEveryone (mirrors Group's tombstone) — SELF_DELETE/
+    // ADMIN_DELETE, now persisted in deletedForAllType by the service.
     const tombstone = buildDeletePayload({
       conversationType: "COMMUNITY",
       messageId: result.id,
       roomId: result.roomId,
       scope: type === "forEveryone" ? "forEveryone" : "forMe",
       deletedBy: userId,
+      ...(type === "forEveryone"
+        ? {
+            deletedType:
+              (result as { deletedForAllType?: string }).deletedForAllType ??
+              "",
+          }
+        : {}),
     });
     if (result?.roomId) {
       await this.redis.publish(

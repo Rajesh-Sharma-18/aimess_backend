@@ -44,6 +44,30 @@ export interface CommunityChatSummary {
   personalLastMessage?: CommunityChatLastMessage;
 }
 
+/** Wire shape of one community message DTO (camelCase — keepCase:false). */
+export interface CommunityMessageDtoWire {
+  messageId: string;
+  roomId: string;
+  senderId: string;
+  message: string;
+  contentType: string;
+  mediaKey: string;
+  /** epoch ms */
+  sentAt: number;
+  systemMessageType: string;
+  systemMetadata: string;
+  isPersonal: boolean;
+  senderName: string;
+  /** pre-resolved presigned URL (already resolved by chat-service's toWire). */
+  senderAvatar: string;
+  /** JSON-encoded attachment array (URLs already resolved). */
+  attachmentsJson: string;
+  /** JSON-encoded reaction summary array. */
+  reactionsJson: string;
+  /** JSON-encoded quoted-message snapshot, "" if none. */
+  quoteDataJson: string;
+}
+
 export interface ChatClient {
   getCommunityChatSummaries(params: {
     userId: string;
@@ -88,6 +112,45 @@ export interface ChatClient {
       size: number;
     }[];
   } | null>;
+  /**
+   * Persist a community message. The message store (Mongo GeneralRoomMessage)
+   * lives in chat-service, so community-service forwards the send verbatim and
+   * relays chat-service's real `{ messageId, roomId, sentAt }` — the same values
+   * the gateway echoes back in the `community:message:send` ack. Business
+   * rejections (muted / banned / not-a-member / content-too-large / unsupported
+   * type) and infra failures propagate as the ORIGINAL gRPC error (code +
+   * details) so the caller can map them; this never fabricates a success.
+   */
+  sendCommunityMessage(params: {
+    communityId: string;
+    roomId: string;
+    senderId: string;
+    clientMessageId: string;
+    message: string;
+    contentType: string;
+    mediaKey: string;
+    parentMessageId: string;
+    attachmentsJson: string;
+  }): Promise<{ messageId: string; roomId: string; sentAt: number }>;
+  /**
+   * Cursor-paged community message history (the socket `community:messages:fetch`
+   * entry point). The message store lives in chat-service, so community-service
+   * forwards the read verbatim and relays chat-service's REAL page — never a
+   * fabricated empty page. Errors (business or infra) propagate as the ORIGINAL
+   * gRPC error so the caller can map them; an empty result here always means
+   * "genuinely no more messages", never "read failed".
+   */
+  getCommunityMessages(params: {
+    roomId: string;
+    requesterId: string;
+    cursor: string;
+    limit: number;
+  }): Promise<{
+    messages: CommunityMessageDtoWire[];
+    nextCursor: string;
+    hasMore: boolean;
+    pinnedMessageJson: string;
+  }>;
 }
 
 export function createChatClient(): ChatClient {
@@ -181,6 +244,57 @@ export function createChatClient(): ChatClient {
   // Best-effort: a failed lookup degrades to "no content" — the report is still
   // filed; the moderator card just omits the reported-content section.
   messageByIdBreaker.fallback(() => ({ found: false }));
+
+  const sendMessageBreaker = makeBreaker(
+    "chat.sendCommunityMessage",
+    (p: {
+      communityId: string;
+      roomId: string;
+      senderId: string;
+      clientMessageId: string;
+      message: string;
+      contentType: string;
+      mediaKey: string;
+      parentMessageId: string;
+      attachmentsJson: string;
+    }) =>
+      makeGrpcCall<
+        unknown,
+        // int64 `sentAt` decoded as STRING (longs: "String").
+        { messageId?: string; roomId?: string; sentAt?: string | number }
+      >(client, "sendCommunityMessage", p)
+  );
+  // NO fallback on purpose: a send must fail LOUDLY so the caller acks a
+  // retryable SERVICE_ERROR — never a fake empty-but-successful ack (the exact
+  // bug this replaces). makeBreaker's default fallback rethrows on open circuit,
+  // and business-error statuses pass through untouched (errorFilter).
+
+  const getMessagesBreaker = makeBreaker(
+    "chat.getCommunityMessages",
+    (p: {
+      roomId: string;
+      requesterId: string;
+      cursor: string;
+      limit: number;
+    }) =>
+      makeGrpcCall<
+        unknown,
+        {
+          messages?: Array<
+            Omit<CommunityMessageDtoWire, "sentAt"> & {
+              // int64 decoded as STRING (longs: "String").
+              sentAt?: string | number;
+            }
+          >;
+          nextCursor?: string;
+          hasMore?: boolean;
+          pinnedMessageJson?: string;
+        }
+      >(client, "getCommunityMessages", p)
+  );
+  // NO fallback on purpose (mirrors sendCommunityMessage): a failed fetch must
+  // fail LOUDLY (ackError) rather than silently return an empty page that the
+  // FE would read as "this community has no history".
 
   return {
     getCommunityChatSummaries: async (params) => {
@@ -276,6 +390,45 @@ export function createChatClient(): ChatClient {
         );
         return null;
       }
+    },
+
+    sendCommunityMessage: async (params) => {
+      // Forward verbatim; relay the ACTUAL persisted identity. Errors (business
+      // or infra) propagate unchanged so the gateway maps them correctly.
+      const res = await sendMessageBreaker.fire(params);
+      return {
+        messageId: res.messageId ?? "",
+        roomId: res.roomId ?? "",
+        sentAt: Number(res.sentAt ?? 0),
+      };
+    },
+
+    getCommunityMessages: async (params) => {
+      // Forward verbatim; relay the ACTUAL persisted page. Errors propagate
+      // unchanged so the caller can distinguish "empty history" from "read failed".
+      const res = await getMessagesBreaker.fire(params);
+      return {
+        messages: (res.messages ?? []).map((m) => ({
+          messageId: m.messageId ?? "",
+          roomId: m.roomId ?? "",
+          senderId: m.senderId ?? "",
+          message: m.message ?? "",
+          contentType: m.contentType ?? "",
+          mediaKey: m.mediaKey ?? "",
+          sentAt: Number(m.sentAt ?? 0),
+          systemMessageType: m.systemMessageType ?? "",
+          systemMetadata: m.systemMetadata ?? "",
+          isPersonal: Boolean(m.isPersonal),
+          senderName: m.senderName ?? "",
+          senderAvatar: m.senderAvatar ?? "",
+          attachmentsJson: m.attachmentsJson ?? "",
+          reactionsJson: m.reactionsJson ?? "",
+          quoteDataJson: m.quoteDataJson ?? "",
+        })),
+        nextCursor: res.nextCursor ?? "",
+        hasMore: Boolean(res.hasMore),
+        pinnedMessageJson: res.pinnedMessageJson ?? "",
+      };
     },
   };
 }

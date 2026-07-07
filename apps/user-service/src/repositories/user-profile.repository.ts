@@ -1,6 +1,7 @@
 import {
   ProfileStatus,
   type ProfileGender,
+  type Prisma,
 } from "../generated/prisma/client.js";
 import { prisma } from "../config/prisma.js";
 import { normalizeUsername } from "../lib/username.util.js";
@@ -229,6 +230,50 @@ export const userProfileRepository = {
         createdAt: true,
       },
     });
+  },
+
+  /**
+   * Admin Panel (Reports search): match userIds by username, first/last name,
+   * or full name (split on the first whitespace so "John Doe" matches either
+   * name order). Capped at 500 — the caller only needs an id-set to filter by,
+   * not a page of results.
+   */
+  adminSearchProfileIds(search: string): Promise<string[]> {
+    const term = search.trim();
+    if (!term) return Promise.resolve([]);
+
+    const or: Prisma.UserProfileWhereInput[] = [
+      { username: { contains: term, mode: "insensitive" } },
+      { firstName: { contains: term, mode: "insensitive" } },
+      { lastName: { contains: term, mode: "insensitive" } },
+    ];
+    const parts = term.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      const first = parts[0]!;
+      const rest = parts.slice(1).join(" ");
+      or.push(
+        {
+          AND: [
+            { firstName: { contains: first, mode: "insensitive" } },
+            { lastName: { contains: rest, mode: "insensitive" } },
+          ],
+        },
+        {
+          AND: [
+            { firstName: { contains: rest, mode: "insensitive" } },
+            { lastName: { contains: first, mode: "insensitive" } },
+          ],
+        }
+      );
+    }
+
+    return prisma.userProfile
+      .findMany({
+        where: { OR: or },
+        select: { userId: true },
+        take: 500,
+      })
+      .then((rows) => rows.map((r) => r.userId));
   },
 
   /** Admin Panel: single profile lookup by id, or null when absent. */

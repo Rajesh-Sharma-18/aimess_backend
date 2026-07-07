@@ -125,6 +125,47 @@ export class GroupMemberRepository {
     });
   }
 
+  /**
+   * Personal (per-member) notification mute — mirrors PrivateRoomRepository's
+   * setMuted/setUnmuted, but stored on the GroupMember row itself since group
+   * mute is per-membership, not per-room. `notificationSettings.mute`/
+   * `muteUntil` were already read by GroupRoomService.getInboxGroups; this was
+   * the missing write path.
+   */
+  async setMuted(
+    roomId: string,
+    userId: string,
+    muteUntil: Date | null
+  ): Promise<GroupMember | null> {
+    const existing = await this.prisma.groupMember.findUnique({
+      where: { roomId_userId: { roomId, userId } },
+    });
+    if (!existing) return null;
+    return this.prisma.groupMember.update({
+      where: { roomId_userId: { roomId, userId } },
+      data: {
+        notificationSettings: {
+          mute: true,
+          muteUntil: muteUntil ? muteUntil.toISOString() : null,
+        },
+      },
+    });
+  }
+
+  async setUnmuted(
+    roomId: string,
+    userId: string
+  ): Promise<GroupMember | null> {
+    const existing = await this.prisma.groupMember.findUnique({
+      where: { roomId_userId: { roomId, userId } },
+    });
+    if (!existing) return null;
+    return this.prisma.groupMember.update({
+      where: { roomId_userId: { roomId, userId } },
+      data: { notificationSettings: { mute: false, muteUntil: null } },
+    });
+  }
+
   async markRead(
     roomId: string,
     userId: string,

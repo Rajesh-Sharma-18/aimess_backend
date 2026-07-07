@@ -12,7 +12,8 @@ import {
   markAdminSessionRevoked,
   markAdminSessionsRevoked,
 } from "../lib/admin-session-cache.js";
-import { resolveAdminAvatarUrl } from "../lib/admin-avatar.js";
+import { resolveAvatarOrNull } from "../lib/avatar-media.js";
+import type { MediaObject } from "@aimess/shared-types";
 import { createRefreshTokenValue, hashToken } from "../lib/admin-token.js";
 import { verifyPassword } from "../lib/password.js";
 import {
@@ -39,8 +40,9 @@ export type AdminProfile = {
   id: string;
   email: string;
   name: string;
-  /** Always present: custom avatar if set, otherwise a system-generated default. */
-  avatarUrl: string;
+  // Standard avatar object (see @aimess/shared-types MediaObject); null when
+  // no avatar is set. Replaces the legacy bare avatarUrl string.
+  avatar: MediaObject | null;
   role: RoleKey;
   status: string;
   lastLoginAt: Date | null;
@@ -64,15 +66,15 @@ type AdminProfileSource = {
   lastLoginAt: Date | null;
 };
 
-function buildAdminProfile(
+async function buildAdminProfile(
   admin: AdminProfileSource,
   permissions: string[]
-): AdminProfile {
+): Promise<AdminProfile> {
   return {
     id: admin.id,
     email: admin.email,
     name: admin.name,
-    avatarUrl: resolveAdminAvatarUrl(admin),
+    avatar: await resolveAvatarOrNull(admin.avatarUrl),
     role: admin.role.key,
     status: admin.status,
     lastLoginAt: admin.lastLoginAt,
@@ -116,7 +118,7 @@ async function issueAdminSession(
       accessTokenExpiresIn: access.expiresInSeconds,
       refreshTokenExpiresIn,
     },
-    admin: buildAdminProfile(admin, permissions),
+    admin: await buildAdminProfile(admin, permissions),
   };
 }
 
@@ -248,7 +250,7 @@ export const adminAuthService = {
         accessTokenExpiresIn: access.expiresInSeconds,
         refreshTokenExpiresIn,
       },
-      admin: buildAdminProfile(admin, permissions),
+      admin: await buildAdminProfile(admin, permissions),
     };
   },
 
@@ -280,6 +282,6 @@ export const adminAuthService = {
     const permissions = await rbacService.getPermissionKeysForRole(
       admin.role.key
     );
-    return buildAdminProfile(admin, permissions);
+    return await buildAdminProfile(admin, permissions);
   },
 };

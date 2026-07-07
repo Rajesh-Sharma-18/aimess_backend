@@ -28,6 +28,14 @@ export class PrivatePinService {
     const room = await this.roomRepo.findByRoomId(roomId);
     if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
 
+    // Only a participant of this DM may pin into it — mirrors the same check
+    // `unpin` already has below. Without this, any authenticated caller who
+    // learns a valid roomId/messageId could pin into a conversation they're
+    // not part of.
+    if (!room.participants?.includes(userId)) {
+      throw new BadRequestError("CHAT_NOT_A_PARTICIPANT");
+    }
+
     const totalPins = await this.pinRepo.countPinsByRoom(roomId);
     if (totalPins >= env.PIN_LIMIT_PER_ROOM) {
       throw new BadRequestError("CHAT_PIN_LIMIT_REACHED");

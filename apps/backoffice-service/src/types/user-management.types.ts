@@ -41,20 +41,18 @@ export type ModerationReason =
 export type UserListItem = {
   userId: string;
   username: string;
-  email: string;
+  /** firstName + lastName (trimmed, single-spaced); null when both are absent. */
+  fullName: string | null;
+  /** null when the user has no email on file (never an empty string). */
+  email: string | null;
   status: UserStatus;
   joinedAt: string;
   reportCount: number;
-  /** Presigned GET URL for the avatar, or null when unset / presign failed. */
-  avatarUrl?: string | null;
-  /** Lifetime of `avatarUrl` in seconds; null when avatarUrl is null. */
-  avatarUrlExpiresIn?: number | null;
   /**
-   * Nested media descriptor for the avatar (additive, always present). Inner
-   * fields are null when the avatar is unset / presign failed. Wraps the same
-   * presigned GET the legacy `avatarUrl` carries via the shared media layer.
+   * Standard avatar object (see @aimess/shared-types MediaObject); null when
+   * no avatar is set. Replaces the legacy bare avatarUrl string.
    */
-  avatar: MediaObject;
+  avatar: MediaObject | null;
   /** Derived from `status` — see {@link ModerationStatus}. Never replaces `status`. */
   moderationStatus: ModerationStatus;
   /** `true` iff the user is currently BANNED or SUSPENDED. Lets the panel pick
@@ -72,14 +70,10 @@ export type UserListItem = {
 /**
  * The repository's pre-resolution list row. Here `avatarUrl` carries the RAW
  * stored avatar value (object key from user-service), NOT a presigned URL — the
- * user-management service resolves it into the legacy presigned `avatarUrl`/
- * `avatarUrlExpiresIn` fields AND the nested `avatar: MediaObject` before the
- * row becomes a public {@link UserListItem}.
+ * user-management service resolves it into the nested `avatar: MediaObject |
+ * null` before the row becomes a public {@link UserListItem}.
  */
-export type UserListItemRaw = Omit<
-  UserListItem,
-  "avatarUrl" | "avatarUrlExpiresIn" | "avatar"
-> & {
+export type UserListItemRaw = Omit<UserListItem, "avatar"> & {
   /** Raw stored avatar value (object key), or null. */
   avatarUrl?: string | null;
 };
@@ -102,27 +96,50 @@ export type ReportCategoryCount = {
   count: number;
 };
 
+/** One free-text note filed under the custom "OTHER" reason. */
+export type OtherReasonNote = {
+  description: string;
+  reportedBy: string | null;
+  reportedAt: string;
+};
+
+/**
+ * "Report Details" panel on the User Management detail screen. Single source
+ * for report data on that screen — `reporter`/`reportDate` come from the most
+ * recent report, `reportCount` is the total across every reason (predefined +
+ * custom), `topReasons` is the predefined-reason breakdown (excludes
+ * "OTHER"), and `otherReasons` carries the free-text notes filed under the
+ * custom "OTHER" reason, each with its reporter and timestamp. Empty arrays
+ * (never omitted) when the user has no reports.
+ */
+export type ReportDetailsBlock = {
+  reporter: string | null;
+  reportDate: string | null;
+  reportCount: number;
+  topReasons: ReportCategoryCount[];
+  otherReasons: OtherReasonNote[];
+};
+
 /** One row in the paginated "Reported Details" list for a user. */
 export type ReportRow = {
   reportId: string;
   reason: string;
   details: string | null;
+  /** Custom description when `reason` is "OTHER"; null for every predefined reason. */
+  otherReason: string | null;
   status: string;
   createdAt: string;
+  /** Community the report was filed in; null for community-less reports. */
+  communityId: string | null;
+  /** Name of {@link communityId}'s community; null when absent/unresolved. */
+  communityName: string | null;
   reporter: {
     userId: string;
     username: string | null;
+    /** firstName + lastName (trimmed, single-spaced); null when both are absent. */
+    fullname: string | null;
     avatarKey: string | null;
   };
-};
-
-/** Aggregated reports filed against this user. */
-export type ReportsSummary = {
-  total: number;
-  open: number;
-  resolved: number;
-  dismissed: number;
-  topReasons: { reason: string; count: number }[];
 };
 
 /** Composed account-state block (from the UserIndex row). */
@@ -143,28 +160,22 @@ export type UserDetail = {
   profile: {
     userId: string;
     username: string;
-    email: string;
-    /** Presigned GET URL for the avatar, or null when unset / presign failed. */
-    avatarUrl: string | null;
-    /** Lifetime of `avatarUrl` in seconds; null when avatarUrl is null. */
-    avatarUrlExpiresIn: number | null;
+    /** firstName + lastName (trimmed, single-spaced); null when both are absent. */
+    fullName: string | null;
+    /** null when the user has no email on file (never an empty string). */
+    email: string | null;
     /**
-     * Nested media descriptor for the avatar (additive, always present). Inner
-     * fields are null when the avatar is unset / presign failed. Wraps the same
-     * presigned GET the legacy `avatarUrl` carries via the shared media layer.
+     * Standard avatar object (see @aimess/shared-types MediaObject); null when
+     * no avatar is set. The flat `avatarUrl`/`avatarUrlExpiresIn` legacy
+     * fields are intentionally NOT part of this response — this is the only
+     * avatar field the detail screen returns.
      */
-    avatar: MediaObject;
+    avatar: MediaObject | null;
     joinedAt: string;
     lastActiveAt: string | null;
   };
   accountStatus: AccountStatusBlock;
-  reportsSummary: ReportsSummary;
-  // All report categories filed against this user (not just the top-5 in summary).
-  reportCategories: ReportCategoryCount[];
-  moderationHistory: ModerationHistoryItem[];
-  stats: {
-    reportCount: number;
-  };
+  reportDetails: ReportDetailsBlock;
 };
 
 /** The raw UserIndex row the repository returns for detail composition. */
@@ -195,7 +206,10 @@ export type UserIndexRow = {
 export type UserDirectoryRow = {
   userId: string;
   username: string;
-  email: string;
+  /** firstName + lastName (trimmed, single-spaced); null when both are absent. */
+  fullName: string | null;
+  /** null when the user has no email on file (never an empty string). */
+  email: string | null;
   avatarUrl: string | null;
   status: UserStatus;
   joinedAt: string;

@@ -216,6 +216,11 @@ message AdminStreamRow {
   int64  lived_at        = 16; // epoch ms; 0 if never went live
   int64  ended_at        = 17; // epoch ms; 0 if not ended
   int64  created_at      = 18; // epoch ms
+  // Distinct-user count from LivestreamViewerSession — the SAME source of
+  // truth AdminListViewerSessions dedupes to. Use this (not total_views,
+  // which is a raw join-attempt/checkAccess-call counter that double-counts
+  // reconnects) whenever a viewer count must match the admin viewer list.
+  int64  unique_viewer_count = 19;
 }
 
 message AdminListStreamsRequest {
