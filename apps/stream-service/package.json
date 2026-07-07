@@ -9,7 +9,7 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "build": "node scripts/prisma-generate-if-needed.mjs && tsc",
-    "typecheck": "node scripts/prisma-generate-if-needed.mjs && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "node ../../node_modules/jest/bin/jest.js --config jest.config.cjs"
   },
