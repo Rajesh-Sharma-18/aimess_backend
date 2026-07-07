@@ -125,7 +125,11 @@ export class StreamController {
     const parsed = commentsQuerySchema.safeParse(req.query);
     if (!parsed.success) throw new BadRequestError("STREAM_REQUEST_INVALID");
 
-    const result = await this.commentService.getComments(id, parsed.data);
+    const result = await this.commentService.getComments(
+      id,
+      parsed.data,
+      req.auth.userId
+    );
     res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("STREAM_COMMENTS_FETCHED", req.locale)));

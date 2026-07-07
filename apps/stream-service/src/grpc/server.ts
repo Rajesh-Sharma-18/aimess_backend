@@ -478,13 +478,22 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             callback(null, { streams: [] });
             return;
           }
+          // No explicit status filter: a RECONNECTING stream (publisher mid
+          // reconnect-grace after a drop) must still surface here — otherwise
+          // the community's isLive/liveStreams[] flips false during a brief
+          // publisher blip, which is exactly what the reconnect-grace feature
+          // is meant to prevent. listStreams() with no status returns
+          // PENDING+LIVE+RECONNECTING; filter out PENDING (never actually
+          // live) to match this RPC's original LIVE-only contract.
           const result = await deps.livestreamService.listStreams({
             communityId,
-            status: "LIVE",
             limit: 20,
           });
+          const liveOrReconnecting = result.items.filter(
+            (s) => s.status === "LIVE" || s.status === "RECONNECTING"
+          );
           callback(null, {
-            streams: result.items.map((s) => ({
+            streams: liveOrReconnecting.map((s) => ({
               id: s.id,
               title: s.title,
               thumbnail: s.thumbnail ?? "",
@@ -555,6 +564,40 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
         } catch (err) {
           logger.warn(`gRPC notifyMemberBanStatus error: ${String(err)}`);
           callback(null, { ok: false });
+        }
+      })();
+    },
+
+    // ForceEndStreamsByCreator — best-effort bulk force-end, called by
+    // community-service (community-wide ban/kick, scoped to one community) and
+    // backoffice-service/user-service (account ban/suspend/deletion, unscoped).
+    // Never fails the caller — matches notifyMemberBanStatus's contract above.
+    forceEndStreamsByCreator: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            creatorId?: string;
+            communityId?: string;
+            reason?: string;
+          };
+          const creatorId = req.creatorId ?? "";
+          if (!creatorId) {
+            callback(null, { ok: true, endedCount: 0 });
+            return;
+          }
+          const { endedCount } =
+            await deps.livestreamService.forceEndStreamsByCreator(
+              creatorId,
+              req.communityId || undefined,
+              req.reason ?? ""
+            );
+          callback(null, { ok: true, endedCount });
+        } catch (err) {
+          logger.warn(`gRPC forceEndStreamsByCreator error: ${String(err)}`);
+          callback(null, { ok: false, endedCount: 0 });
         }
       })();
     },

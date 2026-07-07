@@ -15,5 +15,10 @@ process.env.JWT_ACCESS_SECRET = "test-access-secret-do-not-use-in-prod";
 process.env.USER_GRPC_URL = "localhost:4002";
 process.env.COMMUNITY_GRPC_URL = "localhost:4003";
 process.env.SRS_HOOK_SECRET = "test-srs-hook-secret-do-not-use-in-prod";
+// Pinned explicitly (matches the schema's own default) so tests are hermetic —
+// without this, dotenv falls through to whatever `apps/stream-service/.env`
+// happens to have on the machine running the suite (often "false" for local
+// dev), silently changing which membership-gate branches tests exercise.
+process.env.STREAM_REQUIRE_MEMBERSHIP = "true";
 
 export {};

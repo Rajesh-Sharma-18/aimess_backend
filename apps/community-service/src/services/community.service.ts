@@ -2895,6 +2895,18 @@ export const communityService = {
     // MEMBER_REMOVED is in HIDDEN_SYSTEM_MESSAGE_TYPES (packages/constants) as
     // the authoritative policy. Moderation history lives in the audit log only.
 
+    // Best-effort: a kick removes ACTIVE membership the same as a ban — if the
+    // target is currently broadcasting in this community, they no longer
+    // satisfy the membership gate that let them go live, so end it. Scoped to
+    // this community only. Unlike ban, kick has no existing viewer-kick
+    // notify call (kicked members aren't rejected at CheckStreamAccess the way
+    // banned ones are), so this is the only stream-service touch point here.
+    void getStreamClient().forceEndStreamsByCreator(
+      communityId,
+      targetUserId,
+      "COMMUNITY_KICKED"
+    );
+
     return toMemberData(updated);
   },
 
@@ -3038,6 +3050,17 @@ export const communityService = {
       communityId,
       targetUserId,
       true
+    );
+    // Best-effort: also force-end any stream the target is currently
+    // BROADCASTING in this community — kicking their viewer/chat socket above
+    // doesn't stop their SRS publish, so without this a banned streamer keeps
+    // broadcasting to the community they were just banned from. Scoped to
+    // this community only — they may still be a legitimate member (and
+    // legitimately live) elsewhere.
+    void getStreamClient().forceEndStreamsByCreator(
+      communityId,
+      targetUserId,
+      "COMMUNITY_BANNED"
     );
 
     return toMemberData(updated);
