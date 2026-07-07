@@ -1564,4 +1564,192 @@ export const userPaths = {
       },
     },
   },
+  // ---------------------------------------------------------------------------
+  // Recent Searches
+  // ---------------------------------------------------------------------------
+  "/users/recent-searches": {
+    get: {
+      tags: ["Users"],
+      summary: "List recent searches",
+      operationId: "listRecentSearches",
+      description:
+        "Returns the caller's last 10 recent searches, newest first.\n\n" +
+        "Each entry is one of two shapes:\n" +
+        "- **USER** — the caller tapped on a user's profile. Contains a `user` object with profile data.\n" +
+        "- **QUERY** — the caller typed a search term. Contains a `query` string.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Recent search list",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        type: "object",
+                        properties: {
+                          searches: {
+                            type: "array",
+                            items: {
+                              $ref: "#/components/schemas/RecentSearchEntry",
+                            },
+                          },
+                        },
+                        required: ["searches"],
+                      },
+                    },
+                  },
+                ],
+              },
+              example: {
+                success: true,
+                message: "Success",
+                data: {
+                  searches: [
+                    {
+                      id: "aabbccdd-0000-4000-8000-aabbccdd0001",
+                      type: "USER",
+                      user: {
+                        userId: "660e8400-e29b-41d4-a716-446655440001",
+                        username: "janedoe",
+                        firstName: "Jane",
+                        lastName: "Doe",
+                        bio: null,
+                        avatarUrl: null,
+                        avatarUrlExpiresIn: null,
+                        isOnline: false,
+                      },
+                      createdAt: "2026-07-07T10:00:00.000Z",
+                    },
+                    {
+                      id: "aabbccdd-0000-4000-8000-aabbccdd0002",
+                      type: "QUERY",
+                      query: "john doe",
+                      createdAt: "2026-07-07T09:30:00.000Z",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+    post: {
+      tags: ["Users"],
+      summary: "Record a recent search",
+      operationId: "recordRecentSearch",
+      description:
+        "Records a recent search for the caller. Provide **either** `searchedUserId` (when the user taps a profile) **or** `query` (when the user types a search term). " +
+        "Duplicate entries for the same user/query are de-duplicated and bumped to the top. " +
+        "The list is capped at 10; the oldest entry is pruned automatically.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/RecordRecentSearchBody" },
+            examples: {
+              userTap: {
+                summary: "User profile tap",
+                value: {
+                  searchedUserId: "660e8400-e29b-41d4-a716-446655440001",
+                },
+              },
+              textQuery: {
+                summary: "Text query",
+                value: { query: "john doe" },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Search recorded",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Success", data: null },
+            },
+          },
+        },
+        "400": {
+          description:
+            "Neither searchedUserId nor query provided, or invalid UUID",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Provide either searchedUserId or query",
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+    delete: {
+      tags: ["Users"],
+      summary: "Clear all recent searches",
+      operationId: "clearRecentSearches",
+      description: "Deletes all recent search entries for the caller.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "All entries cleared",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Success", data: null },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
+
+  "/users/recent-searches/{id}": {
+    delete: {
+      tags: ["Users"],
+      summary: "Delete a single recent search",
+      operationId: "deleteRecentSearch",
+      description:
+        "Removes one recent search entry by ID. Returns 404 if the entry does not exist or belongs to another user.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+          description: "ID of the recent search entry to delete.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Entry deleted",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Success", data: null },
+            },
+          },
+        },
+        "404": notFound,
+        "401": unauthorized,
+      },
+    },
+  },
 } as const;

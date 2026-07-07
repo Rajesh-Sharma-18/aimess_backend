@@ -1,4 +1,5 @@
 import { logger } from "@aimess/logger";
+import { CommunityEvents } from "@aimess/shared-types";
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
@@ -10,6 +11,20 @@ import {
 } from "./notification-settings.service.js";
 
 const chatNotificationClient = createChatNotificationClient();
+
+/**
+ * Notification types that must never reach the `notify` socket (or the inbox):
+ * currently-fired community events explicitly excluded from real-time push.
+ * Checked first in `pushToUser` so no DB row, FCM send, or socket event is
+ * ever produced for these types.
+ */
+const NOTIFY_SUPPRESSED_TYPES = new Set<string>([
+  CommunityEvents.MEMBER_KICKED,
+  CommunityEvents.MEMBER_UNBANNED,
+  CommunityEvents.JOIN_REQUEST_REJECTED,
+  CommunityEvents.DELETED,
+  CommunityEvents.LIVESTREAM_STARTED,
+]);
 
 export interface PushInput {
   userId: string;
@@ -56,6 +71,10 @@ export interface PushInput {
  * Never throws — push delivery must not poison the consumer (which would DLQ).
  */
 export async function pushToUser(input: PushInput): Promise<void> {
+  if (NOTIFY_SUPPRESSED_TYPES.has(input.type)) {
+    return;
+  }
+
   const {
     userId,
     category,

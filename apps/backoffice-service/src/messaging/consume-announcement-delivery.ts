@@ -95,6 +95,7 @@ export async function handleAnnouncementDeliverMessage(
         announcementId: data.announcementId,
         title: data.title,
         body: data.description,
+        kind: data.kind,
         userIds: recipients,
         batchId: `ann:${data.announcementId}:notify:${data.cursor}`,
       });

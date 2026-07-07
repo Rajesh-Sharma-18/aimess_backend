@@ -13,6 +13,11 @@ export const announcementStatusEnum = z.enum([
   "SENT",
   "FAILED",
 ]);
+export const announcementKindEnum = z.enum([
+  "ANNOUNCEMENT",
+  "MAINTENANCE",
+  "UPDATE_REQUIRED",
+]);
 
 /** Accept `?x=A` (single) or `?x=A&x=B` (repeated) → always an array. */
 function repeatableEnum<T extends z.ZodEnum>(schema: T) {
@@ -33,6 +38,7 @@ export const createAnnouncementSchema = z
     title: z.string().trim().min(1).max(200),
     description: z.string().trim().min(1).max(5000),
     target: announcementTargetEnum,
+    kind: announcementKindEnum.default("ANNOUNCEMENT"),
     communityId: z.string().uuid().optional(),
     scheduledAt: z.iso.datetime().optional(),
   })

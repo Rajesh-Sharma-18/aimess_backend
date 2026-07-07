@@ -4,6 +4,16 @@ export type AnnouncementTarget = "ALL" | "COMMUNITY";
 
 export type AnnouncementStatus = "SCHEDULED" | "PROCESSING" | "SENT" | "FAILED";
 
+/**
+ * Distinguishes the notification `type` delivered to recipients:
+ * ANNOUNCEMENT (default, backward-compatible with the original single-purpose
+ * feature), MAINTENANCE, or UPDATE_REQUIRED.
+ */
+export type AnnouncementKind =
+  | "ANNOUNCEMENT"
+  | "MAINTENANCE"
+  | "UPDATE_REQUIRED";
+
 /** A single row in the announcements table (list projection). */
 export type AnnouncementListItem = {
   id: string;
@@ -21,6 +31,7 @@ export type AnnouncementDetail = {
   title: string;
   description: string;
   target: AnnouncementTarget;
+  kind: AnnouncementKind;
   communityId: string | null;
   status: AnnouncementStatus;
   scheduledAt: string | null;
@@ -37,6 +48,7 @@ export type CreateAnnouncementInput = {
   title: string;
   description: string;
   target: AnnouncementTarget;
+  kind: AnnouncementKind;
   communityId?: string;
   scheduledAt?: string;
 };

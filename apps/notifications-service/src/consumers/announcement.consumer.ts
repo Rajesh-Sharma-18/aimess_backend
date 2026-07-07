@@ -18,6 +18,8 @@ export interface NotificationAnnouncementBatchPayload {
   announcementId: string;
   title: string;
   body: string;
+  /** Defaults to "ANNOUNCEMENT" for backward compatibility with older publishers. */
+  kind?: "ANNOUNCEMENT" | "MAINTENANCE" | "UPDATE_REQUIRED";
   userIds: string[];
   batchId: string;
 }
@@ -43,14 +45,16 @@ export async function handleAnnouncementBatch(
     return;
   }
 
+  const kind = data.kind ?? "ANNOUNCEMENT";
+
   await pushToUsers(data.userIds, (userId) => ({
     userId,
     category: "systemEnabled",
-    type: "ANNOUNCEMENT",
+    type: kind,
     title: data.title,
     body: data.body,
     bypassSettings: true,
-    data: { type: "ANNOUNCEMENT", announcementId: data.announcementId },
+    data: { type: kind, announcementId: data.announcementId },
   }));
 }
 

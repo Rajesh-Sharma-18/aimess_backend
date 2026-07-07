@@ -191,6 +191,21 @@ function stringifyContent(content: unknown): string {
   }
 }
 
+function publishRealtimeSafe(
+  channel: string,
+  event: string,
+  data: unknown,
+  context: string
+): void {
+  redis
+    .publish(channel, JSON.stringify({ event, data }))
+    .catch((err: unknown) => {
+      logger.warn(
+        `realtime publish failed event=${event} channel=${channel} ${context}: ${String(err)}`
+      );
+    });
+}
+
 export function createMessagingImpl(
   deps: GrpcDeps
 ): grpc.UntypedServiceImplementation {
@@ -288,33 +303,32 @@ export function createMessagingImpl(
               const bcastContent = await resolveBroadcastContent(
                 row.content ?? null
               );
-              await redis.publish(
+              const rowPayload = buildChatMessageEvent({
+                id: row.id,
+                clientMessageId: req.clientMessageId,
+                roomId: req.conversationId,
+                conversationType:
+                  conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+                senderId: req.senderId,
+                senderName: req.senderName,
+                senderAvatar: bcastAvatar,
+                senderRole:
+                  (row as { senderRole?: string }).senderRole ?? msg.senderRole,
+                receiverId: req.receiverId,
+                messageType: row.messageType,
+                content: bcastContent ?? null,
+                parentMessageId: (rowFull.parentMessageId as string) || "",
+                quoteData: rowFull.quoteData ?? null,
+                reactions: [],
+                clientTs,
+                serverTs: rowServerTs,
+                sequenceNumber: row.sequenceNumber,
+              });
+              publishRealtimeSafe(
                 `conv:${req.conversationId}`,
-                JSON.stringify({
-                  event: "message:new",
-                  data: buildChatMessageEvent({
-                    id: row.id,
-                    clientMessageId: req.clientMessageId,
-                    roomId: req.conversationId,
-                    conversationType:
-                      conversationType === "GROUP" ? "GROUP" : "PRIVATE",
-                    senderId: req.senderId,
-                    senderName: req.senderName,
-                    senderAvatar: bcastAvatar,
-                    senderRole:
-                      (row as { senderRole?: string }).senderRole ??
-                      msg.senderRole,
-                    receiverId: req.receiverId,
-                    messageType: row.messageType,
-                    content: bcastContent ?? null,
-                    parentMessageId: (rowFull.parentMessageId as string) || "",
-                    quoteData: rowFull.quoteData ?? null,
-                    reactions: [],
-                    clientTs,
-                    serverTs: rowServerTs,
-                    sequenceNumber: row.sequenceNumber,
-                  }),
-                })
+                "message:new",
+                rowPayload,
+                `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
               );
             }
           }
@@ -1916,38 +1930,37 @@ export function createCommunityImpl(
               const rowSticker = rowAttRecords.find(
                 (a) => String(a.type).toLowerCase() === "sticker"
               );
-              await redis.publish(
+              publishRealtimeSafe(
                 "community:" + req.communityId,
-                JSON.stringify({
-                  event: "community:message:new",
-                  data: {
-                    id: row.id,
-                    messageId: row.id,
-                    communityId: req.communityId,
-                    roomId: row.roomId,
-                    senderId: row.sentBy,
-                    senderName,
-                    senderAvatar: bcastSenderAvatar,
-                    parentMessageId: row.parentMessageId ?? "",
-                    quoteData: buildCanonicalQuote(row.quoteData),
-                    content: {
-                      text: row.message ?? "",
-                      files: rowBcastFiles,
-                      ...(rowLocation ? { location: rowLocation } : {}),
-                      ...(rowContact ? { contact: rowContact } : {}),
-                      ...(rowSticker ? { sticker: rowSticker } : {}),
-                    },
-                    reactions: [],
-                    message: row.message ?? "",
-                    contentType: normalizeMessageType(row.messageType),
-                    isEdited: false,
-                    editedAt: 0,
-                    clientMessageId: req.clientMessageId ?? "",
-                    serverTs: rowSentAt,
-                    sentAt: rowSentAt,
-                    sequenceNumber: row.sequenceNumber,
+                "community:message:new",
+                {
+                  id: row.id,
+                  messageId: row.id,
+                  communityId: req.communityId,
+                  roomId: row.roomId,
+                  senderId: row.sentBy,
+                  senderName,
+                  senderAvatar: bcastSenderAvatar,
+                  parentMessageId: row.parentMessageId ?? "",
+                  quoteData: buildCanonicalQuote(row.quoteData),
+                  content: {
+                    text: row.message ?? "",
+                    files: rowBcastFiles,
+                    ...(rowLocation ? { location: rowLocation } : {}),
+                    ...(rowContact ? { contact: rowContact } : {}),
+                    ...(rowSticker ? { sticker: rowSticker } : {}),
                   },
-                })
+                  reactions: [],
+                  message: row.message ?? "",
+                  contentType: normalizeMessageType(row.messageType),
+                  isEdited: false,
+                  editedAt: 0,
+                  clientMessageId: req.clientMessageId ?? "",
+                  serverTs: rowSentAt,
+                  sentAt: rowSentAt,
+                  sequenceNumber: row.sequenceNumber,
+                },
+                `communityId=${req.communityId} roomId=${row.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
               );
             }
 

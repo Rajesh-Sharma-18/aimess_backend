@@ -101,8 +101,10 @@ export function buildCommunitySystemFallbackText(
       return "Community photo updated";
     case "COMMUNITY_BANNER_UPDATED":
       return "Community banner updated";
+    case "COMMUNITY_HANDLE_UPDATED":
+      return "Community handle updated";
     case "COMMUNITY_UPDATED":
-      return "Community details updated";
+      return "Community settings updated";
     case "LIVE_STREAM_STARTED":
       // Host-named (Telegram group video-chat parity). "You started …" for the
       // host's own view; "{host} started …" for everyone else.
@@ -223,7 +225,7 @@ export function buildCommunitySystemFallbackText(
       return "Your request to join was declined";
 
     default:
-      return "Community details updated";
+      return "Community settings updated";
   }
 }
 

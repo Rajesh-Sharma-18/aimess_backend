@@ -519,10 +519,11 @@ describe("CommunitySystemMessageService — single active join line per user (re
 });
 
 describe("system-message registry — new subtypes are COMMUNITY-visible + bump", () => {
-  it("COMMUNITY_DESCRIPTION_UPDATED and COMMUNITY_BANNER_UPDATED route community-wide and bump the list", () => {
+  it("COMMUNITY_DESCRIPTION_UPDATED, COMMUNITY_BANNER_UPDATED, and COMMUNITY_HANDLE_UPDATED route community-wide and bump the list", () => {
     for (const type of [
       "COMMUNITY_DESCRIPTION_UPDATED",
       "COMMUNITY_BANNER_UPDATED",
+      "COMMUNITY_HANDLE_UPDATED",
     ] as const) {
       expect(SYSTEM_MESSAGE_VISIBILITY[type]).toBe("COMMUNITY");
       expect(SYSTEM_MESSAGE_BUMPS_ACTIVITY[type]).toBe(true);

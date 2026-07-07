@@ -28,6 +28,7 @@ import {
   type CommunityReopenedNotifyPayload,
   type CommunityReportActionedPayload,
   type CommunityReportCreatedPayload,
+  type CommunityReportResolvedPayload,
 } from "@aimess/shared-types";
 
 import { env } from "../config/env.js";
@@ -232,6 +233,16 @@ export function publishCommunityReportActionedSafe(
     CommunityEvents.REPORT_ACTIONED,
     data,
     "community.report_actioned"
+  );
+}
+
+export function publishCommunityReportResolvedSafe(
+  data: CommunityReportResolvedPayload
+): void {
+  publishSafe(
+    CommunityEvents.REPORT_RESOLVED,
+    data,
+    "community.report_resolved"
   );
 }
 

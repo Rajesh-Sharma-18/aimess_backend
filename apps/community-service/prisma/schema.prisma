@@ -254,7 +254,21 @@ model CommunityInvite {
 // CommunityReport — moderation reports against a community OR a specific member.
 // targetUserId null → report is against the community itself.
 // Reporter/target/reviewer ids = AuthUser.id (UUID).
-// Service-level dedup (no @@unique because targetUserId is optional).
+//
+// Duplicate-report enforcement for member-targeted reports (a reporter may
+// report the same target user only once per community, regardless of
+// status): enforced at the SERVICE level (community.repository.ts
+// findReportByReporterAndTarget(), checked in community.service.ts
+// createReport() against ALL statuses) AND at the DB level via a partial
+// unique index on (communityId, reporterId, targetUserId), created
+// idempotently in server.ts (`community_reports_reporter_target_unique`).
+// No plain `@@unique` here because targetUserId is optional/nullable:
+// MongoDB unique indexes treat an explicit null the same across documents,
+// so a non-partial unique index would also collide across every
+// community-level (no-target) report from the same reporter — which must
+// remain unrestricted. Prisma's MongoDB connector cannot express a
+// partial/filtered index in schema.prisma, hence the raw `$runCommandRaw`
+// in server.ts instead of a `@@unique` here.
 // -----------------------------------------------------------------------------
 model CommunityReport {
   id           String                @id @default(auto()) @map("_id") @db.ObjectId

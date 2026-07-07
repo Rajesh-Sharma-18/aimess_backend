@@ -4,13 +4,19 @@
  * Pins the Telegram-style "specific-or-collapsed" rule for the system message
  * posted by `communityService.update()`:
  *   - a SINGLE changed field → its dedicated specific subtype where one exists
- *     (name / description / avatar / banner), else the generic COMMUNITY_UPDATED;
+ *     (name / description / avatar / banner / handle), else the generic
+ *     COMMUNITY_UPDATED;
  *   - MULTIPLE simultaneous fields → exactly ONE collapsed COMMUNITY_UPDATED
- *     ("Community details updated").
+ *     ("Community settings updated").
  *
  * Regression target: description/banner edits previously collapsed into the
  * generic "Community info was updated" line, and a multi-field save posted up to
  * three separate lines. Covers Issue #6.
+ *
+ * LIMITATION (documented, not a gap): a multi-field save still collapses to ONE
+ * generic COMMUNITY_UPDATED line rather than one line per changed field — see
+ * the "collapses multiple simultaneous changes" test below and the doc comment
+ * on `selectCommunityUpdateSystemMessageType` in community.service.ts.
  *
  * Pure unit test of the exported selection helper — no repository / cache / gRPC
  * surface needed (the helper is the single source of truth the service calls).
@@ -40,12 +46,12 @@ describe("selectCommunityUpdateSystemMessageType", () => {
     expect(selectCommunityUpdateSystemMessageType(["banner"])).toBe(
       "COMMUNITY_BANNER_UPDATED"
     );
+    expect(selectCommunityUpdateSystemMessageType(["handle"])).toBe(
+      "COMMUNITY_HANDLE_UPDATED"
+    );
   });
 
   it("uses the generic COMMUNITY_UPDATED for a single field with no dedicated subtype", () => {
-    expect(selectCommunityUpdateSystemMessageType(["handle"])).toBe(
-      "COMMUNITY_UPDATED"
-    );
     expect(selectCommunityUpdateSystemMessageType(["visibility"])).toBe(
       "COMMUNITY_UPDATED"
     );
@@ -124,6 +130,29 @@ describe("detectCommunityChangedFields — only genuine value diffs count", () =
     expect(selectCommunityUpdateSystemMessageType(changed)).toBe(
       "COMMUNITY_AVATAR_UPDATED"
     );
+  });
+
+  it("counts a genuinely new handle and maps it to the dedicated subtype", () => {
+    const changed = detectCommunityChangedFields(CURRENT, {
+      avatarProvided: false,
+      nextAvatarUrl: null,
+      description: undefined,
+      handle: "new-handle",
+    });
+    expect(changed).toEqual(["handle"]);
+    expect(selectCommunityUpdateSystemMessageType(changed)).toBe(
+      "COMMUNITY_HANDLE_UPDATED"
+    );
+  });
+
+  it("does NOT count a resubmitted identical handle as a change", () => {
+    const changed = detectCommunityChangedFields(CURRENT, {
+      avatarProvided: false,
+      nextAvatarUrl: null,
+      description: undefined,
+      handle: "old-handle",
+    });
+    expect(changed).toEqual([]);
   });
 
   it("does NOT count a resubmitted identical category", () => {

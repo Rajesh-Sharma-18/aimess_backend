@@ -733,7 +733,8 @@ describe("CommunitySystemMessageService PERSONAL join message", () => {
       ["COMMUNITY_DESCRIPTION_UPDATED", {}, "Community description updated"],
       ["COMMUNITY_AVATAR_UPDATED", {}, "Community photo updated"],
       ["COMMUNITY_BANNER_UPDATED", {}, "Community banner updated"],
-      ["COMMUNITY_UPDATED", {}, "Community details updated"],
+      ["COMMUNITY_HANDLE_UPDATED", {}, "Community handle updated"],
+      ["COMMUNITY_UPDATED", {}, "Community settings updated"],
       // NOTE: MEMBER_REMOVED / MEMBER_BANNED / MEMBER_LEFT / MEMBER_JOINED are
       // hidden membership lines — post() drops them, so they're not exercised here.
       [

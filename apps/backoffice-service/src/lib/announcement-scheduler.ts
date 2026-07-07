@@ -38,6 +38,7 @@ export async function runSchedulerTick(now: Date = new Date()): Promise<void> {
         title: row.title,
         description: row.description,
         target: row.target,
+        kind: row.kind,
         communityId: row.communityId,
         cursor: 0,
         limit: DELIVERY_BATCH_LIMIT,

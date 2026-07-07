@@ -5350,6 +5350,7 @@ components:
             - COMMUNITY_DESCRIPTION_UPDATED
             - COMMUNITY_AVATAR_UPDATED
             - COMMUNITY_BANNER_UPDATED
+            - COMMUNITY_HANDLE_UPDATED
             - COMMUNITY_UPDATED
             # Live streaming
             - LIVE_STREAM_STARTED
@@ -5387,7 +5388,8 @@ components:
               COMMUNITY_AVATAR_UPDATED      → "Community photo updated"
               COMMUNITY_DESCRIPTION_UPDATED → "Community description updated"
               COMMUNITY_BANNER_UPDATED      → "Community banner updated"
-              COMMUNITY_UPDATED             → "Community details updated"
+              COMMUNITY_HANDLE_UPDATED      → "Community handle updated"
+              COMMUNITY_UPDATED             → "Community settings updated"
               LIVE_STREAM_STARTED           → "{{actorName}} started a livestream"
                                               or "You started a livestream" (viewer=host)
               LIVE_STREAM_ENDED             → "{{actorName}} ended the livestream ({{metadata.duration}})"

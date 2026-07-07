@@ -211,11 +211,18 @@ enum AnnouncementStatus {
   FAILED // delivery exhausted retries
 }
 
+enum AnnouncementKind {
+  ANNOUNCEMENT
+  MAINTENANCE
+  UPDATE_REQUIRED
+}
+
 model Announcement {
   id             String             @id @default(uuid()) @db.Uuid
   title          String
   description    String
   target         AnnouncementTarget
+  kind           AnnouncementKind   @default(ANNOUNCEMENT)
   communityId    String?            @db.Uuid // required iff target == COMMUNITY
   status         AnnouncementStatus @default(SCHEDULED)
   scheduledAt    DateTime?          @db.Timestamptz(3) // null = deliver immediately

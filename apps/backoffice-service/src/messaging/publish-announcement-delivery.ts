@@ -2,7 +2,10 @@ import { logger } from "@aimess/logger";
 import amqp from "amqplib";
 
 import { env } from "../config/env.js";
-import type { AnnouncementTarget } from "../types/announcement.types.js";
+import type {
+  AnnouncementKind,
+  AnnouncementTarget,
+} from "../types/announcement.types.js";
 
 /**
  * Queue 1 — the pagination-cursor driver for announcement delivery. backoffice-
@@ -22,6 +25,7 @@ export type AnnouncementDeliverMessage = {
   title: string;
   description: string;
   target: AnnouncementTarget;
+  kind: AnnouncementKind;
   communityId: string | null;
   cursor: number;
   limit: number;
