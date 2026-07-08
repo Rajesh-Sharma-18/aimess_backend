@@ -26,6 +26,7 @@ import {
   type CommunityReopenedNotifyPayload,
   type CommunityReportActionedPayload,
   type CommunityReportCreatedPayload,
+  type CommunityReportResolvedPayload,
   type NotificationNavigation,
 } from "@aimess/shared-types";
 
@@ -643,6 +644,27 @@ async function handleCommunityEvent(
           {
             reportId: p.reportId,
             targetUserId: p.targetUserId ?? "",
+          },
+          buildDeepLink("community", p.communityId)
+        ),
+      });
+      break;
+    }
+
+    case CommunityEvents.REPORT_RESOLVED: {
+      const p = data as CommunityReportResolvedPayload;
+      await pushToUser({
+        userId: p.reporterId,
+        title: "Report resolved",
+        body: "Your report has been resolved.",
+        ...base(
+          type,
+          p.communityId,
+          p.actorId,
+          {
+            reportId: p.reportId,
+            targetUserId: p.targetUserId ?? "",
+            resolution: p.resolution,
           },
           buildDeepLink("community", p.communityId)
         ),

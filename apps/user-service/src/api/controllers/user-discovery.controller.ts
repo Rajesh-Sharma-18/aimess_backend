@@ -8,14 +8,54 @@ import { userDiscoveryService } from "../../services/user-discovery.service.js";
 
 export const searchUsers = asyncHandler(async (req: Request, res: Response) => {
   const query = req.query as unknown as SearchUsersQuery;
+  const { q, type, page, limit } = query;
 
-  const result = await userDiscoveryService.searchUsers(req.auth.userId, query);
+  // Paginated mode: type=friends or type=others
+  if (type === "friends" || type === "others") {
+    const skip = (page - 1) * limit;
+    const result =
+      type === "friends"
+        ? await userDiscoveryService._queryFriends(
+            req.auth.userId,
+            q,
+            skip,
+            limit
+          )
+        : await userDiscoveryService._queryOthers(
+            req.auth.userId,
+            q,
+            skip,
+            limit
+          );
+    const totalPages = Math.ceil(result.total / limit);
+    return res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          users: result.users,
+          pagination: {
+            total: result.total,
+            page,
+            limit,
+            totalPages,
+            hasNext: page < totalPages,
+            hasPrevious: page > 1,
+          },
+        },
+        t("USERS_FETCHED", req.locale)
+      )
+    );
+  }
 
+  // Split mode (no type): max 5 per group, no pagination
+  const result = await userDiscoveryService.searchUsersSplit(
+    req.auth.userId,
+    q
+  );
   return res
     .status(HTTP_STATUS.OK)
     .json(
       new ApiResponse(
-        { users: result.users, total: result.total },
+        { friends: result.friends, otherPeople: result.otherPeople },
         t("USERS_FETCHED", req.locale)
       )
     );

@@ -57,7 +57,7 @@ export const adminJwt: RequestHandler = (req, res, next) => {
   }
 
   try {
-    jwt.verify(token, env.JWT_ADMIN_SECRET);
+    jwt.verify(token, env.JWT_ADMIN_SECRET, { algorithms: ["HS256"] });
     next();
   } catch {
     unauthorized(res, "Invalid or expired token");

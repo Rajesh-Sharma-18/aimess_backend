@@ -5,6 +5,7 @@ import { BadRequestError, UnauthorizedError } from "@aimess/errors";
 import type { ChangePasswordInput } from "../api/validators/change-password.validator.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
 import { markSessionsRevoked } from "../lib/session-active-cache.js";
+import { publishPasswordChangedSafe } from "../messaging/publish-auth-security.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { sessionRepository } from "../repositories/session.repository.js";
 
@@ -35,6 +36,7 @@ export const changePasswordService = {
     const passwordHash = await bcrypt.hash(input.newPassword, 12);
 
     await authRepository.updatePasswordHash(userId, passwordHash);
+    publishPasswordChangedSafe({ userId, at: new Date().toISOString() });
 
     const active = await sessionRepository.listActiveSessionIds(userId);
     await authRepository.revokeSessionsAfterPasswordChange(userId);

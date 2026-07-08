@@ -5,6 +5,7 @@ import type { Redis, Cluster } from "ioredis";
 import type { Call } from "../generated/prisma/index.js";
 import type { CallRepository } from "../repositories/call.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
+import { buildParticipantsKey } from "../lib/room-id.js";
 import { CallStatus, CallType } from "../types/enums.js";
 
 export class CallService {
@@ -20,22 +21,35 @@ export class CallService {
     type: string;
     privateRoomId?: string | null;
   }): Promise<Call> {
-    // Check block status via private room
-    if (params.privateRoomId) {
-      const room = await this.privateRoomRepo.findByRoomId(
-        params.privateRoomId,
-        {
-          projection: { blockedBy: 1 },
-        }
-      );
-      if (room) {
-        const blockedBy = Array.isArray(room.blockedBy)
-          ? (room.blockedBy as string[])
-          : [];
-        if (blockedBy.includes(params.callerId)) {
-          throw new ForbiddenError("CALL_BLOCKED");
-        }
-      }
+    // The caller and callee MUST share a private DM room — without this, any
+    // authenticated user could ring an arbitrary calleeId (stranger, non-friend)
+    // by supplying a fabricated/omitted privateRoomId. When the client omits
+    // privateRoomId, derive the canonical room for this pair instead of
+    // trusting an unrelated calleeId outright.
+    const room = params.privateRoomId
+      ? await this.privateRoomRepo.findByRoomId(params.privateRoomId, {
+          projection: { participants: 1, blockedBy: 1 },
+        })
+      : await this.privateRoomRepo.findByParticipantsKey(
+          buildParticipantsKey(params.callerId, params.calleeId)
+        );
+    if (!room) throw new NotFoundError("CHAT_ROOM_NOT_FOUND");
+
+    const participants = Array.isArray(room.participants)
+      ? (room.participants as string[])
+      : [];
+    if (
+      !participants.includes(params.callerId) ||
+      !participants.includes(params.calleeId)
+    ) {
+      throw new ForbiddenError("CHAT_NOT_PARTICIPANT");
+    }
+
+    const blockedBy = Array.isArray(room.blockedBy)
+      ? (room.blockedBy as string[])
+      : [];
+    if (blockedBy.includes(params.callerId)) {
+      throw new ForbiddenError("CALL_BLOCKED");
     }
 
     const callId = randomUUID();

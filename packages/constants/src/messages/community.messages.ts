@@ -345,6 +345,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Bạn không thể báo cáo chính mình",
     en: "You cannot report yourself",
   },
+  COMMUNITY_REPORT_ALREADY_EXISTS: {
+    vi: "Bạn đã báo cáo người dùng này trong cộng đồng rồi",
+    en: "You have already reported this user in this community",
+  },
   COMMUNITY_REPORT_OTHER_REASON_REQUIRED: {
     vi: "Vui lòng nhập mô tả khi chọn lý do 'Khác'",
     en: "A description is required when reason is OTHER",

@@ -59,25 +59,24 @@ export const userPaths = {
       summary: "Discover / search users",
       operationId: "discoverUsers",
       description:
-        "Returns a paginated list of users filtered by `section`.\n\n" +
-        "- **`others`** (default) — everyone except yourself, accepted friends, and blocked users. Includes `relationshipStatus` (NONE / PENDING_IN / PENDING_OUT) and `friendshipId`.\n" +
-        "- **`friends`** — your accepted friends only. `relationshipStatus` is always `FRIEND`.\n" +
-        "- **`all`** — every user except yourself and anyone who blocked you (or whom you blocked). No `relationshipStatus` returned — useful for admin / search-all flows.\n\n" +
-        "Optionally filter by `q` (searches username, firstName, lastName). Results are offset-paginated; use `page` + `limit`.",
+        "Three operation modes controlled by the optional `type` parameter:\n\n" +
+        "- **No `type`** (split mode) — returns `{ friends[], otherPeople[] }`, up to 5 users in each group. No pagination. Use for the search overlay / typeahead.\n" +
+        "- **`type=friends`** — paginated list of your accepted friends only. `relationshipStatus` is always `FRIEND`.\n" +
+        "- **`type=others`** — paginated list of everyone except yourself, accepted friends, and blocked users. `relationshipStatus` may be `NONE`, `PENDING_IN`, or `PENDING_OUT`.\n\n" +
+        "Optionally filter by `q` (searches username, firstName, lastName, and full name in either order).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
         {
-          name: "section",
+          name: "type",
           in: "query",
           required: false,
           schema: {
             type: "string",
-            enum: ["friends", "others", "all"],
-            default: "others",
+            enum: ["friends", "others"],
           },
           description:
-            "`others` = non-friends (excludes you + friends + blocked). `friends` = accepted friends only. `all` = everyone except you + blocked.",
+            "Omit for split mode (friends[] + otherPeople[], max 5 each). `friends` = paginated accepted friends. `others` = paginated non-friends.",
         },
         {
           name: "q",
@@ -85,7 +84,7 @@ export const userPaths = {
           required: false,
           schema: { type: "string", maxLength: 100 },
           description:
-            "Search term matched against username, firstName, lastName.",
+            'Search term matched against username, firstName, lastName, or full name (e.g. "John Doe").',
           example: "john",
         },
         {
@@ -93,53 +92,117 @@ export const userPaths = {
           in: "query",
           required: false,
           schema: { type: "integer", minimum: 1, default: 1 },
+          description: "Used only when `type` is provided.",
         },
         {
           name: "limit",
           in: "query",
           required: false,
           schema: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+          description: "Used only when `type` is provided.",
         },
       ],
       responses: {
         "200": {
-          description: "User list + total count",
+          description:
+            "Split response when no `type` is given; paginated response when `type=friends` or `type=others`.",
           content: {
             "application/json": {
               schema: {
-                allOf: [
-                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                oneOf: [
                   {
-                    type: "object",
-                    properties: {
-                      data: {
-                        $ref: "#/components/schemas/UserDiscoveryResponseData",
+                    allOf: [
+                      { $ref: "#/components/schemas/ApiSuccessResponse" },
+                      {
+                        type: "object",
+                        properties: {
+                          data: {
+                            $ref: "#/components/schemas/UserDiscoverySplitData",
+                          },
+                        },
                       },
-                    },
+                    ],
+                  },
+                  {
+                    allOf: [
+                      { $ref: "#/components/schemas/ApiSuccessResponse" },
+                      {
+                        type: "object",
+                        properties: {
+                          data: {
+                            $ref: "#/components/schemas/UserDiscoveryPaginatedData",
+                          },
+                        },
+                      },
+                    ],
                   },
                 ],
               },
-              example: {
-                success: true,
-                message: "Users retrieved",
-                data: {
-                  users: [
-                    {
-                      userId: "660e8400-e29b-41d4-a716-446655440001",
-                      username: "janedoe",
-                      firstName: "Jane",
-                      lastName: "Doe",
-                      avatarUrl: "https://storage.example.com/avatars/jane.jpg",
-                      bio: "Product designer at AIMess",
-                      relationshipStatus: "NONE",
-                      friendshipId: null,
+              examples: {
+                splitMode: {
+                  summary: "No type (split mode)",
+                  value: {
+                    success: true,
+                    message: "Users retrieved",
+                    data: {
+                      friends: [
+                        {
+                          userId: "660e8400-e29b-41d4-a716-446655440001",
+                          username: "janedoe",
+                          firstName: "Jane",
+                          lastName: "Doe",
+                          avatarUrl: null,
+                          bio: null,
+                          isOnline: false,
+                          relationshipStatus: "FRIEND",
+                          friendshipId: "770e8400-e29b-41d4-a716-446655440002",
+                        },
+                      ],
+                      otherPeople: [
+                        {
+                          userId: "880e8400-e29b-41d4-a716-446655440003",
+                          username: "bobsmith",
+                          firstName: "Bob",
+                          lastName: "Smith",
+                          avatarUrl: null,
+                          bio: null,
+                          isOnline: true,
+                          relationshipStatus: "NONE",
+                          friendshipId: null,
+                        },
+                      ],
                     },
-                  ],
-                  total: 1,
-                  page: 1,
-                  limit: 20,
-                  totalPages: 1,
-                  hasNext: false,
+                  },
+                },
+                paginatedFriends: {
+                  summary: "type=friends",
+                  value: {
+                    success: true,
+                    message: "Users retrieved",
+                    data: {
+                      users: [
+                        {
+                          userId: "660e8400-e29b-41d4-a716-446655440001",
+                          username: "janedoe",
+                          firstName: "Jane",
+                          lastName: "Doe",
+                          avatarUrl: null,
+                          bio: null,
+                          isOnline: false,
+                          relationshipStatus: "FRIEND",
+                          friendshipId: "770e8400-e29b-41d4-a716-446655440002",
+                        },
+                      ],
+                      pagination: {
+                        total: 42,
+                        page: 1,
+                        limit: 20,
+                        totalPages: 3,
+                        hasNext: true,
+                        hasPrevious: false,
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -152,8 +215,7 @@ export const userPaths = {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
               example: {
                 success: false,
-                message:
-                  "Invalid section value. Must be 'others', 'friends', or 'all'",
+                message: "Invalid type value. Must be 'friends' or 'others'",
               },
             },
           },
@@ -1499,6 +1561,194 @@ export const userPaths = {
             },
           },
         },
+      },
+    },
+  },
+  // ---------------------------------------------------------------------------
+  // Recent Searches
+  // ---------------------------------------------------------------------------
+  "/users/recent-searches": {
+    get: {
+      tags: ["Users"],
+      summary: "List recent searches",
+      operationId: "listRecentSearches",
+      description:
+        "Returns the caller's last 10 recent searches, newest first.\n\n" +
+        "Each entry is one of two shapes:\n" +
+        "- **USER** — the caller tapped on a user's profile. Contains a `user` object with profile data.\n" +
+        "- **QUERY** — the caller typed a search term. Contains a `query` string.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Recent search list",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        type: "object",
+                        properties: {
+                          searches: {
+                            type: "array",
+                            items: {
+                              $ref: "#/components/schemas/RecentSearchEntry",
+                            },
+                          },
+                        },
+                        required: ["searches"],
+                      },
+                    },
+                  },
+                ],
+              },
+              example: {
+                success: true,
+                message: "Success",
+                data: {
+                  searches: [
+                    {
+                      id: "aabbccdd-0000-4000-8000-aabbccdd0001",
+                      type: "USER",
+                      user: {
+                        userId: "660e8400-e29b-41d4-a716-446655440001",
+                        username: "janedoe",
+                        firstName: "Jane",
+                        lastName: "Doe",
+                        bio: null,
+                        avatarUrl: null,
+                        avatarUrlExpiresIn: null,
+                        isOnline: false,
+                      },
+                      createdAt: "2026-07-07T10:00:00.000Z",
+                    },
+                    {
+                      id: "aabbccdd-0000-4000-8000-aabbccdd0002",
+                      type: "QUERY",
+                      query: "john doe",
+                      createdAt: "2026-07-07T09:30:00.000Z",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+    post: {
+      tags: ["Users"],
+      summary: "Record a recent search",
+      operationId: "recordRecentSearch",
+      description:
+        "Records a recent search for the caller. Provide **either** `searchedUserId` (when the user taps a profile) **or** `query` (when the user types a search term). " +
+        "Duplicate entries for the same user/query are de-duplicated and bumped to the top. " +
+        "The list is capped at 10; the oldest entry is pruned automatically.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/RecordRecentSearchBody" },
+            examples: {
+              userTap: {
+                summary: "User profile tap",
+                value: {
+                  searchedUserId: "660e8400-e29b-41d4-a716-446655440001",
+                },
+              },
+              textQuery: {
+                summary: "Text query",
+                value: { query: "john doe" },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Search recorded",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Success", data: null },
+            },
+          },
+        },
+        "400": {
+          description:
+            "Neither searchedUserId nor query provided, or invalid UUID",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiErrorResponse" },
+              example: {
+                success: false,
+                message: "Provide either searchedUserId or query",
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+    delete: {
+      tags: ["Users"],
+      summary: "Clear all recent searches",
+      operationId: "clearRecentSearches",
+      description: "Deletes all recent search entries for the caller.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "All entries cleared",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Success", data: null },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
+
+  "/users/recent-searches/{id}": {
+    delete: {
+      tags: ["Users"],
+      summary: "Delete a single recent search",
+      operationId: "deleteRecentSearch",
+      description:
+        "Removes one recent search entry by ID. Returns 404 if the entry does not exist or belongs to another user.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+          description: "ID of the recent search entry to delete.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Entry deleted",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: { success: true, message: "Success", data: null },
+            },
+          },
+        },
+        "404": notFound,
+        "401": unauthorized,
       },
     },
   },

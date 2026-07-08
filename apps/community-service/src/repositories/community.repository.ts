@@ -1045,8 +1045,8 @@ export const communityRepository = {
     selfPreview: string | null = null,
     targetUserId: string | null = null,
     targetPreview: string | null = null
-  ): Promise<void> {
-    await prisma.community.updateMany({
+  ): Promise<number> {
+    const result = await prisma.community.updateMany({
       where: { id: communityId, lastActivityAt: { lt: activityAt } },
       data: {
         lastActivityAt: activityAt,
@@ -1063,6 +1063,7 @@ export const communityRepository = {
         lastActivityTargetPreview: targetPreview,
       },
     });
+    return result.count;
   },
 
   /**
@@ -2422,10 +2423,11 @@ export const communityRepository = {
   },
 
   /**
-   * Idempotent-dedup helper: find an existing OPEN report from the same
-   * reporter on the same (communityId, targetUserId) tuple. `targetUserId`
-   * MUST be passed explicitly (null for community-level reports) — Mongo
-   * stores the field as null when omitted, so we match on the precise value.
+   * Idempotent-dedup helper for community-level (no target member) reports
+   * ONLY: finds an existing OPEN report from the same reporter on the same
+   * communityId (targetUserId always null here). `targetUserId` MUST be
+   * passed explicitly — Mongo stores the field as null when omitted, so we
+   * match on the precise value.
    */
   findOpenReportByReporterAndTarget(params: {
     communityId: string;
@@ -2438,6 +2440,31 @@ export const communityRepository = {
         reporterId: params.reporterId,
         targetUserId: params.targetUserId,
         status: CommunityReportStatus.OPEN,
+      },
+    });
+  },
+
+  /**
+   * Duplicate-report guard for member-targeted reports: finds ANY existing
+   * report (regardless of status — OPEN/REVIEWED/ACTIONED/DISMISSED/WITHDRAWN)
+   * from the same reporter against the same target user in the same
+   * community. A user may report another user only ONCE per community, ever
+   * — unlike the no-target path above, closing/dismissing a report does not
+   * free a fresh report slot. Backed by a partial unique index
+   * (`community_reports_reporter_target_unique`, created idempotently in
+   * server.ts — see the CommunityReport schema comment) as the DB-level guard
+   * against the race between this read and the insert.
+   */
+  findReportByReporterAndTarget(params: {
+    communityId: string;
+    reporterId: string;
+    targetUserId: string;
+  }) {
+    return prisma.communityReport.findFirst({
+      where: {
+        communityId: params.communityId,
+        reporterId: params.reporterId,
+        targetUserId: params.targetUserId,
       },
     });
   },

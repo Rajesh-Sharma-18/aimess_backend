@@ -12,6 +12,7 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     findMembership: jest.fn(),
     findMemberByUserId: jest.fn(),
     findOpenReportByReporterAndTarget: jest.fn(),
+    findReportByReporterAndTarget: jest.fn(),
     createReport: jest.fn(),
     findActiveMemberIdsByRoles: jest.fn(),
     createAuditLog: jest.fn(),
@@ -50,6 +51,7 @@ beforeEach(() => {
     status: "ACTIVE",
   });
   repo.findOpenReportByReporterAndTarget.mockResolvedValue(null);
+  repo.findReportByReporterAndTarget.mockResolvedValue(null);
   repo.findActiveMemberIdsByRoles.mockResolvedValue([]);
   repo.createAuditLog.mockResolvedValue(undefined);
   repo.createReport.mockImplementation(

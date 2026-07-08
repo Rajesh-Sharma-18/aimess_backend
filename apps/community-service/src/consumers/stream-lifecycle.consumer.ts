@@ -112,6 +112,9 @@ export async function handleStreamStarted(
   const { communityId, streamId, creatorId } = data;
   if (!communityId || !streamId || !creatorId) return;
   const eventAt = new Date(data.livedAt || Date.now()).toISOString();
+  logger.info(
+    `[LIVE-SIDEBAR:COMMUNITY] stream.started lifecycle received communityId=${communityId} streamId=${streamId} creatorId=${creatorId} eventAt=${eventAt}`
+  );
 
   // 1. Host-named chat SYSTEM message. Idempotent via the eventAt-derived dedup
   //    key; chat-service resolves the host name from triggeredByUserId and bumps
@@ -123,16 +126,32 @@ export async function handleStreamStarted(
     triggeredByUserId: creatorId,
     eventAt,
   });
+  logger.info(
+    `[LIVE-SIDEBAR:COMMUNITY] LIVE_STREAM_STARTED system message queued communityId=${communityId} streamId=${streamId} eventAt=${eventAt}`
+  );
 
   // 2. Push fan-out (deduped against RabbitMQ redelivery).
-  if (!(await claimNotify(streamId, "started"))) return;
+  if (!(await claimNotify(streamId, "started"))) {
+    logger.info(
+      `[LIVE-SIDEBAR:COMMUNITY] stream.started notification deduped communityId=${communityId} streamId=${streamId}`
+    );
+    return;
+  }
   const community = await communityRepository.findById(communityId);
-  if (!community) return;
+  if (!community) {
+    logger.warn(
+      `[LIVE-SIDEBAR:COMMUNITY] stream.started community not found communityId=${communityId} streamId=${streamId}`
+    );
+    return;
+  }
   const [recipientIds, host, communityAvatarView] = await Promise.all([
     resolveRecipients(communityId, creatorId),
     resolveHost(communityId, creatorId),
     communityImageService.resolveViewUrlForClient(community.avatarUrl),
   ]);
+  logger.info(
+    `[LIVE-SIDEBAR:COMMUNITY] stream.started recipients resolved communityId=${communityId} streamId=${streamId} recipients=${recipientIds.length}`
+  );
   if (recipientIds.length === 0) return;
 
   publishCommunityLivestreamStartedSafe({
@@ -155,6 +174,9 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
   const eventAt = new Date(data.endedAt || Date.now()).toISOString();
   const durationSeconds = Math.max(0, Math.floor(data.durationSeconds ?? 0));
   const duration = formatStreamDuration(durationSeconds);
+  logger.info(
+    `[LIVE-SIDEBAR:COMMUNITY] stream.ended lifecycle received communityId=${communityId} streamId=${streamId} creatorId=${creatorId} eventAt=${eventAt} durationSeconds=${durationSeconds}`
+  );
 
   // 1. Host-named chat SYSTEM message ("{host} ended the livestream (1h 24m)").
   publishCommunitySystemMessageForChatSafe({
@@ -164,16 +186,32 @@ export async function handleStreamEnded(data: StreamEndedData): Promise<void> {
     triggeredByUserId: creatorId,
     eventAt,
   });
+  logger.info(
+    `[LIVE-SIDEBAR:COMMUNITY] LIVE_STREAM_ENDED system message queued communityId=${communityId} streamId=${streamId} eventAt=${eventAt}`
+  );
 
   // 2. Push fan-out.
-  if (!(await claimNotify(streamId, "ended"))) return;
+  if (!(await claimNotify(streamId, "ended"))) {
+    logger.info(
+      `[LIVE-SIDEBAR:COMMUNITY] stream.ended notification deduped communityId=${communityId} streamId=${streamId}`
+    );
+    return;
+  }
   const community = await communityRepository.findById(communityId);
-  if (!community) return;
+  if (!community) {
+    logger.warn(
+      `[LIVE-SIDEBAR:COMMUNITY] stream.ended community not found communityId=${communityId} streamId=${streamId}`
+    );
+    return;
+  }
   const [recipientIds, host, communityAvatarView] = await Promise.all([
     resolveRecipients(communityId, creatorId),
     resolveHost(communityId, creatorId),
     communityImageService.resolveViewUrlForClient(community.avatarUrl),
   ]);
+  logger.info(
+    `[LIVE-SIDEBAR:COMMUNITY] stream.ended recipients resolved communityId=${communityId} streamId=${streamId} recipients=${recipientIds.length}`
+  );
   if (recipientIds.length === 0) return;
 
   publishCommunityLivestreamEndedSafe({

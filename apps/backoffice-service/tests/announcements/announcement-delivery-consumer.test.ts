@@ -58,6 +58,7 @@ function baseMessage(overrides: Partial<Record<string, unknown>> = {}) {
     title: "Title",
     description: "Body",
     target: "ALL" as const,
+    kind: "ANNOUNCEMENT" as const,
     communityId: null,
     cursor: 0,
     limit: 100,

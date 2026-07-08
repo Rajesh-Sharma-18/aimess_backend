@@ -21,15 +21,40 @@ const DISCOVERY_SELECT = {
   isOnline: true,
 } as const;
 
-function buildSearchFilter(q: string | undefined) {
+function buildSearchFilter(q: string | undefined): {
+  OR?: Prisma.UserProfileWhereInput[];
+} {
   if (!q) return {};
-  return {
-    OR: [
-      { username: { contains: q, mode: "insensitive" as const } },
-      { firstName: { contains: q, mode: "insensitive" as const } },
-      { lastName: { contains: q, mode: "insensitive" as const } },
-    ],
-  };
+
+  const or: Prisma.UserProfileWhereInput[] = [
+    { username: { contains: q, mode: "insensitive" } },
+    { firstName: { contains: q, mode: "insensitive" } },
+    { lastName: { contains: q, mode: "insensitive" } },
+  ];
+
+  // Multi-word query: also try firstName+lastName in both orders
+  // e.g. "John Doe" → firstName=John AND lastName=Doe, or firstName=Doe AND lastName=John
+  const parts = q.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    const first = parts[0]!;
+    const rest = parts.slice(1).join(" ");
+    or.push(
+      {
+        AND: [
+          { firstName: { contains: first, mode: "insensitive" } },
+          { lastName: { contains: rest, mode: "insensitive" } },
+        ],
+      },
+      {
+        AND: [
+          { firstName: { contains: rest, mode: "insensitive" } },
+          { lastName: { contains: first, mode: "insensitive" } },
+        ],
+      }
+    );
+  }
+
+  return { OR: or };
 }
 
 export const userProfileRepository = {

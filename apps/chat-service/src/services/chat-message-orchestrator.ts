@@ -43,6 +43,22 @@ import { buildDeletePayload } from "../lib/chat-message.serializer.js";
 import { renderConvOverrides } from "../lib/recipient-override-render.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
 
+function publishRealtimeSafe(
+  redis: Redis | Cluster,
+  channel: string,
+  event: string,
+  data: unknown,
+  context: string
+): void {
+  redis
+    .publish(channel, JSON.stringify({ event, data }))
+    .catch((err: unknown) => {
+      logger.warn(
+        `ChatMessageOrchestrator|realtime publish failed event=${event} channel=${channel} ${context}: ${String(err)}`
+      );
+    });
+}
+
 /**
  * Structured message content as it travels through the send path: the body text
  * plus optional attachment arrays / structured extras. Mirrors the shape the
@@ -356,9 +372,12 @@ export class ChatMessageOrchestrator {
           serverTs: rowServerTs,
           sequenceNumber: row.sequenceNumber,
         });
-        await this.redis.publish(
+        publishRealtimeSafe(
+          this.redis,
           `conv:${params.roomId}`,
-          JSON.stringify({ event: "message:new", data: rowWire })
+          "message:new",
+          rowWire,
+          `roomId=${params.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
         );
       }
 
@@ -550,9 +569,12 @@ export class ChatMessageOrchestrator {
           sentAt: rowSentAt,
           sequenceNumber: row.sequenceNumber,
         };
-        await this.redis.publish(
+        publishRealtimeSafe(
+          this.redis,
           `community:${params.communityId}`,
-          JSON.stringify({ event: "community:message:new", data: rowWire })
+          "community:message:new",
+          rowWire,
+          `communityId=${params.communityId} roomId=${row.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
         );
       }
 

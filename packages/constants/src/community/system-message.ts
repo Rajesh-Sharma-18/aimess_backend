@@ -16,8 +16,9 @@ export const CommunitySystemMessageType = {
   COMMUNITY_DESCRIPTION_UPDATED: "COMMUNITY_DESCRIPTION_UPDATED",
   COMMUNITY_AVATAR_UPDATED: "COMMUNITY_AVATAR_UPDATED",
   COMMUNITY_BANNER_UPDATED: "COMMUNITY_BANNER_UPDATED",
-  /** Catch-all for multi-field edits and other single fields (handle, category,
-   * rules, visibility…) — renders "Community details updated". */
+  COMMUNITY_HANDLE_UPDATED: "COMMUNITY_HANDLE_UPDATED",
+  /** Catch-all for multi-field edits and other single fields (category, rules,
+   * visibility…) — renders "Community settings updated". */
   COMMUNITY_UPDATED: "COMMUNITY_UPDATED",
 
   // --- Live streaming (COMMUNITY-visible) -----------------------------------
@@ -82,6 +83,7 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   COMMUNITY_DESCRIPTION_UPDATED: "COMMUNITY",
   COMMUNITY_AVATAR_UPDATED: "COMMUNITY",
   COMMUNITY_BANNER_UPDATED: "COMMUNITY",
+  COMMUNITY_HANDLE_UPDATED: "COMMUNITY",
   COMMUNITY_UPDATED: "COMMUNITY",
   LIVE_STREAM_STARTED: "COMMUNITY",
   LIVE_STREAM_ENDED: "COMMUNITY",
@@ -117,6 +119,7 @@ export const SYSTEM_MESSAGE_BUMPS_ACTIVITY: Record<
   COMMUNITY_DESCRIPTION_UPDATED: true,
   COMMUNITY_AVATAR_UPDATED: true,
   COMMUNITY_BANNER_UPDATED: true,
+  COMMUNITY_HANDLE_UPDATED: true,
   COMMUNITY_UPDATED: true,
   LIVE_STREAM_STARTED: true,
   LIVE_STREAM_ENDED: true,
@@ -271,6 +274,7 @@ export const ACTOR_LESS_SYSTEM_MESSAGE_TYPES = [
   "COMMUNITY_DESCRIPTION_UPDATED",
   "COMMUNITY_AVATAR_UPDATED",
   "COMMUNITY_BANNER_UPDATED",
+  "COMMUNITY_HANDLE_UPDATED",
   "COMMUNITY_UPDATED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
@@ -314,8 +318,12 @@ export function sanitizeCommunitySystemMetadata<
 
 /**
  * Canonical changed-field tokens (still carried in COMMUNITY_UPDATED metadata so
- * the client can render a precise label for "other field" changes). `name` and
- * `avatar` now have dedicated subtypes and are emitted as those instead.
+ * the client can render a precise label for "other field" changes when 2+
+ * fields change at once — see the COMMUNITY_UPDATE_SINGLE_FIELD_SUBTYPE
+ * LIMITATION note in community.service.ts). `name`, `description`, `avatar`,
+ * `banner`, and `handle` now have dedicated subtypes and are emitted as those
+ * instead when they are the ONLY field that changed; only `visibility`,
+ * `category`, and `rules` never get a dedicated subtype.
  */
 export const CommunityChangedField = {
   AVATAR: "avatar",

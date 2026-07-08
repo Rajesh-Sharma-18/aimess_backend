@@ -12,6 +12,7 @@ import { normalizeEmail, verifyOtpCode } from "../lib/otp.js";
 import { sendEmailOtp } from "../lib/send-email-otp.js";
 import { env } from "../config/env.js";
 import { publishChangeEmailOtpSafe } from "../messaging/publish-auth-email-otp.js";
+import { publishEmailChangedSafe } from "../messaging/publish-auth-security.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { otpRepository } from "../repositories/otp.repository.js";
 
@@ -114,6 +115,11 @@ export const changeEmailService = {
     await otpRepository.markConsumed(otp.id);
 
     const updated = await authRepository.updateVerifiedEmail(userId, newEmail);
+    publishEmailChangedSafe({
+      userId: updated.id,
+      newEmail,
+      at: new Date().toISOString(),
+    });
 
     return {
       userId: updated.id,

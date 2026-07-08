@@ -145,6 +145,7 @@ import {
   publishCommunityReopenedSafe,
   publishCommunityReportActionedSafe,
   publishCommunityReportCreatedSafe,
+  publishCommunityReportResolvedSafe,
 } from "../messaging/publish-community.js";
 import {
   publishCommunityCreatedForChatSafe,
@@ -562,9 +563,17 @@ export function applyReactionOverlay(
  * in one `update()` call to the ONE system-message subtype to post:
  *   - 0 fields            → null (nothing changed worth a line)
  *   - exactly 1 field     → its dedicated specific subtype where one exists
- *                           (name / description / avatar / banner), else the
- *                           generic COMMUNITY_UPDATED ("Community details updated")
- *   - 2+ fields           → one collapsed COMMUNITY_UPDATED ("Community details updated")
+ *                           (name / description / avatar / banner / handle),
+ *                           else the generic COMMUNITY_UPDATED ("Community
+ *                           settings updated")
+ *   - 2+ fields           → one collapsed COMMUNITY_UPDATED ("Community settings
+ *                           updated") — see the LIMITATION note on `update()`
+ *                           for why this stays a single line instead of one per
+ *                           changed field.
+ *
+ * `banner` has no producer in {@link detectCommunityChangedFields} today (no
+ * cover/banner upload field exists on `UpdateCommunityInput` yet) — the mapping
+ * is kept here as forward-compatible scaffolding but is currently unreachable.
  *
  * Single source of truth for the "specific-or-collapsed" rule; exported for unit
  * coverage (community-update-system-message.test.ts).
@@ -574,6 +583,7 @@ const COMMUNITY_UPDATE_SINGLE_FIELD_SUBTYPE: Record<string, string> = {
   description: "COMMUNITY_DESCRIPTION_UPDATED",
   avatar: "COMMUNITY_AVATAR_UPDATED",
   banner: "COMMUNITY_BANNER_UPDATED",
+  handle: "COMMUNITY_HANDLE_UPDATED",
 };
 
 export function selectCommunityUpdateSystemMessageType(
@@ -2157,7 +2167,7 @@ export const communityService = {
 
     // Detect which fields ACTUALLY changed (genuine value diff, not merely
     // present in the payload) so a single real edit posts its specific system
-    // line instead of the generic "Community details updated". See
+    // line instead of the generic "Community settings updated". See
     // detectCommunityChangedFields.
     const changedFields = detectCommunityChangedFields(
       {
@@ -2200,12 +2210,21 @@ export const communityService = {
 
     // Telegram-style system line, exactly ONE per update:
     //  - a SINGLE field change → its dedicated, specific subtype where one exists
-    //    (name / description / avatar / banner), else the generic COMMUNITY_UPDATED;
+    //    (name / description / avatar / banner / handle), else the generic
+    //    COMMUNITY_UPDATED;
     //  - MULTIPLE simultaneous fields → one collapsed COMMUNITY_UPDATED
-    //    ("Community details updated").
+    //    ("Community settings updated").
     // This replaces the previous "emit one line per name/avatar/other group"
     // behaviour, which could post up to three separate lines for one save and
     // rendered description/banner edits as the generic "Community info" line.
+    //
+    // LIMITATION (by design, not an oversight): a save that touches 2+ fields
+    // at once (e.g. name + description in the same request) still collapses to
+    // ONE generic COMMUNITY_UPDATED line rather than one specific line per
+    // field — see selectCommunityUpdateSystemMessageType's doc comment. Emitting
+    // N lines for N changed fields was tried and reverted (see the "up to three
+    // separate lines" note above); this stays intentionally single-message per
+    // update() call.
     const systemMessageType =
       selectCommunityUpdateSystemMessageType(changedFields);
     if (systemMessageType) {
@@ -2294,6 +2313,14 @@ export const communityService = {
     const pageRows = rows.slice(0, params.limit);
 
     const communityIds = pageRows.map((row) => row.id);
+    logger.info(
+      `[LIVE-SIDEBAR:COMMUNITY] listMine rawPage userId=${userId} direction=${params.direction} ts=${params.ts.toISOString()} limit=${params.limit} rowCount=${pageRows.length} rows=${pageRows
+        .map(
+          (row) =>
+            `${row.id}@${row.lastActivityAt.getTime()}:${row.lastActivityType ?? "unknown"}`
+        )
+        .join(",")}`
+    );
 
     // Resolve the last-activity sender name from the LIVE member snapshot — the
     // same fresh source the chat room renders — overriding the denormalized
@@ -2410,6 +2437,21 @@ export const communityService = {
     // Inclusive boundary (as specified) → consecutive pages can share the
     // boundary community; clients de-duplicate by id. nextCursor is epoch-ms to
     // feed straight back as before_ts/after_ts.
+    logger.info(
+      `[LIVE-SIDEBAR:COMMUNITY] listMine userId=${userId} direction=${params.direction} ts=${params.ts.toISOString()} limit=${params.limit} returned=${communities.length} total=${total} ids=${communities
+        .map((community) => community.id)
+        .join(",")} liveIds=${communities
+        .filter((community) => community.isLive)
+        .map((community) => community.id)
+        .join(",")} top=${communities
+        .slice(0, 5)
+        .map(
+          (community) =>
+            `${community.id}@${community.lastActivityAt}:${community.isLive ? "live" : "not-live"}`
+        )
+        .join(",")}`
+    );
+
     const lastRow = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && lastRow ? String(lastRow.lastActivityAt.getTime()) : null;
@@ -6516,16 +6558,33 @@ export const communityService = {
       }
     }
 
-    // A5: service-level dedup — an existing OPEN report from the same
-    // reporter on the same (community, target) tuple is returned idempotently.
-    const existing =
-      await communityRepository.findOpenReportByReporterAndTarget({
-        communityId,
-        reporterId: callerId,
-        targetUserId,
-      });
-    if (existing) {
-      return toReportData(existing);
+    // A5: dedup, split by report kind.
+    // - Member-targeted reports: a user may report another user only ONCE per
+    //   community, ever — checked against ALL statuses (OPEN/REVIEWED/
+    //   ACTIONED/DISMISSED/WITHDRAWN all count), not just OPEN. A duplicate is
+    //   a hard error, not an idempotent no-op, per business requirement.
+    // - Community-level (no target) reports: unchanged idempotent behavior —
+    //   an existing OPEN report from the same reporter is returned as-is.
+    if (targetUserId) {
+      const existingAnyStatus =
+        await communityRepository.findReportByReporterAndTarget({
+          communityId,
+          reporterId: callerId,
+          targetUserId,
+        });
+      if (existingAnyStatus) {
+        throw new ConflictError("COMMUNITY_REPORT_ALREADY_EXISTS");
+      }
+    } else {
+      const existingOpen =
+        await communityRepository.findOpenReportByReporterAndTarget({
+          communityId,
+          reporterId: callerId,
+          targetUserId: null,
+        });
+      if (existingOpen) {
+        return toReportData(existingOpen);
+      }
     }
 
     // Message-level report: resolve the reported content from chat-service so the
@@ -6567,18 +6626,31 @@ export const communityService = {
       }
     }
 
-    const row = await communityRepository.createReport({
-      communityId,
-      reporterId: callerId,
-      targetUserId,
-      reason: input.reason,
-      otherReason,
-      reportedMessageId: input.reportedMessageId ?? null,
-      reportedContentType,
-      reportedContentText,
-      reportedContentPostedAt,
-      reportedContentMedia,
-    });
+    let row;
+    try {
+      row = await communityRepository.createReport({
+        communityId,
+        reporterId: callerId,
+        targetUserId,
+        reason: input.reason,
+        otherReason,
+        reportedMessageId: input.reportedMessageId ?? null,
+        reportedContentType,
+        reportedContentText,
+        reportedContentPostedAt,
+        reportedContentMedia,
+      });
+    } catch (error) {
+      // Race-window guard: two concurrent requests can both pass the A5 dedup
+      // read above before either insert commits. The partial unique index on
+      // (communityId, reporterId, targetUserId) — see repository comment —
+      // turns the loser's insert into a P2002, which we map to the same
+      // business error the pre-check throws, instead of a raw 500.
+      if (targetUserId && isUniqueConstraintError(error)) {
+        throw new ConflictError("COMMUNITY_REPORT_ALREADY_EXISTS");
+      }
+      throw error;
+    }
 
     logger.info(
       `Community report created: community=${communityId} reporter=${callerId} target=${targetUserId ?? "(community)"} report=${row.id}`
@@ -6794,6 +6866,23 @@ export const communityService = {
         actorId: callerId,
         reporterId: report.reporterId,
         targetUserId: report.targetUserId ?? null,
+      });
+    }
+
+    // Terminal resolution (ACTIONED or DISMISSED) — notify the reporter their
+    // report was resolved regardless of outcome. REVIEWED is not terminal.
+    if (
+      nextStatus === CommunityReportStatus.ACTIONED ||
+      nextStatus === CommunityReportStatus.DISMISSED
+    ) {
+      publishCommunityReportResolvedSafe({
+        communityId,
+        eventAt: new Date().toISOString(),
+        reportId,
+        actorId: callerId,
+        reporterId: report.reporterId,
+        targetUserId: report.targetUserId ?? null,
+        resolution: nextStatus,
       });
     }
 

@@ -4987,19 +4987,127 @@ export const openApiSchemas = {
       "isOnline",
     ],
   },
-  UserDiscoveryResponseData: {
+  UserDiscoverySplitData: {
     type: "object",
+    description:
+      "Response shape when no `type` param is given. Up to 5 users per group; no pagination.",
+    properties: {
+      friends: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserDiscoveryItem" },
+        description: "Accepted friends matching the query (max 5).",
+      },
+      otherPeople: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserDiscoveryItem" },
+        description:
+          "Non-friends matching the query, excluding blocked users (max 5).",
+      },
+    },
+    required: ["friends", "otherPeople"],
+  },
+  UserDiscoveryPaginatedData: {
+    type: "object",
+    description:
+      "Response shape when `type=friends` or `type=others` is given.",
     properties: {
       users: {
         type: "array",
         items: { $ref: "#/components/schemas/UserDiscoveryItem" },
       },
-      total: {
-        type: "integer",
-        description: "Total matching users (across all pages).",
+      pagination: {
+        type: "object",
+        properties: {
+          total: {
+            type: "integer",
+            description: "Total matching users across all pages.",
+          },
+          page: { type: "integer" },
+          limit: { type: "integer" },
+          totalPages: { type: "integer" },
+          hasNext: { type: "boolean" },
+          hasPrevious: { type: "boolean" },
+        },
+        required: [
+          "total",
+          "page",
+          "limit",
+          "totalPages",
+          "hasNext",
+          "hasPrevious",
+        ],
       },
     },
-    required: ["users", "total"],
+    required: ["users", "pagination"],
+  },
+
+  RecentSearchEntry: {
+    oneOf: [
+      {
+        type: "object",
+        description: "A user-profile tap.",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          type: { type: "string", enum: ["USER"] },
+          user: {
+            type: "object",
+            properties: {
+              userId: { type: "string", format: "uuid" },
+              username: { type: "string" },
+              firstName: { type: "string" },
+              lastName: { type: "string" },
+              bio: { type: "string", nullable: true },
+              avatarUrl: { type: "string", format: "uri", nullable: true },
+              avatarUrlExpiresIn: { type: "integer", nullable: true },
+              avatar: { $ref: "#/components/schemas/MediaObject" },
+              isOnline: { type: "boolean" },
+            },
+            required: [
+              "userId",
+              "username",
+              "firstName",
+              "lastName",
+              "bio",
+              "avatarUrl",
+              "avatarUrlExpiresIn",
+              "avatar",
+              "isOnline",
+            ],
+          },
+          createdAt: { type: "string", format: "date-time" },
+        },
+        required: ["id", "type", "user", "createdAt"],
+      },
+      {
+        type: "object",
+        description: "A text query search.",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          type: { type: "string", enum: ["QUERY"] },
+          query: { type: "string", maxLength: 100 },
+          createdAt: { type: "string", format: "date-time" },
+        },
+        required: ["id", "type", "query", "createdAt"],
+      },
+    ],
+  },
+  RecordRecentSearchBody: {
+    type: "object",
+    description:
+      "Provide exactly one of `searchedUserId` (user tap) or `query` (text search).",
+    properties: {
+      searchedUserId: {
+        type: "string",
+        format: "uuid",
+        description: "ID of the user whose profile was tapped.",
+      },
+      query: {
+        type: "string",
+        minLength: 1,
+        maxLength: 100,
+        description: "The search text the caller typed.",
+      },
+    },
   },
 
   // ===========================================================================

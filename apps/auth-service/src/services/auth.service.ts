@@ -15,6 +15,7 @@ import {
 } from "../lib/login-identifier.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
+import { publishSecurityNewLoginSafe } from "../messaging/publish-auth-security.js";
 import { publishUserCreatedSafe } from "../messaging/publish-user-created.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import type { LoginResult, RegisterResult } from "../types/index.js";
@@ -102,6 +103,10 @@ export const authService = {
 
     await authRepository.recordSuccessfulLogin(user.id);
     await authRepository.mergeFcmTokens(user.id, input.fcmTokens);
+    publishSecurityNewLoginSafe({
+      userId: user.id,
+      at: new Date().toISOString(),
+    });
 
     const session = buildSessionContext(req);
     const { tokens } = await issueAuthTokens(

@@ -33,7 +33,15 @@ interface StreamStartedData {
   communityId: string;
   creatorId: string;
   title?: string;
-  livedAt: number;
+  sourceType?: string;
+  sourceUrl?: string | null;
+  hlsUrl?: string | null;
+  flvUrl?: string | null;
+  dashUrl?: string | null;
+  youtubeVideoId?: string | null;
+  status?: string;
+  livedAt?: number;
+  startedAt?: number;
 }
 
 interface StreamEndedData {
@@ -124,16 +132,32 @@ export async function startStreamLiveConsumer(): Promise<void> {
       // Fan out to every active member's personal channel. Each publish is
       // independently guarded — a single user channel failure must not abort
       // the rest of the fan-out.
-      const socketPayload = isStarted
-        ? {
-            communityId,
-            streamId,
-            ...((data as StreamStartedData).title
-              ? { title: (data as StreamStartedData).title }
-              : {}),
-            livedAt: (data as StreamStartedData).livedAt,
-          }
-        : { communityId, streamId };
+      let socketPayload: Record<string, unknown>;
+      if (isStarted) {
+        const startedData = data as StreamStartedData;
+        const startedAt =
+          startedData.startedAt ?? startedData.livedAt ?? Date.now();
+        socketPayload = {
+          communityId,
+          livestreamId: streamId,
+          streamId,
+          title: startedData.title ?? null,
+          ...(startedData.sourceType
+            ? { sourceType: startedData.sourceType }
+            : {}),
+          sourceUrl: startedData.sourceUrl ?? null,
+          hlsUrl: startedData.hlsUrl ?? null,
+          flvUrl: startedData.flvUrl ?? null,
+          dashUrl: startedData.dashUrl ?? null,
+          youtubeVideoId: startedData.youtubeVideoId ?? null,
+          status: startedData.status ?? "LIVE",
+          livedAt: startedAt,
+          startedAt,
+          hasActiveLivestream: true,
+        };
+      } else {
+        socketPayload = { communityId, streamId };
+      }
 
       await Promise.allSettled(
         memberIds.map((memberId) =>

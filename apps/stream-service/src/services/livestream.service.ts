@@ -465,13 +465,22 @@ export class LivestreamService {
         `on_publish: stream id=${stream.id} resumed within reconnect grace window`
       );
     } else {
+      const startedAt = updated.livedAt?.getTime() ?? Date.now();
       void this.publishCommunityStreamStarted(updated);
       this.eventPublisher("stream.started", {
         streamId: updated.id,
         communityId: updated.communityId,
         creatorId: updated.creatorId,
         title: updated.title,
-        livedAt: updated.livedAt?.getTime() ?? Date.now(),
+        sourceType: updated.sourceType,
+        sourceUrl: updated.sourceUrl ?? null,
+        hlsUrl: updated.hlsUrl ?? null,
+        flvUrl: updated.flvUrl ?? null,
+        dashUrl: updated.dashUrl ?? null,
+        youtubeVideoId: extractYoutubeVideoId(updated.sourceUrl),
+        status: "LIVE",
+        livedAt: startedAt,
+        startedAt,
       });
     }
 
@@ -667,13 +676,22 @@ export class LivestreamService {
         `markLive: stream id=${id} resumed within reconnect grace window`
       );
     } else {
+      const startedAt = updated.livedAt?.getTime() ?? Date.now();
       void this.publishCommunityStreamStarted(updated);
       this.eventPublisher("stream.started", {
         streamId: updated.id,
         communityId: updated.communityId,
         creatorId: updated.creatorId,
         title: updated.title,
-        livedAt: updated.livedAt?.getTime() ?? Date.now(),
+        sourceType: updated.sourceType,
+        sourceUrl: updated.sourceUrl ?? null,
+        hlsUrl: updated.hlsUrl ?? null,
+        flvUrl: updated.flvUrl ?? null,
+        dashUrl: updated.dashUrl ?? null,
+        youtubeVideoId: extractYoutubeVideoId(updated.sourceUrl),
+        status: "LIVE",
+        livedAt: startedAt,
+        startedAt,
       });
     }
 
@@ -2077,6 +2095,7 @@ export class LivestreamService {
         this.resolveHost(stream.creatorId),
         this.streamRepo.countLiveByCommunity(stream.communityId),
       ]);
+      const startedAt = stream.livedAt?.getTime() ?? Date.now();
       await this.redis.publish(
         `community:${stream.communityId}`,
         JSON.stringify({
@@ -2087,9 +2106,15 @@ export class LivestreamService {
             streamId: stream.id, // legacy alias
             host,
             title: stream.title ?? null,
+            sourceType: stream.sourceType,
+            sourceUrl: stream.sourceUrl ?? null,
             hlsUrl: stream.hlsUrl ?? null,
+            flvUrl: stream.flvUrl ?? null,
+            dashUrl: stream.dashUrl ?? null,
+            youtubeVideoId: extractYoutubeVideoId(stream.sourceUrl),
             status: "LIVE",
-            startedAt: stream.livedAt?.getTime() ?? Date.now(),
+            startedAt,
+            livedAt: startedAt,
             activeLivestreamCount: Math.min(
               liveCount,
               env.STREAM_MAX_CONCURRENT_PER_COMMUNITY

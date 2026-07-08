@@ -255,6 +255,7 @@ describe("sanitizeCommunitySystemMetadata — actor identity is stripped", () =>
   it("classifies the actor-less lifecycle set correctly", () => {
     expect(isActorLessSystemMessage("COMMUNITY_CREATED")).toBe(true);
     expect(isActorLessSystemMessage("COMMUNITY_AVATAR_UPDATED")).toBe(true);
+    expect(isActorLessSystemMessage("COMMUNITY_HANDLE_UPDATED")).toBe(true);
     expect(isActorLessSystemMessage("ROLE_CHANGED")).toBe(false);
     expect(isActorLessSystemMessage("MEMBER_BANNED")).toBe(false);
     expect(isActorLessSystemMessage(null)).toBe(false);
@@ -304,6 +305,24 @@ describe("canonical builder — stale-row upgrade guarantee", () => {
         BYSTANDER
       )
     ).toBe("Community photo updated");
+  });
+
+  it("COMMUNITY_HANDLE_UPDATED returns canonical text for any viewer", () => {
+    expect(
+      buildCommunitySystemFallbackText(
+        "COMMUNITY_HANDLE_UPDATED",
+        { actorUserId: ACTOR, actorName: "Jim Methews" },
+        "Jim Methews",
+        "",
+        BYSTANDER
+      )
+    ).toBe("Community handle updated");
+  });
+
+  it("COMMUNITY_UPDATED (generic catch-all) returns the settings-updated text", () => {
+    expect(
+      buildCommunitySystemFallbackText("COMMUNITY_UPDATED", {}, "", "", null)
+    ).toBe("Community settings updated");
   });
 
   it("ROLE_CHANGED returns correct third-person text for a bystander", () => {

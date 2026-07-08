@@ -27,6 +27,7 @@ function toDetail(row: Announcement): AnnouncementDetail {
     title: row.title,
     description: row.description,
     target: row.target,
+    kind: row.kind,
     communityId: row.communityId,
     status: row.status,
     scheduledAt: row.scheduledAt ? row.scheduledAt.toISOString() : null,
@@ -62,6 +63,7 @@ export const announcementRepository = {
         title: input.title,
         description: input.description,
         target: input.target,
+        kind: input.kind,
         communityId: input.communityId ?? null,
         scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : null,
         status,
@@ -131,7 +133,7 @@ export const announcementRepository = {
   ): Promise<
     Pick<
       Announcement,
-      "id" | "title" | "description" | "target" | "communityId"
+      "id" | "title" | "description" | "target" | "kind" | "communityId"
     >[]
   > {
     return prisma.announcement.findMany({
@@ -141,6 +143,7 @@ export const announcementRepository = {
         title: true,
         description: true,
         target: true,
+        kind: true,
         communityId: true,
       },
     });

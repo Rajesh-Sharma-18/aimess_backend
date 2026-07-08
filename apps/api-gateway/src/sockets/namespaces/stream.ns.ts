@@ -435,6 +435,7 @@ export function registerStreamNamespace(
               livestreamId: streamId,
               limit: RECENT_COMMENTS_LIMIT,
               before: "",
+              requesterId: userId,
             });
             // gRPC returns newest-first; reverse to oldest-first so the backfill
             // reads chronologically and live `stream:comment:new` events append
@@ -606,6 +607,7 @@ export function registerStreamNamespace(
               limit: limit ?? RECENT_COMMENTS_LIMIT,
               before: before ?? "",
               after: after ?? "",
+              requesterId: userId,
             });
             // `before` (history): service returns newest-first → reverse to oldest-first for prepend.
             // `after`  (catch-up): service already returns oldest-first → no reverse needed.

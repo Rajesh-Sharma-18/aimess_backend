@@ -54,6 +54,15 @@ export interface MagicValidateParams {
   bucket: string;
   objectKey: string;
   declaredMime: string;
+  /**
+   * Authoritative byte-size ceiling for this category+MIME (the SAME
+   * min(maxBytes, maxBytesByMime[mime]) already enforced on the declared
+   * Content-Length at upload-url time). The presigned PUT URL only signs
+   * Content-Type (see presign.ts), so a client can upload a body far larger
+   * than the size it originally declared — this re-checks the real,
+   * MinIO-reported size before any further (memory-loading) inspection runs.
+   */
+  maxBytes: number;
 }
 
 /**
@@ -69,7 +78,7 @@ const ZIP_FAMILY_MIMES = new Set<string>([
 export async function validateUpload(
   params: MagicValidateParams
 ): Promise<MagicValidationResult> {
-  const { bucket, objectKey, declaredMime } = params;
+  const { bucket, objectKey, declaredMime, maxBytes } = params;
 
   // ── 1. Verify object exists ───────────────────────────────────────────────
   const head = await headObject(storageClient, bucket, objectKey);
@@ -80,6 +89,18 @@ export async function validateUpload(
     };
   }
   const fileSize = head.contentLength ?? 0;
+
+  // ── 1b. Enforce the real size against the category/MIME cap ──────────────
+  // The declared Content-Length checked at upload-url time is client-supplied
+  // and unenforced by the presigned PUT signature — verify the ACTUAL object
+  // size before doing any further (memory-loading) inspection below.
+  if (maxBytes > 0 && fileSize > maxBytes) {
+    return {
+      status: "REJECTED",
+      reason: `File size ${fileSize} exceeds the ${maxBytes}-byte limit for this type`,
+      fileSize,
+    };
+  }
 
   // ── 2. Fetch sample bytes for magic-byte check ────────────────────────────
   const sampleBuf = await getObjectBytes(

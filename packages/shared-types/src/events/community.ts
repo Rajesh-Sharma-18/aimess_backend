@@ -22,6 +22,7 @@ export const CommunityEvents = {
   INVITE_LINK_SHARED: "community.invite_link_shared",
   REPORT_CREATED: "community.report_created",
   REPORT_ACTIONED: "community.report_actioned",
+  REPORT_RESOLVED: "community.report_resolved",
   MEMBER_LEFT: "community.member_left",
   MEMBER_JOINED: "community.member_joined",
   // Livestream lifecycle (community-service stream-lifecycle consumer →
@@ -294,6 +295,20 @@ export type CommunityReportActionedPayload = CommunityEventBase & {
   actorId: string; // moderator who actioned
   reporterId: string;
   targetUserId: string | null;
+};
+
+/**
+ * Published whenever a report reaches a terminal resolution (ACTIONED or
+ * DISMISSED) — distinct from `community.report_actioned`, which only fires
+ * for the ACTIONED transition. Notifies the reporter their report was
+ * resolved regardless of outcome.
+ */
+export type CommunityReportResolvedPayload = CommunityEventBase & {
+  reportId: string;
+  actorId: string; // moderator who resolved it
+  reporterId: string;
+  targetUserId: string | null;
+  resolution: "ACTIONED" | "DISMISSED";
 };
 
 export type CommunityMemberLeftPayload = CommunityEventBase & {

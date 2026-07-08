@@ -191,6 +191,21 @@ function stringifyContent(content: unknown): string {
   }
 }
 
+function publishRealtimeSafe(
+  channel: string,
+  event: string,
+  data: unknown,
+  context: string
+): void {
+  redis
+    .publish(channel, JSON.stringify({ event, data }))
+    .catch((err: unknown) => {
+      logger.warn(
+        `realtime publish failed event=${event} channel=${channel} ${context}: ${String(err)}`
+      );
+    });
+}
+
 export function createMessagingImpl(
   deps: GrpcDeps
 ): grpc.UntypedServiceImplementation {
@@ -288,33 +303,32 @@ export function createMessagingImpl(
               const bcastContent = await resolveBroadcastContent(
                 row.content ?? null
               );
-              await redis.publish(
+              const rowPayload = buildChatMessageEvent({
+                id: row.id,
+                clientMessageId: req.clientMessageId,
+                roomId: req.conversationId,
+                conversationType:
+                  conversationType === "GROUP" ? "GROUP" : "PRIVATE",
+                senderId: req.senderId,
+                senderName: req.senderName,
+                senderAvatar: bcastAvatar,
+                senderRole:
+                  (row as { senderRole?: string }).senderRole ?? msg.senderRole,
+                receiverId: req.receiverId,
+                messageType: row.messageType,
+                content: bcastContent ?? null,
+                parentMessageId: (rowFull.parentMessageId as string) || "",
+                quoteData: rowFull.quoteData ?? null,
+                reactions: [],
+                clientTs,
+                serverTs: rowServerTs,
+                sequenceNumber: row.sequenceNumber,
+              });
+              publishRealtimeSafe(
                 `conv:${req.conversationId}`,
-                JSON.stringify({
-                  event: "message:new",
-                  data: buildChatMessageEvent({
-                    id: row.id,
-                    clientMessageId: req.clientMessageId,
-                    roomId: req.conversationId,
-                    conversationType:
-                      conversationType === "GROUP" ? "GROUP" : "PRIVATE",
-                    senderId: req.senderId,
-                    senderName: req.senderName,
-                    senderAvatar: bcastAvatar,
-                    senderRole:
-                      (row as { senderRole?: string }).senderRole ??
-                      msg.senderRole,
-                    receiverId: req.receiverId,
-                    messageType: row.messageType,
-                    content: bcastContent ?? null,
-                    parentMessageId: (rowFull.parentMessageId as string) || "",
-                    quoteData: rowFull.quoteData ?? null,
-                    reactions: [],
-                    clientTs,
-                    serverTs: rowServerTs,
-                    sequenceNumber: row.sequenceNumber,
-                  }),
-                })
+                "message:new",
+                rowPayload,
+                `roomId=${req.conversationId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
               );
             }
           }
@@ -865,16 +879,31 @@ export function createMessagingImpl(
               ? deps.groupMessageService
               : deps.privateMessageService;
 
+          // Authorize the caller against the room BEFORE binding/mutating the
+          // message: unlike the socket comment previously assumed, message:react
+          // is NOT gated by a prior room-join on the socket, so this gRPC
+          // boundary is the only enforcement point. Without this, any
+          // authenticated user who learns a messageId+conversationId for a
+          // room they aren't in could react to (and broadcast into) it.
+          //
           // Bind message↔room BEFORE the react: react() mutates/broadcasts by
-          // messageId ALONE, so a socket caller in room A could otherwise react
-          // to (and re-broadcast) a message from room B. assertMessageInRoom
+          // messageId ALONE, so a caller authorized for room A could otherwise
+          // react to (and re-broadcast) a message from room B. assertMessageInRoom
           // throws NotFound on mismatch (the catch below maps it to gRPC INTERNAL).
           if (reactConversationType === "GROUP") {
+            await deps.groupMessageService.assertMember(
+              req.conversationId,
+              req.userId
+            );
             await deps.groupMessageService.assertMessageInRoom(
               req.conversationId,
               req.messageId
             );
           } else {
+            await deps.privateMessageService.assertParticipant(
+              req.conversationId,
+              req.userId
+            );
             await deps.privateMessageService.assertMessageInRoom(
               req.conversationId,
               req.messageId
@@ -1286,6 +1315,22 @@ export function createMessagingImpl(
             typeof req.conversationType === "string"
               ? req.conversationType.toUpperCase()
               : "PRIVATE";
+
+          // Authorize the caller against the room before reading reactor
+          // identities: without this, any authenticated user who learns a
+          // messageId+conversationId for a room they aren't in could fetch
+          // the full reactor list (userId/displayName/avatar) — an IDOR.
+          if (conversationType === "GROUP") {
+            await deps.groupMessageService.assertMember(
+              req.conversationId ?? "",
+              req.requesterId ?? ""
+            );
+          } else {
+            await deps.privateMessageService.assertParticipant(
+              req.conversationId ?? "",
+              req.requesterId ?? ""
+            );
+          }
 
           const result =
             conversationType === "GROUP"
@@ -1885,38 +1930,37 @@ export function createCommunityImpl(
               const rowSticker = rowAttRecords.find(
                 (a) => String(a.type).toLowerCase() === "sticker"
               );
-              await redis.publish(
+              publishRealtimeSafe(
                 "community:" + req.communityId,
-                JSON.stringify({
-                  event: "community:message:new",
-                  data: {
-                    id: row.id,
-                    messageId: row.id,
-                    communityId: req.communityId,
-                    roomId: row.roomId,
-                    senderId: row.sentBy,
-                    senderName,
-                    senderAvatar: bcastSenderAvatar,
-                    parentMessageId: row.parentMessageId ?? "",
-                    quoteData: buildCanonicalQuote(row.quoteData),
-                    content: {
-                      text: row.message ?? "",
-                      files: rowBcastFiles,
-                      ...(rowLocation ? { location: rowLocation } : {}),
-                      ...(rowContact ? { contact: rowContact } : {}),
-                      ...(rowSticker ? { sticker: rowSticker } : {}),
-                    },
-                    reactions: [],
-                    message: row.message ?? "",
-                    contentType: normalizeMessageType(row.messageType),
-                    isEdited: false,
-                    editedAt: 0,
-                    clientMessageId: req.clientMessageId ?? "",
-                    serverTs: rowSentAt,
-                    sentAt: rowSentAt,
-                    sequenceNumber: row.sequenceNumber,
+                "community:message:new",
+                {
+                  id: row.id,
+                  messageId: row.id,
+                  communityId: req.communityId,
+                  roomId: row.roomId,
+                  senderId: row.sentBy,
+                  senderName,
+                  senderAvatar: bcastSenderAvatar,
+                  parentMessageId: row.parentMessageId ?? "",
+                  quoteData: buildCanonicalQuote(row.quoteData),
+                  content: {
+                    text: row.message ?? "",
+                    files: rowBcastFiles,
+                    ...(rowLocation ? { location: rowLocation } : {}),
+                    ...(rowContact ? { contact: rowContact } : {}),
+                    ...(rowSticker ? { sticker: rowSticker } : {}),
                   },
-                })
+                  reactions: [],
+                  message: row.message ?? "",
+                  contentType: normalizeMessageType(row.messageType),
+                  isEdited: false,
+                  editedAt: 0,
+                  clientMessageId: req.clientMessageId ?? "",
+                  serverTs: rowSentAt,
+                  sentAt: rowSentAt,
+                  sequenceNumber: row.sequenceNumber,
+                },
+                `communityId=${req.communityId} roomId=${row.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
               );
             }
 

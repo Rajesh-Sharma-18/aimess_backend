@@ -1,5 +1,11 @@
 import amqp from "amqplib";
-import { AdminAuthEvents, AuthEvents } from "@aimess/shared-types";
+import {
+  AdminAuthEvents,
+  AuthEvents,
+  type EmailChangedPayload,
+  type PasswordChangedPayload,
+  type SecurityNewLoginPayload,
+} from "@aimess/shared-types";
 import { NotificationEvents } from "../events/notification.events.js";
 import {
   handleAdminPasswordResetOtpRequested,
@@ -10,6 +16,7 @@ import {
 } from "../handlers/notification.handler.js";
 import { env } from "../config/env.js";
 import { logger } from "@aimess/logger";
+import { pushToUser } from "../services/push.service.js";
 
 const QUEUE_NAME = "notification.queue";
 
@@ -145,6 +152,43 @@ export async function startConsumer() {
         case AdminAuthEvents.PASSWORD_RESET_OTP_REQUESTED:
           await handleAdminPasswordResetOtpRequested(parsed.data);
           break;
+
+        case AuthEvents.SECURITY_NEW_LOGIN: {
+          const p = parsed.data as SecurityNewLoginPayload;
+          await pushToUser({
+            userId: p.userId,
+            category: "systemEnabled",
+            type: parsed.type,
+            bypassSettings: true,
+            title: "New login",
+            body: "Your account was just signed in from a new session.",
+          });
+          break;
+        }
+        case AuthEvents.PASSWORD_CHANGED: {
+          const p = parsed.data as PasswordChangedPayload;
+          await pushToUser({
+            userId: p.userId,
+            category: "systemEnabled",
+            type: parsed.type,
+            bypassSettings: true,
+            title: "Password changed",
+            body: "Your password was changed successfully.",
+          });
+          break;
+        }
+        case AuthEvents.EMAIL_CHANGED: {
+          const p = parsed.data as EmailChangedPayload;
+          await pushToUser({
+            userId: p.userId,
+            category: "systemEnabled",
+            type: parsed.type,
+            bypassSettings: true,
+            title: "Email changed",
+            body: "Your account email was changed successfully.",
+          });
+          break;
+        }
 
         default:
           logger.error(`Unknown notification event type: ${parsed.type}`);
