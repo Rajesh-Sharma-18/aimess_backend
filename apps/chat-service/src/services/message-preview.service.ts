@@ -58,7 +58,7 @@ export function convertMessageToPreview(
     case "DOCUMENT":
       return fileName ? `📄 ${fileName}` : "📄 Document";
     case "STICKER":
-      return "😊 Sticker";
+      return "Sticker";
     case "LOCATION":
       return placeName ? `📍 ${placeName}` : "📍 Location";
     case "CONTACT":

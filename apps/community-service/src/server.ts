@@ -20,6 +20,19 @@ import {
   backfillActiveMutesToChat,
 } from "./jobs/mute-sweeper.js";
 
+function getRawCommandErrorMessage(error: unknown): string {
+  if (!error || typeof error !== "object") return "";
+  const meta = (error as { meta?: { message?: unknown } }).meta;
+  if (typeof meta?.message === "string") return meta.message;
+  if (error instanceof Error) return error.message;
+  return "";
+}
+
+function isDuplicateKeyIndexBuildError(error: unknown): boolean {
+  const message = getRawCommandErrorMessage(error);
+  return message.includes("E11000 duplicate key error");
+}
+
 async function start() {
   try {
     await prisma.$connect();
@@ -77,7 +90,13 @@ async function start() {
       logger.warn(
         "Could not create community_reports duplicate-report unique index — falling back to service-level dedup only"
       );
-      logger.warn(indexErr);
+      if (isDuplicateKeyIndexBuildError(indexErr)) {
+        logger.warn(
+          "Existing duplicate member-targeted reports must be repaired before MongoDB can build the unique index. Run: pnpm --filter @aimess/community-service db:repair:report-duplicates"
+        );
+      } else {
+        logger.warn(indexErr);
+      }
     }
 
     if (env.REDIS_CACHE_ENABLED) {

@@ -31,7 +31,7 @@ describe("buildMessagePreview", () => {
     assert.equal(buildMessagePreview("GIF", {}), "🎞 GIF");
     assert.equal(buildMessagePreview("VOICE", {}), "🎤 Voice Message");
     assert.equal(buildMessagePreview("AUDIO", {}), "🎵 Audio");
-    assert.equal(buildMessagePreview("STICKER", {}), "😊 Sticker");
+    assert.equal(buildMessagePreview("STICKER", {}), "Sticker");
   });
 
   it("interpolates filename / placeName / contactName when present", () => {

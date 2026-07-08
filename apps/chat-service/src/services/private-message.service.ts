@@ -750,6 +750,27 @@ export class PrivateMessageService {
     await assertPrivateParticipant(this.roomRepo, roomId, userId);
   }
 
+  async getMessageContext(
+    roomId: string,
+    messageId: string,
+    userId: string
+  ): Promise<PrivateMessage> {
+    await assertPrivateParticipant(this.roomRepo, roomId, userId);
+    const message = await this.messageRepo.findMessageMeta({
+      roomId,
+      messageId,
+    });
+    if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
+
+    if (
+      message.deletedFor &&
+      (message.deletedFor as Record<string, boolean>)[userId]
+    ) {
+      throw new GoneError("CHAT_MESSAGE_DELETED");
+    }
+    return message;
+  }
+
   /**
    * Bind a message to its room: throw CHAT_MESSAGE_NOT_FOUND unless `messageId`
    * actually belongs to `roomId`. The `react()` primitive mutates a message by id

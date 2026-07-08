@@ -666,7 +666,9 @@ export class CommunityMessageController {
             senderId: recalc.sentBy,
             senderName: recalc.senderName,
             lastMessageId: recalc.prevMessageId ?? "",
-            lastMessageAt: recalc.createdAt.getTime(),
+            lastMessageAt: recalc.hasLastMessage
+              ? recalc.createdAt.getTime()
+              : Date.now(),
             preview: {
               contentType: normalizeMessageType(recalc.messageType),
               text: recalc.preview,
@@ -755,6 +757,16 @@ export class CommunityMessageController {
           messagePreview: recalc.preview,
           activityType: "message",
         });
+      } else {
+        await getCommunityReconcileClient().updateMessageActivity({
+          communityId: roomId,
+          lastMessageAt: Date.now(),
+          lastMessageId: "",
+          senderUserId: "",
+          senderUsername: "",
+          messagePreview: "",
+          activityType: "message",
+        });
       }
       // Realtime bump — fire-and-forget, the DB write above is already
       // guaranteed by the time this fires.
@@ -776,7 +788,9 @@ export class CommunityMessageController {
         senderId: recalc.sentBy,
         senderName: recalc.senderName,
         lastMessageId: recalc.prevMessageId ?? "",
-        lastMessageAt: recalc.createdAt.getTime(),
+        lastMessageAt: recalc.hasLastMessage
+          ? recalc.createdAt.getTime()
+          : Date.now(),
         preview: {
           contentType: normalizeMessageType(recalc.messageType),
           text: recalc.preview,

@@ -112,7 +112,7 @@ describe("buildMessagePreview", () => {
     assert.equal(buildMessagePreview("GIF", {}), "🎞 GIF");
     assert.equal(buildMessagePreview("AUDIO", {}), "🎵 Audio");
     assert.equal(buildMessagePreview("VOICE", {}), "🎤 Voice Message");
-    assert.equal(buildMessagePreview("STICKER", {}), "😊 Sticker");
+    assert.equal(buildMessagePreview("STICKER", {}), "Sticker");
   });
 
   it("DOCUMENT → '📄 <name>' when a filename is present, else '📄 Document'", () => {

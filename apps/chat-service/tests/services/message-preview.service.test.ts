@@ -80,8 +80,8 @@ describe("convertMessageToPreview — media placeholders (the bug-fix scenarios)
     expect(convertMessageToPreview("AUDIO", { text: "" })).toBe("🎵 Audio");
   });
 
-  it("[Sticker preview] STICKER → '😊 Sticker'", () => {
-    expect(convertMessageToPreview("STICKER", { text: "" })).toBe("😊 Sticker");
+  it("[Sticker preview] STICKER → 'Sticker'", () => {
+    expect(convertMessageToPreview("STICKER", { text: "" })).toBe("Sticker");
   });
 });
 
@@ -145,7 +145,7 @@ describe("convertMessageToPreview — case-insensitivity (contentType normalized
     ["image", "📷 Photo"],
     ["Image", "📷 Photo"],
     ["vIdEo", "🎥 Video"],
-    ["sticker", "😊 Sticker"],
+    ["sticker", "Sticker"],
     ["document", "📄 Document"],
   ])("maps lowercase/mixed-case '%s' → '%s'", (type, expected) => {
     expect(convertMessageToPreview(type, { text: "" })).toBe(expected);
@@ -226,7 +226,7 @@ describe("buildPushPreview (push path — type + body text only)", () => {
   it("media push types are non-blank even with no body text", () => {
     expect(buildPushPreview("VIDEO", "")).toBe("🎥 Video");
     expect(buildPushPreview("VOICE", "")).toBe("🎤 Voice Message");
-    expect(buildPushPreview("STICKER", "")).toBe("😊 Sticker");
+    expect(buildPushPreview("STICKER", "")).toBe("Sticker");
   });
 });
 
@@ -251,7 +251,7 @@ describe("REGRESSION: the exact expression persisted as community.activity messa
       files: [],
     });
     expect(messagePreview).not.toBe("");
-    expect(messagePreview).toBe("😊 Sticker");
+    expect(messagePreview).toBe("Sticker");
   });
 
   it("DOCUMENT community message carries the filename through", () => {

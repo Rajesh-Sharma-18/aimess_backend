@@ -16,6 +16,7 @@ import { CommunitySystemMessageService } from "../../src/services/community-syst
 import { CommunityPinService } from "../../src/services/community-pin.service.js";
 import { GeneralRoomMessageRepository } from "../../src/repositories/general-room-message.repository.js";
 import { getCommunityReconcileClient } from "../../src/grpc/community.client.js";
+import { PERSONAL_JOIN_SESSION_TYPES } from "@aimess/constants";
 
 /** Role authorization for CommunityPinService.pin/unpin is sourced LIVE from
  *  community-service, not RoomMember.role — see access-guard.ts
@@ -67,6 +68,10 @@ function emuMatchField(
     return (cond as Array<Record<string, unknown>>).some((s) =>
       emuMatchDoc(doc, s)
     );
+  if (key === "$and")
+    return (cond as Array<Record<string, unknown>>).every((s) =>
+      emuMatchDoc(doc, s)
+    );
   if (key === "$nor")
     return !(cond as Array<Record<string, unknown>>).some((s) =>
       emuMatchDoc(doc, s)
@@ -83,6 +88,13 @@ function emuMatchField(
     return (c.$in as Array<string | null>).some((a) =>
       a === null ? value == null : value === a
     );
+  if ("$eq" in c) {
+    const against = c.$eq;
+    if (against && typeof against === "object" && "$oid" in against) {
+      return value === (against as { $oid: string }).$oid;
+    }
+    return value === against;
+  }
   if ("$nin" in c)
     return !(c.$nin as string[]).includes((value as string) ?? "");
   // Range ops on createdAt (date) / _id (oid).
@@ -110,11 +122,13 @@ function emuMatchField(
       "$oid" in (against as object)
     ) {
       const r = (against as { $oid: string }).$oid;
-      return op === "$lt"
-        ? String(value) < r
-        : op === "$gt"
-          ? String(value) > r
-          : false;
+      return op === "$eq"
+        ? String(value) === r
+        : op === "$lt"
+          ? String(value) < r
+          : op === "$gt"
+            ? String(value) > r
+            : false;
     }
     return false;
   });
@@ -175,7 +189,38 @@ function makeCommunityPrisma(rows: EmuRow[]) {
   });
 
   const findMany = jest.fn(
-    async ({ where }: { where: { id: { in: string[] } } }) => {
+    async ({
+      where,
+      orderBy,
+      take,
+    }: {
+      where: {
+        id?: { in: string[] };
+        roomId?: string;
+        visibleToUserId?: string;
+      };
+      orderBy?: unknown;
+      take?: number;
+    }) => {
+      if (!where.id) {
+        let rows = docs.filter(
+          (d) =>
+            d.roomId === where.roomId &&
+            d.visibleToUserId === where.visibleToUserId &&
+            d.deletedForAll === false &&
+            [...PERSONAL_JOIN_SESSION_TYPES].includes(
+              d.systemMessageType as never
+            )
+        );
+        if (orderBy) {
+          rows = [...rows].sort((a, b) => {
+            const t =
+              (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime();
+            return t || String(b._id).localeCompare(String(a._id));
+          });
+        }
+        return rows.slice(0, take ?? rows.length).map((d) => ({ id: d._id }));
+      }
       const want = new Set(where.id.in);
       return docs
         .filter((d) => want.has(d._id as string))
@@ -440,6 +485,37 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps only the newest personal join-session line for the same user", async () => {
+    const rows = [
+      {
+        id: "new-personal-joined",
+        visibleToUserId: USER_ID,
+        systemMessageType: "COMMUNITY_JOINED",
+      },
+      {
+        id: "old-personal-joined",
+        visibleToUserId: USER_ID,
+        systemMessageType: "COMMUNITY_JOINED",
+      },
+      { id: "msg" },
+    ];
+    const repo = new GeneralRoomMessageRepository(
+      makeCommunityPrisma(rows) as never
+    );
+
+    const { messages } = await repo.findByRoomIdTimeline({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      direction: "before",
+      ts: new Date(),
+      inclusive: true,
+      limit: 20,
+      viewerIsActiveMember: true,
+    });
+
+    expect(messages.map((m) => m.id)).toEqual(["new-personal-joined", "msg"]);
+  });
+
   it("raw catch-up match excludes suppressed moderation types via $nin", async () => {
     const aggregateRaw = jest.fn().mockResolvedValue([]);
     const findMany = jest.fn().mockResolvedValue([]);
@@ -453,9 +529,13 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       limit: 20,
     });
 
-    const match = aggregateRaw.mock.calls[0][0].pipeline.find(
-      (s: Record<string, unknown>) => "$match" in s
-    ).$match;
+    const match = aggregateRaw.mock.calls
+      .map(
+        (call) =>
+          call[0].pipeline.find((s: Record<string, unknown>) => "$match" in s)
+            ?.$match
+      )
+      .find((m) => m?.systemMessageType?.$nin);
     expect(match.systemMessageType).toEqual({
       $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"],
     });
@@ -463,7 +543,8 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
 
   it("conversation count match excludes suppressed moderation types via $nin", async () => {
     const aggregateRaw = jest.fn().mockResolvedValue([{ total: 0 }]);
-    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const findMany = jest.fn().mockResolvedValue([]);
+    const prisma = { generalRoomMessage: { aggregateRaw, findMany } };
     const repo = new GeneralRoomMessageRepository(prisma as never);
 
     await repo.countConversation({
@@ -472,7 +553,9 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       beforeMs: 1_700_000_000_000,
     });
 
-    const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
+    const match = aggregateRaw.mock.calls
+      .map((call) => call[0].pipeline[0].$match)
+      .find((m) => m?.systemMessageType?.$nin);
     expect(match.systemMessageType).toEqual({
       $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"],
     });

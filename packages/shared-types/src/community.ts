@@ -186,6 +186,25 @@ export interface CommunityStreamEndedSocketPayload {
 }
 
 /**
+ * Server -> client. Livestream metadata changed while the community may still be
+ * live (`community:stream:updated`). Use this to patch the list badge/banner
+ * title without polling or refetching. It does not replace `community:updated`,
+ * which remains the list ordering + lastActivity preview event.
+ */
+export interface CommunityStreamUpdatedSocketPayload {
+  communityId: string;
+  livestreamId: string;
+  /** @deprecated legacy alias of `livestreamId`. */
+  streamId: string;
+  title?: string | null;
+  description?: string;
+  thumbnail?: string | null;
+  updatedAt: number; // epoch ms
+  activeLivestreamCount: number;
+  hasActiveLivestream: boolean;
+}
+
+/**
  * Canonical post-update community metadata snapshot carried by
  * `community:meta:updated`. The client applies this verbatim to the detail/header
  * screen and patches the matching list row (name/avatar/description/memberCount).

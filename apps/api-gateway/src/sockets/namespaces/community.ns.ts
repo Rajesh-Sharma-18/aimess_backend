@@ -12,6 +12,7 @@ import { resolveSocketUserDetails } from "../user-details.js";
 import { env } from "../../config/env.js";
 import { createSessionTimers } from "../session-timers.js";
 import { personalizeCommunitySocketMessage } from "../system-message-personalize.js";
+import { emitPersonalizedSender } from "../emit-personalized.js";
 
 // §3: bound free-text fields so a naive/abusive client cannot exceed the 1 MB
 // socket frame or fan an oversized payload out to a whole community room.
@@ -275,10 +276,22 @@ export function registerCommunityNamespace(
                 `[JOIN-TRACE] gateway REDIS RECEIVED event=${parsed.event} channel=${channel} payload=${JSON.stringify(parsed.data)} ts=${Date.now()}`
               );
             }
-            const payload =
-              parsed.event === "community:message:new"
-                ? personalizeCommunitySocketMessage(parsed.data, viewerUserId)
-                : parsed.data;
+            let payload = parsed.data;
+            if (parsed.event === "community:message:new") {
+              payload = personalizeCommunitySocketMessage(
+                parsed.data,
+                viewerUserId
+              );
+            } else if (parsed.event === "community:updated") {
+              const d = parsed.data as {
+                senderId?: string;
+                senderName?: string;
+                [key: string]: unknown;
+              };
+              if (d && d.senderId === viewerUserId) {
+                payload = { ...d, senderName: "You" };
+              }
+            }
             community.to(channel).emit(parsed.event, payload);
             // [JOIN-TRACE]
             if (
@@ -358,51 +371,42 @@ export function registerCommunityNamespace(
             `🔴 [STREAM:GATEWAY] emitting ${parsed.event} to Socket.IO room="${channel}" (sockets in room must have called community:join)`
           );
         }
+
+        let personalizeFn:
+          | ((data: unknown, userId: string) => unknown)
+          | undefined;
         if (parsed.event === "community:message:new") {
-          void (async () => {
-            try {
-              const sockets = await community.in(channel).fetchSockets();
-              for (const socket of sockets) {
-                const viewerUserId = String(socket.data.userId ?? "");
-                socket.emit(
-                  parsed.event,
-                  personalizeCommunitySocketMessage(parsed.data, viewerUserId)
-                );
-              }
-            } catch (emitErr) {
-              logger.warn(
-                `/community personalized emit failed on ${channel}: ${String(emitErr)}`
-              );
-              community.to(channel).emit(parsed.event, parsed.data);
-            }
-          })();
-        } else {
-          // Roster + livestream events must also reach members who haven't opened
-          // the community chat yet. Those members are only in the lightweight
-          // `community-typing:<id>` room (auto-joined at connect), NOT in
-          // `community:<id>` (joined only via explicit community:join). So the
-          // live banner / list badge appears (started) and disappears (ended) in
-          // real time without opening the chat. Chaining .to() makes Socket.IO
-          // de-duplicate recipients, so members in both rooms get one delivery.
-          const TYPING_ROOM_BROADCAST_EVENTS = new Set([
-            "community:member:joined",
-            "community:member:updated",
-            "community:member:removed",
-            "community:member:muted",
-            "community:member:unmuted",
-            "community:stream:started",
-            "community:stream:ended",
-            "community:stream:updated",
-          ]);
+          personalizeFn = personalizeCommunitySocketMessage;
+        }
+
+        const TYPING_ROOM_BROADCAST_EVENTS = new Set([
+          "community:member:joined",
+          "community:member:updated",
+          "community:member:removed",
+          "community:member:muted",
+          "community:member:unmuted",
+          "community:stream:started",
+          "community:stream:ended",
+          "community:stream:updated",
+        ]);
+
+        void emitPersonalizedSender(
+          community,
+          channel,
+          parsed.event,
+          parsed.data,
+          personalizeFn
+        );
+
+        if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {
           const typingRoom = `community-typing:${channel.slice("community:".length)}`;
-          if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {
-            community
-              .to(channel)
-              .to(typingRoom)
-              .emit(parsed.event, parsed.data);
-          } else {
-            community.to(channel).emit(parsed.event, parsed.data);
-          }
+          void emitPersonalizedSender(
+            community,
+            typingRoom,
+            parsed.event,
+            parsed.data,
+            personalizeFn
+          );
         }
 
         // Evict-on-removal: when a member is removed (banned/kicked/left), force
