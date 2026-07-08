@@ -255,7 +255,8 @@ export function registerCommunityNamespace(
             // ── Stream live indicator debug log ─────────────────────────────
             if (
               parsed.event === "community:stream:started" ||
-              parsed.event === "community:stream:ended"
+              parsed.event === "community:stream:ended" ||
+              parsed.event === "community:stream:updated"
             ) {
               const d = parsed.data as {
                 communityId?: string;
@@ -346,7 +347,8 @@ export function registerCommunityNamespace(
         // ── Stream live indicator debug logs ─────────────────────────────────
         if (
           parsed.event === "community:stream:started" ||
-          parsed.event === "community:stream:ended"
+          parsed.event === "community:stream:ended" ||
+          parsed.event === "community:stream:updated"
         ) {
           const d = parsed.data as { communityId?: string; streamId?: string };
           logger.info(
@@ -390,6 +392,7 @@ export function registerCommunityNamespace(
             "community:member:unmuted",
             "community:stream:started",
             "community:stream:ended",
+            "community:stream:updated",
           ]);
           const typingRoom = `community-typing:${channel.slice("community:".length)}`;
           if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {

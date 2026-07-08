@@ -4,6 +4,7 @@ import { publishChatUserEvent } from "@aimess/redis";
 
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
+import { getStreamClient } from "../grpc/stream.client.js";
 import { communityRepository } from "../repositories/community.repository.js";
 
 /**
@@ -27,6 +28,10 @@ const DLQ = "stream.live.community.queue.dlq";
 const DLQ_ROUTING_KEY = "stream.live.community.queue.dead";
 
 const PREFETCH = 5;
+const STREAM_STARTED = "stream.started";
+const STREAM_ENDED = "stream.ended";
+const STREAM_UPDATED = "stream.updated";
+const MAX_ACTIVE_LIVESTREAMS = 5;
 
 interface StreamStartedData {
   streamId: string;
@@ -42,6 +47,33 @@ interface StreamEndedData {
   creatorId: string;
   endedAt: number;
   peakViewers: number;
+}
+
+interface StreamUpdatedData {
+  streamId: string;
+  communityId: string;
+  creatorId: string;
+  title?: string;
+  description?: string;
+  thumbnail?: string | null;
+  updatedAt?: string;
+}
+
+type StreamLiveData = StreamStartedData | StreamEndedData | StreamUpdatedData;
+
+async function getActiveLivestreamCount(communityId: string): Promise<number> {
+  try {
+    const counts = await getStreamClient().getActiveStreamCounts([communityId]);
+    return Math.min(
+      Math.max(0, counts.get(communityId) ?? 0),
+      MAX_ACTIVE_LIVESTREAMS
+    );
+  } catch (error) {
+    logger.warn(
+      `[stream-live-consumer] active stream count lookup failed community=${communityId}: ${String(error)}`
+    );
+    return 0;
+  }
 }
 
 export async function startStreamLiveConsumer(): Promise<void> {
@@ -62,9 +94,10 @@ export async function startStreamLiveConsumer(): Promise<void> {
     deadLetterRoutingKey: DLQ_ROUTING_KEY,
   });
 
-  // Bind both routing keys to the same queue.
-  await channel.bindQueue(QUEUE, EXCHANGE, "stream.started");
-  await channel.bindQueue(QUEUE, EXCHANGE, "stream.ended");
+  // Bind livestream status/metadata routing keys to the same queue.
+  await channel.bindQueue(QUEUE, EXCHANGE, STREAM_STARTED);
+  await channel.bindQueue(QUEUE, EXCHANGE, STREAM_ENDED);
+  await channel.bindQueue(QUEUE, EXCHANGE, STREAM_UPDATED);
 
   await channel.prefetch(PREFETCH);
 
@@ -75,7 +108,7 @@ export async function startStreamLiveConsumer(): Promise<void> {
   channel.consume(QUEUE, async (message) => {
     if (!message) return;
 
-    let parsed: { type: string; data: StreamStartedData | StreamEndedData };
+    let parsed: { type: string; data: StreamLiveData };
     try {
       parsed = JSON.parse(message.content.toString()) as typeof parsed;
     } catch (error) {
@@ -92,7 +125,11 @@ export async function startStreamLiveConsumer(): Promise<void> {
         `🔴 [STREAM:CONSUMER] RabbitMQ message received type=${type} streamId=${(data as StreamStartedData).streamId} communityId=${(data as StreamStartedData).communityId}`
       );
 
-      if (type !== "stream.started" && type !== "stream.ended") {
+      if (
+        type !== STREAM_STARTED &&
+        type !== STREAM_ENDED &&
+        type !== STREAM_UPDATED
+      ) {
         logger.info(
           `🔴 [STREAM:CONSUMER] ⏭ ignoring unrelated event type=${type}`
         );
@@ -101,13 +138,18 @@ export async function startStreamLiveConsumer(): Promise<void> {
       }
 
       const { communityId, streamId } = data;
-      const isStarted = type === "stream.started";
+      const isStarted = type === STREAM_STARTED;
+      const isEnded = type === STREAM_ENDED;
       const socketEvent = isStarted
         ? "community:stream:started"
-        : "community:stream:ended";
+        : isEnded
+          ? "community:stream:ended"
+          : "community:stream:updated";
 
-      const memberIds =
-        await communityRepository.findActiveMemberIds(communityId);
+      const [memberIds, activeLivestreamCount] = await Promise.all([
+        communityRepository.findActiveMemberIds(communityId),
+        getActiveLivestreamCount(communityId),
+      ]);
 
       logger.info(
         `🔴 [STREAM:CONSUMER] found ${String(memberIds.length)} active members in community=${communityId} — fanning out ${socketEvent}`
@@ -127,13 +169,47 @@ export async function startStreamLiveConsumer(): Promise<void> {
       const socketPayload = isStarted
         ? {
             communityId,
+            livestreamId: streamId,
             streamId,
             ...((data as StreamStartedData).title
               ? { title: (data as StreamStartedData).title }
               : {}),
+            status: "LIVE",
             livedAt: (data as StreamStartedData).livedAt,
+            startedAt: (data as StreamStartedData).livedAt,
+            activeLivestreamCount,
+            hasActiveLivestream: true,
           }
-        : { communityId, streamId };
+        : isEnded
+          ? {
+              communityId,
+              livestreamId: streamId,
+              streamId,
+              status: "ENDED",
+              activeLivestreamCount,
+              hasActiveLivestream: activeLivestreamCount > 0,
+            }
+          : {
+              communityId,
+              livestreamId: streamId,
+              streamId,
+              ...((data as StreamUpdatedData).title !== undefined
+                ? { title: (data as StreamUpdatedData).title ?? null }
+                : {}),
+              ...((data as StreamUpdatedData).description !== undefined
+                ? {
+                    description: (data as StreamUpdatedData).description ?? "",
+                  }
+                : {}),
+              ...((data as StreamUpdatedData).thumbnail !== undefined
+                ? { thumbnail: (data as StreamUpdatedData).thumbnail ?? null }
+                : {}),
+              updatedAt: (data as StreamUpdatedData).updatedAt
+                ? Date.parse((data as StreamUpdatedData).updatedAt!)
+                : Date.now(),
+              activeLivestreamCount,
+              hasActiveLivestream: activeLivestreamCount > 0,
+            };
 
       await Promise.allSettled(
         memberIds.map((memberId) =>
