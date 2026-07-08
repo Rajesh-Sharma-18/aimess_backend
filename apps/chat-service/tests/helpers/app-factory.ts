@@ -215,6 +215,7 @@ export function buildApp(): BuiltApp {
   const groupSystemMessageService = new GroupSystemMessageService(
     groupMessageRepo,
     groupRoomRepo,
+    groupMemberRepo,
     cacheRepo,
     userSnapshotService,
     redis

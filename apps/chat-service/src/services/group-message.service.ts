@@ -40,6 +40,7 @@ import {
   fileMediaKey,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
+import { shouldCountInUnread } from "../lib/unread-count.js";
 
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
@@ -103,7 +104,7 @@ export class GroupMessageService {
             params.senderId,
             params.clientMessageId
           );
-          const messages = batch.length > 0 ? batch : [cached];
+          const messages = (batch?.length ?? 0) > 0 ? batch : [cached];
           return withRole(
             markAlbumIdempotentReplay(messages[messages.length - 1]!, messages)
           );
@@ -123,7 +124,7 @@ export class GroupMessageService {
           params.senderId,
           params.clientMessageId
         );
-        const messages = batch.length > 0 ? batch : [existing];
+        const messages = (batch?.length ?? 0) > 0 ? batch : [existing];
         return withRole(
           markAlbumIdempotentReplay(messages[messages.length - 1]!, messages)
         );
@@ -199,7 +200,7 @@ export class GroupMessageService {
                     params.clientMessageId
                   )
                 : [];
-            const messages = batch.length > 0 ? batch : [dup];
+            const messages = (batch?.length ?? 0) > 0 ? batch : [dup];
             return withRole(
               markAlbumIdempotentReplay(
                 messages[messages.length - 1]!,
@@ -235,13 +236,23 @@ export class GroupMessageService {
         );
       });
 
-    this.memberRepo
-      .incUnreadForRoom(params.roomId, params.senderId, created.length)
-      .catch((err: unknown) => {
-        logger.warn(
-          `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
-        );
-      });
+    const unreadIncrement = created.filter((m) =>
+      shouldCountInUnread({
+        messageType: m.messageType,
+        systemEvent: m.systemEvent,
+        explicit: (m as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      })
+    ).length;
+    if (unreadIncrement > 0) {
+      this.memberRepo
+        .incUnreadForRoom(params.roomId, params.senderId, unreadIncrement)
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupMessageService|incUnreadForRoom failed: ${String(err)}`
+          );
+        });
+    }
     return withRole(attachAlbumMessages(message, created));
   }
 
@@ -691,7 +702,32 @@ export class GroupMessageService {
       deletedType = "ADMIN_DELETE";
     }
 
-    return this.messageRepo.deleteForEveryone(messageId, userId, deletedType);
+    const deleted = await this.messageRepo.deleteForEveryone(
+      messageId,
+      userId,
+      deletedType
+    );
+    if (
+      shouldCountInUnread({
+        messageType: message.messageType,
+        systemEvent: message.systemEvent,
+        explicit: (message as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      })
+    ) {
+      this.memberRepo
+        .decrementUnreadForMessage({
+          roomId,
+          senderId: message.senderId,
+          messageCreatedAt: message.createdAt,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupMessageService|decrementUnreadForMessage failed: ${String(err)}`
+          );
+        });
+    }
+    return deleted;
   }
 
   async editMessage(params: {
@@ -849,6 +885,14 @@ export class GroupMessageService {
       clientMessageId: params.clientMessageId ?? null,
       sequenceNumber: seq,
     });
+    const unreadIncrement = shouldCountInUnread({
+      messageType: message.messageType,
+      systemEvent: message.systemEvent,
+      explicit: (message as unknown as { countInUnread?: boolean | null })
+        .countInUnread,
+    })
+      ? 1
+      : 0;
 
     // update room last message (fire and forget)
     const messageContent = (message.content ?? {}) as Record<string, unknown>;
@@ -866,6 +910,16 @@ export class GroupMessageService {
           `GroupMessageService|forwardMessage|updateLastMessage failed: ${String(err)}`
         );
       });
+
+    if (unreadIncrement > 0) {
+      this.memberRepo
+        .incUnreadForRoom(params.targetRoomId, params.senderId, unreadIncrement)
+        .catch((err: unknown) => {
+          logger.warn(
+            `GroupMessageService|forwardMessage|incUnreadForRoom failed: ${String(err)}`
+          );
+        });
+    }
 
     return withRole(message);
   }
@@ -1041,6 +1095,12 @@ export class GroupMessageService {
       const wire = toWireMessage(
         message as { messageType?: string | null }
       ) as unknown as Record<string, unknown>;
+      wire.countInUnread = shouldCountInUnread({
+        messageType: message.messageType,
+        systemEvent: message.systemEvent,
+        explicit: (message as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      });
 
       if (typeof wire.senderAvatar === "string") {
         wire.senderAvatar = urlFromMap(urlMap, wire.senderAvatar);

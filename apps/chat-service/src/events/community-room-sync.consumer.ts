@@ -629,6 +629,8 @@ export class CommunityRoomSyncConsumer {
       serverTs: sentAt,
       systemEvent: "COMMUNITY_INVITE",
       systemData,
+      countInUnread: (message as unknown as { countInUnread?: boolean | null })
+        .countInUnread,
     });
     await redis
       .publish(

@@ -41,6 +41,7 @@ import {
   fileMediaKey,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
+import { shouldCountInUnread } from "../lib/unread-count.js";
 
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
@@ -106,7 +107,7 @@ export class PrivateMessageService {
           params.senderId,
           params.clientMessageId
         );
-        const messages = batch.length > 0 ? batch : [existing];
+        const messages = (batch?.length ?? 0) > 0 ? batch : [existing];
         return markAlbumIdempotentReplay(
           messages[messages.length - 1]!,
           messages
@@ -190,7 +191,7 @@ export class PrivateMessageService {
                     params.clientMessageId
                   )
                 : [];
-            const messages = batch.length > 0 ? batch : [dup];
+            const messages = (batch?.length ?? 0) > 0 ? batch : [dup];
             return markAlbumIdempotentReplay(
               messages[messages.length - 1]!,
               messages
@@ -202,6 +203,14 @@ export class PrivateMessageService {
     }
 
     const message = created[created.length - 1]!;
+    const unreadIncrement = created.filter((m) =>
+      shouldCountInUnread({
+        messageType: m.messageType,
+        systemEvent: m.systemEvent,
+        explicit: (m as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      })
+    ).length;
 
     // Update room with last message; unread += one per persisted row.
     this.roomRepo
@@ -217,7 +226,7 @@ export class PrivateMessageService {
           createdAt: message.createdAt,
         },
         receiverId: params.receiverId,
-        unreadIncrement: created.length,
+        unreadIncrement,
       })
       .catch((err: unknown) => {
         logger.warn(`PrivateMessageService|updateRoom failed: ${String(err)}`);
@@ -597,7 +606,30 @@ export class PrivateMessageService {
     if (message.senderId !== userId) {
       throw new BadRequestError("CHAT_DELETE_OWN_MESSAGES_ONLY");
     }
-    return this.messageRepo.deleteForEveryone(messageId, userId);
+    const deleted = await this.messageRepo.deleteForEveryone(messageId, userId);
+    if (
+      shouldCountInUnread({
+        messageType: message.messageType,
+        systemEvent: message.systemEvent,
+        explicit: (message as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      }) &&
+      message.receiverId
+    ) {
+      this.roomRepo
+        .decrementUnreadForMessage({
+          roomId: message.roomId,
+          recipientId: message.receiverId,
+          messageId: message.id,
+          messageCreatedAt: message.createdAt,
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            `PrivateMessageService|decrementUnreadForMessage failed: ${String(err)}`
+          );
+        });
+    }
+    return deleted;
   }
 
   async editMessage(params: {
@@ -849,6 +881,14 @@ export class PrivateMessageService {
           createdAt: message.createdAt,
         },
         receiverId: params.receiverId,
+        unreadIncrement: shouldCountInUnread({
+          messageType: message.messageType,
+          systemEvent: message.systemEvent,
+          explicit: (message as unknown as { countInUnread?: boolean | null })
+            .countInUnread,
+        })
+          ? 1
+          : 0,
       })
       .catch((err: unknown) => {
         logger.warn(
@@ -1024,6 +1064,12 @@ export class PrivateMessageService {
       const wire = toWireMessage(
         message as { messageType?: string | null }
       ) as unknown as Record<string, unknown>;
+      wire.countInUnread = shouldCountInUnread({
+        messageType: message.messageType,
+        systemEvent: message.systemEvent,
+        explicit: (message as unknown as { countInUnread?: boolean | null })
+          .countInUnread,
+      });
       const displayName = (snapshot.displayName as string) || "";
       const avatar = urlFromMap(urlMap, (snapshot.avatar as string) || "");
 

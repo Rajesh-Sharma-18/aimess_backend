@@ -14,6 +14,10 @@ import {
   isPersonalJoinSessionType,
   isHiddenSystemMessage,
 } from "@aimess/constants";
+import {
+  shouldCountInUnread,
+  UNREAD_COUNTABLE_RAW_MATCH,
+} from "../lib/unread-count.js";
 
 /**
  * PERSONAL system-message visibility check (applied in memory for Prisma
@@ -80,6 +84,10 @@ export class GeneralRoomMessageRepository {
         senderName: (data.senderName as string) ?? null,
         senderAvatar: (data.senderAvatar as string) ?? null,
         message: (data.message as string) ?? null,
+        countInUnread: shouldCountInUnread({
+          messageType: (data.messageType as string) ?? "text",
+          explicit: data.countInUnread as boolean | null | undefined,
+        }),
         reactions: (data.reactions as object) ?? {},
         parentMessageId: (data.parentMessageId as string) ?? null,
         quoteData: (data.quoteData as object) ?? null,
@@ -129,6 +137,10 @@ export class GeneralRoomMessageRepository {
         messageType: "SYSTEM",
         systemMessageType: params.systemMessageType,
         systemMetadata: params.metadata as Prisma.InputJsonValue,
+        countInUnread: shouldCountInUnread({
+          messageType: "SYSTEM",
+          systemMessageType: params.systemMessageType,
+        }),
         visibleToUserId: params.visibleToUserId ?? null,
         clientMessageId: params.clientMessageId ?? null,
         reactions: {},
@@ -648,9 +660,7 @@ export class GeneralRoomMessageRepository {
             // Hidden membership lines never count toward unread (consistency with
             // countUnreadBulk / conversationMatch).
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
-            // No system message (livestream start/end, community updates, etc.)
-            // should ever inflate unread — only user-generated chat messages count.
-            messageType: { $ne: "SYSTEM" },
+            ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
         { $count: "total" },
@@ -696,9 +706,7 @@ export class GeneralRoomMessageRepository {
             visibleToUserId: null,
             // Suppressed moderation lines never count toward unread either.
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
-            // No system message (livestream start/end, community updates, etc.)
-            // should ever inflate unread — only user-generated chat messages count.
-            messageType: { $ne: "SYSTEM" },
+            ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
         {
@@ -911,19 +919,14 @@ export class GeneralRoomMessageRepository {
   }
 
   async deleteForUser(messageId: string, userId: string): Promise<void> {
-    const existing = await this.prisma.generalRoomMessage.findUnique({
-      where: { id: messageId },
-    });
-    if (!existing) return;
-
-    const deletedBy = (existing.deletedBy ?? []) as string[];
-    if (!deletedBy.includes(userId)) {
-      deletedBy.push(userId);
-    }
-
-    await this.prisma.generalRoomMessage.update({
-      where: { id: messageId },
-      data: { deletedBy },
+    await this.prisma.$runCommandRaw({
+      update: "general_room_messages",
+      updates: [
+        {
+          q: { _id: { $oid: messageId } },
+          u: { $addToSet: { deletedBy: userId } },
+        },
+      ],
     });
   }
 
