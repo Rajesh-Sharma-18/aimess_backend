@@ -52,13 +52,13 @@ export function convertMessageToPreview(
     case "GIF":
       return "🎞 GIF";
     case "VOICE":
-      return "🎤 Voice message";
+      return "🎤 Voice Message";
     case "AUDIO":
       return "🎵 Audio";
     case "DOCUMENT":
-      return fileName ? `📎 ${fileName}` : "📎 Document";
+      return fileName ? `📄 ${fileName}` : "📄 Document";
     case "STICKER":
-      return "🌟 Sticker";
+      return "😊 Sticker";
     case "LOCATION":
       return placeName ? `📍 ${placeName}` : "📍 Location";
     case "CONTACT":

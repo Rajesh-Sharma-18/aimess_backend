@@ -1869,7 +1869,10 @@ export class CommunityMessageService {
       });
       return {
         prevMessageId: prev.id,
-        preview: convertMessageToPreview(prev.messageType, prev.message ?? ""),
+        preview: convertMessageToPreview(
+          prev.messageType,
+          this.messagePreviewContent(prev)
+        ),
         messageType: prev.messageType,
         sentBy: prev.sentBy,
         senderName: prev.senderName ?? "",
@@ -1932,7 +1935,10 @@ export class CommunityMessageService {
     if (prev) {
       return {
         prevMessageId: prev.id,
-        preview: convertMessageToPreview(prev.messageType, prev.message ?? ""),
+        preview: convertMessageToPreview(
+          prev.messageType,
+          this.messagePreviewContent(prev)
+        ),
         messageType: prev.messageType,
         sentBy: prev.sentBy,
         senderName: prev.senderName ?? "",
