@@ -240,6 +240,26 @@ export class GroupMemberRepository {
     });
   }
 
+  async decrementUnreadForMessage(params: {
+    roomId: string;
+    senderId: string | null;
+    messageCreatedAt: Date;
+  }): Promise<void> {
+    await this.prisma.groupMember.updateMany({
+      where: {
+        roomId: params.roomId,
+        status: "ACTIVE",
+        unreadCount: { gt: 0 },
+        ...(params.senderId ? { userId: { not: params.senderId } } : {}),
+        OR: [
+          { lastReadAt: null },
+          { lastReadAt: { lt: params.messageCreatedAt } },
+        ],
+      },
+      data: { unreadCount: { decrement: 1 } },
+    });
+  }
+
   async countActiveMembers(roomId: string): Promise<number> {
     return this.prisma.groupMember.count({
       where: { roomId, status: "ACTIVE" },

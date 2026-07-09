@@ -14,6 +14,10 @@ import {
   isPersonalJoinSessionType,
   isHiddenSystemMessage,
 } from "@aimess/constants";
+import {
+  shouldCountInUnread,
+  UNREAD_COUNTABLE_RAW_MATCH,
+} from "../lib/unread-count.js";
 
 /**
  * PERSONAL system-message visibility check (applied in memory for Prisma
@@ -65,8 +69,68 @@ function isVisibleToUser(
   return true;
 }
 
+function personalJoinSessionGuard(
+  userId: string,
+  latestPersonalJoinMessageId: string | null
+): Record<string, unknown> {
+  const personalJoin = {
+    visibleToUserId: userId,
+    systemMessageType: { $in: [...PERSONAL_JOIN_SESSION_TYPES] },
+  };
+  if (!latestPersonalJoinMessageId) {
+    return { $nor: [personalJoin] };
+  }
+  return {
+    $or: [
+      { $nor: [personalJoin] },
+      { _id: { $eq: { $oid: latestPersonalJoinMessageId } } },
+    ],
+  };
+}
+
+function isLatestPersonalJoinSessionForUser(
+  msg: {
+    id: string;
+    visibleToUserId?: string | null;
+    systemMessageType?: string | null;
+  },
+  userId: string,
+  latestPersonalJoinMessageId: string | null
+): boolean {
+  if (
+    msg.visibleToUserId === userId &&
+    isPersonalJoinSessionType(msg.systemMessageType)
+  ) {
+    return latestPersonalJoinMessageId === msg.id;
+  }
+  return true;
+}
+
 export class GeneralRoomMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
+
+  private async findLatestPersonalJoinMessageId(
+    roomId: string,
+    userId: string
+  ): Promise<string | null> {
+    const raw = (await this.prisma.generalRoomMessage.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            roomId: { $oid: roomId },
+            visibleToUserId: userId,
+            systemMessageType: { $in: [...PERSONAL_JOIN_SESSION_TYPES] },
+            deletedForAll: false,
+            deletedBy: { $ne: userId },
+          },
+        },
+        { $sort: { createdAt: -1, _id: -1 } },
+        { $limit: 1 },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    const id = raw[0]?._id;
+    return typeof id === "string" ? id : (id?.$oid ?? null);
+  }
 
   async save(data: {
     roomId: string;
@@ -80,6 +144,10 @@ export class GeneralRoomMessageRepository {
         senderName: (data.senderName as string) ?? null,
         senderAvatar: (data.senderAvatar as string) ?? null,
         message: (data.message as string) ?? null,
+        countInUnread: shouldCountInUnread({
+          messageType: (data.messageType as string) ?? "text",
+          explicit: data.countInUnread as boolean | null | undefined,
+        }),
         reactions: (data.reactions as object) ?? {},
         parentMessageId: (data.parentMessageId as string) ?? null,
         quoteData: (data.quoteData as object) ?? null,
@@ -129,6 +197,10 @@ export class GeneralRoomMessageRepository {
         messageType: "SYSTEM",
         systemMessageType: params.systemMessageType,
         systemMetadata: params.metadata as Prisma.InputJsonValue,
+        countInUnread: shouldCountInUnread({
+          messageType: "SYSTEM",
+          systemMessageType: params.systemMessageType,
+        }),
         visibleToUserId: params.visibleToUserId ?? null,
         clientMessageId: params.clientMessageId ?? null,
         reactions: {},
@@ -191,15 +263,20 @@ export class GeneralRoomMessageRepository {
   ): Promise<GeneralRoomMessage[]> {
     // Prisma MongoDB doesn't support $nin on JSON arrays directly.
     // Fetch and filter in memory for deletedBy + personal visibility.
-    const messages = await this.prisma.generalRoomMessage.findMany({
-      where: {
-        roomId,
-        createdAt: { lt: new Date(beforeTimestamp) },
-        deletedForAll: false,
-      },
-      orderBy: { createdAt: "desc" },
-      take: limit + 10,
-    });
+    const [messages, latestPersonalJoinMessageId] = await Promise.all([
+      this.prisma.generalRoomMessage.findMany({
+        where: {
+          roomId,
+          createdAt: { lt: new Date(beforeTimestamp) },
+          deletedForAll: false,
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit + 10,
+      }),
+      viewerIsActiveMember
+        ? this.findLatestPersonalJoinMessageId(roomId, userId)
+        : Promise.resolve(null),
+    ]);
 
     // Filter out messages this user deleted-for-me + PERSONAL messages targeted
     // at someone else (in memory — see isVisibleToUser).
@@ -208,7 +285,12 @@ export class GeneralRoomMessageRepository {
         const deletedBy = (msg.deletedBy ?? []) as string[];
         return (
           !deletedBy.includes(userId) &&
-          isVisibleToUser(msg, userId, viewerIsActiveMember)
+          isVisibleToUser(msg, userId, viewerIsActiveMember) &&
+          isLatestPersonalJoinSessionForUser(
+            msg,
+            userId,
+            latestPersonalJoinMessageId
+          )
         );
       })
       .slice(0, limit);
@@ -237,6 +319,7 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     viewerIsActiveMember: boolean;
+    latestPersonalJoinMessageId?: string | null;
   }): Record<string, unknown> {
     const match: Record<string, unknown> = {
       roomId: { $oid: params.roomId },
@@ -251,6 +334,13 @@ export class GeneralRoomMessageRepository {
           visibleToUserId: params.userId,
           systemMessageType: { $in: [...PERSONAL_JOIN_SESSION_TYPES] },
         },
+      ];
+    } else {
+      match.$and = [
+        personalJoinSessionGuard(
+          params.userId,
+          params.latestPersonalJoinMessageId ?? null
+        ),
       ];
     }
     return match;
@@ -291,10 +381,15 @@ export class GeneralRoomMessageRepository {
     viewerIsActiveMember?: boolean;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
+    const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
+    const latestPersonalJoinMessageId = viewerIsActiveMember
+      ? await this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
+      : null;
     const base = this.timelineMatch({
       roomId: params.roomId,
       userId: params.userId,
-      viewerIsActiveMember: params.viewerIsActiveMember ?? true,
+      viewerIsActiveMember,
+      latestPersonalJoinMessageId,
     });
 
     const date = { $date: params.ts.toISOString() };
@@ -477,13 +572,18 @@ export class GeneralRoomMessageRepository {
     userId: string;
     viewerIsActiveMember?: boolean;
   }): Promise<number> {
+    const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
+    const latestPersonalJoinMessageId = viewerIsActiveMember
+      ? await this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
+      : null;
     const result = (await this.prisma.generalRoomMessage.aggregateRaw({
       pipeline: [
         {
           $match: this.timelineMatch({
             roomId: params.roomId,
             userId: params.userId,
-            viewerIsActiveMember: params.viewerIsActiveMember ?? true,
+            viewerIsActiveMember,
+            latestPersonalJoinMessageId,
           }),
         },
         { $count: "total" },
@@ -505,7 +605,7 @@ export class GeneralRoomMessageRepository {
   }): Promise<GeneralRoomMessage[]> {
     const half = Math.floor(params.limit / 2);
 
-    const [older, newer] = await Promise.all([
+    const [older, newer, latestPersonalJoinMessageId] = await Promise.all([
       // anchor-inclusive older half (desc → reversed to asc before merge)
       this.prisma.generalRoomMessage.findMany({
         where: {
@@ -526,13 +626,25 @@ export class GeneralRoomMessageRepository {
         orderBy: { createdAt: "asc" },
         take: half,
       }),
+      (params.viewerIsActiveMember ?? true)
+        ? this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
+        : Promise.resolve(null),
     ]);
 
     return [...older.reverse(), ...newer].filter((msg) => {
       const deletedBy = (msg.deletedBy ?? []) as string[];
       return (
         !deletedBy.includes(params.userId) &&
-        isVisibleToUser(msg, params.userId, params.viewerIsActiveMember ?? true)
+        isVisibleToUser(
+          msg,
+          params.userId,
+          params.viewerIsActiveMember ?? true
+        ) &&
+        isLatestPersonalJoinSessionForUser(
+          msg,
+          params.userId,
+          latestPersonalJoinMessageId
+        )
       );
     });
   }
@@ -551,6 +663,7 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     beforeMs: number;
+    latestPersonalJoinMessageId?: string | null;
   }): Prisma.InputJsonObject {
     return {
       roomId: { $oid: params.roomId },
@@ -564,6 +677,12 @@ export class GeneralRoomMessageRepository {
       // chat timeline for everyone. `$nin` also matches docs where the field is
       // absent (regular messages), so they pass through.
       systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+      $and: [
+        personalJoinSessionGuard(
+          params.userId,
+          params.latestPersonalJoinMessageId ?? null
+        ),
+      ] as Prisma.InputJsonValue,
     };
   }
 
@@ -581,8 +700,13 @@ export class GeneralRoomMessageRepository {
     skip: number;
     take: number;
   }): Promise<GeneralRoomMessage[]> {
+    const latestPersonalJoinMessageId =
+      await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
     const raw = (await this.prisma.generalRoomMessage.findRaw({
-      filter: this.conversationMatch(params),
+      filter: this.conversationMatch({
+        ...params,
+        latestPersonalJoinMessageId,
+      }),
       options: {
         sort: { createdAt: -1 },
         skip: params.skip,
@@ -616,9 +740,16 @@ export class GeneralRoomMessageRepository {
     userId: string;
     beforeMs: number;
   }): Promise<number> {
+    const latestPersonalJoinMessageId =
+      await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
     const result = (await this.prisma.generalRoomMessage.aggregateRaw({
       pipeline: [
-        { $match: this.conversationMatch(params) },
+        {
+          $match: this.conversationMatch({
+            ...params,
+            latestPersonalJoinMessageId,
+          }),
+        },
         { $count: "total" },
       ],
     })) as unknown as Array<{ total: number }>;
@@ -648,9 +779,7 @@ export class GeneralRoomMessageRepository {
             // Hidden membership lines never count toward unread (consistency with
             // countUnreadBulk / conversationMatch).
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
-            // No system message (livestream start/end, community updates, etc.)
-            // should ever inflate unread — only user-generated chat messages count.
-            messageType: { $ne: "SYSTEM" },
+            ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
         { $count: "total" },
@@ -696,9 +825,7 @@ export class GeneralRoomMessageRepository {
             visibleToUserId: null,
             // Suppressed moderation lines never count toward unread either.
             systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
-            // No system message (livestream start/end, community updates, etc.)
-            // should ever inflate unread — only user-generated chat messages count.
-            messageType: { $ne: "SYSTEM" },
+            ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
         {
@@ -807,12 +934,14 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     beforeOrAt?: Date;
+    keepId?: string;
   }): Promise<string[]> {
     const where = {
       roomId: params.roomId,
       visibleToUserId: params.userId,
       systemMessageType: { in: [...PERSONAL_JOIN_SESSION_TYPES] },
       ...(params.beforeOrAt ? { createdAt: { lte: params.beforeOrAt } } : {}),
+      ...(params.keepId ? { NOT: { id: params.keepId } } : {}),
     };
     const stale = await this.prisma.generalRoomMessage.findMany({
       where,
@@ -911,19 +1040,14 @@ export class GeneralRoomMessageRepository {
   }
 
   async deleteForUser(messageId: string, userId: string): Promise<void> {
-    const existing = await this.prisma.generalRoomMessage.findUnique({
-      where: { id: messageId },
-    });
-    if (!existing) return;
-
-    const deletedBy = (existing.deletedBy ?? []) as string[];
-    if (!deletedBy.includes(userId)) {
-      deletedBy.push(userId);
-    }
-
-    await this.prisma.generalRoomMessage.update({
-      where: { id: messageId },
-      data: { deletedBy },
+    await this.prisma.$runCommandRaw({
+      update: "general_room_messages",
+      updates: [
+        {
+          q: { _id: { $oid: messageId } },
+          u: { $addToSet: { deletedBy: userId } },
+        },
+      ],
     });
   }
 
@@ -1052,6 +1176,11 @@ export class GeneralRoomMessageRepository {
       // regular messages).
       systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
     };
+    const latestPersonalJoinMessageId =
+      await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
+    matchStage.$and = [
+      personalJoinSessionGuard(params.userId, latestPersonalJoinMessageId),
+    ];
     if (params.sinceId) {
       matchStage["_id"] = { $gt: { $oid: params.sinceId } };
     }
@@ -1105,21 +1234,26 @@ export class GeneralRoomMessageRepository {
     limit: number;
     viewerIsActiveMember?: boolean;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
-    const raw = await this.prisma.generalRoomMessage.findMany({
-      where: {
-        roomId: params.roomId,
-        updatedAt: { gte: params.fromTs },
-        // deletedForAll intentionally NOT filtered — tombstones must be
-        // included so the client can reconcile deletes missed while offline.
-      },
-      // `sequenceNumber` is the secondary sort key so messages sharing the same
-      // updatedAt millisecond have a deterministic, total order across sync pages.
-      // NOTE: the boundary stays inclusive (`gte`) by design — clients de-dupe by
-      // id and apply mutations idempotently; a hot message whose updatedAt keeps
-      // advancing can still re-appear on the boundary (acceptable for sync).
-      orderBy: [{ updatedAt: "asc" }, { sequenceNumber: "asc" }],
-      take: params.limit + 1,
-    });
+    const [raw, latestPersonalJoinMessageId] = await Promise.all([
+      this.prisma.generalRoomMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          updatedAt: { gte: params.fromTs },
+          // deletedForAll intentionally NOT filtered — tombstones must be
+          // included so the client can reconcile deletes missed while offline.
+        },
+        // `sequenceNumber` is the secondary sort key so messages sharing the same
+        // updatedAt millisecond have a deterministic, total order across sync pages.
+        // NOTE: the boundary stays inclusive (`gte`) by design — clients de-dupe by
+        // id and apply mutations idempotently; a hot message whose updatedAt keeps
+        // advancing can still re-appear on the boundary (acceptable for sync).
+        orderBy: [{ updatedAt: "asc" }, { sequenceNumber: "asc" }],
+        take: params.limit + 1,
+      }),
+      (params.viewerIsActiveMember ?? true)
+        ? this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
+        : Promise.resolve(null),
+    ]);
 
     const hasMore = raw.length > params.limit;
     const messages = raw.slice(0, params.limit).filter((msg) => {
@@ -1127,7 +1261,16 @@ export class GeneralRoomMessageRepository {
       const deletedBy = (msg.deletedBy ?? []) as string[];
       return (
         !deletedBy.includes(params.userId) &&
-        isVisibleToUser(msg, params.userId, params.viewerIsActiveMember ?? true)
+        isVisibleToUser(
+          msg,
+          params.userId,
+          params.viewerIsActiveMember ?? true
+        ) &&
+        isLatestPersonalJoinSessionForUser(
+          msg,
+          params.userId,
+          latestPersonalJoinMessageId
+        )
       );
     });
 

@@ -277,6 +277,7 @@ describe("livestream events — typing-room broadcast contract", () => {
     "community:member:unmuted",
     "community:stream:started",
     "community:stream:ended",
+    "community:stream:updated",
   ]);
 
   it("community:stream:started reaches the typing room (banner appears)", () => {
@@ -287,6 +288,12 @@ describe("livestream events — typing-room broadcast contract", () => {
 
   it("community:stream:ended reaches the typing room (banner disappears)", () => {
     expect(TYPING_ROOM_BROADCAST_EVENTS.has("community:stream:ended")).toBe(
+      true
+    );
+  });
+
+  it("community:stream:updated reaches the typing room (title/badge metadata updates)", () => {
+    expect(TYPING_ROOM_BROADCAST_EVENTS.has("community:stream:updated")).toBe(
       true
     );
   });

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
+import { emitPersonalizedSender } from "../emit-personalized.js";
 import type { NotificationClient } from "../../grpc/clients/notification.client.js";
 
 const NotificationsFetchSchema = z.object({
@@ -40,9 +41,12 @@ export function registerNotifyNamespace(
     if (!channel.startsWith("notify:")) return;
     try {
       const parsed = JSON.parse(message) as RedisSocketEvent;
-      notify
-        .to(channel.replace("notify:", "user:"))
-        .emit(parsed.event, parsed.data);
+      void emitPersonalizedSender(
+        notify,
+        channel.replace("notify:", "user:"),
+        parsed.event,
+        parsed.data
+      );
     } catch (err) {
       logger.warn(
         `/notify Redis message parse error on ${channel}: ${String(err)}`

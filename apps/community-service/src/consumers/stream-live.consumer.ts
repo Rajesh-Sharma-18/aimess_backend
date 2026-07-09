@@ -27,6 +27,9 @@ const DLQ = "stream.live.community.queue.dlq";
 const DLQ_ROUTING_KEY = "stream.live.community.queue.dead";
 
 const PREFETCH = 5;
+const STREAM_STARTED = "stream.started";
+const STREAM_ENDED = "stream.ended";
+const STREAM_UPDATED = "stream.updated";
 
 interface StreamStartedData {
   streamId: string;
@@ -52,6 +55,18 @@ interface StreamEndedData {
   peakViewers: number;
 }
 
+interface StreamUpdatedData {
+  streamId: string;
+  communityId: string;
+  creatorId: string;
+  title?: string;
+  description?: string;
+  thumbnail?: string | null;
+  updatedAt?: string;
+}
+
+type StreamLiveData = StreamStartedData | StreamEndedData | StreamUpdatedData;
+
 export async function startStreamLiveConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
   const channel = await connection.createChannel();
@@ -70,9 +85,10 @@ export async function startStreamLiveConsumer(): Promise<void> {
     deadLetterRoutingKey: DLQ_ROUTING_KEY,
   });
 
-  // Bind both routing keys to the same queue.
-  await channel.bindQueue(QUEUE, EXCHANGE, "stream.started");
-  await channel.bindQueue(QUEUE, EXCHANGE, "stream.ended");
+  // Bind livestream status/metadata routing keys to the same queue.
+  await channel.bindQueue(QUEUE, EXCHANGE, STREAM_STARTED);
+  await channel.bindQueue(QUEUE, EXCHANGE, STREAM_ENDED);
+  await channel.bindQueue(QUEUE, EXCHANGE, STREAM_UPDATED);
 
   await channel.prefetch(PREFETCH);
 
@@ -83,7 +99,7 @@ export async function startStreamLiveConsumer(): Promise<void> {
   channel.consume(QUEUE, async (message) => {
     if (!message) return;
 
-    let parsed: { type: string; data: StreamStartedData | StreamEndedData };
+    let parsed: { type: string; data: StreamLiveData };
     try {
       parsed = JSON.parse(message.content.toString()) as typeof parsed;
     } catch (error) {
@@ -100,7 +116,11 @@ export async function startStreamLiveConsumer(): Promise<void> {
         `🔴 [STREAM:CONSUMER] RabbitMQ message received type=${type} streamId=${(data as StreamStartedData).streamId} communityId=${(data as StreamStartedData).communityId}`
       );
 
-      if (type !== "stream.started" && type !== "stream.ended") {
+      if (
+        type !== STREAM_STARTED &&
+        type !== STREAM_ENDED &&
+        type !== STREAM_UPDATED
+      ) {
         logger.info(
           `🔴 [STREAM:CONSUMER] ⏭ ignoring unrelated event type=${type}`
         );
@@ -109,10 +129,13 @@ export async function startStreamLiveConsumer(): Promise<void> {
       }
 
       const { communityId, streamId } = data;
-      const isStarted = type === "stream.started";
+      const isStarted = type === STREAM_STARTED;
+      const isEnded = type === STREAM_ENDED;
       const socketEvent = isStarted
         ? "community:stream:started"
-        : "community:stream:ended";
+        : isEnded
+          ? "community:stream:ended"
+          : "community:stream:updated";
 
       const memberIds =
         await communityRepository.findActiveMemberIds(communityId);

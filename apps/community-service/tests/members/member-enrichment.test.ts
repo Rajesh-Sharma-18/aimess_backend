@@ -182,6 +182,7 @@ describe("listMembers — live profile enrichment (happy path)", () => {
     expect(repo.listMembers).toHaveBeenCalledWith(
       expect.objectContaining({
         communityId: CID,
+        callerId: CALLER,
         status: "ACTIVE",
         page: 2,
         limit: 10,

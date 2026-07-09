@@ -85,6 +85,16 @@ describe("selectListPreview", () => {
     expect(selectListPreview(row, SUBJECT)).toBe("Community photo updated");
   });
 
+  it("allows an empty selfPreview to clear a deleted-for-me viewer preview", () => {
+    const row = {
+      lastActivityPreview: "deleted message text",
+      lastActivitySelfPreview: "",
+      lastActivityUserId: SUBJECT,
+    };
+    expect(selectListPreview(row, SUBJECT)).toBe("");
+    expect(selectListPreview(row, OTHER)).toBe("deleted message text");
+  });
+
   it("does NOT leak the self preview when the subject id does not match the viewer", () => {
     const row = {
       lastActivityPreview: "Jim is now a moderator",

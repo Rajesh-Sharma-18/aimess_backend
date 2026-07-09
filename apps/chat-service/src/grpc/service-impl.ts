@@ -323,6 +323,9 @@ export function createMessagingImpl(
                 clientTs,
                 serverTs: rowServerTs,
                 sequenceNumber: row.sequenceNumber,
+                countInUnread: (
+                  row as unknown as { countInUnread?: boolean | null }
+                ).countInUnread,
               });
               publishRealtimeSafe(
                 `conv:${req.conversationId}`,
@@ -1114,6 +1117,9 @@ export function createMessagingImpl(
                   isForwarded: true,
                   serverTs,
                   sequenceNumber: message.sequenceNumber,
+                  countInUnread: (
+                    message as unknown as { countInUnread?: boolean | null }
+                  ).countInUnread,
                 }),
               })
             );
@@ -1953,6 +1959,9 @@ export function createCommunityImpl(
                   reactions: [],
                   message: row.message ?? "",
                   contentType: normalizeMessageType(row.messageType),
+                  countInUnread:
+                    (row as unknown as { countInUnread?: boolean | null })
+                      .countInUnread ?? true,
                   isEdited: false,
                   editedAt: 0,
                   clientMessageId: req.clientMessageId ?? "",
@@ -2701,6 +2710,16 @@ export function createCommunityImpl(
                 messagePreview: forEveryoneRecalc.preview,
                 activityType: "message",
               });
+            } else if (forEveryoneRecalc !== null) {
+              await getCommunityReconcileClient().updateMessageActivity({
+                communityId: req.communityId,
+                lastMessageAt: Date.now(),
+                lastMessageId: "",
+                senderUserId: "",
+                senderUsername: "",
+                messagePreview: "",
+                activityType: "message",
+              });
             }
           }
 
@@ -2759,7 +2778,9 @@ export function createCommunityImpl(
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
-              lastMessageAt: recalc.createdAt.getTime(),
+              lastMessageAt: recalc.hasLastMessage
+                ? recalc.createdAt.getTime()
+                : Date.now(),
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,
@@ -2780,7 +2801,9 @@ export function createCommunityImpl(
               senderId: recalc.sentBy,
               senderName: recalc.senderName,
               lastMessageId: recalc.prevMessageId ?? "",
-              lastMessageAt: recalc.createdAt.getTime(),
+              lastMessageAt: recalc.hasLastMessage
+                ? recalc.createdAt.getTime()
+                : Date.now(),
               preview: {
                 contentType: normalizeMessageType(recalc.messageType),
                 text: recalc.preview,

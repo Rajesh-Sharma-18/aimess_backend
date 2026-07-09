@@ -340,6 +340,8 @@ export class ChatMessageOrchestrator {
       clientTs,
       serverTs,
       sequenceNumber: msg.sequenceNumber,
+      countInUnread: (msg as unknown as { countInUnread?: boolean | null })
+        .countInUnread,
     });
 
     if (!alreadySent) {
@@ -371,6 +373,8 @@ export class ChatMessageOrchestrator {
           clientTs,
           serverTs: rowServerTs,
           sequenceNumber: row.sequenceNumber,
+          countInUnread: (row as unknown as { countInUnread?: boolean | null })
+            .countInUnread,
         });
         publishRealtimeSafe(
           this.redis,
@@ -515,6 +519,9 @@ export class ChatMessageOrchestrator {
       reactions: [],
       message: saved.message ?? "",
       contentType: normalizeMessageType(saved.messageType),
+      countInUnread:
+        (saved as unknown as { countInUnread?: boolean | null })
+          .countInUnread ?? true,
       clientMessageId,
       serverTs: sentAt,
       sentAt,
@@ -733,6 +740,9 @@ export class ChatMessageOrchestrator {
       reactions: [],
       message: saved.message ?? "",
       contentType: normalizeMessageType(saved.messageType),
+      countInUnread:
+        (saved as unknown as { countInUnread?: boolean | null })
+          .countInUnread ?? true,
       clientMessageId,
       isForwarded: true,
       serverTs: sentAt,

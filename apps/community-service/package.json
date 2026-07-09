@@ -12,6 +12,7 @@
     "db:backfill:category-name": "tsx prisma/seed/backfill-category-name.ts",
     "db:backfill:last-activity-at": "tsx prisma/seed/backfill-last-activity-at.ts",
     "db:backfill:status": "tsx prisma/seed/backfill-status.ts",
+    "db:repair:report-duplicates": "tsx scripts/repair-community-report-duplicates.ts --apply",
     "fix:search": "tsx scripts/fix-community-search.ts",
     "build": "prisma generate && tsc",
     "typecheck": "prisma generate && tsc --noEmit",

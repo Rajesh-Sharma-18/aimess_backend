@@ -68,6 +68,7 @@ import {
   fileMediaKey,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
+import { shouldCountInUnread } from "../lib/unread-count.js";
 
 /**
  * Client-facing community message row: the raw Prisma entity with its
@@ -823,6 +824,12 @@ export class CommunityMessageService {
     viewerUserId?: string
   ): CommunityMessageWire {
     const wire = toWireMessage(m) as Record<string, unknown>;
+    wire.countInUnread = shouldCountInUnread({
+      messageType: m.messageType,
+      systemMessageType: m.systemMessageType,
+      explicit: (m as unknown as { countInUnread?: boolean | null })
+        .countInUnread,
+    });
 
     // Resolve raw object keys → full download URLs on read (never persisted, so
     // CDN/presign rotation keeps working). Internal logic still reads raw rows.
@@ -1869,7 +1876,10 @@ export class CommunityMessageService {
       });
       return {
         prevMessageId: prev.id,
-        preview: convertMessageToPreview(prev.messageType, prev.message ?? ""),
+        preview: convertMessageToPreview(
+          prev.messageType,
+          this.messagePreviewContent(prev)
+        ),
         messageType: prev.messageType,
         sentBy: prev.sentBy,
         senderName: prev.senderName ?? "",
@@ -1932,7 +1942,10 @@ export class CommunityMessageService {
     if (prev) {
       return {
         prevMessageId: prev.id,
-        preview: convertMessageToPreview(prev.messageType, prev.message ?? ""),
+        preview: convertMessageToPreview(
+          prev.messageType,
+          this.messagePreviewContent(prev)
+        ),
         messageType: prev.messageType,
         sentBy: prev.sentBy,
         senderName: prev.senderName ?? "",

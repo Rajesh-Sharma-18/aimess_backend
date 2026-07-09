@@ -10,8 +10,10 @@ import { buildChatMessageEvent } from "../lib/chat-message.serializer.js";
 import { resolveMediaUrl } from "../lib/media-resolve.js";
 import type { GroupMessageRepository } from "../repositories/group-message.repository.js";
 import type { GroupRoomRepository } from "../repositories/group-room.repository.js";
+import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import { shouldCountInUnread } from "../lib/unread-count.js";
 
 export interface PostSystemMessageParams {
   roomId: string;
@@ -39,6 +41,7 @@ export class GroupSystemMessageService {
   constructor(
     private readonly messageRepo: GroupMessageRepository,
     private readonly roomRepo: GroupRoomRepository,
+    private readonly memberRepo: GroupMemberRepository,
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
     private readonly redis: Redis | Cluster
@@ -112,6 +115,23 @@ export class GroupSystemMessageService {
         createdAt: message.createdAt,
       });
 
+      if (
+        shouldCountInUnread({
+          messageType: message.messageType,
+          systemEvent,
+          explicit: (message as unknown as { countInUnread?: boolean | null })
+            .countInUnread,
+        })
+      ) {
+        this.memberRepo
+          .incUnreadForRoom(roomId, actorId ?? "", 1)
+          .catch((err: unknown) => {
+            logger.warn(
+              `GroupSystemMessageService|incUnreadForRoom failed room=${roomId}: ${String(err)}`
+            );
+          });
+      }
+
       // Real-time fan-out (best-effort) — same channel/event AND canonical
       // ChatMessage shape as a real send (§1/§9), with the SYSTEM extras.
       const sysServerTs =
@@ -140,6 +160,11 @@ export class GroupSystemMessageService {
               sequenceNumber: seq,
               systemEvent,
               systemData,
+              countInUnread: (
+                message as unknown as {
+                  countInUnread?: boolean | null;
+                }
+              ).countInUnread,
             }),
           })
         )
