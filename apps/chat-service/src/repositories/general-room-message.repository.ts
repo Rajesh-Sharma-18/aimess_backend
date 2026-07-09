@@ -11,8 +11,9 @@ import {
 import {
   PERSONAL_JOIN_SESSION_TYPES,
   HIDDEN_SYSTEM_MESSAGE_TYPES,
+  REALTIME_ONLY_SYSTEM_MESSAGE_TYPES,
   isPersonalJoinSessionType,
-  isHiddenSystemMessage,
+  isExcludedFromHistory,
 } from "@aimess/constants";
 import {
   shouldCountInUnread,
@@ -50,8 +51,11 @@ function isVisibleToUser(
   // the duplicate "You joined the community" the joiner saw: the legacy
   // MEMBER_JOINED was personalized to "You joined…", doubling the personal
   // COMMUNITY_JOINED line; hiding MEMBER_JOINED leaves exactly one personal line.
+  // Also excludes REAL-TIME-ONLY types (MEMBER_MUTED/MEMBER_UNMUTED) — delivered
+  // live to the affected member's socket, but never returned by a read path,
+  // not even to that same member on a later reload/resync.
   // Applies regardless of membership/visibility, so it runs first.
-  if (isHiddenSystemMessage(msg.systemMessageType)) {
+  if (isExcludedFromHistory(msg.systemMessageType)) {
     return false;
   }
   if (msg.visibleToUserId && msg.visibleToUserId !== userId) {
@@ -340,7 +344,15 @@ export class GeneralRoomMessageRepository {
       deletedForAll: false,
       deletedBy: { $ne: params.userId },
       visibleToUserId: { $in: [null, params.userId] },
-      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+      // Hidden lifecycle lines + REAL-TIME-ONLY types (MEMBER_MUTED/UNMUTED) —
+      // the latter are delivered live to the affected member's socket but must
+      // never resurface via history, not even for that same member on reload.
+      systemMessageType: {
+        $nin: [
+          ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+          ...REALTIME_ONLY_SYSTEM_MESSAGE_TYPES,
+        ],
+      },
     };
     const andClauses: Record<string, unknown>[] = [];
     if (!params.viewerIsActiveMember) {
@@ -711,10 +723,16 @@ export class GeneralRoomMessageRepository {
       // PERSONAL message visibility: keep messages with no target OR targeted at
       // this user. Stored as null when absent, so $in must include null.
       visibleToUserId: { $in: [null, params.userId] },
-      // Suppressed moderation lines (removed/banned/unbanned) are hidden from the
-      // chat timeline for everyone. `$nin` also matches docs where the field is
-      // absent (regular messages), so they pass through.
-      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+      // Suppressed moderation lines (removed/banned/unbanned) + REAL-TIME-ONLY
+      // types (MEMBER_MUTED/UNMUTED) are hidden from the chat timeline for
+      // everyone, including the affected member on reload. `$nin` also matches
+      // docs where the field is absent (regular messages), so they pass through.
+      systemMessageType: {
+        $nin: [
+          ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+          ...REALTIME_ONLY_SYSTEM_MESSAGE_TYPES,
+        ],
+      },
       $and: [
         personalJoinSessionGuard(
           params.userId,
@@ -921,6 +939,13 @@ export class GeneralRoomMessageRepository {
             // excluded — they're already covered by room.lastMessage).
             visibleToUserId: params.userId,
             deletedBy: { $ne: params.userId },
+            // REAL-TIME-ONLY types (MEMBER_MUTED/UNMUTED) must never become the
+            // community-list personal lastActivity preview — they are delivered
+            // live to the affected member's socket only, never persisted-and-
+            // readable via this list overlay.
+            systemMessageType: {
+              $nin: [...REALTIME_ONLY_SYSTEM_MESSAGE_TYPES],
+            },
           },
         },
         { $sort: { createdAt: -1 } },
@@ -1219,9 +1244,15 @@ export class GeneralRoomMessageRepository {
       deletedBy: { $ne: params.userId },
       // PERSONAL message visibility — never surface another user's personal message.
       visibleToUserId: { $in: [null, params.userId] },
-      // Suppressed moderation lines hidden from everyone ($nin keeps field-absent
-      // regular messages).
-      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+      // Suppressed moderation lines + REAL-TIME-ONLY types (MEMBER_MUTED/UNMUTED)
+      // hidden from everyone, including the affected member on catch-up ($nin
+      // keeps field-absent regular messages).
+      systemMessageType: {
+        $nin: [
+          ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+          ...REALTIME_ONLY_SYSTEM_MESSAGE_TYPES,
+        ],
+      },
     };
     const latestPersonalJoinMessageId =
       await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);

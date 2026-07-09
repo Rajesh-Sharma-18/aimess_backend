@@ -461,6 +461,75 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     ]);
   });
 
+  // -------------------------------------------------------------------------
+  // MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL + REAL-TIME-ONLY (Telegram-style
+  // toast, not a chat-history line): delivered live to the affected member's
+  // own socket, but NEVER returned by history/sync — not even to that same
+  // member on a hard reload — and never to other members either.
+  // -------------------------------------------------------------------------
+  it("excludes MEMBER_MUTED/MEMBER_UNMUTED from history for EVERYONE — including the affected member on reload — via the real history/sync read path", async () => {
+    const rows = [
+      // This viewer's own mute + unmute lines — must NOT reappear on reload,
+      // even though they are PERSONAL and targeted at this exact viewer.
+      {
+        id: "muted-mine",
+        deletedBy: [],
+        systemMessageType: "MEMBER_MUTED",
+        visibleToUserId: USER_ID,
+      },
+      {
+        id: "unmuted-mine",
+        deletedBy: [],
+        systemMessageType: "MEMBER_UNMUTED",
+        visibleToUserId: USER_ID,
+      },
+      // Another member's mute/unmute lines — never visible to this viewer
+      // either, even though they are an active member of the same community.
+      {
+        id: "muted-other",
+        deletedBy: [],
+        systemMessageType: "MEMBER_MUTED",
+        visibleToUserId: OTHER_ID,
+      },
+      {
+        id: "unmuted-other",
+        deletedBy: [],
+        systemMessageType: "MEMBER_UNMUTED",
+        visibleToUserId: OTHER_ID,
+      },
+      { id: "msg", deletedBy: [] }, // regular message
+    ];
+    const repo = new GeneralRoomMessageRepository(
+      makeCommunityPrisma(rows) as never
+    );
+
+    const viewer = await repo.findByRoomIdTimeline({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      direction: "before",
+      ts: new Date(),
+      inclusive: true,
+      limit: 30,
+      viewerIsActiveMember: true,
+    });
+    // Only the regular message survives — the viewer's OWN mute/unmute lines
+    // are excluded too, exactly like every other member's.
+    expect(viewer.messages.map((m) => m.id)).toEqual(["msg"]);
+
+    // The other member reads the SAME room and also never sees any
+    // mute/unmute line — theirs or USER_ID's.
+    const otherViewer = await repo.findByRoomIdTimeline({
+      roomId: ROOM_ID,
+      userId: OTHER_ID,
+      direction: "before",
+      ts: new Date(),
+      inclusive: true,
+      limit: 30,
+      viewerIsActiveMember: true,
+    });
+    expect(otherViewer.messages.map((m) => m.id)).toEqual(["msg"]);
+  });
+
   it("joiner with a legacy MEMBER_JOINED + personal COMMUNITY_JOINED sees exactly ONE join line (the duplicate fix)", async () => {
     const rows = [
       // Legacy community-wide join line (would personalize to "You joined…" for
@@ -557,7 +626,13 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       )
       .find((m) => m?.systemMessageType?.$nin);
     expect(match.systemMessageType).toEqual({
-      $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"],
+      $nin: [
+        "MEMBER_LEFT",
+        "MEMBER_JOINED",
+        "MEMBER_REMOVED",
+        "MEMBER_MUTED",
+        "MEMBER_UNMUTED",
+      ],
     });
   });
 
@@ -577,7 +652,61 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
       .map((call) => call[0].pipeline[0].$match)
       .find((m) => m?.systemMessageType?.$nin);
     expect(match.systemMessageType).toEqual({
-      $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"],
+      $nin: [
+        "MEMBER_LEFT",
+        "MEMBER_JOINED",
+        "MEMBER_REMOVED",
+        "MEMBER_MUTED",
+        "MEMBER_UNMUTED",
+      ],
+    });
+  });
+
+  it("findUpdatedAtSince (incremental sync) excludes MEMBER_MUTED/MEMBER_UNMUTED — even the affected member's own row never resyncs", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([]); // findLatestPersonalJoinMessageId
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: "muted-mine",
+        deletedBy: [],
+        visibleToUserId: USER_ID,
+        systemMessageType: "MEMBER_MUTED",
+      },
+      {
+        id: "unmuted-mine",
+        deletedBy: [],
+        visibleToUserId: USER_ID,
+        systemMessageType: "MEMBER_UNMUTED",
+      },
+      { id: "msg", deletedBy: [], visibleToUserId: null },
+    ]);
+    const prisma = { generalRoomMessage: { aggregateRaw, findMany } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    const { messages } = await repo.findUpdatedAtSince({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      fromTs: new Date(0),
+      limit: 20,
+    });
+
+    expect(messages.map((m) => m.id)).toEqual(["msg"]);
+  });
+
+  it("findLatestPersonalByRooms (community-list personal lastActivity overlay) excludes MEMBER_MUTED/MEMBER_UNMUTED via $nin", async () => {
+    const aggregateRaw = jest.fn().mockResolvedValue([]);
+    const prisma = { generalRoomMessage: { aggregateRaw } };
+    const repo = new GeneralRoomMessageRepository(prisma as never);
+
+    await repo.findLatestPersonalByRooms({
+      userId: USER_ID,
+      roomIds: [ROOM_ID],
+    });
+
+    const match = aggregateRaw.mock.calls
+      .map((call) => call[0].pipeline[0].$match)
+      .find((m) => m?.systemMessageType?.$nin);
+    expect(match.systemMessageType).toEqual({
+      $nin: ["MEMBER_MUTED", "MEMBER_UNMUTED"],
     });
   });
 

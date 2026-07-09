@@ -5406,8 +5406,9 @@ components:
               MEMBER_REMOVED                → "{{targetName}} was removed"
               MEMBER_BANNED                 → "{{targetName}} was banned"
               MEMBER_UNBANNED               → "{{targetName}} was unbanned"
-              MEMBER_MUTED                  → "{{targetName}} was muted"
-              MEMBER_UNMUTED                → "{{targetName}} was unmuted"
+              MEMBER_MUTED (target only)    → "You are muted until {{date}}" or
+                                              "You are muted indefinitely" (PERSONAL, real-time only)
+              MEMBER_UNMUTED (target only)  → "You were unmuted" (PERSONAL, real-time only)
               PINNED_MESSAGE (actor)        → "You pinned a message"
               PINNED_MESSAGE (bystander)    → "{{actorName}} pinned a message"
               COMMUNITY_JOINED              → "You joined the community" (PERSONAL)
@@ -5415,19 +5416,28 @@ components:
               JOIN_REQUEST_REJECTED         → "Your request to join was declined" (PERSONAL)
 
             Hidden in chat timeline (never returned in history): MEMBER_LEFT, MEMBER_JOINED.
-            MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are visible to all members.
+            MEMBER_REMOVED / MEMBER_UNBANNED are visible to all members.
             PERSONAL types (isPersonal=true): COMMUNITY_JOINED, JOIN_REQUEST_APPROVED,
-            JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF.
+            JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_BANNED, MEMBER_MUTED,
+            MEMBER_UNMUTED — delivered ONLY to the affected user's `user:<id>`
+            channel and never broadcast to / readable by other members.
+            MEMBER_MUTED / MEMBER_UNMUTED are additionally REAL-TIME ONLY: unlike
+            every other PERSONAL type, they are never returned by history,
+            pagination, incremental sync, or catch-up APIs — not even to the
+            affected user on a later reload — and never become the community-list
+            personal lastActivity preview. They exist only as a live socket push.
             MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED (old persisted rows only).
         isPersonal:
           type: boolean
           description: >-
             True for user-scoped (PERSONAL) SYSTEM messages — visible ONLY to the
             target user, never broadcast to the community room and never returned
-            to other members in history. COMMUNITY_JOINED ("You joined the
-            community") is PERSONAL: delivered to the joiner's `user:<id>` channel
-            only. All other system types are COMMUNITY-visible (isPersonal=false /
-            absent). Null/absent for normal messages.
+            to other members in history. PERSONAL types: COMMUNITY_JOINED,
+            JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF,
+            MEMBER_BANNED, MEMBER_MUTED, MEMBER_UNMUTED — each delivered to the
+            affected user's `user:<id>` channel only. All other system types are
+            COMMUNITY-visible (isPersonal=false / absent). Null/absent for normal
+            messages.
         systemMetadata:
           type: object
           nullable: true

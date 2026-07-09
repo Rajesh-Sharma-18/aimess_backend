@@ -4125,6 +4125,23 @@ export const communityService = {
       actorId: callerId,
     });
 
+    // Mute is silent COMMUNITY-wide (no "{name} was muted" line for other
+    // members — MEMBER_MUTED is PERSONAL visibility), but the muted member
+    // themselves gets a private "You were muted in this community." line in
+    // their own history (Telegram parity), delivered only to their own
+    // `user:<id>` channel — never broadcast to the community room.
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_MUTED",
+      actorId: callerId,
+      targetUserId,
+      visibleToUserId: targetUserId,
+      extra: {
+        mutedUntil: mutedUntil ? mutedUntil.getTime() : null,
+        durationMinutes: durationMinutes ?? null,
+      },
+    });
+
     // Best-effort: push a real-time notice to any of the target's currently-LIVE
     // stream sessions in this community. Never blocks/fails the mute itself
     // (notifyMemberMuteStatus swallows its own errors).
@@ -4226,11 +4243,17 @@ export const communityService = {
       0
     );
 
+    // Unmute is silent COMMUNITY-wide (no "{name} was unmuted" line for other
+    // members — MEMBER_UNMUTED is PERSONAL visibility), but the unmuted member
+    // themselves gets a private "You were unmuted in this community." line in
+    // their own history (Telegram parity), delivered only to their own
+    // `user:<id>` channel — never broadcast to the community room.
     this.emitMemberSystemMessage({
       communityId,
       systemMessageType: "MEMBER_UNMUTED",
       actorId: callerId,
       targetUserId,
+      visibleToUserId: targetUserId,
     });
   },
 

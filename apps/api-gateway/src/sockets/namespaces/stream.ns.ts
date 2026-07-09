@@ -104,9 +104,9 @@ async function enrichCommentAvatar(
 ): Promise<Record<string, unknown>> {
   const key =
     typeof comment.senderAvatar === "string" ? comment.senderAvatar : "";
-  const sentBy = typeof comment.sentBy === "string" ? comment.sentBy : "";
+  const senderId = typeof comment.senderId === "string" ? comment.senderId : "";
   if (!key) return comment;
-  const url = await presignAvatar(mediaClient, key, sentBy);
+  const url = await presignAvatar(mediaClient, key, senderId);
   // On presign failure fall back to the raw object key rather than "".
   // resolveStreamCommentAvatar() on the client prepends cdnUrl for non-http values,
   // so the key still resolves to an image instead of being silently dropped.
@@ -589,8 +589,15 @@ export function registerStreamNamespace(
               clientCommentId: clientCommentId ?? "",
             });
             // The stream:comment:new broadcast arrives via the psubscribe path
-            // (stream-service publishes it) — we do NOT emit it here.
-            ackOk(callback, "SOCKET_STREAM_COMMENT_POSTED", locale, result);
+            // (stream-service publishes it) — we do NOT emit it here. The ack
+            // itself stays a thin confirmation (community/private chat pattern):
+            // the full message shape only ever goes out on the :new broadcast.
+            ackOk(callback, "SOCKET_STREAM_COMMENT_POSTED", locale, {
+              commentId: result.comment.id,
+              streamId,
+              sentAt: result.comment.createdAt,
+              clientCommentId: clientCommentId ?? "",
+            });
           } catch (err: unknown) {
             const code = (err as { code?: number }).code;
             if (code === grpcStatus.PERMISSION_DENIED) {
