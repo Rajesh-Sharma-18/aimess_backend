@@ -1,5 +1,8 @@
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Sentinel written at registration when the user hasn't set a real date of birth yet. */
+export const PLACEHOLDER_DATE_OF_BIRTH = new Date("2000-01-01");
+
 const MIN_PROFILE_AGE_YEARS = 13;
 const MAX_PROFILE_AGE_YEARS = 120;
 
@@ -69,7 +72,10 @@ export function dateOfBirthToUtcDate(isoDate: string): Date {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
-export function formatDateOfBirth(date: Date): string {
+export function formatDateOfBirth(date: Date): string | null {
+  if (date.getTime() === PLACEHOLDER_DATE_OF_BIRTH.getTime()) {
+    return null;
+  }
   return date.toISOString().slice(0, 10);
 }
 

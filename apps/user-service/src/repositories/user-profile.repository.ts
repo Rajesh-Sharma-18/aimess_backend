@@ -5,8 +5,7 @@ import {
 } from "../generated/prisma/client.js";
 import { prisma } from "../config/prisma.js";
 import { normalizeUsername } from "../lib/username.util.js";
-
-const PLACEHOLDER_DATE_OF_BIRTH = new Date("2000-01-01");
+import { PLACEHOLDER_DATE_OF_BIRTH } from "../lib/profile-fields.util.js";
 
 /** Maximum users returned by findAllActiveExcept — prevents full-table scans on large deployments. */
 const AUTO_CONNECT_USER_LIMIT = 10_000;
