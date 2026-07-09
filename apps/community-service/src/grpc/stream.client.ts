@@ -20,6 +20,12 @@ export interface StreamClient {
   getActiveStreamCounts(communityIds: string[]): Promise<Map<string, number>>;
   getLiveStreamsByCommunity(communityId: string): Promise<LiveStreamSummary[]>;
   /**
+   * Returns true when the user already has a LIVE or RECONNECTING stream in
+   * any community. Fail-open — returns false on stream-service failure so
+   * a service outage never incorrectly disables the Go Live button for users.
+   */
+  checkCreatorHasActiveStream(creatorId: string): Promise<boolean>;
+  /**
    * Best-effort push after a moderator mute/unmute: lets any of the target's
    * currently-LIVE stream sessions in this community get a real-time socket
    * notice. Never throws — a stream-service outage must not fail the mute.
@@ -146,6 +152,18 @@ export function createStreamClient(): StreamClient {
   // Fail-open: a stream-service outage must not fail (or even delay) the ban.
   notifyBanBreaker.fallback(() => ({ ok: false }));
 
+  const creatorActiveBreaker = makeBreaker(
+    "stream.checkCreatorHasActiveStream",
+    (creatorId: string) =>
+      makeGrpcCall<unknown, { hasActiveStream?: boolean }>(
+        client,
+        "checkCreatorHasActiveStream",
+        { creatorId }
+      )
+  );
+  // Fail-open: a stream-service outage must not incorrectly disable Go Live.
+  creatorActiveBreaker.fallback(() => ({ hasActiveStream: false }));
+
   const forceEndBreaker = makeBreaker(
     "stream.forceEndStreamsByCreator",
     (args: { communityId: string; userId: string; reason: string }) =>
@@ -211,6 +229,19 @@ export function createStreamClient(): StreamClient {
           `stream.getLiveStreamsByCommunity failed; degrading to no streams: ${String(err)}`
         );
         return [];
+      }
+    },
+
+    checkCreatorHasActiveStream: async (creatorId) => {
+      if (!creatorId) return false;
+      try {
+        const res = await creatorActiveBreaker.fire(creatorId);
+        return Boolean(res.hasActiveStream);
+      } catch (err) {
+        logger.warn(
+          `stream.checkCreatorHasActiveStream failed; degrading to false: ${String(err)}`
+        );
+        return false;
       }
     },
 

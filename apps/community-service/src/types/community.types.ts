@@ -82,6 +82,12 @@ export type CommunityData = {
   activeLivestreamCount: number;
   /** Currently-LIVE streams for this community (the active livestreams). Empty when none. */
   liveStreams: LiveStreamSummary[];
+  /**
+   * True when the authenticated caller already has a LIVE or RECONNECTING
+   * stream in ANY community. Clients use this to disable the Go Live button —
+   * a user can only broadcast in one community at a time.
+   */
+  currentUserIsStreaming: boolean;
   /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
   moderationStatus: CommunityModerationStatus;
   /**
@@ -300,6 +306,12 @@ export type CommunityListItem = {
   isMemberMuted: boolean;
   /** ISO-8601 expiry of the caller's moderation mute; null = indefinite or not muted. */
   memberMutedUntil: string | null;
+  /**
+   * True when the authenticated caller already has a LIVE or RECONNECTING
+   * stream in ANY community. Clients use this to disable the Go Live button —
+   * a user can only broadcast in one community at a time.
+   */
+  currentUserIsStreaming: boolean;
 };
 
 /**
@@ -354,6 +366,12 @@ export type CommunityDiscoverItem = {
   hasActiveLivestream: boolean;
   /** Number of currently-LIVE streams (0–5). */
   activeLivestreamCount: number;
+  /**
+   * True when the authenticated caller already has a LIVE or RECONNECTING
+   * stream in ANY community. Clients use this to disable the Go Live button —
+   * a user can only broadcast in one community at a time.
+   */
+  currentUserIsStreaming: boolean;
   /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
   /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */

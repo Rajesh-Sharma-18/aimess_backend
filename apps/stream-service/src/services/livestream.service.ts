@@ -304,17 +304,15 @@ export class LivestreamService {
       params.communityId,
       params.creatorId,
       async () => {
-        // Both counts are LIVE-only — a PENDING stream (still setting up,
-        // never published) never blocks a new create and never occupies a
-        // community concurrency slot. Only an actually-broadcasting stream does.
-        const [activeByCreator, activeByCommunity] = await Promise.all([
-          this.streamRepo.countActiveByCommunityAndCreator(
-            params.communityId,
-            params.creatorId
-          ),
+        // Two counts run in parallel — all LIVE-only (PENDING never blocks):
+        //   activeAnywhere  — creator is already LIVE in any community
+        //   activeByCommunity — community's concurrent-stream cap
+        const [activeAnywhere, activeByCommunity] = await Promise.all([
+          this.streamRepo.countLiveByCreator(params.creatorId),
           this.streamRepo.countActiveByCommunity(params.communityId),
         ]);
-        if (activeByCreator > 0) {
+        // Global rule: one active stream per user across all communities.
+        if (activeAnywhere > 0) {
           throw new ConflictError("STREAM_ALREADY_ACTIVE");
         }
         if (activeByCommunity >= env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) {
@@ -1327,6 +1325,16 @@ export class LivestreamService {
       })),
       total,
     };
+  }
+
+  /**
+   * Returns true when the creator has a LIVE or RECONNECTING stream in any
+   * community. Backs the `CheckCreatorHasActiveStream` gRPC RPC consumed by
+   * community-service to populate `currentUserIsStreaming` in API responses.
+   */
+  async hasActiveStreamByCreator(creatorId: string): Promise<boolean> {
+    const count = await this.streamRepo.countLiveByCreator(creatorId);
+    return count > 0;
   }
 
   /**

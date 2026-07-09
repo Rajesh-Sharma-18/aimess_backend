@@ -270,6 +270,18 @@ export class LivestreamRepository {
   }
 
   /**
+   * Count of LIVE/RECONNECTING streams for one creator ACROSS ALL communities.
+   * Used by `createStream` to enforce the one-active-stream-per-user global
+   * cap, and by the `CheckCreatorHasActiveStream` gRPC RPC that feeds the
+   * `currentUserIsStreaming` flag in community API responses.
+   */
+  async countLiveByCreator(creatorId: string): Promise<number> {
+    return this.prisma.livestream.count({
+      where: { creatorId, status: { in: [...LIVE_STATUSES] } },
+    });
+  }
+
+  /**
    * Every non-terminal (PENDING/LIVE/RECONNECTING) stream owned by one
    * creator — optionally scoped to a single community. Backs the bulk
    * force-end triggered by an account ban/suspend/deletion (unscoped: every
