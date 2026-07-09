@@ -10,6 +10,7 @@ import { createGroupInviteLinkRoutes } from "./group-invite-link.routes.js";
 import { createNotificationRoutes } from "./notification.routes.js";
 import { createCommunityRoutes } from "./community.routes.js";
 import { createCallRoutes } from "./call.routes.js";
+import { createMessageContextRoutes } from "./message-context.routes.js";
 import { healthRoutes } from "./health.routes.js";
 
 import type { PrivateRoomController } from "../controllers/private-room.controller.js";
@@ -25,6 +26,7 @@ import type { CommunityController } from "../controllers/community.controller.js
 import type { CommunityMessageController } from "../controllers/community-message.controller.js";
 import type { CallController } from "../controllers/call.controller.js";
 import type { PresenceController } from "../controllers/presence.controller.js";
+import type { MessageContextController } from "../controllers/message-context.controller.js";
 
 export interface Controllers {
   privateRoomCtrl: PrivateRoomController;
@@ -40,6 +42,7 @@ export interface Controllers {
   communityMessageCtrl: CommunityMessageController;
   callCtrl: CallController;
   presenceCtrl: PresenceController;
+  messageContextCtrl: MessageContextController;
 }
 
 export function createRoutes(controllers: Controllers): Router {
@@ -87,6 +90,10 @@ export function createRoutes(controllers: Controllers): Router {
     )
   );
   router.use(`${basePath}/calls`, createCallRoutes(controllers.callCtrl));
+  router.use(
+    `${basePath}/messages`,
+    createMessageContextRoutes(controllers.messageContextCtrl)
+  );
 
   return router;
 }

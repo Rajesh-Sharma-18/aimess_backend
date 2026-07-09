@@ -58,6 +58,7 @@ import { CommunityController } from "../../src/api/controllers/community.control
 import { CommunityMessageController } from "../../src/api/controllers/community-message.controller.js";
 import { CallController } from "../../src/api/controllers/call.controller.js";
 import { PresenceController } from "../../src/api/controllers/presence.controller.js";
+import { MessageContextController } from "../../src/api/controllers/message-context.controller.js";
 
 /**
  * A Proxy whose every property is a fresh jest.fn() (memoized per key). Lets a
@@ -336,6 +337,11 @@ export function buildApp(): BuiltApp {
     ),
     callCtrl: new CallController(callService),
     presenceCtrl: new PresenceController(presenceService),
+    messageContextCtrl: new MessageContextController(
+      privateMessageService,
+      groupMessageService,
+      communityMessageService
+    ),
   };
 
   const app = createApp(controllers);
