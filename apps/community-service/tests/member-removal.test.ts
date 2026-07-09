@@ -172,19 +172,19 @@ describe("kickMember — silent-chat policy", () => {
 describe("banMember — silent-chat policy", () => {
   beforeEach(setupBanMocks);
 
-  it("does NOT publish any MEMBER_BANNED chat system message", async () => {
+  it("publishes a PERSONAL MEMBER_BANNED chat system message visible only to the banned user (Telegram parity)", async () => {
     await communityService.banMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
 
     const banCalls = publishSystemMsg.mock.calls.filter(
       (call: any[]) => call[0]?.systemMessageType === "MEMBER_BANNED"
     );
-    expect(banCalls).toHaveLength(0);
-  });
-
-  it("does NOT call publishCommunitySystemMessageForChatSafe at all during ban", async () => {
-    await communityService.banMember(COMMUNITY_ID, CALLER_ID, TARGET_ID);
-
-    expect(publishSystemMsg).not.toHaveBeenCalled();
+    expect(banCalls).toHaveLength(1);
+    expect(banCalls[0][0]).toMatchObject({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "MEMBER_BANNED",
+      triggeredByUserId: CALLER_ID,
+      visibleToUserId: TARGET_ID,
+    });
   });
 
   it("publishes community:membership:removed to the banned user's personal channel", async () => {
@@ -243,9 +243,11 @@ describe("HIDDEN_SYSTEM_MESSAGE_TYPES policy contract", () => {
     expect(isHiddenSystemMessage("MEMBER_REMOVED")).toBe(true);
   });
 
-  it("MEMBER_BANNED is hidden — ban is silent in chat", async () => {
-    const { isHiddenSystemMessage } = await import("@aimess/constants");
-    expect(isHiddenSystemMessage("MEMBER_BANNED")).toBe(true);
+  it("MEMBER_BANNED is NOT hidden — it is PERSONAL (visible only to the banned user), not community-hidden", async () => {
+    const { isHiddenSystemMessage, isPersonalSystemMessage } =
+      await import("@aimess/constants");
+    expect(isHiddenSystemMessage("MEMBER_BANNED")).toBe(false);
+    expect(isPersonalSystemMessage("MEMBER_BANNED")).toBe(true);
   });
 
   it("MEMBER_LEFT is hidden (voluntary leave is also silent)", async () => {

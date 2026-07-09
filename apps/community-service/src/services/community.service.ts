@@ -3085,10 +3085,19 @@ export const communityService = {
         `community realtime broadcast failed ban community=${communityId}: ${String(err)}`
       );
     }
-    // NOTE: emitMemberSystemMessage("MEMBER_BANNED") is NOT called here.
-    // Product rule: ban is silent from the chat-message perspective (same policy
-    // as removal). MEMBER_BANNED is in HIDDEN_SYSTEM_MESSAGE_TYPES. The banned
-    // user receives a push notification via notifications-service.
+    // Ban is silent COMMUNITY-wide (no "{name} was banned" line for other
+    // members — MEMBER_BANNED is PERSONAL visibility), but the banned user
+    // themselves gets a private "You were banned from this community." line
+    // in their own history (Telegram parity). emitMemberSystemMessage() is a
+    // no-op for hidden types and MEMBER_BANNED isn't one, so this only ever
+    // reaches the target via visibleToUserId.
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_BANNED",
+      actorId: callerId,
+      targetUserId,
+      visibleToUserId: targetUserId,
+    });
 
     // Best-effort: kick the target from any of their currently-LIVE stream
     // sessions in this community. Never blocks/fails the ban itself

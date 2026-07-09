@@ -118,7 +118,7 @@ beforeEach(() => {
 });
 
 describe("CommunitySystemMessageService — lastActivity eligibility", () => {
-  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"])(
+  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"])(
     "%s is a hidden membership line — never persisted or broadcast (post backstop)",
     async (type) => {
       const h = makeService({
@@ -141,6 +141,41 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
       expect(pubListBump).not.toHaveBeenCalled();
     }
   );
+
+  it("MEMBER_BANNED is PERSONAL — persisted + delivered only to the target's own channel, never the community room, and never bumps lastActivity", async () => {
+    const h = makeService({
+      withMemberRepo: true,
+      snapshots: [[TARGET, { displayName: "John Doe" }]],
+    });
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "MEMBER_BANNED",
+      metadata: { targetUserId: TARGET },
+      triggeredByUserId: ACTOR,
+      visibleToUserId: TARGET,
+      eventAt: EVENT_AT,
+    });
+
+    // Persisted (not hidden) with the PERSONAL target and the exact banned copy.
+    expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
+    const createArgs = h.createSystemMessage.mock.calls[0][0] as {
+      visibleToUserId: string | null;
+      fallbackText: string;
+    };
+    expect(createArgs.visibleToUserId).toBe(TARGET);
+    expect(createArgs.fallbackText).toBe(
+      "You were banned from this community."
+    );
+
+    // Delivered ONLY on the target's personal channel — never the community room.
+    expect(h.redis.publish).toHaveBeenCalledTimes(1);
+    expect(h.redis.publish.mock.calls[0][0]).toBe(`user:${TARGET}`);
+
+    // Never eligible to bump/become the community-list preview.
+    expect(pubActivity).not.toHaveBeenCalled();
+    expect(pubListBump).not.toHaveBeenCalled();
+  });
 
   it("a COMMUNITY content line (ROLE_CHANGED) still bumps lastActivity", async () => {
     const h = makeService({
@@ -170,8 +205,8 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
   it.each([
     // Visible moderation lines (Telegram parity): delivered to all members but
     // not eligible to bump the community-list preview. NOT in HIDDEN_SYSTEM_MESSAGE_TYPES
-    // (MEMBER_REMOVED / MEMBER_BANNED ARE in that set — "removal must be SILENT" —
-    // and are covered by the hidden-membership-line case above instead).
+    // (MEMBER_REMOVED IS in that set — "removal must be SILENT" — and is covered
+    // by the hidden-membership-line case above instead).
     "MEMBER_MUTED",
     "MEMBER_UNMUTED",
     "MEMBER_UNBANNED",

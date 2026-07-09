@@ -446,7 +446,8 @@ describe("GET /rooms/:roomId/messages/search (membership-gated)", () => {
       10,
       expect.any(String),
       expect.anything(),
-      10
+      10,
+      undefined
     );
   });
 
@@ -468,7 +469,8 @@ describe("GET /rooms/:roomId/messages/search (membership-gated)", () => {
       ROOM,
       "hello",
       expect.any(String),
-      expect.anything()
+      expect.anything(),
+      undefined
     );
   });
 

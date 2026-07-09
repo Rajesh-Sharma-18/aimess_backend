@@ -952,7 +952,7 @@ export class CommunityMessageService {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
     // 2. The community is PUBLIC (non-members can read history)
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -967,7 +967,8 @@ export class CommunityMessageService {
         "older",
         params.limit,
         params.userId,
-        viewerIsActiveMember
+        viewerIsActiveMember,
+        bannedAtCutoff
       ),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
@@ -1005,7 +1006,7 @@ export class CommunityMessageService {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
     // 2. The community is PUBLIC (non-members can read history)
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1023,12 +1024,14 @@ export class CommunityMessageService {
           inclusive: params.inclusive ?? false,
           limit: params.limit,
           viewerIsActiveMember,
+          readCutoff: bannedAtCutoff,
         }),
         this.memberRepo.findReadStatusByRoom(params.roomId),
         this.messageRepo.countTimeline({
           roomId: params.roomId,
           userId: params.userId,
           viewerIsActiveMember,
+          readCutoff: bannedAtCutoff,
         }),
       ]
     );
@@ -1137,7 +1140,7 @@ export class CommunityMessageService {
     // 2. The community is PUBLIC (non-members can read history)
     // Note: sync path is typically members-only (offline-first mobile), but we enforce
     // the same rules for consistency.
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1153,6 +1156,7 @@ export class CommunityMessageService {
       fromTs: params.fromTs,
       limit: params.limit,
       viewerIsActiveMember: member?.status === "active",
+      readCutoff: bannedAtCutoff,
     });
 
     const last = messages[messages.length - 1];
@@ -1293,7 +1297,7 @@ export class CommunityMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: CommunityMessageWire[]; total: number }> {
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1311,6 +1315,7 @@ export class CommunityMessageService {
         anchorDate: anchor.createdAt,
         limit: params.limit,
         viewerIsActiveMember,
+        readCutoff: bannedAtCutoff,
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
       // Use the history-visible count (same filter as the timeline) so `total`
@@ -1320,6 +1325,7 @@ export class CommunityMessageService {
         roomId: params.roomId,
         userId: params.userId,
         viewerIsActiveMember,
+        readCutoff: bannedAtCutoff,
       }),
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
@@ -1407,7 +1413,7 @@ export class CommunityMessageService {
     limit: number;
     skip?: number;
   }): Promise<CommunityMessageWire[]> {
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1419,7 +1425,8 @@ export class CommunityMessageService {
       params.limit,
       params.userId,
       isActiveMember(member),
-      params.skip ?? 0
+      params.skip ?? 0,
+      bannedAtCutoff
     );
     const urlMap = await this.resolveRowsMedia(rows);
     return rows.map((m) =>
@@ -1436,7 +1443,7 @@ export class CommunityMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       roomId,
@@ -1446,7 +1453,8 @@ export class CommunityMessageService {
       roomId,
       query,
       userId,
-      isActiveMember(member)
+      isActiveMember(member),
+      bannedAtCutoff
     );
   }
 
