@@ -146,6 +146,26 @@ export const USER_MESSAGES = {
     vi: "Đã kết bạn tự động thành công",
     en: "Auto-connect completed.",
   },
+  RECENT_SEARCH_LIST_FETCHED: {
+    vi: "Lấy danh sách tìm kiếm gần đây thành công",
+    en: "Recent searches retrieved successfully.",
+  },
+  RECENT_SEARCH_RECORDED: {
+    vi: "Đã lưu tìm kiếm",
+    en: "Search recorded.",
+  },
+  RECENT_SEARCH_DELETED: {
+    vi: "Đã xóa tìm kiếm",
+    en: "Search deleted.",
+  },
+  RECENT_SEARCH_NOT_FOUND: {
+    vi: "Không tìm thấy tìm kiếm này",
+    en: "Recent search not found.",
+  },
+  RECENT_SEARCH_CLEARED: {
+    vi: "Đã xóa toàn bộ lịch sử tìm kiếm",
+    en: "Recent search history cleared.",
+  },
 } as const satisfies MessageCatalog;
 
 export type UserMessageKey = keyof typeof USER_MESSAGES;

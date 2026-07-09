@@ -11,7 +11,12 @@ export const listRecentSearches = asyncHandler(
     const searches = await recentSearchService.list(req.auth.userId);
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse({ searches }, t("SUCCESS", req.locale)));
+      .json(
+        new ApiResponse(
+          { searches },
+          t("RECENT_SEARCH_LIST_FETCHED", req.locale)
+        )
+      );
   }
 );
 
@@ -25,23 +30,23 @@ export const recordRecentSearch = asyncHandler(
     });
     return res
       .status(HTTP_STATUS.CREATED)
-      .json(new ApiResponse(null, t("SUCCESS", req.locale)));
+      .json(new ApiResponse(null, t("RECENT_SEARCH_RECORDED", req.locale)));
   }
 );
 
 export const deleteRecentSearch = asyncHandler(
   async (req: Request, res: Response) => {
-    const { id } = req.params;
+    const { id } = req.params as unknown as { id: string };
     const deleted = await recentSearchService.deleteOne(id, req.auth.userId);
     if (!deleted) {
       return res.status(HTTP_STATUS.NOT_FOUND).json({
         success: false,
-        message: t("NOT_FOUND", req.locale),
+        message: t("RECENT_SEARCH_NOT_FOUND", req.locale),
       });
     }
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(null, t("SUCCESS", req.locale)));
+      .json(new ApiResponse(null, t("RECENT_SEARCH_DELETED", req.locale)));
   }
 );
 
@@ -50,6 +55,6 @@ export const clearRecentSearches = asyncHandler(
     await recentSearchService.clearAll(req.auth.userId);
     return res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse(null, t("SUCCESS", req.locale)));
+      .json(new ApiResponse(null, t("RECENT_SEARCH_CLEARED", req.locale)));
   }
 );

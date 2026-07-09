@@ -23,7 +23,7 @@ const RECENT_COMMENTS_LIMIT = 20;
 const VIEWER_KEY_TTL_SEC = 7200; // 2h
 
 // stream:comment sliding-window rate limit (per user, per stream).
-const COMMENT_RATE_MAX = 2; // comments allowed…
+const COMMENT_RATE_MAX = 10; // comments allowed…
 const COMMENT_RATE_WINDOW_SEC = 3; // …per this window
 
 // Debounce viewer_count broadcasts to ≤ 1 emit/sec per stream so a join/leave
@@ -106,7 +106,10 @@ async function enrichCommentAvatar(
   const sentBy = typeof comment.sentBy === "string" ? comment.sentBy : "";
   if (!key) return comment;
   const url = await presignAvatar(mediaClient, key, sentBy);
-  return { ...comment, senderAvatar: url ?? "" };
+  // On presign failure fall back to the raw object key rather than "".
+  // resolveStreamCommentAvatar() on the client prepends cdnUrl for non-http values,
+  // so the key still resolves to an image instead of being silently dropped.
+  return { ...comment, senderAvatar: url ?? key };
 }
 
 export function registerStreamNamespace(
@@ -444,6 +447,8 @@ export function registerStreamNamespace(
 
             // Presign unique avatar keys so clients receive ready-to-use URLs.
             // Deduplicate by key to avoid N calls for N comments by the same user.
+            // On presign failure keep the raw key so resolveStreamCommentAvatar()
+            // on the client can fall back to the CDN URL instead of a blank avatar.
             const avatarKeyMap = new Map<string, string>();
             for (const c of rawComments) {
               if (c.senderAvatar && !avatarKeyMap.has(c.senderAvatar)) {
@@ -452,13 +457,13 @@ export function registerStreamNamespace(
                   c.senderAvatar,
                   c.sentBy
                 );
-                avatarKeyMap.set(c.senderAvatar, url ?? "");
+                avatarKeyMap.set(c.senderAvatar, url ?? c.senderAvatar);
               }
             }
             recentComments = rawComments.map((c) => ({
               ...c,
               senderAvatar: c.senderAvatar
-                ? (avatarKeyMap.get(c.senderAvatar) ?? "")
+                ? (avatarKeyMap.get(c.senderAvatar) ?? c.senderAvatar)
                 : "",
             }));
 
@@ -617,6 +622,7 @@ export function registerStreamNamespace(
               : [...res.comments].reverse();
 
             // Presign unique avatar keys (same pattern as stream:join backfill).
+            // On presign failure keep the raw key — CDN fallback on the client side.
             const avatarKeyMap = new Map<string, string>();
             for (const c of rawComments) {
               if (c.senderAvatar && !avatarKeyMap.has(c.senderAvatar)) {
@@ -625,13 +631,13 @@ export function registerStreamNamespace(
                   c.senderAvatar,
                   c.sentBy
                 );
-                avatarKeyMap.set(c.senderAvatar, url ?? "");
+                avatarKeyMap.set(c.senderAvatar, url ?? c.senderAvatar);
               }
             }
             const comments = rawComments.map((c) => ({
               ...c,
               senderAvatar: c.senderAvatar
-                ? (avatarKeyMap.get(c.senderAvatar) ?? "")
+                ? (avatarKeyMap.get(c.senderAvatar) ?? c.senderAvatar)
                 : "",
             }));
 
