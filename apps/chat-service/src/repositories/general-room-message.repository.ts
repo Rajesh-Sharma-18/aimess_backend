@@ -776,9 +776,10 @@ export class GeneralRoomMessageRepository {
             deletedBy: { $ne: params.userId },
             // Personal system messages (e.g. "You joined") are informational only.
             visibleToUserId: null,
-            // Hidden membership lines never count toward unread (consistency with
-            // countUnreadBulk / conversationMatch).
-            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // No SYSTEM message (any systemMessageType at all) counts toward
+            // unread — mirrors write-time shouldCountInUnread() and guards
+            // legacy rows persisted before `countInUnread` existed.
+            systemMessageType: { $in: [null] },
             ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
@@ -823,8 +824,10 @@ export class GeneralRoomMessageRepository {
             // events (e.g. "You joined the community") and must never inflate unread.
             // Only community-wide messages (visibleToUserId === null) count.
             visibleToUserId: null,
-            // Suppressed moderation lines never count toward unread either.
-            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // No SYSTEM message (any systemMessageType at all) counts toward
+            // unread — mirrors write-time shouldCountInUnread() and guards
+            // legacy rows persisted before `countInUnread` existed.
+            systemMessageType: { $in: [null] },
             ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
