@@ -40,6 +40,8 @@ const envSchema = z
     AUTH_GRPC_URL: z.string().default("0.0.0.0:4001"),
     /** stream-service gRPC endpoint — force-ends a deleted account's active streams. */
     STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
+    /** chat-service gRPC endpoint — resolves rooms/groups for User Search. */
+    CHAT_GRPC_URL: z.string().default("0.0.0.0:4004"),
 
     MINIO_ENDPOINT: z.string().url(),
     /**

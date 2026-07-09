@@ -151,6 +151,24 @@ export interface ChatClient {
     hasMore: boolean;
     pinnedMessageJson: string;
   }>;
+  /**
+   * Delete a community message ("forMe" or "forEveryone"). Message storage and
+   * the delete/lastActivity-recalculation logic live in chat-service, so
+   * community-service forwards verbatim and relays chat-service's REAL result.
+   * Business rejections and infra failures propagate as the ORIGINAL gRPC
+   * error (code + details), matching sendCommunityMessage/getCommunityMessages.
+   */
+  deleteCommunityMessage(params: {
+    messageId: string;
+    communityId: string;
+    userId: string;
+    deleteType: string;
+  }): Promise<{
+    messageId: string;
+    communityId: string;
+    roomId: string;
+    deleteType: string;
+  }>;
 }
 
 export function createChatClient(): ChatClient {
@@ -296,6 +314,28 @@ export function createChatClient(): ChatClient {
   // fail LOUDLY (ackError) rather than silently return an empty page that the
   // FE would read as "this community has no history".
 
+  const deleteMessageBreaker = makeBreaker(
+    "chat.deleteCommunityMessage",
+    (p: {
+      messageId: string;
+      communityId: string;
+      userId: string;
+      deleteType: string;
+    }) =>
+      makeGrpcCall<
+        unknown,
+        {
+          messageId?: string;
+          communityId?: string;
+          roomId?: string;
+          deleteType?: string;
+        }
+      >(client, "deleteCommunityMessage", p)
+  );
+  // NO fallback on purpose (mirrors sendCommunityMessage/getCommunityMessages):
+  // a delete must fail LOUDLY so the caller acks a retryable SERVICE_ERROR
+  // rather than silently reporting success for a message that still exists.
+
   return {
     getCommunityChatSummaries: async (params) => {
       if (!params.communityIds.length) return [];
@@ -428,6 +468,18 @@ export function createChatClient(): ChatClient {
         nextCursor: res.nextCursor ?? "",
         hasMore: Boolean(res.hasMore),
         pinnedMessageJson: res.pinnedMessageJson ?? "",
+      };
+    },
+
+    deleteCommunityMessage: async (params) => {
+      // Forward verbatim; relay the ACTUAL result. Errors (business or infra)
+      // propagate unchanged so the gateway maps them correctly.
+      const res = await deleteMessageBreaker.fire(params);
+      return {
+        messageId: res.messageId ?? "",
+        communityId: res.communityId ?? "",
+        roomId: res.roomId ?? "",
+        deleteType: res.deleteType ?? "",
       };
     },
   };

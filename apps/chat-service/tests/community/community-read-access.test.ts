@@ -561,7 +561,7 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     });
   });
 
-  it("bulk unread count excludes suppressed moderation types via $nin", async () => {
+  it("bulk unread count excludes ALL system messages (any systemMessageType) via $in:[null]", async () => {
     const aggregateRaw = jest.fn().mockResolvedValue([]);
     const prisma = { generalRoomMessage: { aggregateRaw } };
     const repo = new GeneralRoomMessageRepository(prisma as never);
@@ -572,9 +572,10 @@ describe("GeneralRoomMessageRepository personal-visibility filter", () => {
     });
 
     const match = aggregateRaw.mock.calls[0][0].pipeline[0].$match;
-    expect(match.systemMessageType).toEqual({
-      $nin: ["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"],
-    });
+    // Unread counting excludes every SYSTEM message, not just the suppressed
+    // moderation subset (see shouldCountInUnread policy) — any doc with a
+    // systemMessageType at all is excluded via $in:[null].
+    expect(match.systemMessageType).toEqual({ $in: [null] });
   });
 });
 

@@ -5110,6 +5110,116 @@ export const openApiSchemas = {
     },
   },
 
+  UserSearchUserItem: {
+    type: "object",
+    description: "A User result in the unified User Search endpoint.",
+    properties: {
+      type: { type: "string", enum: ["USER"] },
+      userId: { type: "string", format: "uuid" },
+      username: { type: "string" },
+      firstName: { type: "string" },
+      lastName: { type: "string" },
+      fullName: { type: "string" },
+      avatarUrl: { type: "string", format: "uri", nullable: true },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      avatar: { $ref: "#/components/schemas/MediaObject" },
+      isOnline: { type: "boolean" },
+      roomId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Existing private-room id with the caller, resolved dynamically; null if none.",
+      },
+    },
+    required: [
+      "type",
+      "userId",
+      "username",
+      "firstName",
+      "lastName",
+      "fullName",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "avatar",
+      "isOnline",
+      "roomId",
+    ],
+  },
+  UserSearchGroupItem: {
+    type: "object",
+    description: "A Group result in the unified User Search endpoint.",
+    properties: {
+      type: { type: "string", enum: ["GROUP"] },
+      roomId: {
+        type: "string",
+        description: "The group's stable id (also its chat roomId).",
+      },
+      name: { type: "string" },
+      avatar: { type: "string" },
+      description: { type: "string" },
+      memberCount: { type: "integer" },
+      isActiveMember: {
+        type: "boolean",
+        description: "Whether the caller is an ACTIVE member of this group.",
+      },
+    },
+    required: [
+      "type",
+      "roomId",
+      "name",
+      "avatar",
+      "description",
+      "memberCount",
+      "isActiveMember",
+    ],
+  },
+  UserSearchResultItem: {
+    oneOf: [
+      { $ref: "#/components/schemas/UserSearchUserItem" },
+      { $ref: "#/components/schemas/UserSearchGroupItem" },
+    ],
+    discriminator: { propertyName: "type" },
+  },
+  UserSearchData: {
+    type: "object",
+    properties: {
+      recent: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserSearchResultItem" },
+        description:
+          "Latest 4 recently viewed Users/Groups, ordered by lastViewedAt desc.",
+      },
+      chat: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserSearchResultItem" },
+        description:
+          "Max 10: private Users with an existing room + Groups the caller actively belongs to.",
+      },
+      other: {
+        type: "array",
+        items: { $ref: "#/components/schemas/UserSearchResultItem" },
+        description:
+          "Max `limit` (default 10, paginated): Users without a room + Groups the caller doesn't belong to. Excludes recent/chat.",
+      },
+    },
+    required: ["recent", "chat", "other"],
+  },
+  RecordRecentUserSearchBody: {
+    type: "object",
+    description: "Upsert key is (caller, targetType, targetId).",
+    properties: {
+      targetType: { type: "string", enum: ["USER", "GROUP"] },
+      targetId: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+        description:
+          "USER: the target userId (UUID). GROUP: the group's roomId.",
+      },
+    },
+    required: ["targetType", "targetId"],
+  },
+
   // ===========================================================================
   // community-service
   // ===========================================================================

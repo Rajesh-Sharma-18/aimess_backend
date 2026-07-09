@@ -16,7 +16,7 @@ process.env.REDIS_URL = "redis://127.0.0.1:6379";
 process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3000";
 
 // --- gRPC URLs for socket-facing services (required: .min(1)) -------------
-process.env.MESSAGING_GRPC_URL = "localhost:4004";
+process.env.CHAT_GRPC_URL = "localhost:4004";
 process.env.COMMUNITY_GRPC_URL = "localhost:4003";
 process.env.NOTIFICATION_GRPC_URL = "localhost:4006";
 

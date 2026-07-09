@@ -48,6 +48,19 @@ jest.mock("../../src/grpc/auth.client.js", () => ({
   getAccountSummaryBreaker: { fire: jest.fn(), on: jest.fn() },
 }));
 
+// --- chat-service gRPC client: the real module runs `protoLoader.loadSync`
+//     against a path derived from `import.meta.url` at import time (breaks
+//     under CJS-mode Jest) and pulls in native @grpc/grpc-js. Stub it. --------
+jest.mock("../../src/grpc/messaging.client.js", () => ({
+  messagingGrpcClient: {
+    resolvePrivateRooms: jest.fn(async () => []),
+    listPrivateRoomPeers: jest.fn(async () => []),
+    listActiveGroups: jest.fn(async () => []),
+    listOtherGroups: jest.fn(async () => []),
+    getGroupsByIds: jest.fn(async () => []),
+  },
+}));
+
 // --- MinIO / S3 storage clients: avoid constructing the AWS SDK S3 client and
 //     the media-URL strategy at import. Presign/head/delete are never hit by
 //     the smoke route; per-test specs re-mock with real fns when needed. ------

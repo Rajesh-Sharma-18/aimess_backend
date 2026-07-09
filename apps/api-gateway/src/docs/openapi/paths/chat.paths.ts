@@ -2381,6 +2381,137 @@ const privateMessageRemoveReaction = {
 };
 
 // =============================================================================
+// GET /chat/messages/{messageId}/context — unified cross-type navigation API
+// =============================================================================
+const unifiedMessageContext = {
+  get: {
+    tags: ["Chat — Messages"],
+    operationId: "getMessageContext",
+    summary:
+      "Get a message navigation context anchor (private, group, or community)",
+    description: [
+      "Single endpoint for every 'locate and scroll to a message I don't currently have loaded' use case — reply-tap, pinned-message-tap, search-result-tap, a shared/forwarded message deep link, or a push-notification deep link.",
+      "",
+      "Pass the conversation type and room id alongside the message id — the same triple already carried by a reply's `quoteData`, a pin record, a search hit, or a notification's `navigation` payload.",
+      "",
+      "**Use case:** resolve the (conversationType, roomId, messageId) triple from the source (reply/pin/search/notification) → call this endpoint → either call the conversation's `GET .../messages?around=<messageId>` (simplest), or page from `anchor.sequenceNumber` via `?before_seq=`/`?after_seq=` (private/group), or from `anchor.beforeCursor`/`afterCursor` via `?before_ts=`/`?after_ts=` (all three).",
+      "",
+      "Always returns HTTP 200 for a content-level result. When `isAvailable` is `false` the target message has been deleted or does not exist (or does not belong to the given room); display a 'message unavailable' placeholder. Access failures (not a participant/member of the room, or the room doesn't exist) return a normal 401/403/404 instead.",
+    ].join("\n"),
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "messageId",
+        in: "path" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description: "The message to navigate to.",
+      },
+      {
+        name: "conversationType",
+        in: "query" as const,
+        required: true,
+        schema: {
+          type: "string" as const,
+          enum: ["PRIVATE", "GROUP", "COMMUNITY"],
+        },
+        description: "The conversation type the message belongs to.",
+      },
+      {
+        name: "roomId",
+        in: "query" as const,
+        required: true,
+        schema: { type: "string" as const },
+        description:
+          "The room the message is claimed to belong to (private room id, group room id, or community id). Validated server-side — a mismatched roomId returns `isAvailable: false`, never a foreign message's content.",
+      },
+    ],
+    responses: {
+      "200": {
+        description: "Message context anchor",
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/ApiSuccessResponse" },
+                {
+                  type: "object" as const,
+                  properties: {
+                    data: {
+                      type: "object" as const,
+                      required: [
+                        "messageId",
+                        "roomId",
+                        "conversationType",
+                        "isAvailable",
+                      ],
+                      properties: {
+                        messageId: { type: "string" as const },
+                        roomId: { type: "string" as const },
+                        conversationType: {
+                          type: "string" as const,
+                          enum: ["PRIVATE", "GROUP", "COMMUNITY"],
+                        },
+                        isAvailable: {
+                          type: "boolean" as const,
+                          description:
+                            "`true` — message exists in this room. `false` — deleted, not found, or belongs to a different room.",
+                        },
+                        anchor: {
+                          type: "object" as const,
+                          nullable: true,
+                          description: "Present when `isAvailable` is true.",
+                          properties: {
+                            sequenceNumber: {
+                              type: "integer" as const,
+                              description:
+                                "Room-local monotonic sequence number (private/group only). Pass as `?before_seq=`/`?after_seq=`.",
+                            },
+                            beforeCursor: {
+                              type: "string" as const,
+                              description:
+                                'Compound `"<createdAt_ms>_<messageId>"` cursor for `?before_ts=`.',
+                            },
+                            afterCursor: {
+                              type: "string" as const,
+                              description:
+                                "Same value as `beforeCursor` (reserved for `?after_ts=`).",
+                            },
+                          },
+                        },
+                        error: {
+                          type: "object" as const,
+                          nullable: true,
+                          description: "Present when `isAvailable` is false.",
+                          properties: {
+                            code: {
+                              type: "string" as const,
+                              example: "MESSAGE_NOT_FOUND",
+                            },
+                            message: {
+                              type: "string" as const,
+                              example: "Message doesn't exist",
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+      "400": badRequest,
+      "401": unauthorized,
+      "403": forbidden,
+      "404": notFound,
+    },
+  },
+};
+
+// =============================================================================
 // Groups — forward & reactions
 // =============================================================================
 const groupMessageForward = {
@@ -2752,6 +2883,9 @@ export const chatPaths = {
   "/chat/groups/{roomId}/messages/{messageId}/reactions": groupMessageReactions,
   "/chat/groups/{roomId}/messages/{messageId}/reactions/{emoji}":
     groupMessageRemoveReaction,
+
+  // Unified cross-conversation-type message navigation
+  "/chat/messages/{messageId}/context": unifiedMessageContext,
 
   // Calls
   "/chat/calls": callHistory,

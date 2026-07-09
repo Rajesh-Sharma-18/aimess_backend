@@ -29,7 +29,7 @@ const envSchema = z.object({
   AUTH_GRPC_URL: z.string().optional(),
   USER_GRPC_URL: z.string().optional(),
   /** gRPC URLs for socket-facing services (required — sockets cannot operate without them). */
-  MESSAGING_GRPC_URL: z.string().min(1),
+  CHAT_GRPC_URL: z.string().min(1),
   COMMUNITY_GRPC_URL: z.string().min(1),
   NOTIFICATION_GRPC_URL: z.string().min(1),
   /** stream-service gRPC URL (livestream comments) — used by the /stream socket namespace. */

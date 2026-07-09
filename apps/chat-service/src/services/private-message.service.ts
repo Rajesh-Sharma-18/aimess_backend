@@ -762,6 +762,9 @@ export class PrivateMessageService {
     });
     if (!message) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
 
+    if (message.isDeleted) {
+      throw new GoneError("CHAT_MESSAGE_DELETED");
+    }
     if (
       message.deletedFor &&
       (message.deletedFor as Record<string, boolean>)[userId]
