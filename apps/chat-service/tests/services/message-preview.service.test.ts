@@ -70,9 +70,9 @@ describe("convertMessageToPreview — media placeholders (the bug-fix scenarios)
     expect(convertMessageToPreview("GIF", { text: "" })).toBe("🎞 GIF");
   });
 
-  it("[Voice preview] VOICE → '🎤 Voice message'", () => {
+  it("[Voice preview] VOICE → '🎤 Voice Message'", () => {
     expect(convertMessageToPreview("VOICE", { text: "" })).toBe(
-      "🎤 Voice message"
+      "🎤 Voice Message"
     );
   });
 
@@ -80,30 +80,30 @@ describe("convertMessageToPreview — media placeholders (the bug-fix scenarios)
     expect(convertMessageToPreview("AUDIO", { text: "" })).toBe("🎵 Audio");
   });
 
-  it("[Sticker preview] STICKER → '🌟 Sticker'", () => {
-    expect(convertMessageToPreview("STICKER", { text: "" })).toBe("🌟 Sticker");
+  it("[Sticker preview] STICKER → 'Sticker'", () => {
+    expect(convertMessageToPreview("STICKER", { text: "" })).toBe("Sticker");
   });
 });
 
 describe("convertMessageToPreview — DOCUMENT (filename interpolation)", () => {
-  it("[Document/File preview] DOCUMENT with files[0].name → '📎 <name>'", () => {
+  it("[Document/File preview] DOCUMENT with files[0].name → '📄 <name>'", () => {
     expect(
       convertMessageToPreview("DOCUMENT", { files: [{ name: "report.pdf" }] })
-    ).toBe("📎 report.pdf");
+    ).toBe("📄 report.pdf");
   });
 
-  it("[Document preview] DOCUMENT with no files → '📎 Document'", () => {
+  it("[Document preview] DOCUMENT with no files → '📄 Document'", () => {
     expect(convertMessageToPreview("DOCUMENT", { text: "" })).toBe(
-      "📎 Document"
+      "📄 Document"
     );
     expect(convertMessageToPreview("DOCUMENT", { files: [] })).toBe(
-      "📎 Document"
+      "📄 Document"
     );
   });
 
-  it("[Document preview] file entry without a name → '📎 Document' (NON-BLANK)", () => {
+  it("[Document preview] file entry without a name → '📄 Document' (NON-BLANK)", () => {
     expect(convertMessageToPreview("DOCUMENT", { files: [{ size: 10 }] })).toBe(
-      "📎 Document"
+      "📄 Document"
     );
   });
 });
@@ -145,8 +145,8 @@ describe("convertMessageToPreview — case-insensitivity (contentType normalized
     ["image", "📷 Photo"],
     ["Image", "📷 Photo"],
     ["vIdEo", "🎥 Video"],
-    ["sticker", "🌟 Sticker"],
-    ["document", "📎 Document"],
+    ["sticker", "Sticker"],
+    ["document", "📄 Document"],
   ])("maps lowercase/mixed-case '%s' → '%s'", (type, expected) => {
     expect(convertMessageToPreview(type, { text: "" })).toBe(expected);
   });
@@ -225,8 +225,8 @@ describe("buildPushPreview (push path — type + body text only)", () => {
 
   it("media push types are non-blank even with no body text", () => {
     expect(buildPushPreview("VIDEO", "")).toBe("🎥 Video");
-    expect(buildPushPreview("VOICE", "")).toBe("🎤 Voice message");
-    expect(buildPushPreview("STICKER", "")).toBe("🌟 Sticker");
+    expect(buildPushPreview("VOICE", "")).toBe("🎤 Voice Message");
+    expect(buildPushPreview("STICKER", "")).toBe("Sticker");
   });
 });
 
@@ -251,7 +251,7 @@ describe("REGRESSION: the exact expression persisted as community.activity messa
       files: [],
     });
     expect(messagePreview).not.toBe("");
-    expect(messagePreview).toBe("🌟 Sticker");
+    expect(messagePreview).toBe("Sticker");
   });
 
   it("DOCUMENT community message carries the filename through", () => {
@@ -259,6 +259,6 @@ describe("REGRESSION: the exact expression persisted as community.activity messa
       text: "",
       files: [{ name: "invoice.pdf" }],
     });
-    expect(messagePreview).toBe("📎 invoice.pdf");
+    expect(messagePreview).toBe("📄 invoice.pdf");
   });
 });

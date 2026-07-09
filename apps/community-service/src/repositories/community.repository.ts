@@ -844,6 +844,7 @@ export const communityRepository = {
 
   async listMembers(params: {
     communityId: string;
+    callerId: string;
     status: CommunityMemberStatus;
     page: number;
     limit: number;
@@ -853,30 +854,73 @@ export const communityRepository = {
       status: params.status,
     };
 
-    const [rows, total] = await Promise.all([
-      prisma.communityMember.findMany({
-        where,
-        orderBy: { id: "asc" },
-        skip: (params.page - 1) * params.limit,
-        take: params.limit,
-        select: {
-          id: true,
-          userId: true,
-          role: true,
-          status: true,
-          joinedAt: true,
-          snapshotUsername: true,
-          snapshotDisplayName: true,
-          snapshotAvatarKey: true,
-          bannedAt: true,
-          bannedBy: true,
-          banReason: true,
+    const rawIds = (await prisma.communityMember.aggregateRaw({
+      pipeline: [
+        {
+          $match: {
+            communityId: { $oid: params.communityId },
+            status: params.status,
+          },
         },
-      }),
+        {
+          $addFields: {
+            _sortPriority: {
+              $switch: {
+                branches: [
+                  { case: { $eq: ["$userId", params.callerId] }, then: 0 },
+                  {
+                    case: { $eq: ["$role", CommunityMemberRole.ADMIN] },
+                    then: 1,
+                  },
+                  {
+                    case: { $eq: ["$role", CommunityMemberRole.MODERATOR] },
+                    then: 2,
+                  },
+                ],
+                default: 3,
+              },
+            },
+          },
+        },
+        { $sort: { _sortPriority: 1, _id: 1 } },
+        { $skip: (params.page - 1) * params.limit },
+        { $limit: params.limit },
+        { $project: { _id: 1 } },
+      ] as unknown as Prisma.InputJsonValue[],
+    })) as unknown as Array<{ _id?: { $oid?: string } | string }>;
+    const ids = rawIds
+      .map((row) => (typeof row._id === "string" ? row._id : row._id?.$oid))
+      .filter((id): id is string => Boolean(id));
+
+    const [rows, total] = await Promise.all([
+      ids.length
+        ? prisma.communityMember.findMany({
+            where: { id: { in: ids } },
+            select: {
+              id: true,
+              userId: true,
+              role: true,
+              status: true,
+              joinedAt: true,
+              snapshotUsername: true,
+              snapshotDisplayName: true,
+              snapshotAvatarKey: true,
+              bannedAt: true,
+              bannedBy: true,
+              banReason: true,
+            },
+          })
+        : Promise.resolve([]),
       prisma.communityMember.count({ where }),
     ]);
 
-    return { rows, total };
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return {
+      rows: ids
+        .map((id) => byId.get(id))
+        .filter((row): row is (typeof rows)[number] => Boolean(row)),
+      total,
+    };
   },
 
   /**

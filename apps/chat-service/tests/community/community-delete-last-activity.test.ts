@@ -48,6 +48,7 @@ import request from "supertest";
 import { buildApp, type BuiltMocks } from "../helpers/app-factory.js";
 import { bearer, makeAccessToken, TEST_USER_ID } from "../helpers/auth.js";
 import { publishCommunityActivitySafe } from "../../src/events/publish-community-activity.js";
+import { publishCommunityUpdatedSafe } from "../../src/events/publish-conv-updated.js";
 import { getCommunityReconcileClient } from "../../src/grpc/community.client.js";
 import {
   createCommunityImpl,
@@ -55,6 +56,7 @@ import {
 } from "../../src/grpc/service-impl.js";
 
 const pubActivity = publishCommunityActivitySafe as jest.Mock;
+const pubCommunityUpdated = publishCommunityUpdatedSafe as jest.Mock;
 const reconcileClient = getCommunityReconcileClient as jest.Mock;
 const updateMessageActivity = jest.fn(async () => true);
 
@@ -108,8 +110,8 @@ describe("REST DELETE /messages/:messageId?type=forEveryone", () => {
       id: "prev-1",
       sentBy: "sender-2",
       senderName: "Prev Sender",
-      message: "the previous message",
-      messageType: "text",
+      message: "",
+      messageType: "IMAGE",
       createdAt: new Date(),
     });
 
@@ -126,7 +128,7 @@ describe("REST DELETE /messages/:messageId?type=forEveryone", () => {
         lastMessageId: "prev-1",
         senderUserId: "sender-2",
         senderUsername: "Prev Sender",
-        messagePreview: expect.any(String),
+        messagePreview: "📷 Photo",
         activityType: "message",
       })
     );
@@ -169,7 +171,7 @@ describe("REST DELETE /messages/:messageId?type=forEveryone", () => {
     expect(updateMessageActivity).not.toHaveBeenCalled();
   });
 
-  it("does NOT call updateMessageActivity when the room becomes empty (hasLastMessage: false)", async () => {
+  it("clears updateMessageActivity when the room becomes empty (hasLastMessage: false)", async () => {
     mocks.generalRoomMessageRepo.findById.mockResolvedValue({
       id: MSG,
       roomId: ROOM,
@@ -196,7 +198,25 @@ describe("REST DELETE /messages/:messageId?type=forEveryone", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(updateMessageActivity).not.toHaveBeenCalled();
+    expect(updateMessageActivity).toHaveBeenCalledWith({
+      communityId: ROOM,
+      lastMessageAt: expect.any(Number),
+      lastMessageId: "",
+      senderUserId: "",
+      senderUsername: "",
+      messagePreview: "",
+      activityType: "message",
+    });
+    expect(pubCommunityUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: ROOM,
+        lastMessageId: "",
+        lastMessageAt: expect.any(Number),
+      })
+    );
+    expect(
+      pubCommunityUpdated.mock.calls.at(-1)?.[0].lastMessageAt
+    ).toBeGreaterThan(0);
   });
 });
 
@@ -241,8 +261,9 @@ describe("REST DELETE /messages/:messageId?type=forMe", () => {
       id: "prev-2",
       sentBy: "sender-3",
       senderName: "Prev Sender 2",
-      message: "an earlier message",
-      messageType: "text",
+      message: "",
+      messageType: "DOCUMENT",
+      attachments: [{ name: "guide.pdf" }],
       createdAt: new Date(deletedCreatedAt.getTime() - 1000),
     });
 
@@ -256,7 +277,7 @@ describe("REST DELETE /messages/:messageId?type=forMe", () => {
     expect(updateMessageActivity).toHaveBeenCalledWith({
       communityId: ROOM,
       selfUserId: TEST_USER_ID,
-      selfPreview: expect.any(String),
+      selfPreview: "📄 guide.pdf",
     });
     // Delete-for-me must NEVER touch the canonical bump.
     expect(pubActivity).not.toHaveBeenCalled();
@@ -375,6 +396,41 @@ describe("gRPC deleteCommunityMessage — forEveryone", () => {
       deleteType: "forEveryone",
     });
     expect(updateMessageActivity).not.toHaveBeenCalled();
+  });
+
+  it("clears updateMessageActivity when recalc has no last message", async () => {
+    const deps = makeDeps({
+      communityMessageService: {
+        deleteForAll: jest
+          .fn()
+          .mockResolvedValue({ id: MSG, roomId: ROOM, createdAt: new Date() }),
+        recalculateLastMessageAfterDelete: jest.fn().mockResolvedValue({
+          prevMessageId: null,
+          preview: "",
+          messageType: "",
+          sentBy: "",
+          senderName: "",
+          createdAt: new Date(0),
+          hasLastMessage: false,
+        }),
+      },
+    });
+    const impl = createCommunityImpl(deps);
+    await invoke(impl.deleteCommunityMessage as Handler, {
+      messageId: MSG,
+      communityId: ROOM,
+      userId: TEST_USER_ID,
+      deleteType: "forEveryone",
+    });
+    expect(updateMessageActivity).toHaveBeenCalledWith({
+      communityId: ROOM,
+      lastMessageAt: expect.any(Number),
+      lastMessageId: "",
+      senderUserId: "",
+      senderUsername: "",
+      messagePreview: "",
+      activityType: "message",
+    });
   });
 });
 

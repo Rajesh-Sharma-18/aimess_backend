@@ -145,30 +145,36 @@ export class PrivateRoomRepository {
       string,
       number
     >;
-    unreadCountByUser[receiverId] =
-      (unreadCountByUser[receiverId] || 0) + (params.unreadIncrement ?? 1);
+    const unreadIncrement = params.unreadIncrement ?? 1;
+    if (unreadIncrement > 0) {
+      unreadCountByUser[receiverId] =
+        (unreadCountByUser[receiverId] || 0) + unreadIncrement;
+    }
 
     const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
       string,
       boolean
     >;
-    hasUnreadByUser[receiverId] = true;
+    if (unreadIncrement > 0) hasUnreadByUser[receiverId] = true;
 
     const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
       {}) as Record<string, string>;
-    lastUnreadMessageIdByUser[receiverId] = message._id;
+    if (unreadIncrement > 0)
+      lastUnreadMessageIdByUser[receiverId] = message._id;
 
     const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
       {}) as Record<string, unknown>;
-    lastUnreadPreviewByUser[receiverId] = {
-      content: message.content,
-      senderId: message.senderId,
-      messageType: message.messageType,
-      systemEvent: message.systemEvent || null,
-      systemData: message.systemData || null,
-      createdAt: now,
-      messageId: message._id,
-    };
+    if (unreadIncrement > 0) {
+      lastUnreadPreviewByUser[receiverId] = {
+        content: message.content,
+        senderId: message.senderId,
+        messageType: message.messageType,
+        systemEvent: message.systemEvent || null,
+        systemData: message.systemData || null,
+        createdAt: now,
+        messageId: message._id,
+      };
+    }
 
     return this.prisma.privateRoom.update({
       where: { roomId },
@@ -258,6 +264,65 @@ export class PrivateRoomRepository {
         lastUnreadPreviewByUser:
           lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
         updatedAt: now,
+      },
+    });
+  }
+
+  async decrementUnreadForMessage(params: {
+    roomId: string;
+    recipientId: string;
+    messageId: string;
+    messageCreatedAt: Date;
+  }): Promise<void> {
+    const existing = await this.prisma.privateRoom.findUnique({
+      where: { roomId: params.roomId },
+    });
+    if (!existing) return;
+
+    const lastReadAtByUser = (existing.lastReadAtByUser ?? {}) as Record<
+      string,
+      string
+    >;
+    const lastReadAt = lastReadAtByUser[params.recipientId]
+      ? new Date(lastReadAtByUser[params.recipientId]!)
+      : null;
+    if (lastReadAt && lastReadAt >= params.messageCreatedAt) return;
+
+    const unreadCountByUser = (existing.unreadCountByUser ?? {}) as Record<
+      string,
+      number
+    >;
+    unreadCountByUser[params.recipientId] = Math.max(
+      0,
+      (unreadCountByUser[params.recipientId] || 0) - 1
+    );
+
+    const hasUnreadByUser = (existing.hasUnreadByUser ?? {}) as Record<
+      string,
+      boolean
+    >;
+    hasUnreadByUser[params.recipientId] =
+      (unreadCountByUser[params.recipientId] || 0) > 0;
+
+    const lastUnreadMessageIdByUser = (existing.lastUnreadMessageIdByUser ??
+      {}) as Record<string, string | null>;
+    const lastUnreadPreviewByUser = (existing.lastUnreadPreviewByUser ??
+      {}) as Record<string, unknown>;
+    if (lastUnreadMessageIdByUser[params.recipientId] === params.messageId) {
+      lastUnreadMessageIdByUser[params.recipientId] = null;
+      lastUnreadPreviewByUser[params.recipientId] = null;
+    }
+
+    await this.prisma.privateRoom.update({
+      where: { roomId: params.roomId },
+      data: {
+        unreadCountByUser:
+          unreadCountByUser as unknown as Prisma.InputJsonValue,
+        hasUnreadByUser: hasUnreadByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadMessageIdByUser:
+          lastUnreadMessageIdByUser as unknown as Prisma.InputJsonValue,
+        lastUnreadPreviewByUser:
+          lastUnreadPreviewByUser as unknown as Prisma.InputJsonValue,
       },
     });
   }

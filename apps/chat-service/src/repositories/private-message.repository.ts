@@ -5,6 +5,7 @@
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { logger } from "@aimess/logger";
+import { shouldCountInUnread } from "../lib/unread-count.js";
 
 export class PrivateMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -17,6 +18,7 @@ export class PrivateMessageRepository {
     messageType?: string;
     systemEvent?: string | null;
     systemData?: object | null;
+    countInUnread?: boolean | null;
     readBy?: unknown[];
     reactions?: object;
     inviteLinkData?: object | null;
@@ -41,6 +43,11 @@ export class PrivateMessageRepository {
         messageType: data.messageType ?? "TEXT",
         systemEvent: data.systemEvent ?? null,
         systemData: (data.systemData as object) ?? null,
+        countInUnread: shouldCountInUnread({
+          messageType: data.messageType ?? "TEXT",
+          systemEvent: data.systemEvent ?? null,
+          explicit: data.countInUnread ?? null,
+        }),
         readBy: (data.readBy as object) ?? [],
         reactions: (data.reactions as object) ?? {},
         inviteLinkData: (data.inviteLinkData as object) ?? null,
@@ -660,6 +667,7 @@ export class PrivateMessageRepository {
     receiverId: string;
     content: object;
     messageType: string;
+    countInUnread?: boolean | null;
     forwardData: object;
     clientMessageId?: string | null;
     sequenceNumber?: number;
@@ -672,6 +680,10 @@ export class PrivateMessageRepository {
         receiverId: data.receiverId,
         content: data.content as Prisma.InputJsonValue,
         messageType: data.messageType,
+        countInUnread: shouldCountInUnread({
+          messageType: data.messageType,
+          explicit: data.countInUnread ?? null,
+        }),
         isForwarded: true,
         forwardData: data.forwardData as Prisma.InputJsonValue,
         clientMessageId: data.clientMessageId ?? null,

@@ -5,6 +5,7 @@ import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
+import { emitPersonalizedSender } from "../emit-personalized.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
@@ -199,10 +200,13 @@ export function registerChatNamespace(
             conversationId,
             ...(parsed.data as object),
           };
-          chat.to(channel).emit(parsed.event, enriched);
+          void emitPersonalizedSender(chat, channel, parsed.event, enriched);
           return;
         }
 
+        let personalizeFn:
+          | ((data: unknown, userId: string) => unknown)
+          | undefined;
         if (parsed.event === "message:new" && pattern === "conv:*") {
           const contentType = String(
             (parsed.data as { contentType?: string; messageType?: string })
@@ -211,28 +215,17 @@ export function registerChatNamespace(
               ""
           ).toUpperCase();
           if (contentType === "SYSTEM") {
-            void (async () => {
-              try {
-                const sockets = await chat.in(channel).fetchSockets();
-                for (const socket of sockets) {
-                  const viewerUserId = String(socket.data.userId ?? "");
-                  socket.emit(
-                    parsed.event,
-                    personalizeGroupSocketMessage(parsed.data, viewerUserId)
-                  );
-                }
-              } catch (emitErr) {
-                logger.warn(
-                  `/chat personalized SYSTEM emit failed on ${channel}: ${String(emitErr)}`
-                );
-                chat.to(channel).emit(parsed.event, parsed.data);
-              }
-            })();
-            return;
+            personalizeFn = personalizeGroupSocketMessage;
           }
         }
 
-        chat.to(channel).emit(parsed.event, parsed.data);
+        void emitPersonalizedSender(
+          chat,
+          channel,
+          parsed.event,
+          parsed.data,
+          personalizeFn
+        );
       } catch (err) {
         logger.warn(
           `/chat Redis message parse error on ${channel}: ${String(err)}`

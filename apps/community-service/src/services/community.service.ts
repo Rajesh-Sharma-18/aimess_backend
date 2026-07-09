@@ -303,7 +303,11 @@ export function selectListPreview(
   },
   viewerId: string
 ): string | null {
-  if (row.lastActivitySelfPreview && row.lastActivityUserId === viewerId) {
+  if (
+    row.lastActivitySelfPreview !== null &&
+    row.lastActivitySelfPreview !== undefined &&
+    row.lastActivityUserId === viewerId
+  ) {
     return row.lastActivitySelfPreview;
   }
   if (
@@ -2604,6 +2608,7 @@ export const communityService = {
     const status = params.status ?? CommunityMemberStatus.ACTIVE;
     const { rows, total } = await communityRepository.listMembers({
       communityId,
+      callerId,
       status,
       page: params.page,
       limit: params.limit,

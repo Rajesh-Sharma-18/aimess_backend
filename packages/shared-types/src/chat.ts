@@ -196,6 +196,7 @@ export interface MessageDto extends MessageSenderDto {
   systemData?: unknown;
   systemMessageType?: string | null;
   systemMetadata?: SystemMessageMetadata | null;
+  countInUnread?: boolean;
 }
 
 export interface ReadByEntryDto {

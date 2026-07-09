@@ -231,20 +231,12 @@ export class CommunitySystemMessageService {
         visibleToUserId &&
         isPersonalJoinSessionType(systemMessageType)
       ) {
-        // [JOIN-TRACE] temporary investigation logging — remove after diagnosis.
-        logger.info(
-          `[JOIN-TRACE] delete-cleanup START community=${communityId} user=${visibleToUserId} ts=${Date.now()}`
-        );
         await this.messageRepo
           .deletePersonalJoinMessages({
             roomId: communityId,
             userId: visibleToUserId,
           })
           .then((deletedIds) => {
-            // [JOIN-TRACE]
-            logger.info(
-              `[JOIN-TRACE] delete-cleanup DONE community=${communityId} user=${visibleToUserId} deletedIds=${JSON.stringify(deletedIds)} ts=${Date.now()}`
-            );
             this.publishJoinLineDeletions(
               communityId,
               visibleToUserId,
@@ -259,11 +251,6 @@ export class CommunitySystemMessageService {
       }
 
       const seq = await this.roomRepo.allocateSequence(communityId);
-
-      // [JOIN-TRACE]
-      logger.info(
-        `[JOIN-TRACE] new-message CREATE START community=${communityId} user=${visibleToUserId} type=${systemMessageType} ts=${Date.now()}`
-      );
 
       const message = await this.messageRepo
         .createSystemMessage({
@@ -290,17 +277,33 @@ export class CommunitySystemMessageService {
       // Duplicate replay — the line (and its bump/publish) already happened on
       // the first delivery; do nothing further.
       if (!message) {
-        // [JOIN-TRACE]
-        logger.info(
-          `[JOIN-TRACE] new-message CREATE SKIPPED (dedup replay) community=${communityId} user=${visibleToUserId} key=${dedupeKey} ts=${Date.now()}`
-        );
         return null;
       }
 
-      // [JOIN-TRACE]
-      logger.info(
-        `[JOIN-TRACE] new-message CREATED messageId=${message.id} community=${communityId} user=${visibleToUserId} ts=${Date.now()}`
-      );
+      if (
+        isPersonal &&
+        visibleToUserId &&
+        isPersonalJoinSessionType(systemMessageType)
+      ) {
+        await this.messageRepo
+          .deletePersonalJoinMessages({
+            roomId: communityId,
+            userId: visibleToUserId,
+            keepId: message.id,
+          })
+          .then((deletedIds) => {
+            this.publishJoinLineDeletions(
+              communityId,
+              visibleToUserId,
+              deletedIds
+            );
+          })
+          .catch((err: unknown) => {
+            logger.warn(
+              `CommunitySystemMessageService|post-create join-line cleanup failed community=${communityId} user=${visibleToUserId}: ${String(err)}`
+            );
+          });
+      }
 
       // Bump the community-list ordering only for subtypes that should reorder
       // the chat list (registry-driven). No unread increment — system messages
@@ -332,11 +335,6 @@ export class CommunitySystemMessageService {
         isPersonal && visibleToUserId
           ? `user:${visibleToUserId}`
           : `community:${communityId}`;
-
-      // [JOIN-TRACE]
-      logger.info(
-        `[JOIN-TRACE] new-message PUBLISH messageId=${message.id} community=${communityId} user=${visibleToUserId} channel=${redisChannel} ts=${Date.now()}`
-      );
 
       // SENDER-LESS wire: senderId/senderName/senderAvatar are intentionally
       // empty for SYSTEM messages — the actor is in systemMetadata only.
@@ -531,10 +529,6 @@ export class CommunitySystemMessageService {
         scope: "forEveryone",
         deletedBy: "",
       });
-      // [JOIN-TRACE]
-      logger.info(
-        `[JOIN-TRACE] delete PUBLISH messageId=${messageId} community=${communityId} user=${userId} channel=user:${userId} payload=${JSON.stringify(tombstone)} ts=${Date.now()}`
-      );
       this.redis
         .publish(
           `user:${userId}`,

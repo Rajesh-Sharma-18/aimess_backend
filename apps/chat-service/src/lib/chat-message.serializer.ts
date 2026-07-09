@@ -255,6 +255,7 @@ export interface ChatMessageEventInput {
   /** Group lifecycle SYSTEM messages only (messageType=SYSTEM). */
   systemEvent?: string | null;
   systemData?: unknown;
+  countInUnread?: boolean | null;
 }
 
 export type DeleteConversationKind = ConversationKind | "COMMUNITY";
@@ -335,6 +336,7 @@ export function buildChatMessageEvent(
     clientTs: input.clientTs ?? 0,
     serverTs: input.serverTs,
     sequenceNumber: input.sequenceNumber,
+    countInUnread: input.countInUnread ?? true,
     // Group lifecycle system messages (messageType=SYSTEM) carry structured data.
     ...(input.systemEvent ? { systemEvent: input.systemEvent } : {}),
     ...(input.systemData !== undefined ? { systemData: input.systemData } : {}),

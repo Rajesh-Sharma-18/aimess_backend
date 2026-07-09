@@ -111,17 +111,17 @@ describe("buildMessagePreview", () => {
     assert.equal(buildMessagePreview("VIDEO", {}), "🎥 Video");
     assert.equal(buildMessagePreview("GIF", {}), "🎞 GIF");
     assert.equal(buildMessagePreview("AUDIO", {}), "🎵 Audio");
-    assert.equal(buildMessagePreview("VOICE", {}), "🎤 Voice message");
-    assert.equal(buildMessagePreview("STICKER", {}), "🌟 Sticker");
+    assert.equal(buildMessagePreview("VOICE", {}), "🎤 Voice Message");
+    assert.equal(buildMessagePreview("STICKER", {}), "Sticker");
   });
 
-  it("DOCUMENT → '📎 <name>' when a filename is present, else '📎 Document'", () => {
+  it("DOCUMENT → '📄 <name>' when a filename is present, else '📄 Document'", () => {
     assert.equal(
       buildMessagePreview("DOCUMENT", { files: [{ name: "report.pdf" }] }),
-      "📎 report.pdf"
+      "📄 report.pdf"
     );
-    assert.equal(buildMessagePreview("DOCUMENT", { files: [] }), "📎 Document");
-    assert.equal(buildMessagePreview("DOCUMENT", {}), "📎 Document");
+    assert.equal(buildMessagePreview("DOCUMENT", { files: [] }), "📄 Document");
+    assert.equal(buildMessagePreview("DOCUMENT", {}), "📄 Document");
   });
 
   it("LOCATION → '📍 <place>' when placeName is present, else '📍 Location'", () => {

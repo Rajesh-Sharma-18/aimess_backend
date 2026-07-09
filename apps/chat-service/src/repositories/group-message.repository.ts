@@ -5,6 +5,10 @@
 } from "../generated/prisma/index.js";
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { logger } from "@aimess/logger";
+import {
+  shouldCountInUnread,
+  UNREAD_COUNTABLE_RAW_MATCH,
+} from "../lib/unread-count.js";
 
 export class GroupMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -23,6 +27,11 @@ export class GroupMessageRepository {
         senderName: (data.senderName as string) ?? "",
         senderAvatar: (data.senderAvatar as string) ?? "",
         messageType: (data.messageType as string) ?? "TEXT",
+        countInUnread: shouldCountInUnread({
+          messageType: (data.messageType as string) ?? "TEXT",
+          systemEvent: (data.systemEvent as string) ?? null,
+          explicit: data.countInUnread as boolean | null | undefined,
+        }),
         content: (data.content as object) ?? { text: "", urls: [], files: [] },
         systemEvent: (data.systemEvent as string) ?? null,
         systemData: (data.systemData as object) ?? null,
@@ -479,6 +488,7 @@ export class GroupMessageRepository {
             isDeleted: false,
             createdAt: { $gt: { $date: params.afterDate.toISOString() } },
             deletedForUserIds: { $ne: params.userId },
+            ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
         { $count: "total" },
@@ -649,6 +659,7 @@ export class GroupMessageRepository {
     senderAvatar: string;
     content: object;
     messageType: string;
+    countInUnread?: boolean | null;
     forwardData: object;
     clientMessageId?: string | null;
     sequenceNumber?: number;
@@ -662,6 +673,10 @@ export class GroupMessageRepository {
         senderAvatar: data.senderAvatar,
         content: data.content as Prisma.InputJsonValue,
         messageType: data.messageType,
+        countInUnread: shouldCountInUnread({
+          messageType: data.messageType,
+          explicit: data.countInUnread ?? null,
+        }),
         isForwarded: true,
         forwardData: data.forwardData as Prisma.InputJsonValue,
         clientMessageId: data.clientMessageId ?? null,

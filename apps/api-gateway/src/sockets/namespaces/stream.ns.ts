@@ -5,6 +5,7 @@ import { status as grpcStatus } from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
+import { emitPersonalizedSender } from "../emit-personalized.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 
@@ -235,9 +236,19 @@ export function registerStreamNamespace(
                 mediaClient,
                 parsed.data as Record<string, unknown>
               );
-              streamNs.to(channel).emit("stream:comment:new", enriched);
+              void emitPersonalizedSender(
+                streamNs,
+                channel,
+                "stream:comment:new",
+                enriched
+              );
             } catch {
-              streamNs.to(channel).emit("stream:comment:new", parsed.data);
+              void emitPersonalizedSender(
+                streamNs,
+                channel,
+                "stream:comment:new",
+                parsed.data
+              );
             }
           })();
           return;

@@ -54,10 +54,14 @@ function matchField(doc: Doc, key: string, cond: unknown): boolean {
   if (key === "deletedBy")
     return !doc.deletedBy.includes((cond as { $ne: string }).$ne);
   if (key === "visibleToUserId") {
-    const arr = (cond as { $in: Array<string | null> }).$in;
-    return arr.some((a) =>
-      a === null ? doc.visibleToUserId == null : doc.visibleToUserId === a
-    );
+    if (typeof cond === "string") return doc.visibleToUserId === cond;
+    const arr = (cond as { $in?: Array<string | null> }).$in;
+    if (arr) {
+      return arr.some((a) =>
+        a === null ? doc.visibleToUserId == null : doc.visibleToUserId === a
+      );
+    }
+    return false;
   }
   if (key === "systemMessageType") {
     const arr = cond as { $nin?: string[]; $in?: string[] };
@@ -77,12 +81,18 @@ function matchField(doc: Doc, key: string, cond: unknown): boolean {
   }
   if (key === "_id") {
     const c = cond as Record<string, { $oid: string }>;
+    if (c.$eq && !(doc._id === c.$eq.$oid)) return false;
     if (c.$lt && !(doc._id < c.$lt.$oid)) return false;
     if (c.$gt && !(doc._id > c.$gt.$oid)) return false;
     return true;
   }
   if (key === "$or") {
     return (cond as Array<Record<string, unknown>>).some((sub) =>
+      matchDoc(doc, sub)
+    );
+  }
+  if (key === "$and") {
+    return (cond as Array<Record<string, unknown>>).every((sub) =>
       matchDoc(doc, sub)
     );
   }
@@ -133,7 +143,37 @@ function makeFakePrisma(docs: Doc[]) {
   });
 
   const findMany = jest.fn(
-    async ({ where }: { where: { id: { in: string[] } } }) => {
+    async ({
+      where,
+      orderBy,
+      take,
+    }: {
+      where: {
+        id?: { in: string[] };
+        roomId?: string;
+        visibleToUserId?: string;
+      };
+      orderBy?: unknown;
+      take?: number;
+    }) => {
+      if (!where.id) {
+        let rows = docs.filter(
+          (d) =>
+            d.roomId === where.roomId &&
+            d.visibleToUserId === where.visibleToUserId &&
+            !d.deletedForAll &&
+            [...PERSONAL_JOIN_SESSION_TYPES].includes(
+              d.systemMessageType as never
+            )
+        );
+        if (orderBy) {
+          rows = [...rows].sort((a, b) => {
+            const t = b.createdAt.getTime() - a.createdAt.getTime();
+            return t || b._id.localeCompare(a._id);
+          });
+        }
+        return rows.slice(0, take ?? rows.length).map((d) => ({ id: d._id }));
+      }
       const want = new Set(where.id.in);
       return docs
         .filter((d) => want.has(d._id))
@@ -145,7 +185,30 @@ function makeFakePrisma(docs: Doc[]) {
 }
 
 // Mirror of timelineMatch semantics — the EXPECTED visible set for an active viewer.
-function isVisible(doc: Doc, viewerActive = true): boolean {
+function latestPersonalJoinId(docs: Doc[]): string | null {
+  return (
+    docs
+      .filter(
+        (d) =>
+          d.roomId === ROOM &&
+          d.visibleToUserId === USER &&
+          !d.deletedForAll &&
+          [...PERSONAL_JOIN_SESSION_TYPES].includes(
+            d.systemMessageType as never
+          )
+      )
+      .sort((a, b) => {
+        const t = b.createdAt.getTime() - a.createdAt.getTime();
+        return t || b._id.localeCompare(a._id);
+      })[0]?._id ?? null
+  );
+}
+
+function isVisible(
+  doc: Doc,
+  viewerActive = true,
+  latestJoinId: string | null = null
+): boolean {
   if (doc.roomId !== ROOM) return false;
   if (doc.deletedForAll) return false;
   if (doc.deletedBy.includes(USER)) return false;
@@ -159,6 +222,12 @@ function isVisible(doc: Doc, viewerActive = true): boolean {
     [...PERSONAL_JOIN_SESSION_TYPES].includes(doc.systemMessageType as never)
   )
     return false;
+  if (
+    viewerActive &&
+    doc.visibleToUserId === USER &&
+    [...PERSONAL_JOIN_SESSION_TYPES].includes(doc.systemMessageType as never)
+  )
+    return doc._id === latestJoinId;
   return true;
 }
 
@@ -276,10 +345,10 @@ describe("community history pagination — full traversal", () => {
     );
 
     const expected = docs
-      .filter((d) => isVisible(d))
+      .filter((d) => isVisible(d, true, latestPersonalJoinId(docs)))
       .map((d) => d._id)
       .sort();
-    expect(expected.length).toBeGreaterThan(600); // sanity: most are visible
+    expect(expected.length).toBeGreaterThan(500); // sanity: most are visible
 
     const collected = await traverseAll(repo, 30);
     const ids = collected.map((d) => d._id);
@@ -341,7 +410,7 @@ describe("community history pagination — full traversal", () => {
     const collected = await traverseAll(repo, 30);
     const ids = collected.map((d) => d._id).sort();
     const expected = docs
-      .filter((d) => isVisible(d))
+      .filter((d) => isVisible(d, true, latestPersonalJoinId(docs)))
       .map((d) => d._id)
       .sort();
 
@@ -467,7 +536,7 @@ describe("community history pagination — full traversal", () => {
     );
 
     const expected = docs
-      .filter((d) => isVisible(d))
+      .filter((d) => isVisible(d, true, latestPersonalJoinId(docs)))
       .map((d) => d._id)
       .sort();
     const ids = (await traverseBareMs(repo, 30)).map((d) => d._id);
