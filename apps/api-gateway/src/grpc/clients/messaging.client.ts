@@ -349,7 +349,7 @@ export function createMessagingClient(): MessagingClient {
   ] as grpc.ServiceClientConstructor;
 
   const client = new ServiceCtor(
-    env.MESSAGING_GRPC_URL,
+    env.CHAT_GRPC_URL,
     grpc.credentials.createInsecure()
   );
 

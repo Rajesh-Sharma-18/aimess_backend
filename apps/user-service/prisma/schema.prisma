@@ -56,6 +56,7 @@ model UserProfile {
   blocksMade             Block[]               @relation("BlockerBlocks")
   blocksReceived         Block[]               @relation("BlockedByBlocks")
   recentSearches         RecentSearch[]        @relation("Searcher")
+  recentUserSearches     RecentUserSearch[]    @relation("RecentUserSearchSearcher")
   callPrivacyAllowList   CallAllowedFriend[]   @relation("CallOwner")
 
   @@index([username])
@@ -215,9 +216,35 @@ model RecentSearch {
   @@map("recent_searches")
 }
 
+// -----------------------------------------------------------------------------
+// RecentUserSearch — recently VIEWED User/Group targets (unified User Search
+// feature). Distinct from RecentSearch (free-text query / tapped-user history
+// used by the older discovery screen). Never stores roomId: private rooms can
+// be created after the view and group membership can change, so roomId is
+// always resolved dynamically at read time via chat-service.
+// -----------------------------------------------------------------------------
+model RecentUserSearch {
+  id           String                 @id @default(uuid()) @db.Uuid
+  userId       String                 @db.Uuid // searcher
+  searcher     UserProfile            @relation("RecentUserSearchSearcher", fields: [userId], references: [userId], onDelete: Cascade)
+  targetType   RecentSearchTargetType
+  targetId     String                 @db.VarChar(64) // USER: target userId (UUID); GROUP: chat-service roomId
+  lastViewedAt DateTime               @default(now()) @db.Timestamptz(3)
+  createdAt    DateTime               @default(now()) @db.Timestamptz(3)
+
+  @@unique([userId, targetType, targetId])
+  @@index([userId, lastViewedAt(sort: Desc)])
+  @@map("recent_user_searches")
+}
+
 // =============================================================================
 // Enums
 // =============================================================================
+
+enum RecentSearchTargetType {
+  USER
+  GROUP
+}
 
 enum ProfileStatus {
   ACTIVE

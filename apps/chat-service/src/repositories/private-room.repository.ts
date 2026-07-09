@@ -35,6 +35,43 @@ export class PrivateRoomRepository {
     });
   }
 
+  /**
+   * Batch lookup for User Search: resolves many candidate peer rooms in one
+   * indexed `$in` query against the @unique participantsKey column instead of
+   * N single-key lookups.
+   */
+  async findByParticipantsKeys(keys: string[]): Promise<PrivateRoom[]> {
+    if (keys.length === 0) return [];
+    return this.prisma.privateRoom.findMany({
+      where: { participantsKey: { in: keys } },
+    });
+  }
+
+  /**
+   * User Search: capped list of {peerId, roomId} pairs for every private
+   * room the user participates in — used to classify search-matched users
+   * into "has a room" (Chat) vs "doesn't" (Other) without a per-candidate
+   * round trip. Ordered by lastMessageAt desc so a truncated cap keeps the
+   * most-relevant (most-recently-active) rooms.
+   */
+  async findPeersForUser(
+    userId: string,
+    limit: number
+  ): Promise<Array<{ peerId: string; roomId: string }>> {
+    const rooms = await this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId } },
+      select: { roomId: true, participants: true },
+      orderBy: { lastMessageAt: "desc" },
+      take: limit,
+    });
+    return rooms
+      .map((r) => {
+        const peerId = r.participants.find((p) => p !== userId);
+        return peerId ? { peerId, roomId: r.roomId } : null;
+      })
+      .filter((x): x is { peerId: string; roomId: string } => x !== null);
+  }
+
   async create(data: {
     roomId: string;
     participants: string[];

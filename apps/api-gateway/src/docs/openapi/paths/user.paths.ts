@@ -1752,4 +1752,183 @@ export const userPaths = {
       },
     },
   },
+
+  "/users/search": {
+    get: {
+      tags: ["Users"],
+      summary: "Unified User Search (Recent / Chat / Other)",
+      operationId: "searchUsers2",
+      description:
+        "Search Users and Groups in one call, grouped into three sections:\n\n" +
+        "- **recent** — up to 4 recently viewed Users/Groups (from `POST /users/search/recent`), newest-viewed first. `roomId` is resolved dynamically (never stored).\n" +
+        "- **chat** — up to `limit` (default 10) results: private Users you already have a room with, and Groups you actively belong to.\n" +
+        "- **other** — up to `limit` (default 10, paginated via `page`) results: Users without an existing room, and Groups you are not an active member of. Excludes anything already returned in `recent` or `chat`.\n\n" +
+        "`q` is applied to all three sections (username, handle, firstName, lastName, fullName for Users; name for Groups). " +
+        "When `q` is omitted: `recent` returns the latest viewed, `chat` returns the most recently active, `other` returns a suggested set.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        {
+          name: "q",
+          in: "query",
+          required: false,
+          schema: { type: "string", maxLength: 100 },
+          description: "Search term applied to Recent, Chat, and Other.",
+          example: "jane",
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+          description: "Paginates the `other` section only.",
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 10, default: 10 },
+          description:
+            "Caps the `chat` and `other` sections (max 10 per spec).",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Recent / Chat / Other search results",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: { $ref: "#/components/schemas/UserSearchData" },
+                    },
+                  },
+                ],
+              },
+              example: {
+                success: true,
+                message: "Users retrieved successfully.",
+                data: {
+                  recent: [
+                    {
+                      type: "USER",
+                      userId: "660e8400-e29b-41d4-a716-446655440001",
+                      username: "janedoe",
+                      firstName: "Jane",
+                      lastName: "Doe",
+                      fullName: "Jane Doe",
+                      avatarUrl: null,
+                      avatarUrlExpiresIn: null,
+                      avatar: { url: null, expiresIn: null },
+                      isOnline: false,
+                      roomId: "room_abc123",
+                    },
+                    {
+                      type: "GROUP",
+                      roomId: "room_group456",
+                      name: "Weekend Hikers",
+                      avatar: "",
+                      description: "",
+                      memberCount: 12,
+                      isActiveMember: true,
+                    },
+                  ],
+                  chat: [
+                    {
+                      type: "USER",
+                      userId: "880e8400-e29b-41d4-a716-446655440003",
+                      username: "bobsmith",
+                      firstName: "Bob",
+                      lastName: "Smith",
+                      fullName: "Bob Smith",
+                      avatarUrl: null,
+                      avatarUrlExpiresIn: null,
+                      avatar: { url: null, expiresIn: null },
+                      isOnline: true,
+                      roomId: "room_def789",
+                    },
+                  ],
+                  other: [
+                    {
+                      type: "USER",
+                      userId: "990e8400-e29b-41d4-a716-446655440004",
+                      username: "alicew",
+                      firstName: "Alice",
+                      lastName: "White",
+                      fullName: "Alice White",
+                      avatarUrl: null,
+                      avatarUrlExpiresIn: null,
+                      avatar: { url: null, expiresIn: null },
+                      isOnline: false,
+                      roomId: null,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+        "400": _badRequest,
+        "401": unauthorized,
+      },
+    },
+  },
+
+  "/users/search/recent": {
+    post: {
+      tags: ["Users"],
+      summary: "Record a recently viewed User/Group",
+      operationId: "recordRecentUserSearch",
+      description:
+        "Upserts a recently-viewed User or Group by `(caller, targetType, targetId)`. " +
+        "If the target was already recorded, only `lastViewedAt` is bumped (no duplicate row). " +
+        "The list is capped at 20 entries per user; the oldest entries beyond the cap are pruned automatically. " +
+        "`roomId` is never accepted or stored here — it is always resolved dynamically by `GET /users/search`.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              $ref: "#/components/schemas/RecordRecentUserSearchBody",
+            },
+            examples: {
+              user: {
+                summary: "Viewed a user profile",
+                value: {
+                  targetType: "USER",
+                  targetId: "660e8400-e29b-41d4-a716-446655440001",
+                },
+              },
+              group: {
+                summary: "Viewed a group",
+                value: { targetType: "GROUP", targetId: "room_group456" },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "201": {
+          description: "Recorded",
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ApiSuccessResponse" },
+              example: {
+                success: true,
+                message: "Recently viewed item saved.",
+                data: null,
+              },
+            },
+          },
+        },
+        "400": _badRequest,
+        "401": unauthorized,
+      },
+    },
+  },
 } as const;

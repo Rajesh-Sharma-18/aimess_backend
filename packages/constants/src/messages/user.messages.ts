@@ -146,6 +146,10 @@ export const USER_MESSAGES = {
     vi: "Đã kết bạn tự động thành công",
     en: "Auto-connect completed.",
   },
+  USER_RECENT_SEARCH_RECORDED: {
+    vi: "Đã lưu mục vừa xem",
+    en: "Recently viewed item saved.",
+  },
 } as const satisfies MessageCatalog;
 
 export type UserMessageKey = keyof typeof USER_MESSAGES;
