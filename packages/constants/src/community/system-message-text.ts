@@ -177,7 +177,8 @@ export function buildCommunitySystemFallbackText(
       return `${target} was removed`;
 
     case "MEMBER_BANNED":
-      if (isTarget) return "You were banned";
+      // PERSONAL message — only the banned member ever reads this.
+      if (isTarget) return "You were banned from this community.";
       return `${target} was banned`;
 
     case "MEMBER_UNBANNED":

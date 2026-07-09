@@ -119,6 +119,59 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // Community message deletion ("forMe" | "forEveryone") — the gateway's
+  // `community:message:delete` entry point. Delete + lastActivity
+  // recalculation live in chat-service, so forward the delete verbatim and
+  // relay chat-service's REAL result. Business rejections and infra failures
+  // are re-emitted with the ORIGINAL gRPC code + details, matching
+  // sendCommunityMessage, so the gateway's ack-error mapping still works.
+  deleteCommunityMessage: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        messageId?: string;
+        communityId?: string;
+        userId?: string;
+        deleteType?: string;
+      };
+      try {
+        const res = await getChatClient().deleteCommunityMessage({
+          messageId: req.messageId ?? "",
+          communityId: req.communityId ?? "",
+          userId: req.userId ?? "",
+          deleteType: req.deleteType ?? "",
+        });
+        callback(null, {
+          messageId: res.messageId,
+          communityId: res.communityId,
+          roomId: res.roomId,
+          deleteType: res.deleteType,
+        });
+      } catch (err) {
+        const e = err as {
+          code?: number;
+          details?: string;
+          message?: string;
+        };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("deleteCommunityMessage gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "deleteCommunityMessage failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   // Cursor-paged community message history — the gateway's socket
   // `community:messages:fetch` entry point. Message storage lives in
   // chat-service, so forward the read verbatim and relay chat-service's REAL

@@ -66,6 +66,7 @@ import { CommunityController } from "./api/controllers/community.controller.js";
 import { CommunityMessageController } from "./api/controllers/community-message.controller.js";
 import { CallController } from "./api/controllers/call.controller.js";
 import { PresenceController } from "./api/controllers/presence.controller.js";
+import { MessageContextController } from "./api/controllers/message-context.controller.js";
 
 // -- gRPC --
 import { startGrpcServer } from "./grpc/server.js";
@@ -551,6 +552,11 @@ const startServer = async () => {
       ),
       callCtrl: new CallController(callService),
       presenceCtrl: new PresenceController(presenceService),
+      messageContextCtrl: new MessageContextController(
+        privateMessageService,
+        groupMessageService,
+        communityMessageService
+      ),
     };
 
     // 5. Create Express app + HTTP server

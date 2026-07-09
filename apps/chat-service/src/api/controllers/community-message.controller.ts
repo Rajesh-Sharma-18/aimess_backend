@@ -17,6 +17,10 @@ import {
   buildDeletePayload,
 } from "../../lib/chat-message.serializer.js";
 import {
+  buildAvailableContext,
+  buildUnavailableContext,
+} from "../../lib/message-context.js";
+import {
   publishCommunityUpdatedSafe,
   type RecipientBump,
 } from "../../events/publish-conv-updated.js";
@@ -1001,52 +1005,29 @@ export class CommunityMessageController {
     await this.service.assertMember(roomId, userId);
 
     const message = await this.service.findMessageById(messageId, roomId);
-    if (!message || message.roomId !== roomId) {
-      // Message doesn't exist at all
+    if (!message || message.deletedForAll) {
+      // Message doesn't exist, isn't in this room, or was deleted for everyone.
       res.status(HTTP_STATUS.OK).json(
-        new ApiResponse({
-          messageId,
-          roomId,
-          isAvailable: false,
-          error: {
-            code: "MESSAGE_NOT_FOUND",
-            message: "Message doesn't exist",
-          },
-        })
+        new ApiResponse(
+          buildUnavailableContext({
+            messageId,
+            roomId,
+            conversationType: "COMMUNITY",
+          })
+        )
       );
       return;
     }
-
-    if (message.deletedForAll) {
-      res.status(HTTP_STATUS.OK).json(
-        new ApiResponse({
-          messageId,
-          roomId,
-          isAvailable: false,
-          error: {
-            code: "MESSAGE_NOT_FOUND",
-            message: "Message doesn't exist",
-          },
-        })
-      );
-      return;
-    }
-
-    // Build compound cursor anchor so the FE can call ?around=<messageId>
-    const ms =
-      message.createdAt instanceof Date
-        ? message.createdAt.getTime()
-        : Number(message.createdAt);
-    const beforeCursor = `${ms}_${messageId}`;
-    const afterCursor = `${ms}_${messageId}`;
 
     res.status(HTTP_STATUS.OK).json(
-      new ApiResponse({
-        messageId,
-        roomId,
-        isAvailable: true,
-        anchor: { beforeCursor, afterCursor },
-      })
+      new ApiResponse(
+        buildAvailableContext({
+          messageId,
+          roomId,
+          conversationType: "COMMUNITY",
+          createdAt: message.createdAt,
+        })
+      )
     );
   });
 }

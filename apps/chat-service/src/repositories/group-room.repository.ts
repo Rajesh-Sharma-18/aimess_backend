@@ -314,6 +314,57 @@ export class GroupRoomRepository {
    * - direction "after" : lastMessageAt >= ts, oldest-first (asc).
    * Only ACTIVE groups the user belongs to (roomIds) with a lastMessageAt.
    */
+  /**
+   * User Search — groups the viewer is an ACTIVE member of, optionally
+   * filtered by name, newest activity first.
+   */
+  async searchActiveForUser(
+    roomIds: string[],
+    q: string | undefined,
+    limit: number
+  ): Promise<GroupRoom[]> {
+    if (roomIds.length === 0) return [];
+    return this.prisma.groupRoom.findMany({
+      where: {
+        roomId: { in: roomIds },
+        status: "ACTIVE",
+        ...(q ? { name: { contains: q, mode: "insensitive" } } : {}),
+      },
+      orderBy: { lastMessageAt: "desc" },
+      take: limit,
+    });
+  }
+
+  /**
+   * User Search — groups the viewer is NOT a member of (`excludeRoomIds`
+   * covers both the viewer's own memberships and any ids already surfaced
+   * elsewhere, e.g. Recent), optionally filtered by name, largest first as a
+   * simple "suggested" ordering.
+   */
+  async searchOtherForUser(
+    excludeRoomIds: string[],
+    q: string | undefined,
+    limit: number
+  ): Promise<GroupRoom[]> {
+    return this.prisma.groupRoom.findMany({
+      where: {
+        ...(excludeRoomIds.length ? { roomId: { notIn: excludeRoomIds } } : {}),
+        status: "ACTIVE",
+        ...(q ? { name: { contains: q, mode: "insensitive" } } : {}),
+      },
+      orderBy: { memberCount: "desc" },
+      take: limit,
+    });
+  }
+
+  /** User Search — resolve specific roomIds (e.g. Recent group targets). */
+  async findManyByRoomIds(roomIds: string[]): Promise<GroupRoom[]> {
+    if (roomIds.length === 0) return [];
+    return this.prisma.groupRoom.findMany({
+      where: { roomId: { in: roomIds }, status: "ACTIVE" },
+    });
+  }
+
   async getInboxGroups(params: {
     roomIds: string[];
     direction: "before" | "after";

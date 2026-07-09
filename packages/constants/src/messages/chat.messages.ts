@@ -193,6 +193,10 @@ export const CHAT_MESSAGES = {
     vi: "Không tìm thấy tin nhắn",
     en: "Message not found",
   },
+  CHAT_INVALID_CONVERSATION_TYPE: {
+    vi: "Loại cuộc trò chuyện không hợp lệ",
+    en: "Invalid conversation type",
+  },
   CHAT_DELETE_OWN_MESSAGES_ONLY: {
     vi: "Bạn chỉ có thể xóa tin nhắn của mình",
     en: "You can only delete your own messages",

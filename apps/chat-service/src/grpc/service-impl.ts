@@ -66,6 +66,7 @@ import {
   assertGroupMember,
   assertCommunityMember,
 } from "../lib/access-guard.js";
+import { buildParticipantsKey } from "../lib/room-id.js";
 
 /**
  * Resolve attachment object-keys inside a message `content` blob to full,
@@ -1787,6 +1788,150 @@ export function createMessagingImpl(
             `checkMediaAccess denied (scope=${scope}, user=${userId}, resource=${resourceId}): ${String(err)}`
           );
           callback(null, { allowed: false });
+        }
+      })();
+    },
+
+    // User Search: bulk-resolve existing PrivateRoom ids for a viewer across
+    // many candidate peer userIds in one indexed query (participantsKey is
+    // @unique) — avoids N+1 gRPC calls from user-service's search endpoint.
+    resolvePrivateRooms: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            viewerId?: string;
+            peerUserIds?: string[];
+          };
+          const viewerId = req.viewerId ?? "";
+          const peerIds = [...new Set((req.peerUserIds ?? []).filter(Boolean))];
+          if (!viewerId || peerIds.length === 0) {
+            callback(null, { matches: [] });
+            return;
+          }
+
+          const keyToPeer = new Map(
+            peerIds.map((peerId) => [
+              buildParticipantsKey(viewerId, peerId),
+              peerId,
+            ])
+          );
+          const rooms = await deps.privateRoomRepo.findByParticipantsKeys([
+            ...keyToPeer.keys(),
+          ]);
+          const matches = rooms
+            .map((room) => {
+              const peerId = keyToPeer.get(room.participantsKey);
+              return peerId
+                ? { peerUserId: peerId, roomId: room.roomId }
+                : null;
+            })
+            .filter(
+              (m): m is { peerUserId: string; roomId: string } => m !== null
+            );
+
+          callback(null, { matches });
+        } catch (err) {
+          logger.error(`gRPC resolvePrivateRooms error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // User Search: capped list of the viewer's private-room peers (peerId +
+    // roomId), used to classify search-matched users into "Chat" vs "Other".
+    listPrivateRooms: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { viewerId?: string; limit?: number };
+          const viewerId = req.viewerId ?? "";
+          const limit = Math.min(Math.max(req.limit || 300, 1), 1000);
+          if (!viewerId) {
+            callback(null, { rooms: [] });
+            return;
+          }
+          const peers = await deps.privateRoomRepo.findPeersForUser(
+            viewerId,
+            limit
+          );
+          callback(null, {
+            rooms: peers.map((p) => ({
+              peerUserId: p.peerId,
+              roomId: p.roomId,
+            })),
+          });
+        } catch (err) {
+          logger.error(`gRPC listPrivateRooms error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // User Search: list/search groups for a viewer — ACTIVE (member),
+    // OTHER (not a member, excluding given roomIds), or BY_IDS (resolve
+    // specific roomIds, e.g. to refresh a recently-viewed group's metadata).
+    searchUserGroups: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            viewerId?: string;
+            q?: string;
+            mode?: string;
+            roomIds?: string[];
+            limit?: number;
+          };
+          const viewerId = req.viewerId ?? "";
+          const q = req.q || undefined;
+          const mode = String(req.mode ?? "ACTIVE").toUpperCase();
+          const roomIds = (req.roomIds ?? []).filter(Boolean);
+          const limit = Math.min(Math.max(req.limit || 10, 1), 100);
+
+          const activeRoomIds = viewerId
+            ? await deps.groupMemberRepo.getActiveRoomIds(viewerId)
+            : [];
+          const activeSet = new Set(activeRoomIds);
+
+          let rows;
+          if (mode === "OTHER") {
+            const excludeSet = new Set([...activeRoomIds, ...roomIds]);
+            rows = await deps.groupRoomRepo.searchOtherForUser(
+              [...excludeSet],
+              q,
+              limit
+            );
+          } else if (mode === "BY_IDS") {
+            rows = await deps.groupRoomRepo.findManyByRoomIds(roomIds);
+          } else {
+            rows = await deps.groupRoomRepo.searchActiveForUser(
+              activeRoomIds,
+              q,
+              limit
+            );
+          }
+
+          const groups = rows.map((g) => ({
+            roomId: g.roomId,
+            name: g.name,
+            avatar: g.avatar,
+            description: g.description,
+            memberCount: g.memberCount,
+            isActiveMember: activeSet.has(g.roomId),
+            lastMessageAt: g.lastMessageAt ? g.lastMessageAt.getTime() : 0,
+            createdAt: g.createdAt.getTime(),
+          }));
+
+          callback(null, { groups });
+        } catch (err) {
+          logger.error(`gRPC searchUserGroups error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
     },

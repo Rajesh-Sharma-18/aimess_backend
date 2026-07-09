@@ -5,10 +5,10 @@
  * visible in chat history; this only affects the unread-count queries.
  *
  * Uses a tiny local aggregateRaw emulator (not tests/helpers/timeline-emulator,
- * which doesn't implement `$nin` — the operator countUnreadAfter's HIDDEN-type
- * exclusion depends on) covering exactly the operators countUnreadAfter emits:
- * plain equality, `$ne` (scalar/array), `$nin`, `$oid`, `$date`, and `$gt` on
- * createdAt.
+ * which doesn't implement `$nin`/`$in`/`$or`/`$exists`) covering exactly the
+ * operators countUnreadAfter emits: plain equality, `$ne` (scalar/array),
+ * `$nin`, `$in`, `$exists`, `$oid`, `$date`, `$gt` on createdAt, and the
+ * top-level `$or` combinator.
  */
 import { GeneralRoomMessageRepository } from "../../src/repositories/general-room-message.repository.js";
 
@@ -56,16 +56,35 @@ function matchField(doc: Doc, key: string, cond: unknown): boolean {
   if ("$nin" in c) {
     return !(c.$nin as unknown[]).includes(value as never);
   }
+  if ("$in" in c) {
+    const normalized = value === undefined ? null : value;
+    return (c.$in as unknown[]).includes(normalized as never);
+  }
   if ("$gt" in c) {
     const against = c.$gt as { $date: string };
     const t = new Date(against.$date).getTime();
     return value instanceof Date && value.getTime() > t;
   }
+  if ("$exists" in c) {
+    return (value !== undefined) === (c.$exists as boolean);
+  }
   return false;
 }
 
 function matchDoc(doc: Doc, match: Record<string, unknown>): boolean {
-  return Object.entries(match).every(([k, v]) => matchField(doc, k, v));
+  return Object.entries(match).every(([k, v]) => {
+    if (k === "$or") {
+      return (v as Record<string, unknown>[]).some((clause) =>
+        matchDoc(doc, clause)
+      );
+    }
+    if (k === "$and") {
+      return (v as Record<string, unknown>[]).every((clause) =>
+        matchDoc(doc, clause)
+      );
+    }
+    return matchField(doc, k, v);
+  });
 }
 
 function makeRepo(docs: Doc[]): GeneralRoomMessageRepository {
@@ -123,6 +142,27 @@ describe("countUnreadAfter excludes SYSTEM messages", () => {
         _id: "4".repeat(24),
         messageType: "SYSTEM",
         systemMessageType: "COMMUNITY_NAME_UPDATED",
+      }),
+    ]);
+    const count = await repo.countUnreadAfter({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      afterDate,
+    });
+    expect(count).toBe(0);
+  });
+
+  it("does NOT count previously-'important' system types (ROLE_CHANGED, COMMUNITY_CREATED)", async () => {
+    const repo = makeRepo([
+      baseDoc({
+        _id: "9".repeat(24),
+        messageType: "SYSTEM",
+        systemMessageType: "ROLE_CHANGED",
+      }),
+      baseDoc({
+        _id: "a1".padEnd(24, "0"),
+        messageType: "SYSTEM",
+        systemMessageType: "COMMUNITY_CREATED",
       }),
     ]);
     const count = await repo.countUnreadAfter({

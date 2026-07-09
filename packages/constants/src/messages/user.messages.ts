@@ -146,6 +146,10 @@ export const USER_MESSAGES = {
     vi: "Đã kết bạn tự động thành công",
     en: "Auto-connect completed.",
   },
+  USER_RECENT_SEARCH_RECORDED: {
+    vi: "Đã lưu mục vừa xem",
+    en: "Recently viewed item saved.",
+  },
   RECENT_SEARCH_LIST_FETCHED: {
     vi: "Lấy danh sách tìm kiếm gần đây thành công",
     en: "Recent searches retrieved successfully.",

@@ -7,6 +7,7 @@ import { profileRoutes } from "./profile.routes.js";
 import { recentSearchesRoutes } from "./recent-searches.routes.js";
 import { settingsRoutes } from "./settings.routes.js";
 import { usernameRoutes } from "./username.routes.js";
+import { userSearchRoutes } from "./user-search.routes.js";
 import { usersRoutes } from "./users.routes.js";
 
 /** API v1 routes — mounted at `/api/v1` (same idea as `authRoutes` at `/api/auth`). */
@@ -19,4 +20,5 @@ userRoutes.use("/usernames", usernameRoutes);
 userRoutes.use("/profiles", profileRoutes);
 userRoutes.use("/friends", friendshipRoutes);
 userRoutes.use("/recent-searches", recentSearchesRoutes);
+userRoutes.use("/search", userSearchRoutes);
 userRoutes.use("/", usersRoutes);

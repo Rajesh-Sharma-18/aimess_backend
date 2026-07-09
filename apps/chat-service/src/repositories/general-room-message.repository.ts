@@ -11,8 +11,9 @@ import {
 import {
   PERSONAL_JOIN_SESSION_TYPES,
   HIDDEN_SYSTEM_MESSAGE_TYPES,
+  REALTIME_ONLY_SYSTEM_MESSAGE_TYPES,
   isPersonalJoinSessionType,
-  isHiddenSystemMessage,
+  isExcludedFromHistory,
 } from "@aimess/constants";
 import {
   shouldCountInUnread,
@@ -50,8 +51,11 @@ function isVisibleToUser(
   // the duplicate "You joined the community" the joiner saw: the legacy
   // MEMBER_JOINED was personalized to "You joined…", doubling the personal
   // COMMUNITY_JOINED line; hiding MEMBER_JOINED leaves exactly one personal line.
+  // Also excludes REAL-TIME-ONLY types (MEMBER_MUTED/MEMBER_UNMUTED) — delivered
+  // live to the affected member's socket, but never returned by a read path,
+  // not even to that same member on a later reload/resync.
   // Applies regardless of membership/visibility, so it runs first.
-  if (isHiddenSystemMessage(msg.systemMessageType)) {
+  if (isExcludedFromHistory(msg.systemMessageType)) {
     return false;
   }
   if (msg.visibleToUserId && msg.visibleToUserId !== userId) {
@@ -259,15 +263,23 @@ export class GeneralRoomMessageRepository {
     _direction: string,
     limit: number,
     userId: string,
-    viewerIsActiveMember = true
+    viewerIsActiveMember = true,
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null
   ): Promise<GeneralRoomMessage[]> {
+    // A banned viewer's window can never extend past their ban cutoff, even if
+    // `beforeTimestamp` (the scroll cursor) is later.
+    const upperBound =
+      readCutoff && readCutoff < new Date(beforeTimestamp)
+        ? new Date(readCutoff.getTime() + 1)
+        : new Date(beforeTimestamp);
     // Prisma MongoDB doesn't support $nin on JSON arrays directly.
     // Fetch and filter in memory for deletedBy + personal visibility.
     const [messages, latestPersonalJoinMessageId] = await Promise.all([
       this.prisma.generalRoomMessage.findMany({
         where: {
           roomId,
-          createdAt: { lt: new Date(beforeTimestamp) },
+          createdAt: { lt: upperBound },
           deletedForAll: false,
         },
         orderBy: { createdAt: "desc" },
@@ -320,14 +332,29 @@ export class GeneralRoomMessageRepository {
     userId: string;
     viewerIsActiveMember: boolean;
     latestPersonalJoinMessageId?: string | null;
+    /**
+     * Upper bound for a BANNED viewer: only messages created at/before their
+     * ban timestamp are visible (Telegram parity — pre-ban history stays
+     * readable, nothing newer ever is, including after unban/rejoin resync).
+     */
+    readCutoff?: Date | null;
   }): Record<string, unknown> {
     const match: Record<string, unknown> = {
       roomId: { $oid: params.roomId },
       deletedForAll: false,
       deletedBy: { $ne: params.userId },
       visibleToUserId: { $in: [null, params.userId] },
-      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+      // Hidden lifecycle lines + REAL-TIME-ONLY types (MEMBER_MUTED/UNMUTED) —
+      // the latter are delivered live to the affected member's socket but must
+      // never resurface via history, not even for that same member on reload.
+      systemMessageType: {
+        $nin: [
+          ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+          ...REALTIME_ONLY_SYSTEM_MESSAGE_TYPES,
+        ],
+      },
     };
+    const andClauses: Record<string, unknown>[] = [];
     if (!params.viewerIsActiveMember) {
       match.$nor = [
         {
@@ -336,13 +363,19 @@ export class GeneralRoomMessageRepository {
         },
       ];
     } else {
-      match.$and = [
+      andClauses.push(
         personalJoinSessionGuard(
           params.userId,
           params.latestPersonalJoinMessageId ?? null
-        ),
-      ];
+        )
+      );
     }
+    if (params.readCutoff) {
+      andClauses.push({
+        createdAt: { $lte: { $date: params.readCutoff.toISOString() } },
+      });
+    }
+    if (andClauses.length) match.$and = andClauses;
     return match;
   }
 
@@ -379,6 +412,8 @@ export class GeneralRoomMessageRepository {
     inclusive?: boolean;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
     const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
@@ -390,6 +425,7 @@ export class GeneralRoomMessageRepository {
       userId: params.userId,
       viewerIsActiveMember,
       latestPersonalJoinMessageId,
+      readCutoff: params.readCutoff,
     });
 
     const date = { $date: params.ts.toISOString() };
@@ -571,6 +607,8 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
   }): Promise<number> {
     const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
     const latestPersonalJoinMessageId = viewerIsActiveMember
@@ -584,6 +622,7 @@ export class GeneralRoomMessageRepository {
             userId: params.userId,
             viewerIsActiveMember,
             latestPersonalJoinMessageId,
+            readCutoff: params.readCutoff,
           }),
         },
         { $count: "total" },
@@ -602,8 +641,14 @@ export class GeneralRoomMessageRepository {
     anchorDate: Date;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
     const half = Math.floor(params.limit / 2);
+    const newerUpperBound =
+      params.readCutoff && params.readCutoff < params.anchorDate
+        ? params.readCutoff
+        : null;
 
     const [older, newer, latestPersonalJoinMessageId] = await Promise.all([
       // anchor-inclusive older half (desc → reversed to asc before merge)
@@ -616,16 +661,21 @@ export class GeneralRoomMessageRepository {
         orderBy: { createdAt: "desc" },
         take: half + 1,
       }),
-      // strictly newer half
-      this.prisma.generalRoomMessage.findMany({
-        where: {
-          roomId: params.roomId,
-          deletedForAll: false,
-          createdAt: { gt: params.anchorDate },
-        },
-        orderBy: { createdAt: "asc" },
-        take: half,
-      }),
+      // strictly newer half — never past the ban cutoff for a banned viewer.
+      newerUpperBound
+        ? Promise.resolve([])
+        : this.prisma.generalRoomMessage.findMany({
+            where: {
+              roomId: params.roomId,
+              deletedForAll: false,
+              createdAt: {
+                gt: params.anchorDate,
+                ...(params.readCutoff ? { lte: params.readCutoff } : {}),
+              },
+            },
+            orderBy: { createdAt: "asc" },
+            take: half,
+          }),
       (params.viewerIsActiveMember ?? true)
         ? this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
         : Promise.resolve(null),
@@ -673,10 +723,16 @@ export class GeneralRoomMessageRepository {
       // PERSONAL message visibility: keep messages with no target OR targeted at
       // this user. Stored as null when absent, so $in must include null.
       visibleToUserId: { $in: [null, params.userId] },
-      // Suppressed moderation lines (removed/banned/unbanned) are hidden from the
-      // chat timeline for everyone. `$nin` also matches docs where the field is
-      // absent (regular messages), so they pass through.
-      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+      // Suppressed moderation lines (removed/banned/unbanned) + REAL-TIME-ONLY
+      // types (MEMBER_MUTED/UNMUTED) are hidden from the chat timeline for
+      // everyone, including the affected member on reload. `$nin` also matches
+      // docs where the field is absent (regular messages), so they pass through.
+      systemMessageType: {
+        $nin: [
+          ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+          ...REALTIME_ONLY_SYSTEM_MESSAGE_TYPES,
+        ],
+      },
       $and: [
         personalJoinSessionGuard(
           params.userId,
@@ -776,9 +832,10 @@ export class GeneralRoomMessageRepository {
             deletedBy: { $ne: params.userId },
             // Personal system messages (e.g. "You joined") are informational only.
             visibleToUserId: null,
-            // Hidden membership lines never count toward unread (consistency with
-            // countUnreadBulk / conversationMatch).
-            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // No SYSTEM message (any systemMessageType at all) counts toward
+            // unread — mirrors write-time shouldCountInUnread() and guards
+            // legacy rows persisted before `countInUnread` existed.
+            systemMessageType: { $in: [null] },
             ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
@@ -823,8 +880,10 @@ export class GeneralRoomMessageRepository {
             // events (e.g. "You joined the community") and must never inflate unread.
             // Only community-wide messages (visibleToUserId === null) count.
             visibleToUserId: null,
-            // Suppressed moderation lines never count toward unread either.
-            systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+            // No SYSTEM message (any systemMessageType at all) counts toward
+            // unread — mirrors write-time shouldCountInUnread() and guards
+            // legacy rows persisted before `countInUnread` existed.
+            systemMessageType: { $in: [null] },
             ...UNREAD_COUNTABLE_RAW_MATCH,
           },
         },
@@ -880,6 +939,13 @@ export class GeneralRoomMessageRepository {
             // excluded — they're already covered by room.lastMessage).
             visibleToUserId: params.userId,
             deletedBy: { $ne: params.userId },
+            // REAL-TIME-ONLY types (MEMBER_MUTED/UNMUTED) must never become the
+            // community-list personal lastActivity preview — they are delivered
+            // live to the affected member's socket only, never persisted-and-
+            // readable via this list overlay.
+            systemMessageType: {
+              $nin: [...REALTIME_ONLY_SYSTEM_MESSAGE_TYPES],
+            },
           },
         },
         { $sort: { createdAt: -1 } },
@@ -960,7 +1026,9 @@ export class GeneralRoomMessageRepository {
     limit: number,
     userId: string,
     viewerIsActiveMember = true,
-    skip = 0
+    skip = 0,
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null
   ): Promise<GeneralRoomMessage[]> {
     // `message` is a top-level String field, so a case-insensitive `contains`
     // works directly. Per-user visibility (deletedBy/isVisibleToUser) can only
@@ -974,6 +1042,7 @@ export class GeneralRoomMessageRepository {
         roomId,
         deletedForAll: false,
         message: { contains: query, mode: "insensitive" },
+        ...(readCutoff ? { createdAt: { lte: readCutoff } } : {}),
       },
       orderBy: { createdAt: "desc" },
       take: skip + limit + OVERFETCH_MARGIN,
@@ -994,7 +1063,9 @@ export class GeneralRoomMessageRepository {
     roomId: string,
     query: string,
     userId: string,
-    viewerIsActiveMember = true
+    viewerIsActiveMember = true,
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null
   ): Promise<number> {
     // Mirrors searchByText's per-user filter (deletedBy/isVisibleToUser) so the
     // reported total — and therefore totalPage/hasMore — matches what the user
@@ -1004,6 +1075,7 @@ export class GeneralRoomMessageRepository {
         roomId,
         deletedForAll: false,
         message: { contains: query, mode: "insensitive" },
+        ...(readCutoff ? { createdAt: { lte: readCutoff } } : {}),
       },
       select: {
         deletedBy: true,
@@ -1172,9 +1244,15 @@ export class GeneralRoomMessageRepository {
       deletedBy: { $ne: params.userId },
       // PERSONAL message visibility — never surface another user's personal message.
       visibleToUserId: { $in: [null, params.userId] },
-      // Suppressed moderation lines hidden from everyone ($nin keeps field-absent
-      // regular messages).
-      systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
+      // Suppressed moderation lines + REAL-TIME-ONLY types (MEMBER_MUTED/UNMUTED)
+      // hidden from everyone, including the affected member on catch-up ($nin
+      // keeps field-absent regular messages).
+      systemMessageType: {
+        $nin: [
+          ...HIDDEN_SYSTEM_MESSAGE_TYPES,
+          ...REALTIME_ONLY_SYSTEM_MESSAGE_TYPES,
+        ],
+      },
     };
     const latestPersonalJoinMessageId =
       await this.findLatestPersonalJoinMessageId(params.roomId, params.userId);
@@ -1233,12 +1311,22 @@ export class GeneralRoomMessageRepository {
     fromTs: Date;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /**
+     * Upper bound for a BANNED viewer — a resync must never surface a message
+     * CREATED after the ban, even if its `updatedAt` (a later reaction/edit by
+     * someone else, or the ban's own mirrored membership row) falls after
+     * `fromTs`. See {@link timelineMatch}.
+     */
+    readCutoff?: Date | null;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     const [raw, latestPersonalJoinMessageId] = await Promise.all([
       this.prisma.generalRoomMessage.findMany({
         where: {
           roomId: params.roomId,
           updatedAt: { gte: params.fromTs },
+          ...(params.readCutoff
+            ? { createdAt: { lte: params.readCutoff } }
+            : {}),
           // deletedForAll intentionally NOT filtered — tombstones must be
           // included so the client can reconcile deletes missed while offline.
         },

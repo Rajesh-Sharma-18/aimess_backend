@@ -157,6 +157,20 @@ export const conversationQuerySchema = z.object({
  *
  * The two are mutually exclusive; omit both for the newest page.
  */
+/**
+ * Query schema for the unified cross-conversation-type message-context
+ * endpoint (`GET /messages/:messageId/context`) — reply/pinned/search-result/
+ * deep-link navigation. `roomId` is required so the target message can be
+ * bound to the conversation the caller claims it belongs to (cross-room IDOR
+ * guard, enforced in the service layer).
+ */
+export const messageContextQuerySchema = z.object({
+  conversationType: z.enum(["PRIVATE", "GROUP", "COMMUNITY"], {
+    error: "conversationType must be one of PRIVATE, GROUP, COMMUNITY",
+  }),
+  roomId: z.string().min(1).max(300),
+});
+
 export const inboxQuerySchema = z
   .object({
     before_ts: z.coerce.number().int().positive().optional(),
