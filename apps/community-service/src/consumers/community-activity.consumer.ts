@@ -119,7 +119,7 @@ export async function startCommunityActivityConsumer(): Promise<void> {
           } else {
             const at = new Date(parsed.data.lastMessageAt);
             if (communityId && !Number.isNaN(at.getTime())) {
-              await communityRepository.updateLastActivity(
+              const updatedCount = await communityRepository.updateLastActivity(
                 communityId,
                 at,
                 parsed.data.type ?? "message",
@@ -129,6 +129,9 @@ export async function startCommunityActivityConsumer(): Promise<void> {
                 parsed.data.selfPreview ?? null,
                 parsed.data.targetUserId ?? null,
                 parsed.data.targetPreview ?? null
+              );
+              logger.info(
+                `[LIVE-SIDEBAR:COMMUNITY] community.activity updateLastActivity communityId=${communityId} activityType=${parsed.data.type ?? "message"} at=${at.toISOString()} updatedCount=${updatedCount} preview="${parsed.data.messagePreview ?? ""}"`
               );
             }
           }

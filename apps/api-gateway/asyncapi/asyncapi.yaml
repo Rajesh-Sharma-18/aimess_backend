@@ -3138,9 +3138,15 @@ components:
               displayName: "Jane Doe"
               avatarUrl: "communities/avatars/jane.jpg"
             title: "Friday Q&A"
+            sourceType: YOUTUBE
+            sourceUrl: "https://youtu.be/_JF_s-ZRTyY"
             hlsUrl: "https://cdn.aimess.com/hls/684abc.m3u8"
+            flvUrl: "https://cdn.aimess.com/hls/684abc.flv"
+            dashUrl: "https://cdn.aimess.com/hls/684abc.mpd"
+            youtubeVideoId: "_JF_s-ZRTyY"
             status: LIVE
             startedAt: 1750000400000
+            livedAt: 1750000400000
             activeLivestreamCount: 1
             hasActiveLivestream: true
     CommunityStreamEnded:
@@ -6366,14 +6372,35 @@ components:
               description: "Object key or resolved URL; resolve on read. May be null."
           required: [userId, displayName, avatarUrl]
         title: { type: string, nullable: true }
+        sourceType:
+          type: string
+          enum: [PHONE_CAMERA, OBS_RTMP, URL, YOUTUBE]
+          description: "Stream source type, matching the REST stream read model."
+        sourceUrl:
+          type: string
+          nullable: true
+          description: "Original external source URL for URL/YOUTUBE streams, otherwise null."
         hlsUrl:
           {
             type: string,
             nullable: true,
             description: "Primary playback URL (HLS).",
           }
+        flvUrl:
+          type: string
+          nullable: true
+        dashUrl:
+          type: string
+          nullable: true
+        youtubeVideoId:
+          type: string
+          nullable: true
+          description: 'Extracted YouTube video id when sourceType is "YOUTUBE", otherwise null.'
         status: { type: string, enum: [LIVE] }
         startedAt: { type: integer, description: "Epoch ms." }
+        livedAt:
+          type: integer
+          description: "REST-compatible alias of startedAt, in epoch ms."
         activeLivestreamCount:
           type: integer
           description: "LIVE-only count after this stream went live (0–5, capped)."
@@ -6384,8 +6411,15 @@ components:
           livestreamId,
           streamId,
           host,
+          sourceType,
+          sourceUrl,
+          hlsUrl,
+          flvUrl,
+          dashUrl,
+          youtubeVideoId,
           status,
           startedAt,
+          livedAt,
           activeLivestreamCount,
           hasActiveLivestream,
         ]

@@ -1089,8 +1089,8 @@ export const communityRepository = {
     selfPreview: string | null = null,
     targetUserId: string | null = null,
     targetPreview: string | null = null
-  ): Promise<void> {
-    await prisma.community.updateMany({
+  ): Promise<number> {
+    const result = await prisma.community.updateMany({
       where: { id: communityId, lastActivityAt: { lt: activityAt } },
       data: {
         lastActivityAt: activityAt,
@@ -1107,6 +1107,7 @@ export const communityRepository = {
         lastActivityTargetPreview: targetPreview,
       },
     });
+    return result.count;
   },
 
   /**

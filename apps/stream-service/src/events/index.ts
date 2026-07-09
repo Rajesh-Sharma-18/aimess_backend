@@ -53,6 +53,9 @@ export function publishStreamEvent(
       channel.publish(EXCHANGE, routingKey, Buffer.from(body), {
         persistent: true,
       });
+      logger.info(
+        `[LIVE-SIDEBAR:STREAM] RabbitMQ published routingKey=${routingKey} streamId=${String(payload.streamId ?? "")} communityId=${String(payload.communityId ?? "")} creatorId=${String(payload.creatorId ?? "")}`
+      );
     } catch (error) {
       channelPromise = null;
       logger.warn(

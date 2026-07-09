@@ -133,8 +133,11 @@ export interface CommunityMemberUnmutedSocketPayload {
  * chat. Timestamps are epoch ms. `status` stays "LIVE" (the canonical stream enum
  * value). `activeLivestreamCount` is the community's LIVE-only count AFTER this
  * stream went live, clamped to the 5-stream cap; `hasActiveLivestream` is always
- * true here. Additive over the legacy `{ communityId, streamId, title, hlsUrl }`
- * payload — older listeners that read only those keys keep working.
+ * true here. `sourceType`/`sourceUrl` mirror the REST stream read model so
+ * clients can distinguish embedded YouTube/URL streams from SRS-backed camera or
+ * OBS streams without an immediate refetch. Additive over the legacy
+ * `{ communityId, streamId, title, hlsUrl }` payload — older listeners that read
+ * only those keys keep working.
  */
 export interface CommunityStreamStartedSocketPayload {
   communityId: string;
@@ -149,10 +152,20 @@ export interface CommunityStreamStartedSocketPayload {
   };
   /** Stream title, when set. */
   title: string | null;
+  /** Stream source, matching the REST stream read model. */
+  sourceType: "PHONE_CAMERA" | "OBS_RTMP" | "URL" | "YOUTUBE";
+  /** Original external source URL for URL/YOUTUBE streams, otherwise null. */
+  sourceUrl: string | null;
   /** Primary playback URL (HLS), when available. */
   hlsUrl: string | null;
+  flvUrl: string | null;
+  dashUrl: string | null;
+  /** Extracted YouTube video id when sourceType === "YOUTUBE", otherwise null. */
+  youtubeVideoId: string | null;
   status: "LIVE";
   startedAt: number; // epoch ms
+  /** REST-compatible alias of `startedAt`. */
+  livedAt: number; // epoch ms
   activeLivestreamCount: number;
   hasActiveLivestream: true;
 }

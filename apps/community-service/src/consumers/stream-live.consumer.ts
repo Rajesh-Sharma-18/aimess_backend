@@ -4,7 +4,6 @@ import { publishChatUserEvent } from "@aimess/redis";
 
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
-import { getStreamClient } from "../grpc/stream.client.js";
 import { communityRepository } from "../repositories/community.repository.js";
 
 /**
@@ -31,14 +30,21 @@ const PREFETCH = 5;
 const STREAM_STARTED = "stream.started";
 const STREAM_ENDED = "stream.ended";
 const STREAM_UPDATED = "stream.updated";
-const MAX_ACTIVE_LIVESTREAMS = 5;
 
 interface StreamStartedData {
   streamId: string;
   communityId: string;
   creatorId: string;
   title?: string;
-  livedAt: number;
+  sourceType?: string;
+  sourceUrl?: string | null;
+  hlsUrl?: string | null;
+  flvUrl?: string | null;
+  dashUrl?: string | null;
+  youtubeVideoId?: string | null;
+  status?: string;
+  livedAt?: number;
+  startedAt?: number;
 }
 
 interface StreamEndedData {
@@ -60,21 +66,6 @@ interface StreamUpdatedData {
 }
 
 type StreamLiveData = StreamStartedData | StreamEndedData | StreamUpdatedData;
-
-async function getActiveLivestreamCount(communityId: string): Promise<number> {
-  try {
-    const counts = await getStreamClient().getActiveStreamCounts([communityId]);
-    return Math.min(
-      Math.max(0, counts.get(communityId) ?? 0),
-      MAX_ACTIVE_LIVESTREAMS
-    );
-  } catch (error) {
-    logger.warn(
-      `[stream-live-consumer] active stream count lookup failed community=${communityId}: ${String(error)}`
-    );
-    return 0;
-  }
-}
 
 export async function startStreamLiveConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
@@ -146,10 +137,8 @@ export async function startStreamLiveConsumer(): Promise<void> {
           ? "community:stream:ended"
           : "community:stream:updated";
 
-      const [memberIds, activeLivestreamCount] = await Promise.all([
-        communityRepository.findActiveMemberIds(communityId),
-        getActiveLivestreamCount(communityId),
-      ]);
+      const memberIds =
+        await communityRepository.findActiveMemberIds(communityId);
 
       logger.info(
         `🔴 [STREAM:CONSUMER] found ${String(memberIds.length)} active members in community=${communityId} — fanning out ${socketEvent}`
@@ -166,50 +155,32 @@ export async function startStreamLiveConsumer(): Promise<void> {
       // Fan out to every active member's personal channel. Each publish is
       // independently guarded — a single user channel failure must not abort
       // the rest of the fan-out.
-      const socketPayload = isStarted
-        ? {
-            communityId,
-            livestreamId: streamId,
-            streamId,
-            ...((data as StreamStartedData).title
-              ? { title: (data as StreamStartedData).title }
-              : {}),
-            status: "LIVE",
-            livedAt: (data as StreamStartedData).livedAt,
-            startedAt: (data as StreamStartedData).livedAt,
-            activeLivestreamCount,
-            hasActiveLivestream: true,
-          }
-        : isEnded
-          ? {
-              communityId,
-              livestreamId: streamId,
-              streamId,
-              status: "ENDED",
-              activeLivestreamCount,
-              hasActiveLivestream: activeLivestreamCount > 0,
-            }
-          : {
-              communityId,
-              livestreamId: streamId,
-              streamId,
-              ...((data as StreamUpdatedData).title !== undefined
-                ? { title: (data as StreamUpdatedData).title ?? null }
-                : {}),
-              ...((data as StreamUpdatedData).description !== undefined
-                ? {
-                    description: (data as StreamUpdatedData).description ?? "",
-                  }
-                : {}),
-              ...((data as StreamUpdatedData).thumbnail !== undefined
-                ? { thumbnail: (data as StreamUpdatedData).thumbnail ?? null }
-                : {}),
-              updatedAt: (data as StreamUpdatedData).updatedAt
-                ? Date.parse((data as StreamUpdatedData).updatedAt!)
-                : Date.now(),
-              activeLivestreamCount,
-              hasActiveLivestream: activeLivestreamCount > 0,
-            };
+      let socketPayload: Record<string, unknown>;
+      if (isStarted) {
+        const startedData = data as StreamStartedData;
+        const startedAt =
+          startedData.startedAt ?? startedData.livedAt ?? Date.now();
+        socketPayload = {
+          communityId,
+          livestreamId: streamId,
+          streamId,
+          title: startedData.title ?? null,
+          ...(startedData.sourceType
+            ? { sourceType: startedData.sourceType }
+            : {}),
+          sourceUrl: startedData.sourceUrl ?? null,
+          hlsUrl: startedData.hlsUrl ?? null,
+          flvUrl: startedData.flvUrl ?? null,
+          dashUrl: startedData.dashUrl ?? null,
+          youtubeVideoId: startedData.youtubeVideoId ?? null,
+          status: startedData.status ?? "LIVE",
+          livedAt: startedAt,
+          startedAt,
+          hasActiveLivestream: true,
+        };
+      } else {
+        socketPayload = { communityId, streamId };
+      }
 
       await Promise.allSettled(
         memberIds.map((memberId) =>
