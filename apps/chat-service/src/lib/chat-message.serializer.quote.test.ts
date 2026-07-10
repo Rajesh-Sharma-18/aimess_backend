@@ -49,6 +49,7 @@ describe("buildCanonicalQuote", () => {
       isDeleted: false,
       thumbnail: null,
       mimeType: null,
+      mediaId: null,
       durationMs: 0,
       attachmentCount: 0,
     });
@@ -225,6 +226,38 @@ describe("buildReplyQuoteSnapshot", () => {
     assert.equal(q.thumbnail, "chat-uploads/c1/img1.png");
     assert.equal(q.mimeType, "image/png");
     assert.equal(q.attachmentCount, 1);
+  });
+
+  it("IMAGE: passes through mediaId from the first file, null when absent", () => {
+    const withId = buildReplyQuoteSnapshot({
+      messageId: "m2c",
+      senderId: "u2",
+      senderName: "Bob",
+      messageType: "IMAGE",
+      content: {
+        files: [
+          {
+            objectKey: "chat-uploads/c1/img1.png",
+            mime: "image/png",
+            mediaId: "media-abc123",
+          },
+        ],
+      },
+      isDeleted: false,
+    });
+    assert.equal(withId.mediaId, "media-abc123");
+
+    const legacy = buildReplyQuoteSnapshot({
+      messageId: "m2d",
+      senderId: "u2",
+      senderName: "Bob",
+      messageType: "IMAGE",
+      content: {
+        files: [{ objectKey: "chat-uploads/c1/img1.png", mime: "image/png" }],
+      },
+      isDeleted: false,
+    });
+    assert.equal(legacy.mediaId, null);
   });
 
   it("ALBUM: attachmentCountOverride (true sibling-row count) drives '📷 N Photos'", () => {

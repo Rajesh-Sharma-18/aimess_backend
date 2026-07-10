@@ -192,11 +192,31 @@ describe("POST /api/v1/users/search/recent", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("GET /api/v1/users/search", () => {
-  it("returns empty recent/chat/other with no data", async () => {
+  it("returns only `recent` when q is empty", async () => {
     const res = await request(app).get("/api/v1/users/search").set(auth());
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ recent: [], chat: [], other: [] });
+    expect(res.body.data).toEqual({ recent: [] });
+  });
+
+  it("returns only `recent` when q is whitespace-only", async () => {
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "   " })
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ recent: [] });
+  });
+
+  it("returns only `chat`/`other` (no `recent`) when q has a value", async () => {
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ chat: [], other: [] });
   });
 
   it("returns a Recent USER entry with roomId resolved dynamically", async () => {
@@ -272,7 +292,10 @@ describe("GET /api/v1/users/search", () => {
       groupSummary({ isActiveMember: true }),
     ]);
 
-    const res = await request(app).get("/api/v1/users/search").set(auth());
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
 
     expect(res.body.data.chat).toEqual(
       expect.arrayContaining([
@@ -294,7 +317,10 @@ describe("GET /api/v1/users/search", () => {
     pRepo.findUsersNotInList.mockResolvedValue([profile(OTHER_ID)]);
     grpc.listOtherGroups.mockResolvedValue([groupSummary()]);
 
-    const res = await request(app).get("/api/v1/users/search").set(auth());
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
 
     expect(res.body.data.other).toEqual(
       expect.arrayContaining([
@@ -317,7 +343,10 @@ describe("GET /api/v1/users/search", () => {
       { peerUserId: PEER_ID, roomId: "room_abc" },
     ]);
 
-    await request(app).get("/api/v1/users/search").set(auth());
+    await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
 
     const excludeArg = pRepo.findUsersNotInList.mock.calls[0][0];
     expect(excludeArg).toEqual(expect.arrayContaining([TEST_USER_ID, PEER_ID]));

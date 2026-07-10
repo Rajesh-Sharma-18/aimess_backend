@@ -52,6 +52,8 @@ export interface CanonicalQuote {
   /** Full CDN/download URL, or `null` when unavailable — never a raw objectKey. */
   thumbnail: string | null;
   mimeType: string | null;
+  /** Stable media identity of the quoted attachment's first file. Null for legacy quotes/non-media replies. */
+  mediaId: string | null;
   durationMs: number;
   attachmentCount: number;
 }
@@ -131,6 +133,7 @@ export function buildCanonicalQuote(raw: unknown): CanonicalQuote | null {
     thumbnail:
       typeof q.thumbnail === "string" && q.thumbnail ? q.thumbnail : null,
     mimeType: typeof q.mimeType === "string" && q.mimeType ? q.mimeType : null,
+    mediaId: typeof q.mediaId === "string" && q.mediaId ? q.mediaId : null,
     durationMs: typeof q.durationMs === "number" ? q.durationMs : 0,
     attachmentCount:
       typeof q.attachmentCount === "number" ? q.attachmentCount : 0,
@@ -177,6 +180,7 @@ export function buildReplyQuoteSnapshot(
   const thumbnailKey =
     (first?.objectKey as string) || (first?.url as string) || "";
   const mimeType = (first?.mime as string) || "";
+  const mediaId = (first?.mediaId as string) || "";
   const durationMs = first?.durationMs;
   const attachmentCount = input.attachmentCountOverride ?? files.length;
   return {
@@ -192,6 +196,7 @@ export function buildReplyQuoteSnapshot(
     isDeleted: Boolean(input.isDeleted),
     thumbnail: thumbnailKey || null,
     mimeType: mimeType || null,
+    mediaId: mediaId || null,
     durationMs: typeof durationMs === "number" ? durationMs : 0,
     attachmentCount,
   };

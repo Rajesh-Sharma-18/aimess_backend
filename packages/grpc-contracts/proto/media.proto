@@ -29,6 +29,9 @@ message MediaObjectProto {
   string upload_url                  = 8;
   int64  upload_url_expires_in       = 9;
   map<string, string> upload_headers = 10;
+  // Stable, immutable media identity (media-service MediaFile._id), independent
+  // of object_key/url. Empty string for legacy/unregistered media.
+  string media_id                    = 11;
 }
 
 message UploadUrlRequest {

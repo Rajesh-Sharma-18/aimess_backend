@@ -1572,7 +1572,9 @@ export const userPaths = {
       tags: ["Users"],
       summary: "List recent searches",
       operationId: "listRecentSearches",
+      deprecated: true,
       description:
+        "**Deprecated** — use `GET /users/search` with no `q` (or a blank `q`) instead; it now returns `{ recent: [...] }`.\n\n" +
         "Returns the caller's last 10 recent searches, newest first.\n\n" +
         "Each entry is one of two shapes:\n" +
         "- **USER** — the caller tapped on a user's profile. Contains a `user` object with profile data.\n" +
@@ -1759,12 +1761,11 @@ export const userPaths = {
       summary: "Unified User Search (Recent / Chat / Other)",
       operationId: "searchUsers2",
       description:
-        "Search Users and Groups in one call, grouped into three sections:\n\n" +
-        "- **recent** — up to 4 recently viewed Users/Groups (from `POST /users/search/recent`), newest-viewed first. `roomId` is resolved dynamically (never stored).\n" +
-        "- **chat** — up to `limit` (default 10) results: private Users you already have a room with, and Groups you actively belong to.\n" +
-        "- **other** — up to `limit` (default 10, paginated via `page`) results: Users without an existing room, and Groups you are not an active member of. Excludes anything already returned in `recent` or `chat`.\n\n" +
-        "`q` is applied to all three sections (username, handle, firstName, lastName, fullName for Users; name for Groups). " +
-        "When `q` is omitted: `recent` returns the latest viewed, `chat` returns the most recently active, `other` returns a suggested set.",
+        "Single entry point for the search experience. The response shape depends on `q`:\n\n" +
+        "- **`q` empty, missing, or whitespace-only** — runs no search logic. Returns only `{ recent: [...] }`: up to 4 recently viewed Users/Groups (from `POST /users/search/recent`), newest-viewed first. `roomId` is resolved dynamically (never stored).\n" +
+        "- **`q` has a value** — returns only `{ chat: [...], other: [...] }` (no `recent`):\n" +
+        "  - **chat** — up to `limit` (default 10) results: private Users you already have a room with, and Groups you actively belong to, filtered by `q`.\n" +
+        "  - **other** — up to `limit` (default 10, paginated via `page`) results: Users without an existing room, and Groups you are not an active member of, filtered by `q`. Excludes anything already in `chat`.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -1808,64 +1809,78 @@ export const userPaths = {
                   },
                 ],
               },
-              example: {
-                success: true,
-                message: "Users retrieved successfully.",
-                data: {
-                  recent: [
-                    {
-                      type: "USER",
-                      userId: "660e8400-e29b-41d4-a716-446655440001",
-                      username: "janedoe",
-                      firstName: "Jane",
-                      lastName: "Doe",
-                      fullName: "Jane Doe",
-                      avatarUrl: null,
-                      avatarUrlExpiresIn: null,
-                      avatar: { url: null, expiresIn: null },
-                      isOnline: false,
-                      roomId: "room_abc123",
+              examples: {
+                blankQuery: {
+                  summary: "q empty/missing — Recent only",
+                  value: {
+                    success: true,
+                    message: "Users retrieved successfully.",
+                    data: {
+                      recent: [
+                        {
+                          type: "USER",
+                          userId: "660e8400-e29b-41d4-a716-446655440001",
+                          username: "janedoe",
+                          firstName: "Jane",
+                          lastName: "Doe",
+                          fullName: "Jane Doe",
+                          avatarUrl: null,
+                          avatarUrlExpiresIn: null,
+                          avatar: { url: null, expiresIn: null },
+                          isOnline: false,
+                          roomId: "room_abc123",
+                        },
+                        {
+                          type: "GROUP",
+                          roomId: "room_group456",
+                          name: "Weekend Hikers",
+                          avatar: "",
+                          description: "",
+                          memberCount: 12,
+                          isActiveMember: true,
+                        },
+                      ],
                     },
-                    {
-                      type: "GROUP",
-                      roomId: "room_group456",
-                      name: "Weekend Hikers",
-                      avatar: "",
-                      description: "",
-                      memberCount: 12,
-                      isActiveMember: true,
+                  },
+                },
+                withQuery: {
+                  summary: "q has a value — Chat + Other only",
+                  value: {
+                    success: true,
+                    message: "Users retrieved successfully.",
+                    data: {
+                      chat: [
+                        {
+                          type: "USER",
+                          userId: "880e8400-e29b-41d4-a716-446655440003",
+                          username: "bobsmith",
+                          firstName: "Bob",
+                          lastName: "Smith",
+                          fullName: "Bob Smith",
+                          avatarUrl: null,
+                          avatarUrlExpiresIn: null,
+                          avatar: { url: null, expiresIn: null },
+                          isOnline: true,
+                          roomId: "room_def789",
+                        },
+                      ],
+                      other: [
+                        {
+                          type: "USER",
+                          userId: "990e8400-e29b-41d4-a716-446655440004",
+                          username: "alicew",
+                          firstName: "Alice",
+                          lastName: "White",
+                          fullName: "Alice White",
+                          avatarUrl: null,
+                          avatarUrlExpiresIn: null,
+                          avatar: { url: null, expiresIn: null },
+                          isOnline: false,
+                          roomId: null,
+                        },
+                      ],
                     },
-                  ],
-                  chat: [
-                    {
-                      type: "USER",
-                      userId: "880e8400-e29b-41d4-a716-446655440003",
-                      username: "bobsmith",
-                      firstName: "Bob",
-                      lastName: "Smith",
-                      fullName: "Bob Smith",
-                      avatarUrl: null,
-                      avatarUrlExpiresIn: null,
-                      avatar: { url: null, expiresIn: null },
-                      isOnline: true,
-                      roomId: "room_def789",
-                    },
-                  ],
-                  other: [
-                    {
-                      type: "USER",
-                      userId: "990e8400-e29b-41d4-a716-446655440004",
-                      username: "alicew",
-                      firstName: "Alice",
-                      lastName: "White",
-                      fullName: "Alice White",
-                      avatarUrl: null,
-                      avatarUrlExpiresIn: null,
-                      avatar: { url: null, expiresIn: null },
-                      isOnline: false,
-                      roomId: null,
-                    },
-                  ],
+                  },
                 },
               },
             },

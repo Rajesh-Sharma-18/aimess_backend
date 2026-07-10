@@ -72,16 +72,6 @@ async function resolveAvatar(stored: string | null) {
   };
 }
 
-/** Case-insensitive substring match across any of the given fields. */
-function matchesQuery(
-  q: string | undefined,
-  ...fields: Array<string | null | undefined>
-): boolean {
-  if (!q) return true;
-  const needle = q.toLowerCase();
-  return fields.some((f) => (f ?? "").toLowerCase().includes(needle));
-}
-
 async function toUserItem(
   profile: BasicProfile,
   roomId: string | null
@@ -131,18 +121,8 @@ export const userSearchService = {
     });
   },
 
-  async search(
-    viewerId: string,
-    query: UnifiedSearchQuery
-  ): Promise<{
-    recent: SearchResultItem[];
-    chat: SearchResultItem[];
-    other: SearchResultItem[];
-  }> {
-    const q = query.q?.trim() || undefined;
-    const skip = (query.page - 1) * query.limit;
-    const otherTake = query.limit;
-
+  /** `q` empty/whitespace → Recent only. No search logic runs. */
+  async searchRecent(viewerId: string): Promise<{ recent: SearchResultItem[] }> {
     const [blocks, recentRows, peers] = await Promise.all([
       friendshipRepository.findAllBlocks(viewerId),
       recentUserSearchRepository.findByUserId(viewerId),
@@ -156,13 +136,7 @@ export const userSearchService = {
     const peerRoomByUserId = new Map(
       peers.map((p) => [p.peerUserId, p.roomId])
     );
-    const chatPeerIds = [...peerRoomByUserId.keys()].filter(
-      (id) => !blockedIds.has(id)
-    );
 
-    // ---------------------------------------------------------------------
-    // Recent — latest 4 (after q filter), roomId resolved dynamically.
-    // ---------------------------------------------------------------------
     const recentUserIds = recentRows
       .filter((r) => r.targetType === RecentSearchTargetType.USER)
       .map((r) => r.targetId);
@@ -195,16 +169,6 @@ export const userSearchService = {
       if (row.targetType === RecentSearchTargetType.USER) {
         const profile = recentProfileById.get(row.targetId);
         if (!profile || blockedIds.has(profile.userId)) continue;
-        if (
-          !matchesQuery(
-            q,
-            profile.username,
-            profile.firstName,
-            profile.lastName,
-            `${profile.firstName} ${profile.lastName}`
-          )
-        )
-          continue;
         recent.push(
           await toUserItem(
             profile,
@@ -216,34 +180,45 @@ export const userSearchService = {
       } else {
         const group = recentGroupById.get(row.targetId);
         if (!group) continue; // group deleted/disbanded since last view
-        if (!matchesQuery(q, group.name)) continue;
         recent.push(toGroupItem(group));
       }
     }
-    const recentUserIdSet = new Set(
-      recent
-        .filter((i): i is SearchUserItem => i.type === "USER")
-        .map((i) => i.userId)
+
+    return { recent };
+  },
+
+  /** `q` has a value → Chat + Other only. Never returns Recent. */
+  async searchByQuery(
+    viewerId: string,
+    query: UnifiedSearchQuery
+  ): Promise<{ chat: SearchResultItem[]; other: SearchResultItem[] }> {
+    const q = query.q?.trim() || undefined;
+    const skip = (query.page - 1) * query.limit;
+    const otherTake = query.limit;
+
+    const [blocks, peers] = await Promise.all([
+      friendshipRepository.findAllBlocks(viewerId),
+      messagingGrpcClient.listPrivateRoomPeers(viewerId, PRIVATE_ROOM_PEER_CAP),
+    ]);
+
+    const blockedIds = new Set(
+      blocks.map((b) => (b.blockerId === viewerId ? b.blockedId : b.blockerId))
     );
-    const recentGroupIdSet = new Set(
-      recent
-        .filter((i): i is SearchGroupItem => i.type === "GROUP")
-        .map((i) => i.roomId)
+    // `peers` arrives ordered by lastMessageAt desc from chat-service.
+    const peerRoomByUserId = new Map(
+      peers.map((p) => [p.peerUserId, p.roomId])
+    );
+    const chatPeerIds = [...peerRoomByUserId.keys()].filter(
+      (id) => !blockedIds.has(id)
     );
 
     // ---------------------------------------------------------------------
     // Chat — max 10: private peers with a room + groups the viewer actively
-    // belongs to. Without q, take the most-recently-active peers first.
+    // belongs to.
     // ---------------------------------------------------------------------
-    const chatCandidateIds = q ? chatPeerIds : chatPeerIds.slice(0, CHAT_LIMIT);
     const [chatUserProfiles, chatGroupSummaries] = await Promise.all([
-      chatCandidateIds.length
-        ? userProfileRepository.findUsersInList(
-            chatCandidateIds,
-            q,
-            0,
-            CHAT_LIMIT
-          )
+      chatPeerIds.length
+        ? userProfileRepository.findUsersInList(chatPeerIds, q, 0, CHAT_LIMIT)
         : Promise.resolve([]),
       messagingGrpcClient.listActiveGroups(viewerId, q, CHAT_LIMIT),
     ]);
@@ -272,42 +247,40 @@ export const userSearchService = {
 
     // ---------------------------------------------------------------------
     // Other — max `limit` (default 10, paginated): users without a room,
-    // groups the viewer isn't an active member of. Excludes Recent + Chat.
+    // groups the viewer isn't an active member of. Excludes Chat.
     // ---------------------------------------------------------------------
     const excludeUserIds = [
       viewerId,
       ...blockedIds,
       ...chatPeerIds, // anyone with an existing room is never "other"
     ];
-    const excludeGroupIds = [...recentGroupIdSet, ...chatGroupIdSet];
+    const excludeGroupIds = [...chatGroupIdSet];
 
     const [otherUserProfiles, otherGroupSummaries] = await Promise.all([
       userProfileRepository.findUsersNotInList(
         excludeUserIds,
         q,
         skip,
-        otherTake + recentUserIdSet.size
+        otherTake
       ),
       messagingGrpcClient.listOtherGroups(
         viewerId,
         q,
         excludeGroupIds,
-        otherTake + recentGroupIdSet.size
+        otherTake
       ),
     ]);
 
     const other: SearchResultItem[] = [];
     for (const p of otherUserProfiles) {
       if (other.length >= otherTake) break;
-      if (recentUserIdSet.has(p.userId)) continue; // already surfaced in Recent
       other.push(await toUserItem(p, null));
     }
     for (const g of otherGroupSummaries) {
       if (other.length >= otherTake) break;
-      if (recentGroupIdSet.has(g.roomId)) continue;
       other.push(toGroupItem(g));
     }
 
-    return { recent, chat, other };
+    return { chat, other };
   },
 };

@@ -5063,6 +5063,12 @@ components:
         see `docs/MEDIA_UPLOAD.md`) **or** `url` (an external URL, e.g. a Tenor
         GIF) is expected. The server never receives file bytes over the socket.
       properties:
+        mediaId:
+          {
+            type: string,
+            maxLength: 100,
+            description: "Stable, immutable media identity from the upload-url response — independent of objectKey/url. Absent/null for legacy attachments uploaded before this field existed.",
+          }
         objectKey: { type: string, maxLength: 500 }
         url: { type: string, format: uri, maxLength: 3000 }
         name: { type: string, maxLength: 255 }
