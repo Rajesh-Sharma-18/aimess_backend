@@ -8717,10 +8717,18 @@ export const openApiSchemas = {
           "LIVE_STREAM_ENDED → 'Live stream ended ({{duration}})' or 'Live stream ended' when duration absent; " +
           "ROLE_CHANGED (bystander) → '{{targetName}} is now a moderator/admin/member'; " +
           "ROLE_CHANGED (viewer=target) → 'You are now a moderator/admin/member'; " +
-          "MEMBER_REMOVED → '{{targetName}} was removed'; MEMBER_BANNED → '{{targetName}} was banned'. " +
-          "PERSONAL types (isPersonal=true): COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF. " +
-          "Hidden in chat timeline (never returned): MEMBER_LEFT, MEMBER_JOINED. " +
-          "MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are visible to all members. " +
+          "MEMBER_UNBANNED → '{{targetName}} was unbanned'; " +
+          "MEMBER_BANNED (target only) → 'You were banned from this community.'; " +
+          "MEMBER_MUTED (target only) → 'You are muted until {{date}}' or 'You are muted indefinitely' when no expiry; " +
+          "MEMBER_UNMUTED (target only) → 'You were unmuted'. " +
+          "PERSONAL types (isPersonal=true, only ever returned to the target user): " +
+          "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF / " +
+          "MEMBER_BANNED / MEMBER_MUTED / MEMBER_UNMUTED. " +
+          "Hidden in chat timeline (never returned to anyone): MEMBER_LEFT, MEMBER_JOINED, MEMBER_REMOVED — " +
+          "the removed/left member learns via the `community:membership:removed` socket event instead. " +
+          "MEMBER_UNBANNED is COMMUNITY-visible (all members see it); MEMBER_BANNED, MEMBER_MUTED and " +
+          "MEMBER_UNMUTED are PERSONAL — silent for everyone else, visible only to the affected member's " +
+          "own history/sync/catch-up on reload or reconnect. " +
           "MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED (old rows only).",
       },
       systemMetadata: {
@@ -8736,7 +8744,10 @@ export const openApiSchemas = {
           "COMMUNITY_NAME_UPDATED: { newName } — the rename target. " +
           "LIVE_STREAM_ENDED: { duration? } — human-readable runtime, e.g. '2 hours 15 minutes'. " +
           "ROLE_CHANGED / MEMBER_ROLE_CHANGED: { targetUserId, targetName, oldRole, newRole }. " +
-          "MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_MUTED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
+          "MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
+          "MEMBER_MUTED: { targetUserId, targetName, mutedUntil, durationMinutes } — mutedUntil is an " +
+          "epoch-ms timestamp (or null for an indefinite mute), durationMinutes is the mute length as " +
+          "originally requested (or null for indefinite). " +
           "PINNED_MESSAGE / UNPINNED_MESSAGE: { messageId, messagePreview }. " +
           "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED: personal — same shape, no targetUserId. " +
           "Null for normal messages.",
@@ -8745,7 +8756,8 @@ export const openApiSchemas = {
         type: "boolean",
         description:
           "True for user-scoped SYSTEM messages (COMMUNITY_JOINED 'You joined the community', " +
-          "JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF). " +
+          "JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_BANNED, MEMBER_MUTED, " +
+          "MEMBER_UNMUTED). " +
           "PERSONAL messages are only ever returned to the target user — other members never see them in history. " +
           "Absent/false for normal and community-wide system messages.",
       },

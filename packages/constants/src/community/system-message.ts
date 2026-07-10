@@ -233,11 +233,12 @@ export function isPersonalJoinSessionType(
  *                    list; see MEMBER_BANNED's PERSONAL visibility instead.
  *
  * MEMBER_UNBANNED is NOT hidden: it's an informational action that members may
- * legitimately see in context. MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL and
- * REAL-TIME-ONLY (Telegram-style toast, not a chat-history line): the affected
- * member's own socket receives it the instant it happens, but the row is never
- * returned by history/sync/catch-up/list APIs — not even to the affected member
- * on a later reload. See {@link REALTIME_ONLY_SYSTEM_MESSAGE_TYPES}.
+ * legitimately see in context. MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL
+ * (Telegram parity: only the affected member ever sees "You are muted…" /
+ * "You were unmuted" — never broadcast, never visible to other members), and
+ * persist exactly like any other PERSONAL line (MEMBER_BANNED, COMMUNITY_JOINED):
+ * delivered live to the affected member's socket AND returned by history/sync/
+ * catch-up/list APIs for that same member on reload/reconnect.
  * Membership history also lives in the backoffice/audit log.
  *
  * SYSTEM-EVENT POLICY TABLE
@@ -248,7 +249,7 @@ export function isPersonalJoinSessionType(
  * | Member banned           | No (COMMUNITY)  | Yes (MEMBER_BANNED PERSONAL) | No       |
  * | Member left voluntarily | No (HIDDEN)     | No                   | No                 |
  * | Member role changed     | Yes (COMMUNITY) | Yes (ROLE_CHANGED_SELF PERSONAL) | Yes  |
- * | Member muted/unmuted    | No (COMMUNITY)  | Real-time only (MEMBER_MUTED/UNMUTED PERSONAL, never in history) | No |
+ * | Member muted/unmuted    | No (COMMUNITY)  | Yes (MEMBER_MUTED/UNMUTED PERSONAL) | No |
  */
 export const HIDDEN_SYSTEM_MESSAGE_TYPES = [
   "MEMBER_LEFT",
@@ -261,44 +262,6 @@ export function isHiddenSystemMessage(
   type: string | null | undefined
 ): boolean {
   return inTypeSet(HIDDEN_SYSTEM_MESSAGE_TYPES, type);
-}
-
-/**
- * PERSONAL subtypes delivered ONLY as a real-time socket push to the affected
- * member — never returned by any read/history API, including for the affected
- * member themselves. Unlike {@link HIDDEN_SYSTEM_MESSAGE_TYPES} (which also
- * skips creation + real-time publish entirely), these ARE still created and
- * published in real time exactly as before — only READ paths (chat history,
- * pagination, incremental sync, catch-up, and the community-list personal
- * lastActivity overlay) must exclude them. A hard reload / resync must never
- * resurface "You were muted…" / "You were unmuted…" as a persisted chat line.
- */
-export const REALTIME_ONLY_SYSTEM_MESSAGE_TYPES = [
-  "MEMBER_MUTED",
-  "MEMBER_UNMUTED",
-] as const satisfies readonly CommunitySystemMessageType[];
-
-/** True when the subtype must never be returned by a read/history API (see above). */
-export function isRealtimeOnlySystemMessage(
-  type: string | null | undefined
-): boolean {
-  return inTypeSet(REALTIME_ONLY_SYSTEM_MESSAGE_TYPES, type);
-}
-
-/**
- * True when the subtype must be excluded from every READ path (history,
- * pagination, incremental sync, catch-up, list lastActivity overlay) —
- * the union of {@link isHiddenSystemMessage} (never created/published either)
- * and {@link isRealtimeOnlySystemMessage} (created/published, but real-time
- * only). Read-path query filters should use this instead of
- * `isHiddenSystemMessage` alone so a real-time-only type can't leak back in
- * through history/sync/list after being correctly excluded from the room/list
- * broadcast in the first place.
- */
-export function isExcludedFromHistory(
-  type: string | null | undefined
-): boolean {
-  return isHiddenSystemMessage(type) || isRealtimeOnlySystemMessage(type);
 }
 
 /**

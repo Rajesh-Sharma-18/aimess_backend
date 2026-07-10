@@ -152,6 +152,7 @@ import {
   publishCommunityDeletedForChatSafe,
   publishCommunityInviteLinkSharedForChatSafe,
   publishCommunityMemberMuteSyncedForChatSafe,
+  publishCommunityMemberMuteRetractedForChatSafe,
   publishCommunityStatusChangedForChatSafe,
   publishCommunitySystemMessageForChatSafe,
   publishCommunityVisibilityChangedForChatSafe,
@@ -4243,11 +4244,21 @@ export const communityService = {
       0
     );
 
+    // Telegram parity: this mute session is over, so the previous "You are
+    // muted until …" line no longer reflects reality — retract it (soft-delete
+    // + a `community:message:deleted` tombstone on the target's own `user:<id>`
+    // channel) so it disappears from history/pagination/sync everywhere, rather
+    // than leaving both the mute AND unmute lines stacked in their history.
+    publishCommunityMemberMuteRetractedForChatSafe({
+      communityId,
+      userId: targetUserId,
+    });
+
     // Unmute is silent COMMUNITY-wide (no "{name} was unmuted" line for other
     // members — MEMBER_UNMUTED is PERSONAL visibility), but the unmuted member
-    // themselves gets a private "You were unmuted in this community." line in
-    // their own history (Telegram parity), delivered only to their own
-    // `user:<id>` channel — never broadcast to the community room.
+    // themselves gets a private "You were unmuted" line in their own history
+    // (Telegram parity), delivered only to their own `user:<id>` channel —
+    // never broadcast to the community room.
     this.emitMemberSystemMessage({
       communityId,
       systemMessageType: "MEMBER_UNMUTED",

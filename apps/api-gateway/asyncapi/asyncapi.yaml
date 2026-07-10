@@ -113,6 +113,8 @@ info:
       description: Many-member community chat
     - name: notify
       description: In-app notification feed + unread badge
+    - name: stream
+      description: Livestream comments, moderation, and viewer presence
     - name: multi-device
       description: "Own-device sync: read_sync (unread high-water mark) + presence"
 
@@ -368,6 +370,72 @@ channels:
       communityJoinRequestUpdate:
         { $ref: "#/components/messages/CommunityJoinRequestUpdate" }
       communityJoined: { $ref: "#/components/messages/CommunityJoined" }
+
+  # --------------------------------------------------------------- /stream
+  stream:
+    address: /stream
+    title: /stream namespace
+    description: |
+      Livestream VIEWER ROOM: comments, ephemeral reactions, viewer
+      presence/count, join/leave, and moderation pushes (ban/mute) for a
+      single livestream. Served by stream-service over gRPC. stream-service
+      is the SOLE publisher of `stream:comment:new` and `stream:status` to
+      Redis channel `stream:<streamId>` — the gateway subscribes
+      (`psubscribe("stream:*")`) and only relays; it never emits these two
+      itself. Room: `stream:<streamId>` (joined via `stream:join`).
+
+      **Distinct from `/community`:** `community:stream:started` /
+      `community:stream:ended` (documented under the `/community` channel)
+      are community-wide LIFECYCLE announcements ("a livestream just went
+      live/ended in this community") delivered to every member so the list
+      badge / banner updates without opening the stream. This `/stream`
+      namespace is the livestream itself once a viewer has opened it —
+      comments, reactions, live viewer count, and moderation. A client
+      typically listens on `/community` for the lifecycle banner, then
+      connects/joins `/stream` `stream:<streamId>` only when the user
+      actually opens the livestream screen.
+
+      **Presence accounting.** Viewer count is the `SCARD` of a Redis session
+      set (`stream:session:users:<streamId>`), keyed by unique `userId` — a
+      rejoin (reconnect) never double-counts. `stream:heartbeat` (client
+      emits every ~30s while visible) refreshes the set's TTL (2h) so a
+      silent reconnect isn't evicted; `stream:viewer_count` broadcasts are
+      debounced to ≤ 1/sec per stream.
+
+      **Comment history.** `stream:join`'s ack backfills the most recent 20
+      comments oldest-first; `stream:load_more` paginates further with
+      `before` (older, history scroll) or `after` (newer, reconnect
+      catch-up) exclusive cursors on the comment id.
+
+      **Moderation.** `stream:comment` / `stream:react` are gated by a
+      join-time `canComment` snapshot (membership + mute + stream
+      `commentStatus`), cached per-socket — comments are additionally
+      re-checked authoritatively server-side on every `postComment` gRPC
+      call; reactions are ephemeral (never round-trip to stream-service) so
+      the cached flag is the only enforcement point. A ban kicks the target's
+      live socket(s) out of the room (`stream:banned`) and removes them from
+      the viewer/session sets; a mute/unmute pushes a targeted
+      `stream:member_muted` / `stream:member_unmuted` notice without evicting
+      the viewer.
+    x-socketio-namespace: /stream
+    messages:
+      streamJoin: { $ref: "#/components/messages/StreamJoin" }
+      streamLeave: { $ref: "#/components/messages/StreamLeave" }
+      streamCommentPost: { $ref: "#/components/messages/StreamCommentPost" }
+      streamLoadMore: { $ref: "#/components/messages/StreamLoadMore" }
+      streamReact: { $ref: "#/components/messages/StreamReact" }
+      streamCommentDelete: { $ref: "#/components/messages/StreamCommentDelete" }
+      streamHeartbeat: { $ref: "#/components/messages/StreamHeartbeat" }
+      # server -> client
+      streamCommentNew: { $ref: "#/components/messages/StreamCommentNew" }
+      streamViewerCount: { $ref: "#/components/messages/StreamViewerCount" }
+      streamStatus: { $ref: "#/components/messages/StreamStatus" }
+      streamBroadcastLive: { $ref: "#/components/messages/StreamBroadcastLive" }
+      streamBanned: { $ref: "#/components/messages/StreamBanned" }
+      streamMemberMuted: { $ref: "#/components/messages/StreamMemberMuted" }
+      streamMemberUnmuted: { $ref: "#/components/messages/StreamMemberUnmuted" }
+      streamReactNew: { $ref: "#/components/messages/StreamReactNew" }
+      streamError: { $ref: "#/components/messages/StreamError" }
 
 operations:
   # =================================================== /chat client -> server
@@ -1585,6 +1653,242 @@ operations:
       button to "Open" and add it to the community list without a refresh. An
       in-app `notification:new` (`community.member_joined`) is delivered alongside.
     messages: [{ $ref: "#/channels/notify/messages/communityJoined" }]
+
+  # =================================================== /stream client -> server
+  stream.join:
+    action: send
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:join — join a livestream's viewer room"
+    description: |
+      Fail-closed join gate: a banned user or a non-member of a PRIVATE
+      community's stream gets `FORBIDDEN`; a downstream check error emits a
+      non-retryable-looking but actually transient `stream:error
+      { code: SERVICE_UNAVAILABLE }` to the socket alongside a `SERVICE_ERROR`
+      ack. On success: joins Redis room `stream:<streamId>`, adds the caller
+      to the viewer session set (idempotent SADD), records a durable viewer
+      session (best-effort), and backfills recent comments. Ack `data` on
+      success — schema **`StreamJoinAckData`**:
+      ```json
+      {
+        "viewerCount": 12,
+        "recentComments": [ /* StreamCommentObject[], oldest-first */ ],
+        "nextCursor": "684abc123def456789012399",
+        "hasMore": true,
+        "canComment": true,
+        "streamSnapshot": {
+          "status": "LIVE",
+          "chatEnabled": true,
+          "title": "Friday Q&A",
+          "description": "",
+          "thumbnail": null,
+          "creatorId": "user_xyz",
+          "hlsUrl": "https://cdn.aimess.com/hls/684abc.m3u8",
+          "flvUrl": null
+        }
+      }
+      ```
+      A `stream:viewer_count` broadcast follows (debounced ≤ 1/sec).
+    messages: [{ $ref: "#/channels/stream/messages/streamJoin" }]
+    reply:
+      channel: { $ref: "#/channels/stream" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  stream.leave:
+    action: send
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:leave — leave a livestream's viewer room"
+    description: |
+      No-op (still acks OK) if the socket was never in the room. On success:
+      leaves Redis room `stream:<streamId>`, removes the caller from the
+      viewer session set, closes the durable viewer session (best-effort),
+      and emits a debounced `stream:viewer_count` update. Ack `data` is empty.
+    messages: [{ $ref: "#/channels/stream/messages/streamLeave" }]
+    reply:
+      channel: { $ref: "#/channels/stream" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  stream.commentPost:
+    action: send
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:comment — post a livestream comment"
+    description: |
+      Requires the socket to already be in `stream:<streamId>` (via
+      `stream:join`) AND the join-time `canComment` gate to be `true` —
+      otherwise `FORBIDDEN` with no gRPC round trip. Sliding-window rate
+      limit: 10 comments per 3s per (user, stream); over the limit returns
+      `RATE_LIMITED` (fails OPEN on a Redis outage — a Redis blip never
+      silences chat). The ack is a thin confirmation only — the full comment
+      is broadcast separately as `stream:comment:new` (same pattern as
+      `message:send` / `community:message:send`). Ack `data` on success —
+      schema **`StreamCommentPostAckData`**:
+      ```json
+      { "commentId": "684def456abc789012345aaa", "streamId": "684abc123def4567890123ff", "sentAt": 1750000500000, "clientCommentId": "550e8400-e29b-41d4-a716-446655440020" }
+      ```
+    messages: [{ $ref: "#/channels/stream/messages/streamCommentPost" }]
+    reply:
+      channel: { $ref: "#/channels/stream" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  stream.loadMore:
+    action: send
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:load_more — cursor-paginated comment history / reconnect catch-up"
+    description: |
+      `before` (history scroll): returns older comments, oldest-first, for
+      prepending above the current list. `after` (reconnect catch-up):
+      returns newer comments, oldest-first, for appending below the current
+      list. Both cursors are exclusive comment ids; omit both for the
+      first/newest page (same result as `stream:join`'s backfill). Ack
+      `data` on success — schema **`StreamLoadMoreAckData`**:
+      ```json
+      { "comments": [ /* StreamCommentObject[] */ ], "nextCursor": "684def456abc789012345bbb", "hasMore": false }
+      ```
+    messages: [{ $ref: "#/channels/stream/messages/streamLoadMore" }]
+    reply:
+      channel: { $ref: "#/channels/stream" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  stream.react:
+    action: send
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:react — send an ephemeral emoji reaction"
+    description: |
+      Fire-and-forget: never persisted, never round-trips to stream-service.
+      Same room-membership + `canComment` gate as `stream:comment` (FORBIDDEN
+      otherwise). On success, broadcasts `stream:react:new` to the whole
+      room AND acks the sender with an empty-data confirmation.
+    messages: [{ $ref: "#/channels/stream/messages/streamReact" }]
+    reply:
+      channel: { $ref: "#/channels/stream" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  stream.commentDelete:
+    action: send
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:comment:delete — delete a livestream comment (own comment or moderator)"
+    description: |
+      Requires the socket to already be in `stream:<streamId>`. `NOT_FOUND`
+      if the comment doesn't exist; `FORBIDDEN` if the caller may not delete
+      it. Ack `data` on success — schema **`StreamCommentDeleteAckData`**:
+      ```json
+      { "commentId": "684def456abc789012345aaa", "streamId": "684abc123def4567890123ff" }
+      ```
+      NOTE: unlike `community:message:delete`, there is currently no
+      `stream:comment:deleted` broadcast wired to this namespace's clients —
+      the deleting client updates its own UI from the ack; other viewers'
+      copies go stale until their next `stream:load_more` / rejoin.
+    messages: [{ $ref: "#/channels/stream/messages/streamCommentDelete" }]
+    reply:
+      channel: { $ref: "#/channels/stream" }
+      messages: [{ $ref: "#/components/messages/Ack" }]
+  stream.heartbeat:
+    action: send
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:heartbeat — keep-alive, refreshes viewer-presence TTL (fire-and-forget)"
+    description: |
+      Client emits every ~30s while the livestream screen is visible and the
+      socket is still in `stream:<streamId>`. Refreshes the Redis viewer
+      session set + join-time hash TTL (2h) so a silent reconnect (network
+      blip with no full Socket.IO reconnect) doesn't evict the viewer. A
+      no-op if the socket isn't in the room. No ack.
+    messages: [{ $ref: "#/channels/stream/messages/streamHeartbeat" }]
+
+  # =================================================== /stream server -> client
+  stream.onCommentNew:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:comment:new — new comment broadcast to the room"
+    description: |
+      Published exclusively by stream-service to Redis `stream:<streamId>`;
+      the gateway presigns `senderAvatar` (object key → download URL,
+      falling back to the raw key on presign failure) before relaying.
+      Personalized per-recipient: the poster's own copy has `senderName`
+      replaced with "You" (`emitPersonalizedSender`). Shape mirrors the
+      canonical chat/community message envelope so the same renderer can be
+      reused; `parentCommentId` / `quoteData` / `content.files` are reserved
+      for future reply/media support and are always empty/null today.
+    messages: [{ $ref: "#/channels/stream/messages/streamCommentNew" }]
+  stream.onViewerCount:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:viewer_count — live viewer count changed"
+    description: |
+      Debounced to ≤ 1 emit/sec per stream. Fired after join, leave,
+      disconnect, and a ban-kick. `viewerCount` is the exact `SCARD` of the
+      unique-viewer session set — never a phantom/negative value.
+    messages: [{ $ref: "#/channels/stream/messages/streamViewerCount" }]
+  stream.onStatus:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:status — livestream lifecycle status changed"
+    description: |
+      Room-wide broadcast of the STABLE shape only (`streamId`, `status`,
+      `communityId`) — the gateway strips internal broadcaster context
+      (`creatorId`, `hlsUrl`, `flvUrl`, `startedAt`) that stream-service
+      includes on the underlying Redis message for `LIVE` transitions before
+      relaying to the room; that context is instead sent ONLY to the
+      broadcaster's own socket as `stream:broadcast:live` (see below).
+      `communityId` lets a viewer screen update the community's `isLive`
+      badge without a separate `/community` subscription.
+    messages: [{ $ref: "#/channels/stream/messages/streamStatus" }]
+  stream.onBroadcastLive:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:broadcast:live — targeted confirmation to the broadcaster that their stream is LIVE"
+    description: |
+      Sent ONLY to the creator's own socket(s) in the room, immediately after
+      a room-wide `stream:status { status: LIVE }`. Lets the broadcaster's UI
+      flip to "You are live!" with the ingest URLs it needs to start
+      publishing/playback confirmation. Not delivered to viewers.
+    messages: [{ $ref: "#/channels/stream/messages/streamBroadcastLive" }]
+  stream.onBanned:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:banned — targeted notice to a just-banned viewer, followed by a forced room eviction"
+    description: |
+      Delivered ONLY to the banned user's own live socket(s) in
+      `stream:<streamId>` (never room-broadcast). Immediately after emitting
+      this, the gateway force-leaves those sockets from the room, removes
+      the user from the viewer session set, closes their durable viewer
+      session, and re-broadcasts the corrected `stream:viewer_count` to the
+      remaining room. A rejoin attempt is independently blocked by the
+      `stream:join` access gate (`checkStreamAccess` → `FORBIDDEN`).
+    messages: [{ $ref: "#/channels/stream/messages/streamBanned" }]
+  stream.onMemberMuted:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:member_muted — targeted notice that the recipient was muted (composer disabled, still watching)"
+    description: |
+      Delivered ONLY to the muted user's own live socket(s) — unlike a ban,
+      mute never evicts the viewer from the room; they keep watching, just
+      cannot comment/react. The write-path checks in stream-service remain
+      authoritative regardless of whether this push arrives or is stale.
+      Muting from the livestream screen writes through to the same
+      community-wide mute record as muting from the community member list
+      (see `community:member:muted` under `/community`).
+    messages: [{ $ref: "#/channels/stream/messages/streamMemberMuted" }]
+  stream.onMemberUnmuted:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:member_unmuted — targeted notice that the recipient's mute was lifted"
+    description: |
+      Delivered ONLY to the affected user's own live socket(s). Re-enables
+      the comment/react composer client-side.
+    messages: [{ $ref: "#/channels/stream/messages/streamMemberUnmuted" }]
+  stream.onReactNew:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:react:new — ephemeral emoji reaction broadcast to the whole room"
+    description: |
+      Fire-and-forget, never persisted — purely a live visual effect
+      (e.g. floating emoji burst). No delete/undo event exists.
+    messages: [{ $ref: "#/channels/stream/messages/streamReactNew" }]
+  stream.onError:
+    action: receive
+    channel: { $ref: "#/channels/stream" }
+    summary: "stream:error — out-of-band error push (currently: join access-check outage)"
+    description: |
+      Emitted alongside (not instead of) a `SERVICE_ERROR` ack when
+      `stream:join`'s `checkStreamAccess` gRPC call itself fails (as opposed
+      to returning `allowed: false`, which is a plain `FORBIDDEN` ack with no
+      `stream:error`). Lets the client distinguish "the service is down,
+      retry" from "you are permanently banned/not a member".
+    messages: [{ $ref: "#/channels/stream/messages/streamError" }]
 
 components:
   securitySchemes:
@@ -3523,7 +3827,16 @@ components:
     CommunityMessageDeleted:
       name: "community:message:deleted"
       title: "community:message:deleted"
-      summary: Broadcast to all room members when a message is deleted for everyone.
+      summary: >-
+        Broadcast to all room members when a message is deleted for everyone.
+        ALSO reused, with the same event name and payload shape, as a targeted
+        tombstone for a retracted PERSONAL system line — published to the
+        affected user's own `user:<id>` channel only (never `community:<id>`)
+        when a stale personal line is hard-deleted server-side: a superseded
+        "You joined the community" line on rejoin, or the CURRENT
+        "You are muted until …" MEMBER_MUTED line when the mute session ends
+        (see retractPersonalMuteMessage). `deletedBy` is `""` for these
+        system-initiated retractions (no human actor).
       payload: { $ref: "#/components/schemas/CommunityMessageDeletedPayload" }
       examples:
         - name: forEveryone delete broadcast
@@ -3533,6 +3846,13 @@ components:
             roomId: "6843e1a2b5c3d4e5f6a7b8c9"
             deleteType: forEveryone
             deletedBy: "user_abc123"
+        - name: Personal system-line retraction (targeted to user:<id> only)
+          payload:
+            messageId: "683abc123def456789012399"
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            deleteType: forEveryone
+            deletedBy: ""
     CommunityMessagePin:
       name: "community:message:pin"
       title: "community:message:pin"
@@ -4360,6 +4680,228 @@ components:
             status: ERROR
             reason: ""
             at: 1749465240000
+
+    # -------- /stream client -> server --------
+    StreamJoin:
+      name: "stream:join"
+      title: "stream:join"
+      payload: { $ref: "#/components/schemas/StreamRef" }
+      examples:
+        - name: Join a livestream's viewer room
+          payload:
+            streamId: "684abc123def4567890123ff"
+    StreamLeave:
+      name: "stream:leave"
+      title: "stream:leave"
+      payload: { $ref: "#/components/schemas/StreamRef" }
+      examples:
+        - name: Leave a livestream's viewer room
+          payload:
+            streamId: "684abc123def4567890123ff"
+    StreamCommentPost:
+      name: "stream:comment"
+      title: "stream:comment"
+      payload: { $ref: "#/components/schemas/StreamCommentPostPayload" }
+      examples:
+        - name: Post a comment
+          payload:
+            streamId: "684abc123def4567890123ff"
+            message: "This is awesome! 🔥"
+            clientCommentId: "550e8400-e29b-41d4-a716-446655440020"
+        - name: Post a comment (no client idempotency key)
+          payload:
+            streamId: "684abc123def4567890123ff"
+            message: "Can you hear us?"
+    StreamLoadMore:
+      name: "stream:load_more"
+      title: "stream:load_more"
+      payload: { $ref: "#/components/schemas/StreamLoadMorePayload" }
+      examples:
+        - name: Scroll up for older comments (history)
+          payload:
+            streamId: "684abc123def4567890123ff"
+            before: "684def456abc789012345aaa"
+            limit: 30
+        - name: Catch up on missed comments after reconnect
+          payload:
+            streamId: "684abc123def4567890123ff"
+            after: "684def456abc789012345bbb"
+    StreamReact:
+      name: "stream:react"
+      title: "stream:react"
+      payload: { $ref: "#/components/schemas/StreamReactPayload" }
+      examples:
+        - name: Send a heart reaction
+          payload:
+            streamId: "684abc123def4567890123ff"
+            emoji: "❤️"
+    StreamCommentDelete:
+      name: "stream:comment:delete"
+      title: "stream:comment:delete"
+      payload: { $ref: "#/components/schemas/StreamCommentDeletePayload" }
+      examples:
+        - name: Delete a comment (own comment or moderator)
+          payload:
+            streamId: "684abc123def4567890123ff"
+            commentId: "684def456abc789012345aaa"
+    StreamHeartbeat:
+      name: "stream:heartbeat"
+      title: "stream:heartbeat"
+      summary: "Fire-and-forget keep-alive; no ack."
+      payload: { $ref: "#/components/schemas/StreamRef" }
+      examples:
+        - name: Keep-alive while the livestream screen is visible
+          payload:
+            streamId: "684abc123def4567890123ff"
+
+    # -------- /stream server -> client --------
+    StreamCommentNew:
+      name: "stream:comment:new"
+      title: "stream:comment:new"
+      summary: "New livestream comment broadcast to the room. Published exclusively by stream-service; the gateway presigns senderAvatar before relaying."
+      payload: { $ref: "#/components/schemas/StreamCommentNewPayload" }
+      examples:
+        - name: New comment broadcast
+          payload:
+            id: "684def456abc789012345aaa"
+            commentId: "684def456abc789012345aaa"
+            streamId: "684abc123def4567890123ff"
+            senderId: "user_abc123"
+            senderName: "Alice"
+            senderAvatar: "https://cdn.aimess.com/avatars/alice.jpg"
+            parentCommentId: ""
+            quoteData: null
+            content:
+              text: "This is awesome! 🔥"
+              files: []
+            message: "This is awesome! 🔥"
+            contentType: TEXT
+            isEdited: false
+            editedAt: 0
+            clientCommentId: "550e8400-e29b-41d4-a716-446655440020"
+            serverTs: 1750000500000
+            sentAt: 1750000500000
+        - name: Own comment echoed back (senderName replaced with "You")
+          payload:
+            id: "684def456abc789012345bbb"
+            commentId: "684def456abc789012345bbb"
+            streamId: "684abc123def4567890123ff"
+            senderId: "user_abc123"
+            senderName: "You"
+            senderAvatar: "https://cdn.aimess.com/avatars/alice.jpg"
+            parentCommentId: ""
+            quoteData: null
+            content:
+              text: "Can you hear us?"
+              files: []
+            message: "Can you hear us?"
+            contentType: TEXT
+            isEdited: false
+            editedAt: 0
+            clientCommentId: ""
+            serverTs: 1750000505000
+            sentAt: 1750000505000
+    StreamViewerCount:
+      name: "stream:viewer_count"
+      title: "stream:viewer_count"
+      summary: "Live viewer count changed. Debounced to <= 1 emit/sec per stream."
+      payload: { $ref: "#/components/schemas/StreamViewerCountPayload" }
+      examples:
+        - name: Viewer count update
+          payload:
+            streamId: "684abc123def4567890123ff"
+            viewerCount: 13
+    StreamStatus:
+      name: "stream:status"
+      title: "stream:status"
+      summary: "Livestream lifecycle status changed. Room-wide broadcast of the stable shape only — see stream:broadcast:live for the broadcaster-only ingest context."
+      payload: { $ref: "#/components/schemas/StreamStatusPayload" }
+      examples:
+        - name: Stream went live
+          payload:
+            streamId: "684abc123def4567890123ff"
+            status: LIVE
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+        - name: Stream connection dropped, awaiting reconnect
+          payload:
+            streamId: "684abc123def4567890123ff"
+            status: RECONNECTING
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+        - name: Stream ended
+          payload:
+            streamId: "684abc123def4567890123ff"
+            status: ENDED
+            communityId: "6843e1a2b5c3d4e5f6a7b8c9"
+    StreamBroadcastLive:
+      name: "stream:broadcast:live"
+      title: "stream:broadcast:live"
+      summary: "Targeted confirmation to the broadcaster's OWN socket(s) that their stream is LIVE, with ingest/playback URLs. Not delivered to viewers."
+      payload: { $ref: "#/components/schemas/StreamBroadcastLivePayload" }
+      examples:
+        - name: Broadcaster confirmation
+          payload:
+            streamId: "684abc123def4567890123ff"
+            startedAt: 1750000400000
+            hlsUrl: "https://cdn.aimess.com/hls/684abc.m3u8"
+            flvUrl: "https://cdn.aimess.com/hls/684abc.flv"
+    StreamBanned:
+      name: "stream:banned"
+      title: "stream:banned"
+      summary: "Targeted notice to a just-banned viewer, immediately followed by a forced room eviction server-side. Never room-broadcast."
+      payload: { $ref: "#/components/schemas/StreamBannedPayload" }
+      examples:
+        - name: Viewer banned from the stream
+          payload:
+            streamId: "684abc123def4567890123ff"
+    StreamMemberMuted:
+      name: "stream:member_muted"
+      title: "stream:member_muted"
+      summary: "Targeted notice that the recipient was muted. Never evicts — the viewer stays in the room, only the composer is disabled client-side."
+      payload: { $ref: "#/components/schemas/StreamMemberMutedPayload" }
+      examples:
+        - name: Timed mute
+          payload:
+            streamId: "684abc123def4567890123ff"
+            userId: "user_def456"
+            mutedUntil: 1750004100000
+            reason: "Spamming"
+        - name: Indefinite mute (no reason given)
+          payload:
+            streamId: "684abc123def4567890123ff"
+            userId: "user_def456"
+            mutedUntil: 0
+            reason: null
+    StreamMemberUnmuted:
+      name: "stream:member_unmuted"
+      title: "stream:member_unmuted"
+      summary: "Targeted notice that the recipient's mute was lifted."
+      payload: { $ref: "#/components/schemas/StreamMemberUnmutedPayload" }
+      examples:
+        - name: Mute lifted
+          payload:
+            streamId: "684abc123def4567890123ff"
+            userId: "user_def456"
+    StreamReactNew:
+      name: "stream:react:new"
+      title: "stream:react:new"
+      summary: "Ephemeral emoji reaction broadcast to the whole room. Never persisted — a live visual effect only."
+      payload: { $ref: "#/components/schemas/StreamReactNewPayload" }
+      examples:
+        - name: Reaction broadcast
+          payload:
+            streamId: "684abc123def4567890123ff"
+            userId: "user_abc123"
+            emoji: "❤️"
+    StreamError:
+      name: "stream:error"
+      title: "stream:error"
+      summary: "Out-of-band error push. Currently emitted only when stream:join's access check itself fails (service outage), alongside a SERVICE_ERROR ack."
+      payload: { $ref: "#/components/schemas/StreamErrorPayload" }
+      examples:
+        - name: Access-check service unavailable during join
+          payload:
+            streamId: "684abc123def4567890123ff"
+            code: SERVICE_UNAVAILABLE
 
   schemas:
     # -------- generic --------
@@ -5404,11 +5946,11 @@ components:
               ROLE_CHANGED (bystander)      → "{{targetName}} is now a moderator/admin/member"
               ROLE_CHANGED (viewer=target)  → "You are now a moderator/admin/member"
               MEMBER_REMOVED                → "{{targetName}} was removed"
-              MEMBER_BANNED                 → "{{targetName}} was banned"
+              MEMBER_BANNED (target only)   → "You were banned from this community." (PERSONAL)
               MEMBER_UNBANNED               → "{{targetName}} was unbanned"
               MEMBER_MUTED (target only)    → "You are muted until {{date}}" or
-                                              "You are muted indefinitely" (PERSONAL, real-time only)
-              MEMBER_UNMUTED (target only)  → "You were unmuted" (PERSONAL, real-time only)
+                                              "You are muted indefinitely" (PERSONAL)
+              MEMBER_UNMUTED (target only)  → "You were unmuted" (PERSONAL)
               PINNED_MESSAGE (actor)        → "You pinned a message"
               PINNED_MESSAGE (bystander)    → "{{actorName}} pinned a message"
               COMMUNITY_JOINED              → "You joined the community" (PERSONAL)
@@ -5420,12 +5962,10 @@ components:
             PERSONAL types (isPersonal=true): COMMUNITY_JOINED, JOIN_REQUEST_APPROVED,
             JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_BANNED, MEMBER_MUTED,
             MEMBER_UNMUTED — delivered ONLY to the affected user's `user:<id>`
-            channel and never broadcast to / readable by other members.
-            MEMBER_MUTED / MEMBER_UNMUTED are additionally REAL-TIME ONLY: unlike
-            every other PERSONAL type, they are never returned by history,
-            pagination, incremental sync, or catch-up APIs — not even to the
-            affected user on a later reload — and never become the community-list
-            personal lastActivity preview. They exist only as a live socket push.
+            channel and never broadcast to / readable by other members. They
+            persist like any other PERSONAL line and remain available to the
+            affected user via history, pagination, incremental sync, and catch-up
+            after a reload/reconnect.
             MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED (old persisted rows only).
         isPersonal:
           type: boolean
@@ -5730,9 +6270,15 @@ components:
     CommunityMessageDeletedPayload:
       type: object
       description: |
-        Server → client broadcast to `community:<communityId>` after a `forEveryone` delete.
-        Clients replace the message body with a tombstone placeholder.
-        NOT emitted for `forMe` deletes.
+        Server → client, normally broadcast to `community:<communityId>` after a
+        `forEveryone` delete. Clients replace the message body with a tombstone
+        placeholder. NOT emitted for `forMe` deletes.
+
+        Same shape is also published to the affected user's own `user:<id>`
+        channel (never `community:<id>`) to retract a stale PERSONAL system
+        line client-side — a superseded join line, or the current MEMBER_MUTED
+        line once its mute session ends. `deletedBy` is `""` in that case
+        (system-initiated, no human actor).
       properties:
         messageId: { type: string }
         communityId: { type: string }
@@ -5741,7 +6287,7 @@ components:
         deletedBy:
           {
             type: string,
-            description: "userId of the actor who deleted the message.",
+            description: "userId of the actor who deleted the message; empty string for a system-initiated PERSONAL line retraction (no human actor).",
           }
       required: [messageId, communityId, roomId, deleteType, deletedBy]
     CommunityMessagePinPayload:
@@ -6628,3 +7174,309 @@ components:
           maxLength: 200
           description: "Client-generated idempotency key (UUID recommended)."
       required: [messageId, communityId, targetCommunityId, clientMessageId]
+
+    # -------- /stream --------
+    StreamRef:
+      type: object
+      description: "Client → server. Identifies the target livestream. Shared by stream:join, stream:leave, and stream:heartbeat."
+      properties:
+        streamId: { type: string, minLength: 1 }
+      required: [streamId]
+    StreamCommentPostPayload:
+      type: object
+      description: "Client → server. Post a new livestream comment."
+      properties:
+        streamId: { type: string, minLength: 1 }
+        message:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: "Comment text (500-char cap enforced at the gateway; stream-service enforces the authoritative limit)."
+        clientCommentId:
+          type: string
+          maxLength: 200
+          description: "Optional client-generated idempotency key. Echoed back on the ack."
+      required: [streamId, message]
+    StreamLoadMorePayload:
+      type: object
+      description: |
+        Client → server. Cursor-paginated comment history / reconnect
+        catch-up. `before` and `after` are exclusive comment-id cursors —
+        supply at most one; omit both for the newest page.
+      properties:
+        streamId: { type: string, minLength: 1 }
+        before:
+          type: string
+          description: "Fetch comments older than this comment id (history scroll)."
+        after:
+          type: string
+          description: "Fetch comments newer than this comment id (reconnect catch-up gap-fill)."
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: "Page size. Server default (20) applies when omitted."
+      required: [streamId]
+    StreamReactPayload:
+      type: object
+      description: "Client → server. Send an ephemeral emoji reaction — never persisted, never round-trips to stream-service."
+      properties:
+        streamId: { type: string, minLength: 1 }
+        emoji:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: "One emoji grapheme, including ZWJ/skin-tone sequences."
+      required: [streamId, emoji]
+    StreamCommentDeletePayload:
+      type: object
+      description: "Client → server. Delete a livestream comment (own comment, or moderator/owner)."
+      properties:
+        streamId: { type: string, minLength: 1 }
+        commentId: { type: string, minLength: 1 }
+      required: [streamId, commentId]
+    StreamCommentObject:
+      type: object
+      description: |
+        One livestream comment as returned by stream-service (`stream:join`
+        backfill and `stream:load_more`). `senderAvatar` is presigned by the
+        gateway to a ready-to-use download URL (falls back to the raw
+        object key if presigning fails).
+      properties:
+        id: { type: string }
+        sentBy: { type: string, description: "Author's userId." }
+        senderName: { type: string }
+        senderAvatar:
+          type: string
+          description: "Presigned download URL, or the raw object key on presign failure. Empty string if the author has no avatar."
+        message: { type: string }
+        createdAt: { type: integer, description: "Epoch ms." }
+      required: [id, sentBy, senderName, senderAvatar, message, createdAt]
+    StreamSnapshot:
+      type: object
+      description: "Snapshot of stream state at join time — lets the client render the livestream screen on reconnect without a separate REST detail call."
+      properties:
+        status:
+          type: string
+          enum: [PENDING, LIVE, RECONNECTING, ENDED, CANCELLED]
+        chatEnabled:
+          type: boolean
+          description: "Same value as the ack's top-level canComment."
+        title: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        thumbnail:
+          type: string
+          nullable: true
+          description: "Raw thumbnail object key, or null if none — resolve on read."
+        creatorId: { type: string }
+        hlsUrl: { type: string, nullable: true }
+        flvUrl: { type: string, nullable: true }
+      required:
+        [
+          status,
+          chatEnabled,
+          title,
+          description,
+          thumbnail,
+          creatorId,
+          hlsUrl,
+          flvUrl,
+        ]
+    StreamJoinAckData:
+      type: object
+      description: "`data` of the stream:join ack."
+      properties:
+        viewerCount: { type: integer, minimum: 0 }
+        recentComments:
+          type: array
+          description: "Most recent comments, oldest-first (up to 20)."
+          items: { $ref: "#/components/schemas/StreamCommentObject" }
+        nextCursor:
+          { type: string, description: "Empty string when hasMore is false." }
+        hasMore: { type: boolean }
+        canComment: { type: boolean }
+        streamSnapshot: { $ref: "#/components/schemas/StreamSnapshot" }
+      required:
+        [
+          viewerCount,
+          recentComments,
+          nextCursor,
+          hasMore,
+          canComment,
+          streamSnapshot,
+        ]
+    StreamCommentPostAckData:
+      type: object
+      description: "`data` of the stream:comment ack. The full comment is broadcast separately as stream:comment:new."
+      properties:
+        commentId: { type: string }
+        streamId: { type: string }
+        sentAt: { type: integer, description: "Epoch ms." }
+        clientCommentId:
+          type: string
+          description: "Echoes the request's clientCommentId, or empty string if none was supplied."
+      required: [commentId, streamId, sentAt, clientCommentId]
+    StreamLoadMoreAckData:
+      type: object
+      description: "`data` of the stream:load_more ack."
+      properties:
+        comments:
+          type: array
+          items: { $ref: "#/components/schemas/StreamCommentObject" }
+        nextCursor: { type: string }
+        hasMore: { type: boolean }
+      required: [comments, nextCursor, hasMore]
+    StreamCommentDeleteAckData:
+      type: object
+      description: "`data` of the stream:comment:delete ack."
+      properties:
+        commentId: { type: string }
+        streamId: { type: string }
+      required: [commentId, streamId]
+    StreamCommentNewPayload:
+      type: object
+      description: |
+        Server → client. New livestream comment broadcast, published
+        exclusively by stream-service to Redis `stream:<streamId>`. Mirrors
+        the canonical chat/community message envelope so the same message
+        component can render it. `parentCommentId` / `quoteData` /
+        `content.files` are reserved for future reply/media support and are
+        always empty/null today.
+      properties:
+        id: { type: string }
+        commentId: { type: string, description: "Same value as id." }
+        streamId: { type: string }
+        senderId: { type: string }
+        senderName:
+          type: string
+          description: 'Replaced with "You" in the copy delivered to the poster''s own socket(s).'
+        senderAvatar:
+          type: string
+          description: "Presigned download URL, or the raw object key on presign failure."
+        parentCommentId:
+          { type: string, description: 'Always "" today (reserved).' }
+        quoteData:
+          {
+            type: object,
+            nullable: true,
+            description: "Always null today (reserved).",
+          }
+        content:
+          type: object
+          properties:
+            text: { type: string }
+            files: { type: array, items: {} }
+          required: [text, files]
+        message: { type: string, description: "Same value as content.text." }
+        contentType: { type: string, enum: [TEXT] }
+        isEdited: { type: boolean, enum: [false] }
+        editedAt: { type: integer, enum: [0] }
+        clientCommentId:
+          {
+            type: string,
+            description: 'Echoes the poster''s clientCommentId, or "" if none.',
+          }
+        serverTs:
+          { type: integer, description: "Epoch ms. Same value as sentAt." }
+        sentAt: { type: integer, description: "Epoch ms." }
+      required:
+        [
+          id,
+          commentId,
+          streamId,
+          senderId,
+          senderName,
+          senderAvatar,
+          parentCommentId,
+          quoteData,
+          content,
+          message,
+          contentType,
+          isEdited,
+          editedAt,
+          clientCommentId,
+          serverTs,
+          sentAt,
+        ]
+    StreamViewerCountPayload:
+      type: object
+      description: "Server → client. Live viewer count changed. Debounced to <= 1 emit/sec per stream."
+      properties:
+        streamId: { type: string }
+        viewerCount: { type: integer, minimum: 0 }
+      required: [streamId, viewerCount]
+    StreamStatusPayload:
+      type: object
+      description: |
+        Server → client. Livestream lifecycle status changed — room-wide
+        broadcast of the STABLE shape only. Internal broadcaster context
+        (creatorId/hlsUrl/flvUrl/startedAt), present on the underlying
+        Redis message for LIVE transitions, is stripped by the gateway
+        before this relay and sent instead as a targeted
+        stream:broadcast:live to the broadcaster's own socket.
+      properties:
+        streamId: { type: string }
+        status:
+          type: string
+          enum: [PENDING, LIVE, RECONNECTING, ENDED, CANCELLED]
+        communityId:
+          type: string
+          description: "Lets a viewer screen update the community's isLive badge without a separate /community subscription."
+      required: [streamId, status, communityId]
+    StreamBroadcastLivePayload:
+      type: object
+      description: "Server → client. Targeted to the broadcaster's OWN socket(s) only — confirms LIVE with ingest/playback context. Not delivered to viewers."
+      properties:
+        streamId: { type: string }
+        startedAt: { type: integer, description: "Epoch ms." }
+        hlsUrl:
+          type: string
+          description: "Primary playback URL (HLS). Empty string if none (e.g. YOUTUBE source)."
+        flvUrl:
+          type: string
+          description: "Empty string if none."
+      required: [streamId, startedAt, hlsUrl, flvUrl]
+    StreamBannedPayload:
+      type: object
+      description: "Server → client. Targeted to the just-banned viewer's OWN socket(s) only, immediately followed by a forced room eviction. Never room-broadcast."
+      properties:
+        streamId: { type: string }
+      required: [streamId]
+    StreamMemberMutedPayload:
+      type: object
+      description: "Server → client. Targeted to the muted user's OWN socket(s) only. Never evicts — the viewer stays in the room with the composer disabled."
+      properties:
+        streamId: { type: string }
+        userId: { type: string, description: "The muted member's userId." }
+        mutedUntil:
+          type: integer
+          description: "Epoch ms the mute expires, or 0 for an indefinite mute."
+        reason:
+          type: string
+          nullable: true
+          description: "Moderator-supplied reason, or null if none was given."
+      required: [streamId, userId, mutedUntil, reason]
+    StreamMemberUnmutedPayload:
+      type: object
+      description: "Server → client. Targeted to the affected user's OWN socket(s) only."
+      properties:
+        streamId: { type: string }
+        userId: { type: string, description: "The unmuted member's userId." }
+      required: [streamId, userId]
+    StreamReactNewPayload:
+      type: object
+      description: "Server → client. Ephemeral emoji reaction broadcast to the whole room. Never persisted."
+      properties:
+        streamId: { type: string }
+        userId: { type: string, description: "Who sent the reaction." }
+        emoji: { type: string }
+      required: [streamId, userId, emoji]
+    StreamErrorPayload:
+      type: object
+      description: "Server → client. Out-of-band error push. Currently emitted only when stream:join's access check itself fails (service outage)."
+      properties:
+        streamId: { type: string }
+        code:
+          type: string
+          enum: [SERVICE_UNAVAILABLE]
+      required: [streamId, code]

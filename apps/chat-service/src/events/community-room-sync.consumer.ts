@@ -367,6 +367,19 @@ export class CommunityRoomSyncConsumer {
           break;
         }
 
+        case "community.member.mute_msg_retracted": {
+          // Telegram parity: on unmute, retract the CURRENT mute session's
+          // "You are muted until …" PERSONAL line so it never sits alongside
+          // the fresh unmute line in the affected member's history.
+          const userId = event.data.userId;
+          if (!userId) break;
+          await this.communitySystemMessageService.retractPersonalMuteMessage({
+            communityId,
+            userId,
+          });
+          break;
+        }
+
         case "community.invite_link_shared": {
           const {
             inviterId,
