@@ -140,14 +140,11 @@ describe("POST /api/v1/users/search/recent", () => {
   });
 
   it("never persists a roomId — only targetType/targetId reach the repository", async () => {
-    await request(app)
-      .post("/api/v1/users/search/recent")
-      .set(auth())
-      .send({
-        targetType: "USER",
-        targetId: PEER_ID,
-        roomId: "room_should_be_ignored",
-      });
+    await request(app).post("/api/v1/users/search/recent").set(auth()).send({
+      targetType: "USER",
+      targetId: PEER_ID,
+      roomId: "room_should_be_ignored",
+    });
 
     const call = recentRepo.upsert.mock.calls[0][0];
     expect(call).not.toHaveProperty("roomId");

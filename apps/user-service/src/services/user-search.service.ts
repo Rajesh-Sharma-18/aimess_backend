@@ -122,7 +122,9 @@ export const userSearchService = {
   },
 
   /** `q` empty/whitespace → Recent only. No search logic runs. */
-  async searchRecent(viewerId: string): Promise<{ recent: SearchResultItem[] }> {
+  async searchRecent(
+    viewerId: string
+  ): Promise<{ recent: SearchResultItem[] }> {
     const [blocks, recentRows, peers] = await Promise.all([
       friendshipRepository.findAllBlocks(viewerId),
       recentUserSearchRepository.findByUserId(viewerId),
