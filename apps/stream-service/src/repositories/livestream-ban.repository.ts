@@ -12,6 +12,8 @@ export class LivestreamBanRepository {
     bannedUserId: string;
     bannedBy: string;
     reason?: string | null;
+    snapshotUsername?: string | null;
+    snapshotDisplayName?: string | null;
   }): Promise<LivestreamBan> {
     const existing = await this.prisma.livestreamBan.findFirst({
       where: {
@@ -26,6 +28,8 @@ export class LivestreamBanRepository {
         bannedUserId: data.bannedUserId,
         bannedBy: data.bannedBy,
         reason: data.reason ?? null,
+        snapshotUsername: data.snapshotUsername ?? null,
+        snapshotDisplayName: data.snapshotDisplayName ?? null,
       },
     });
   }

@@ -5,7 +5,6 @@ import { status as grpcStatus } from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
-import { emitPersonalizedSender } from "../emit-personalized.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 
@@ -228,7 +227,10 @@ export function registerStreamNamespace(
           return;
         }
         // Presign the senderAvatar object key before emitting live comments so
-        // clients receive a ready-to-use image URL, not a raw S3 key.
+        // clients receive a ready-to-use image URL, not a raw S3 key. Plain room
+        // broadcast (NOT emitPersonalizedSender): a livestream comment shows the
+        // author's real @username to everyone, the sender included — rewriting it
+        // to "You" per-socket made the sender's optimistic bubble flicker its name.
         if (parsed.event === "stream:comment:new") {
           void (async () => {
             try {
@@ -236,19 +238,9 @@ export function registerStreamNamespace(
                 mediaClient,
                 parsed.data as Record<string, unknown>
               );
-              void emitPersonalizedSender(
-                streamNs,
-                channel,
-                "stream:comment:new",
-                enriched
-              );
+              streamNs.to(channel).emit("stream:comment:new", enriched);
             } catch {
-              void emitPersonalizedSender(
-                streamNs,
-                channel,
-                "stream:comment:new",
-                parsed.data
-              );
+              streamNs.to(channel).emit("stream:comment:new", parsed.data);
             }
           })();
           return;
