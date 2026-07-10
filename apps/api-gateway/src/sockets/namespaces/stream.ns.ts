@@ -74,6 +74,8 @@ interface RedisSocketEvent {
   data: unknown;
 }
 
+const isHttpUrl = (value: string): boolean => /^https?:\/\//i.test(value);
+
 /** Presign a USER_AVATAR object key to a download URL; returns null on any error. */
 async function presignAvatar(
   mediaClient: MediaClient,
@@ -81,6 +83,10 @@ async function presignAvatar(
   requesterId: string
 ): Promise<string | null> {
   if (!objectKey) return null;
+  // stream-service now resolves senderAvatar to a full URL itself — pass it
+  // through unchanged instead of re-presigning (avoids a wasted media-service
+  // round trip and treating a URL as an object key).
+  if (isHttpUrl(objectKey)) return objectKey;
   try {
     const res = await mediaClient.generateDownloadUrl({
       objectKey,

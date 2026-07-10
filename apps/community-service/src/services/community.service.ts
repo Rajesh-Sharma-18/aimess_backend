@@ -3001,33 +3001,34 @@ export const communityService = {
       return toMemberData(target);
     }
 
-    // Single-document update + recompute of memberCount — no $transaction
-    // (standalone Mongo). Recounting ACTIVE members is robust against drift.
-    const updated = await communityRepository.updateMemberStatus(
-      communityId,
-      targetUserId,
-      CommunityMemberStatus.BANNED,
-      {
-        bannedAt: new Date(),
-        bannedBy: callerId,
-        banReason: reason ?? null,
-      }
-    );
-
-    const count = await communityRepository.countActiveMembers(communityId);
-    await communityRepository.setMemberCount(communityId, count);
-
+    // Ban = automatic leave: reuse the same removal core as leaveCommunity
+    // (status flip, memberCount recompute, audit, socket eviction via
+    // community:member:removed, and community-list drop via
+    // community:membership:removed) so a banned member is cleaned up
+    // identically to one who left voluntarily. Only the target status
+    // (BANNED + ban metadata) and event reason ("banned") differ.
     // NOTE: ban is intentionally NOT written to lastActivity — a ban line must
     // never become the community-list preview (Telegram parity; see
     // isEligibleForLastActivity). The previous eligible activity stays.
-
-    await this.recordAudit({
+    const { updated } = await this.removeActiveMember(
       communityId,
-      actorId: callerId,
-      action: "MEMBER_BANNED",
       targetUserId,
-      reason,
-    });
+      {
+        actorId: callerId,
+        status: CommunityMemberStatus.BANNED,
+        banMeta: {
+          bannedAt: new Date(),
+          bannedBy: callerId,
+          banReason: reason ?? null,
+        },
+        removedReason: "banned",
+        auditAction: "MEMBER_BANNED",
+        auditMetadata: reason ? { reason } : undefined,
+        reason: reason ?? null,
+        eventAt: new Date().toISOString(),
+        emitLeftDomainEvent: false,
+      }
+    );
 
     // `reason` is operator-supplied, not PII.
     logger.info(
@@ -3041,51 +3042,6 @@ export const communityService = {
       targetUserId,
       reason: reason ?? null,
     });
-
-    try {
-      const now = Date.now();
-      await Promise.all([
-        publishCommunityRoomEvent(
-          redis,
-          communityId,
-          "community:member:removed",
-          {
-            communityId,
-            userId: targetUserId,
-            reason: "banned",
-            actorId: callerId,
-            updatedAt: now,
-          } satisfies CommunityMemberRemovedPayload
-        ),
-        publishCommunityRoomEvent(
-          redis,
-          communityId,
-          "community:stats:updated",
-          {
-            communityId,
-            memberCount: count,
-            updatedAt: now,
-          } satisfies CommunityStatsUpdatedPayload
-        ),
-        // Personal channel: reaches ALL devices of the banned user regardless
-        // of which screen they're currently on (same mechanism as community:added).
-        publishChatUserEvent(
-          redis,
-          targetUserId,
-          "community:membership:removed",
-          {
-            communityId,
-            membershipStatus: "REMOVED",
-            reason: "banned",
-            removedAt: now,
-          }
-        ),
-      ]);
-    } catch (err) {
-      logger.warn(
-        `community realtime broadcast failed ban community=${communityId}: ${String(err)}`
-      );
-    }
     // Ban is silent COMMUNITY-wide (no "{name} was banned" line for other
     // members — MEMBER_BANNED is PERSONAL visibility), but the banned user
     // themselves gets a private "You were banned from this community." line
@@ -3740,47 +3696,74 @@ export const communityService = {
   },
 
   /**
-   * Shared core of a non-admin member leaving a community: flips status to
-   * LEFT, recomputes memberCount, records the audit entry, and fans out the
-   * RabbitMQ + Redis leave events. Reused by leaveCommunity, and by
-   * bulkDeleteCommunities for its active-member branch — keeps the leave
-   * side effects defined in exactly one place.
+   * Shared core of removing an ACTIVE member from a community: flips status
+   * (LEFT by default, or BANNED via opts), recomputes memberCount, records
+   * the audit entry, and fans out the RabbitMQ + Redis removal events.
+   * Reused by leaveCommunity, bulkDeleteCommunities, AND banMember — keeps
+   * the "remove from community" side effects (socket eviction via
+   * community:member:removed, community-list drop via
+   * community:membership:removed, memberCount recompute) defined in exactly
+   * one place regardless of why the member left.
    */
   async removeActiveMember(
     communityId: string,
-    callerId: string,
+    targetUserId: string,
     opts: {
+      actorId?: string; // defaults to targetUserId (self-leave); pass the admin id for a ban
       auditMetadata?: Prisma.InputJsonValue;
       reason?: string | null;
       eventAt: string;
+      status?: CommunityMemberStatus; // defaults LEFT
+      banMeta?: {
+        bannedAt: Date | null;
+        bannedBy: string | null;
+        banReason: string | null;
+      };
+      removedReason?: "left" | "banned"; // realtime payload reason, defaults "left"
+      auditAction?: "MEMBER_LEFT" | "MEMBER_BANNED"; // defaults MEMBER_LEFT
+      emitLeftDomainEvent?: boolean; // defaults true; ban passes false (publishes its own MEMBER_BANNED event)
     }
   ): Promise<{
     updated: Awaited<ReturnType<typeof communityRepository.updateMemberStatus>>;
     memberCount: number;
   }> {
-    const updated = await communityRepository.updateMemberStatus(
-      communityId,
-      callerId,
-      CommunityMemberStatus.LEFT
-    );
+    const status = opts.status ?? CommunityMemberStatus.LEFT;
+    const actorId = opts.actorId ?? targetUserId;
+    const removedReason = opts.removedReason ?? "left";
+    const auditAction = opts.auditAction ?? "MEMBER_LEFT";
+
+    const updated = opts.banMeta
+      ? await communityRepository.updateMemberStatus(
+          communityId,
+          targetUserId,
+          status,
+          opts.banMeta
+        )
+      : await communityRepository.updateMemberStatus(
+          communityId,
+          targetUserId,
+          status
+        );
 
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
 
     await this.recordAudit({
       communityId,
-      actorId: callerId,
-      action: "MEMBER_LEFT",
-      targetUserId: callerId,
+      actorId,
+      action: auditAction,
+      targetUserId,
       metadata: opts.auditMetadata,
     });
 
-    publishCommunityMemberLeftSafe({
-      communityId,
-      actorId: callerId,
-      reason: opts.reason ?? null,
-      eventAt: opts.eventAt,
-    });
+    if (opts.emitLeftDomainEvent ?? true) {
+      publishCommunityMemberLeftSafe({
+        communityId,
+        actorId,
+        reason: opts.reason ?? null,
+        eventAt: opts.eventAt,
+      });
+    }
 
     try {
       const now = Date.now();
@@ -3791,9 +3774,9 @@ export const communityService = {
           "community:member:removed",
           {
             communityId,
-            userId: callerId,
-            reason: "left",
-            actorId: callerId,
+            userId: targetUserId,
+            reason: removedReason,
+            actorId,
             updatedAt: now,
           } satisfies CommunityMemberRemovedPayload
         ),
@@ -3807,21 +3790,25 @@ export const communityService = {
             updatedAt: now,
           } satisfies CommunityStatsUpdatedPayload
         ),
-        // Personal channel — reaches ALL of the leaver's devices, including those
-        // NOT inside the community room. Mirrors kick/ban so a voluntary leave
-        // drops the community from the list on the user's OTHER tabs/devices in
-        // real time (the acting tab already removed it optimistically). Without
-        // this, a leave on one device left the row visible elsewhere until reload.
-        publishChatUserEvent(redis, callerId, "community:membership:removed", {
-          communityId,
-          membershipStatus: "REMOVED",
-          reason: "left",
-          removedAt: now,
-        }),
+        // Personal channel — reaches ALL of the removed member's devices,
+        // including those NOT inside the community room. Mirrors leave/ban so
+        // removal on one device drops the community from the list on every
+        // other tab/device in real time.
+        publishChatUserEvent(
+          redis,
+          targetUserId,
+          "community:membership:removed",
+          {
+            communityId,
+            membershipStatus: "REMOVED",
+            reason: removedReason,
+            removedAt: now,
+          }
+        ),
       ]);
     } catch (err) {
       logger.warn(
-        `community realtime broadcast failed leave community=${communityId}: ${String(err)}`
+        `community realtime broadcast failed ${removedReason} community=${communityId}: ${String(err)}`
       );
     }
 

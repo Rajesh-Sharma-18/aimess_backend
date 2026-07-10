@@ -208,4 +208,59 @@ describe("redeemInviteLink — usage accounting (autoApprove=true)", () => {
     expect(repo.incrementInviteLinkUsageIfUnder).toHaveBeenCalledTimes(1);
     expect(res.member).toBeDefined();
   });
+
+  it("reactivates a LEFT (unbanned-but-not-rejoined) member instead of creating a fresh row", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
+    repo.findInviteLinkById.mockResolvedValue(link({ autoApprove: true }));
+    repo.findMemberByUserId.mockResolvedValue({
+      userId: CALLER,
+      role: "MEMBER",
+      status: "LEFT",
+      joinedAt: new Date(),
+      snapshotUsername: CALLER,
+      snapshotDisplayName: "Mock User",
+      snapshotAvatarKey: null,
+    });
+    repo.reactivateMemberWithSnapshot.mockResolvedValue({
+      userId: CALLER,
+      role: "MEMBER",
+      status: "ACTIVE",
+      joinedAt: new Date(),
+      snapshotUsername: CALLER,
+      snapshotDisplayName: "Mock User",
+      snapshotAvatarKey: null,
+    });
+    repo.countActiveMembers.mockResolvedValue(6);
+    repo.setMemberCount.mockResolvedValue(undefined);
+    repo.updateLastActivity.mockResolvedValue(undefined);
+
+    const res = await communityService.redeemInviteLink("abc123", CALLER);
+
+    expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledTimes(1);
+    expect(repo.createMember).not.toHaveBeenCalled();
+    expect(res.member).toBeDefined();
+  });
+});
+
+describe("redeemInviteLink — a BANNED caller is rejected outright, no bypass of the ban", () => {
+  it("throws COMMUNITY_JOIN_BANNED and never touches usage accounting or membership", async () => {
+    repo.findInviteLinkByCode.mockResolvedValue(link({ autoApprove: true }));
+    repo.findMemberByUserId.mockResolvedValue({
+      userId: CALLER,
+      role: "MEMBER",
+      status: "BANNED",
+      joinedAt: new Date(),
+      snapshotUsername: CALLER,
+      snapshotDisplayName: "Mock User",
+      snapshotAvatarKey: null,
+    });
+
+    await expect(
+      communityService.redeemInviteLink("abc123", CALLER)
+    ).rejects.toMatchObject({ message: "COMMUNITY_JOIN_BANNED" });
+
+    expect(repo.incrementInviteLinkUsageIfUnder).not.toHaveBeenCalled();
+    expect(repo.createMember).not.toHaveBeenCalled();
+    expect(repo.reactivateMemberWithSnapshot).not.toHaveBeenCalled();
+  });
 });

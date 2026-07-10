@@ -20,5 +20,10 @@ process.env.SRS_HOOK_SECRET = "test-srs-hook-secret-do-not-use-in-prod";
 // happens to have on the machine running the suite (often "false" for local
 // dev), silently changing which membership-gate branches tests exercise.
 process.env.STREAM_REQUIRE_MEMBERSHIP = "true";
+process.env.MINIO_ENDPOINT = "http://localhost:9000";
+process.env.MINIO_ACCESS_KEY = "test-minio-access-key";
+process.env.MINIO_SECRET_KEY = "test-minio-secret-key";
+process.env.MINIO_BUCKET_AVATARS = "aimess-avatars";
+process.env.MINIO_REGION = "us-east-1";
 
 export {};

@@ -124,13 +124,18 @@ describe("LivestreamCommentService.addComment — stream:comment:new broadcast s
     expect(channel).toBe("stream:stream-1");
     const parsed = JSON.parse(raw as string);
     expect(parsed.event).toBe("stream:comment:new");
+    // senderAvatar is resolved to a full presigned download URL, never the
+    // raw stored object key — see apps/stream-service/src/lib/avatar-resolve.ts.
+    expect(parsed.data.senderAvatar).toMatch(
+      /^http:\/\/localhost:9000\/aimess-avatars\/avatars\/member-1\.jpg\?/
+    );
     expect(parsed.data).toEqual({
       id: "comment-1",
       commentId: "comment-1",
       streamId: "stream-1",
       senderId: "member-1",
       senderName: "member_one",
-      senderAvatar: "avatars/member-1.jpg",
+      senderAvatar: parsed.data.senderAvatar,
       parentCommentId: "",
       quoteData: null,
       content: { text: "heee", files: [] },

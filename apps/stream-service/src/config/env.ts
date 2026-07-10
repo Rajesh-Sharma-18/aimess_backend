@@ -89,6 +89,18 @@ const envSchema = z.object({
 
   /** ffmpeg binary path for URL re-stream ingest (host prerequisite in dev). */
   FFMPEG_PATH: z.string().default("ffmpeg"),
+
+  // ---- MinIO (resolve stored avatar object keys to full download URLs) ----
+  MINIO_ENDPOINT: z.string().url(),
+  MINIO_PUBLIC_ENDPOINT: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().url().optional()
+  ),
+  MINIO_ACCESS_KEY: z.string(),
+  MINIO_SECRET_KEY: z.string(),
+  MINIO_BUCKET_AVATARS: z.string().min(1).default("aimess-avatars"),
+  MINIO_REGION: z.string(),
+  MINIO_VIEW_EXPIRES_IN: z.coerce.number().positive().default(3600),
 });
 
 const parsed = envSchema.safeParse(process.env);
