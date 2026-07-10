@@ -591,6 +591,15 @@ export const bulkLeaveSchema = z.object({
 });
 export type BulkLeaveInput = z.infer<typeof bulkLeaveSchema>;
 
+// --- Bulk delete ------------------------------------------------------------
+
+export const bulkDeleteCommunitySchema = z.object({
+  communityIds: communityIdsSchema,
+});
+export type BulkDeleteCommunityInput = z.infer<
+  typeof bulkDeleteCommunitySchema
+>;
+
 // --- Invite links ---------------------------------------------------------
 
 export const createInviteLinkSchema = z.object({

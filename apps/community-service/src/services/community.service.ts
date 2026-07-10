@@ -786,7 +786,8 @@ async function toCommunityData(
   muteRow: MuteRowFragment,
   joinRequest: { id: string; status: CommunityJoinReqStatus } | null = null,
   liveStreams: LiveStreamSummary[] = [],
-  callerModerationMute: { mutedUntil: Date | null } | null = null
+  callerModerationMute: { mutedUntil: Date | null } | null = null,
+  currentUserIsStreaming = false
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -825,6 +826,7 @@ async function toCommunityData(
     moderationStatus: community.moderationStatus,
     ...livestreamFields(liveStreams.length),
     liveStreams,
+    currentUserIsStreaming,
     status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
@@ -923,7 +925,8 @@ async function toDiscoverItem(
   isJoined: boolean,
   hasRequested: boolean,
   liveCount = 0,
-  viewerId?: string
+  viewerId?: string,
+  currentUserIsStreaming = false
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -946,6 +949,7 @@ async function toDiscoverItem(
     hasRequested,
     ...muteFields(muteRow),
     ...livestreamFields(liveCount),
+    currentUserIsStreaming,
     moderationStatus: community.moderationStatus,
     status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.getTime(),
@@ -1683,19 +1687,25 @@ export const communityService = {
         ? membership.role
         : null;
 
-    // Fetch notification mute row, join request, live streams, and caller's
-    // moderation mute (silenced-by-moderator) in parallel.
-    const [muteRow, joinRequest, liveStreams, callerModerationMute] =
-      await Promise.all([
-        communityRepository.findMuteByUserAndCommunity(callerId, id),
-        myRole === null
-          ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
-          : Promise.resolve(null),
-        fetchCommunityLiveStreams(id),
-        myRole !== null
-          ? communityRepository.findActiveMemberMute(id, callerId)
-          : Promise.resolve(null),
-      ]);
+    // Fetch notification mute row, join request, live streams, caller's
+    // moderation mute, and whether the caller is already streaming somewhere.
+    const [
+      muteRow,
+      joinRequest,
+      liveStreams,
+      callerModerationMute,
+      currentUserIsStreaming,
+    ] = await Promise.all([
+      communityRepository.findMuteByUserAndCommunity(callerId, id),
+      myRole === null
+        ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
+        : Promise.resolve(null),
+      fetchCommunityLiveStreams(id),
+      myRole !== null
+        ? communityRepository.findActiveMemberMute(id, callerId)
+        : Promise.resolve(null),
+      getStreamClient().checkCreatorHasActiveStream(callerId),
+    ]);
 
     return toCommunityData(
       community,
@@ -1703,7 +1713,8 @@ export const communityService = {
       muteRow,
       joinRequest,
       liveStreams,
-      callerModerationMute
+      callerModerationMute,
+      currentUserIsStreaming
     );
   },
 
@@ -2338,15 +2349,22 @@ export const communityService = {
       .filter((id): id is string => Boolean(id));
 
     // Bulk-fetch chat enrichment, notification mute settings, moderation mutes,
-    // live sender names, and live status in parallel.
-    const [chatMap, muteMap, modMuteMap, senderNameMap, liveCountMap] =
-      await Promise.all([
-        fetchChatEnrichment(userId, communityIds),
-        loadMuteMap(userId, communityIds),
-        communityRepository.findCallerMutesByCommunityIds(userId, communityIds),
-        communityRepository.getDisplayNamesByUserIds(senderIds),
-        fetchLiveStreamCounts(communityIds),
-      ]);
+    // live sender names, live status, and whether the caller is already streaming.
+    const [
+      chatMap,
+      muteMap,
+      modMuteMap,
+      senderNameMap,
+      liveCountMap,
+      currentUserIsStreaming,
+    ] = await Promise.all([
+      fetchChatEnrichment(userId, communityIds),
+      loadMuteMap(userId, communityIds),
+      communityRepository.findCallerMutesByCommunityIds(userId, communityIds),
+      communityRepository.getDisplayNamesByUserIds(senderIds),
+      fetchLiveStreamCounts(communityIds),
+      getStreamClient().checkCreatorHasActiveStream(userId),
+    ]);
 
     const communities: CommunityListItem[] = await Promise.all(
       pageRows.map(async (row) => {
@@ -2430,6 +2448,7 @@ export const communityService = {
           lastActivity,
           ...muteFields(muteMap.get(row.id) ?? null),
           ...livestreamFields(liveCountMap.get(row.id) ?? 0),
+          currentUserIsStreaming,
           moderationStatus: row.moderationStatus,
           status: communityAccessPolicy.deriveStatus(row),
           isMemberMuted: modMuteMap.has(row.id),
@@ -2533,16 +2552,22 @@ export const communityService = {
 
     const communityIds = rows.map((row) => row.id);
 
-    // Batch-load mute rows, pending join requests, and live counts in parallel.
-    const [muteByCommunityId, pendingRequestSet, liveCountMap] =
-      await Promise.all([
-        loadMuteMap(userId, communityIds),
-        communityRepository.findPendingRequestedCommunityIds(
-          userId,
-          communityIds
-        ),
-        fetchLiveStreamCounts(communityIds),
-      ]);
+    // Batch-load mute rows, pending join requests, live counts, and whether
+    // the caller is already streaming elsewhere — all in parallel.
+    const [
+      muteByCommunityId,
+      pendingRequestSet,
+      liveCountMap,
+      currentUserIsStreaming,
+    ] = await Promise.all([
+      loadMuteMap(userId, communityIds),
+      communityRepository.findPendingRequestedCommunityIds(
+        userId,
+        communityIds
+      ),
+      fetchLiveStreamCounts(communityIds),
+      getStreamClient().checkCreatorHasActiveStream(userId),
+    ]);
 
     // Build a fast lookup for membership: used by the mine-search alias
     // (includeJoined=true). Public discover always has isJoined=false.
@@ -2558,7 +2583,8 @@ export const communityService = {
           memberSet.has(row.id),
           pendingRequestSet.has(row.id),
           liveCountMap.get(row.id) ?? 0,
-          userId
+          userId,
+          currentUserIsStreaming
         )
       )
     );
@@ -3001,33 +3027,34 @@ export const communityService = {
       return toMemberData(target);
     }
 
-    // Single-document update + recompute of memberCount — no $transaction
-    // (standalone Mongo). Recounting ACTIVE members is robust against drift.
-    const updated = await communityRepository.updateMemberStatus(
-      communityId,
-      targetUserId,
-      CommunityMemberStatus.BANNED,
-      {
-        bannedAt: new Date(),
-        bannedBy: callerId,
-        banReason: reason ?? null,
-      }
-    );
-
-    const count = await communityRepository.countActiveMembers(communityId);
-    await communityRepository.setMemberCount(communityId, count);
-
+    // Ban = automatic leave: reuse the same removal core as leaveCommunity
+    // (status flip, memberCount recompute, audit, socket eviction via
+    // community:member:removed, and community-list drop via
+    // community:membership:removed) so a banned member is cleaned up
+    // identically to one who left voluntarily. Only the target status
+    // (BANNED + ban metadata) and event reason ("banned") differ.
     // NOTE: ban is intentionally NOT written to lastActivity — a ban line must
     // never become the community-list preview (Telegram parity; see
     // isEligibleForLastActivity). The previous eligible activity stays.
-
-    await this.recordAudit({
+    const { updated } = await this.removeActiveMember(
       communityId,
-      actorId: callerId,
-      action: "MEMBER_BANNED",
       targetUserId,
-      reason,
-    });
+      {
+        actorId: callerId,
+        status: CommunityMemberStatus.BANNED,
+        banMeta: {
+          bannedAt: new Date(),
+          bannedBy: callerId,
+          banReason: reason ?? null,
+        },
+        removedReason: "banned",
+        auditAction: "MEMBER_BANNED",
+        auditMetadata: reason ? { reason } : undefined,
+        reason: reason ?? null,
+        eventAt: new Date().toISOString(),
+        emitLeftDomainEvent: false,
+      }
+    );
 
     // `reason` is operator-supplied, not PII.
     logger.info(
@@ -3041,51 +3068,6 @@ export const communityService = {
       targetUserId,
       reason: reason ?? null,
     });
-
-    try {
-      const now = Date.now();
-      await Promise.all([
-        publishCommunityRoomEvent(
-          redis,
-          communityId,
-          "community:member:removed",
-          {
-            communityId,
-            userId: targetUserId,
-            reason: "banned",
-            actorId: callerId,
-            updatedAt: now,
-          } satisfies CommunityMemberRemovedPayload
-        ),
-        publishCommunityRoomEvent(
-          redis,
-          communityId,
-          "community:stats:updated",
-          {
-            communityId,
-            memberCount: count,
-            updatedAt: now,
-          } satisfies CommunityStatsUpdatedPayload
-        ),
-        // Personal channel: reaches ALL devices of the banned user regardless
-        // of which screen they're currently on (same mechanism as community:added).
-        publishChatUserEvent(
-          redis,
-          targetUserId,
-          "community:membership:removed",
-          {
-            communityId,
-            membershipStatus: "REMOVED",
-            reason: "banned",
-            removedAt: now,
-          }
-        ),
-      ]);
-    } catch (err) {
-      logger.warn(
-        `community realtime broadcast failed ban community=${communityId}: ${String(err)}`
-      );
-    }
     // Ban is silent COMMUNITY-wide (no "{name} was banned" line for other
     // members — MEMBER_BANNED is PERSONAL visibility), but the banned user
     // themselves gets a private "You were banned from this community." line
@@ -3723,29 +3705,91 @@ export const communityService = {
 
     // Non-admin leave: status → LEFT + recompute. Single-document update +
     // recompute of memberCount — no $transaction.
-    const updated = await communityRepository.updateMemberStatus(
+    const { updated } = await this.removeActiveMember(communityId, callerId, {
+      auditMetadata: leaveMeta,
+      reason: leaveReason,
+      eventAt: new Date().toISOString(),
+    });
+
+    this.emitMemberSystemMessage({
       communityId,
-      callerId,
-      CommunityMemberStatus.LEFT
-    );
+      systemMessageType: "MEMBER_LEFT",
+      actorId: callerId,
+      targetUserId: callerId,
+    });
+
+    return toMemberData(updated);
+  },
+
+  /**
+   * Shared core of removing an ACTIVE member from a community: flips status
+   * (LEFT by default, or BANNED via opts), recomputes memberCount, records
+   * the audit entry, and fans out the RabbitMQ + Redis removal events.
+   * Reused by leaveCommunity, bulkDeleteCommunities, AND banMember — keeps
+   * the "remove from community" side effects (socket eviction via
+   * community:member:removed, community-list drop via
+   * community:membership:removed, memberCount recompute) defined in exactly
+   * one place regardless of why the member left.
+   */
+  async removeActiveMember(
+    communityId: string,
+    targetUserId: string,
+    opts: {
+      actorId?: string; // defaults to targetUserId (self-leave); pass the admin id for a ban
+      auditMetadata?: Prisma.InputJsonValue;
+      reason?: string | null;
+      eventAt: string;
+      status?: CommunityMemberStatus; // defaults LEFT
+      banMeta?: {
+        bannedAt: Date | null;
+        bannedBy: string | null;
+        banReason: string | null;
+      };
+      removedReason?: "left" | "banned"; // realtime payload reason, defaults "left"
+      auditAction?: "MEMBER_LEFT" | "MEMBER_BANNED"; // defaults MEMBER_LEFT
+      emitLeftDomainEvent?: boolean; // defaults true; ban passes false (publishes its own MEMBER_BANNED event)
+    }
+  ): Promise<{
+    updated: Awaited<ReturnType<typeof communityRepository.updateMemberStatus>>;
+    memberCount: number;
+  }> {
+    const status = opts.status ?? CommunityMemberStatus.LEFT;
+    const actorId = opts.actorId ?? targetUserId;
+    const removedReason = opts.removedReason ?? "left";
+    const auditAction = opts.auditAction ?? "MEMBER_LEFT";
+
+    const updated = opts.banMeta
+      ? await communityRepository.updateMemberStatus(
+          communityId,
+          targetUserId,
+          status,
+          opts.banMeta
+        )
+      : await communityRepository.updateMemberStatus(
+          communityId,
+          targetUserId,
+          status
+        );
 
     const count = await communityRepository.countActiveMembers(communityId);
     await communityRepository.setMemberCount(communityId, count);
 
     await this.recordAudit({
       communityId,
-      actorId: callerId,
-      action: "MEMBER_LEFT",
-      targetUserId: callerId,
-      metadata: leaveMeta,
+      actorId,
+      action: auditAction,
+      targetUserId,
+      metadata: opts.auditMetadata,
     });
 
-    publishCommunityMemberLeftSafe({
-      communityId,
-      actorId: callerId,
-      reason: leaveReason,
-      eventAt: new Date().toISOString(),
-    });
+    if (opts.emitLeftDomainEvent ?? true) {
+      publishCommunityMemberLeftSafe({
+        communityId,
+        actorId,
+        reason: opts.reason ?? null,
+        eventAt: opts.eventAt,
+      });
+    }
 
     try {
       const now = Date.now();
@@ -3756,9 +3800,9 @@ export const communityService = {
           "community:member:removed",
           {
             communityId,
-            userId: callerId,
-            reason: "left",
-            actorId: callerId,
+            userId: targetUserId,
+            reason: removedReason,
+            actorId,
             updatedAt: now,
           } satisfies CommunityMemberRemovedPayload
         ),
@@ -3772,32 +3816,29 @@ export const communityService = {
             updatedAt: now,
           } satisfies CommunityStatsUpdatedPayload
         ),
-        // Personal channel — reaches ALL of the leaver's devices, including those
-        // NOT inside the community room. Mirrors kick/ban so a voluntary leave
-        // drops the community from the list on the user's OTHER tabs/devices in
-        // real time (the acting tab already removed it optimistically). Without
-        // this, a leave on one device left the row visible elsewhere until reload.
-        publishChatUserEvent(redis, callerId, "community:membership:removed", {
-          communityId,
-          membershipStatus: "REMOVED",
-          reason: "left",
-          removedAt: now,
-        }),
+        // Personal channel — reaches ALL of the removed member's devices,
+        // including those NOT inside the community room. Mirrors leave/ban so
+        // removal on one device drops the community from the list on every
+        // other tab/device in real time.
+        publishChatUserEvent(
+          redis,
+          targetUserId,
+          "community:membership:removed",
+          {
+            communityId,
+            membershipStatus: "REMOVED",
+            reason: removedReason,
+            removedAt: now,
+          }
+        ),
       ]);
     } catch (err) {
       logger.warn(
-        `community realtime broadcast failed leave community=${communityId}: ${String(err)}`
+        `community realtime broadcast failed ${removedReason} community=${communityId}: ${String(err)}`
       );
     }
 
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_LEFT",
-      actorId: callerId,
-      targetUserId: callerId,
-    });
-
-    return toMemberData(updated);
+    return { updated, memberCount: count };
   },
 
   /**
@@ -3964,6 +4005,119 @@ export const communityService = {
       summary: {
         requested: communityIds.length,
         left: leftCount,
+        failed: failedCount,
+      },
+    };
+  },
+
+  /**
+   * Bulk "remove community from my list" for the logged-in user. Each id is
+   * processed independently — one failure never blocks the rest.
+   *
+   * Rules:
+   *  - Community not found          → FAILED / NOT_FOUND
+   *  - Caller is the community admin → FAILED / OWNER_CANNOT_DELETE (never
+   *    auto-deletes, unlike leaveCommunity — admins must transfer ownership
+   *    or delete the community from the admin panel)
+   *  - No membership / already LEFT → SKIPPED (already gone, nothing to do)
+   *  - BANNED membership            → REMOVED, no DB write — banned members
+   *    are already excluded from "My Communities" reads, so the desired
+   *    end state already holds without touching membership
+   *  - PENDING (or any other status) → SKIPPED — never surfaced in the list
+   *  - ACTIVE non-admin membership   → REMOVED via the shared leave path
+   *    (removeActiveMember) — same cleanup, socket events, and notification
+   *    fan-out as a voluntary leave
+   */
+  async bulkDeleteCommunities(
+    callerId: string,
+    communityIds: string[]
+  ): Promise<{
+    results: Array<{
+      communityId: string;
+      status: "REMOVED" | "SKIPPED" | "FAILED";
+      errorCode?: "OWNER_CANNOT_DELETE" | "NOT_FOUND";
+    }>;
+    summary: { requested: number; removed: number; failed: number };
+  }> {
+    const [communities, membershipEntries] = await Promise.all([
+      communityRepository.findCommunitiesByIds(communityIds),
+      Promise.all(
+        communityIds.map((communityId) =>
+          communityRepository
+            .findMemberByUserId(communityId, callerId)
+            .then((membership) => [communityId, membership] as const)
+        )
+      ),
+    ]);
+
+    const communityIdSet = new Set(communities.map((c) => c.id));
+    const membershipMap = new Map(membershipEntries);
+
+    const results: Array<{
+      communityId: string;
+      status: "REMOVED" | "SKIPPED" | "FAILED";
+      errorCode?: "OWNER_CANNOT_DELETE" | "NOT_FOUND";
+    }> = [];
+    let removedCount = 0;
+    let failedCount = 0;
+    const eventAt = new Date().toISOString();
+
+    for (const communityId of communityIds) {
+      if (!communityIdSet.has(communityId)) {
+        results.push({ communityId, status: "FAILED", errorCode: "NOT_FOUND" });
+        failedCount++;
+        continue;
+      }
+
+      const membership = membershipMap.get(communityId);
+
+      if (!membership || membership.status === CommunityMemberStatus.LEFT) {
+        results.push({ communityId, status: "SKIPPED" });
+        continue;
+      }
+
+      if (membership.status === CommunityMemberStatus.BANNED) {
+        results.push({ communityId, status: "REMOVED" });
+        removedCount++;
+        continue;
+      }
+
+      if (membership.status !== CommunityMemberStatus.ACTIVE) {
+        results.push({ communityId, status: "SKIPPED" });
+        continue;
+      }
+
+      if (membership.role === CommunityMemberRole.ADMIN) {
+        results.push({
+          communityId,
+          status: "FAILED",
+          errorCode: "OWNER_CANNOT_DELETE",
+        });
+        failedCount++;
+        continue;
+      }
+
+      // ACTIVE non-admin member: reuse the same leave workflow as
+      // leaveCommunity — membership removal, memberCount recompute, audit,
+      // and the socket/notification fan-out that drops the community from
+      // every device's list in real time.
+      await this.removeActiveMember(communityId, callerId, { eventAt });
+      this.emitMemberSystemMessage({
+        communityId,
+        systemMessageType: "MEMBER_LEFT",
+        actorId: callerId,
+        targetUserId: callerId,
+      });
+
+      results.push({ communityId, status: "REMOVED" });
+      removedCount++;
+    }
+
+    return {
+      results,
+      summary: {
+        requested: communityIds.length,
+        removed: removedCount,
         failed: failedCount,
       },
     };

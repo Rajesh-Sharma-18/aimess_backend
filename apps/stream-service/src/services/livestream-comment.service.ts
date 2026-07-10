@@ -10,6 +10,11 @@ import type { LivestreamRepository } from "../repositories/livestream.repository
 import type { LivestreamBanRepository } from "../repositories/livestream-ban.repository.js";
 import type { redis as RedisClient } from "../config/redis.js";
 import type { userGrpcClient as UserGrpcClient } from "../grpc/user.client.js";
+import {
+  resolveAvatarUrl,
+  resolveAvatarUrlMap,
+  avatarUrlFromMap,
+} from "../lib/avatar-resolve.js";
 
 export const COMMENT_REPORT_REASONS = [
   "OFFENSIVE_LANGUAGE",
@@ -74,15 +79,33 @@ export interface GetCommentsResult {
   hasMore: boolean;
 }
 
-function toDto(c: LivestreamComment): CommentDto {
+/**
+ * Persisted rows keep the raw MinIO object key; every read boundary (REST,
+ * gRPC, Redis broadcast) resolves it to a full download URL here so no
+ * caller ever has to know about the object-key/URL distinction.
+ */
+async function toDto(c: LivestreamComment): Promise<CommentDto> {
   return {
     id: c.id,
     sentBy: c.sentBy,
     senderName: c.senderName ?? "",
-    senderAvatar: c.senderAvatar ?? "",
+    senderAvatar: await resolveAvatarUrl(c.senderAvatar),
     message: c.message,
     createdAt: c.createdAt,
   };
+}
+
+/** Batch variant of {@link toDto} — resolves each distinct avatar key once. */
+async function toDtoList(rows: LivestreamComment[]): Promise<CommentDto[]> {
+  const urlMap = await resolveAvatarUrlMap(rows.map((r) => r.senderAvatar));
+  return rows.map((c) => ({
+    id: c.id,
+    sentBy: c.sentBy,
+    senderName: c.senderName ?? "",
+    senderAvatar: avatarUrlFromMap(urlMap, c.senderAvatar),
+    message: c.message,
+    createdAt: c.createdAt,
+  }));
 }
 
 export class LivestreamCommentService {
@@ -214,7 +237,7 @@ export class LivestreamCommentService {
         params.userId,
         params.clientCommentId
       );
-      if (existing) return toDto(existing);
+      if (existing) return await toDto(existing);
     }
 
     // Enforce ban (local + community-wide) + commentStatus + moderator mute
@@ -297,7 +320,7 @@ export class LivestreamCommentService {
         )
       );
 
-    const dto = toDto(saved);
+    const dto = await toDto(saved);
 
     // Broadcast to the livestream channel (gateway fans out to viewers).
     try {
@@ -556,7 +579,7 @@ export class LivestreamCommentService {
     });
     const hasMore = rows.length > options.limit;
     const page = hasMore ? rows.slice(0, options.limit) : rows;
-    const items = page.map(toDto);
+    const items = await toDtoList(page);
     const nextCursor =
       hasMore && items.length > 0 ? items[items.length - 1]!.id : null;
     return { items, nextCursor, hasMore };

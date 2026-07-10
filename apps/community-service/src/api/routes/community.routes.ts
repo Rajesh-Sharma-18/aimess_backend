@@ -11,6 +11,7 @@ import {
   approveCommunityJoinRequest,
   banCommunityMember,
   bulkApproveCommunityJoinRequests,
+  bulkDeleteCommunities,
   bulkLeaveCommunities,
   bulkMarkReadCommunities,
   bulkMuteCommunities,
@@ -84,6 +85,7 @@ import {
   addMembersSchema,
   adminCategoriesQuerySchema,
   bulkApproveJoinRequestsSchema,
+  bulkDeleteCommunitySchema,
   bulkLeaveSchema,
   bulkMarkReadSchema,
   bulkMuteSchema,
@@ -286,6 +288,15 @@ communityRoutes.post(
 );
 
 communityRoutes.post("/", validateBody(createCommunitySchema), createCommunity);
+
+// Bulk-remove communities from the caller's own list. Sits at the router
+// root ("/") — a distinct method+path from "/:id", so no route-ordering
+// conflict with the "/:id" routes below.
+communityRoutes.delete(
+  "/",
+  validateBody(bulkDeleteCommunitySchema),
+  bulkDeleteCommunities
+);
 
 communityRoutes.get(
   "/:id",

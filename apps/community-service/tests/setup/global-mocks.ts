@@ -89,6 +89,8 @@ jest.mock("../../src/repositories/community.repository.js", () => ({
     deleteMember: jest.fn(),
     findActiveMembers: jest.fn().mockResolvedValue([]),
     findPendingJoinRequest: jest.fn(),
+    findJoinRequestByCommunityAndUser: jest.fn(),
+    recyclePendingJoinRequest: jest.fn(),
     updateJoinRequest: jest.fn(),
     createJoinRequest: jest.fn(),
     findInvite: jest.fn(),

@@ -5,7 +5,6 @@ import { status as grpcStatus } from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
 import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
-import { emitPersonalizedSender } from "../emit-personalized.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 
@@ -74,6 +73,11 @@ interface RedisSocketEvent {
   data: unknown;
 }
 
+const isHttpUrl = (value: string): boolean => /^https?:\/\//i.test(value);
+// ponytail: in-process cache; presigned URLs expire in 1 h (X-Amz-Expires=3600), 50-min TTL = 10-min safety margin
+const avatarUrlCache = new Map<string, { url: string; expiresAt: number }>();
+const AVATAR_URL_CACHE_TTL_MS = 50 * 60 * 1000;
+
 /** Presign a USER_AVATAR object key to a download URL; returns null on any error. */
 async function presignAvatar(
   mediaClient: MediaClient,
@@ -81,15 +85,28 @@ async function presignAvatar(
   requesterId: string
 ): Promise<string | null> {
   if (!objectKey) return null;
+  // stream-service now resolves senderAvatar to a full URL itself — pass it
+  // through unchanged instead of re-presigning (avoids a wasted media-service
+  // round trip and treating a URL as an object key).
+  if (isHttpUrl(objectKey)) return objectKey;
+  const cached = avatarUrlCache.get(objectKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
   try {
     const res = await mediaClient.generateDownloadUrl({
       objectKey,
       category: "USER_AVATAR",
       requesterId,
     });
-    return res?.downloadUrl ?? null;
+    const url = res?.downloadUrl ?? null;
+    if (url)
+      avatarUrlCache.set(objectKey, {
+        url,
+        expiresAt: Date.now() + AVATAR_URL_CACHE_TTL_MS,
+      });
+    return url;
   } catch {
-    return null;
+    // On media-service failure, serve stale cache rather than falling through to raw key.
+    return cached?.url ?? null;
   }
 }
 
@@ -228,7 +245,10 @@ export function registerStreamNamespace(
           return;
         }
         // Presign the senderAvatar object key before emitting live comments so
-        // clients receive a ready-to-use image URL, not a raw S3 key.
+        // clients receive a ready-to-use image URL, not a raw S3 key. Plain room
+        // broadcast (NOT emitPersonalizedSender): a livestream comment shows the
+        // author's real @username to everyone, the sender included — rewriting it
+        // to "You" per-socket made the sender's optimistic bubble flicker its name.
         if (parsed.event === "stream:comment:new") {
           void (async () => {
             try {
@@ -236,19 +256,9 @@ export function registerStreamNamespace(
                 mediaClient,
                 parsed.data as Record<string, unknown>
               );
-              void emitPersonalizedSender(
-                streamNs,
-                channel,
-                "stream:comment:new",
-                enriched
-              );
+              streamNs.to(channel).emit("stream:comment:new", enriched);
             } catch {
-              void emitPersonalizedSender(
-                streamNs,
-                channel,
-                "stream:comment:new",
-                parsed.data
-              );
+              streamNs.to(channel).emit("stream:comment:new", parsed.data);
             }
           })();
           return;

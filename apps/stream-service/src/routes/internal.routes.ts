@@ -86,6 +86,14 @@ export function createInternalRoutes(
         return;
       }
 
+      // Transcoded quality renditions (e.g. KEY_720p, KEY_360p) re-publish into
+      // SRS via RTMP and trigger hooks too — allow them through without a DB lookup.
+      const QUALITY_SUFFIXES = ["_720p", "_360p"];
+      if (QUALITY_SUFFIXES.some((s) => streamKey.endsWith(s))) {
+        res.json(0);
+        return;
+      }
+
       try {
         switch (action) {
           case "on_publish": {

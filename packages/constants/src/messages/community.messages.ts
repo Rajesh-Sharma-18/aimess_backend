@@ -150,6 +150,14 @@ export const COMMUNITY_MESSAGES = {
     vi: "Xử lý rời khỏi cộng đồng hàng loạt thành công",
     en: "Bulk community leave processed",
   },
+  COMMUNITY_BULK_DELETED: {
+    vi: "Xử lý xóa cộng đồng hàng loạt thành công",
+    en: "Bulk community removal processed",
+  },
+  COMMUNITY_OWNER_CANNOT_DELETE: {
+    vi: "Bạn không thể xóa một cộng đồng mà bạn sở hữu. Hãy chuyển quyền sở hữu hoặc xóa cộng đồng từ trang quản trị.",
+    en: "You cannot remove a community that you own. Transfer ownership or delete the community from the admin panel.",
+  },
   COMMUNITY_MEMBER_UNBANNED: {
     vi: "Đã bỏ cấm thành viên",
     en: "Member unbanned",

@@ -46,6 +46,13 @@ service StreamService {
   // caller — same contract as NotifyMemberBanStatus above.
   rpc ForceEndStreamsByCreator (ForceEndStreamsByCreatorRequest) returns (ForceEndStreamsByCreatorResponse);
 
+  // Check whether a user already has a LIVE or RECONNECTING stream in any
+  // community. community-service calls this to populate `currentUserIsStreaming`
+  // in API responses so clients can disable the Go Live button when the user
+  // is already broadcasting elsewhere. Fail-open — callers treat an error as
+  // has_active_stream=false rather than blocking the user.
+  rpc CheckCreatorHasActiveStream (CheckCreatorHasActiveStreamRequest) returns (CheckCreatorHasActiveStreamResponse);
+
   // ---- Backoffice (admin panel) Livestream Management ----
   // Source-of-truth read path for the admin Livestream Management screen.
   // backoffice-service is the only caller; it enriches community/creator/
@@ -330,4 +337,12 @@ message AdminListViewerSessionsRequest {
 message AdminListViewerSessionsResponse {
   repeated AdminViewerSessionRow sessions = 1;
   int64 total = 2;
+}
+
+message CheckCreatorHasActiveStreamRequest {
+  string creator_id = 1;
+}
+message CheckCreatorHasActiveStreamResponse {
+  // True when the creator has at least one LIVE or RECONNECTING stream in any community.
+  bool has_active_stream = 1;
 }

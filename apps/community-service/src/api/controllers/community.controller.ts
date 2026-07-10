@@ -9,6 +9,7 @@ import type {
   AuditLogsQuery,
   BannedMembersQuery,
   BulkApproveJoinRequestsInput,
+  BulkDeleteCommunityInput,
   BulkLeaveInput,
   BulkMarkReadInput,
   BulkMuteInput,
@@ -359,6 +360,21 @@ export const bulkLeaveCommunities = asyncHandler(
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("COMMUNITY_BULK_LEFT", req.locale)));
+  }
+);
+
+export const bulkDeleteCommunities = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { communityIds } = req.body as BulkDeleteCommunityInput;
+
+    const result = await communityService.bulkDeleteCommunities(
+      req.auth.userId,
+      communityIds
+    );
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("COMMUNITY_BULK_DELETED", req.locale)));
   }
 );
 

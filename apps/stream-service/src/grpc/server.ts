@@ -604,6 +604,32 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
       })();
     },
 
+    // CheckCreatorHasActiveStream — community-service queries this to set
+    // currentUserIsStreaming in API responses. Fail-open: errors return false.
+    checkCreatorHasActiveStream: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as { creatorId?: string };
+          const creatorId = req.creatorId ?? "";
+          if (!creatorId) {
+            callback(null, { hasActiveStream: false });
+            return;
+          }
+          const hasActiveStream =
+            await deps.livestreamService.hasActiveStreamByCreator(creatorId);
+          callback(null, { hasActiveStream });
+        } catch (err) {
+          logger.error(
+            `gRPC checkCreatorHasActiveStream error: ${String(err)}`
+          );
+          callback(null, { hasActiveStream: false });
+        }
+      })();
+    },
+
     deleteComment: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>

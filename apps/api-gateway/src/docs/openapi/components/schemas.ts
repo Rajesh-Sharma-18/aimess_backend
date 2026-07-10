@@ -7007,6 +7007,68 @@ export const openApiSchemas = {
       },
     },
   },
+  BulkDeleteCommunityRequest: {
+    type: "object",
+    required: ["communityIds"],
+    properties: {
+      communityIds: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        maxItems: 50,
+        description:
+          "List of community ObjectIds to remove from the caller's community list (1–50, duplicates deduplicated).",
+      },
+    },
+  },
+  BulkDeleteCommunityResultItem: {
+    type: "object",
+    required: ["communityId", "status"],
+    properties: {
+      communityId: { type: "string" },
+      status: {
+        type: "string",
+        enum: ["REMOVED", "SKIPPED", "FAILED"],
+        description:
+          "`REMOVED` — the community was removed from the caller's list (active member leave, or an already-hidden banned membership); `SKIPPED` — nothing to do (caller not a member / already left / pending); `FAILED` — see `errorCode`.",
+      },
+      errorCode: {
+        type: "string",
+        enum: ["OWNER_CANNOT_DELETE", "NOT_FOUND"],
+        description:
+          "Present only when `status` is `FAILED`. `OWNER_CANNOT_DELETE` — caller owns this community and must transfer ownership or delete it from the admin panel; `NOT_FOUND` — community does not exist.",
+      },
+    },
+  },
+  BulkDeleteCommunityResult: {
+    type: "object",
+    required: ["results", "summary"],
+    properties: {
+      results: {
+        type: "array",
+        items: { $ref: "#/components/schemas/BulkDeleteCommunityResultItem" },
+        description: "Per-community outcome in the same order as the request.",
+      },
+      summary: {
+        type: "object",
+        required: ["requested", "removed", "failed"],
+        properties: {
+          requested: {
+            type: "integer",
+            description: "Total communities requested.",
+          },
+          removed: {
+            type: "integer",
+            description: "Communities removed from the caller's list.",
+          },
+          failed: {
+            type: "integer",
+            description: "Communities that could not be removed.",
+          },
+        },
+      },
+    },
+  },
   BulkMuteRequest: {
     type: "object",
     required: ["action", "communityIds"],
