@@ -73,6 +73,10 @@ interface RedisSocketEvent {
   data: unknown;
 }
 
+// ponytail: in-process cache; presigned URLs expire in 1 h (X-Amz-Expires=3600), 50-min TTL = 10-min safety margin
+const avatarUrlCache = new Map<string, { url: string; expiresAt: number }>();
+const AVATAR_URL_CACHE_TTL_MS = 50 * 60 * 1000;
+
 /** Presign a USER_AVATAR object key to a download URL; returns null on any error. */
 async function presignAvatar(
   mediaClient: MediaClient,
@@ -80,15 +84,24 @@ async function presignAvatar(
   requesterId: string
 ): Promise<string | null> {
   if (!objectKey) return null;
+  const cached = avatarUrlCache.get(objectKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
   try {
     const res = await mediaClient.generateDownloadUrl({
       objectKey,
       category: "USER_AVATAR",
       requesterId,
     });
-    return res?.downloadUrl ?? null;
+    const url = res?.downloadUrl ?? null;
+    if (url)
+      avatarUrlCache.set(objectKey, {
+        url,
+        expiresAt: Date.now() + AVATAR_URL_CACHE_TTL_MS,
+      });
+    return url;
   } catch {
-    return null;
+    // On media-service failure, serve stale cache rather than falling through to raw key.
+    return cached?.url ?? null;
   }
 }
 
