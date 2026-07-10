@@ -92,6 +92,8 @@ export interface StreamAccess {
 /** A ban row as exposed over REST. */
 export interface BanView {
   userId: string;
+  username: string | null;
+  displayName: string | null;
   reason: string | null;
   bannedAt: Date;
 }
@@ -304,17 +306,15 @@ export class LivestreamService {
       params.communityId,
       params.creatorId,
       async () => {
-        // Both counts are LIVE-only — a PENDING stream (still setting up,
-        // never published) never blocks a new create and never occupies a
-        // community concurrency slot. Only an actually-broadcasting stream does.
-        const [activeByCreator, activeByCommunity] = await Promise.all([
-          this.streamRepo.countActiveByCommunityAndCreator(
-            params.communityId,
-            params.creatorId
-          ),
+        // Two counts run in parallel — all LIVE-only (PENDING never blocks):
+        //   activeAnywhere  — creator is already LIVE in any community
+        //   activeByCommunity — community's concurrent-stream cap
+        const [activeAnywhere, activeByCommunity] = await Promise.all([
+          this.streamRepo.countLiveByCreator(params.creatorId),
           this.streamRepo.countActiveByCommunity(params.communityId),
         ]);
-        if (activeByCreator > 0) {
+        // Global rule: one active stream per user across all communities.
+        if (activeAnywhere > 0) {
           throw new ConflictError("STREAM_ALREADY_ACTIVE");
         }
         if (activeByCommunity >= env.STREAM_MAX_CONCURRENT_PER_COMMUNITY) {
@@ -1330,6 +1330,16 @@ export class LivestreamService {
   }
 
   /**
+   * Returns true when the creator has a LIVE or RECONNECTING stream in any
+   * community. Backs the `CheckCreatorHasActiveStream` gRPC RPC consumed by
+   * community-service to populate `currentUserIsStreaming` in API responses.
+   */
+  async hasActiveStreamByCreator(creatorId: string): Promise<boolean> {
+    const count = await this.streamRepo.countLiveByCreator(creatorId);
+    return count > 0;
+  }
+
+  /**
    * Join gate (called by the gateway over gRPC on stream:join). A user may view
    * a stream when they are not banned AND (the membership gate is off OR they are
    * the owner OR an ACTIVE community member). Fail-closed on the membership check
@@ -1512,9 +1522,10 @@ export class LivestreamService {
   }
 
   /**
-   * Owner bans a user from the stream. Idempotent. Publishes a `stream:banned`
-   * event so the gateway kicks the user's live sockets in real time. The join
-   * gate (checkAccess) then blocks any rejoin.
+   * Admin bans a user from the stream and community-wide. Authorization
+   * (ADMIN-only, cannot ban another admin) is enforced by community-service.
+   * Also writes a local per-stream ban record and publishes `stream:banned`
+   * so the gateway kicks live sockets in real time.
    */
   async banUser(
     streamId: string,
@@ -1524,11 +1535,30 @@ export class LivestreamService {
   ): Promise<void> {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
-    if (stream.creatorId !== requesterId) {
-      throw new ForbiddenError("STREAM_NOT_OWNER");
+
+    // Community-service enforces ADMIN-only and blocks banning another admin.
+    const result = await this.communityClient.banMember(
+      stream.communityId,
+      requesterId,
+      targetUserId,
+      reason ?? ""
+    );
+    if (!result.ok) {
+      throw moderationErrorToAppError(result.errorCode);
     }
-    if (targetUserId === stream.creatorId) {
-      throw new BadRequestError("STREAM_CANNOT_BAN_OWNER");
+
+    let snapshotUsername: string | null = null;
+    let snapshotDisplayName: string | null = null;
+    try {
+      const [snap] = await this.userClient.bulkGetUserSnapshots([targetUserId]);
+      if (snap) {
+        snapshotUsername = snap.username ?? null;
+        snapshotDisplayName = snap.displayName ?? null;
+      }
+    } catch (error) {
+      logger.warn(
+        `ban user snapshot failed for user=${targetUserId}: ${String(error)}`
+      );
     }
 
     await this.banRepo.ban({
@@ -1536,6 +1566,8 @@ export class LivestreamService {
       bannedUserId: targetUserId,
       bannedBy: requesterId,
       reason: reason ?? null,
+      snapshotUsername,
+      snapshotDisplayName,
     });
 
     try {
@@ -1553,7 +1585,7 @@ export class LivestreamService {
     }
   }
 
-  /** Owner lifts a ban. Idempotent. */
+  /** Admin lifts a ban — community-wide and local per-stream. Idempotent. */
   async unbanUser(
     streamId: string,
     requesterId: string,
@@ -1561,22 +1593,35 @@ export class LivestreamService {
   ): Promise<void> {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
-    if (stream.creatorId !== requesterId) {
-      throw new ForbiddenError("STREAM_NOT_OWNER");
+
+    const result = await this.communityClient.unbanMember(
+      stream.communityId,
+      requesterId,
+      targetUserId
+    );
+    if (!result.ok) {
+      throw moderationErrorToAppError(result.errorCode);
     }
+
     await this.banRepo.unban(streamId, targetUserId);
   }
 
-  /** Owner lists who is banned from the stream. */
+  /** Admin lists who is banned from the stream. */
   async listBans(streamId: string, requesterId: string): Promise<BanView[]> {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
-    if (stream.creatorId !== requesterId) {
+    const membership = await this.communityClient.validateMembership(
+      stream.communityId,
+      requesterId
+    );
+    if (membership.role !== "ADMIN") {
       throw new ForbiddenError("STREAM_NOT_OWNER");
     }
     const bans = await this.banRepo.listByStream(streamId);
     return bans.map((b) => ({
       userId: b.bannedUserId,
+      username: b.snapshotUsername ?? null,
+      displayName: b.snapshotDisplayName ?? null,
       reason: b.reason,
       bannedAt: b.bannedAt,
     }));

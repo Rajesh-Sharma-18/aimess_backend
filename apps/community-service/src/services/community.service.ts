@@ -786,7 +786,8 @@ async function toCommunityData(
   muteRow: MuteRowFragment,
   joinRequest: { id: string; status: CommunityJoinReqStatus } | null = null,
   liveStreams: LiveStreamSummary[] = [],
-  callerModerationMute: { mutedUntil: Date | null } | null = null
+  callerModerationMute: { mutedUntil: Date | null } | null = null,
+  currentUserIsStreaming = false
 ): Promise<CommunityData> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -825,6 +826,7 @@ async function toCommunityData(
     moderationStatus: community.moderationStatus,
     ...livestreamFields(liveStreams.length),
     liveStreams,
+    currentUserIsStreaming,
     status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.toISOString(),
     updatedAt: community.updatedAt.toISOString(),
@@ -923,7 +925,8 @@ async function toDiscoverItem(
   isJoined: boolean,
   hasRequested: boolean,
   liveCount = 0,
-  viewerId?: string
+  viewerId?: string,
+  currentUserIsStreaming = false
 ): Promise<CommunityDiscoverItem> {
   const avatarView = await communityImageService.resolveViewUrlForClient(
     community.avatarUrl
@@ -946,6 +949,7 @@ async function toDiscoverItem(
     hasRequested,
     ...muteFields(muteRow),
     ...livestreamFields(liveCount),
+    currentUserIsStreaming,
     moderationStatus: community.moderationStatus,
     status: communityAccessPolicy.deriveStatus(community),
     createdAt: community.createdAt.getTime(),
@@ -1683,19 +1687,25 @@ export const communityService = {
         ? membership.role
         : null;
 
-    // Fetch notification mute row, join request, live streams, and caller's
-    // moderation mute (silenced-by-moderator) in parallel.
-    const [muteRow, joinRequest, liveStreams, callerModerationMute] =
-      await Promise.all([
-        communityRepository.findMuteByUserAndCommunity(callerId, id),
-        myRole === null
-          ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
-          : Promise.resolve(null),
-        fetchCommunityLiveStreams(id),
-        myRole !== null
-          ? communityRepository.findActiveMemberMute(id, callerId)
-          : Promise.resolve(null),
-      ]);
+    // Fetch notification mute row, join request, live streams, caller's
+    // moderation mute, and whether the caller is already streaming somewhere.
+    const [
+      muteRow,
+      joinRequest,
+      liveStreams,
+      callerModerationMute,
+      currentUserIsStreaming,
+    ] = await Promise.all([
+      communityRepository.findMuteByUserAndCommunity(callerId, id),
+      myRole === null
+        ? communityRepository.findJoinRequestByCommunityAndUser(id, callerId)
+        : Promise.resolve(null),
+      fetchCommunityLiveStreams(id),
+      myRole !== null
+        ? communityRepository.findActiveMemberMute(id, callerId)
+        : Promise.resolve(null),
+      getStreamClient().checkCreatorHasActiveStream(callerId),
+    ]);
 
     return toCommunityData(
       community,
@@ -1703,7 +1713,8 @@ export const communityService = {
       muteRow,
       joinRequest,
       liveStreams,
-      callerModerationMute
+      callerModerationMute,
+      currentUserIsStreaming
     );
   },
 
@@ -2338,15 +2349,22 @@ export const communityService = {
       .filter((id): id is string => Boolean(id));
 
     // Bulk-fetch chat enrichment, notification mute settings, moderation mutes,
-    // live sender names, and live status in parallel.
-    const [chatMap, muteMap, modMuteMap, senderNameMap, liveCountMap] =
-      await Promise.all([
-        fetchChatEnrichment(userId, communityIds),
-        loadMuteMap(userId, communityIds),
-        communityRepository.findCallerMutesByCommunityIds(userId, communityIds),
-        communityRepository.getDisplayNamesByUserIds(senderIds),
-        fetchLiveStreamCounts(communityIds),
-      ]);
+    // live sender names, live status, and whether the caller is already streaming.
+    const [
+      chatMap,
+      muteMap,
+      modMuteMap,
+      senderNameMap,
+      liveCountMap,
+      currentUserIsStreaming,
+    ] = await Promise.all([
+      fetchChatEnrichment(userId, communityIds),
+      loadMuteMap(userId, communityIds),
+      communityRepository.findCallerMutesByCommunityIds(userId, communityIds),
+      communityRepository.getDisplayNamesByUserIds(senderIds),
+      fetchLiveStreamCounts(communityIds),
+      getStreamClient().checkCreatorHasActiveStream(userId),
+    ]);
 
     const communities: CommunityListItem[] = await Promise.all(
       pageRows.map(async (row) => {
@@ -2430,6 +2448,7 @@ export const communityService = {
           lastActivity,
           ...muteFields(muteMap.get(row.id) ?? null),
           ...livestreamFields(liveCountMap.get(row.id) ?? 0),
+          currentUserIsStreaming,
           moderationStatus: row.moderationStatus,
           status: communityAccessPolicy.deriveStatus(row),
           isMemberMuted: modMuteMap.has(row.id),
@@ -2533,16 +2552,22 @@ export const communityService = {
 
     const communityIds = rows.map((row) => row.id);
 
-    // Batch-load mute rows, pending join requests, and live counts in parallel.
-    const [muteByCommunityId, pendingRequestSet, liveCountMap] =
-      await Promise.all([
-        loadMuteMap(userId, communityIds),
-        communityRepository.findPendingRequestedCommunityIds(
-          userId,
-          communityIds
-        ),
-        fetchLiveStreamCounts(communityIds),
-      ]);
+    // Batch-load mute rows, pending join requests, live counts, and whether
+    // the caller is already streaming elsewhere — all in parallel.
+    const [
+      muteByCommunityId,
+      pendingRequestSet,
+      liveCountMap,
+      currentUserIsStreaming,
+    ] = await Promise.all([
+      loadMuteMap(userId, communityIds),
+      communityRepository.findPendingRequestedCommunityIds(
+        userId,
+        communityIds
+      ),
+      fetchLiveStreamCounts(communityIds),
+      getStreamClient().checkCreatorHasActiveStream(userId),
+    ]);
 
     // Build a fast lookup for membership: used by the mine-search alias
     // (includeJoined=true). Public discover always has isJoined=false.
@@ -2558,7 +2583,8 @@ export const communityService = {
           memberSet.has(row.id),
           pendingRequestSet.has(row.id),
           liveCountMap.get(row.id) ?? 0,
-          userId
+          userId,
+          currentUserIsStreaming
         )
       )
     );

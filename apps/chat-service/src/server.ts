@@ -304,6 +304,13 @@ const startServer = async () => {
       logger.warn(err);
     }
 
+    // Old name for the general_room_messages timeline index; renamed to
+    // general_room_messages_room_createdAt_idx — drop so re-creation succeeds.
+    await dropStaleIndex(
+      "general_room_messages",
+      "general_room_messages_roomId_createdAt_idx"
+    );
+
     // A stale unique index on (roomId, messageId) predates the current
     // CommunityMessagePin schema (which intentionally has no @@unique — the
     // same message can be pinned/unpinned/re-pinned as soft-delete history).
