@@ -106,7 +106,7 @@ describe("GET /community/rooms — livestream enrichment", () => {
     );
 
     const res = await request(app).get(`${BASE}/rooms`);
-    expect(res.body.data.data[0].activeLivestreamCount).toBe(5);
+    expect(res.body.data.data[0].liveStreamCount).toBe(5);
   });
 
   it("degrades to 0 when stream-service is unavailable (fail-open)", async () => {
