@@ -130,6 +130,7 @@ describe("toMediaObject", () => {
 
     assert.equal(result.objectKey, "avatars/uid/abc.jpg");
     assert.equal(result.fileId, "abc");
+    assert.equal(result.mediaId, null);
     assert.equal(result.downloadUrl, "https://signed.example/file?sig=abc");
     assert.equal(result.downloadUrlExpiresIn, 600);
     assert.equal(result.fileName, "abc.jpg");
@@ -138,6 +139,19 @@ describe("toMediaObject", () => {
     // upload half null
     assert.equal(result.uploadUrl, null);
     assert.equal(result.uploadUrlExpiresIn, null);
+  });
+
+  it("(a2) stamps the supplied mediaId through, independent of objectKey/url", async () => {
+    const result = await toMediaObject({
+      bucket: "user-media",
+      stored: "avatars/uid/abc.jpg",
+      prefixes: ["avatars"],
+      strategy: fixedStrategy(),
+      mediaId: "registry-id-1",
+    });
+
+    assert.equal(result.mediaId, "registry-id-1");
+    assert.equal(result.objectKey, "avatars/uid/abc.jpg");
   });
 
   it("(b) returns an all-null inner MediaObject when stored is null", async () => {
@@ -149,6 +163,7 @@ describe("toMediaObject", () => {
     });
 
     assert.equal(result.fileId, null);
+    assert.equal(result.mediaId, null);
     assert.equal(result.objectKey, null);
     assert.equal(result.fileName, null);
     assert.equal(result.contentType, null);
@@ -232,11 +247,30 @@ describe("buildUploadMediaObject", () => {
     assert.deepEqual(result.uploadHeaders, { "Content-Type": "image/png" });
     assert.equal(result.objectKey, "avatars/uid/x.png");
     assert.equal(result.fileId, "x");
+    assert.equal(result.mediaId, null);
     assert.equal(result.contentType, "image/png");
     assert.equal(result.fileName, "x.png");
     // download half null
     assert.equal(result.downloadUrl, null);
     assert.equal(result.downloadUrlExpiresIn, null);
+  });
+
+  it("stamps the supplied mediaId through", () => {
+    const uploadResult: UploadUrlResult = {
+      uploadUrl: "https://signed.example/put?sig=xyz",
+      objectKey: "avatars/uid/x.png",
+      uploadExpiresIn: 900,
+      maxBytes: 5_000_000,
+      headers: { "Content-Type": "image/png" },
+    };
+
+    const result = buildUploadMediaObject({
+      result: uploadResult,
+      contentType: "image/png",
+      mediaId: "registry-id-2",
+    });
+
+    assert.equal(result.mediaId, "registry-id-2");
   });
 });
 

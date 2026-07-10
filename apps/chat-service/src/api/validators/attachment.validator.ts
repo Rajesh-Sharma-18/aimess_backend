@@ -22,6 +22,7 @@ export const contactSchema = z.object({
 
 export const stickerSchema = z
   .object({
+    mediaId: z.string().min(1).max(100).optional(),
     objectKey: z.string().min(1).max(500).optional(),
     url: z.string().url().optional(),
     packId: z.string().max(100),

@@ -237,7 +237,7 @@ export class CommunitySystemMessageService {
             userId: visibleToUserId,
           })
           .then((deletedIds) => {
-            this.publishJoinLineDeletions(
+            this.publishPersonalMessageDeletions(
               communityId,
               visibleToUserId,
               deletedIds
@@ -292,7 +292,7 @@ export class CommunitySystemMessageService {
             keepId: message.id,
           })
           .then((deletedIds) => {
-            this.publishJoinLineDeletions(
+            this.publishPersonalMessageDeletions(
               communityId,
               visibleToUserId,
               deletedIds
@@ -468,7 +468,7 @@ export class CommunitySystemMessageService {
    * message) — and tells connected clients to remove it. Same `deletedForAll`
    * mechanism and tombstone shape as a normal message hard-delete; just
    * triggered by pin lifecycle instead of a user delete action. Mirrors
-   * `publishJoinLineDeletions` below for the PERSONAL case. Best-effort:
+   * `publishPersonalMessageDeletions` below for the PERSONAL case. Best-effort:
    * never throws — the pin state change that triggered this must not roll
    * back on a failure here.
    */
@@ -498,6 +498,38 @@ export class CommunitySystemMessageService {
     }
   }
 
+  /**
+   * Retracts the CURRENT mute session's "You are muted until …" PERSONAL line
+   * for one user (Telegram parity: on unmute, the stale mute line must not sit
+   * alongside the fresh unmute line in the member's history). No-op if the user
+   * has no active mute message (e.g. it already expired/was retracted, or the
+   * mute never posted a line). Same `deletedForAll` + tombstone mechanism as
+   * {@link retractSystemMessage}, but scoped to the affected user's own
+   * `user:<id>` channel via {@link publishPersonalMessageDeletions} — PERSONAL
+   * messages are never broadcast to the community room. Best-effort: never
+   * throws — a retraction failure must not roll back the unmute itself.
+   */
+  async retractPersonalMuteMessage(params: {
+    communityId: string;
+    userId: string;
+  }): Promise<void> {
+    const { communityId, userId } = params;
+    try {
+      const messageId = await this.messageRepo.findLatestActiveMutedMessageId({
+        roomId: communityId,
+        userId,
+      });
+      if (!messageId) return;
+      const hidden = await this.messageRepo.deleteForAll(messageId);
+      if (!hidden) return;
+      this.publishPersonalMessageDeletions(communityId, userId, [messageId]);
+    } catch (err) {
+      logger.warn(
+        `CommunitySystemMessageService|retractPersonalMuteMessage failed community=${communityId} user=${userId}: ${String(err)}`
+      );
+    }
+  }
+
   private nameOf(
     snapshots: Map<string, Record<string, unknown>>,
     userId: string | null
@@ -507,16 +539,17 @@ export class CommunitySystemMessageService {
   }
 
   /**
-   * Tell an already-connected client to remove stale join-session line(s) that
-   * were just hard-deleted server-side (see deletePersonalJoinMessages). Without
-   * this, a client that rendered the prior "You joined the community" line
-   * before the user left never learns it was deleted — it stays on screen,
-   * alongside the fresh join line, until the client does a full refetch
-   * (reload/reconnect). PERSONAL messages are user-scoped, so this publishes to
-   * the `user:<id>` channel (never `community:<id>`), mirroring how the new
-   * join line itself is delivered (see the isPersonal branch below).
+   * Tell an already-connected client to remove PERSONAL message(s) that were
+   * just hard-deleted server-side for one user — stale join-session lines (see
+   * deletePersonalJoinMessages) and retracted mute lines (see
+   * retractPersonalMuteMessage). Without this, a client that already rendered
+   * the line never learns it was deleted — it stays on screen until a full
+   * refetch (reload/reconnect). PERSONAL messages are user-scoped, so this
+   * publishes to the `user:<id>` channel (never `community:<id>`), mirroring
+   * how the line itself was originally delivered (see the isPersonal branch
+   * in postOne above).
    */
-  private publishJoinLineDeletions(
+  private publishPersonalMessageDeletions(
     communityId: string,
     userId: string,
     deletedIds: string[]

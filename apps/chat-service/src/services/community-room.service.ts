@@ -17,7 +17,7 @@ export type CommunityRoomView = GeneralRoom & {
   /** Alias of hasActiveLivestream — matches the documented ChatCommunityRoom.isLive. */
   isLive: boolean;
   hasActiveLivestream: boolean;
-  activeLivestreamCount: number;
+  liveStreamCount: number;
   hasUnread?: boolean;
 };
 
@@ -59,7 +59,7 @@ export class CommunityRoomService {
         ...room,
         isLive: count > 0,
         hasActiveLivestream: count > 0,
-        activeLivestreamCount: count,
+        liveStreamCount: count,
       };
     };
 

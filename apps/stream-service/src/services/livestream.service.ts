@@ -1045,7 +1045,7 @@ export class LivestreamService {
   }
 
   /**
-   * Backs `activeLivestreamCount`/`hasActiveLivestream` on GET /communities/mine
+   * Backs `liveStreamCount`/`hasActiveLivestream` on GET /communities/mine
    * and the chat-service community rooms list. Returns the LIVE-or-RECONNECTING
    * count per community (communities with 0 such streams are omitted).
    * Fail-open caller side.
@@ -2160,7 +2160,7 @@ export class LivestreamService {
             status: "LIVE",
             startedAt,
             livedAt: startedAt,
-            activeLivestreamCount: Math.min(
+            liveStreamCount: Math.min(
               liveCount,
               env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
             ),
@@ -2183,7 +2183,7 @@ export class LivestreamService {
    * only fired when the LAST stream ended), this fires on EVERY end carrying the
    * updated live count — `hasActiveLivestream` stays true while other streams run
    * and flips false only when the final stream ends. Drive banner visibility off
-   * `hasActiveLivestream`/`activeLivestreamCount`, not the event's presence.
+   * `hasActiveLivestream`/`liveStreamCount`, not the event's presence.
    */
   private async publishCommunityStreamEnded(stream: Livestream): Promise<void> {
     try {
@@ -2207,7 +2207,7 @@ export class LivestreamService {
             endedAt: stream.endedAt?.getTime() ?? Date.now(),
             duration: formatStreamDuration(durationSeconds),
             durationSeconds,
-            activeLivestreamCount: Math.min(
+            liveStreamCount: Math.min(
               liveCount,
               env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
             ),

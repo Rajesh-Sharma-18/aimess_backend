@@ -15,10 +15,13 @@ import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js"
 import {
   normalizeMessageType,
   buildCanonicalQuote,
+  buildReplyQuoteSnapshot,
+  buildReplyPreviewText,
   buildReactionGroups,
   reactionUserIdMap,
   toggleStoredReaction,
   toWireMessage,
+  type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
@@ -26,6 +29,8 @@ import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
   attachAlbumMessages,
   markAlbumIdempotentReplay,
+  resolveParentMessageId,
+  resolveReplyAttachmentCount,
 } from "../lib/album-messages.js";
 import { splitDirectMediaAlbum } from "../lib/split-media-album.js";
 import {
@@ -39,6 +44,7 @@ import {
   urlFromMap,
   applyUrlMapToFiles,
   fileMediaKey,
+  resolveQuoteThumbnail,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
@@ -121,11 +127,13 @@ export class PrivateMessageService {
       params.clientMessageId ?? null
     );
 
-    let quoteData: Record<string, unknown> | undefined;
-    if (params.parentMessageId) {
-      const originalMsg = await this.messageRepo.findById(
-        params.parentMessageId
-      );
+    // Validate BEFORE the lookup query (not just before persistence) — an
+    // invalid/foreign-shaped id (albumId/mediaId/attachmentId/clientMessageId,
+    // anything not a 24-hex ObjectId) must never reach `findById`.
+    const resolvedParentId = resolveParentMessageId(params.parentMessageId);
+    let quoteData: CanonicalQuote | undefined;
+    if (resolvedParentId) {
+      const originalMsg = await this.messageRepo.findById(resolvedParentId);
       if (originalMsg) {
         const originSenderId = originalMsg.senderId || "";
         const snapshots = await this.userSnapshotService.getUserSnapshotsMap(
@@ -134,19 +142,31 @@ export class PrivateMessageService {
         );
         const senderSnap =
           (snapshots.get(originSenderId) as Record<string, unknown>) || {};
-        quoteData = {
+        // Album sends are split one-row-per-file (lib/split-media-album.ts),
+        // so the parent row's own content.files can never reveal the true
+        // album size — look up its sibling batch for IMAGE/VIDEO parents.
+        const attachmentCountOverride = ["IMAGE", "VIDEO"].includes(
+          normalizeMessageType(originalMsg.messageType)
+        )
+          ? await resolveReplyAttachmentCount(
+              this.messageRepo,
+              params.roomId,
+              originSenderId,
+              originalMsg
+            )
+          : undefined;
+        quoteData = buildReplyQuoteSnapshot({
           messageId: originalMsg.id,
           senderId: originSenderId,
           senderName:
             (senderSnap.displayName as string) ||
             (senderSnap.memberId as string) ||
             "",
-          messageType: normalizeMessageType(originalMsg.messageType),
-          preview:
-            ((originalMsg.content as Record<string, unknown> | null)
-              ?.text as string) || "",
+          messageType: originalMsg.messageType,
+          content: originalMsg.content,
           isDeleted: Boolean(originalMsg.isDeleted),
-        };
+          attachmentCountOverride,
+        });
       }
     }
 
@@ -159,7 +179,7 @@ export class PrivateMessageService {
         receiverId: params.receiverId,
         content: part.content,
         messageType: normalizeMessageType(part.messageType),
-        parentMessageId: params.parentMessageId || null,
+        parentMessageId: resolvedParentId,
         clientMessageId: part.clientMessageId ?? null,
         ...(i === 0 && params.clientTs
           ? { clientInfo: { clientTs: params.clientTs } }
@@ -629,6 +649,16 @@ export class PrivateMessageService {
           );
         });
     }
+    // Best-effort: flip `quoteData.isDeleted` on every existing reply to this
+    // message so "Message deleted" shows up everywhere, not just for replies
+    // sent after this delete.
+    this.messageRepo
+      .refreshReplyQuotes(messageId, { isDeleted: true })
+      .catch((err: unknown) => {
+        logger.warn(
+          `PrivateMessageService|refreshReplyQuotes(delete) failed: ${String(err)}`
+        );
+      });
     return deleted;
   }
 
@@ -657,7 +687,22 @@ export class PrivateMessageService {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
-    return this.messageRepo.editMessage(params.messageId, params.content);
+    const updated = await this.messageRepo.editMessage(
+      params.messageId,
+      params.content
+    );
+    // Best-effort: keep every existing reply's `quoteData.preview` in sync with
+    // the new text (edits are TEXT-only, so preview === the new text verbatim).
+    this.messageRepo
+      .refreshReplyQuotes(params.messageId, {
+        preview: buildReplyPreviewText("TEXT", params.content, 0),
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          `PrivateMessageService|refreshReplyQuotes(edit) failed: ${String(err)}`
+        );
+      });
+    return updated;
   }
 
   async markDelivered(params: {
@@ -1064,6 +1109,10 @@ export class PrivateMessageService {
           if (key) mediaKeys.push(key);
         }
       }
+      const quote = message.quoteData as Record<string, unknown> | null;
+      if (typeof quote?.thumbnail === "string" && quote.thumbnail) {
+        mediaKeys.push(quote.thumbnail);
+      }
       const reactions = message.reactions as Record<string, unknown> | null;
       if (reactions) {
         for (const reactors of Object.values(reactions)) {
@@ -1149,7 +1198,10 @@ export class PrivateMessageService {
         // as the socket message:new (legacy fields kept untouched).
         senderName: displayName,
         conversationType: "PRIVATE",
-        quoteData: buildCanonicalQuote(wire.quoteData),
+        quoteData: resolveQuoteThumbnail(
+          buildCanonicalQuote(wire.quoteData),
+          urlMap
+        ),
         reactionGroups,
         deliveredTo,
         clientTs: Number(

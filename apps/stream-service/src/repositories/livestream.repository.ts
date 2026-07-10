@@ -175,7 +175,7 @@ export class LivestreamRepository {
 
   /**
    * Batched LIVE-only counts for a set of communities. Backs the
-   * `activeLivestreamCount` enrichment on the mine list + chat rooms list.
+   * `liveStreamCount` enrichment on the mine list + chat rooms list.
    * Communities with 0 live streams are omitted. Counts in memory (live streams
    * per community are capped low) to avoid any Mongo groupBy edge cases.
    */

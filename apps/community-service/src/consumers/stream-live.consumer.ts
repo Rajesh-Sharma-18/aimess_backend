@@ -45,6 +45,7 @@ interface StreamStartedData {
   status?: string;
   livedAt?: number;
   startedAt?: number;
+  liveStreamCount?: number;
 }
 
 interface StreamEndedData {
@@ -53,6 +54,7 @@ interface StreamEndedData {
   creatorId: string;
   endedAt: number;
   peakViewers: number;
+  liveStreamCount?: number;
 }
 
 interface StreamUpdatedData {
@@ -66,6 +68,43 @@ interface StreamUpdatedData {
 }
 
 type StreamLiveData = StreamStartedData | StreamEndedData | StreamUpdatedData;
+
+export function buildStreamSocketPayload(
+  type: string,
+  data: StreamLiveData
+): Record<string, unknown> {
+  const { communityId, streamId } = data;
+  if (type === STREAM_STARTED) {
+    const d = data as StreamStartedData;
+    const startedAt = d.startedAt ?? d.livedAt ?? Date.now();
+    return {
+      communityId,
+      livestreamId: streamId,
+      streamId,
+      title: d.title ?? null,
+      ...(d.sourceType ? { sourceType: d.sourceType } : {}),
+      sourceUrl: d.sourceUrl ?? null,
+      hlsUrl: d.hlsUrl ?? null,
+      flvUrl: d.flvUrl ?? null,
+      dashUrl: d.dashUrl ?? null,
+      youtubeVideoId: d.youtubeVideoId ?? null,
+      status: d.status ?? "LIVE",
+      livedAt: startedAt,
+      startedAt,
+      hasActiveLivestream: true,
+      liveStreamCount: d.liveStreamCount ?? 1,
+    };
+  }
+  if (type === STREAM_ENDED) {
+    const d = data as StreamEndedData;
+    return {
+      communityId,
+      streamId,
+      liveStreamCount: d.liveStreamCount ?? 0,
+    };
+  }
+  return { communityId, streamId };
+}
 
 export async function startStreamLiveConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URL);
@@ -128,7 +167,7 @@ export async function startStreamLiveConsumer(): Promise<void> {
         return;
       }
 
-      const { communityId, streamId } = data;
+      const { communityId } = data;
       const isStarted = type === STREAM_STARTED;
       const isEnded = type === STREAM_ENDED;
       const socketEvent = isStarted
@@ -155,32 +194,7 @@ export async function startStreamLiveConsumer(): Promise<void> {
       // Fan out to every active member's personal channel. Each publish is
       // independently guarded — a single user channel failure must not abort
       // the rest of the fan-out.
-      let socketPayload: Record<string, unknown>;
-      if (isStarted) {
-        const startedData = data as StreamStartedData;
-        const startedAt =
-          startedData.startedAt ?? startedData.livedAt ?? Date.now();
-        socketPayload = {
-          communityId,
-          livestreamId: streamId,
-          streamId,
-          title: startedData.title ?? null,
-          ...(startedData.sourceType
-            ? { sourceType: startedData.sourceType }
-            : {}),
-          sourceUrl: startedData.sourceUrl ?? null,
-          hlsUrl: startedData.hlsUrl ?? null,
-          flvUrl: startedData.flvUrl ?? null,
-          dashUrl: startedData.dashUrl ?? null,
-          youtubeVideoId: startedData.youtubeVideoId ?? null,
-          status: startedData.status ?? "LIVE",
-          livedAt: startedAt,
-          startedAt,
-          hasActiveLivestream: true,
-        };
-      } else {
-        socketPayload = { communityId, streamId };
-      }
+      const socketPayload = buildStreamSocketPayload(type, data);
 
       await Promise.allSettled(
         memberIds.map((memberId) =>

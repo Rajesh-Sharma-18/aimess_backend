@@ -48,6 +48,9 @@ function makeService(
     memberIds?: string[];
     /** Non-null → the dedup pre-check finds an existing row (redelivery/replay). */
     findOneResult?: unknown;
+    /** Non-null → the affected user has an active mute-session message to retract. */
+    activeMutedMessageId?: string | null;
+    deleteForAllResult?: unknown;
   } = {}
 ) {
   // createSystemMessage echoes the fallbackText it received so assertions can
@@ -64,10 +67,18 @@ function makeService(
   );
   const findOne = jest.fn(async () => opts.findOneResult ?? null);
   const deletePersonalJoinMessages = jest.fn(async () => [] as string[]);
+  const findLatestActiveMutedMessageId = jest.fn(
+    async () => opts.activeMutedMessageId ?? null
+  );
+  const deleteForAll = jest.fn(
+    async () => opts.deleteForAllResult ?? { id: "msg-1" }
+  );
   const messageRepo = {
     findOne,
     createSystemMessage,
     deletePersonalJoinMessages,
+    findLatestActiveMutedMessageId,
+    deleteForAll,
   };
 
   const roomRepo = {
@@ -107,6 +118,8 @@ function makeService(
     service,
     createSystemMessage,
     deletePersonalJoinMessages,
+    findLatestActiveMutedMessageId,
+    deleteForAll,
     memberRepo,
     redis,
   };
@@ -740,6 +753,60 @@ describe("CommunitySystemMessageService — single active join line per user (re
 
     expect(h.deletePersonalJoinMessages).not.toHaveBeenCalled();
     expect(h.createSystemMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("CommunitySystemMessageService — retractPersonalMuteMessage (unmute retracts the mute line)", () => {
+  it("finds and hard-hides the current mute session's message, then publishes a tombstone ONLY on the affected user's own channel", async () => {
+    const h = makeService({ activeMutedMessageId: "muted-msg-1" });
+
+    await h.service.retractPersonalMuteMessage({
+      communityId: COMMUNITY_ID,
+      userId: TARGET,
+    });
+
+    expect(h.findLatestActiveMutedMessageId).toHaveBeenCalledWith({
+      roomId: COMMUNITY_ID,
+      userId: TARGET,
+    });
+    expect(h.deleteForAll).toHaveBeenCalledWith("muted-msg-1");
+
+    // Tombstone delivered ONLY to the affected user's personal channel —
+    // never the community room, so no other member ever sees it either.
+    expect(h.redis.publish).toHaveBeenCalledTimes(1);
+    const [channel, raw] = h.redis.publish.mock.calls[0] as [string, string];
+    expect(channel).toBe(`user:${TARGET}`);
+    expect(channel).not.toBe(`community:${COMMUNITY_ID}`);
+    const parsed = JSON.parse(raw) as {
+      event: string;
+      data: { messageId: string };
+    };
+    expect(parsed.event).toBe("community:message:deleted");
+    expect(parsed.data.messageId).toBe("muted-msg-1");
+  });
+
+  it("is a no-op when there is no active mute-session message to retract", async () => {
+    const h = makeService({ activeMutedMessageId: null });
+
+    await h.service.retractPersonalMuteMessage({
+      communityId: COMMUNITY_ID,
+      userId: TARGET,
+    });
+
+    expect(h.deleteForAll).not.toHaveBeenCalled();
+    expect(h.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("swallows a repository failure — best-effort, never throws", async () => {
+    const h = makeService({ activeMutedMessageId: "muted-msg-1" });
+    h.deleteForAll.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(
+      h.service.retractPersonalMuteMessage({
+        communityId: COMMUNITY_ID,
+        userId: TARGET,
+      })
+    ).resolves.toBeUndefined();
   });
 });
 

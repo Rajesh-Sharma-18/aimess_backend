@@ -9,9 +9,26 @@ import {
   shouldCountInUnread,
   UNREAD_COUNTABLE_RAW_MATCH,
 } from "../lib/unread-count.js";
+import {
+  refreshQuoteDataForParent,
+  type QuoteRefreshPatch,
+} from "../lib/quote-refresh.js";
 
 export class GroupMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
+
+  /** Refresh `quoteData.preview`/`.isDeleted` on every reply to `parentMessageId`. */
+  async refreshReplyQuotes(
+    parentMessageId: string,
+    patch: QuoteRefreshPatch
+  ): Promise<void> {
+    await refreshQuoteDataForParent(
+      this.prisma,
+      "group_messages",
+      parentMessageId,
+      patch
+    );
+  }
 
   async create(data: {
     roomId: string;
@@ -52,6 +69,7 @@ export class GroupMessageRepository {
   }
 
   async findById(messageId: string): Promise<GroupMessage | null> {
+    if (!/^[0-9a-f]{24}$/i.test(messageId)) return null;
     return this.prisma.groupMessage.findUnique({ where: { id: messageId } });
   }
 

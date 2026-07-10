@@ -23,6 +23,7 @@ export interface GenerateDownloadUrlGrpcParams {
   requesterId: string;
 }
 export interface MediaObjectDto {
+  mediaId: string;
   fileId: string;
   objectKey: string;
   fileName: string;

@@ -35,6 +35,7 @@ export const sendCommunityMessageSchema = z
       .object({
         files: z.array(
           z.object({
+            mediaId: z.string().min(1).max(100).optional(),
             url: z.string().url(),
             key: z.string(),
             mime: z.string(),
@@ -81,6 +82,7 @@ export const sendCommunityMessageBodySchema = z
       .object({
         files: z.array(
           z.object({
+            mediaId: z.string().min(1).max(100).optional(),
             url: z.string().url().optional(),
             objectKey: z.string().optional(),
             key: z.string().optional(),

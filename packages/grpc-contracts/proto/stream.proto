@@ -10,7 +10,7 @@ service StreamService {
   // Backs community-service `isLive` on GET /communities/mine (fail-open).
   rpc GetActiveStreamsByCommunityIds (GetActiveStreamsRequest) returns (GetActiveStreamsResponse);
   // Bulk: LIVE-only stream count per community. Backs
-  // `activeLivestreamCount`/`hasActiveLivestream` on GET /communities/mine and
+  // `liveStreamCount`/`hasActiveLivestream` on GET /communities/mine and
   // the chat-service community rooms list (fail-open). Superset of
   // GetActiveStreamsByCommunityIds (count > 0 ⇒ live).
   rpc GetActiveStreamCountsByCommunityIds (GetActiveStreamCountsRequest) returns (GetActiveStreamCountsResponse);

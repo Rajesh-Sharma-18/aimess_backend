@@ -1339,8 +1339,14 @@ const communityMessages = {
       "Dual-mode message endpoint. The query param determines which mode is active — **provide only one of before_ts / after_ts**.\n\n" +
       "**Access control (Telegram-style):**\n" +
       "- **PUBLIC** communities: any authenticated user can read message history — membership is NOT required (guests can browse before joining).\n" +
-      "- **PRIVATE** communities: only ACTIVE members can read; non-members and banned users get `403 CHAT_NOT_A_MEMBER`.\n\n" +
-      "**Personal system messages:** SYSTEM messages with `isPersonal: true` (e.g. COMMUNITY_JOINED, 'You joined this community') are returned ONLY to the target user — other members never see them in this history, even in PUBLIC communities.\n\n" +
+      "- **PRIVATE** communities: only ACTIVE (or BANNED, see below) members can read; other non-members get `403 CHAT_NOT_A_MEMBER`.\n" +
+      "- **BANNED members**: keep read access to their **pre-ban history only** — every message/edit/reaction/deletion created " +
+      "at or before their ban timestamp remains visible (scroll, jump-to-message, and incremental-sync all honor this cutoff), " +
+      "but anything created after the ban is never returned, even on rejoin/resync. This applies in both PUBLIC and PRIVATE " +
+      "communities and replaces the previous behavior where a banned member was rejected outright.\n\n" +
+      "**Personal system messages:** SYSTEM messages with `isPersonal: true` (e.g. COMMUNITY_JOINED, 'You joined this community', " +
+      "MEMBER_BANNED 'You were banned from this community.', MEMBER_MUTED, MEMBER_UNMUTED) are returned ONLY to the target user " +
+      "— other members never see them in this history, even in PUBLIC communities.\n\n" +
       "**Scroll / history mode** (`before_ts` or neither):\n" +
       "- `before_ts` → messages with `createdAt <= before_ts`, newest-first.\n" +
       "- Omit both for the newest page.\n" +
@@ -1889,6 +1895,11 @@ const communityRoomSync = {
       "### Tombstones",
       "Deleted messages are **included** (`isDeleted: true`). The client should",
       "remove them from local storage when it sees `isDeleted: true`.",
+      "",
+      "### Banned members",
+      "A BANNED member may still call this endpoint but only ever catches up on",
+      "events at or before their ban timestamp — anything created after the ban",
+      "is never returned, even across multiple sync pages.",
       "",
       "**Rate limit:** 120 requests / min per user.",
     ].join("\n"),

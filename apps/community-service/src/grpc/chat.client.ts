@@ -73,6 +73,62 @@ export interface ChatClient {
     userId: string;
     communityIds: string[];
   }): Promise<CommunityChatSummary[]>;
+  communityCatchup(params: {
+    roomId: string;
+    requesterId: string;
+    sinceId: string;
+    limit: number;
+    sinceTs: number;
+  }): Promise<unknown>;
+  reactToCommunityMessage(params: {
+    messageId: string;
+    communityId: string;
+    userId: string;
+    emoji: string;
+  }): Promise<unknown>;
+  editCommunityMessage(params: {
+    messageId: string;
+    communityId: string;
+    userId: string;
+    text: string;
+  }): Promise<unknown>;
+  pinCommunityMessage(params: {
+    messageId: string;
+    communityId: string;
+    roomId: string;
+    userId: string;
+  }): Promise<unknown>;
+  unpinCommunityMessage(params: {
+    messageId: string;
+    communityId: string;
+    roomId: string;
+    userId: string;
+  }): Promise<unknown>;
+  markCommunityMessageRead(params: {
+    communityId: string;
+    roomId: string;
+    readerId: string;
+    upToMessageId: string;
+  }): Promise<unknown>;
+  getCommunityMessageReactions(params: {
+    messageId: string;
+    communityId: string;
+    requesterId: string;
+  }): Promise<unknown>;
+  forwardCommunityMessage(params: {
+    sourceMessageId: string;
+    sourceCommunityId: string;
+    targetCommunityId: string;
+    targetRoomId: string;
+    senderId: string;
+    clientMessageId: string;
+  }): Promise<unknown>;
+  markCommunityMessageDelivered(params: {
+    communityId: string;
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<unknown>;
   bulkMarkCommunityRead(params: {
     userId: string;
     communityIds: string[];
@@ -336,6 +392,88 @@ export function createChatClient(): ChatClient {
   // a delete must fail LOUDLY so the caller acks a retryable SERVICE_ERROR
   // rather than silently reporting success for a message that still exists.
 
+  const catchupBreaker = makeBreaker(
+    "chat.communityCatchup",
+    (p: {
+      roomId: string;
+      requesterId: string;
+      sinceId: string;
+      limit: number;
+      sinceTs: number;
+    }) => makeGrpcCall<unknown, unknown>(client, "communityCatchup", p)
+  );
+  const reactBreaker = makeBreaker(
+    "chat.reactToCommunityMessage",
+    (p: {
+      messageId: string;
+      communityId: string;
+      userId: string;
+      emoji: string;
+    }) => makeGrpcCall<unknown, unknown>(client, "reactToCommunityMessage", p)
+  );
+  const editMessageBreaker = makeBreaker(
+    "chat.editCommunityMessage",
+    (p: {
+      messageId: string;
+      communityId: string;
+      userId: string;
+      text: string;
+    }) => makeGrpcCall<unknown, unknown>(client, "editCommunityMessage", p)
+  );
+  const pinMessageBreaker = makeBreaker(
+    "chat.pinCommunityMessage",
+    (p: {
+      messageId: string;
+      communityId: string;
+      roomId: string;
+      userId: string;
+    }) => makeGrpcCall<unknown, unknown>(client, "pinCommunityMessage", p)
+  );
+  const unpinMessageBreaker = makeBreaker(
+    "chat.unpinCommunityMessage",
+    (p: {
+      messageId: string;
+      communityId: string;
+      roomId: string;
+      userId: string;
+    }) => makeGrpcCall<unknown, unknown>(client, "unpinCommunityMessage", p)
+  );
+  const markReadBreaker = makeBreaker(
+    "chat.markCommunityMessageRead",
+    (p: {
+      communityId: string;
+      roomId: string;
+      readerId: string;
+      upToMessageId: string;
+    }) => makeGrpcCall<unknown, unknown>(client, "markCommunityMessageRead", p)
+  );
+  const getReactionsBreaker = makeBreaker(
+    "chat.getCommunityMessageReactions",
+    (p: { messageId: string; communityId: string; requesterId: string }) =>
+      makeGrpcCall<unknown, unknown>(client, "getCommunityMessageReactions", p)
+  );
+  const forwardMessageBreaker = makeBreaker(
+    "chat.forwardCommunityMessage",
+    (p: {
+      sourceMessageId: string;
+      sourceCommunityId: string;
+      targetCommunityId: string;
+      targetRoomId: string;
+      senderId: string;
+      clientMessageId: string;
+    }) => makeGrpcCall<unknown, unknown>(client, "forwardCommunityMessage", p)
+  );
+  const markDeliveredBreaker = makeBreaker(
+    "chat.markCommunityMessageDelivered",
+    (p: {
+      communityId: string;
+      roomId: string;
+      recipientId: string;
+      upToMessageId: string;
+    }) =>
+      makeGrpcCall<unknown, unknown>(client, "markCommunityMessageDelivered", p)
+  );
+
   return {
     getCommunityChatSummaries: async (params) => {
       if (!params.communityIds.length) return [];
@@ -482,6 +620,17 @@ export function createChatClient(): ChatClient {
         deleteType: res.deleteType ?? "",
       };
     },
+
+    communityCatchup: (params) => catchupBreaker.fire(params),
+    reactToCommunityMessage: (params) => reactBreaker.fire(params),
+    editCommunityMessage: (params) => editMessageBreaker.fire(params),
+    pinCommunityMessage: (params) => pinMessageBreaker.fire(params),
+    unpinCommunityMessage: (params) => unpinMessageBreaker.fire(params),
+    markCommunityMessageRead: (params) => markReadBreaker.fire(params),
+    getCommunityMessageReactions: (params) => getReactionsBreaker.fire(params),
+    forwardCommunityMessage: (params) => forwardMessageBreaker.fire(params),
+    markCommunityMessageDelivered: (params) =>
+      markDeliveredBreaker.fire(params),
   };
 }
 

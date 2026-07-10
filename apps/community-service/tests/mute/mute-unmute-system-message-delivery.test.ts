@@ -15,10 +15,15 @@
  */
 import { communityRepository } from "../../src/repositories/community.repository.js";
 import { communityService } from "../../src/services/community.service.js";
-import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
+import {
+  publishCommunitySystemMessageForChatSafe,
+  publishCommunityMemberMuteRetractedForChatSafe,
+} from "../../src/messaging/publish-community-chat.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const sysMsg = publishCommunitySystemMessageForChatSafe as jest.Mock;
+const muteRetracted =
+  publishCommunityMemberMuteRetractedForChatSafe as jest.Mock;
 
 const CID = "a".repeat(24);
 const CALLER = "11111111-1111-4111-8111-111111111111";
@@ -89,5 +94,21 @@ describe("communityService.muteMember/unmuteMember — PERSONAL system message d
     expect(payload.systemMessageType).toBe("MEMBER_UNMUTED");
     expect(payload.visibleToUserId).toBe(TARGET);
     expect(payload.metadata.targetUserId).toBe(TARGET);
+  });
+
+  it("unmuteMember also retracts the current mute session's PERSONAL MEMBER_MUTED line — the mute and unmute lines never stack together", async () => {
+    await communityService.unmuteMember(CID, CALLER, TARGET);
+
+    expect(muteRetracted).toHaveBeenCalledTimes(1);
+    expect(muteRetracted).toHaveBeenCalledWith({
+      communityId: CID,
+      userId: TARGET,
+    });
+  });
+
+  it("muteMember does NOT retract anything — retraction only fires on unmute", async () => {
+    await communityService.muteMember(CID, CALLER, TARGET, 60, "spam");
+
+    expect(muteRetracted).not.toHaveBeenCalled();
   });
 });
