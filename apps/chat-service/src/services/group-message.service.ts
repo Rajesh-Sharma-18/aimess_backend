@@ -20,6 +20,7 @@ import {
   toggleStoredReaction,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
+import { convertMessageToPreview } from "./message-preview.service.js";
 import { assertGroupMember } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
@@ -143,16 +144,15 @@ export class GroupMessageService {
         params.parentMessageId
       );
       if (originalMsg) {
-        const origContent = (originalMsg.content ?? {}) as Record<
-          string,
-          unknown
-        >;
         quoteData = {
           messageId: originalMsg.id,
           senderId: originalMsg.senderId,
           senderName: originalMsg.senderName,
           messageType: normalizeMessageType(originalMsg.messageType),
-          preview: (origContent.text as string) || "",
+          preview: convertMessageToPreview(
+            originalMsg.messageType,
+            originalMsg.content
+          ),
           isDeleted: Boolean(originalMsg.isDeleted),
         };
       }

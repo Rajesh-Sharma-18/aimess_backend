@@ -357,8 +357,15 @@ export class CommunityMessageService {
       );
       if (originalMsg) {
         quoteData = {
-          message: originalMsg.message,
+          messageId: originalMsg.id,
+          senderId: originalMsg.sentBy,
           senderName: originalMsg.senderName,
+          messageType: normalizeMessageType(originalMsg.messageType),
+          preview: convertMessageToPreview(
+            originalMsg.messageType,
+            this.messagePreviewContent(originalMsg)
+          ),
+          isDeleted: Boolean(originalMsg.deletedForAll),
         };
       }
     }

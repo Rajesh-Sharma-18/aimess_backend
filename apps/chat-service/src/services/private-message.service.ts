@@ -20,6 +20,7 @@ import {
   toggleStoredReaction,
   toWireMessage,
 } from "../lib/chat-message.serializer.js";
+import { convertMessageToPreview } from "./message-preview.service.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
@@ -142,9 +143,10 @@ export class PrivateMessageService {
             (senderSnap.memberId as string) ||
             "",
           messageType: normalizeMessageType(originalMsg.messageType),
-          preview:
-            ((originalMsg.content as Record<string, unknown> | null)
-              ?.text as string) || "",
+          preview: convertMessageToPreview(
+            originalMsg.messageType,
+            originalMsg.content
+          ),
           isDeleted: Boolean(originalMsg.isDeleted),
         };
       }
