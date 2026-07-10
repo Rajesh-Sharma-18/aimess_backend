@@ -23,7 +23,7 @@ export interface StreamCountsClient {
 
 /**
  * Outbound gRPC client to stream-service for the community rooms-list livestream
- * enrichment (`hasActiveLivestream` / `activeLivestreamCount`). Wrapped in an
+ * enrichment (`hasActiveLivestream` / `liveStreamCount`). Wrapped in an
  * opossum breaker like the other cross-service clients; fail-open so a
  * stream-service outage degrades to "no live streams", never a 500 on the list.
  */

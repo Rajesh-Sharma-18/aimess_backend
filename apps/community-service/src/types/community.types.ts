@@ -79,7 +79,7 @@ export type CommunityData = {
   /** Spec-aligned alias of `isLive` — true when ≥1 livestream is LIVE. */
   hasActiveLivestream: boolean;
   /** Number of currently-LIVE streams (equals liveStreams.length, clamped 0–5). */
-  activeLivestreamCount: number;
+  liveStreamCount: number;
   /** Currently-LIVE streams for this community (the active livestreams). Empty when none. */
   liveStreams: LiveStreamSummary[];
   /** ACTIVE = open; SUSPENDED = closed by admin — clients show a read-only banner. */
@@ -291,7 +291,7 @@ export type CommunityListItem = {
   /** Spec-aligned alias of `isLive` — true when ≥1 livestream is LIVE. */
   hasActiveLivestream: boolean;
   /** Number of currently-LIVE streams (0–5). */
-  activeLivestreamCount: number;
+  liveStreamCount: number;
   /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
   /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */
@@ -353,7 +353,7 @@ export type CommunityDiscoverItem = {
   /** Spec-aligned alias of `isLive` — true when ≥1 livestream is LIVE. */
   hasActiveLivestream: boolean;
   /** Number of currently-LIVE streams (0–5). */
-  activeLivestreamCount: number;
+  liveStreamCount: number;
   /** ACTIVE = open; SUSPENDED = closed by platform admin (read-only banner). */
   moderationStatus: CommunityModerationStatus;
   /** Owner lifecycle status: ACTIVE = open; CLOSED = owner closed (read-only). */

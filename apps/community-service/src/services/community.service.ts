@@ -888,13 +888,13 @@ const MAX_ACTIVE_LIVESTREAMS = 5;
 function livestreamFields(liveCount: number): {
   isLive: boolean;
   hasActiveLivestream: boolean;
-  activeLivestreamCount: number;
+  liveStreamCount: number;
 } {
   const count = Math.min(Math.max(0, liveCount), MAX_ACTIVE_LIVESTREAMS);
   return {
     isLive: count > 0,
     hasActiveLivestream: count > 0,
-    activeLivestreamCount: count,
+    liveStreamCount: count,
   };
 }
 
@@ -1462,7 +1462,7 @@ const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
 
 /**
  * Bulk LIVE-only stream count per community for the mine + discover lists. One
- * batched gRPC call backs both `isLive` (count > 0) and `activeLivestreamCount`.
+ * batched gRPC call backs both `isLive` (count > 0) and `liveStreamCount`.
  * Degrades to an empty map (→ count 0, isLive false) on stream-service failure.
  */
 async function fetchLiveStreamCounts(

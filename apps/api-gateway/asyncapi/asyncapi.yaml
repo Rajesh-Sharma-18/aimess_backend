@@ -3429,7 +3429,7 @@ components:
     CommunityStreamStarted:
       name: "community:stream:started"
       title: "community:stream:started"
-      summary: "A livestream went LIVE in a community. Emitted by stream-service to community:<id> AND relayed to the lightweight community-typing:<id> room (auto-joined by every member) so the live banner / list badge appears WITHOUT opening the chat. Additive over the legacy { communityId, streamId, title, hlsUrl } shape. activeLivestreamCount is the LIVE-only count after this stream went live (capped at 5); hasActiveLivestream is always true here."
+      summary: "A livestream went LIVE in a community. Emitted by stream-service to community:<id> AND relayed to the lightweight community-typing:<id> room (auto-joined by every member) so the live banner / list badge appears WITHOUT opening the chat. Additive over the legacy { communityId, streamId, title, hlsUrl } shape. liveStreamCount is the LIVE-only count after this stream went live (capped at 5); hasActiveLivestream is always true here."
       payload: { $ref: "#/components/schemas/CommunityStreamStartedPayload" }
       examples:
         - name: A member started a livestream
@@ -3451,12 +3451,12 @@ components:
             status: LIVE
             startedAt: 1750000400000
             livedAt: 1750000400000
-            activeLivestreamCount: 1
+            liveStreamCount: 1
             hasActiveLivestream: true
     CommunityStreamEnded:
       name: "community:stream:ended"
       title: "community:stream:ended"
-      summary: "A livestream ENDED in a community. Same fan-out as community:stream:started. Unlike the legacy behavior (fired only when the LAST stream ended), this fires on EVERY end carrying the updated count — drive banner visibility off hasActiveLivestream/activeLivestreamCount, NOT the event's presence. hasActiveLivestream stays true while other streams remain live and flips false only when the final stream ends (activeLivestreamCount === 0)."
+      summary: "A livestream ENDED in a community. Same fan-out as community:stream:started. Unlike the legacy behavior (fired only when the LAST stream ended), this fires on EVERY end carrying the updated count — drive banner visibility off hasActiveLivestream/liveStreamCount, NOT the event's presence. hasActiveLivestream stays true while other streams remain live and flips false only when the final stream ends (liveStreamCount === 0)."
       payload: { $ref: "#/components/schemas/CommunityStreamEndedPayload" }
       examples:
         - name: The last livestream ended
@@ -3472,7 +3472,7 @@ components:
             endedAt: 1750008500000
             duration: "1h 24m"
             durationSeconds: 5040
-            activeLivestreamCount: 0
+            liveStreamCount: 0
             hasActiveLivestream: false
     CommunityMetaUpdated:
       name: "community:meta:updated"
@@ -6957,7 +6957,7 @@ components:
         livedAt:
           type: integer
           description: "REST-compatible alias of startedAt, in epoch ms."
-        activeLivestreamCount:
+        liveStreamCount:
           type: integer
           description: "LIVE-only count after this stream went live (0–5, capped)."
         hasActiveLivestream: { type: boolean, enum: [true] }
@@ -6976,12 +6976,12 @@ components:
           status,
           startedAt,
           livedAt,
-          activeLivestreamCount,
+          liveStreamCount,
           hasActiveLivestream,
         ]
     CommunityStreamEndedPayload:
       type: object
-      description: "Server → client. A livestream ENDED in a community. Fires on EVERY end with the updated count — drive banner visibility off hasActiveLivestream/activeLivestreamCount."
+      description: "Server → client. A livestream ENDED in a community. Fires on EVERY end with the updated count — drive banner visibility off hasActiveLivestream/liveStreamCount."
       properties:
         communityId: { type: string }
         livestreamId: { type: string }
@@ -7001,7 +7001,7 @@ components:
             description: 'Human-readable runtime, e.g. "1h 24m".',
           }
         durationSeconds: { type: integer }
-        activeLivestreamCount:
+        liveStreamCount:
           type: integer
           description: "Remaining LIVE count (0 when the final stream ended)."
         hasActiveLivestream:
@@ -7017,7 +7017,7 @@ components:
           endedAt,
           duration,
           durationSeconds,
-          activeLivestreamCount,
+          liveStreamCount,
           hasActiveLivestream,
         ]
     CommunityMetaDto:
