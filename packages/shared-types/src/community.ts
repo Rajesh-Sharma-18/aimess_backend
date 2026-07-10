@@ -131,7 +131,7 @@ export interface CommunityMemberUnmutedSocketPayload {
  * lightweight `community-typing:<id>` room (auto-joined by every member) so the
  * live banner / list badge appears for connected members who have NOT opened the
  * chat. Timestamps are epoch ms. `status` stays "LIVE" (the canonical stream enum
- * value). `activeLivestreamCount` is the community's LIVE-only count AFTER this
+ * value). `liveStreamCount` is the community's LIVE-only count AFTER this
  * stream went live, clamped to the 5-stream cap; `hasActiveLivestream` is always
  * true here. `sourceType`/`sourceUrl` mirror the REST stream read model so
  * clients can distinguish embedded YouTube/URL streams from SRS-backed camera or
@@ -166,7 +166,8 @@ export interface CommunityStreamStartedSocketPayload {
   startedAt: number; // epoch ms
   /** REST-compatible alias of `startedAt`. */
   livedAt: number; // epoch ms
-  activeLivestreamCount: number;
+  /** LIVE-only count after this stream went live, clamped to the 5-stream cap. */
+  liveStreamCount: number;
   hasActiveLivestream: true;
 }
 
@@ -175,9 +176,9 @@ export interface CommunityStreamStartedSocketPayload {
  * Same fan-out as {@link CommunityStreamStartedSocketPayload}. Unlike the legacy
  * behavior (which only fired when the LAST stream ended), this now fires on EVERY
  * stream end carrying the updated count — drive banner visibility off
- * `hasActiveLivestream`/`activeLivestreamCount`, NOT the mere presence of the
+ * `hasActiveLivestream`/`liveStreamCount`, NOT the mere presence of the
  * event. `hasActiveLivestream` stays true while OTHER streams remain live and
- * flips false only when the final stream ends (`activeLivestreamCount === 0`).
+ * flips false only when the final stream ends (`liveStreamCount === 0`).
  */
 export interface CommunityStreamEndedSocketPayload {
   communityId: string;
@@ -194,7 +195,8 @@ export interface CommunityStreamEndedSocketPayload {
   /** Human-readable runtime, e.g. "1h 24m". */
   duration: string;
   durationSeconds: number;
-  activeLivestreamCount: number;
+  /** Remaining LIVE count (0 when the final stream ended). */
+  liveStreamCount: number;
   hasActiveLivestream: boolean;
 }
 
@@ -213,7 +215,7 @@ export interface CommunityStreamUpdatedSocketPayload {
   description?: string;
   thumbnail?: string | null;
   updatedAt: number; // epoch ms
-  activeLivestreamCount: number;
+  liveStreamCount: number;
   hasActiveLivestream: boolean;
 }
 

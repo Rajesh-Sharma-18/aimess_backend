@@ -140,12 +140,16 @@ export const mediaService = {
       // storage key to its owner + resource + classification so downloads can be
       // authorized against resource membership and orphans cleaned up. A registry
       // failure must never break URL issuance — isolated in its own try/catch.
+      // The registry row's own `id` (stable Mongo ObjectId, keyed by the unique
+      // objectKey — see mediaFileRepository.register) becomes the durable
+      // `mediaId` surfaced to clients, independent of objectKey/url.
+      let mediaId: string | null = null;
       try {
         const resourceType = resolveResourceType(
           params.category,
           params.contentType
         );
-        await mediaFileRepository.register({
+        const registered = await mediaFileRepository.register({
           objectKey: result.objectKey,
           bucket: def.bucket,
           uploadCategory: params.category,
@@ -158,6 +162,7 @@ export const mediaService = {
           size: params.contentLength,
           scanStatus: "PENDING",
         });
+        mediaId = registered.id;
       } catch (err) {
         logger.warn("media registry: register on upload-url failed", {
           objectKey: result.objectKey,
@@ -172,6 +177,7 @@ export const mediaService = {
             result,
             contentType: params.contentType,
             fileName: result.fileName,
+            mediaId,
           }),
           downloadUrl: download.downloadUrl,
           downloadUrlExpiresIn: download.downloadUrlExpiresIn,
@@ -393,11 +399,19 @@ export const mediaService = {
       throw new ForbiddenError("MEDIA_SCAN_PENDING");
     }
 
+    // Legacy/unregistered objects (uploaded before the registry existed, or a
+    // failed best-effort register) simply have no MediaFile row — mediaId
+    // gracefully falls back to null rather than breaking the download.
+    const registered = await mediaFileRepository.findByObjectKey(
+      params.objectKey
+    );
+
     const media = await toMediaObject({
       bucket: def.bucket,
       stored: params.objectKey,
       prefixes: [def.keyPrefix],
       strategy: mediaUrlStrategy,
+      mediaId: registered?.id ?? null,
     });
 
     // Safe-serving: force a download (Content-Disposition: attachment) for

@@ -34,6 +34,10 @@ import {
   toggleStoredReaction,
   reactionUserIdMap,
   toWireMessage,
+  buildCanonicalQuote,
+  buildReplyQuoteSnapshot,
+  buildReplyPreviewText,
+  type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import {
   convertMessageToPreview,
@@ -59,6 +63,8 @@ import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
   attachAlbumMessages,
   markAlbumIdempotentReplay,
+  resolveParentMessageId,
+  resolveReplyAttachmentCount,
 } from "../lib/album-messages.js";
 import { splitCommunityMediaAlbum } from "../lib/split-media-album.js";
 import {
@@ -66,6 +72,7 @@ import {
   urlFromMap,
   applyUrlMapToFiles,
   fileMediaKey,
+  resolveQuoteThumbnail,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { shouldCountInUnread } from "../lib/unread-count.js";
@@ -350,16 +357,36 @@ export class CommunityMessageService {
       params.clientMessageId ?? null
     );
 
-    let quoteData: Record<string, unknown> | undefined;
-    if (params.parentMessageId) {
-      const originalMsg = await this.messageRepo.findById(
-        params.parentMessageId
-      );
+    // Validate BEFORE the lookup query (not just before persistence) — an
+    // invalid/foreign-shaped id (albumId/mediaId/attachmentId/clientMessageId,
+    // anything not a 24-hex ObjectId) must never reach `findById`.
+    const resolvedParentId = resolveParentMessageId(params.parentMessageId);
+    let quoteData: CanonicalQuote | undefined;
+    if (resolvedParentId) {
+      const originalMsg = await this.messageRepo.findById(resolvedParentId);
       if (originalMsg) {
-        quoteData = {
-          message: originalMsg.message,
-          senderName: originalMsg.senderName,
-        };
+        // Album sends are split one-row-per-file (lib/split-media-album.ts),
+        // so the parent row's own attachments can never reveal the true
+        // album size — look up its sibling batch for IMAGE/VIDEO parents.
+        const attachmentCountOverride = ["IMAGE", "VIDEO"].includes(
+          normalizeMessageType(originalMsg.messageType)
+        )
+          ? await resolveReplyAttachmentCount(
+              this.messageRepo,
+              params.roomId,
+              originalMsg.sentBy,
+              originalMsg
+            )
+          : undefined;
+        quoteData = buildReplyQuoteSnapshot({
+          messageId: originalMsg.id,
+          senderId: originalMsg.sentBy,
+          senderName: originalMsg.senderName ?? "",
+          messageType: originalMsg.messageType,
+          content: this.messagePreviewContent(originalMsg),
+          isDeleted: Boolean(originalMsg.deletedForAll),
+          attachmentCountOverride,
+        });
       }
     }
 
@@ -376,7 +403,7 @@ export class CommunityMessageService {
         senderAvatar: params.senderAvatar,
         message: part.message,
         messageType: normalizeMessageType(part.messageType),
-        parentMessageId: params.parentMessageId || null,
+        parentMessageId: resolvedParentId,
         clientMessageId: part.clientMessageId || null,
         sequenceNumber,
         ...(part.attachments.length ? { attachments: part.attachments } : {}),
@@ -748,6 +775,10 @@ export class CommunityMessageService {
           if (key) keys.push(key);
         }
       }
+      const quote = m.quoteData as Record<string, unknown> | null;
+      if (typeof quote?.thumbnail === "string" && quote.thumbnail) {
+        keys.push(quote.thumbnail);
+      }
     }
     return resolveMediaUrlMap(keys);
   }
@@ -824,6 +855,13 @@ export class CommunityMessageService {
     viewerUserId?: string
   ): CommunityMessageWire {
     const wire = toWireMessage(m) as Record<string, unknown>;
+    // Normalize to the same CanonicalQuote shape the community socket
+    // broadcast already uses (`community:message:new`), so REST history/
+    // pagination/search/sync are byte-identical to the live event.
+    const canonicalQuote = buildCanonicalQuote(wire.quoteData);
+    wire.quoteData = urlMap
+      ? resolveQuoteThumbnail(canonicalQuote, urlMap)
+      : canonicalQuote;
     wire.countInUnread = shouldCountInUnread({
       messageType: m.messageType,
       systemMessageType: m.systemMessageType,
@@ -952,7 +990,7 @@ export class CommunityMessageService {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
     // 2. The community is PUBLIC (non-members can read history)
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -967,7 +1005,8 @@ export class CommunityMessageService {
         "older",
         params.limit,
         params.userId,
-        viewerIsActiveMember
+        viewerIsActiveMember,
+        bannedAtCutoff
       ),
       this.memberRepo.findReadStatusByRoom(params.roomId),
     ]);
@@ -1005,7 +1044,7 @@ export class CommunityMessageService {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
     // 2. The community is PUBLIC (non-members can read history)
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1023,12 +1062,14 @@ export class CommunityMessageService {
           inclusive: params.inclusive ?? false,
           limit: params.limit,
           viewerIsActiveMember,
+          readCutoff: bannedAtCutoff,
         }),
         this.memberRepo.findReadStatusByRoom(params.roomId),
         this.messageRepo.countTimeline({
           roomId: params.roomId,
           userId: params.userId,
           viewerIsActiveMember,
+          readCutoff: bannedAtCutoff,
         }),
       ]
     );
@@ -1137,7 +1178,7 @@ export class CommunityMessageService {
     // 2. The community is PUBLIC (non-members can read history)
     // Note: sync path is typically members-only (offline-first mobile), but we enforce
     // the same rules for consistency.
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1153,6 +1194,7 @@ export class CommunityMessageService {
       fromTs: params.fromTs,
       limit: params.limit,
       viewerIsActiveMember: member?.status === "active",
+      readCutoff: bannedAtCutoff,
     });
 
     const last = messages[messages.length - 1];
@@ -1293,7 +1335,7 @@ export class CommunityMessageService {
     messageId: string;
     limit: number;
   }): Promise<{ items: CommunityMessageWire[]; total: number }> {
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1311,6 +1353,7 @@ export class CommunityMessageService {
         anchorDate: anchor.createdAt,
         limit: params.limit,
         viewerIsActiveMember,
+        readCutoff: bannedAtCutoff,
       }),
       this.memberRepo.findReadStatusByRoom(params.roomId),
       // Use the history-visible count (same filter as the timeline) so `total`
@@ -1320,6 +1363,7 @@ export class CommunityMessageService {
         roomId: params.roomId,
         userId: params.userId,
         viewerIsActiveMember,
+        readCutoff: bannedAtCutoff,
       }),
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
@@ -1407,7 +1451,7 @@ export class CommunityMessageService {
     limit: number;
     skip?: number;
   }): Promise<CommunityMessageWire[]> {
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       params.roomId,
@@ -1419,7 +1463,8 @@ export class CommunityMessageService {
       params.limit,
       params.userId,
       isActiveMember(member),
-      params.skip ?? 0
+      params.skip ?? 0,
+      bannedAtCutoff
     );
     const urlMap = await this.resolveRowsMedia(rows);
     return rows.map((m) =>
@@ -1436,7 +1481,7 @@ export class CommunityMessageService {
     query: string,
     userId: string
   ): Promise<number> {
-    const { member } = await assertCommunityReadAccess(
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
       roomId,
@@ -1446,7 +1491,8 @@ export class CommunityMessageService {
       roomId,
       query,
       userId,
-      isActiveMember(member)
+      isActiveMember(member),
+      bannedAtCutoff
     );
   }
 
@@ -1533,7 +1579,26 @@ export class CommunityMessageService {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
-    return this.messageRepo.editMessage(params.messageId, params.content.text);
+    const updated = await this.messageRepo.editMessage(
+      params.messageId,
+      params.content.text
+    );
+    // Best-effort: keep every existing reply's `quoteData.preview` in sync with
+    // the new text (edits are TEXT-only, so preview === the new text verbatim).
+    this.messageRepo
+      .refreshReplyQuotes(params.messageId, {
+        preview: buildReplyPreviewText(
+          "TEXT",
+          { text: params.content.text },
+          0
+        ),
+      })
+      .catch((err: unknown) => {
+        logger.warn(
+          `CommunityMessageService|refreshReplyQuotes(edit) failed: ${String(err)}`
+        );
+      });
+    return updated;
   }
 
   /**
@@ -1820,10 +1885,21 @@ export class CommunityMessageService {
     // Audit trail (deletedForAllType/At/By) mirrors GroupMessage's tombstone —
     // previously this was a bare boolean with no record of who deleted it or
     // when, unlike Group's fully-audited equivalent.
-    return this.messageRepo.deleteForAll(messageId, {
+    const deleted = await this.messageRepo.deleteForAll(messageId, {
       deletedType,
       deletedBy: userId,
     });
+    // Best-effort: flip `quoteData.isDeleted` on every existing reply to this
+    // message so "Message deleted" shows up everywhere, not just for replies
+    // sent after this delete.
+    this.messageRepo
+      .refreshReplyQuotes(messageId, { isDeleted: true })
+      .catch((err: unknown) => {
+        logger.warn(
+          `CommunityMessageService|refreshReplyQuotes(delete) failed: ${String(err)}`
+        );
+      });
+    return deleted;
   }
 
   /**

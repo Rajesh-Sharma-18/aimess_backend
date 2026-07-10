@@ -29,7 +29,8 @@ export type UserProfileData = {
   googleEmail: string | null;
   /** Email of the linked Apple account; null when Apple is not linked or no email is available. Always present. */
   appleEmail: string | null;
-  dateOfBirth: string;
+  /** ISO date (YYYY-MM-DD); null when the user hasn't set a date of birth. */
+  dateOfBirth: string | null;
   gender: ProfileGenderValue | null;
   /** Presigned GET URL (private bucket). Refresh via profile API when expired. */
   avatarUrl: string | null;

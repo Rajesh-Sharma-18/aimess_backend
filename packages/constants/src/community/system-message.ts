@@ -91,10 +91,10 @@ export const SYSTEM_MESSAGE_VISIBILITY: Record<
   MEMBER_JOINED: "COMMUNITY",
   MEMBER_LEFT: "COMMUNITY",
   MEMBER_REMOVED: "COMMUNITY",
-  MEMBER_BANNED: "COMMUNITY",
+  MEMBER_BANNED: "PERSONAL",
   MEMBER_UNBANNED: "COMMUNITY",
   MEMBER_MUTED: "PERSONAL",
-  MEMBER_UNMUTED: "COMMUNITY",
+  MEMBER_UNMUTED: "PERSONAL",
   PINNED_MESSAGE: "COMMUNITY",
   UNPINNED_MESSAGE: "COMMUNITY",
   COMMUNITY_INVITE_CREATED: "COMMUNITY",
@@ -225,13 +225,20 @@ export function isPersonalJoinSessionType(
  *                    `community:member:removed`. No "{name} was removed" text must
  *                    appear in chat history, sync, lastActivity, or any API surface.
  *                    Moderation history lives in the audit log and backoffice panel.
- *  - MEMBER_BANNED:  Same policy as MEMBER_REMOVED — ban is also a silent
- *                    moderation action from the chat perspective. The banned user
- *                    receives a push notification (via notifications-service) and
- *                    the `community:membership:removed` socket event.
+ *  - MEMBER_BANNED:  Silent from the COMMUNITY-wide chat perspective (no one
+ *                    else sees a "{name} was banned" line), but — Telegram
+ *                    parity — the banned user themselves gets a PERSONAL
+ *                    ("You were banned from this community") line so it
+ *                    appears in their own message history. Not in this hidden
+ *                    list; see MEMBER_BANNED's PERSONAL visibility instead.
  *
- * MEMBER_UNBANNED / MEMBER_MUTED / MEMBER_UNMUTED are NOT hidden: they are
- * informational actions that members may legitimately see in context.
+ * MEMBER_UNBANNED is NOT hidden: it's an informational action that members may
+ * legitimately see in context. MEMBER_MUTED / MEMBER_UNMUTED are PERSONAL
+ * (Telegram parity: only the affected member ever sees "You are muted…" /
+ * "You were unmuted" — never broadcast, never visible to other members), and
+ * persist exactly like any other PERSONAL line (MEMBER_BANNED, COMMUNITY_JOINED):
+ * delivered live to the affected member's socket AND returned by history/sync/
+ * catch-up/list APIs for that same member on reload/reconnect.
  * Membership history also lives in the backoffice/audit log.
  *
  * SYSTEM-EVENT POLICY TABLE
@@ -239,16 +246,15 @@ export function isPersonalJoinSessionType(
  * |-------------------------|-----------------|----------------------|--------------------|
  * | Member joined           | No (HIDDEN)     | Yes (COMMUNITY_JOINED PERSONAL) | No    |
  * | Member removed by admin | No (HIDDEN)     | No (socket only)     | No                 |
- * | Member banned           | No (HIDDEN)     | No (socket only)     | No                 |
+ * | Member banned           | No (COMMUNITY)  | Yes (MEMBER_BANNED PERSONAL) | No       |
  * | Member left voluntarily | No (HIDDEN)     | No                   | No                 |
  * | Member role changed     | Yes (COMMUNITY) | Yes (ROLE_CHANGED_SELF PERSONAL) | Yes  |
- * | Member muted/unmuted    | Yes (COMMUNITY) | No                   | No                 |
+ * | Member muted/unmuted    | No (COMMUNITY)  | Yes (MEMBER_MUTED/UNMUTED PERSONAL) | No |
  */
 export const HIDDEN_SYSTEM_MESSAGE_TYPES = [
   "MEMBER_LEFT",
   "MEMBER_JOINED",
   "MEMBER_REMOVED",
-  "MEMBER_BANNED",
 ] as const satisfies readonly CommunitySystemMessageType[];
 
 /** True when the subtype must never appear in the chat timeline (see above). */

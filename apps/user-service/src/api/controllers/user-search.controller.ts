@@ -28,7 +28,9 @@ export const recordRecentUserSearch = asyncHandler(
 export const searchUsersUnified = asyncHandler(
   async (req: Request, res: Response) => {
     const query = req.query as unknown as UnifiedSearchQuery;
-    const result = await userSearchService.search(req.auth.userId, query);
+    const result = query.q?.trim()
+      ? await userSearchService.searchByQuery(req.auth.userId, query)
+      : await userSearchService.searchRecent(req.auth.userId);
     return res
       .status(HTTP_STATUS.OK)
       .json(new ApiResponse(result, t("USERS_FETCHED", req.locale)));

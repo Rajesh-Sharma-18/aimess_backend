@@ -33,6 +33,7 @@ jest.mock("@aimess/storage", () => {
     // Resolve-on-read: the service presigns a GET for the minted key so the
     // upload-url response carries an immediately-usable downloadUrl.
     toMediaObject: jest.fn(async (input: any) => ({
+      mediaId: input.mediaId ?? null,
       fileId: "test-file-id",
       objectKey: input.stored,
       fileName: null,
@@ -74,6 +75,7 @@ describe("POST /api/v1/media/upload-url", () => {
     expect(typeof res.body.data.objectKey).toBe("string");
     expect(res.body.data.objectKey).toMatch(/^avatars\//);
     expect(res.body.data.media).toMatchObject({
+      mediaId: "mock-media-id",
       objectKey: expect.any(String),
       uploadUrl: expect.any(String),
       uploadUrlExpiresIn: expect.any(Number),

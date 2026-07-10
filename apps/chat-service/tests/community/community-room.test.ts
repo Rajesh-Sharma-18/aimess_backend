@@ -66,7 +66,7 @@ describe("GET /community/rooms (public list)", () => {
 });
 
 describe("GET /community/rooms — livestream enrichment", () => {
-  it("attaches hasActiveLivestream + activeLivestreamCount per room", async () => {
+  it("attaches hasActiveLivestream + liveStreamCount per room", async () => {
     mocks.generalRoomRepo.findActiveRooms.mockResolvedValue([
       { id: "room-1", name: "Live One", lastMessageAt: new Date(1) },
       { id: "room-2", name: "Quiet", lastMessageAt: new Date(1) },
@@ -84,11 +84,11 @@ describe("GET /community/rooms — livestream enrichment", () => {
     const r2 = rooms.find((r) => r.id === "room-2");
     expect(r1).toMatchObject({
       hasActiveLivestream: true,
-      activeLivestreamCount: 3,
+      liveStreamCount: 3,
     });
     expect(r2).toMatchObject({
       hasActiveLivestream: false,
-      activeLivestreamCount: 0,
+      liveStreamCount: 0,
     });
     // One batched gRPC call for the whole page — no N+1.
     expect(
@@ -106,7 +106,7 @@ describe("GET /community/rooms — livestream enrichment", () => {
     );
 
     const res = await request(app).get(`${BASE}/rooms`);
-    expect(res.body.data.data[0].activeLivestreamCount).toBe(5);
+    expect(res.body.data.data[0].liveStreamCount).toBe(5);
   });
 
   it("degrades to 0 when stream-service is unavailable (fail-open)", async () => {
@@ -122,7 +122,7 @@ describe("GET /community/rooms — livestream enrichment", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.data[0]).toMatchObject({
       hasActiveLivestream: false,
-      activeLivestreamCount: 0,
+      liveStreamCount: 0,
     });
   });
 });

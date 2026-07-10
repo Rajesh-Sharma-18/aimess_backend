@@ -20,12 +20,14 @@ import {
   buildCanonicalQuote,
   normalizeMessageType,
   type ReactionGroup,
+  type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import {
   resolveMediaUrl,
   resolveMediaUrlMap,
   urlFromMap,
   resolveContentFiles,
+  resolveQuoteThumbnail,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
@@ -318,9 +320,10 @@ export class ChatMessageOrchestrator {
     // returned/broadcast wire object only (the stored snapshot keeps raw keys).
     // Built UNCONDITIONALLY — the controller returns this canonical wire event
     // even on a replay (the client still gets the message it sent).
-    const [bcastAvatar, bcastContent] = await Promise.all([
+    const [bcastAvatar, bcastContent, bcastQuote] = await Promise.all([
       resolveMediaUrl(senderAvatar || ""),
       this.resolveBroadcastContent(msg.content ?? null),
+      this.resolveBroadcastQuote(full.quoteData ?? null),
     ]);
     const wireEvent = buildChatMessageEvent({
       id: msg.id,
@@ -335,7 +338,7 @@ export class ChatMessageOrchestrator {
       messageType: msg.messageType,
       content: bcastContent ?? null,
       parentMessageId: (full.parentMessageId as string) || "",
-      quoteData: full.quoteData ?? null,
+      quoteData: bcastQuote,
       reactions: [],
       clientTs,
       serverTs,
@@ -351,9 +354,10 @@ export class ChatMessageOrchestrator {
         const rowFull = row as Record<string, unknown>;
         const rowServerTs =
           row.createdAt instanceof Date ? row.createdAt.getTime() : serverTs;
-        const rowBcastContent = await this.resolveBroadcastContent(
-          row.content ?? null
-        );
+        const [rowBcastContent, rowBcastQuote] = await Promise.all([
+          this.resolveBroadcastContent(row.content ?? null),
+          this.resolveBroadcastQuote(rowFull.quoteData ?? null),
+        ]);
         const rowWire = buildChatMessageEvent({
           id: row.id,
           clientMessageId,
@@ -368,7 +372,7 @@ export class ChatMessageOrchestrator {
           messageType: row.messageType,
           content: rowBcastContent ?? null,
           parentMessageId: (rowFull.parentMessageId as string) || "",
-          quoteData: rowFull.quoteData ?? null,
+          quoteData: rowBcastQuote,
           reactions: [],
           clientTs,
           serverTs: rowServerTs,
@@ -493,9 +497,10 @@ export class ChatMessageOrchestrator {
     const location = this.firstAttachmentOfType(params.attachments, "location");
     const contact = this.firstAttachmentOfType(params.attachments, "contact");
     const sticker = this.firstAttachmentOfType(params.attachments, "sticker");
-    const [bcastSenderAvatar, bcastFiles] = await Promise.all([
+    const [bcastSenderAvatar, bcastFiles, bcastQuote] = await Promise.all([
       resolveMediaUrl(senderAvatar || ""),
       resolveContentFiles(files as MediaFileLike[]),
+      this.resolveBroadcastQuote(saved.quoteData),
     ]);
 
     const wireEvent: Record<string, unknown> = {
@@ -508,7 +513,7 @@ export class ChatMessageOrchestrator {
       senderName,
       senderAvatar: bcastSenderAvatar,
       parentMessageId: saved.parentMessageId ?? "",
-      quoteData: buildCanonicalQuote(saved.quoteData),
+      quoteData: bcastQuote,
       content: {
         text: saved.message ?? "",
         files: bcastFiles,
@@ -550,7 +555,10 @@ export class ChatMessageOrchestrator {
           rowAttachments as Array<Record<string, unknown>>,
           "sticker"
         );
-        const rowBcastFiles = await resolveContentFiles(rowAttachments);
+        const [rowBcastFiles, rowBcastQuote] = await Promise.all([
+          resolveContentFiles(rowAttachments),
+          this.resolveBroadcastQuote(row.quoteData),
+        ]);
         const rowWire: Record<string, unknown> = {
           id: row.id,
           messageId: row.id,
@@ -560,7 +568,7 @@ export class ChatMessageOrchestrator {
           senderName,
           senderAvatar: bcastSenderAvatar,
           parentMessageId: row.parentMessageId ?? "",
-          quoteData: buildCanonicalQuote(row.quoteData),
+          quoteData: rowBcastQuote,
           content: {
             text: row.message ?? "",
             files: rowBcastFiles,
@@ -715,9 +723,10 @@ export class ChatMessageOrchestrator {
     const location = this.firstAttachmentOfType(attachments, "location");
     const contact = this.firstAttachmentOfType(attachments, "contact");
     const sticker = this.firstAttachmentOfType(attachments, "sticker");
-    const [bcastSenderAvatar, bcastFiles] = await Promise.all([
+    const [bcastSenderAvatar, bcastFiles, bcastQuote] = await Promise.all([
       resolveMediaUrl(saved.senderAvatar || senderAvatar || ""),
       resolveContentFiles(attachments as MediaFileLike[]),
+      this.resolveBroadcastQuote(saved.quoteData),
     ]);
 
     const wireEvent: Record<string, unknown> = {
@@ -729,7 +738,7 @@ export class ChatMessageOrchestrator {
       senderName: saved.senderName || senderName,
       senderAvatar: bcastSenderAvatar,
       parentMessageId: saved.parentMessageId ?? "",
-      quoteData: buildCanonicalQuote(saved.quoteData),
+      quoteData: bcastQuote,
       content: {
         text: saved.message ?? "",
         files: bcastFiles,
@@ -1339,6 +1348,22 @@ export class ChatMessageOrchestrator {
       }
     }
     return content;
+  }
+
+  /**
+   * Resolve a reply's `quoteData.thumbnail` object-key to a full download URL
+   * for the send-ACK/broadcast payload — same resolve-on-read contract as
+   * {@link resolveBroadcastContent}, applied via {@link buildCanonicalQuote}
+   * (single canonical shape) then a single-key {@link resolveMediaUrl}.
+   */
+  private async resolveBroadcastQuote(
+    raw: unknown
+  ): Promise<CanonicalQuote | null> {
+    const quote = buildCanonicalQuote(raw);
+    if (!quote) return null;
+    if (!quote.thumbnail) return quote;
+    const urlMap = await resolveMediaUrlMap([quote.thumbnail]);
+    return resolveQuoteThumbnail(quote, urlMap);
   }
 
   /**

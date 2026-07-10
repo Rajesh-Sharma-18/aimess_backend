@@ -21,7 +21,7 @@ jest.mock("../../src/config/storage.js", () => ({
 // --- MediaFile registry repository (prevents live Mongo/Prisma in tests) ---
 jest.mock("../../src/repositories/media-file.repository.js", () => ({
   mediaFileRepository: {
-    register: jest.fn(async () => ({})),
+    register: jest.fn(async () => ({ id: "mock-media-id" })),
     findByObjectKey: jest.fn(async () => null),
     setScanStatus: jest.fn(async () => undefined),
     setUsage: jest.fn(async () => undefined),

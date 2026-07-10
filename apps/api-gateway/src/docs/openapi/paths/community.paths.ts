@@ -1834,7 +1834,11 @@ export const communityPaths = {
       operationId: "banCommunityMember",
       summary: "Ban a member",
       description:
-        "Admin only. Sets the member's status to BANNED and recomputes memberCount. You cannot ban yourself or the community admin. Idempotent when the member is already banned.",
+        "Admin only. Sets the member's status to BANNED and recomputes memberCount. You cannot ban yourself or the community admin. Idempotent when the member is already banned. " +
+        "Posts a PERSONAL `MEMBER_BANNED` system message ('You were banned from this community.') visible only to the banned " +
+        "user's own chat history — silent for everyone else. The banned member keeps read access to their pre-ban chat " +
+        "history (via GET /chat/community/rooms/{roomId}/messages and the sync endpoint) but never sees anything created " +
+        "after the ban.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -2249,7 +2253,9 @@ export const communityPaths = {
       operationId: "muteCommunityMember",
       summary: "Mute a member",
       description:
-        "Moderator or admin only. Upserts a moderation mute on an ACTIVE member. `durationMinutes` null/omitted → mute indefinitely; positive integer → mute for N minutes. You cannot mute yourself or the community admin, and you must outrank the target (a moderator cannot mute another moderator). Recorded in the community moderation audit log (`MEMBER_MUTED`).",
+        "Moderator or admin only. Upserts a moderation mute on an ACTIVE member. `durationMinutes` null/omitted → mute indefinitely; positive integer → mute for N minutes. You cannot mute yourself or the community admin, and you must outrank the target (a moderator cannot mute another moderator). Recorded in the community moderation audit log (`MEMBER_MUTED`). " +
+        "Posts a PERSONAL `MEMBER_MUTED` system message ('You are muted until {{date}}' or 'You are muted indefinitely') " +
+        "visible only in the muted user's own chat history — silent for everyone else (COMMUNITY-wide, no line for other members).",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },
@@ -2331,7 +2337,10 @@ export const communityPaths = {
       operationId: "unmuteCommunityMember",
       summary: "Unmute a member",
       description:
-        "Moderator or admin only. Removes an active moderation mute. Fails when the member is not currently muted (a fully-expired mute is treated as not muted). Recorded in the community moderation audit log (`MEMBER_UNMUTED`).",
+        "Moderator or admin only. Removes an active moderation mute. Fails when the member is not currently muted (a fully-expired mute is treated as not muted). Recorded in the community moderation audit log (`MEMBER_UNMUTED`). " +
+        "Retracts (soft-deletes) the target's still-visible 'You are muted until …' PERSONAL line from their own history, and " +
+        "posts a PERSONAL `MEMBER_UNMUTED` system message ('You were unmuted') visible only to that member — silent for " +
+        "everyone else.",
       security: [{ bearerAuth: [] }],
       parameters: [
         { $ref: "#/components/parameters/LanguageHeader" },

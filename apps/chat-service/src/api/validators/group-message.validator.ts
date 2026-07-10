@@ -21,6 +21,7 @@ export const sendGroupMessageSchema = z
       files: z
         .array(
           z.object({
+            mediaId: z.string().min(1).max(100).optional(),
             objectKey: z.string().min(1).max(500).optional(),
             url: z.string().url().optional(),
             name: z.string().default(""),
@@ -58,6 +59,7 @@ export const sendGroupMessageBodySchema = z
       files: z
         .array(
           z.object({
+            mediaId: z.string().min(1).max(100).optional(),
             objectKey: z.string().min(1).max(500).optional(),
             url: z.string().url().optional(),
             name: z.string().default(""),

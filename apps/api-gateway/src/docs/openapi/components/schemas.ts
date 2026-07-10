@@ -8,6 +8,12 @@ export const openApiSchemas = {
     description:
       "Reusable media descriptor for an object-storage asset. Returned ADDITIVELY alongside the legacy flat fields (avatarUrl/coverUrl/objectKey/downloadUrl/uploadUrl, etc.). All nine scalar fields are always present (may be null); `uploadHeaders` is only present on upload-url responses.",
     properties: {
+      mediaId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Stable, immutable media identity — independent of objectKey/url, never changes for this file. Null for legacy media registered before this field existed.",
+      },
       fileId: { type: "string", nullable: true },
       objectKey: { type: "string", nullable: true },
       fileName: { type: "string", nullable: true },
@@ -5182,27 +5188,28 @@ export const openApiSchemas = {
   },
   UserSearchData: {
     type: "object",
+    description:
+      "`q` empty/missing → only `recent` is present. `q` has a value → only `chat`+`other` are present.",
     properties: {
       recent: {
         type: "array",
         items: { $ref: "#/components/schemas/UserSearchResultItem" },
         description:
-          "Latest 4 recently viewed Users/Groups, ordered by lastViewedAt desc.",
+          "Latest 4 recently viewed Users/Groups, ordered by lastViewedAt desc. Only present when `q` is empty/missing.",
       },
       chat: {
         type: "array",
         items: { $ref: "#/components/schemas/UserSearchResultItem" },
         description:
-          "Max 10: private Users with an existing room + Groups the caller actively belongs to.",
+          "Max 10: private Users with an existing room + Groups the caller actively belongs to. Only present when `q` has a value.",
       },
       other: {
         type: "array",
         items: { $ref: "#/components/schemas/UserSearchResultItem" },
         description:
-          "Max `limit` (default 10, paginated): Users without a room + Groups the caller doesn't belong to. Excludes recent/chat.",
+          "Max `limit` (default 10, paginated): Users without a room + Groups the caller doesn't belong to. Excludes chat. Only present when `q` has a value.",
       },
     },
-    required: ["recent", "chat", "other"],
   },
   RecordRecentUserSearchBody: {
     type: "object",
@@ -8717,10 +8724,18 @@ export const openApiSchemas = {
           "LIVE_STREAM_ENDED → 'Live stream ended ({{duration}})' or 'Live stream ended' when duration absent; " +
           "ROLE_CHANGED (bystander) → '{{targetName}} is now a moderator/admin/member'; " +
           "ROLE_CHANGED (viewer=target) → 'You are now a moderator/admin/member'; " +
-          "MEMBER_REMOVED → '{{targetName}} was removed'; MEMBER_BANNED → '{{targetName}} was banned'. " +
-          "PERSONAL types (isPersonal=true): COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF. " +
-          "Hidden in chat timeline (never returned): MEMBER_LEFT, MEMBER_JOINED. " +
-          "MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED are visible to all members. " +
+          "MEMBER_UNBANNED → '{{targetName}} was unbanned'; " +
+          "MEMBER_BANNED (target only) → 'You were banned from this community.'; " +
+          "MEMBER_MUTED (target only) → 'You are muted until {{date}}' or 'You are muted indefinitely' when no expiry; " +
+          "MEMBER_UNMUTED (target only) → 'You were unmuted'. " +
+          "PERSONAL types (isPersonal=true, only ever returned to the target user): " +
+          "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED / ROLE_CHANGED_SELF / " +
+          "MEMBER_BANNED / MEMBER_MUTED / MEMBER_UNMUTED. " +
+          "Hidden in chat timeline (never returned to anyone): MEMBER_LEFT, MEMBER_JOINED, MEMBER_REMOVED — " +
+          "the removed/left member learns via the `community:membership:removed` socket event instead. " +
+          "MEMBER_UNBANNED is COMMUNITY-visible (all members see it); MEMBER_BANNED, MEMBER_MUTED and " +
+          "MEMBER_UNMUTED are PERSONAL — silent for everyone else, visible only to the affected member's " +
+          "own history/sync/catch-up on reload or reconnect. " +
           "MEMBER_ROLE_CHANGED is the legacy alias for ROLE_CHANGED (old rows only).",
       },
       systemMetadata: {
@@ -8736,7 +8751,10 @@ export const openApiSchemas = {
           "COMMUNITY_NAME_UPDATED: { newName } — the rename target. " +
           "LIVE_STREAM_ENDED: { duration? } — human-readable runtime, e.g. '2 hours 15 minutes'. " +
           "ROLE_CHANGED / MEMBER_ROLE_CHANGED: { targetUserId, targetName, oldRole, newRole }. " +
-          "MEMBER_REMOVED / MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_MUTED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
+          "MEMBER_BANNED / MEMBER_UNBANNED / MEMBER_UNMUTED: { targetUserId, targetName }. " +
+          "MEMBER_MUTED: { targetUserId, targetName, mutedUntil, durationMinutes } — mutedUntil is an " +
+          "epoch-ms timestamp (or null for an indefinite mute), durationMinutes is the mute length as " +
+          "originally requested (or null for indefinite). " +
           "PINNED_MESSAGE / UNPINNED_MESSAGE: { messageId, messagePreview }. " +
           "COMMUNITY_JOINED / JOIN_REQUEST_APPROVED / JOIN_REQUEST_REJECTED: personal — same shape, no targetUserId. " +
           "Null for normal messages.",
@@ -8745,7 +8763,8 @@ export const openApiSchemas = {
         type: "boolean",
         description:
           "True for user-scoped SYSTEM messages (COMMUNITY_JOINED 'You joined the community', " +
-          "JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF). " +
+          "JOIN_REQUEST_APPROVED, JOIN_REQUEST_REJECTED, ROLE_CHANGED_SELF, MEMBER_BANNED, MEMBER_MUTED, " +
+          "MEMBER_UNMUTED). " +
           "PERSONAL messages are only ever returned to the target user — other members never see them in history. " +
           "Absent/false for normal and community-wide system messages.",
       },
@@ -8773,6 +8792,7 @@ export const openApiSchemas = {
             items: {
               type: "object",
               properties: {
+                mediaId: { type: "string", nullable: true },
                 url: { type: "string" },
                 mime: { type: "string" },
                 name: { type: "string" },
@@ -8803,6 +8823,13 @@ export const openApiSchemas = {
             "Images/videos add `width`/`height`/`blurhash`. Audio/voice add `durationMs`/`waveform`. " +
             "Stickers follow the ChatSticker shape. Location follows ChatLocationAttachment. Contact follows ChatContactAttachment.",
           properties: {
+            mediaId: {
+              type: "string",
+              nullable: true,
+              description:
+                "Stable, immutable media identity — independent of objectKey/url. Null for legacy attachments sent before this field existed.",
+              example: "668f1a2b3c4d5e6f7a8b9c99",
+            },
             url: {
               type: "string",
               description:
@@ -9118,6 +9145,7 @@ export const openApiSchemas = {
             items: {
               type: "object",
               properties: {
+                mediaId: { type: "string", nullable: true },
                 url: { type: "string" },
                 mime: { type: "string" },
                 name: { type: "string" },
@@ -9153,6 +9181,13 @@ export const openApiSchemas = {
             items: {
               type: "object",
               properties: {
+                mediaId: {
+                  type: "string",
+                  nullable: true,
+                  description:
+                    "Stable, immutable media identity — independent of objectKey/url. Null for legacy attachments sent before this field existed.",
+                  example: "668f1a2b3c4d5e6f7a8b9c99",
+                },
                 url: {
                   type: "string",
                   description:
@@ -10016,6 +10051,12 @@ export const openApiSchemas = {
     description:
       "Sticker payload. Lives in message content (private/group) or attachments[] (community). Exactly one of `objectKey` or `url` is required.",
     properties: {
+      mediaId: {
+        type: "string",
+        nullable: true,
+        description:
+          "Stable, immutable media identity — independent of objectKey/url. Null for legacy stickers sent before this field existed.",
+      },
       objectKey: {
         type: "string",
         minLength: 1,

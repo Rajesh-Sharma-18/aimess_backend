@@ -48,6 +48,9 @@ function makeService(
     memberIds?: string[];
     /** Non-null → the dedup pre-check finds an existing row (redelivery/replay). */
     findOneResult?: unknown;
+    /** Non-null → the affected user has an active mute-session message to retract. */
+    activeMutedMessageId?: string | null;
+    deleteForAllResult?: unknown;
   } = {}
 ) {
   // createSystemMessage echoes the fallbackText it received so assertions can
@@ -64,10 +67,18 @@ function makeService(
   );
   const findOne = jest.fn(async () => opts.findOneResult ?? null);
   const deletePersonalJoinMessages = jest.fn(async () => [] as string[]);
+  const findLatestActiveMutedMessageId = jest.fn(
+    async () => opts.activeMutedMessageId ?? null
+  );
+  const deleteForAll = jest.fn(
+    async () => opts.deleteForAllResult ?? { id: "msg-1" }
+  );
   const messageRepo = {
     findOne,
     createSystemMessage,
     deletePersonalJoinMessages,
+    findLatestActiveMutedMessageId,
+    deleteForAll,
   };
 
   const roomRepo = {
@@ -107,6 +118,8 @@ function makeService(
     service,
     createSystemMessage,
     deletePersonalJoinMessages,
+    findLatestActiveMutedMessageId,
+    deleteForAll,
     memberRepo,
     redis,
   };
@@ -118,7 +131,7 @@ beforeEach(() => {
 });
 
 describe("CommunitySystemMessageService — lastActivity eligibility", () => {
-  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED", "MEMBER_BANNED"])(
+  it.each(["MEMBER_LEFT", "MEMBER_JOINED", "MEMBER_REMOVED"])(
     "%s is a hidden membership line — never persisted or broadcast (post backstop)",
     async (type) => {
       const h = makeService({
@@ -141,6 +154,41 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
       expect(pubListBump).not.toHaveBeenCalled();
     }
   );
+
+  it("MEMBER_BANNED is PERSONAL — persisted + delivered only to the target's own channel, never the community room, and never bumps lastActivity", async () => {
+    const h = makeService({
+      withMemberRepo: true,
+      snapshots: [[TARGET, { displayName: "John Doe" }]],
+    });
+
+    await h.service.post({
+      communityId: COMMUNITY_ID,
+      systemMessageType: "MEMBER_BANNED",
+      metadata: { targetUserId: TARGET },
+      triggeredByUserId: ACTOR,
+      visibleToUserId: TARGET,
+      eventAt: EVENT_AT,
+    });
+
+    // Persisted (not hidden) with the PERSONAL target and the exact banned copy.
+    expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
+    const createArgs = h.createSystemMessage.mock.calls[0][0] as {
+      visibleToUserId: string | null;
+      fallbackText: string;
+    };
+    expect(createArgs.visibleToUserId).toBe(TARGET);
+    expect(createArgs.fallbackText).toBe(
+      "You were banned from this community."
+    );
+
+    // Delivered ONLY on the target's personal channel — never the community room.
+    expect(h.redis.publish).toHaveBeenCalledTimes(1);
+    expect(h.redis.publish.mock.calls[0][0]).toBe(`user:${TARGET}`);
+
+    // Never eligible to bump/become the community-list preview.
+    expect(pubActivity).not.toHaveBeenCalled();
+    expect(pubListBump).not.toHaveBeenCalled();
+  });
 
   it("a COMMUNITY content line (ROLE_CHANGED) still bumps lastActivity", async () => {
     const h = makeService({
@@ -168,10 +216,12 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
   });
 
   it.each([
-    // Visible moderation lines (Telegram parity): delivered to all members but
-    // not eligible to bump the community-list preview. NOT in HIDDEN_SYSTEM_MESSAGE_TYPES
-    // (MEMBER_REMOVED / MEMBER_BANNED ARE in that set — "removal must be SILENT" —
-    // and are covered by the hidden-membership-line case above instead).
+    // Non-hidden moderation lines: persisted (MEMBER_UNBANNED community-wide;
+    // MEMBER_MUTED/MEMBER_UNMUTED PERSONAL to the affected member only), but
+    // never eligible to bump the community-list preview. NOT in
+    // HIDDEN_SYSTEM_MESSAGE_TYPES (MEMBER_REMOVED IS in that set — "removal
+    // must be SILENT" — and is covered by the hidden-membership-line case
+    // above instead).
     "MEMBER_MUTED",
     "MEMBER_UNMUTED",
     "MEMBER_UNBANNED",
@@ -197,6 +247,194 @@ describe("CommunitySystemMessageService — lastActivity eligibility", () => {
       expect(pubListBump).not.toHaveBeenCalled();
     }
   );
+
+  it.each(["MEMBER_MUTED", "MEMBER_UNMUTED"] as const)(
+    "%s is PERSONAL — persisted + delivered only to the target's own channel, never the community room, and never bumps lastActivity",
+    async (type) => {
+      const h = makeService({
+        withMemberRepo: true,
+        snapshots: [[TARGET, { displayName: "John Doe" }]],
+      });
+
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: type,
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        visibleToUserId: TARGET,
+        eventAt: EVENT_AT,
+      });
+
+      // Persisted (not hidden) with the PERSONAL target.
+      expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
+      const createArgs = h.createSystemMessage.mock.calls[0][0] as {
+        visibleToUserId: string | null;
+      };
+      expect(createArgs.visibleToUserId).toBe(TARGET);
+
+      // Delivered ONLY on the target's personal channel — never the
+      // community room, so no other member (including admins/moderators)
+      // ever receives it in real time.
+      expect(h.redis.publish).toHaveBeenCalledTimes(1);
+      expect(h.redis.publish.mock.calls[0][0]).toBe(`user:${TARGET}`);
+      expect(h.redis.publish.mock.calls[0][0]).not.toBe(
+        `community:${COMMUNITY_ID}`
+      );
+
+      // Never eligible to bump/become the community-list preview.
+      expect(pubActivity).not.toHaveBeenCalled();
+      expect(pubListBump).not.toHaveBeenCalled();
+    }
+  );
+
+  describe("mute/unmute delivery is PERSONAL — the payload/text/type are unchanged; only the recipient is restricted", () => {
+    it("the affected user receives the MEMBER_MUTED system message — inserted normally, unchanged payload shape, delivered only to their own channel", async () => {
+      const h = makeService({
+        withMemberRepo: true,
+        snapshots: [[TARGET, { displayName: "John Doe" }]],
+      });
+
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: "MEMBER_MUTED",
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        visibleToUserId: TARGET,
+        eventAt: EVENT_AT,
+      });
+
+      // A normal insert, exactly as before — no update/replace path.
+      expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
+      const createArgs = h.createSystemMessage.mock.calls[0][0] as {
+        visibleToUserId: string | null;
+        systemMessageType: string;
+      };
+      expect(createArgs.visibleToUserId).toBe(TARGET);
+      expect(createArgs.systemMessageType).toBe("MEMBER_MUTED");
+
+      expect(h.redis.publish).toHaveBeenCalledTimes(1);
+      const [channel, raw] = h.redis.publish.mock.calls[0] as [string, string];
+      expect(channel).toBe(`user:${TARGET}`);
+      const parsed = JSON.parse(raw) as {
+        event: string;
+        data: { systemMessageType: string; isPersonal: boolean };
+      };
+      // Unchanged wire event/shape — still a "new message", never an edit.
+      expect(parsed.event).toBe("community:message:new");
+      expect(parsed.data.systemMessageType).toBe("MEMBER_MUTED");
+      expect(parsed.data.isPersonal).toBe(true);
+    });
+
+    it("the affected user receives the MEMBER_UNMUTED system message — inserted normally, unchanged payload shape, delivered only to their own channel", async () => {
+      const h = makeService({
+        withMemberRepo: true,
+        snapshots: [[TARGET, { displayName: "John Doe" }]],
+      });
+
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: "MEMBER_UNMUTED",
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        visibleToUserId: TARGET,
+        eventAt: "2026-06-19T12:05:00.000Z",
+      });
+
+      expect(h.createSystemMessage).toHaveBeenCalledTimes(1);
+      const createArgs = h.createSystemMessage.mock.calls[0][0] as {
+        visibleToUserId: string | null;
+        systemMessageType: string;
+      };
+      expect(createArgs.visibleToUserId).toBe(TARGET);
+      expect(createArgs.systemMessageType).toBe("MEMBER_UNMUTED");
+
+      expect(h.redis.publish).toHaveBeenCalledTimes(1);
+      const [channel, raw] = h.redis.publish.mock.calls[0] as [string, string];
+      expect(channel).toBe(`user:${TARGET}`);
+      const parsed = JSON.parse(raw) as {
+        event: string;
+        data: { systemMessageType: string; isPersonal: boolean };
+      };
+      expect(parsed.event).toBe("community:message:new");
+      expect(parsed.data.systemMessageType).toBe("MEMBER_UNMUTED");
+      expect(parsed.data.isPersonal).toBe(true);
+    });
+
+    it("the affected user receives EVERY mute/unmute line as its own message — repeated mute/unmute actions each insert, never collapse or replace a prior one", async () => {
+      const h = makeService({
+        withMemberRepo: true,
+        snapshots: [[TARGET, { displayName: "John Doe" }]],
+      });
+
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: "MEMBER_MUTED",
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        visibleToUserId: TARGET,
+        eventAt: "2026-06-19T12:00:00.000Z",
+      });
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: "MEMBER_UNMUTED",
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        visibleToUserId: TARGET,
+        eventAt: "2026-06-19T12:05:00.000Z",
+      });
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: "MEMBER_MUTED",
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        visibleToUserId: TARGET,
+        eventAt: "2026-06-19T12:10:00.000Z",
+      });
+
+      // Three distinct events → three inserted messages — nothing was
+      // updated/replaced in place.
+      expect(h.createSystemMessage).toHaveBeenCalledTimes(3);
+      expect(h.redis.publish).toHaveBeenCalledTimes(3);
+      for (const call of h.redis.publish.mock.calls) {
+        expect(call[0]).toBe(`user:${TARGET}`);
+        const parsed = JSON.parse(call[1] as string) as { event: string };
+        expect(parsed.event).toBe("community:message:new");
+      }
+    });
+
+    it("other members (including admins/moderators) never receive the mute/unmute system message — it is never published to the community room", async () => {
+      const h = makeService({
+        withMemberRepo: true,
+        snapshots: [[TARGET, { displayName: "John Doe" }]],
+      });
+
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: "MEMBER_MUTED",
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        visibleToUserId: TARGET,
+        eventAt: EVENT_AT,
+      });
+      await h.service.post({
+        communityId: COMMUNITY_ID,
+        systemMessageType: "MEMBER_UNMUTED",
+        metadata: { targetUserId: TARGET },
+        triggeredByUserId: ACTOR,
+        visibleToUserId: TARGET,
+        eventAt: "2026-06-19T12:05:00.000Z",
+      });
+
+      const publishedChannels = h.redis.publish.mock.calls.map(
+        (call) => call[0]
+      );
+      expect(publishedChannels).not.toContain(`community:${COMMUNITY_ID}`);
+      expect(publishedChannels).toEqual([`user:${TARGET}`, `user:${TARGET}`]);
+      // No community-list bump either — moderation churn never reaches the room.
+      expect(pubActivity).not.toHaveBeenCalled();
+      expect(pubListBump).not.toHaveBeenCalled();
+    });
+  });
 
   it("Case 3: an eligible line AFTER an ineligible one becomes the new preview", async () => {
     const h = makeService({
@@ -515,6 +753,60 @@ describe("CommunitySystemMessageService — single active join line per user (re
 
     expect(h.deletePersonalJoinMessages).not.toHaveBeenCalled();
     expect(h.createSystemMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("CommunitySystemMessageService — retractPersonalMuteMessage (unmute retracts the mute line)", () => {
+  it("finds and hard-hides the current mute session's message, then publishes a tombstone ONLY on the affected user's own channel", async () => {
+    const h = makeService({ activeMutedMessageId: "muted-msg-1" });
+
+    await h.service.retractPersonalMuteMessage({
+      communityId: COMMUNITY_ID,
+      userId: TARGET,
+    });
+
+    expect(h.findLatestActiveMutedMessageId).toHaveBeenCalledWith({
+      roomId: COMMUNITY_ID,
+      userId: TARGET,
+    });
+    expect(h.deleteForAll).toHaveBeenCalledWith("muted-msg-1");
+
+    // Tombstone delivered ONLY to the affected user's personal channel —
+    // never the community room, so no other member ever sees it either.
+    expect(h.redis.publish).toHaveBeenCalledTimes(1);
+    const [channel, raw] = h.redis.publish.mock.calls[0] as [string, string];
+    expect(channel).toBe(`user:${TARGET}`);
+    expect(channel).not.toBe(`community:${COMMUNITY_ID}`);
+    const parsed = JSON.parse(raw) as {
+      event: string;
+      data: { messageId: string };
+    };
+    expect(parsed.event).toBe("community:message:deleted");
+    expect(parsed.data.messageId).toBe("muted-msg-1");
+  });
+
+  it("is a no-op when there is no active mute-session message to retract", async () => {
+    const h = makeService({ activeMutedMessageId: null });
+
+    await h.service.retractPersonalMuteMessage({
+      communityId: COMMUNITY_ID,
+      userId: TARGET,
+    });
+
+    expect(h.deleteForAll).not.toHaveBeenCalled();
+    expect(h.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("swallows a repository failure — best-effort, never throws", async () => {
+    const h = makeService({ activeMutedMessageId: "muted-msg-1" });
+    h.deleteForAll.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(
+      h.service.retractPersonalMuteMessage({
+        communityId: COMMUNITY_ID,
+        userId: TARGET,
+      })
+    ).resolves.toBeUndefined();
   });
 });
 

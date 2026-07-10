@@ -226,6 +226,352 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  communityCatchup: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        roomId?: string;
+        requesterId?: string;
+        sinceId?: string;
+        limit?: number;
+        sinceTs?: number;
+      };
+      try {
+        const res = await getChatClient().communityCatchup({
+          roomId: req.roomId ?? "",
+          requesterId: req.requesterId ?? "",
+          sinceId: req.sinceId ?? "",
+          limit: req.limit ?? 0,
+          sinceTs: req.sinceTs ?? 0,
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("communityCatchup gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "communityCatchup failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  reactToCommunityMessage: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        messageId?: string;
+        communityId?: string;
+        userId?: string;
+        emoji?: string;
+      };
+      try {
+        const res = await getChatClient().reactToCommunityMessage({
+          messageId: req.messageId ?? "",
+          communityId: req.communityId ?? "",
+          userId: req.userId ?? "",
+          emoji: req.emoji ?? "",
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("reactToCommunityMessage gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "reactToCommunityMessage failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  editCommunityMessage: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        messageId?: string;
+        communityId?: string;
+        userId?: string;
+        text?: string;
+      };
+      try {
+        const res = await getChatClient().editCommunityMessage({
+          messageId: req.messageId ?? "",
+          communityId: req.communityId ?? "",
+          userId: req.userId ?? "",
+          text: req.text ?? "",
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("editCommunityMessage gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "editCommunityMessage failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  pinCommunityMessage: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        messageId?: string;
+        communityId?: string;
+        roomId?: string;
+        userId?: string;
+      };
+      try {
+        const res = await getChatClient().pinCommunityMessage({
+          messageId: req.messageId ?? "",
+          communityId: req.communityId ?? "",
+          roomId: req.roomId ?? "",
+          userId: req.userId ?? "",
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("pinCommunityMessage gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "pinCommunityMessage failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  unpinCommunityMessage: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        messageId?: string;
+        communityId?: string;
+        roomId?: string;
+        userId?: string;
+      };
+      try {
+        const res = await getChatClient().unpinCommunityMessage({
+          messageId: req.messageId ?? "",
+          communityId: req.communityId ?? "",
+          roomId: req.roomId ?? "",
+          userId: req.userId ?? "",
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("unpinCommunityMessage gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "unpinCommunityMessage failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  markCommunityMessageRead: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        roomId?: string;
+        readerId?: string;
+        upToMessageId?: string;
+      };
+      try {
+        const res = await getChatClient().markCommunityMessageRead({
+          communityId: req.communityId ?? "",
+          roomId: req.roomId ?? "",
+          readerId: req.readerId ?? "",
+          upToMessageId: req.upToMessageId ?? "",
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("markCommunityMessageRead gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "markCommunityMessageRead failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  getCommunityMessageReactions: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        messageId?: string;
+        communityId?: string;
+        requesterId?: string;
+      };
+      try {
+        const res = await getChatClient().getCommunityMessageReactions({
+          messageId: req.messageId ?? "",
+          communityId: req.communityId ?? "",
+          requesterId: req.requesterId ?? "",
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("getCommunityMessageReactions gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "getCommunityMessageReactions failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  forwardCommunityMessage: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        sourceMessageId?: string;
+        sourceCommunityId?: string;
+        targetCommunityId?: string;
+        targetRoomId?: string;
+        senderId?: string;
+        clientMessageId?: string;
+      };
+      try {
+        const res = await getChatClient().forwardCommunityMessage({
+          sourceMessageId: req.sourceMessageId ?? "",
+          sourceCommunityId: req.sourceCommunityId ?? "",
+          targetCommunityId: req.targetCommunityId ?? "",
+          targetRoomId: req.targetRoomId ?? "",
+          senderId: req.senderId ?? "",
+          clientMessageId: req.clientMessageId ?? "",
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("forwardCommunityMessage gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "forwardCommunityMessage failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
+  markCommunityMessageDelivered: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      const req = call.request as {
+        communityId?: string;
+        roomId?: string;
+        recipientId?: string;
+        upToMessageId?: string;
+      };
+      try {
+        const res = await getChatClient().markCommunityMessageDelivered({
+          communityId: req.communityId ?? "",
+          roomId: req.roomId ?? "",
+          recipientId: req.recipientId ?? "",
+          upToMessageId: req.upToMessageId ?? "",
+        });
+        callback(null, res);
+      } catch (err) {
+        const e = err as { code?: number; details?: string; message?: string };
+        if (typeof e?.code === "number") {
+          callback({
+            code: e.code,
+            details: e.details ?? e.message ?? "",
+            message: e.message ?? e.details ?? "",
+          } as grpc.ServiceError);
+          return;
+        }
+        logger.error("markCommunityMessageDelivered gRPC forward failed", err);
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: "markCommunityMessageDelivered failed",
+        } as grpc.ServiceError);
+      }
+    })();
+  },
+
   // Reconciliation pull: chat-service lists communities (+ members) on boot to
   // provision any missing chat rooms / sync RoomMember rows. Cursor on community id.
   listCommunities: (

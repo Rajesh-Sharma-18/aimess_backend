@@ -62,7 +62,7 @@ describe("system message text — display names and You personalization", () => 
         "Jim Methews",
         TARGET
       )
-    ).toBe("You were banned");
+    ).toBe("You were banned from this community.");
   });
 
   it("resolves subject user for moderation list bumps", () => {
@@ -84,7 +84,7 @@ describe("system message text — display names and You personalization", () => 
         "Jim Methews",
         TARGET
       )
-    ).toBe("You were banned");
+    ).toBe("You were banned from this community.");
   });
 
   it("personalizes group MEMBER_ADDED for the target", () => {

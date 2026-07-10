@@ -301,22 +301,33 @@ export class LivestreamCommentService {
 
     // Broadcast to the livestream channel (gateway fans out to viewers).
     try {
+      const sentAt = dto.createdAt.getTime();
       await this.redis.publish(
         `stream:${params.livestreamId}`,
         JSON.stringify({
           event: "stream:comment:new",
-          // Canonical comment shape — identical field names to the gRPC/REST
-          // `CommentDto` so a client renders a live comment and a backfilled
-          // `recentComments[]` item through one code path. `streamId` is an
-          // extra routing hint on the live event (harmless if ignored).
+          // Mirrors the canonical community/private chat message shape (see
+          // chat-service's buildChatMessageEvent) so a livestream comment
+          // renders through the same message component as chat. `parentCommentId`,
+          // `quoteData` and `content.files` are reserved for future reply/media
+          // support and are always empty until that ships.
           data: {
             id: dto.id,
+            commentId: dto.id,
             streamId: params.livestreamId,
-            sentBy: dto.sentBy,
+            senderId: dto.sentBy,
             senderName: dto.senderName,
             senderAvatar: dto.senderAvatar,
+            parentCommentId: "",
+            quoteData: null,
+            content: { text: dto.message, files: [] },
             message: dto.message,
-            createdAt: dto.createdAt.getTime(),
+            contentType: "TEXT",
+            isEdited: false,
+            editedAt: 0,
+            clientCommentId: saved.clientCommentId ?? "",
+            serverTs: sentAt,
+            sentAt,
           },
         })
       );

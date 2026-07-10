@@ -18,6 +18,10 @@ import {
   shouldCountInUnread,
   UNREAD_COUNTABLE_RAW_MATCH,
 } from "../lib/unread-count.js";
+import {
+  refreshQuoteDataForParent,
+  type QuoteRefreshPatch,
+} from "../lib/quote-refresh.js";
 
 /**
  * PERSONAL system-message visibility check (applied in memory for Prisma
@@ -214,9 +218,34 @@ export class GeneralRoomMessageRepository {
   }
 
   async findById(messageId: string): Promise<GeneralRoomMessage | null> {
+    if (!/^[0-9a-f]{24}$/i.test(messageId)) return null;
     return this.prisma.generalRoomMessage.findUnique({
       where: { id: messageId },
     });
+  }
+
+  /**
+   * The most recent still-visible PERSONAL MEMBER_MUTED line for one user in
+   * one room, if any — the "You are muted until …" line from the CURRENT mute
+   * session. Retracted (soft-deleted) when that session ends via unmute, so
+   * the mute + unmute lines never stack together in the affected member's
+   * history (Telegram parity: only the current state is shown).
+   */
+  async findLatestActiveMutedMessageId(params: {
+    roomId: string;
+    userId: string;
+  }): Promise<string | null> {
+    const row = await this.prisma.generalRoomMessage.findFirst({
+      where: {
+        roomId: params.roomId,
+        visibleToUserId: params.userId,
+        systemMessageType: "MEMBER_MUTED",
+        deletedForAll: false,
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    return row?.id ?? null;
   }
 
   async findOne(
@@ -259,15 +288,23 @@ export class GeneralRoomMessageRepository {
     _direction: string,
     limit: number,
     userId: string,
-    viewerIsActiveMember = true
+    viewerIsActiveMember = true,
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null
   ): Promise<GeneralRoomMessage[]> {
+    // A banned viewer's window can never extend past their ban cutoff, even if
+    // `beforeTimestamp` (the scroll cursor) is later.
+    const upperBound =
+      readCutoff && readCutoff < new Date(beforeTimestamp)
+        ? new Date(readCutoff.getTime() + 1)
+        : new Date(beforeTimestamp);
     // Prisma MongoDB doesn't support $nin on JSON arrays directly.
     // Fetch and filter in memory for deletedBy + personal visibility.
     const [messages, latestPersonalJoinMessageId] = await Promise.all([
       this.prisma.generalRoomMessage.findMany({
         where: {
           roomId,
-          createdAt: { lt: new Date(beforeTimestamp) },
+          createdAt: { lt: upperBound },
           deletedForAll: false,
         },
         orderBy: { createdAt: "desc" },
@@ -320,6 +357,12 @@ export class GeneralRoomMessageRepository {
     userId: string;
     viewerIsActiveMember: boolean;
     latestPersonalJoinMessageId?: string | null;
+    /**
+     * Upper bound for a BANNED viewer: only messages created at/before their
+     * ban timestamp are visible (Telegram parity — pre-ban history stays
+     * readable, nothing newer ever is, including after unban/rejoin resync).
+     */
+    readCutoff?: Date | null;
   }): Record<string, unknown> {
     const match: Record<string, unknown> = {
       roomId: { $oid: params.roomId },
@@ -328,6 +371,7 @@ export class GeneralRoomMessageRepository {
       visibleToUserId: { $in: [null, params.userId] },
       systemMessageType: { $nin: [...HIDDEN_SYSTEM_MESSAGE_TYPES] },
     };
+    const andClauses: Record<string, unknown>[] = [];
     if (!params.viewerIsActiveMember) {
       match.$nor = [
         {
@@ -336,13 +380,19 @@ export class GeneralRoomMessageRepository {
         },
       ];
     } else {
-      match.$and = [
+      andClauses.push(
         personalJoinSessionGuard(
           params.userId,
           params.latestPersonalJoinMessageId ?? null
-        ),
-      ];
+        )
+      );
     }
+    if (params.readCutoff) {
+      andClauses.push({
+        createdAt: { $lte: { $date: params.readCutoff.toISOString() } },
+      });
+    }
+    if (andClauses.length) match.$and = andClauses;
     return match;
   }
 
@@ -379,6 +429,8 @@ export class GeneralRoomMessageRepository {
     inclusive?: boolean;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     const before = params.direction === "before";
     const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
@@ -390,6 +442,7 @@ export class GeneralRoomMessageRepository {
       userId: params.userId,
       viewerIsActiveMember,
       latestPersonalJoinMessageId,
+      readCutoff: params.readCutoff,
     });
 
     const date = { $date: params.ts.toISOString() };
@@ -571,6 +624,8 @@ export class GeneralRoomMessageRepository {
     roomId: string;
     userId: string;
     viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
   }): Promise<number> {
     const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
     const latestPersonalJoinMessageId = viewerIsActiveMember
@@ -584,6 +639,7 @@ export class GeneralRoomMessageRepository {
             userId: params.userId,
             viewerIsActiveMember,
             latestPersonalJoinMessageId,
+            readCutoff: params.readCutoff,
           }),
         },
         { $count: "total" },
@@ -602,8 +658,14 @@ export class GeneralRoomMessageRepository {
     anchorDate: Date;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
     const half = Math.floor(params.limit / 2);
+    const newerUpperBound =
+      params.readCutoff && params.readCutoff < params.anchorDate
+        ? params.readCutoff
+        : null;
 
     const [older, newer, latestPersonalJoinMessageId] = await Promise.all([
       // anchor-inclusive older half (desc → reversed to asc before merge)
@@ -616,16 +678,21 @@ export class GeneralRoomMessageRepository {
         orderBy: { createdAt: "desc" },
         take: half + 1,
       }),
-      // strictly newer half
-      this.prisma.generalRoomMessage.findMany({
-        where: {
-          roomId: params.roomId,
-          deletedForAll: false,
-          createdAt: { gt: params.anchorDate },
-        },
-        orderBy: { createdAt: "asc" },
-        take: half,
-      }),
+      // strictly newer half — never past the ban cutoff for a banned viewer.
+      newerUpperBound
+        ? Promise.resolve([])
+        : this.prisma.generalRoomMessage.findMany({
+            where: {
+              roomId: params.roomId,
+              deletedForAll: false,
+              createdAt: {
+                gt: params.anchorDate,
+                ...(params.readCutoff ? { lte: params.readCutoff } : {}),
+              },
+            },
+            orderBy: { createdAt: "asc" },
+            take: half,
+          }),
       (params.viewerIsActiveMember ?? true)
         ? this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
         : Promise.resolve(null),
@@ -963,7 +1030,9 @@ export class GeneralRoomMessageRepository {
     limit: number,
     userId: string,
     viewerIsActiveMember = true,
-    skip = 0
+    skip = 0,
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null
   ): Promise<GeneralRoomMessage[]> {
     // `message` is a top-level String field, so a case-insensitive `contains`
     // works directly. Per-user visibility (deletedBy/isVisibleToUser) can only
@@ -977,6 +1046,7 @@ export class GeneralRoomMessageRepository {
         roomId,
         deletedForAll: false,
         message: { contains: query, mode: "insensitive" },
+        ...(readCutoff ? { createdAt: { lte: readCutoff } } : {}),
       },
       orderBy: { createdAt: "desc" },
       take: skip + limit + OVERFETCH_MARGIN,
@@ -997,7 +1067,9 @@ export class GeneralRoomMessageRepository {
     roomId: string,
     query: string,
     userId: string,
-    viewerIsActiveMember = true
+    viewerIsActiveMember = true,
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null
   ): Promise<number> {
     // Mirrors searchByText's per-user filter (deletedBy/isVisibleToUser) so the
     // reported total — and therefore totalPage/hasMore — matches what the user
@@ -1007,6 +1079,7 @@ export class GeneralRoomMessageRepository {
         roomId,
         deletedForAll: false,
         message: { contains: query, mode: "insensitive" },
+        ...(readCutoff ? { createdAt: { lte: readCutoff } } : {}),
       },
       select: {
         deletedBy: true,
@@ -1029,6 +1102,19 @@ export class GeneralRoomMessageRepository {
     return this.prisma.generalRoomMessage.count({
       where: { roomId, deletedForAll: false },
     });
+  }
+
+  /** Refresh `quoteData.preview`/`.isDeleted` on every reply to `parentMessageId`. */
+  async refreshReplyQuotes(
+    parentMessageId: string,
+    patch: QuoteRefreshPatch
+  ): Promise<void> {
+    await refreshQuoteDataForParent(
+      this.prisma,
+      "general_room_messages",
+      parentMessageId,
+      patch
+    );
   }
 
   async updateById(
@@ -1236,12 +1322,22 @@ export class GeneralRoomMessageRepository {
     fromTs: Date;
     limit: number;
     viewerIsActiveMember?: boolean;
+    /**
+     * Upper bound for a BANNED viewer — a resync must never surface a message
+     * CREATED after the ban, even if its `updatedAt` (a later reaction/edit by
+     * someone else, or the ban's own mirrored membership row) falls after
+     * `fromTs`. See {@link timelineMatch}.
+     */
+    readCutoff?: Date | null;
   }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
     const [raw, latestPersonalJoinMessageId] = await Promise.all([
       this.prisma.generalRoomMessage.findMany({
         where: {
           roomId: params.roomId,
           updatedAt: { gte: params.fromTs },
+          ...(params.readCutoff
+            ? { createdAt: { lte: params.readCutoff } }
+            : {}),
           // deletedForAll intentionally NOT filtered — tombstones must be
           // included so the client can reconcile deletes missed while offline.
         },

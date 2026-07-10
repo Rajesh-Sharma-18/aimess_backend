@@ -7,6 +7,7 @@ import type { MediaCategoryKey } from "../../config/uploads.js";
 
 function toMediaObjectProto(m: MediaObject): object {
   return {
+    mediaId: m.mediaId ?? "",
     fileId: m.fileId ?? "",
     objectKey: m.objectKey ?? "",
     fileName: m.fileName ?? "",

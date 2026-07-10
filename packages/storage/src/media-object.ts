@@ -16,6 +16,8 @@ export interface ToMediaObjectInput {
   contentType?: string | null;
   size?: number | null;
   resolveDownload?: boolean;
+  /** Stable media identity to stamp onto the result (e.g. MediaFile._id). Null for legacy/unregistered media. */
+  mediaId?: string | null;
 }
 
 /**
@@ -36,6 +38,7 @@ export async function toMediaObject(
       typeof input.stored === "string" && /^https?:\/\//i.test(input.stored);
 
     return {
+      mediaId: input.mediaId ?? null,
       fileId: null,
       objectKey: null,
       fileName: input.fileName ?? null,
@@ -67,6 +70,7 @@ export async function toMediaObject(
   }
 
   return {
+    mediaId: input.mediaId ?? null,
     fileId,
     objectKey,
     fileName: input.fileName ?? null,
@@ -83,10 +87,13 @@ export function buildUploadMediaObject(input: {
   result: UploadUrlResult;
   contentType: string;
   fileName?: string | null;
+  /** Stable media identity to stamp onto the result (e.g. MediaFile._id). Null for legacy/unregistered media. */
+  mediaId?: string | null;
 }): MediaObject {
   const { fileId } = parseFileMetaFromObjectKey(input.result.objectKey);
 
   return {
+    mediaId: input.mediaId ?? null,
     fileId,
     objectKey: input.result.objectKey,
     fileName: input.fileName ?? null,

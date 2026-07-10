@@ -5,6 +5,10 @@ import {
   splitDirectMediaAlbum,
   shouldSplitMediaAlbum,
 } from "../../src/lib/split-media-album.js";
+import {
+  resolveMessageId,
+  resolveParentMessageId,
+} from "../../src/lib/album-messages.js";
 
 describe("split-media-album", () => {
   it("splits a multi-image private album into one row per file", () => {
@@ -76,5 +80,55 @@ describe("split-media-album", () => {
     const parts = splitCommunityMediaAlbum("IMAGE", "", attachments, "x");
     expect(parts).toHaveLength(1);
     expect(parts[0]?.attachments).toHaveLength(2);
+  });
+});
+
+describe("resolveMessageId", () => {
+  const OBJECT_ID = "6a509a89d59f6ac6cc5fbc19";
+
+  it("strips album- prefix to recover the primary message ObjectId", () => {
+    expect(resolveMessageId(`album-${OBJECT_ID}`)).toBe(OBJECT_ID);
+  });
+
+  it("returns a plain ObjectId unchanged", () => {
+    expect(resolveMessageId(OBJECT_ID)).toBe(OBJECT_ID);
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(resolveMessageId("")).toBe("");
+  });
+
+  it("returns empty string for null/undefined", () => {
+    expect(resolveMessageId(null)).toBe("");
+    expect(resolveMessageId(undefined)).toBe("");
+  });
+});
+
+describe("resolveParentMessageId", () => {
+  const OBJECT_ID = "6a509a89d59f6ac6cc5fbc19";
+
+  it("strips album- prefix and returns the ObjectId for persistence", () => {
+    expect(resolveParentMessageId(`album-${OBJECT_ID}`)).toBe(OBJECT_ID);
+  });
+
+  it("returns a plain ObjectId unchanged", () => {
+    expect(resolveParentMessageId(OBJECT_ID)).toBe(OBJECT_ID);
+  });
+
+  it("returns null for null/undefined/empty — no garbage stored in the column", () => {
+    expect(resolveParentMessageId(null)).toBeNull();
+    expect(resolveParentMessageId(undefined)).toBeNull();
+    expect(resolveParentMessageId("")).toBeNull();
+  });
+
+  it("returns null for non-ObjectId strings that would crash Prisma", () => {
+    expect(resolveParentMessageId("album-notanobjectid")).toBeNull();
+    expect(resolveParentMessageId("mediaId-abc")).toBeNull();
+    expect(resolveParentMessageId("clientMsg-xyz")).toBeNull();
+    expect(resolveParentMessageId("some-random-string")).toBeNull();
+  });
+
+  it("rejects a 24-char hex string prefixed with album- where the suffix is too short", () => {
+    expect(resolveParentMessageId("album-tooshort")).toBeNull();
   });
 });
