@@ -21,6 +21,7 @@ jest.mock("../../src/services/community.service.js", () => ({
     unbanMember: jest.fn(),
     leaveCommunity: jest.fn(),
     bulkLeaveCommunities: jest.fn(),
+    bulkDeleteCommunities: jest.fn(),
     transferAdmin: jest.fn(),
     joinCommunity: jest.fn(),
   },
@@ -375,6 +376,68 @@ describe("POST /:id/leave and POST /leave/bulk", () => {
       .set(auth())
       .send({ communityIds: [] });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("DELETE /api/v1/communities (bulk delete)", () => {
+  const CID2 = "b".repeat(24);
+
+  it("returns 200 and forwards deduped ids to the service", async () => {
+    svc.bulkDeleteCommunities.mockResolvedValue({
+      results: [
+        { communityId: CID, status: "REMOVED" },
+        { communityId: CID2, status: "REMOVED" },
+      ],
+      summary: { requested: 2, removed: 2, failed: 0 },
+    });
+    const res = await request(app)
+      .delete("/api/v1/communities")
+      .set(auth())
+      .send({ communityIds: [CID, CID2, CID] });
+    expect(res.status).toBe(200);
+    expect(svc.bulkDeleteCommunities).toHaveBeenCalledWith(SELF, [CID, CID2]);
+  });
+
+  it("returns 400 with an empty list", async () => {
+    const res = await request(app)
+      .delete("/api/v1/communities")
+      .set(auth())
+      .send({ communityIds: [] });
+    expect(res.status).toBe(400);
+    expect(svc.bulkDeleteCommunities).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for an invalid community id", async () => {
+    const res = await request(app)
+      .delete("/api/v1/communities")
+      .set(auth())
+      .send({ communityIds: ["not-an-object-id"] });
+    expect(res.status).toBe(400);
+    expect(svc.bulkDeleteCommunities).not.toHaveBeenCalled();
+  });
+
+  it("reports per-item failures without failing the whole request (partial success)", async () => {
+    svc.bulkDeleteCommunities.mockResolvedValue({
+      results: [
+        { communityId: CID, status: "REMOVED" },
+        {
+          communityId: CID2,
+          status: "FAILED",
+          errorCode: "OWNER_CANNOT_DELETE",
+        },
+      ],
+      summary: { requested: 2, removed: 1, failed: 1 },
+    });
+    const res = await request(app)
+      .delete("/api/v1/communities")
+      .set(auth())
+      .send({ communityIds: [CID, CID2] });
+    expect(res.status).toBe(200);
+    expect(res.body.data.summary).toEqual({
+      requested: 2,
+      removed: 1,
+      failed: 1,
+    });
   });
 });
 

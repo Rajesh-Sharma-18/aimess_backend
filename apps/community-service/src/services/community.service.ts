@@ -3723,6 +3723,41 @@ export const communityService = {
 
     // Non-admin leave: status → LEFT + recompute. Single-document update +
     // recompute of memberCount — no $transaction.
+    const { updated } = await this.removeActiveMember(communityId, callerId, {
+      auditMetadata: leaveMeta,
+      reason: leaveReason,
+      eventAt: new Date().toISOString(),
+    });
+
+    this.emitMemberSystemMessage({
+      communityId,
+      systemMessageType: "MEMBER_LEFT",
+      actorId: callerId,
+      targetUserId: callerId,
+    });
+
+    return toMemberData(updated);
+  },
+
+  /**
+   * Shared core of a non-admin member leaving a community: flips status to
+   * LEFT, recomputes memberCount, records the audit entry, and fans out the
+   * RabbitMQ + Redis leave events. Reused by leaveCommunity, and by
+   * bulkDeleteCommunities for its active-member branch — keeps the leave
+   * side effects defined in exactly one place.
+   */
+  async removeActiveMember(
+    communityId: string,
+    callerId: string,
+    opts: {
+      auditMetadata?: Prisma.InputJsonValue;
+      reason?: string | null;
+      eventAt: string;
+    }
+  ): Promise<{
+    updated: Awaited<ReturnType<typeof communityRepository.updateMemberStatus>>;
+    memberCount: number;
+  }> {
     const updated = await communityRepository.updateMemberStatus(
       communityId,
       callerId,
@@ -3737,14 +3772,14 @@ export const communityService = {
       actorId: callerId,
       action: "MEMBER_LEFT",
       targetUserId: callerId,
-      metadata: leaveMeta,
+      metadata: opts.auditMetadata,
     });
 
     publishCommunityMemberLeftSafe({
       communityId,
       actorId: callerId,
-      reason: leaveReason,
-      eventAt: new Date().toISOString(),
+      reason: opts.reason ?? null,
+      eventAt: opts.eventAt,
     });
 
     try {
@@ -3790,14 +3825,7 @@ export const communityService = {
       );
     }
 
-    this.emitMemberSystemMessage({
-      communityId,
-      systemMessageType: "MEMBER_LEFT",
-      actorId: callerId,
-      targetUserId: callerId,
-    });
-
-    return toMemberData(updated);
+    return { updated, memberCount: count };
   },
 
   /**
@@ -3964,6 +3992,119 @@ export const communityService = {
       summary: {
         requested: communityIds.length,
         left: leftCount,
+        failed: failedCount,
+      },
+    };
+  },
+
+  /**
+   * Bulk "remove community from my list" for the logged-in user. Each id is
+   * processed independently — one failure never blocks the rest.
+   *
+   * Rules:
+   *  - Community not found          → FAILED / NOT_FOUND
+   *  - Caller is the community admin → FAILED / OWNER_CANNOT_DELETE (never
+   *    auto-deletes, unlike leaveCommunity — admins must transfer ownership
+   *    or delete the community from the admin panel)
+   *  - No membership / already LEFT → SKIPPED (already gone, nothing to do)
+   *  - BANNED membership            → REMOVED, no DB write — banned members
+   *    are already excluded from "My Communities" reads, so the desired
+   *    end state already holds without touching membership
+   *  - PENDING (or any other status) → SKIPPED — never surfaced in the list
+   *  - ACTIVE non-admin membership   → REMOVED via the shared leave path
+   *    (removeActiveMember) — same cleanup, socket events, and notification
+   *    fan-out as a voluntary leave
+   */
+  async bulkDeleteCommunities(
+    callerId: string,
+    communityIds: string[]
+  ): Promise<{
+    results: Array<{
+      communityId: string;
+      status: "REMOVED" | "SKIPPED" | "FAILED";
+      errorCode?: "OWNER_CANNOT_DELETE" | "NOT_FOUND";
+    }>;
+    summary: { requested: number; removed: number; failed: number };
+  }> {
+    const [communities, membershipEntries] = await Promise.all([
+      communityRepository.findCommunitiesByIds(communityIds),
+      Promise.all(
+        communityIds.map((communityId) =>
+          communityRepository
+            .findMemberByUserId(communityId, callerId)
+            .then((membership) => [communityId, membership] as const)
+        )
+      ),
+    ]);
+
+    const communityIdSet = new Set(communities.map((c) => c.id));
+    const membershipMap = new Map(membershipEntries);
+
+    const results: Array<{
+      communityId: string;
+      status: "REMOVED" | "SKIPPED" | "FAILED";
+      errorCode?: "OWNER_CANNOT_DELETE" | "NOT_FOUND";
+    }> = [];
+    let removedCount = 0;
+    let failedCount = 0;
+    const eventAt = new Date().toISOString();
+
+    for (const communityId of communityIds) {
+      if (!communityIdSet.has(communityId)) {
+        results.push({ communityId, status: "FAILED", errorCode: "NOT_FOUND" });
+        failedCount++;
+        continue;
+      }
+
+      const membership = membershipMap.get(communityId);
+
+      if (!membership || membership.status === CommunityMemberStatus.LEFT) {
+        results.push({ communityId, status: "SKIPPED" });
+        continue;
+      }
+
+      if (membership.status === CommunityMemberStatus.BANNED) {
+        results.push({ communityId, status: "REMOVED" });
+        removedCount++;
+        continue;
+      }
+
+      if (membership.status !== CommunityMemberStatus.ACTIVE) {
+        results.push({ communityId, status: "SKIPPED" });
+        continue;
+      }
+
+      if (membership.role === CommunityMemberRole.ADMIN) {
+        results.push({
+          communityId,
+          status: "FAILED",
+          errorCode: "OWNER_CANNOT_DELETE",
+        });
+        failedCount++;
+        continue;
+      }
+
+      // ACTIVE non-admin member: reuse the same leave workflow as
+      // leaveCommunity — membership removal, memberCount recompute, audit,
+      // and the socket/notification fan-out that drops the community from
+      // every device's list in real time.
+      await this.removeActiveMember(communityId, callerId, { eventAt });
+      this.emitMemberSystemMessage({
+        communityId,
+        systemMessageType: "MEMBER_LEFT",
+        actorId: callerId,
+        targetUserId: callerId,
+      });
+
+      results.push({ communityId, status: "REMOVED" });
+      removedCount++;
+    }
+
+    return {
+      results,
+      summary: {
+        requested: communityIds.length,
+        removed: removedCount,
         failed: failedCount,
       },
     };

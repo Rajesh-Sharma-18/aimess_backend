@@ -425,6 +425,145 @@ describe("leaveCommunity — real-time broadcasts", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Suite 3b — bulkDeleteCommunities
+// ---------------------------------------------------------------------------
+
+describe("bulkDeleteCommunities", () => {
+  const CID2 = "d".repeat(24);
+  const bannedMember = {
+    ...activeMemberNonAdmin,
+    status: "BANNED",
+    bannedAt: new Date("2026-06-05T00:00:00.000Z"),
+    bannedBy: ADMIN,
+    banReason: "spam",
+  };
+  const adminMembership = {
+    ...activeMemberNonAdmin,
+    userId: ADMIN,
+    role: "ADMIN",
+  };
+
+  beforeEach(() => {
+    repo.findCommunitiesByIds.mockResolvedValue([{ id: CID }, { id: CID2 }]);
+    repo.updateMemberStatus.mockResolvedValue({
+      ...activeMemberNonAdmin,
+      status: "LEFT",
+    });
+    repo.countActiveMembers.mockResolvedValue(9);
+    repo.setMemberCount.mockResolvedValue(undefined);
+    repo.createAuditLog.mockResolvedValue(undefined);
+  });
+
+  it("admin: fails with OWNER_CANNOT_DELETE and never touches membership", async () => {
+    repo.findMemberByUserId.mockResolvedValue(adminMembership);
+
+    const result = await communityService.bulkDeleteCommunities(ADMIN, [CID]);
+
+    expect(result.results).toEqual([
+      { communityId: CID, status: "FAILED", errorCode: "OWNER_CANNOT_DELETE" },
+    ]);
+    expect(result.summary).toEqual({ requested: 1, removed: 0, failed: 1 });
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+  });
+
+  it("active member: removed via the shared leave path, real-time events fire", async () => {
+    repo.findMemberByUserId.mockResolvedValue(activeMemberNonAdmin);
+
+    const result = await communityService.bulkDeleteCommunities(NON_ADMIN, [
+      CID,
+    ]);
+
+    expect(result.results).toEqual([{ communityId: CID, status: "REMOVED" }]);
+    expect(repo.updateMemberStatus).toHaveBeenCalledWith(
+      CID,
+      NON_ADMIN,
+      "LEFT"
+    );
+    expect(pubMemberLeft).toHaveBeenCalledTimes(1);
+    const removedCall = pubRoomEvent.mock.calls.find(
+      ([, , evt]) => evt === "community:member:removed"
+    );
+    expect(removedCall).toBeDefined();
+  });
+
+  it("banned member: does not touch membership, still reports REMOVED", async () => {
+    repo.findMemberByUserId.mockResolvedValue(bannedMember);
+
+    const result = await communityService.bulkDeleteCommunities(NON_ADMIN, [
+      CID,
+    ]);
+
+    expect(result.results).toEqual([{ communityId: CID, status: "REMOVED" }]);
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+    expect(pubRoomEvent).not.toHaveBeenCalled();
+    expect(pubMemberLeft).not.toHaveBeenCalled();
+  });
+
+  it("pending member: skipped without error", async () => {
+    repo.findMemberByUserId.mockResolvedValue({
+      ...activeMemberNonAdmin,
+      status: "PENDING",
+    });
+
+    const result = await communityService.bulkDeleteCommunities(NON_ADMIN, [
+      CID,
+    ]);
+
+    expect(result.results).toEqual([{ communityId: CID, status: "SKIPPED" }]);
+    expect(repo.updateMemberStatus).not.toHaveBeenCalled();
+  });
+
+  it("already-left / no membership: skipped gracefully", async () => {
+    repo.findMemberByUserId.mockResolvedValue(null);
+
+    const result = await communityService.bulkDeleteCommunities(NON_ADMIN, [
+      CID,
+    ]);
+
+    expect(result.results).toEqual([{ communityId: CID, status: "SKIPPED" }]);
+  });
+
+  it("unknown community id: fails with NOT_FOUND", async () => {
+    repo.findCommunitiesByIds.mockResolvedValue([{ id: CID }]);
+    repo.findMemberByUserId.mockResolvedValue(activeMemberNonAdmin);
+
+    const missingId = "e".repeat(24);
+    const result = await communityService.bulkDeleteCommunities(NON_ADMIN, [
+      missingId,
+    ]);
+
+    expect(result.results).toEqual([
+      { communityId: missingId, status: "FAILED", errorCode: "NOT_FOUND" },
+    ]);
+  });
+
+  it("processes multiple ids independently — partial success", async () => {
+    repo.findMemberByUserId.mockImplementation((communityId: string) =>
+      Promise.resolve(
+        communityId === CID ? activeMemberNonAdmin : adminMembership
+      )
+    );
+
+    const result = await communityService.bulkDeleteCommunities(NON_ADMIN, [
+      CID,
+      CID2,
+    ]);
+
+    expect(result.summary).toEqual({ requested: 2, removed: 1, failed: 1 });
+    expect(result.results).toEqual(
+      expect.arrayContaining([
+        { communityId: CID, status: "REMOVED" },
+        {
+          communityId: CID2,
+          status: "FAILED",
+          errorCode: "OWNER_CANNOT_DELETE",
+        },
+      ])
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Suite 4 — unbanMember
 // ---------------------------------------------------------------------------
 

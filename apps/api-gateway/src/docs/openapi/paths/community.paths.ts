@@ -81,6 +81,90 @@ export const communityPaths = {
         },
       },
     },
+    delete: {
+      tags: ["Communities"],
+      operationId: "bulkDeleteCommunities",
+      summary: "Bulk remove communities from my list",
+      description:
+        "Remove multiple communities from the caller's own community list in a single call. Each community is processed independently — a failure for one does not block the others.\n\n" +
+        "**Rules (per community):**\n" +
+        "- `REMOVED` — caller was an active non-admin member and has been removed (reuses the same leave workflow, cleanup, and events as `POST /communities/{id}/leave`), **or** caller is a banned member (membership is left untouched — banned members are already excluded from `GET /communities/mine`, so the community was already invisible in the caller's list).\n" +
+        "- `SKIPPED` — caller has no membership, already left, or is only pending — there is nothing to remove.\n" +
+        "- `FAILED / OWNER_CANNOT_DELETE` — caller owns this community. Transfer ownership or delete the community from the admin panel.\n" +
+        "- `FAILED / NOT_FOUND` — community does not exist.\n\n" +
+        "Unlike bulk-leave, an admin's community is **never** auto-deleted here, even if the admin is the sole member.\n\n" +
+        "A `MEMBER_LEFT` audit entry and a `community.member_left` RabbitMQ event are fired for each successful active-member removal. " +
+        "The response is always `200 OK`; inspect each item's `status` and the `summary` to determine overall outcome.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/BulkDeleteCommunityRequest" },
+            examples: {
+              basic: {
+                summary: "Remove two communities",
+                value: {
+                  communityIds: [
+                    "64a7b1e2f1d2e34567890abc",
+                    "64a7b1e2f1d2e34567890def",
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description:
+            "Bulk delete processed. Each item carries its own `status`; `summary` gives aggregate counts.",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        $ref: "#/components/schemas/BulkDeleteCommunityResult",
+                      },
+                    },
+                  },
+                ],
+              },
+              examples: {
+                partial: {
+                  summary: "Mixed result — one removed, one owner-blocked",
+                  value: {
+                    success: true,
+                    message: "Bulk community removal processed",
+                    data: {
+                      results: [
+                        {
+                          communityId: "64a7b1e2f1d2e34567890abc",
+                          status: "REMOVED",
+                        },
+                        {
+                          communityId: "64a7b1e2f1d2e34567890def",
+                          status: "FAILED",
+                          errorCode: "OWNER_CANNOT_DELETE",
+                        },
+                      ],
+                      summary: { requested: 2, removed: 1, failed: 1 },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        "400": validationError,
+        "401": unauthorized,
+      },
+    },
   },
   "/communities/categories": {
     get: {
