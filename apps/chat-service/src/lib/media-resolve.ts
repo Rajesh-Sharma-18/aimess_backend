@@ -143,6 +143,22 @@ export async function resolveContentFiles<T extends MediaFileLike>(
 }
 
 /**
+ * Resolve-on-read for a reply's `quoteData.thumbnail` — same contract as every
+ * other stored media field: the persisted snapshot keeps the raw objectKey (or
+ * `null`), and this stamps a fresh full URL from the page's already-resolved
+ * `urlMap` (add the key to the same batch `resolveMediaUrlMap` call other
+ * fields use — no extra round trip). Returns `null`, never a raw key, when
+ * unresolved. Input is not mutated.
+ */
+export function resolveQuoteThumbnail<
+  T extends { thumbnail?: string | null } | null | undefined,
+>(quote: T, urlMap: Map<string, string>): T {
+  if (!quote || typeof quote !== "object") return quote;
+  if (!quote.thumbnail) return quote;
+  return { ...quote, thumbnail: urlFromMap(urlMap, quote.thumbnail) || null };
+}
+
+/**
  * Resolve-on-read for a page of pinned-message snapshots (private/group/
  * community pins share the same shape: a stored `senderAvatar` object key and a
  * frozen `contentPinned` JSON blob whose `files[]` carry attachment object

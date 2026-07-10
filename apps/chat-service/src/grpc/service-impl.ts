@@ -57,6 +57,7 @@ import {
   resolveMediaUrlMap,
   urlFromMap,
   resolveContentFiles,
+  resolveQuoteThumbnail,
   type MediaFileLike,
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
@@ -2081,6 +2082,13 @@ export function createCommunityImpl(
               const rowSticker = rowAttRecords.find(
                 (a) => String(a.type).toLowerCase() === "sticker"
               );
+              // Resolve-on-read: quoteData.thumbnail objectKey → full download
+              // URL for the broadcast, same contract as the sender avatar/
+              // attachment files above (never persisted resolved).
+              const rowQuote = buildCanonicalQuote(row.quoteData);
+              const rowQuoteUrlMap = rowQuote?.thumbnail
+                ? await resolveMediaUrlMap([rowQuote.thumbnail])
+                : new Map<string, string>();
               publishRealtimeSafe(
                 "community:" + req.communityId,
                 "community:message:new",
@@ -2093,7 +2101,7 @@ export function createCommunityImpl(
                   senderName,
                   senderAvatar: bcastSenderAvatar,
                   parentMessageId: row.parentMessageId ?? "",
-                  quoteData: buildCanonicalQuote(row.quoteData),
+                  quoteData: resolveQuoteThumbnail(rowQuote, rowQuoteUrlMap),
                   content: {
                     text: row.message ?? "",
                     files: rowBcastFiles,

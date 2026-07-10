@@ -242,4 +242,49 @@ describe("getChatSummaries — personalLastMessage overlay", () => {
     // preview instead of leaving the deleted message showing.
     expect(summaries[0]!.perUserResolved).toBe(true);
   });
+
+  it("delete-for-everyone: room.lastMessage already reflects M2 (set by recalculateLastMessageAfterDelete); filterHiddenByUser returns empty so the shared snapshot is used directly without findPreviousVisibleForUser", async () => {
+    const m2At = new Date(1_699_999_000_000);
+    const { service, messageRepo } = buildService({
+      members: [{ roomId: COMM_JOINED, lastReadAt: null }],
+      rooms: [
+        {
+          id: COMM_JOINED,
+          // After recalculateLastMessageAfterDelete ran, room's lastMessageId
+          // and lastMessage JSON are already updated to M2.
+          lastMessageId: "m2",
+          lastMessageAt: m2At,
+          lastMessage: {
+            content: "M2 text",
+            senderId: "bob",
+            senderName: "Bob",
+            messageType: "TEXT",
+            createdAt: m2At,
+          },
+        },
+      ],
+      personal: new Map(),
+      // M2 is NOT in any user's hidden set — visible path, no per-user fallback.
+      hiddenMessageIds: new Set(),
+    });
+
+    const summaries = await service.getChatSummaries({
+      userId: USER,
+      communityIds: [COMM_JOINED],
+    });
+
+    const s = summaries[0]!;
+    expect(s.hasLastMessage).toBe(true);
+    // Shared snapshot path — perUserResolved is false (no per-viewer override).
+    expect(s.perUserResolved).toBeFalsy();
+    expect(s.lastMessage).toEqual({
+      username: "Bob",
+      message: "M2 text",
+      dateTime: m2At.getTime(),
+      isSystem: false,
+      userId: "bob",
+    });
+    // No per-user fallback needed — never called.
+    expect(messageRepo.findPreviousVisibleForUser).not.toHaveBeenCalled();
+  });
 });

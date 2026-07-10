@@ -18,6 +18,10 @@ import {
   shouldCountInUnread,
   UNREAD_COUNTABLE_RAW_MATCH,
 } from "../lib/unread-count.js";
+import {
+  refreshQuoteDataForParent,
+  type QuoteRefreshPatch,
+} from "../lib/quote-refresh.js";
 
 /**
  * PERSONAL system-message visibility check (applied in memory for Prisma
@@ -214,6 +218,7 @@ export class GeneralRoomMessageRepository {
   }
 
   async findById(messageId: string): Promise<GeneralRoomMessage | null> {
+    if (!/^[0-9a-f]{24}$/i.test(messageId)) return null;
     return this.prisma.generalRoomMessage.findUnique({
       where: { id: messageId },
     });
@@ -1097,6 +1102,19 @@ export class GeneralRoomMessageRepository {
     return this.prisma.generalRoomMessage.count({
       where: { roomId, deletedForAll: false },
     });
+  }
+
+  /** Refresh `quoteData.preview`/`.isDeleted` on every reply to `parentMessageId`. */
+  async refreshReplyQuotes(
+    parentMessageId: string,
+    patch: QuoteRefreshPatch
+  ): Promise<void> {
+    await refreshQuoteDataForParent(
+      this.prisma,
+      "general_room_messages",
+      parentMessageId,
+      patch
+    );
   }
 
   async updateById(

@@ -43,10 +43,62 @@ export function safeStringify(value: unknown): string {
 export interface CanonicalQuote {
   messageId: string;
   senderId: string;
+  /** Original sender's display name — NEVER "You", even when the viewer is the sender. */
   senderName: string;
   messageType: string;
+  /** "Message deleted" when `isDeleted`, else the type-specific preview text. */
   preview: string;
   isDeleted: boolean;
+  /** Full CDN/download URL, or `null` when unavailable — never a raw objectKey. */
+  thumbnail: string | null;
+  mimeType: string | null;
+  durationMs: number;
+  attachmentCount: number;
+}
+
+/** WhatsApp-style reply preview text — the SINGLE rule set for every reply
+ *  snapshot, distinct from {@link convertMessageToPreview}'s list/push preview
+ *  wording (that one keeps its own emoji/labels for the conversation list). */
+export function buildReplyPreviewText(
+  messageType: string,
+  content: unknown,
+  attachmentCount: number
+): string {
+  const type = normalizeMessageType(messageType);
+  const c: Record<string, unknown> =
+    content && typeof content === "object"
+      ? (content as Record<string, unknown>)
+      : { text: typeof content === "string" ? content : "" };
+  const text = typeof c.text === "string" ? c.text : "";
+  const files = Array.isArray(c.files)
+    ? (c.files as Array<Record<string, unknown>>)
+    : [];
+  const fileName = (files[0]?.name as string) || "";
+
+  switch (type) {
+    case "TEXT":
+      return text;
+    case "IMAGE":
+      return attachmentCount > 1 ? `📷 ${attachmentCount} Photos` : "📷 Photo";
+    case "VIDEO":
+      return "🎥 Video";
+    case "VOICE":
+      return "🎤 Voice message";
+    case "AUDIO":
+      return "🎵 Audio";
+    case "DOCUMENT":
+      return fileName ? `📄 ${fileName}` : "📄 Document";
+    case "GIF":
+      return "GIF";
+    case "STICKER":
+      return "Sticker";
+    case "CONTACT":
+      return "Contact";
+    case "LOCATION":
+      return "Location";
+    default:
+      return text;
+  }
 }
 
 /**
@@ -54,11 +106,14 @@ export interface CanonicalQuote {
  * Tolerates the two legacy shapes so old persisted rows still render:
  *   - private legacy: { message, senderName }
  *   - group   legacy: { text, senderId, senderName, messageType, deletedForAll }
+ * `isDeleted` always wins over the stored preview text — "Message deleted" is
+ * derived here, on every read, so a delete never needs a preview-text rewrite.
  */
 export function buildCanonicalQuote(raw: unknown): CanonicalQuote | null {
   if (!raw || typeof raw !== "object") return null;
   const q = raw as Record<string, unknown>;
-  const preview =
+  const isDeleted = Boolean(q.isDeleted ?? q.deletedForAll ?? false);
+  const storedPreview =
     (q.preview as string) ?? (q.message as string) ?? (q.text as string) ?? "";
   return {
     messageId: (q.messageId as string) ?? (q.parentMessageId as string) ?? "",
@@ -67,8 +122,78 @@ export function buildCanonicalQuote(raw: unknown): CanonicalQuote | null {
     messageType: q.messageType
       ? normalizeMessageType(q.messageType as string)
       : "",
-    preview: typeof preview === "string" ? preview : "",
-    isDeleted: Boolean(q.isDeleted ?? q.deletedForAll ?? false),
+    preview: isDeleted
+      ? "Message deleted"
+      : typeof storedPreview === "string"
+        ? storedPreview
+        : "",
+    isDeleted,
+    thumbnail:
+      typeof q.thumbnail === "string" && q.thumbnail ? q.thumbnail : null,
+    mimeType: typeof q.mimeType === "string" && q.mimeType ? q.mimeType : null,
+    durationMs: typeof q.durationMs === "number" ? q.durationMs : 0,
+    attachmentCount:
+      typeof q.attachmentCount === "number" ? q.attachmentCount : 0,
+  };
+}
+
+export interface ReplyQuoteSourceInput {
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  messageType: string;
+  /** Structured content: `{ text, files[], location, contact, sticker }`. */
+  content: unknown;
+  isDeleted: boolean;
+  /**
+   * True album size (sibling-row count for a split album send). Album sends
+   * are persisted as one row PER file (see `lib/split-media-album.ts`), so a
+   * single row's own `content.files` can never reveal the album total — the
+   * caller must look up the sibling batch and pass its size here. Defaults to
+   * `content.files.length` (0 or 1) when omitted.
+   */
+  attachmentCountOverride?: number;
+}
+
+/**
+ * The SINGLE shared builder for a reply's persisted `quoteData` snapshot —
+ * reused by private/group/community send paths so all three chat types
+ * capture the same fields the same way (previously duplicated 3x inline).
+ */
+export function buildReplyQuoteSnapshot(
+  input: ReplyQuoteSourceInput
+): CanonicalQuote {
+  const c =
+    input.content && typeof input.content === "object"
+      ? (input.content as Record<string, unknown>)
+      : {};
+  const files = Array.isArray(c.files)
+    ? (c.files as Array<Record<string, unknown>>)
+    : [];
+  const first = files[0];
+  // Prefer the stable objectKey over a (possibly presigned/expiring) stored
+  // url; resolved to a full download URL on READ, never persisted resolved
+  // (see `lib/media-resolve.ts`'s resolve-on-read contract).
+  const thumbnailKey =
+    (first?.objectKey as string) || (first?.url as string) || "";
+  const mimeType = (first?.mime as string) || "";
+  const durationMs = first?.durationMs;
+  const attachmentCount = input.attachmentCountOverride ?? files.length;
+  return {
+    messageId: input.messageId,
+    senderId: input.senderId,
+    senderName: input.senderName,
+    messageType: normalizeMessageType(input.messageType),
+    preview: buildReplyPreviewText(
+      input.messageType,
+      input.content,
+      attachmentCount
+    ),
+    isDeleted: Boolean(input.isDeleted),
+    thumbnail: thumbnailKey || null,
+    mimeType: mimeType || null,
+    durationMs: typeof durationMs === "number" ? durationMs : 0,
+    attachmentCount,
   };
 }
 

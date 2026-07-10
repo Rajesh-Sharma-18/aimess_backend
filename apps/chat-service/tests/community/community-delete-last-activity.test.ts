@@ -522,3 +522,437 @@ describe("gRPC deleteCommunityMessage — forMe", () => {
     expect(updateMessageActivity).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Socket content — community:updated carries the recalculated preview
+// ---------------------------------------------------------------------------
+
+describe("REST DELETE forEveryone — community:updated socket carries recalculated preview", () => {
+  it("publishCommunityUpdatedSafe receives the prev message id and rendered preview", async () => {
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      sentBy: TEST_USER_ID,
+      messageType: "text",
+      deletedForAll: false,
+    });
+    mocks.generalRoomMessageRepo.deleteForAll.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      createdAt: new Date(),
+    });
+    mocks.generalRoomRepo.findRoomById.mockResolvedValue({
+      id: ROOM,
+      status: "active",
+      lastMessageId: MSG,
+    });
+    mocks.generalRoomMessageRepo.findPreviousVisibleMessage.mockResolvedValue({
+      id: "prev-1",
+      sentBy: "sender-2",
+      senderName: "Alice",
+      message: "",
+      messageType: "IMAGE",
+      createdAt: new Date(Date.now() - 2000),
+    });
+
+    const res = await request(app)
+      .delete(`${BASE}/messages/${MSG}?type=forEveryone`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(pubCommunityUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: ROOM,
+        lastMessageId: "prev-1",
+        preview: expect.objectContaining({
+          contentType: "IMAGE",
+          text: "📷 Photo",
+        }),
+      })
+    );
+  });
+
+  it("publishCommunityUpdatedSafe carries empty lastMessageId when room is empty after delete", async () => {
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      sentBy: TEST_USER_ID,
+      messageType: "text",
+      deletedForAll: false,
+    });
+    mocks.generalRoomMessageRepo.deleteForAll.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      createdAt: new Date(),
+    });
+    mocks.generalRoomRepo.findRoomById.mockResolvedValue({
+      id: ROOM,
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findPreviousVisibleMessage.mockResolvedValue(
+      null
+    );
+
+    await request(app)
+      .delete(`${BASE}/messages/${MSG}?type=forEveryone`)
+      .set(bearer(makeAccessToken()));
+
+    expect(pubCommunityUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ communityId: ROOM, lastMessageId: "" })
+    );
+  });
+
+  it("consecutive deletes: each recalculates independently (M3→M2→M1)", async () => {
+    const MSG2 = "msg-2";
+    const MSG1 = "msg-1";
+
+    mocks.generalRoomMessageRepo.findById
+      .mockResolvedValueOnce({
+        id: MSG,
+        roomId: ROOM,
+        sentBy: TEST_USER_ID,
+        messageType: "text",
+        deletedForAll: false,
+      })
+      .mockResolvedValueOnce({
+        id: MSG2,
+        roomId: ROOM,
+        sentBy: TEST_USER_ID,
+        messageType: "text",
+        deletedForAll: false,
+      });
+    mocks.generalRoomMessageRepo.deleteForAll
+      .mockResolvedValueOnce({ id: MSG, roomId: ROOM, createdAt: new Date() })
+      .mockResolvedValueOnce({ id: MSG2, roomId: ROOM, createdAt: new Date() });
+    mocks.generalRoomRepo.findRoomById.mockResolvedValue({
+      id: ROOM,
+      status: "active",
+      lastMessageId: MSG,
+    });
+    mocks.generalRoomMessageRepo.findPreviousVisibleMessage
+      .mockResolvedValueOnce({
+        id: MSG2,
+        sentBy: "u2",
+        senderName: "Bob",
+        message: "second",
+        messageType: "TEXT",
+        createdAt: new Date(Date.now() - 2000),
+      })
+      .mockResolvedValueOnce({
+        id: MSG1,
+        sentBy: "u1",
+        senderName: "Alice",
+        message: "first",
+        messageType: "TEXT",
+        createdAt: new Date(Date.now() - 4000),
+      });
+
+    await request(app)
+      .delete(`${BASE}/messages/${MSG}?type=forEveryone`)
+      .set(bearer(makeAccessToken()));
+    await request(app)
+      .delete(`${BASE}/messages/${MSG2}?type=forEveryone`)
+      .set(bearer(makeAccessToken()));
+
+    expect(updateMessageActivity).toHaveBeenCalledTimes(2);
+    expect(updateMessageActivity).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ communityId: ROOM, lastMessageId: MSG2 })
+    );
+    expect(updateMessageActivity).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ communityId: ROOM, lastMessageId: MSG1 })
+    );
+    expect(pubCommunityUpdated).toHaveBeenCalledTimes(2);
+    expect(pubCommunityUpdated).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ lastMessageId: MSG2 })
+    );
+    expect(pubCommunityUpdated).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ lastMessageId: MSG1 })
+    );
+  });
+
+  it("deleting a middle message (not the last) is a no-op: no updateMessageActivity, no socket", async () => {
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      sentBy: TEST_USER_ID,
+      messageType: "text",
+      deletedForAll: false,
+    });
+    mocks.generalRoomMessageRepo.deleteForAll.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      createdAt: new Date(),
+    });
+    // Room's lastMessageId is a DIFFERENT (newer) message, and prev resolves to it too
+    mocks.generalRoomRepo.findRoomById.mockResolvedValue({
+      id: ROOM,
+      status: "active",
+      lastMessageId: "newer-msg",
+    });
+    mocks.generalRoomMessageRepo.findPreviousVisibleMessage.mockResolvedValue({
+      id: "newer-msg",
+      sentBy: "u",
+      messageType: "text",
+      createdAt: new Date(),
+    });
+
+    const res = await request(app)
+      .delete(`${BASE}/messages/${MSG}?type=forEveryone`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(updateMessageActivity).not.toHaveBeenCalled();
+    expect(pubCommunityUpdated).not.toHaveBeenCalled();
+  });
+});
+
+describe("REST DELETE forMe — community:updated socket carries recalculated preview", () => {
+  it("publishCommunityUpdatedSafe receives the prev message id, senderName and rendered preview", async () => {
+    const deletedCreatedAt = new Date("2026-07-01T10:00:00.000Z");
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      sentBy: "someone-else",
+      messageType: "text",
+      deletedForAll: false,
+      createdAt: deletedCreatedAt,
+    });
+    mocks.generalRoomMessageRepo.deleteForUser.mockResolvedValue(undefined);
+    mocks.generalRoomRepo.findRoomById.mockResolvedValue({
+      id: ROOM,
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findPreviousVisibleForUser.mockResolvedValue({
+      id: "prev-forMe",
+      sentBy: "carol",
+      senderName: "Carol",
+      message: "earlier text",
+      messageType: "TEXT",
+      createdAt: new Date(deletedCreatedAt.getTime() - 1000),
+    });
+
+    const res = await request(app)
+      .delete(`${BASE}/messages/${MSG}?type=forMe`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(pubCommunityUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: ROOM,
+        lastMessageId: "prev-forMe",
+        preview: expect.objectContaining({
+          contentType: "TEXT",
+          text: "earlier text",
+        }),
+      })
+    );
+    // Only sent to the deleter (not all members)
+    const call = pubCommunityUpdated.mock.calls[0][0] as {
+      fetchMembers: () => Promise<string[]>;
+    };
+    const recipients = await call.fetchMembers();
+    expect(recipients).toEqual([TEST_USER_ID]);
+  });
+
+  it("no socket when deleted message was not the viewer's effective last", async () => {
+    const oldCreatedAt = new Date("2026-06-01T10:00:00.000Z");
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: MSG,
+      roomId: ROOM,
+      sentBy: "someone-else",
+      messageType: "text",
+      deletedForAll: false,
+      createdAt: oldCreatedAt,
+    });
+    mocks.generalRoomMessageRepo.deleteForUser.mockResolvedValue(undefined);
+    mocks.generalRoomRepo.findRoomById.mockResolvedValue({
+      id: ROOM,
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findPreviousVisibleForUser.mockResolvedValue({
+      id: "newer-msg",
+      sentBy: "u",
+      messageType: "text",
+      createdAt: new Date("2026-07-01T10:00:00.000Z"),
+    });
+
+    await request(app)
+      .delete(`${BASE}/messages/${MSG}?type=forMe`)
+      .set(bearer(makeAccessToken()));
+
+    expect(pubCommunityUpdated).not.toHaveBeenCalled();
+  });
+});
+
+describe("gRPC deleteCommunityMessage forEveryone — socket content", () => {
+  function makeDeps(
+    over: Record<string, unknown>
+  ): import("../../src/grpc/service-impl.js").GrpcDeps {
+    return over as unknown as import("../../src/grpc/service-impl.js").GrpcDeps;
+  }
+  type Handler = (
+    call: { request: unknown },
+    cb: (err: unknown, res?: unknown) => void
+  ) => void;
+  function invoke(handler: Handler, request: unknown): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      handler({ request }, (err, res) =>
+        err
+          ? reject(err instanceof Error ? err : new Error(String(err)))
+          : resolve(res)
+      );
+    });
+  }
+
+  it("publishCommunityUpdatedSafe receives the recalculated prev message id and preview", async () => {
+    const deps = makeDeps({
+      communityMessageService: {
+        deleteForAll: jest
+          .fn()
+          .mockResolvedValue({ id: MSG, roomId: ROOM, createdAt: new Date() }),
+        recalculateLastMessageAfterDelete: jest.fn().mockResolvedValue({
+          prevMessageId: "prev-grpc-1",
+          preview: "📷 Photo",
+          messageType: "IMAGE",
+          sentBy: "sender-grpc",
+          senderName: "GrpcSender",
+          createdAt: new Date(),
+          hasLastMessage: true,
+        }),
+        getActiveMemberIds: jest.fn().mockResolvedValue([]),
+        resolveForEveryoneOverrides: jest.fn().mockResolvedValue(new Map()),
+      },
+    });
+    const impl = createCommunityImpl(deps);
+    await invoke(impl.deleteCommunityMessage as Handler, {
+      messageId: MSG,
+      communityId: ROOM,
+      userId: TEST_USER_ID,
+      deleteType: "forEveryone",
+    });
+
+    expect(pubCommunityUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: ROOM,
+        lastMessageId: "prev-grpc-1",
+        preview: expect.objectContaining({
+          contentType: "IMAGE",
+          text: "📷 Photo",
+        }),
+      })
+    );
+  });
+
+  it("no publishCommunityUpdatedSafe when recalc is null (middle message deleted)", async () => {
+    const deps = makeDeps({
+      communityMessageService: {
+        deleteForAll: jest
+          .fn()
+          .mockResolvedValue({ id: MSG, roomId: ROOM, createdAt: new Date() }),
+        recalculateLastMessageAfterDelete: jest.fn().mockResolvedValue(null),
+      },
+    });
+    const impl = createCommunityImpl(deps);
+    await invoke(impl.deleteCommunityMessage as Handler, {
+      messageId: MSG,
+      communityId: ROOM,
+      userId: TEST_USER_ID,
+      deleteType: "forEveryone",
+    });
+
+    expect(pubCommunityUpdated).not.toHaveBeenCalled();
+  });
+});
+
+describe("gRPC deleteCommunityMessage forMe — socket content", () => {
+  function makeDeps(
+    over: Record<string, unknown>
+  ): import("../../src/grpc/service-impl.js").GrpcDeps {
+    return over as unknown as import("../../src/grpc/service-impl.js").GrpcDeps;
+  }
+  type Handler = (
+    call: { request: unknown },
+    cb: (err: unknown, res?: unknown) => void
+  ) => void;
+  function invoke(handler: Handler, request: unknown): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      handler({ request }, (err, res) =>
+        err
+          ? reject(err instanceof Error ? err : new Error(String(err)))
+          : resolve(res)
+      );
+    });
+  }
+
+  it("publishCommunityUpdatedSafe sent only to deleter with prev preview", async () => {
+    const deps = makeDeps({
+      communityMessageService: {
+        deleteForMe: jest
+          .fn()
+          .mockResolvedValue({ id: MSG, roomId: ROOM, createdAt: new Date() }),
+        recalculateLastMessageAfterDeleteForMe: jest.fn().mockResolvedValue({
+          prevMessageId: "prev-grpc-me-1",
+          preview: "hello from carol",
+          messageType: "TEXT",
+          sentBy: "carol",
+          senderName: "Carol",
+          createdAt: new Date(),
+          hasLastMessage: true,
+          wasEffectiveLast: true,
+        }),
+      },
+    });
+    const impl = createCommunityImpl(deps);
+    await invoke(impl.deleteCommunityMessage as Handler, {
+      messageId: MSG,
+      communityId: ROOM,
+      userId: TEST_USER_ID,
+      deleteType: "forMe",
+    });
+
+    expect(pubCommunityUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        communityId: ROOM,
+        lastMessageId: "prev-grpc-me-1",
+        preview: expect.objectContaining({ text: "hello from carol" }),
+      })
+    );
+    const call = pubCommunityUpdated.mock.calls[0][0] as {
+      fetchMembers: () => Promise<string[]>;
+    };
+    expect(await call.fetchMembers()).toEqual([TEST_USER_ID]);
+  });
+
+  it("no socket when wasEffectiveLast is false (middle personal delete)", async () => {
+    const deps = makeDeps({
+      communityMessageService: {
+        deleteForMe: jest
+          .fn()
+          .mockResolvedValue({ id: MSG, roomId: ROOM, createdAt: new Date() }),
+        recalculateLastMessageAfterDeleteForMe: jest.fn().mockResolvedValue({
+          prevMessageId: "newer",
+          preview: "",
+          messageType: "TEXT",
+          sentBy: "",
+          senderName: "",
+          createdAt: new Date(),
+          hasLastMessage: true,
+          wasEffectiveLast: false,
+        }),
+      },
+    });
+    const impl = createCommunityImpl(deps);
+    await invoke(impl.deleteCommunityMessage as Handler, {
+      messageId: MSG,
+      communityId: ROOM,
+      userId: TEST_USER_ID,
+      deleteType: "forMe",
+    });
+
+    expect(pubCommunityUpdated).not.toHaveBeenCalled();
+  });
+});

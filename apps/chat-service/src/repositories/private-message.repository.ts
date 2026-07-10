@@ -6,6 +6,10 @@
 import { MEDIA_MESSAGE_TYPES } from "../constants/media-limits.js";
 import { logger } from "@aimess/logger";
 import { shouldCountInUnread } from "../lib/unread-count.js";
+import {
+  refreshQuoteDataForParent,
+  type QuoteRefreshPatch,
+} from "../lib/quote-refresh.js";
 
 export class PrivateMessageRepository {
   constructor(private readonly prisma: PrismaClient) {}
@@ -65,6 +69,7 @@ export class PrivateMessageRepository {
   }
 
   async findById(messageId: string): Promise<PrivateMessage | null> {
+    if (!/^[0-9a-f]{24}$/i.test(messageId)) return null;
     return this.prisma.privateMessage.findUnique({ where: { id: messageId } });
   }
 
@@ -600,6 +605,19 @@ export class PrivateMessageRepository {
         deletedFor: { type: "forEveryone" } as unknown as Prisma.InputJsonValue,
       },
     });
+  }
+
+  /** Refresh `quoteData.preview`/`.isDeleted` on every reply to `parentMessageId`. */
+  async refreshReplyQuotes(
+    parentMessageId: string,
+    patch: QuoteRefreshPatch
+  ): Promise<void> {
+    await refreshQuoteDataForParent(
+      this.prisma,
+      "private_messages",
+      parentMessageId,
+      patch
+    );
   }
 
   async countSearchResults(
