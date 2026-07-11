@@ -485,11 +485,15 @@ export const adminPaths = {
       requestBody: jsonBody("#/components/schemas/AdminChangePasswordRequest"),
       responses: {
         "200": okRes(
-          "Password changed",
+          "Password changed successfully",
           "#/components/schemas/AdminChangePasswordResponse"
         ),
-        "400": errRes("Validation failed or same password"),
-        "401": errRes("Wrong current password / missing token"),
+        "400": errRes(
+          "Wrong current password / same as current / policy failure / confirmation mismatch"
+        ),
+        "401": errRes("Missing, invalid, or expired admin token"),
+        "403": errRes("Admin account not active"),
+        "404": errRes("Admin account not found"),
       },
       "x-implementation-status": "implemented",
     },

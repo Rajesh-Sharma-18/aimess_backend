@@ -59,7 +59,7 @@ export const changePassword: RequestHandler = (req, res, next) => {
       );
       res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "Password changed",
+        message: "Password changed successfully.",
         data: { passwordChanged: true },
       });
     } catch (error) {

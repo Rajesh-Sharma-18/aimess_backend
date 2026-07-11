@@ -2,6 +2,7 @@ import {
   BadRequestError,
   ConflictError,
   ForbiddenError,
+  NotFoundError,
   UnauthorizedError,
 } from "@aimess/errors";
 
@@ -368,12 +369,15 @@ export const adminAuthService = {
   ): Promise<void> {
     const admin = await adminUserRepository.findById(adminId);
     if (!admin) {
-      throw new UnauthorizedError("AUTH_UNAUTHORIZED");
+      throw new NotFoundError("ADMIN_NOT_FOUND");
+    }
+    if (admin.status !== "ACTIVE") {
+      throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
     }
 
     const ok = await verifyPassword(input.currentPassword, admin.passwordHash);
     if (!ok) {
-      throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
+      throw new BadRequestError("AUTH_CURRENT_PASSWORD_INVALID");
     }
 
     const sameAsCurrent = await verifyPassword(

@@ -1,5 +1,9 @@
 import { extractBearerToken } from "@aimess/auth-jwt";
-import { UnauthorizedError } from "@aimess/errors";
+import {
+  ForbiddenError,
+  NotFoundError,
+  UnauthorizedError,
+} from "@aimess/errors";
 import type { RequestHandler } from "express";
 
 import { verifyAdminAccessToken } from "../../lib/admin-jwt.js";
@@ -23,8 +27,11 @@ export const adminAuth: RequestHandler = (req, _res, next) => {
       }
 
       const admin = await adminUserRepository.findById(adminId);
-      if (!admin || admin.status !== "ACTIVE") {
-        throw new UnauthorizedError("AUTH_UNAUTHORIZED");
+      if (!admin) {
+        throw new NotFoundError("ADMIN_NOT_FOUND");
+      }
+      if (admin.status !== "ACTIVE") {
+        throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
       }
 
       const permissions = await getCachedAdminPermissions(

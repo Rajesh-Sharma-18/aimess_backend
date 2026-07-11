@@ -24,7 +24,12 @@ jest.mock("../../src/services/index.js", () => {
 });
 
 import request from "supertest";
-import { ConflictError, UnauthorizedError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "@aimess/errors";
 
 import { app } from "../../src/app.js";
 import { adminUserRepository } from "../../src/repositories/index.js";
@@ -187,15 +192,53 @@ describe("PATCH /v1/change-password", () => {
     expect(svc.changePassword).not.toHaveBeenCalled();
   });
 
-  it("returns 401 when the current password is wrong", async () => {
+  it("returns 400 when the current password is wrong", async () => {
     svc.changePassword.mockRejectedValueOnce(
-      new UnauthorizedError("AUTH_INVALID_CREDENTIALS")
+      new BadRequestError("AUTH_CURRENT_PASSWORD_INVALID")
     );
     const res = await request(app)
       .patch("/v1/change-password")
       .set(bearer(makeAdminAccessToken()))
       .send(goodBody);
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.message).toBe("Current password is incorrect.");
+  });
+
+  it("returns 400 when the service reports new password same as current", async () => {
+    svc.changePassword.mockRejectedValueOnce(
+      new BadRequestError("PASSWORD_SAME_AS_CURRENT")
+    );
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe(
+      "New password must be different from your current password."
+    );
+  });
+
+  it("returns 404 when the admin account is not found in the service", async () => {
+    svc.changePassword.mockRejectedValueOnce(
+      new NotFoundError("ADMIN_NOT_FOUND")
+    );
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 403 when the admin account is inactive in the service", async () => {
+    svc.changePassword.mockRejectedValueOnce(
+      new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE")
+    );
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(403);
   });
 
   it("returns 401 without a token", async () => {

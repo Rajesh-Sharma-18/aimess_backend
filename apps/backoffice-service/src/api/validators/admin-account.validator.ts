@@ -140,11 +140,11 @@ export const changePasswordSchema = z
   })
   .refine((v) => v.newPassword === v.confirmPassword, {
     path: ["confirmPassword"],
-    message: "Passwords do not match",
+    message: "Password confirmation does not match.",
   })
   .refine((v) => v.newPassword !== v.currentPassword, {
     path: ["newPassword"],
-    message: "New password must differ from the current password",
+    message: "New password must be different from the current password.",
   });
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
