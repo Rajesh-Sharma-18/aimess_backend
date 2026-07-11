@@ -1700,15 +1700,16 @@ export const adminPaths = {
       operationId: "adminGetReport",
       summary: "Get Reports & Moderation Details",
       description:
-        "Aggregate for the admin Reports & Moderation Details page, composed in one call: " +
-        "(1) the report block — id/type/status/createdAt + enriched `reportedUser`/`reporter` " +
-        "(id/username/fullName/avatar); (2) `community` — the Community Report Details block " +
-        "(id/name/avatar/category/reportedDate/`reportedMessage`), null when the report has no " +
-        "associated community; (3) `members` — the community's member list (`items`/`pagination`), " +
-        "reusing the same read-through as GET /admin/v1/communities/{communityId}/members " +
-        "(supports `page`/`limit`/`search`/`role`), null when there is no community. " +
-        "`reportedMessage` is null for non-message-based reports, and only carries the message id " +
-        "(no admin RPC exists yet to fetch message content). Requires `reports.read`.",
+        "Aggregate for the admin Reports & Moderation Details page, composed in one call. " +
+        "`reportType` identifies the reported entity and drives which blocks are returned: " +
+        "`USER` → `reportedUser`; `COMMUNITY` (a reported community member) → " +
+        "`reportedUser`/`community`/`communityAdmin`; `LIVESTREAM` → additionally `livestream`; " +
+        "`MESSAGE` (a reported community message) → additionally `message`. A community is " +
+        "never itself reportable. User objects (`reporter`/`reportedUser`/`communityAdmin`/" +
+        "`livestream.host`) are the standard `{id,fullName,username,avatar}` shape; `avatar` is " +
+        "the standard media object. `message` content/media are best-effort `null` until an " +
+        "admin message-content RPC exists in chat-service. All timestamps are epoch " +
+        "milliseconds. Requires `reports.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -1718,43 +1719,13 @@ export const adminPaths = {
           schema: { type: "string" },
           description: "Public report id, e.g. RPT-2026-0001284.",
         },
-        {
-          name: "page",
-          in: "query",
-          required: false,
-          schema: { type: "integer", minimum: 1, default: 1 },
-          description:
-            "Community member list page (ignored when the report has no community).",
-        },
-        {
-          name: "limit",
-          in: "query",
-          required: false,
-          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
-          description: "Community member list page size.",
-        },
-        {
-          name: "search",
-          in: "query",
-          required: false,
-          schema: { type: "string" },
-          description:
-            "Community member search by username, display name, or exact userId.",
-        },
-        {
-          name: "role",
-          in: "query",
-          required: false,
-          schema: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
-          description: "Filter the community member list by role.",
-        },
       ],
       responses: {
         "200": okRes(
           "Reports & Moderation Details",
           "#/components/schemas/AdminReportModerationDetail"
         ),
-        "400": errRes("Validation failed (bad page/limit/role)"),
+        "400": errRes("Validation failed (bad reportId)"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing reports.read"),
         "404": errRes("Report not found"),

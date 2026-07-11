@@ -67,7 +67,7 @@ beforeEach(() => {
   });
   svc.getReportModerationDetail.mockResolvedValue({
     id: "RPT-2026-0000001",
-    type: "USER",
+    reportType: "COMMUNITY",
     reportReason: "Spam Messages",
     reportMessage: null,
     reportStatus: "PENDING",

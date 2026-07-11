@@ -2102,104 +2102,209 @@ export const openApiSchemas = {
     },
     required: ["id", "username", "fullName", "avatar"],
   },
+  AdminCommunityReportBlock: {
+    type: "object",
+    description: "Compact community reference on a report.",
+    properties: {
+      id: { type: "string", example: "comm_001" },
+      name: { type: "string", example: "Indie Game Devs" },
+      handle: { type: "string", example: "@indie_devs" },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description: "Standard avatar object; `null` when no avatar is set.",
+      },
+    },
+    required: ["id", "name", "handle", "avatar"],
+  },
+  AdminLivestreamReportBlock: {
+    type: "object",
+    description:
+      "Reported livestream — the stream's useful details (present only for LIVESTREAM reports).",
+    properties: {
+      id: { type: "string", example: "stream_9f2" },
+      title: { type: "string", example: "Late-night live coding" },
+      description: { type: "string", example: "Building the admin panel" },
+      status: {
+        type: "string",
+        example: "ENDED",
+        description: "LIVE | ENDED | SCHEDULED | CANCELLED (as stored).",
+      },
+      thumbnail: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description: "Standard media object; `null` when no thumbnail is set.",
+      },
+      viewerCount: {
+        type: "integer",
+        example: 200,
+        description:
+          "Distinct viewers for an ended stream; currently-watching count while live.",
+      },
+      activeViewerCount: {
+        type: "integer",
+        example: 0,
+        description: "Currently watching; 0 once the stream has ended.",
+      },
+      duration: {
+        type: "integer",
+        format: "int64",
+        example: 3600000,
+        description: "Stream duration in milliseconds.",
+      },
+      startedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        example: 1783765815123,
+        description: "Epoch milliseconds; `null` if never went live.",
+      },
+      endedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        example: 1783769415123,
+        description: "Epoch milliseconds; `null` while still live/scheduled.",
+      },
+      host: {
+        allOf: [{ $ref: "#/components/schemas/AdminReportModerationUserRef" }],
+        nullable: true,
+      },
+    },
+    required: [
+      "id",
+      "title",
+      "description",
+      "status",
+      "thumbnail",
+      "viewerCount",
+      "activeViewerCount",
+      "duration",
+      "startedAt",
+      "endedAt",
+      "host",
+    ],
+  },
+  AdminMessageReportBlock: {
+    type: "object",
+    description:
+      "Reported community message (present only for MESSAGE reports). Content/media are best-effort `null` until an admin message-content RPC exists in chat-service; the reported `id`/`senderId` are always available.",
+    properties: {
+      id: { type: "string", example: "msg_42" },
+      messageType: { type: "string", nullable: true, example: "TEXT" },
+      text: { type: "string", nullable: true, example: "spam spam spam" },
+      content: { type: "string", nullable: true },
+      media: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MediaObject" },
+      },
+      sentAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        example: 1783765815123,
+        description: "Epoch milliseconds.",
+      },
+      senderId: { type: "string", nullable: true, example: "u_1" },
+    },
+    required: [
+      "id",
+      "messageType",
+      "text",
+      "content",
+      "media",
+      "sentAt",
+      "senderId",
+    ],
+  },
   AdminReportModerationDetail: {
     type: "object",
     description:
-      "Aggregate for the admin Reports & Moderation Details page: `{ success, data: { report, community, members } }`.",
+      "Aggregate for the admin Reports & Moderation Details page: `{ success, data }`. `data.reportType` identifies the reported entity and drives which entity blocks are present:\n- `USER` → reportedUser only\n- `COMMUNITY` → reportedUser, community, communityAdmin\n- `LIVESTREAM` → reportedUser, community, communityAdmin, livestream\n- `MESSAGE` → reportedUser, community, communityAdmin, message\n\nA community is never itself reportable: a reported community MEMBER is a `COMMUNITY` report; a reported community MESSAGE is a `MESSAGE` report. All timestamps are epoch milliseconds.",
     properties: {
       success: { type: "boolean", example: true },
       data: {
         type: "object",
         properties: {
-          report: {
-            type: "object",
-            description: "Report Details.",
-            properties: {
-              id: { type: "string", example: "RPT-2026-0001284" },
-              type: { $ref: "#/components/schemas/AdminModerationTargetType" },
-              status: { $ref: "#/components/schemas/AdminModerationStatus" },
-              createdAt: { type: "string", format: "date-time" },
-              reportedUser: {
-                allOf: [
-                  { $ref: "#/components/schemas/AdminReportModerationUserRef" },
-                ],
-                nullable: true,
-              },
-              reporter: {
-                allOf: [
-                  { $ref: "#/components/schemas/AdminReportModerationUserRef" },
-                ],
-                nullable: true,
-              },
-            },
-            required: [
-              "id",
-              "type",
-              "status",
-              "createdAt",
-              "reportedUser",
-              "reporter",
+          id: { type: "string", example: "RPT-2026-0001284" },
+          reportType: {
+            type: "string",
+            enum: ["USER", "COMMUNITY", "LIVESTREAM", "MESSAGE"],
+            example: "COMMUNITY",
+            description:
+              "Reported entity kind. (COMMENT is reserved for future livestream-comment reports and is not emitted yet.)",
+          },
+          reportReason: { type: "string", example: "Spam Messages" },
+          reportMessage: {
+            type: "string",
+            nullable: true,
+            example: "Kept posting spam links",
+          },
+          reportStatus: {
+            $ref: "#/components/schemas/AdminModerationStatus",
+          },
+          createdAt: {
+            type: "integer",
+            format: "int64",
+            example: 1783765815123,
+            description: "Epoch milliseconds.",
+          },
+          updatedAt: {
+            type: "integer",
+            format: "int64",
+            example: 1783765824000,
+            description: "Epoch milliseconds.",
+          },
+          reporter: {
+            allOf: [
+              { $ref: "#/components/schemas/AdminReportModerationUserRef" },
             ],
+            nullable: true,
+          },
+          reportedUser: {
+            allOf: [
+              { $ref: "#/components/schemas/AdminReportModerationUserRef" },
+            ],
+            nullable: true,
           },
           community: {
-            type: "object",
+            allOf: [{ $ref: "#/components/schemas/AdminCommunityReportBlock" }],
             nullable: true,
             description:
-              "Community Report Details. Null when the report has no associated community.",
-            properties: {
-              id: { type: "string", example: "comm_001" },
-              name: { type: "string", example: "Indie Game Devs" },
-              avatar: {
-                allOf: [{ $ref: "#/components/schemas/MediaObject" }],
-                nullable: true,
-                description:
-                  "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
-              },
-              category: {
-                type: "object",
-                properties: {
-                  id: { type: "string", example: "cat_07" },
-                  name: { type: "string", example: "Gaming" },
-                },
-                required: ["id", "name"],
-              },
-              reportedDate: { type: "string", format: "date-time" },
-              reportedMessage: {
-                type: "object",
-                nullable: true,
-                description:
-                  "Only the message id — null for non-message-based reports. No admin RPC exists yet to fetch message content.",
-                properties: {
-                  id: { type: "string", example: "msg_42" },
-                },
-                required: ["id"],
-              },
-            },
-            required: [
-              "id",
-              "name",
-              "avatar",
-              "category",
-              "reportedDate",
-              "reportedMessage",
-            ],
+              "Present for COMMUNITY / LIVESTREAM / MESSAGE reports; omitted for USER reports.",
           },
-          members: {
-            type: "object",
+          communityAdmin: {
+            allOf: [
+              { $ref: "#/components/schemas/AdminReportModerationUserRef" },
+            ],
             nullable: true,
             description:
-              "Community Member List — identical shape/filters to GET /admin/v1/communities/{communityId}/members. Null when there is no community.",
-            properties: {
-              items: {
-                type: "array",
-                items: { $ref: "#/components/schemas/AdminCommunityMember" },
-              },
-              pagination: { $ref: "#/components/schemas/AdminPagination" },
-            },
-            required: ["items", "pagination"],
+              "Community's current ADMIN. Present for COMMUNITY / LIVESTREAM / MESSAGE reports; omitted for USER reports.",
+          },
+          livestream: {
+            allOf: [
+              { $ref: "#/components/schemas/AdminLivestreamReportBlock" },
+            ],
+            nullable: true,
+            description: "Present only for LIVESTREAM reports.",
+          },
+          message: {
+            allOf: [{ $ref: "#/components/schemas/AdminMessageReportBlock" }],
+            nullable: true,
+            description: "Present only for MESSAGE reports.",
           },
         },
-        required: ["report", "community", "members"],
+        required: [
+          "id",
+          "reportType",
+          "reportReason",
+          "reportMessage",
+          "reportStatus",
+          "createdAt",
+          "updatedAt",
+          "reporter",
+          "reportedUser",
+        ],
       },
     },
     required: ["success", "data"],

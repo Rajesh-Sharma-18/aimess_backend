@@ -1,6 +1,8 @@
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import { communityClient } from "../grpc/community.client.js";
 import { userClient } from "../grpc/user.client.js";
+import { streamClient } from "../grpc/stream.client.js";
+import type { RawAdminCommunityRow } from "../grpc/community.client.js";
 import {
   adminUserRepository,
   reportRepository,
@@ -17,10 +19,12 @@ import type {
   DismissResult,
   EvidenceItem,
   HistoryItem,
+  LivestreamReportBlock,
   ListReportEvidenceQuery,
   ListReportHistoryQuery,
   ListReportRelatedQuery,
   ListReportsQuery,
+  MessageReportBlock,
   ModeratorRef,
   Paginated,
   RelatedReport,
@@ -28,6 +32,7 @@ import type {
   ReportDetail,
   ReportListItem,
   ReportModerationDetail,
+  ReportModerationKind,
   ReportModerationUserRef,
   PaginationMeta,
   ResolveResult,
@@ -36,6 +41,7 @@ import { normalizeReportReason } from "../lib/report-reason.js";
 import {
   resolveAvatarOrNull,
   resolveCommunityImageOrNull,
+  resolveStreamThumbnailOrNull,
 } from "../lib/avatar-media.js";
 import { auditService } from "./audit.service.js";
 
@@ -79,49 +85,60 @@ function toModerationUserRef(
   };
 }
 
-/**
- * Community + communityAdmin blocks for the Reports & Moderation Details page,
- * sourced from the existing `adminGetCommunity` RPC (same one
- * community.grpc.repository.ts uses for the Community Detail page) plus one
- * admin-profile lookup (user-service) for the community's current ADMIN
- * member's firstName/lastName. Falls back to community-service's own
- * admin-snapshot fields (name/username/avatar) if the profile lookup misses,
- * so a stale/deleted user-service record can't blank the whole block.
- */
-async function buildCommunityBlocks(communityId: string): Promise<{
-  community: CommunityReportBlock | null;
-  communityAdmin: ReportModerationUserRef | null;
-}> {
-  const res = await communityClient.adminGetCommunity(communityId);
-  if (!res.found || !res.community) {
-    return { community: null, communityAdmin: null };
-  }
-  const row = res.community;
+/** first+last name, falling back to username; "" when no profile at all. */
+function fullNameOf(
+  p?: { firstName: string; lastName: string; username: string } | null
+): string {
+  if (!p) return "";
+  const full = [p.firstName, p.lastName].filter(Boolean).join(" ").trim();
+  return full || p.username;
+}
 
-  const [avatar, adminProfile, adminAvatar] = await Promise.all([
-    resolveCommunityImageOrNull(row.communityAvatarUrl),
+/**
+ * Report-kind derivation from the reported ENTITY (never the reason category):
+ * a community is never reportable, so a reported user carrying a `communityId`
+ * is a community MEMBER report (COMMUNITY) while one without is a private USER
+ * report; a `stream`/`message` target maps to LIVESTREAM/MESSAGE. Legacy
+ * `community`-typed rows (pre-rule) also surface as COMMUNITY. Exhaustive/
+ * default-safe so an unexpected target type degrades to USER rather than
+ * throwing.
+ */
+export function toReportKind(
+  core: Pick<ReportCore, "targetType" | "communityId">
+): ReportModerationKind {
+  switch (core.targetType) {
+    case "STREAM":
+      return "LIVESTREAM";
+    case "MESSAGE":
+      return "MESSAGE";
+    case "COMMUNITY":
+      return "COMMUNITY";
+    case "USER":
+    default:
+      return core.communityId ? "COMMUNITY" : "USER";
+  }
+}
+
+/**
+ * A community's current ADMIN member (the `communityAdmin` block). Falls back
+ * to community-service's own admin-snapshot fields (name/username) if the
+ * user-service profile lookup misses, so a stale/deleted user-service record
+ * can't blank the field.
+ */
+async function resolveCommunityAdmin(
+  row: RawAdminCommunityRow
+): Promise<ReportModerationUserRef> {
+  const [adminProfile, adminAvatar] = await Promise.all([
     userClient.adminGetProfile(row.adminId),
     resolveAvatarOrNull(row.adminAvatarUrl),
   ]);
-
-  const community: CommunityReportBlock = {
-    id: row.communityId,
-    name: row.name,
-    handle: row.handle,
-    avatar,
-  };
-
-  const communityAdmin: ReportModerationUserRef = adminProfile
+  return adminProfile
     ? {
         id: row.adminId,
         username: adminProfile.username,
         firstName: adminProfile.firstName,
         lastName: adminProfile.lastName,
-        fullName:
-          [adminProfile.firstName, adminProfile.lastName]
-            .filter(Boolean)
-            .join(" ")
-            .trim() || adminProfile.username,
+        fullName: fullNameOf(adminProfile),
         avatar: adminAvatar,
       }
     : {
@@ -132,8 +149,108 @@ async function buildCommunityBlocks(communityId: string): Promise<{
         fullName: row.adminName,
         avatar: adminAvatar,
       };
+}
 
-  return { community, communityAdmin };
+/**
+ * `community` + `communityAdmin` blocks, shared by COMMUNITY / LIVESTREAM /
+ * MESSAGE reports. Sourced from the existing `adminGetCommunity` RPC (same one
+ * the Community Detail page uses) plus one admin-profile lookup. Both null when
+ * the community can't be found (deleted since the report was filed).
+ */
+async function buildCommunityBlocks(communityId: string): Promise<{
+  community: CommunityReportBlock | null;
+  communityAdmin: ReportModerationUserRef | null;
+}> {
+  const detail = await communityClient.adminGetCommunity(communityId);
+  if (!detail.found || !detail.community) {
+    return { community: null, communityAdmin: null };
+  }
+  const row = detail.community;
+  const [avatar, communityAdmin] = await Promise.all([
+    resolveCommunityImageOrNull(row.communityAvatarUrl),
+    resolveCommunityAdmin(row),
+  ]);
+  return {
+    community: {
+      id: row.communityId,
+      name: row.name,
+      handle: row.handle,
+      avatar,
+    },
+    communityAdmin,
+  };
+}
+
+/**
+ * `livestream` block for a LIVESTREAM report — sourced from `adminGetStream`
+ * (all existing useful stream fields) plus the host profile. Returns the
+ * stream's owning `communityId` alongside so the caller can resolve the
+ * community/communityAdmin blocks without re-fetching the stream. Null when the
+ * stream can't be found.
+ */
+async function buildLivestreamBlock(streamId: string): Promise<{
+  livestream: LivestreamReportBlock;
+  communityId: string;
+} | null> {
+  const stream = await streamClient.adminGetStream(streamId);
+  if (!stream) return null;
+
+  const host = await userClient.adminGetProfile(stream.creatorId);
+  const [thumbnail, hostAvatar] = await Promise.all([
+    resolveStreamThumbnailOrNull(stream.thumbnail || null),
+    resolveAvatarOrNull(host?.avatarUrl),
+  ]);
+
+  // Mirrors livestreamRepository's viewer-count rule: ended streams report the
+  // distinct-user count; live streams report the currently-watching count.
+  const ended = stream.endedAt > 0 || /ENDED/i.test(stream.status);
+  const live = !ended && /LIVE/i.test(stream.status);
+
+  return {
+    communityId: stream.communityId,
+    livestream: {
+      id: stream.id,
+      title: stream.title,
+      description: stream.description,
+      status: stream.status,
+      thumbnail,
+      viewerCount: ended ? stream.uniqueViewerCount : stream.totalViews,
+      activeViewerCount: live ? stream.viewerCount : 0,
+      duration: stream.durationSeconds * 1000,
+      startedAt: stream.livedAt || null,
+      endedAt: stream.endedAt || null,
+      host: host
+        ? {
+            id: stream.creatorId,
+            username: host.username,
+            firstName: host.firstName,
+            lastName: host.lastName,
+            fullName: fullNameOf(host),
+            avatar: hostAvatar,
+          }
+        : null,
+    },
+  };
+}
+
+/**
+ * `message` block for a MESSAGE (community message) report. Content/media are
+ * best-effort null: there is no admin message-content-fetch RPC into
+ * chat-service yet, so only the identifiers carried on the report row are
+ * populated (`id` = the reported messageId; `senderId` = the resolved reported
+ * user when available). The shape matches the eventual full contract so the FE
+ * can type against it now; wire the content fields when that RPC lands.
+ */
+function buildMessageBlock(core: ReportCore): MessageReportBlock {
+  return {
+    id: core.target.id,
+    messageType: null,
+    text: null,
+    content: null,
+    media: [],
+    sentAt: null,
+    senderId: core.reportedUser?.id ?? null,
+  };
 }
 
 export const moderationService = {
@@ -159,13 +276,14 @@ export const moderationService = {
   },
 
   /**
-   * "Reports & Moderation Details" page aggregate for GET /reports/{reportId}:
-   * a flattened report block plus reporter/reportedUser/communityAdmin/community
-   * — reusing {@link reportRepository.getCore} (already enriches
-   * reportedUser/reporterUser via user-service) and `communityClient`
-   * (community + its current admin). Null (→ 404) when the report doesn't
-   * exist. `community`/`communityAdmin` are null when the report has no
-   * associated community.
+   * "Reports & Moderation Details" page aggregate for GET /reports/{reportId}.
+   * Preserves the flat structure (id / reportReason / reportMessage /
+   * reportStatus / reporter / reportedUser / community / communityAdmin) and
+   * adds `reportType` (the reported-entity kind) plus the entity-specific
+   * `livestream` / `message` blocks. Related entities are fetched only when the
+   * report type needs them: USER hits no extra service; COMMUNITY/MESSAGE fetch
+   * community + admin; LIVESTREAM additionally fetches the stream. Null (→ 404)
+   * when the report doesn't exist.
    */
   async getReportModerationDetail(
     reportId: string
@@ -173,25 +291,59 @@ export const moderationService = {
     const core = await reportRepository.getCore(reportId);
     if (!core) return null;
 
-    const reportedUser = toModerationUserRef(core.reportedUser);
-    const reporter = toModerationUserRef(core.reporterUser);
-    const { community, communityAdmin } = core.communityId
-      ? await buildCommunityBlocks(core.communityId)
-      : { community: null, communityAdmin: null };
-
-    return {
+    const reportType = toReportKind(core);
+    const base: ReportModerationDetail = {
       id: core.reportId,
-      type: core.reportType,
+      reportType,
       reportReason: normalizeReportReason(core.reason).label,
       reportMessage: core.reporterNote,
       reportStatus: core.status,
       createdAt: core.createdAt,
       updatedAt: core.updatedAt,
-      reporter,
-      reportedUser,
-      communityAdmin,
-      community,
+      reporter: toModerationUserRef(core.reporterUser),
+      reportedUser: toModerationUserRef(core.reportedUser),
     };
+
+    switch (reportType) {
+      case "USER":
+        return base;
+
+      case "COMMUNITY": {
+        const blocks = core.communityId
+          ? await buildCommunityBlocks(core.communityId)
+          : { community: null, communityAdmin: null };
+        return { ...base, ...blocks };
+      }
+
+      case "MESSAGE": {
+        const blocks = core.communityId
+          ? await buildCommunityBlocks(core.communityId)
+          : { community: null, communityAdmin: null };
+        return { ...base, ...blocks, message: buildMessageBlock(core) };
+      }
+
+      case "LIVESTREAM": {
+        // Fetch the stream and (when the report carries a communityId) its
+        // community in parallel; fall back to the stream's own community when
+        // the report row lacks one.
+        const [built, preFetched] = await Promise.all([
+          buildLivestreamBlock(core.target.id),
+          core.communityId
+            ? buildCommunityBlocks(core.communityId)
+            : Promise.resolve(null),
+        ]);
+        const blocks =
+          preFetched ??
+          (built
+            ? await buildCommunityBlocks(built.communityId)
+            : { community: null, communityAdmin: null });
+        return {
+          ...base,
+          ...blocks,
+          livestream: built?.livestream ?? null,
+        };
+      }
+    }
   },
 
   listReportEvidence(

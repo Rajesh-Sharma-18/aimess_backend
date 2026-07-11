@@ -306,13 +306,84 @@ export type ReportModerationUserRef = {
   avatar: MediaObject | null;
 };
 
-/** "Community" block. Null when the report has no associated community. */
+/**
+ * Explicit report-kind identifier for the Reports & Moderation Details page —
+ * derived from the REPORTED ENTITY (not the reason category). A community
+ * itself is never reportable; inside a community a reported MEMBER is a
+ * COMMUNITY report and a reported MESSAGE is a MESSAGE report. A reported user
+ * outside any community is a USER report.
+ *   USER       → private (non-community) user report
+ *   COMMUNITY  → community member report
+ *   LIVESTREAM → livestream report
+ *   MESSAGE    → community message report
+ * Future: COMMENT (livestream comment) — mapping kept commented below until
+ * the backend grows a comment entity + report path.
+ */
+export type ReportModerationKind =
+  | "USER"
+  | "COMMUNITY"
+  | "LIVESTREAM"
+  | "MESSAGE";
+// | "COMMENT"; // (Future) livestream comment reports — not yet wired.
+
+/** "community" block — compact community reference. */
 export type CommunityReportBlock = {
   id: string;
   name: string;
   handle: string;
   avatar: MediaObject | null;
 };
+
+/**
+ * "livestream" block — the reported stream's useful details, sourced from the
+ * existing stream-service admin read (`streamClient.adminGetStream`).
+ */
+export type LivestreamReportBlock = {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  thumbnail: MediaObject | null;
+  /** Total distinct viewers (ended) or running total (live). */
+  viewerCount: number;
+  /** Currently watching; 0 once the stream has ended. */
+  activeViewerCount: number;
+  /** Milliseconds. */
+  duration: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  host: ReportModerationUserRef | null;
+};
+
+/**
+ * "message" block — the reported community message. Content fields are
+ * best-effort: there is no admin message-content-fetch RPC into chat-service
+ * yet, so a message report currently exposes the identifiers it carries
+ * (id/senderId) with content/media null until that path exists. Shape matches
+ * the eventual full contract so the FE can type against it now.
+ */
+export type MessageReportBlock = {
+  id: string;
+  messageType: string | null;
+  text: string | null;
+  content: string | null;
+  media: MediaObject[];
+  sentAt: number | null;
+  senderId: string | null;
+};
+
+/**
+ * (Future) "comment" block for COMMENT (livestream comment) reports — kept
+ * commented until the backend grows a comment entity + report-ingest path.
+ *
+ * export type CommentReportBlock = {
+ *   id: string;
+ *   message: string | null;
+ *   sender: ReportModerationUserRef | null;
+ *   livestream: { id: string; title: string } | null;
+ *   createdAt: number | null;
+ * };
+ */
 
 /**
  * One row in the "Community Members" grid on the Reports & Moderation Details
@@ -336,10 +407,21 @@ export type CommunityMembersBlock = {
   pagination: PaginationMeta;
 };
 
-/** Full aggregate returned by GET /reports/{reportId} for the admin Reports & Moderation Details page. */
+/**
+ * Full aggregate returned by GET /reports/{reportId} for the admin Reports &
+ * Moderation Details page. Preserves the original flat structure (id /
+ * reportReason / reportMessage / reportStatus / reporter / reportedUser /
+ * community / communityAdmin) and adds `reportType` (the reported-entity kind)
+ * plus the entity-specific `livestream` / `message` blocks. Entity blocks are
+ * present only for the report types that use them (see {@link ReportModerationKind}):
+ *   USER       → reportedUser
+ *   COMMUNITY  → reportedUser, community, communityAdmin
+ *   LIVESTREAM → reportedUser, community, communityAdmin, livestream
+ *   MESSAGE    → reportedUser, community, communityAdmin, message
+ */
 export type ReportModerationDetail = {
   id: string;
-  type: ReportType;
+  reportType: ReportModerationKind;
   reportReason: string;
   reportMessage: string | null;
   reportStatus: ReportStatus;
@@ -347,8 +429,11 @@ export type ReportModerationDetail = {
   updatedAt: number;
   reporter: ReportModerationUserRef | null;
   reportedUser: ReportModerationUserRef | null;
-  // Current ADMIN member of `community`; null when there's no associated
-  // community or the community has no resolvable admin.
-  communityAdmin: ReportModerationUserRef | null;
-  community: CommunityReportBlock | null;
+  // Present for COMMUNITY / LIVESTREAM / MESSAGE reports (omitted for USER).
+  community?: CommunityReportBlock | null;
+  communityAdmin?: ReportModerationUserRef | null;
+  // Present only for LIVESTREAM reports.
+  livestream?: LivestreamReportBlock | null;
+  // Present only for MESSAGE reports.
+  message?: MessageReportBlock | null;
 };
