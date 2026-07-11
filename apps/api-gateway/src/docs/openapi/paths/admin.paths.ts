@@ -451,24 +451,47 @@ export const adminPaths = {
       },
       "x-implementation-status": "implemented",
     },
+    patch: {
+      tags: [adminTags.authAccount],
+      operationId: "updateAdminProfile",
+      summary: "Update my profile (username, email, avatar)",
+      description:
+        "Self-service profile update for the My Account page. Accepts any " +
+        "subset of `username`, `email`, `avatarObjectKey` (the object key from " +
+        "the shared `/media/upload-url` USER_AVATAR flow; `null` clears the " +
+        "avatar). Response mirrors GET /admin/v1/me. Audited.",
+      security: adminSecurity,
+      requestBody: jsonBody("#/components/schemas/AdminUpdateMeRequest"),
+      responses: {
+        "200": okRes("Profile updated", "#/components/schemas/AdminProfile"),
+        "400": errRes("Validation failed"),
+        "401": errRes("Missing or invalid admin token"),
+        "409": errRes("Email already in use (ADMIN_EMAIL_TAKEN)"),
+      },
+      "x-implementation-status": "implemented",
+    },
   },
-  "/admin/v1/me/password": {
+  "/admin/v1/change-password": {
     patch: {
       tags: [adminTags.authAccount],
       operationId: "changeAdminPassword",
       summary: "Change my password",
       description:
-        PLANNED +
-        "Self-service password change. 🔐 step-up TOTP required (`X-Totp-Code`). Audited.",
+        "Self-service password change. Verifies the current password, applies " +
+        "the admin password policy to the new one (≥6 chars, upper + lower + " +
+        "digit + special), and revokes every OTHER active session (the caller's " +
+        "session stays alive). Audited.",
       security: adminSecurity,
-      parameters: [totpHeaderParam],
       requestBody: jsonBody("#/components/schemas/AdminChangePasswordRequest"),
       responses: {
-        "200": okRes("Password changed", "#/components/schemas/AdminProfile"),
+        "200": okRes(
+          "Password changed",
+          "#/components/schemas/AdminChangePasswordResponse"
+        ),
         "400": errRes("Validation failed or same password"),
-        "401": errRes("Wrong current password / invalid TOTP / missing token"),
+        "401": errRes("Wrong current password / missing token"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 

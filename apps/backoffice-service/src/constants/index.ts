@@ -82,6 +82,8 @@ export const AUDIT_ACTIONS = {
   ADMIN_ACTIVATED: "admin.activated",
   ADMIN_DEACTIVATED: "admin.deactivated",
   ADMIN_PERMISSIONS_UPDATED: "admin.permissions_updated",
+  ADMIN_PROFILE_UPDATED: "admin.profile_updated",
+  ADMIN_PASSWORD_CHANGED: "admin.password_changed",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

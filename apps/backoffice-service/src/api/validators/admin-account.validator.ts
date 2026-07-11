@@ -46,6 +46,13 @@ const adminPasswordSchema = z
 
 const avatarUrlSchema = z.string().trim().url("Avatar URL is invalid").max(500);
 
+/**
+ * MinIO object key produced by the shared `/media/upload-url` flow (USER_AVATAR
+ * category). Same shape as community/livestream avatar accept-fields. The stored
+ * column keeps its historical name `avatarUrl`; only the wire field is renamed.
+ */
+const avatarObjectKeySchema = z.string().trim().min(1).max(512);
+
 const SORT_FIELDS = ["name", "email", "createdAt", "lastLoginAt"] as const;
 const SORT_PATTERN = new RegExp(`^(${SORT_FIELDS.join("|")}):(asc|desc)$`);
 
@@ -102,6 +109,44 @@ export const listAdminAccountsQuerySchema = z.object({
 export type ListAdminAccountsQueryInput = z.infer<
   typeof listAdminAccountsQuerySchema
 >;
+
+// ---------------------------------------------------------------------------
+// Self-service "My Account" (PATCH /me + PATCH /change-password).
+// Reuses email/name/password schemas — no duplicate validation.
+// ---------------------------------------------------------------------------
+export const updateMeSchema = z
+  .object({
+    // FE calls this "username"; DB column is `name` — same field, two names.
+    username: nameSchema.optional(),
+    email: emailSchema.optional(),
+    // Nullable so the admin can clear their avatar. Object key produced by the
+    // shared USER_AVATAR upload flow; response returns the resolved MediaObject.
+    avatarObjectKey: avatarObjectKeySchema.nullable().optional(),
+  })
+  .refine(
+    (v) =>
+      v.username !== undefined ||
+      v.email !== undefined ||
+      v.avatarObjectKey !== undefined,
+    { message: "At least one field is required to update" }
+  );
+export type UpdateMeInput = z.infer<typeof updateMeSchema>;
+
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1, "Current password is required"),
+    newPassword: adminPasswordSchema,
+    confirmPassword: z.string().min(1, "Confirm password is required"),
+  })
+  .refine((v) => v.newPassword === v.confirmPassword, {
+    path: ["confirmPassword"],
+    message: "Passwords do not match",
+  })
+  .refine((v) => v.newPassword !== v.currentPassword, {
+    path: ["newPassword"],
+    message: "New password must differ from the current password",
+  });
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
 // ---------------------------------------------------------------------------
 // Path params.

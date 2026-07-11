@@ -5,7 +5,7 @@ export {
   resendOtp,
   resetPassword,
 } from "./password-reset.controller.js";
-export { getMe } from "./me.controller.js";
+export { getMe, updateMe, changePassword } from "./me.controller.js";
 export {
   listReports,
   getReportDetails,

@@ -281,13 +281,65 @@ export const openApiSchemas = {
     },
     required: ["success", "data"],
   },
+  AdminUpdateMeRequest: {
+    type: "object",
+    description:
+      "Self-service profile update body. At least one field required. `avatarObjectKey` is the MinIO object key returned by the shared `/media/upload-url` USER_AVATAR flow; pass `null` to clear the avatar.",
+    properties: {
+      username: {
+        type: "string",
+        minLength: 2,
+        maxLength: 100,
+        example: "Ops Admin",
+      },
+      email: {
+        type: "string",
+        format: "email",
+        example: "ops@aimess.io",
+      },
+      avatarObjectKey: {
+        type: "string",
+        nullable: true,
+        example: "avatars/adm_1/2026-07/abc.png",
+        description:
+          "MinIO object key from the shared upload flow. `null` clears the current avatar.",
+      },
+    },
+  },
   AdminChangePasswordRequest: {
     type: "object",
-    required: ["current", "next"],
+    required: ["currentPassword", "newPassword", "confirmPassword"],
     properties: {
-      current: { type: "string", example: "old-pass" },
-      next: { type: "string", minLength: 8, example: "new-stronger-pass" },
+      currentPassword: { type: "string", example: "OldP@ss1" },
+      newPassword: {
+        type: "string",
+        minLength: 6,
+        example: "NewStr0ng!",
+        description:
+          "≥6 chars with at least one upper, lower, digit and special char.",
+      },
+      confirmPassword: {
+        type: "string",
+        example: "NewStr0ng!",
+        description: "Must equal `newPassword`.",
+      },
     },
+  },
+  AdminChangePasswordResponse: {
+    type: "object",
+    description: "Successful admin self-service password change.",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: { type: "string", example: "Password changed" },
+      data: {
+        type: "object",
+        properties: {
+          passwordChanged: { type: "boolean", example: true },
+        },
+        required: ["passwordChanged"],
+      },
+    },
+    required: ["success", "data"],
   },
 
   // ---- Forgot / reset password (public — a locked-out admin must reach these) ----

@@ -84,11 +84,20 @@ export const adminUserRepository = {
     });
   },
 
-  updateProfile(id: string, input: { name?: string; avatarUrl?: string }) {
+  updateProfile(
+    id: string,
+    input: {
+      name?: string;
+      email?: string;
+      // `null` clears the avatar (self-service PATCH /me flow).
+      avatarUrl?: string | null;
+    }
+  ) {
     return prisma.adminUser.update({
       where: { id },
       data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.email !== undefined ? { email: input.email } : {}),
         ...(input.avatarUrl !== undefined
           ? { avatarUrl: input.avatarUrl }
           : {}),

@@ -1,4 +1,9 @@
-import { ForbiddenError, UnauthorizedError } from "@aimess/errors";
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  UnauthorizedError,
+} from "@aimess/errors";
 
 import { env } from "../config/env.js";
 import { AUDIT_ACTIONS } from "../constants/index.js";
@@ -15,7 +20,7 @@ import {
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 import type { MediaObject } from "@aimess/shared-types";
 import { createRefreshTokenValue, hashToken } from "../lib/admin-token.js";
-import { verifyPassword } from "../lib/password.js";
+import { hashPassword, verifyPassword } from "../lib/password.js";
 import {
   adminSessionRepository,
   adminUserRepository,
@@ -284,4 +289,135 @@ export const adminAuthService = {
     );
     return await buildAdminProfile(admin, permissions);
   },
+
+  /**
+   * Self-service profile update for the "My Account" page (username, email,
+   * avatar). Reuses `adminUserRepository.updateProfile`, `buildAdminProfile`
+   * and the shared audit trail. Password changes go through `changePassword`.
+   */
+  async updateMe(
+    adminId: string,
+    input: {
+      username?: string;
+      email?: string;
+      avatarObjectKey?: string | null;
+    },
+    ctx: AdminRequestContext
+  ): Promise<AdminProfile> {
+    const existing = await adminUserRepository.findById(adminId);
+    if (!existing) {
+      throw new UnauthorizedError("AUTH_UNAUTHORIZED");
+    }
+
+    // Case-insensitive email uniqueness — validator lowercases before we get here.
+    if (input.email !== undefined && input.email !== existing.email) {
+      const clash = await adminUserRepository.findByEmail(input.email);
+      if (clash && clash.id !== adminId) {
+        throw new ConflictError("ADMIN_EMAIL_TAKEN");
+      }
+    }
+
+    let updated;
+    try {
+      updated = await adminUserRepository.updateProfile(adminId, {
+        name: input.username,
+        email: input.email,
+        avatarUrl: input.avatarObjectKey,
+      });
+    } catch (error) {
+      if (isUniqueEmailViolation(error)) {
+        throw new ConflictError("ADMIN_EMAIL_TAKEN");
+      }
+      throw error;
+    }
+
+    await auditService.record({
+      actorId: adminId,
+      action: AUDIT_ACTIONS.ADMIN_PROFILE_UPDATED,
+      targetType: "admin",
+      targetId: adminId,
+      before: {
+        name: existing.name,
+        email: existing.email,
+        avatarUrl: existing.avatarUrl,
+      },
+      after: {
+        name: updated.name,
+        email: updated.email,
+        avatarUrl: updated.avatarUrl,
+      },
+      ip: ctx.ip,
+      userAgent: ctx.userAgent ?? null,
+    });
+
+    const permissions = await rbacService.getPermissionKeysForRole(
+      updated.role.key
+    );
+    return buildAdminProfile(updated, permissions);
+  },
+
+  /**
+   * Self-service password change for the "My Account" page. Verifies the
+   * current password, hashes + persists the new one, and revokes every OTHER
+   * active session (the caller's session is kept alive). Audited.
+   */
+  async changePassword(
+    adminId: string,
+    input: { currentPassword: string; newPassword: string },
+    ctx: AdminRequestContext & { sessionId?: string }
+  ): Promise<void> {
+    const admin = await adminUserRepository.findById(adminId);
+    if (!admin) {
+      throw new UnauthorizedError("AUTH_UNAUTHORIZED");
+    }
+
+    const ok = await verifyPassword(input.currentPassword, admin.passwordHash);
+    if (!ok) {
+      throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
+    }
+
+    const sameAsCurrent = await verifyPassword(
+      input.newPassword,
+      admin.passwordHash
+    );
+    if (sameAsCurrent) {
+      throw new BadRequestError("PASSWORD_SAME_AS_CURRENT");
+    }
+
+    await adminUserRepository.updatePasswordHash(
+      adminId,
+      await hashPassword(input.newPassword)
+    );
+
+    // Revoke every OTHER active session so stolen tokens stop working, but
+    // keep the caller's current session alive so they don't get logged out.
+    const active = await adminSessionRepository.listActiveByAdmin(adminId);
+    const toRevoke = active
+      .map((s) => s.id)
+      .filter((sid) => sid !== ctx.sessionId);
+    if (toRevoke.length > 0) {
+      for (const sid of toRevoke) {
+        await adminSessionRepository.revoke(sid);
+      }
+      await markAdminSessionsRevoked(toRevoke);
+    }
+
+    await auditService.record({
+      actorId: adminId,
+      action: AUDIT_ACTIONS.ADMIN_PASSWORD_CHANGED,
+      targetType: "admin",
+      targetId: adminId,
+      ip: ctx.ip,
+      userAgent: ctx.userAgent ?? null,
+    });
+  },
 };
+
+function isUniqueEmailViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}

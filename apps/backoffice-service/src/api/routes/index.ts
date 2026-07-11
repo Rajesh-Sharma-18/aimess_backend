@@ -18,7 +18,10 @@ import { usersRoutes } from "./users.routes.js";
 export const serviceRoutes: IRouter = Router();
 
 serviceRoutes.use("/auth", authRoutes);
-serviceRoutes.use("/me", meRoutes);
+// Self-service "My Account" routes are self-prefixed (`/me`, `/change-password`)
+// so they resolve at `/v1/me` and `/v1/change-password` — matching the gateway
+// paths `/admin/v1/me` and `/admin/v1/change-password`.
+serviceRoutes.use(meRoutes);
 // Reports & Moderation routes are self-prefixed with `/reports` so they resolve
 // at `/v1/reports/*` — matching the documented gateway path `/admin/v1/reports`
 // (the gateway strips `/admin` and forwards `/v1/*` verbatim). Do NOT nest under
