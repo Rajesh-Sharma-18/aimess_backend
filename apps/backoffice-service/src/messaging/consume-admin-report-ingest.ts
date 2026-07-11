@@ -62,6 +62,7 @@ export async function handleReportIngest(
         reason: data.reason,
         details: data.details ?? null,
         communityId: data.communityId ?? null,
+        reportedUserId: data.reportedUserId ?? null,
         status: "open",
         sourceReportId: data.sourceReportId,
       },

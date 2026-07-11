@@ -6806,6 +6806,10 @@ export const communityService = {
           size?: number | null;
         }[]
       | null = input.reportedContentMedia ?? null;
+    // Message sender resolved from the chat snapshot when the reporter's own
+    // targetUserId is absent — the admin.report.ingest event needs one so the
+    // backoffice can hydrate `reportedUser` on the report row.
+    let resolvedMessageSenderId: string | null = null;
     if (input.reportedMessageId) {
       const snap = await getChatClient().getCommunityMessageById({
         communityId,
@@ -6825,6 +6829,7 @@ export const communityService = {
               size: m.size || null,
             }))
           : null;
+        resolvedMessageSenderId = snap.senderId || null;
       }
     }
 
@@ -6875,13 +6880,28 @@ export const communityService = {
       moderatorRecipientIds: reportModeratorRecipientIds,
     });
 
+    // Message reports carry the messageId as targetId + the sender as
+    // reportedUserId; the backoffice's toReportKind maps `type: "message"` →
+    // MESSAGE, which unlocks the entity-specific `message` block in the
+    // Report Details response.
+    const messageSenderId = input.reportedMessageId
+      ? (targetUserId ?? resolvedMessageSenderId)
+      : null;
+    const ingestType: "user" | "community" | "message" = input.reportedMessageId
+      ? "message"
+      : targetUserId
+        ? "user"
+        : "community";
+    const ingestTargetId =
+      input.reportedMessageId ?? targetUserId ?? communityId;
     publishAdminReportIngestSafe({
-      type: targetUserId ? "user" : "community",
-      targetId: targetUserId ?? communityId,
+      type: ingestType,
+      targetId: ingestTargetId,
       reporterId: callerId,
       reason: input.reason,
       details: otherReason,
       communityId,
+      reportedUserId: messageSenderId,
       eventAt: reportEventAt,
       sourceReportId: row.id,
     });

@@ -679,6 +679,7 @@ type RawReportRow = {
   resolvedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  reportedUserId: string | null;
 };
 
 /** Batched profile/status/moderator-name lookups for a page of report rows. */
@@ -699,6 +700,7 @@ async function buildListEnrichment(
   const communityIds = new Set<string>();
   for (const r of rows) {
     if (r.type === "user") userIds.add(r.targetId);
+    else if (r.reportedUserId) userIds.add(r.reportedUserId);
     userIds.add(r.reporterId);
     if (r.assignedTo) moderatorIds.add(r.assignedTo);
     if (r.communityId) communityIds.add(r.communityId);
@@ -765,8 +767,10 @@ async function toReportListItem(
   r: RawReportRow,
   ctx: EnrichmentContext
 ): Promise<ReportListItem> {
+  const reportedUserId =
+    r.type === "user" ? r.targetId : (r.reportedUserId ?? null);
   const [reportedUser, reporterUser] = await Promise.all([
-    r.type === "user" ? toUserRef(r.targetId, ctx) : Promise.resolve(null),
+    reportedUserId ? toUserRef(reportedUserId, ctx) : Promise.resolve(null),
     toUserRef(r.reporterId, ctx),
   ]);
   return {
@@ -990,13 +994,16 @@ export class PrismaReportRepository implements ReportRepository {
     if (!row) return null;
 
     const moderatorIds = row.assignedTo ? [row.assignedTo] : [];
+    // reportedUserId is the message-sender / comment-author on non-USER reports
+    // (message/stream). For user reports the target IS the reported user, so
+    // fall back to targetId — keeping the resolution logic uniform below.
+    const reportedUserId =
+      row.type === "user" ? row.targetId : (row.reportedUserId ?? null);
     const allIds = [
       ...new Set(
-        [
-          row.type === "user" ? row.targetId : null,
-          row.reporterId,
-          ...moderatorIds,
-        ].filter((v): v is string => v !== null)
+        [reportedUserId, row.reporterId, ...moderatorIds].filter(
+          (v): v is string => v !== null
+        )
       ),
     ];
 
@@ -1054,9 +1061,9 @@ export class PrismaReportRepository implements ReportRepository {
 
     const status = toReportStatus(row.status);
     const [reportedUser, reporterUser] = await Promise.all([
-      row.type === "user"
+      reportedUserId
         ? toReportedProfile(
-            row.targetId,
+            reportedUserId,
             ctx,
             reportedPriorCount,
             reportedPriorActions

@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 import { ForbiddenError, NotFoundError } from "@aimess/errors";
 import { env } from "../config/env.js";
+import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { communityGrpcClient as CommunityGrpcClient } from "../grpc/community.client.js";
 
 import type { LivestreamComment } from "../generated/prisma/index.js";
@@ -453,6 +454,23 @@ export class LivestreamCommentService {
       reportedBy: params.reportedBy,
       reason: params.reason,
       details: params.details ?? null,
+    });
+
+    // Mirror community-service: fan the report into the backoffice via
+    // admin.report.ingest so it surfaces in the Admin Reports list/details.
+    // Best-effort — stream-service owns the source of truth (stream_comment_reports),
+    // so a publish failure never blocks the reporter.
+    const stream = await this.streamRepo.findById(params.livestreamId);
+    publishAdminReportIngestSafe({
+      type: "stream",
+      targetId: params.livestreamId,
+      reporterId: params.reportedBy,
+      reason: params.reason,
+      details: params.details ?? null,
+      communityId: stream?.communityId ?? null,
+      reportedUserId: comment.sentBy,
+      eventAt: new Date().toISOString(),
+      sourceReportId: report.id,
     });
 
     return {

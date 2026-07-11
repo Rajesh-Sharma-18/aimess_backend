@@ -84,6 +84,12 @@ export type AdminReportIngestPayload = {
   reason: string;
   details: string | null;
   communityId?: string | null;
+  /**
+   * The reported USER when the target itself isn't a user — i.e. the message
+   * sender for `message` reports, the comment author for `stream` reports.
+   * Omitted for `user` (already the target) and `community` reports.
+   */
+  reportedUserId?: string | null;
   /** ISO-8601 timestamp captured at publish time. */
   eventAt: string;
   sourceReportId: string;
