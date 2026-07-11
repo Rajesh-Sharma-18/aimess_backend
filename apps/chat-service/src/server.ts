@@ -144,15 +144,12 @@ const startServer = async () => {
     }
 
     function isMongoIndexNotFoundError(error: unknown): boolean {
-      return (
-        typeof error === "object" &&
-        error !== null &&
-        "message" in error &&
-        typeof (error as { message?: string }).message === "string" &&
-        /index not found|ns not found/i.test(
-          (error as { message: string }).message
-        )
-      );
+      if (!error || typeof error !== "object") return false;
+      const meta = (error as { meta?: { message?: unknown } }).meta;
+      const msg =
+        (typeof meta?.message === "string" ? meta.message : "") ||
+        (error instanceof Error ? error.message : "");
+      return /index not found|ns not found/i.test(msg);
     }
 
     /**

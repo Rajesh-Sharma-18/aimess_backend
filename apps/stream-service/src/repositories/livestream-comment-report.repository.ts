@@ -49,4 +49,28 @@ export class LivestreamCommentReportRepository {
       take: options.limit,
     });
   }
+
+  /**
+   * Report count grouped by livestreamId — one aggregation, not per-livestream
+   * fetches. When `livestreamIds` is non-empty the aggregation is scoped to
+   * that set (missing keys ⇒ 0); when empty, every livestream that has at
+   * least one report is returned (used by the has-reports/min-reports filter).
+   */
+  async groupCountsByLivestream(
+    livestreamIds?: string[]
+  ): Promise<{ livestreamId: string; count: number }[]> {
+    if (livestreamIds && livestreamIds.length === 0) return [];
+    const rows = await this.prisma.livestreamCommentReport.groupBy({
+      by: ["livestreamId"],
+      where:
+        livestreamIds && livestreamIds.length > 0
+          ? { livestreamId: { in: livestreamIds } }
+          : undefined,
+      _count: { _all: true },
+    });
+    return rows.map((r) => ({
+      livestreamId: r.livestreamId,
+      count: r._count._all,
+    }));
+  }
 }

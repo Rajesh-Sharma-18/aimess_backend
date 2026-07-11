@@ -426,6 +426,41 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
       })();
     },
 
+    // AdminGetLivestreamReportCounts — backoffice `reportCount` on the
+    // Livestream Management list/detail + the hasReports/minReports filter.
+    // Source of truth is LivestreamCommentReport (the ONLY report kind that
+    // exists for a livestream); `admin_db.Report` type="stream" was previously
+    // queried here but nothing ever writes to it — root cause of "reportCount
+    // is always 0". Empty livestream_ids ⇒ every stream with count >= min_count.
+    adminGetLivestreamReportCounts: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            livestreamIds?: string[];
+            minCount?: number;
+          };
+          const counts = await deps.commentService.adminGetReportCounts({
+            livestreamIds: req.livestreamIds ?? [],
+            minCount: req.minCount ?? 0,
+          });
+          callback(null, {
+            counts: counts.map((c) => ({
+              livestreamId: c.livestreamId,
+              count: c.count,
+            })),
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC adminGetLivestreamReportCounts error: ${String(err)}`
+          );
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // AdminListViewerSessions — backoffice "Livestream User List" (actual viewers).
     adminListViewerSessions: (
       call: grpc.ServerUnaryCall<unknown, unknown>,

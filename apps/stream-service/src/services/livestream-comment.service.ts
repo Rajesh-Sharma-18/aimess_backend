@@ -541,6 +541,26 @@ export class LivestreamCommentService {
   }
 
   /**
+   * Bulk report counts for the admin Livestream Management screen. Passing a
+   * non-empty `livestreamIds` scopes the aggregation to that set (missing keys
+   * ⇒ 0). Passing an empty/undefined `livestreamIds` returns every livestream
+   * with `count >= minCount` (used by the has-reports/min-reports filter).
+   * Backs the `AdminGetLivestreamReportCounts` gRPC.
+   */
+  async adminGetReportCounts(params: {
+    livestreamIds?: string[];
+    minCount?: number;
+  }): Promise<{ livestreamId: string; count: number }[]> {
+    const rows = await this.reportRepo.groupCountsByLivestream(
+      params.livestreamIds
+    );
+    const scoped = params.livestreamIds && params.livestreamIds.length > 0;
+    if (scoped) return rows;
+    const min = Math.max(1, params.minCount ?? 1);
+    return rows.filter((r) => r.count >= min);
+  }
+
+  /**
    * Cursor-paged comment fetch.
    * - `before`: newest-first (history scroll). nextCursor = oldest item's id.
    * - `after`:  oldest-first (reconnect catch-up). nextCursor = newest item's id.

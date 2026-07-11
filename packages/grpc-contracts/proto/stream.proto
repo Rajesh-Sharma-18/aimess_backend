@@ -74,6 +74,14 @@ service StreamService {
   // Admin: paginated viewer session history for a stream (the "Livestream User
   // List" screen). Backs GET /admin/v1/livestreams/:id/users.
   rpc AdminListViewerSessions (AdminListViewerSessionsRequest) returns (AdminListViewerSessionsResponse);
+  // Admin: report counts per livestream, sourced from LivestreamCommentReport
+  // (the ONLY report kind that exists for a livestream — user-submitted
+  // reports on chat comments during the stream). Backs `reportCount` on the
+  // admin Livestream Management list + detail, plus the `hasReports`/
+  // `minReports` list filter. Empty `livestream_ids` returns every livestream
+  // whose report count >= `min_count`; a non-empty `livestream_ids` returns
+  // counts for exactly those ids (missing ⇒ 0).
+  rpc AdminGetLivestreamReportCounts (AdminGetLivestreamReportCountsRequest) returns (AdminGetLivestreamReportCountsResponse);
 }
 
 // One livestream comment row, shared by PostComment + GetComments.
@@ -345,4 +353,22 @@ message CheckCreatorHasActiveStreamRequest {
 message CheckCreatorHasActiveStreamResponse {
   // True when the creator has at least one LIVE or RECONNECTING stream in any community.
   bool has_active_stream = 1;
+}
+
+// ---- Admin report counts (LivestreamCommentReport) --------------------------
+
+message LivestreamReportCount {
+  string livestream_id = 1;
+  int64  count         = 2;
+}
+message AdminGetLivestreamReportCountsRequest {
+  // Empty ⇒ ALL livestreams with report count >= min_count (used by the
+  // hasReports/minReports list filter). Non-empty ⇒ counts for exactly these
+  // ids (missing keys ⇒ 0).
+  repeated string livestream_ids = 1;
+  // Applied only when livestream_ids is empty; 0/1 ⇒ >= 1.
+  int32 min_count = 2;
+}
+message AdminGetLivestreamReportCountsResponse {
+  repeated LivestreamReportCount counts = 1;
 }

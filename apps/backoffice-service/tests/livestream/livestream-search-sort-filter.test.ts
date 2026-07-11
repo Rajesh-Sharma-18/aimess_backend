@@ -23,7 +23,8 @@
 jest.mock("../../src/config/prisma.js", () => ({
   prisma: {
     report: {
-      groupBy: jest.fn(async () => []),
+      // Kept for the detail path's admin_db.Report reports[] enrichment
+      // (moderator card list — unrelated to reportCount).
       findMany: jest.fn(async () => []),
     },
   },
@@ -32,6 +33,7 @@ jest.mock("../../src/grpc/stream.client.js", () => ({
   streamClient: {
     adminListStreams: jest.fn(),
     adminGetStream: jest.fn(),
+    adminGetLivestreamReportCounts: jest.fn(async () => []),
   },
 }));
 jest.mock("../../src/grpc/community.client.js", () => ({
@@ -49,7 +51,6 @@ jest.mock("../../src/grpc/user.client.js", () => ({
   },
 }));
 
-import { prisma } from "../../src/config/prisma.js";
 import { streamClient } from "../../src/grpc/stream.client.js";
 import { communityClient } from "../../src/grpc/community.client.js";
 import { userClient } from "../../src/grpc/user.client.js";
@@ -65,7 +66,8 @@ const adminGetCommunitiesByIds =
   communityClient.adminGetCommunitiesByIds as jest.Mock;
 const adminSearchProfileIds = userClient.adminSearchProfileIds as jest.Mock;
 const adminGetProfilesByIds = userClient.adminGetProfilesByIds as jest.Mock;
-const reportGroupBy = prisma.report.groupBy as jest.Mock;
+const adminGetLivestreamReportCounts =
+  streamClient.adminGetLivestreamReportCounts as jest.Mock;
 
 function baseQuery(
   overrides: Partial<ListLivestreamsQuery> = {}
@@ -112,7 +114,7 @@ beforeEach(() => {
   adminGetCommunitiesByIds.mockResolvedValue(new Map());
   adminSearchProfileIds.mockResolvedValue([]);
   adminGetProfilesByIds.mockResolvedValue([]);
-  reportGroupBy.mockResolvedValue([]);
+  adminGetLivestreamReportCounts.mockResolvedValue([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -233,9 +235,9 @@ describe("sort — cross-service fields (candidate-set sort, fixes the reportCou
       ],
       total: 3,
     });
-    reportGroupBy.mockResolvedValue([
-      { targetId: "LS-A", _count: { _all: 5 } },
-      { targetId: "LS-B", _count: { _all: 1 } },
+    adminGetLivestreamReportCounts.mockResolvedValue([
+      { livestreamId: "LS-A", count: 5 },
+      { livestreamId: "LS-B", count: 1 },
       // LS-C has no Report rows → 0.
     ]);
 
@@ -458,18 +460,21 @@ describe("filter", () => {
   });
 
   it("restricts to reported stream ids via minReports", async () => {
-    reportGroupBy.mockResolvedValue([
-      { targetId: "LS-1", _count: { _all: 3 } },
-      { targetId: "LS-2", _count: { _all: 1 } },
+    // stream-service already applies the min-count filter — return only LS-1.
+    adminGetLivestreamReportCounts.mockResolvedValue([
+      { livestreamId: "LS-1", count: 3 },
     ]);
     await livestreamRepository.list(baseQuery({ minReports: 2 }));
     expect(adminListStreams.mock.calls[0][0].restrictStreamIds).toEqual([
       "LS-1",
     ]);
+    expect(adminGetLivestreamReportCounts).toHaveBeenCalledWith(
+      expect.objectContaining({ minCount: 2 })
+    );
   });
 
   it("short-circuits to an empty page when hasReports=true matches nothing", async () => {
-    reportGroupBy.mockResolvedValue([]);
+    adminGetLivestreamReportCounts.mockResolvedValue([]);
     const page = await livestreamRepository.list(
       baseQuery({ hasReports: true })
     );
@@ -512,8 +517,8 @@ describe("combinations", () => {
       streams: [stream({ id: "LS-1", communityId: "C-9" })],
       total: 1,
     });
-    reportGroupBy.mockResolvedValue([
-      { targetId: "LS-1", _count: { _all: 2 } },
+    adminGetLivestreamReportCounts.mockResolvedValue([
+      { livestreamId: "LS-1", count: 2 },
     ]);
 
     const page = await livestreamRepository.list(
@@ -527,10 +532,10 @@ describe("combinations", () => {
 
   it("search + filter + sort: community search + minReports filter + creatorName sort", async () => {
     adminSearchCommunityIds.mockResolvedValue(["C-1"]);
-    reportGroupBy
+    adminGetLivestreamReportCounts
       .mockResolvedValueOnce([
-        { targetId: "LS-A", _count: { _all: 4 } },
-        { targetId: "LS-B", _count: { _all: 4 } },
+        { livestreamId: "LS-A", count: 4 },
+        { livestreamId: "LS-B", count: 4 },
       ]) // resolveStreamIdsWithReports (minReports)
       .mockResolvedValueOnce([]); // reportCountsByStream (not needed for creatorName sort)
     adminListStreams.mockResolvedValue({
@@ -601,8 +606,8 @@ describe("pagination", () => {
       stream({ id: `LS-${i}`, createdAt: i })
     );
     adminListStreams.mockResolvedValue({ streams, total: 5 });
-    reportGroupBy.mockResolvedValue(
-      streams.map((s, i) => ({ targetId: s.id, _count: { _all: i } }))
+    adminGetLivestreamReportCounts.mockResolvedValue(
+      streams.map((s, i) => ({ livestreamId: s.id, count: i }))
     );
 
     const page = await livestreamRepository.list(
