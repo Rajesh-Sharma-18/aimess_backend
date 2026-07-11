@@ -635,7 +635,10 @@ const VIEWER_CANDIDATE_CAP = 2000;
 type EnrichedViewer = {
   userId: string;
   username: string;
+  /** Used only for `search`/username sort filtering; NOT surfaced on the wire. */
   displayName: string;
+  /** Same rule as the livestream detail's `creator.displayName` (via `displayNameOf`). */
+  fullName: string;
   avatarUrl: string | undefined;
   type: LivestreamViewerType;
   /** epoch ms. */
@@ -646,15 +649,11 @@ type EnrichedViewer = {
 };
 
 /** Map an enriched viewer → the wire item, presigning its avatar. */
-async function toViewerItem(
-  no: number,
-  e: EnrichedViewer
-): Promise<LivestreamUserItem> {
+async function toViewerItem(e: EnrichedViewer): Promise<LivestreamUserItem> {
   return {
-    no,
     userId: e.userId,
     username: e.username,
-    handle: e.username ? `@${e.username}` : null,
+    fullName: e.fullName,
     avatar: await resolveAvatarOrNull(e.avatarUrl),
     joinedAt: e.joinedAt,
     // 0 from the wire means "still watching" (see AdminViewerSessionRow).
@@ -681,23 +680,25 @@ function toStreamStatus(s: LivestreamStatus): string {
 }
 
 /**
- * Shared viewerCount resolution for the admin list/detail responses.
- * LIVE reports the live count (currently watching, from Redis — intentionally
- * NOT the same number as the "who ever watched" viewer list). ENDED reports
- * `uniqueViewerCount` — the distinct-user count from `LivestreamViewerSession`,
- * the SAME source `/livestreams/:id/users` (AdminListViewerSessions) dedupes
- * to, so the two endpoints always agree for an ended stream. Deliberately NOT
- * `totalViews`: that column increments on every `checkAccess` call (each join
- * attempt/reconnect), so it over-counts and is not deduped by user. All other
- * statuses (SCHEDULED/CANCELLED) keep the raw stored `viewerCount`.
+ * Admin `viewerCount` = TOTAL unique users who joined this stream at least
+ * once during its lifetime (host + co-hosts + speakers + viewers, current or
+ * departed — each counted once, reconnects/rejoins deduped by userId). Sourced
+ * from `LivestreamViewerSession` (distinct users) — the SAME source
+ * `/livestreams/:id/users` (AdminListViewerSessions) paginates over, so the
+ * list `viewerCount` and the detail viewers page always agree.
+ *
+ * Deliberately NOT the live Redis presence count (that's "who is watching
+ * right now" — surfaced on the detail via `viewerStats.currentViewers`).
+ * Deliberately NOT `totalViews` (that column increments on every checkAccess
+ * call, so it over-counts joins and never dedupes by user). Deliberately NOT
+ * the stored `viewerCount` column (SRS on_play/on_stop rough counter, drifts
+ * from reality).
  */
 function resolveViewerCount(
-  status: LivestreamStatus,
+  _status: LivestreamStatus,
   s: Pick<AdminStreamRow, "viewerCount" | "uniqueViewerCount">
 ): number {
-  if (status === "LIVE") return s.viewerCount;
-  if (status === "ENDED") return s.uniqueViewerCount;
-  return s.viewerCount;
+  return s.uniqueViewerCount;
 }
 
 function slugify(name: string): string {
@@ -872,27 +873,30 @@ async function resolveCommunityIdsByCategoryName(
   }
 }
 
-/** Stream ids with at least `min` reports (admin_db Report, type=stream). */
+/**
+ * Stream ids with at least `min` reports. Source of truth is stream-service's
+ * `LivestreamCommentReport` (per-comment reports filed during the stream — the
+ * ONLY report kind a livestream has). Previously read `admin_db.Report`
+ * type="stream", which no publisher ever writes to — the root cause of
+ * `reportCount` always being 0 and the hasReports/minReports filter never
+ * matching anything.
+ */
 async function resolveStreamIdsWithReports(min: number): Promise<string[]> {
-  const rows = await prisma.report.groupBy({
-    by: ["targetId"],
-    where: { type: "stream" },
-    _count: { _all: true },
+  const rows = await streamClient.adminGetLivestreamReportCounts({
+    minCount: Math.max(1, min),
   });
-  return rows.filter((r) => r._count._all >= min).map((r) => r.targetId);
+  return rows.map((r) => r.livestreamId);
 }
 
-/** Report counts keyed by streamId (admin_db Report, type=stream). */
+/** Report counts keyed by streamId (LivestreamCommentReport, via gRPC). */
 async function reportCountsByStream(
   streamIds: string[]
 ): Promise<Map<string, number>> {
   if (streamIds.length === 0) return new Map();
-  const rows = await prisma.report.groupBy({
-    by: ["targetId"],
-    where: { type: "stream", targetId: { in: streamIds } },
-    _count: { _all: true },
+  const rows = await streamClient.adminGetLivestreamReportCounts({
+    livestreamIds: streamIds,
   });
-  return new Map(rows.map((r) => [r.targetId, r._count._all]));
+  return new Map(rows.map((r) => [r.livestreamId, r.count]));
 }
 
 type StreamReportRow = {
@@ -1263,11 +1267,14 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
   async getById(id: string): Promise<LivestreamDetail | null> {
     const s = await streamClient.adminGetStream(id);
     if (!s) return null;
-    const [communityMap, creators, reportRows] = await Promise.all([
-      communityClient.adminGetCommunitiesByIds([s.communityId]),
-      userClient.adminGetProfilesByIds([s.creatorId]),
-      streamReportRows(id),
-    ]);
+    const [communityMap, creators, reportRows, reportCountMap] =
+      await Promise.all([
+        communityClient.adminGetCommunitiesByIds([s.communityId]),
+        userClient.adminGetProfilesByIds([s.creatorId]),
+        streamReportRows(id),
+        reportCountsByStream([id]),
+      ]);
+    const totalReportCount = reportCountMap.get(id) ?? 0;
     const c = communityMap.get(s.communityId);
     const u = creators[0];
     const [thumbnailUrl, communityAvatar, creatorAvatar] = await Promise.all([
@@ -1311,8 +1318,11 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       durationSeconds: s.durationSeconds,
       status,
       viewerCount: resolveViewerCount(status, s),
-      reportCount: reports.length,
-      reportSeverity: severityFromCount(reports.length),
+      // reportCount reflects LivestreamCommentReport (all comment reports for
+      // this stream) — the moderator card `reports[]` array below is
+      // admin_db-sourced and remains a distinct concern.
+      reportCount: totalReportCount,
+      reportSeverity: severityFromCount(totalReportCount),
       thumbnailUrl,
       endReasonCode: null,
       endedBy: null,
@@ -1443,11 +1453,12 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         sortField: nativeSort,
         sortDir,
       });
-      const enriched = await this.enrichViewers(s.communityId, sessions);
-      const start = (query.page - 1) * query.limit;
-      const data = await Promise.all(
-        enriched.map((e, i) => toViewerItem(start + i + 1, e))
+      const enriched = await this.enrichViewers(
+        s.communityId,
+        s.creatorId,
+        sessions
       );
+      const data = await Promise.all(enriched.map((e) => toViewerItem(e)));
       return { data, pagination: offsetMeta(query.page, query.limit, total) };
     }
 
@@ -1466,7 +1477,11 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       );
     }
 
-    let enriched = await this.enrichViewers(s.communityId, sessions);
+    let enriched = await this.enrichViewers(
+      s.communityId,
+      s.creatorId,
+      sessions
+    );
 
     if (search) {
       enriched = enriched.filter(
@@ -1502,19 +1517,20 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     const total = enriched.length;
     const start = (query.page - 1) * query.limit;
     const pageSlice = enriched.slice(start, start + query.limit);
-    const data = await Promise.all(
-      pageSlice.map((e, i) => toViewerItem(start + i + 1, e))
-    );
+    const data = await Promise.all(pageSlice.map((e) => toViewerItem(e)));
     return { data, pagination: offsetMeta(query.page, query.limit, total) };
   }
 
   /**
    * Enrich raw viewer sessions with each viewer's profile (username/display
    * name/avatar key) + current community role — WITHOUT resolving avatars (the
-   * caller presigns only the page it keeps). Batched (no N+1).
+   * caller presigns only the page it keeps). Batched (no N+1). The stream's
+   * `creatorId` is surfaced as `type: "Host"` regardless of their community role,
+   * so the host is always identifiable in the viewer list.
    */
   private async enrichViewers(
     communityId: string,
+    creatorId: string,
     sessions: AdminViewerSessionRow[]
   ): Promise<EnrichedViewer[]> {
     const userIds = unique(sessions.map((v) => v.userId));
@@ -1531,8 +1547,16 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         userId: v.userId,
         username: p?.username ?? "",
         displayName: displayNameOf(p),
+        // Same rule as the detail's creator.displayName — first+last, trimmed,
+        // falling back to username if both name parts are empty; "" when no
+        // profile at all.
+        fullName: displayNameOf(p),
         avatarUrl: p?.avatarUrl,
-        type: toViewerType(roleMap.get(v.userId)),
+        // The host wins over their community role (they may be Admin,
+        // Moderator, or Member of the community — but on THIS stream they are
+        // the host, and that's what the admin viewer list surfaces).
+        type:
+          v.userId === creatorId ? "Host" : toViewerType(roleMap.get(v.userId)),
         joinedAt: v.joinedAt,
         leftAt: v.leftAt,
         watchDurationSeconds: v.watchDurationSeconds,

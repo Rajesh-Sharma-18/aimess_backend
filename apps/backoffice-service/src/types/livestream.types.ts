@@ -284,15 +284,22 @@ export type ListLivestreamReportsQuery = {
  * durable `LivestreamViewerSession` table. A user who rejoined has multiple
  * rows (one per join→leave session).
  */
-/** Community role of a viewer, as shown in the admin viewer-list "type" column. */
-export type LivestreamViewerType = "Admin" | "Moderator" | "Member";
+/**
+ * Viewer's "type" column in the admin viewer list. "Host" is the stream
+ * creator (always surfaced regardless of their community role); the remaining
+ * values reflect the viewer's CURRENT community role, defaulting to Member.
+ */
+export type LivestreamViewerType = "Host" | "Admin" | "Moderator" | "Member";
 
 export type LivestreamUserItem = {
-  /** Pagination-based sequence number: (page - 1) * limit + index + 1. */
-  no: number;
   userId: string;
   username: string;
-  handle: string | null;
+  /**
+   * Same format as the livestream detail's `creator.displayName`:
+   * `firstName lastName` trimmed, falling back to `username` if both name
+   * parts are empty. Empty string only when the user profile can't be resolved.
+   */
+  fullName: string;
   // Standard avatar object (see @aimess/shared-types MediaObject); null when
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
@@ -302,7 +309,10 @@ export type LivestreamUserItem = {
   leftAt: number | null;
   /** Computed live (now - joinedAt) while still watching. */
   watchDurationSeconds: number;
-  /** Viewer's current community role; defaults to "Member" if not a member. */
+  /**
+   * "Host" for the stream creator; otherwise the viewer's current community
+   * role, defaulting to "Member" when they are no longer a community member.
+   */
   type: LivestreamViewerType;
 };
 

@@ -114,23 +114,120 @@ describe("admin livestream viewer list — sequence + role enrichment", () => {
     );
   });
 
-  it("sequences `no` from the page/limit, not the DB row order", async () => {
+  it("populates `fullName` with the same rule as the detail's `creator.displayName` (first+last, username fallback)", async () => {
     adminListViewerSessions.mockResolvedValueOnce({
       sessions: [
         { userId: "u-1", joinedAt: 1000, leftAt: 0, watchDurationSeconds: 1 },
         { userId: "u-2", joinedAt: 1000, leftAt: 0, watchDurationSeconds: 1 },
+        { userId: "u-3", joinedAt: 1000, leftAt: 0, watchDurationSeconds: 1 },
       ],
-      total: 12,
+      total: 3,
     });
-    adminGetProfilesByIds.mockResolvedValueOnce([]);
+    adminGetProfilesByIds.mockResolvedValueOnce([
+      {
+        userId: "u-1",
+        username: "jane",
+        firstName: "Jane",
+        lastName: "Doe",
+        avatarUrl: "",
+      },
+      // Only firstName present → fullName === "Kai".
+      {
+        userId: "u-2",
+        username: "kai",
+        firstName: "Kai",
+        lastName: "",
+        avatarUrl: "",
+      },
+      // Neither present → fullName === null.
+      {
+        userId: "u-3",
+        username: "anon",
+        firstName: "",
+        lastName: "",
+        avatarUrl: "",
+      },
+    ]);
     adminGetMemberRoles.mockResolvedValueOnce(new Map());
 
     const page = await livestreamRepository.listUsers("LS-1", {
-      page: 2,
+      page: 1,
       limit: 10,
     });
 
-    expect(page.data.map((v) => v.no)).toEqual([11, 12]);
+    const byId = new Map(page.data.map((v) => [v.userId, v]));
+    expect(byId.get("u-1")?.fullName).toBe("Jane Doe");
+    expect(byId.get("u-2")?.fullName).toBe("Kai");
+    // Both name parts empty → falls back to username (same as detail's displayName).
+    expect(byId.get("u-3")?.fullName).toBe("anon");
+    // Removed fields are gone from the wire.
+    for (const row of page.data) {
+      expect(row).not.toHaveProperty("no");
+      expect(row).not.toHaveProperty("handle");
+    }
+  });
+
+  it("marks the stream creator as type 'Host', overriding whatever their community role happens to be", async () => {
+    // Host publishes via SRS/RTMP — no `stream:join` — but a viewer-session row
+    // is opened for them at go-live (stream-service side), so U-1 shows up here.
+    adminListViewerSessions.mockResolvedValueOnce({
+      sessions: [
+        { userId: "U-1", joinedAt: 1000, leftAt: 0, watchDurationSeconds: 60 },
+        {
+          userId: "u-viewer",
+          joinedAt: 2000,
+          leftAt: 0,
+          watchDurationSeconds: 40,
+        },
+      ],
+      total: 2,
+    });
+    adminGetProfilesByIds.mockResolvedValueOnce([
+      { userId: "U-1", username: "hostname", avatarUrl: "" },
+      { userId: "u-viewer", username: "vlad", avatarUrl: "" },
+    ]);
+    // The host also happens to be a community ADMIN — the Host label must
+    // still win over the community role.
+    adminGetMemberRoles.mockResolvedValueOnce(
+      new Map([
+        ["U-1", "ADMIN"],
+        ["u-viewer", "MEMBER"],
+      ])
+    );
+
+    const page = await livestreamRepository.listUsers("LS-1", {
+      page: 1,
+      limit: 10,
+    });
+
+    expect(page.data.find((v) => v.userId === "U-1")?.type).toBe("Host");
+    expect(page.data.find((v) => v.userId === "u-viewer")?.type).toBe("Member");
+  });
+
+  it("dedupes the host: a second (socket-based) session for the creator produces just one 'Host' row", async () => {
+    // Both rows are U-1 — reconnect/rejoin. stream-service's `listByStream`
+    // aggregates by userId before returning, so a single entry per user
+    // reaches the backoffice. The Host label still applies.
+    adminListViewerSessions.mockResolvedValueOnce({
+      sessions: [
+        { userId: "U-1", joinedAt: 1000, leftAt: 0, watchDurationSeconds: 120 },
+      ],
+      total: 1,
+    });
+    adminGetProfilesByIds.mockResolvedValueOnce([
+      { userId: "U-1", username: "hostname", avatarUrl: "" },
+    ]);
+    adminGetMemberRoles.mockResolvedValueOnce(new Map([["U-1", "MEMBER"]]));
+
+    const page = await livestreamRepository.listUsers("LS-1", {
+      page: 1,
+      limit: 10,
+    });
+
+    expect(page.data).toHaveLength(1);
+    expect(page.data[0].userId).toBe("U-1");
+    expect(page.data[0].type).toBe("Host");
+    expect(page.pagination.total).toBe(1);
   });
 
   it("skips the role gRPC call entirely when the page has no viewers", async () => {
@@ -269,7 +366,7 @@ describe("admin livestream viewer list — candidate-set search/filter/sort", ()
     const page = await livestreamRepository.listUsers("LS-1", {
       page: 1,
       limit: 10,
-      role: "HOST", // no livestream participant-role model → not a valid filter
+      role: "HOST", // Host is a display-only type; role filter is over community roles
     });
     expect(page.data.map((v) => v.userId).sort()).toEqual([
       "u-a",
@@ -322,9 +419,8 @@ describe("admin livestream viewer list — candidate-set search/filter/sort", ()
       sortField: "username",
       sortDir: "asc",
     });
-    // Page 2 of [amy, mike, zoe] @ limit 2 → [zoe], numbered from 3.
+    // Page 2 of [amy, mike, zoe] @ limit 2 → [zoe].
     expect(page.data.map((v) => v.username)).toEqual(["zoe"]);
-    expect(page.data[0].no).toBe(3);
     expect(page.pagination.total).toBe(3);
   });
 });

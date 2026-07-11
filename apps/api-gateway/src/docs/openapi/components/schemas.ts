@@ -2139,7 +2139,7 @@ export const openApiSchemas = {
         type: "integer",
         example: 200,
         description:
-          "Distinct viewers for an ended stream; currently-watching count while live.",
+          "TOTAL unique viewers over the stream's lifetime (host + co-hosts + speakers + viewers, current and departed; reconnects deduped). Independent of status.",
       },
       activeViewerCount: {
         type: "integer",
@@ -2901,7 +2901,12 @@ export const openApiSchemas = {
       startedAt: { type: "string", format: "date-time" },
       endedAt: { type: "string", format: "date-time", nullable: true },
       durationSeconds: { type: "integer", example: 3600 },
-      viewerCount: { type: "integer", example: 134 },
+      viewerCount: {
+        type: "integer",
+        example: 134,
+        description:
+          "TOTAL unique users who joined this stream at least once during its lifetime (host + co-hosts + speakers + viewers, current and departed; reconnects deduped by userId). Independent of status.",
+      },
       reportCount: { type: "integer", example: 2 },
       reportSeverity: {
         type: "string",
@@ -3055,15 +3060,14 @@ export const openApiSchemas = {
     description:
       "A viewer-session row for this stream (who watched, not the community roster — see the endpoint description).",
     properties: {
-      no: {
-        type: "integer",
-        description:
-          "Pagination-based sequence number: (page - 1) * limit + index + 1.",
-        example: 1,
-      },
       userId: { type: "string" },
-      username: { type: "string" },
-      handle: { type: "string", nullable: true },
+      username: { type: "string", example: "john_doe" },
+      fullName: {
+        type: "string",
+        example: "John Doe",
+        description:
+          "Same format as the livestream detail's `creator.displayName`: `firstName lastName` trimmed, falling back to `username` when both name parts are empty. Empty string only when the user profile cannot be resolved.",
+      },
       avatar: {
         allOf: [{ $ref: "#/components/schemas/MediaObject" }],
         nullable: true,
@@ -3080,15 +3084,15 @@ export const openApiSchemas = {
       watchDurationSeconds: { type: "integer", example: 340 },
       type: {
         type: "string",
-        enum: ["Admin", "Moderator", "Member"],
+        enum: ["Host", "Admin", "Moderator", "Member"],
         description:
-          "Viewer's CURRENT community role. Defaults to 'Member' if they are no longer a member of the stream's community.",
+          "`Host` for the stream creator (always surfaced, even if they broadcast via RTMP and never emit `stream:join`). Otherwise the viewer's CURRENT community role, defaulting to `Member` when they are no longer a member of the stream's community.",
       },
     },
     required: [
-      "no",
       "userId",
       "username",
+      "fullName",
       "joinedAt",
       "watchDurationSeconds",
       "type",

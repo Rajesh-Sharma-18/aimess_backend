@@ -465,8 +465,17 @@ export class LivestreamService {
         `on_publish: stream id=${stream.id} resumed within reconnect grace window`
       );
     } else {
+      // Open a viewer session for the host as the stream first goes LIVE, so
+      // the host is always counted in `uniqueViewerCount` and surfaced in the
+      // admin viewer list — even though they publish via SRS/RTMP and never
+      // emit `stream:join` themselves. Idempotent: a subsequent socket-based
+      // host join reuses this same open session (see recordJoin).
+      void this.recordHostViewerJoin(updated.id, updated.creatorId);
       const startedAt = updated.livedAt?.getTime() ?? Date.now();
-      void this.publishCommunityStreamStarted(updated);
+      const liveStreamCount = await this.streamRepo.countLiveByCommunity(
+        updated.communityId
+      );
+      void this.publishCommunityStreamStarted(updated, liveStreamCount);
       this.eventPublisher("stream.started", {
         streamId: updated.id,
         communityId: updated.communityId,
@@ -481,6 +490,7 @@ export class LivestreamService {
         status: "LIVE",
         livedAt: startedAt,
         startedAt,
+        liveStreamCount,
       });
     }
 
@@ -579,8 +589,11 @@ export class LivestreamService {
 
     await this.srsService.kickStream(stream.streamKey, stream.sourceType);
 
+    const liveStreamCount = await this.streamRepo.countLiveByCommunity(
+      updated.communityId
+    );
     await this.publishStatus(updated.id, "ENDED", updated.communityId);
-    void this.publishCommunityStreamEnded(updated);
+    void this.publishCommunityStreamEnded(updated, liveStreamCount);
     void this.closeOpenViewerSessions(
       updated.id,
       updated.endedAt ?? new Date()
@@ -592,6 +605,7 @@ export class LivestreamService {
       endedAt: updated.endedAt?.getTime() ?? Date.now(),
       durationSeconds: computeDurationSeconds(updated),
       peakViewers: updated.peakViewers,
+      liveStreamCount,
     });
 
     return updated;
@@ -676,8 +690,13 @@ export class LivestreamService {
         `markLive: stream id=${id} resumed within reconnect grace window`
       );
     } else {
+      // Host viewer session — see handlePublish for the rationale.
+      void this.recordHostViewerJoin(updated.id, updated.creatorId);
       const startedAt = updated.livedAt?.getTime() ?? Date.now();
-      void this.publishCommunityStreamStarted(updated);
+      const liveStreamCount = await this.streamRepo.countLiveByCommunity(
+        updated.communityId
+      );
+      void this.publishCommunityStreamStarted(updated, liveStreamCount);
       this.eventPublisher("stream.started", {
         streamId: updated.id,
         communityId: updated.communityId,
@@ -692,6 +711,7 @@ export class LivestreamService {
         status: "LIVE",
         livedAt: startedAt,
         startedAt,
+        liveStreamCount,
       });
     }
 
@@ -1016,8 +1036,11 @@ export class LivestreamService {
         // Best-effort — a PENDING stream never published, but a client may have
         // gotten as far as opening the ingest connection.
         await this.srsService.kickStream(stream.streamKey, stream.sourceType);
+        const liveStreamCount = await this.streamRepo.countLiveByCommunity(
+          updated.communityId
+        );
         await this.publishStatus(updated.id, "ENDED", updated.communityId);
-        void this.publishCommunityStreamEnded(updated);
+        void this.publishCommunityStreamEnded(updated, liveStreamCount);
         this.eventPublisher("stream.ended", {
           streamId: updated.id,
           communityId: updated.communityId,
@@ -1025,6 +1048,7 @@ export class LivestreamService {
           endedAt: updated.endedAt?.getTime() ?? Date.now(),
           durationSeconds: 0,
           peakViewers: 0,
+          liveStreamCount,
         });
         logger.info(
           `sweepStalePendingStreams: cancelled stream=${stream.id} community=${stream.communityId}`
@@ -1219,6 +1243,29 @@ export class LivestreamService {
         joinedAt: joinedAtById.get(userId) ?? null,
       };
     });
+  }
+
+  /**
+   * Fire-and-forget durable viewer-session record for the HOST as their stream
+   * goes LIVE. Called from `handlePublish`/`markLive` on a fresh (non-resume)
+   * transition so `LivestreamViewerSession` always contains the host —
+   * otherwise `viewerCount` (and the admin viewer list) would silently miss
+   * them, since the host publishes via SRS/RTMP and never emits `stream:join`.
+   * Idempotent (see {@link LivestreamViewerSessionRepository.recordJoin}), so
+   * a later socket-based host join reuses this same open row and
+   * `closeAllOpenForStream` closes it alongside every viewer on ENDED.
+   */
+  private async recordHostViewerJoin(
+    streamId: string,
+    creatorId: string
+  ): Promise<void> {
+    try {
+      await this.viewerSessionRepo.recordJoin(streamId, creatorId);
+    } catch (error) {
+      logger.warn(
+        `recordHostViewerJoin failed for stream=${streamId}: ${String(error)}`
+      );
+    }
   }
 
   /**
@@ -2130,16 +2177,18 @@ export class LivestreamService {
    * room, so every connected member sees the banner without opening the chat.
    */
   private async publishCommunityStreamStarted(
-    stream: Livestream
+    stream: Livestream,
+    liveStreamCount: number
   ): Promise<void> {
     logger.info(
       `🔴 [STREAM:LIVE] publishCommunityStreamStarted → Redis channel=community:${stream.communityId} streamId=${stream.id} title="${stream.title ?? ""}"`
     );
     try {
-      const [host, liveCount] = await Promise.all([
-        this.resolveHost(stream.creatorId),
-        this.streamRepo.countLiveByCommunity(stream.communityId),
-      ]);
+      const host = await this.resolveHost(stream.creatorId);
+      const cappedCount = Math.min(
+        liveStreamCount,
+        env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
+      );
       const startedAt = stream.livedAt?.getTime() ?? Date.now();
       await this.redis.publish(
         `community:${stream.communityId}`,
@@ -2160,10 +2209,7 @@ export class LivestreamService {
             status: "LIVE",
             startedAt,
             livedAt: startedAt,
-            liveStreamCount: Math.min(
-              liveCount,
-              env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
-            ),
+            liveStreamCount: cappedCount,
             hasActiveLivestream: true,
           },
         })
@@ -2185,14 +2231,16 @@ export class LivestreamService {
    * and flips false only when the final stream ends. Drive banner visibility off
    * `hasActiveLivestream`/`liveStreamCount`, not the event's presence.
    */
-  private async publishCommunityStreamEnded(stream: Livestream): Promise<void> {
+  private async publishCommunityStreamEnded(
+    stream: Livestream,
+    liveStreamCount: number
+  ): Promise<void> {
     try {
-      // Count is read AFTER this stream is ENDED, so it reflects the streams
-      // that remain live.
-      const [host, liveCount] = await Promise.all([
-        this.resolveHost(stream.creatorId),
-        this.streamRepo.countLiveByCommunity(stream.communityId),
-      ]);
+      const host = await this.resolveHost(stream.creatorId);
+      const cappedCount = Math.min(
+        liveStreamCount,
+        env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
+      );
       const durationSeconds = computeDurationSeconds(stream);
       await this.redis.publish(
         `community:${stream.communityId}`,
@@ -2207,11 +2255,8 @@ export class LivestreamService {
             endedAt: stream.endedAt?.getTime() ?? Date.now(),
             duration: formatStreamDuration(durationSeconds),
             durationSeconds,
-            liveStreamCount: Math.min(
-              liveCount,
-              env.STREAM_MAX_CONCURRENT_PER_COMMUNITY
-            ),
-            hasActiveLivestream: liveCount > 0,
+            liveStreamCount: cappedCount,
+            hasActiveLivestream: cappedCount > 0,
           },
         })
       );

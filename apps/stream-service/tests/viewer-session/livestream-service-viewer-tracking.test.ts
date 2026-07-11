@@ -264,6 +264,126 @@ describe("LivestreamService — viewer sessions close out on every ENDED transit
   });
 });
 
+describe("LivestreamService — host viewer session on go-live", () => {
+  it("handlePublish opens a viewer session for the host on a fresh PENDING→LIVE transition", async () => {
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service, viewerSessionRepo } = makeDeps({
+      streamRepo: {
+        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({
+            ...stream,
+            status: "LIVE",
+            livedAt: new Date(),
+          }),
+      },
+    });
+
+    const allowed = await service.handlePublish("key-1");
+    await flushMicrotasks();
+
+    expect(allowed).toBe(true);
+    expect(viewerSessionRepo.recordJoin).toHaveBeenCalledWith(
+      "stream-1",
+      "creator-1"
+    );
+  });
+
+  it("markLive opens a viewer session for the host on a fresh PENDING→LIVE transition", async () => {
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service, viewerSessionRepo } = makeDeps({
+      streamRepo: {
+        findById: jest.fn().mockResolvedValue(stream),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({
+            ...stream,
+            status: "LIVE",
+            livedAt: new Date(),
+          }),
+      },
+    });
+
+    await service.markLive("stream-1", "creator-1");
+    await flushMicrotasks();
+
+    expect(viewerSessionRepo.recordJoin).toHaveBeenCalledWith(
+      "stream-1",
+      "creator-1"
+    );
+  });
+
+  it("handlePublish on RESUME (RECONNECTING→LIVE) does NOT re-record the host — the original open session is preserved", async () => {
+    const originalLivedAt = new Date(Date.now() - 120_000);
+    const stream = makeStream({
+      status: "RECONNECTING",
+      livedAt: originalLivedAt,
+      disconnectedAt: new Date(Date.now() - 5_000),
+    });
+    const { service, viewerSessionRepo } = makeDeps({
+      streamRepo: {
+        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "LIVE",
+          disconnectedAt: null,
+        }),
+      },
+    });
+
+    await service.handlePublish("key-1");
+    await flushMicrotasks();
+
+    expect(viewerSessionRepo.recordJoin).not.toHaveBeenCalled();
+  });
+
+  it("host viewer session is closed alongside every viewer when the stream ENDS", async () => {
+    // The stream ends via any ENDED path — closeAllOpenForStream sweeps every
+    // open row, including the host row opened at go-live.
+    const stream = makeStream();
+    const { service, viewerSessionRepo } = makeDeps({
+      streamRepo: {
+        findById: jest.fn().mockResolvedValue(stream),
+        updateById: jest.fn().mockResolvedValue({
+          ...stream,
+          status: "ENDED",
+          endedAt: new Date(),
+        }),
+      },
+    });
+
+    await service.stopStream("stream-1", "creator-1");
+    await flushMicrotasks();
+
+    expect(viewerSessionRepo.closeAllOpenForStream).toHaveBeenCalledWith(
+      "stream-1",
+      expect.any(Date)
+    );
+  });
+
+  it("a repo failure recording the host session does NOT block go-live (fire-and-forget)", async () => {
+    const stream = makeStream({ status: "PENDING", livedAt: null });
+    const { service } = makeDeps({
+      streamRepo: {
+        findByStreamKey: jest.fn().mockResolvedValue(stream),
+        updateById: jest
+          .fn()
+          .mockResolvedValue({
+            ...stream,
+            status: "LIVE",
+            livedAt: new Date(),
+          }),
+      },
+      viewerSessionRepo: {
+        recordJoin: jest.fn().mockRejectedValue(new Error("db down")),
+      },
+    });
+
+    await expect(service.handlePublish("key-1")).resolves.toBe(true);
+  });
+});
+
 describe("LivestreamService — publisher reconnect-grace (RECONNECTING)", () => {
   it("handleUnpublish on a LIVE stream enters RECONNECTING instead of ending it — no viewer sessions closed, no stream.ended emitted", async () => {
     const stream = makeStream({ status: "LIVE" });
