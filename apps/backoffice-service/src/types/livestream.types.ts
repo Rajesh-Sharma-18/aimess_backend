@@ -264,8 +264,10 @@ export type ListLivestreamsQuery = {
   page: number;
   limit: number;
   cursor?: string;
-  dateFrom?: string;
-  dateTo?: string;
+  /** Epoch-ms lower bound on createdAt (inclusive). */
+  dateFrom?: number;
+  /** Epoch-ms upper bound on createdAt (inclusive). */
+  dateTo?: number;
 };
 
 /** Normalized per-stream reports list query (post-validation/coercion). */

@@ -1095,6 +1095,7 @@ export class LivestreamService {
     creatorId?: string;
     restrictCommunityIds?: string[];
     restrictStreamIds?: string[];
+    excludeStreamIds?: string[];
     dateFrom?: Date;
     dateTo?: Date;
     sortField:
@@ -1116,6 +1117,7 @@ export class LivestreamService {
       creatorId: params.creatorId,
       restrictCommunityIds: params.restrictCommunityIds,
       restrictStreamIds: params.restrictStreamIds,
+      excludeStreamIds: params.excludeStreamIds,
       dateFrom: params.dateFrom,
       dateTo: params.dateTo,
     };

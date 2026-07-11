@@ -2187,13 +2187,17 @@ export const adminPaths = {
       description:
         "Paginated, filtered livestreams read LIVE from stream-service over gRPC " +
         "(source of truth — no event-fed read-model). Each row is enriched with " +
-        "community/creator/category/avatars and a report count (admin_db `Report`, " +
-        "type=stream). `search` matches livestream title, community name, OR creator " +
-        "name. Filters: `category` (slug/id), `status` (LIVE/ENDED/SCHEDULED/CANCELLED — " +
-        "SCHEDULED⇄PENDING), `hasReports`, `minReports`, `communityId`, `creatorId`, " +
-        "`dateFrom`/`dateTo`. Sort whitelist: `createdAt|viewerCount|reportCount|duration` " +
-        "with `:asc|:desc` (default `createdAt:desc`). All media fields are full " +
-        "presigned URLs (never object keys). Requires `livestreams.read`.",
+        "community/creator/category/avatars and a report count. `search` is " +
+        "case-insensitive and matches livestream title, community name, community " +
+        "handle, creator username, OR creator full name. Filters: `category` " +
+        "(slug/id/name) OR `categoryId` (id-only alias), `status` (LIVE/ENDED/" +
+        "SCHEDULED/CANCELLED — SCHEDULED⇄PENDING), `reportStatus` " +
+        "(REPORTED=reportCount>0 / NOT_REPORTED=reportCount==0), `hasReports`, " +
+        "`minReports`, `communityId`, `creatorId`, `dateFrom`/`dateTo` (epoch ms). " +
+        "Sort: `sortBy` (createdAt|title|viewerCount|reportCount|duration|status|" +
+        "category|creatorName|communityName) + `sortOrder` (asc|desc) — or the " +
+        "legacy `sort=field:asc|:desc` (default `createdAt:desc`). All media " +
+        "fields are full presigned URLs. Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -2212,9 +2216,24 @@ export const adminPaths = {
           name: "search",
           in: "query",
           required: false,
+          schema: { type: "string", example: "react" },
+          description:
+            "Case-insensitive. Matches livestream title, community name, community handle, creator username, OR creator full name.",
+        },
+        {
+          name: "categoryId",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Filter to a single category by id.",
+        },
+        {
+          name: "category",
+          in: "query",
+          required: false,
           schema: { type: "string" },
           description:
-            "Matches livestream title, community name, OR creator name (case-insensitive).",
+            "Legacy alias for categoryId. Matches by slug, id, or name.",
         },
         {
           name: "status",
@@ -2224,6 +2243,17 @@ export const adminPaths = {
             type: "string",
             enum: ["LIVE", "ENDED", "SCHEDULED", "CANCELLED"],
           },
+        },
+        {
+          name: "reportStatus",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["REPORTED", "NOT_REPORTED"],
+          },
+          description:
+            "REPORTED = reportCount > 0. NOT_REPORTED = reportCount == 0. Computed via the reports relation; no new DB field.",
         },
         {
           name: "communityId",
@@ -2242,6 +2272,7 @@ export const adminPaths = {
           in: "query",
           required: false,
           schema: { type: "boolean" },
+          description: "Legacy alias for reportStatus.",
         },
         {
           name: "minReports",
@@ -2250,27 +2281,57 @@ export const adminPaths = {
           schema: { type: "integer", minimum: 0 },
         },
         {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: [
+              "createdAt",
+              "title",
+              "viewerCount",
+              "reportCount",
+              "duration",
+              "status",
+              "category",
+              "creatorName",
+              "communityName",
+            ],
+          },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
+        },
+        {
           name: "sort",
           in: "query",
           required: false,
           schema: {
             type: "string",
             pattern:
-              "^(createdAt|viewerCount|reportCount|duration):(asc|desc)$",
+              "^(createdAt|viewerCount|reportCount|duration|title|status|category|creatorName|communityName):(asc|desc)$",
             default: "createdAt:desc",
           },
+          description: "Legacy `field:dir` form. Prefer sortBy + sortOrder.",
         },
         {
           name: "dateFrom",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date" },
+          schema: { type: "integer", format: "int64", example: 1783600000000 },
+          description:
+            "Inclusive lower bound on createdAt (epoch milliseconds).",
         },
         {
           name: "dateTo",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date" },
+          schema: { type: "integer", format: "int64", example: 1784200000000 },
+          description:
+            "Inclusive upper bound on createdAt (epoch milliseconds).",
         },
       ],
       responses: {

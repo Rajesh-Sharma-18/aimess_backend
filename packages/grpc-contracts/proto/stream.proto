@@ -264,6 +264,8 @@ message AdminListStreamsRequest {
   repeated string restrict_community_ids = 13;
   // AND-restrict to these stream ids (drives the has-reports/min-reports filter — empty = no restriction).
   repeated string restrict_stream_ids = 14;
+  // AND-exclude these stream ids (drives reportStatus=NOT_REPORTED — empty = no exclusion).
+  repeated string exclude_stream_ids = 15;
 }
 message AdminListStreamsResponse {
   repeated AdminStreamRow streams = 1;

@@ -382,6 +382,8 @@ export interface AdminStreamFilter {
   restrictCommunityIds?: string[];
   /** AND-restrict to these stream ids (report filter). Empty/undefined = no restriction. */
   restrictStreamIds?: string[];
+  /** AND-exclude these stream ids (reportStatus=NOT_REPORTED). Empty/undefined = no exclusion. */
+  excludeStreamIds?: string[];
   /** createdAt lower bound (inclusive). */
   dateFrom?: Date;
   /** createdAt upper bound (inclusive). */
@@ -400,6 +402,9 @@ function buildAdminWhere(f: AdminStreamFilter): Prisma.LivestreamWhereInput {
   }
   if (f.restrictStreamIds?.length) {
     and.push({ id: { in: f.restrictStreamIds } });
+  }
+  if (f.excludeStreamIds?.length) {
+    and.push({ id: { notIn: f.excludeStreamIds } });
   }
   if (f.dateFrom || f.dateTo) {
     and.push({

@@ -66,6 +66,8 @@ export interface AdminListStreamsArgs {
   restrictCommunityIds?: string[];
   /** AND-restrict to these stream ids (drives the has-reports/min-reports filter). */
   restrictStreamIds?: string[];
+  /** AND-exclude these stream ids (drives reportStatus=NOT_REPORTED). */
+  excludeStreamIds?: string[];
   /** epoch ms inclusive; 0/undefined = no bound. */
   dateFrom?: number;
   dateTo?: number;
@@ -262,6 +264,7 @@ const adminListStreamsBreaker = makeBreaker(
       creatorIds: args.creatorIds ?? [],
       restrictCommunityIds: args.restrictCommunityIds ?? [],
       restrictStreamIds: args.restrictStreamIds ?? [],
+      excludeStreamIds: args.excludeStreamIds ?? [],
       dateFrom: args.dateFrom ?? 0,
       dateTo: args.dateTo ?? 0,
       sortField: args.sortField ?? "createdAt",

@@ -58,8 +58,8 @@ export const communityRepository = {
   },
 
   /**
-   * Admin Reports search: community ids whose name matches the search term
-   * (case-insensitive, partial). Capped at 500 — the caller only needs an
+   * Admin Reports search: community ids whose name OR handle matches the search
+   * term (case-insensitive, partial). Capped at 500 — the caller only needs an
    * id-set to filter by, not a page of results. Soft-deleted communities are
    * still matched (a report can reference a since-deleted community).
    */
@@ -67,7 +67,12 @@ export const communityRepository = {
     const term = search.trim();
     if (!term) return [];
     const rows = await prisma.community.findMany({
-      where: { name: { contains: term, mode: "insensitive" } },
+      where: {
+        OR: [
+          { name: { contains: term, mode: "insensitive" } },
+          { handle: { contains: term, mode: "insensitive" } },
+        ],
+      },
       select: { id: true },
       take: 500,
     });

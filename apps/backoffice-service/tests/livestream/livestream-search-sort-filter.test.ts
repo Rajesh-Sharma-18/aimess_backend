@@ -412,22 +412,35 @@ describe("sort — cross-service fields (candidate-set sort, fixes the reportCou
 // Filter only.
 // ---------------------------------------------------------------------------
 describe("filter", () => {
-  it("forwards status/communityId/creatorId/date-range as exact AND filters", async () => {
+  it("forwards status/communityId/creatorId/date-range (epoch ms) as exact AND filters", async () => {
+    const from = Date.parse("2026-01-01T00:00:00.000Z");
+    const to = Date.parse("2026-01-31T23:59:59.999Z");
     await livestreamRepository.list(
       baseQuery({
         status: "LIVE",
         communityId: "C-1",
         creatorId: "U-1",
-        dateFrom: "2026-01-01",
-        dateTo: "2026-01-31",
+        dateFrom: from,
+        dateTo: to,
       })
     );
     const arg = adminListStreams.mock.calls[0][0];
     expect(arg.status).toBe("LIVE");
     expect(arg.communityId).toBe("C-1");
     expect(arg.creatorId).toBe("U-1");
-    expect(arg.dateFrom).toBe(Date.parse("2026-01-01T00:00:00.000Z"));
-    expect(arg.dateTo).toBe(Date.parse("2026-01-31T23:59:59.999Z"));
+    expect(arg.dateFrom).toBe(from);
+    expect(arg.dateTo).toBe(to);
+  });
+
+  it("reportStatus=NOT_REPORTED excludes ids with reports via excludeStreamIds", async () => {
+    adminGetLivestreamReportCounts.mockResolvedValue([
+      { livestreamId: "LS-BAD-1", count: 4 },
+      { livestreamId: "LS-BAD-2", count: 1 },
+    ]);
+    await livestreamRepository.list(baseQuery({ hasReports: false }));
+    const arg = adminListStreams.mock.calls[0][0];
+    expect(arg.excludeStreamIds).toEqual(["LS-BAD-1", "LS-BAD-2"]);
+    expect(arg.restrictStreamIds).toBeUndefined();
   });
 
   it("maps the SCHEDULED admin status to stream-service's PENDING", async () => {

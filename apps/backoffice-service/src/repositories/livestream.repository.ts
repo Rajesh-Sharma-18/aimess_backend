@@ -366,17 +366,18 @@ export class MockLivestreamRepository implements LivestreamRepository {
 
   private applyFilters(query: ListLivestreamsQuery): LivestreamDetail[] {
     const search = query.search?.toLowerCase();
-    const from = query.dateFrom
-      ? Date.parse(`${query.dateFrom}T00:00:00.000Z`)
-      : null;
-    // dateTo is inclusive on the whole day.
-    const to = query.dateTo
-      ? Date.parse(`${query.dateTo}T23:59:59.999Z`)
-      : null;
+    // dateFrom/dateTo are epoch-ms integers (inclusive); 0/undefined = no bound.
+    const from = query.dateFrom ?? null;
+    const to = query.dateTo ?? null;
 
     return this.rows.filter((r) => {
       if (query.status && r.status !== query.status) return false;
-      if (query.category && r.category.slug !== query.category) return false;
+      if (
+        query.category &&
+        r.category.slug !== query.category &&
+        r.category.id !== query.category
+      )
+        return false;
       if (query.communityId && r.community.id !== query.communityId)
         return false;
       if (query.creatorId && r.creator.id !== query.creatorId) return false;
@@ -395,6 +396,8 @@ export class MockLivestreamRepository implements LivestreamRepository {
           r.livestreamId,
           r.title,
           r.community.name,
+          r.community.slug,
+          r.creator.username,
           r.creator.displayName,
         ]
           .join(" ")
@@ -1100,8 +1103,12 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       if (restrictCommunityIds.length === 0) return emptyListPage(query);
     }
 
-    // hasReports / minReports → AND-restrict to reported stream ids.
+    // Reports filter:
+    //  - hasReports=true  / minReports>0 → AND-restrict to reported ids.
+    //  - hasReports=false                 → AND-exclude any reported id
+    //    (reportStatus=NOT_REPORTED funnels through hasReports=false at the validator).
     let restrictStreamIds: string[] | undefined;
+    let excludeStreamIds: string[] | undefined;
     const minReports =
       query.hasReports === true
         ? Math.max(1, query.minReports ?? 1)
@@ -1109,6 +1116,8 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     if (minReports && minReports > 0) {
       restrictStreamIds = await resolveStreamIdsWithReports(minReports);
       if (restrictStreamIds.length === 0) return emptyListPage(query);
+    } else if (query.hasReports === false) {
+      excludeStreamIds = await resolveStreamIdsWithReports(1);
     }
 
     const commonArgs = {
@@ -1117,15 +1126,14 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       creatorIds: searchCreatorIds,
       restrictCommunityIds,
       restrictStreamIds,
+      excludeStreamIds,
       status: query.status ? toStreamStatus(query.status) : undefined,
       communityId: query.communityId,
       creatorId: query.creatorId,
-      dateFrom: query.dateFrom
-        ? Date.parse(`${query.dateFrom}T00:00:00.000Z`)
-        : undefined,
-      dateTo: query.dateTo
-        ? Date.parse(`${query.dateTo}T23:59:59.999Z`)
-        : undefined,
+      // Epoch-ms integers arrive already coerced by the validator (0/undefined = no bound).
+      dateFrom:
+        query.dateFrom && query.dateFrom > 0 ? query.dateFrom : undefined,
+      dateTo: query.dateTo && query.dateTo > 0 ? query.dateTo : undefined,
     };
 
     if (EXTERNAL_SORT_FIELDS.has(field)) {

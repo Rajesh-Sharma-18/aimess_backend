@@ -81,34 +81,57 @@ const REPORT_SORT_PATTERN = /^createdAt:(asc|desc)$/;
 // ---------------------------------------------------------------------------
 // List query.
 // ---------------------------------------------------------------------------
+export const reportStatusEnum = z.enum(["REPORTED", "NOT_REPORTED"]);
+
 export const listLivestreamsQuerySchema = z
   .object({
     search: z.string().trim().min(1).optional(),
+    // `category` (slug/id/name — existing) OR `categoryId` (new alias — id only).
     category: z.string().trim().min(1).optional(),
+    categoryId: z.string().trim().min(1).optional(),
     status: livestreamStatusEnum.optional(),
     hasReports: z.coerce.boolean().optional(),
     minReports: z.coerce.number().int().min(0).optional(),
+    // REPORTED = reportCount > 0; NOT_REPORTED = reportCount == 0. Funnels into
+    // `hasReports` below so the repo keeps ONE code path for the reports filter.
+    reportStatus: reportStatusEnum.optional(),
     communityId: z.string().trim().min(1).optional(),
     creatorId: z.string().trim().min(1).optional(),
     // `sort=field:dir` (existing convention) is still accepted; `sortBy` +
-    // `order` is an additive alternative that composes into the same `sort`
-    // string below — both funnel into one canonical field for the repository.
+    // `order`|`sortOrder` is an additive alternative that composes into the same
+    // `sort` string below — all funnel into one canonical field for the repository.
     sort: z
       .string()
       .regex(SORT_PATTERN, "Sort must be in the format field:asc or field:desc")
       .optional(),
     sortBy: sortFieldEnum.optional(),
     order: z.enum(["asc", "desc"]).optional(),
+    sortOrder: z.enum(["asc", "desc"]).optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(20),
     cursor: z.string().trim().min(1).optional(),
-    dateFrom: z.iso.date().optional(),
-    dateTo: z.iso.date().optional(),
+    // Epoch-ms integers (inclusive). ponytail: coerce keeps numeric strings working.
+    dateFrom: z.coerce.number().int().nonnegative().optional(),
+    dateTo: z.coerce.number().int().nonnegative().optional(),
   })
-  .transform(({ sortBy, order, sort, ...rest }) => ({
-    ...rest,
-    sort: sortBy ? `${sortBy}:${order ?? "desc"}` : (sort ?? "createdAt:desc"),
-  }));
+  .transform(
+    ({ sortBy, order, sortOrder, sort, categoryId, reportStatus, ...rest }) => {
+      const dir = sortOrder ?? order ?? "desc";
+      return {
+        ...rest,
+        // categoryId is the id-only alias; wins over `category` when both set.
+        category: categoryId ?? rest.category,
+        // reportStatus wins over hasReports when both set.
+        hasReports:
+          reportStatus === "REPORTED"
+            ? true
+            : reportStatus === "NOT_REPORTED"
+              ? false
+              : rest.hasReports,
+        sort: sortBy ? `${sortBy}:${dir}` : (sort ?? "createdAt:desc"),
+      };
+    }
+  );
 export type ListLivestreamsQueryInput = z.infer<
   typeof listLivestreamsQuerySchema
 >;
