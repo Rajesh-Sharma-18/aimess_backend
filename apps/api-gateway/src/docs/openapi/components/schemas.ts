@@ -621,7 +621,7 @@ export const openApiSchemas = {
             note: {
               type: "string",
               description:
-                "Present for services with no backoffice gRPC client (status unknown, reported degraded).",
+                "Optional short reason string — set on degraded/down rows (probe error, HTTP status code, slow-response warning).",
             },
           },
         },
@@ -3641,14 +3641,20 @@ export const openApiSchemas = {
       monitored: {
         type: "boolean",
         description:
-          "false for media/notification/stream/user — no backoffice health probe is wired for them yet; status is always unknown and they are excluded from the overall/servicesUp roll-up.",
+          "Always true today — every service (auth/chat/community via gRPC ping, user/media/notification/stream via HTTP /health) is actively probed and rolled up into overall/servicesUp.",
       },
-      uptimePercent: { type: "number", nullable: true, example: 99.8 },
+      uptimePercent: {
+        type: "number",
+        nullable: true,
+        example: 99.8,
+        description:
+          "Rolling availability (%): from the opossum circuit-breaker window for gRPC-probed services (auth/chat/community); from an in-memory 100-slot probe window for the HTTP-probed services (user/media/notification/stream). Null only until the first sample lands.",
+      },
       latencyMs: {
         type: "integer",
         nullable: true,
         description:
-          "Only populated for the 3 monitored services (auth/community/chat).",
+          "Measured round-trip of the live probe (gRPC ping or HTTP /health). Null only when the probe never began (rare — settle failure).",
       },
       breaker: {
         type: "string",

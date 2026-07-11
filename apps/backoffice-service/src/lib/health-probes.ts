@@ -151,15 +151,27 @@ const MONITORED_SERVICES: MonitoredServiceDef[] = [
 ];
 
 /**
- * Services with no backoffice-side probe wired. Listed for completeness so the
- * panel shows the full topology, but `monitored:false` keeps them out of the
- * overall roll-up and the services-up tally (we never fabricate a status).
+ * Services probed via their HTTP `/health` endpoint. Every service in the
+ * monorepo already exposes one (see each app's routes/health.routes.ts,
+ * returns `{status:"ok"}` on 200) — reusing it keeps the probe uniform and
+ * dependency-free (no new gRPC clients). `breaker`/`uptimePercent` stay null
+ * because no backoffice-side circuit backs the call — the ping is the whole
+ * signal.
  */
-const UNMONITORED_SERVICES: Array<{ key: string; name: string }> = [
-  { key: "media", name: "Media Service" },
-  { key: "notification", name: "Notification Service" },
-  { key: "stream", name: "Livestream Service" },
-  { key: "user", name: "User Service" },
+interface HttpMonitoredServiceDef {
+  key: string;
+  name: string;
+  url: string;
+}
+const HTTP_MONITORED_SERVICES: HttpMonitoredServiceDef[] = [
+  { key: "user", name: "User Service", url: env.USER_HTTP_URL },
+  { key: "media", name: "Media Service", url: env.MEDIA_HTTP_URL },
+  {
+    key: "notification",
+    name: "Notification Service",
+    url: env.NOTIFICATIONS_HTTP_URL,
+  },
+  { key: "stream", name: "Livestream Service", url: env.STREAM_HTTP_URL },
 ];
 
 async function probeService(def: MonitoredServiceDef): Promise<ServiceHealth> {
@@ -193,16 +205,86 @@ async function probeService(def: MonitoredServiceDef): Promise<ServiceHealth> {
 }
 
 /**
- * Probe every monitored service concurrently, then append the unmonitored
- * (status `unknown`) rows. Never throws — a rejected probe is coerced to `down`.
+ * Rolling-window uptime% for the HTTP-probed services. No backoffice-side
+ * circuit breaker backs the /health call, so we keep the last N observations
+ * per service key in memory and derive availability as ok/(ok+bad)*100.
+ * ~5s cache × 100 slots ≈ 8min of history — plenty for a live dashboard.
+ * ponytail: in-memory only; a service restart resets to null-until-first-probe.
+ */
+const HTTP_UPTIME_WINDOW = 100;
+const httpUptimeWindow = new Map<string, boolean[]>();
+function recordHttpProbe(key: string, ok: boolean): number {
+  const arr = httpUptimeWindow.get(key) ?? [];
+  arr.push(ok);
+  if (arr.length > HTTP_UPTIME_WINDOW) arr.shift();
+  httpUptimeWindow.set(key, arr);
+  const good = arr.filter(Boolean).length;
+  return Math.round((good / arr.length) * 1000) / 10;
+}
+
+/**
+ * HTTP `/health` probe — bounded via AbortSignal so it honors PROBE_TIMEOUT_MS.
+ * Any non-2xx or network failure resolves to `down`; a slow-but-2xx response
+ * degrades to `degraded`. Never throws.
+ */
+async function probeHttpService(
+  def: HttpMonitoredServiceDef
+): Promise<ServiceHealth> {
+  const start = performance.now();
+  let status: ServiceHealth["status"];
+  let latencyMs: number;
+  let note: string | undefined;
+
+  try {
+    const res = await fetch(`${def.url}/health`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    latencyMs = round(performance.now() - start);
+    if (!res.ok) {
+      status = "down";
+      note = `HTTP ${String(res.status)}`;
+    } else {
+      status = latencyMs > SLOW_SERVICE_MS ? "degraded" : "healthy";
+      if (status === "degraded")
+        note = `slow response (${String(latencyMs)}ms)`;
+    }
+  } catch (err) {
+    latencyMs = round(performance.now() - start);
+    status = "down";
+    note = noteFrom(err);
+  }
+
+  const uptimePercent = recordHttpProbe(def.key, status !== "down");
+  return {
+    key: def.key,
+    name: def.name,
+    status,
+    monitored: true,
+    uptimePercent,
+    latencyMs,
+    breaker: null,
+    lastChecked: nowMs(),
+    note,
+  };
+}
+
+/**
+ * Probe every monitored service (gRPC + HTTP) concurrently. Never throws — a
+ * rejected probe is coerced to a `down` row so one down dependency can never
+ * fail the whole /system-health response.
  */
 export async function probeServices(): Promise<ServiceHealth[]> {
-  const settled = await Promise.allSettled(
-    MONITORED_SERVICES.map(probeService)
-  );
-  const monitored: ServiceHealth[] = settled.map((r, i) => {
+  const settled = await Promise.allSettled([
+    ...MONITORED_SERVICES.map(probeService),
+    ...HTTP_MONITORED_SERVICES.map(probeHttpService),
+  ]);
+  const defs: Array<{ key: string; name: string }> = [
+    ...MONITORED_SERVICES,
+    ...HTTP_MONITORED_SERVICES,
+  ];
+  return settled.map((r, i) => {
     if (r.status === "fulfilled") return r.value;
-    const def = MONITORED_SERVICES[i];
+    const def = defs[i];
     return {
       key: def.key,
       name: def.name,
@@ -215,20 +297,6 @@ export async function probeServices(): Promise<ServiceHealth[]> {
       note: noteFrom(r.reason),
     };
   });
-
-  const unmonitored: ServiceHealth[] = UNMONITORED_SERVICES.map((s) => ({
-    key: s.key,
-    name: s.name,
-    status: "unknown",
-    monitored: false,
-    uptimePercent: null,
-    latencyMs: null,
-    breaker: null,
-    lastChecked: nowMs(),
-    note: "No backoffice health probe wired — status unknown.",
-  }));
-
-  return [...monitored, ...unmonitored];
 }
 
 // ---------------------------------------------------------------------------

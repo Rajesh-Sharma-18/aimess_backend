@@ -32,6 +32,15 @@ const envSchema = z.object({
   CHAT_GRPC_URL: z.string().default("0.0.0.0:4004"),
   STREAM_GRPC_URL: z.string().default("0.0.0.0:4007"),
 
+  // HTTP `/health` endpoints of services with no lightweight gRPC ping wired
+  // in backoffice. The System Health probe hits each of these to derive
+  // status/latency; each service already exposes `GET /health` (returns
+  // `{status:"ok"}`). Defaults match apps/*/.env.example + Dockerfile ports.
+  USER_HTTP_URL: z.string().url().default("http://0.0.0.0:3002"),
+  MEDIA_HTTP_URL: z.string().url().default("http://0.0.0.0:3009"),
+  NOTIFICATIONS_HTTP_URL: z.string().url().default("http://0.0.0.0:3006"),
+  STREAM_HTTP_URL: z.string().url().default("http://0.0.0.0:3007"),
+
   /**
    * Comma-separated CORS origin allowlist (e.g. the admin-panel URL). LAN /
    * loopback origins are auto-allowed in dev via a regex, so this is mainly for
