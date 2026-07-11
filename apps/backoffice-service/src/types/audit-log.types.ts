@@ -27,7 +27,7 @@ export type AuditLogListItem = {
   action: string;
   targetType: string;
   targetId: string | null;
-  createdAt: string;
+  createdAt: number;
 };
 
 /** The full audit-log detail returned by GET /audit-logs/{id}. */
@@ -37,7 +37,7 @@ export type AuditLogDetail = {
   action: string;
   targetType: string;
   targetId: string | null;
-  createdAt: string;
+  createdAt: number;
   /** Best-effort human reason, lifted from the before/after payload if present. */
   reason: string | null;
   metadata: {

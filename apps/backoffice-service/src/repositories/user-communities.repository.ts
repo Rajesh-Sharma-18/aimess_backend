@@ -9,6 +9,7 @@ import type {
   UserCommunityRow,
 } from "../types/community.types.js";
 import { resolveCommunityImageOrNull } from "../lib/avatar-media.js";
+import { msToEpoch } from "../lib/grpc-view.js";
 
 /**
  * Read-through repository for the admin "Communities" grid on the User
@@ -35,10 +36,9 @@ async function toRow(r: RawAdminUserCommunityRow): Promise<UserCommunityRow> {
     description: r.description,
     memberCount: r.memberCount,
     role: r.role,
-    joinedAt: r.joinedAt,
-    // createdAt arrives as an int64 epoch-ms STRING (longs: String) — coerce to
-    // a number, then surface as an ISO 8601 string for the JSON contract.
-    createdAt: new Date(Number(r.createdAt)).toISOString(),
+    // r.joinedAt arrives as an ISO 8601 string from the proto — coerce to epoch ms.
+    joinedAt: new Date(r.joinedAt).getTime(),
+    createdAt: msToEpoch(r.createdAt),
   };
 }
 

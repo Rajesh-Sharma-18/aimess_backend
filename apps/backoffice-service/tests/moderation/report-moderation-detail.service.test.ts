@@ -1,30 +1,39 @@
 /**
  * Reports & Moderation Details aggregate — the composition rules the
  * route-level spec (reports.test.ts) exercises only via a mocked service:
- * community fetches only fire when the report has a communityId,
- * `reportedMessage` is only populated for MESSAGE-targeted reports, and the
- * user avatar keys returned by `reportRepository.getCore` are presigned
- * (never returned raw).
+ * community/communityAdmin fetches only fire when the report has a
+ * communityId, and the user avatar keys returned by
+ * `reportRepository.getCore` are presigned (never returned raw).
  */
 jest.mock("../../src/repositories/index.js", () => ({
   adminUserRepository: { findById: jest.fn() },
   reportRepository: { getCore: jest.fn() },
 }));
 jest.mock("../../src/grpc/community.client.js", () => ({
-  communityClient: { adminGetCommunitiesByIds: jest.fn() },
+  communityClient: { adminGetCommunity: jest.fn() },
 }));
-jest.mock("../../src/services/user-avatar.service.js", () => ({
-  userAvatarService: {
-    resolveAvatarOrNull: jest.fn(async (key: string | null) =>
-      key
-        ? {
-            objectKey: key,
-            downloadUrl: `https://cdn.example/${key}`,
-            fileId: null,
-          }
-        : null
-    ),
-  },
+jest.mock("../../src/grpc/user.client.js", () => ({
+  userClient: { adminGetProfile: jest.fn() },
+}));
+jest.mock("../../src/lib/avatar-media.js", () => ({
+  resolveAvatarOrNull: jest.fn(async (key: string | null) =>
+    key
+      ? {
+          objectKey: key,
+          downloadUrl: `https://cdn.example/${key}`,
+          fileId: null,
+        }
+      : null
+  ),
+  resolveCommunityImageOrNull: jest.fn(async (key: string | null) =>
+    key
+      ? {
+          objectKey: key,
+          downloadUrl: `https://community-cdn.example/${key}`,
+          fileId: null,
+        }
+      : null
+  ),
 }));
 jest.mock("../../src/services/audit.service.js", () => ({
   auditService: { record: jest.fn(async () => undefined) },
@@ -33,24 +42,29 @@ jest.mock("../../src/services/audit.service.js", () => ({
 import { moderationService } from "../../src/services/moderation.service.js";
 import { reportRepository } from "../../src/repositories/index.js";
 import { communityClient } from "../../src/grpc/community.client.js";
+import { userClient } from "../../src/grpc/user.client.js";
 
 const getCore = reportRepository.getCore as jest.Mock;
-const adminGetCommunitiesByIds =
-  communityClient.adminGetCommunitiesByIds as jest.Mock;
+const adminGetCommunity = communityClient.adminGetCommunity as jest.Mock;
+const adminGetProfile = userClient.adminGetProfile as jest.Mock;
 
 const baseCore = {
   reportId: "RPT-2026-0000001",
   reportType: "USER",
   targetType: "USER",
-  reporterNote: null as string | null,
+  reason: "SPAM",
+  reporterNote: "Spam message text",
   status: "PENDING",
-  createdAt: "2026-01-01T00:00:00.000Z",
+  createdAt: 1783741146000,
+  updatedAt: 1783741146000,
   communityId: null as string | null,
   target: { type: "USER", id: "u_1" },
   reportedUser: {
     id: "u_1",
     username: "jdoe",
     displayName: "John Doe",
+    firstName: "John",
+    lastName: "Doe",
     // reportRepository.getCore already resolves the avatar (see toUserRef) —
     // toModerationUserRef passes it through, no re-presign.
     avatar: {
@@ -63,6 +77,8 @@ const baseCore = {
     id: "u_2",
     username: "asmith",
     displayName: "Alice Smith",
+    firstName: "Alice",
+    lastName: "Smith",
     avatar: null,
   },
 };
@@ -77,24 +93,29 @@ describe("moderationService.getReportModerationDetail", () => {
     const result =
       await moderationService.getReportModerationDetail("RPT-MISSING");
     expect(result).toBeNull();
-    expect(adminGetCommunitiesByIds).not.toHaveBeenCalled();
+    expect(adminGetCommunity).not.toHaveBeenCalled();
   });
 
-  it("shapes reportedUser/reporter with a presigned avatar and no community block when communityId is null", async () => {
+  it("shapes a flattened report + reporter/reportedUser and no community block when communityId is null", async () => {
     getCore.mockResolvedValue(baseCore);
 
     const result = await moderationService.getReportModerationDetail(
       baseCore.reportId
     );
 
-    expect(result?.report).toEqual({
+    expect(result).toEqual({
       id: baseCore.reportId,
       type: "USER",
-      status: "PENDING",
+      reportReason: "Spam Messages",
+      reportMessage: "Spam message text",
+      reportStatus: "PENDING",
       createdAt: baseCore.createdAt,
+      updatedAt: baseCore.updatedAt,
       reportedUser: {
         id: "u_1",
         username: "jdoe",
+        firstName: "John",
+        lastName: "Doe",
         fullName: "John Doe",
         avatar: {
           objectKey: "avatars/u_1.png",
@@ -105,96 +126,111 @@ describe("moderationService.getReportModerationDetail", () => {
       reporter: {
         id: "u_2",
         username: "asmith",
+        firstName: "Alice",
+        lastName: "Smith",
         fullName: "Alice Smith",
         avatar: null,
       },
+      communityAdmin: null,
+      community: null,
     });
-    expect(result?.community).toBeNull();
     // No community context → gRPC fan-out should not fire.
-    expect(adminGetCommunitiesByIds).not.toHaveBeenCalled();
+    expect(adminGetCommunity).not.toHaveBeenCalled();
+    expect(adminGetProfile).not.toHaveBeenCalled();
   });
 
-  it("fetches community details when the report has a communityId", async () => {
-    getCore.mockResolvedValue({
-      ...baseCore,
-      communityId: "comm_1",
-      targetType: "MESSAGE",
-      target: { type: "MESSAGE", id: "msg_42" },
+  it("fetches community + communityAdmin details when the report has a communityId", async () => {
+    getCore.mockResolvedValue({ ...baseCore, communityId: "comm_1" });
+    adminGetCommunity.mockResolvedValue({
+      found: true,
+      community: {
+        communityId: "comm_1",
+        name: "Indie Devs",
+        handle: "@indie_devs",
+        communityAvatarUrl: "comm_1.png",
+        adminId: "u_admin",
+        adminName: "Alice Wonder",
+        adminUsername: "alice_124",
+        adminAvatarUrl: "avatars/u_admin.png",
+      },
     });
-    adminGetCommunitiesByIds.mockResolvedValue(
-      new Map([
-        [
-          "comm_1",
-          {
-            communityId: "comm_1",
-            name: "Indie Devs",
-            avatarUrl: "https://community-cdn.example/comm_1.png",
-            categoryId: "cat_1",
-            categoryName: "Gaming",
-            categorySlug: "gaming",
-            memberCount: 42,
-          },
-        ],
-      ])
-    );
+    adminGetProfile.mockResolvedValue({
+      userId: "u_admin",
+      username: "alice_124",
+      firstName: "Alice",
+      lastName: "Wonder",
+      avatarUrl: "avatars/u_admin.png",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
 
     const result =
       await moderationService.getReportModerationDetail("RPT-2026-0000001");
 
-    expect(adminGetCommunitiesByIds).toHaveBeenCalledWith(["comm_1"]);
+    expect(adminGetCommunity).toHaveBeenCalledWith("comm_1");
+    expect(adminGetProfile).toHaveBeenCalledWith("u_admin");
     expect(result?.community).toEqual({
       id: "comm_1",
       name: "Indie Devs",
+      handle: "@indie_devs",
       avatar: {
-        objectKey: "https://community-cdn.example/comm_1.png",
-        downloadUrl:
-          "https://cdn.example/https://community-cdn.example/comm_1.png",
+        objectKey: "comm_1.png",
+        downloadUrl: "https://community-cdn.example/comm_1.png",
         fileId: null,
       },
-      category: { id: "cat_1", name: "Gaming" },
-      reportedDate: baseCore.createdAt,
-      reportedMessage: { id: "msg_42" },
     });
-    expect(result?.members).toBeUndefined();
+    expect(result?.communityAdmin).toEqual({
+      id: "u_admin",
+      username: "alice_124",
+      firstName: "Alice",
+      lastName: "Wonder",
+      fullName: "Alice Wonder",
+      avatar: {
+        objectKey: "avatars/u_admin.png",
+        downloadUrl: "https://cdn.example/avatars/u_admin.png",
+        fileId: null,
+      },
+    });
   });
 
-  it("returns reportedMessage: null when the report is community-based but not message-based", async () => {
-    getCore.mockResolvedValue({
-      ...baseCore,
-      communityId: "comm_1",
-      targetType: "COMMUNITY",
-      target: { type: "COMMUNITY", id: "comm_1" },
+  it("falls back to the community-service admin snapshot when the user-service profile lookup misses", async () => {
+    getCore.mockResolvedValue({ ...baseCore, communityId: "comm_1" });
+    adminGetCommunity.mockResolvedValue({
+      found: true,
+      community: {
+        communityId: "comm_1",
+        name: "Indie Devs",
+        handle: "@indie_devs",
+        communityAvatarUrl: "",
+        adminId: "u_admin",
+        adminName: "Alice Wonder",
+        adminUsername: "alice_124",
+        adminAvatarUrl: "",
+      },
     });
-    adminGetCommunitiesByIds.mockResolvedValue(new Map());
+    adminGetProfile.mockResolvedValue(null);
 
     const result =
       await moderationService.getReportModerationDetail("RPT-2026-0000001");
 
-    expect(result?.community?.reportedMessage).toBeNull();
-  });
-
-  it("includes otherReason only when reportType is OTHER", async () => {
-    getCore.mockResolvedValue({
-      ...baseCore,
-      reportType: "OTHER",
-      reporterNote: "Custom free-text reason",
+    expect(result?.communityAdmin).toEqual({
+      id: "u_admin",
+      username: "alice_124",
+      firstName: "",
+      lastName: "",
+      fullName: "Alice Wonder",
+      avatar: null,
     });
-
-    const result = await moderationService.getReportModerationDetail(
-      baseCore.reportId
-    );
-
-    expect(result?.report.type).toBe("OTHER");
-    expect(result?.report.otherReason).toBe("Custom free-text reason");
   });
 
-  it("omits otherReason when reportType is not OTHER", async () => {
-    getCore.mockResolvedValue(baseCore);
+  it("returns null community/communityAdmin when community-service can't find the community", async () => {
+    getCore.mockResolvedValue({ ...baseCore, communityId: "comm_missing" });
+    adminGetCommunity.mockResolvedValue({ found: false });
 
-    const result = await moderationService.getReportModerationDetail(
-      baseCore.reportId
-    );
+    const result =
+      await moderationService.getReportModerationDetail("RPT-2026-0000001");
 
-    expect(result?.report).not.toHaveProperty("otherReason");
+    expect(result?.community).toBeNull();
+    expect(result?.communityAdmin).toBeNull();
+    expect(adminGetProfile).not.toHaveBeenCalled();
   });
 });

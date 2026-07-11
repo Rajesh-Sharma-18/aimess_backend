@@ -12,7 +12,7 @@ import type {
   ListGroupMembersQuery,
   ListGroupsQuery,
 } from "../types/group.types.js";
-import { msToIso, orNull } from "../lib/grpc-view.js";
+import { msToEpoch, orNull } from "../lib/grpc-view.js";
 import { resolveAvatarOrNull } from "../lib/avatar-media.js";
 
 // Group + user avatars (group logo, owner/member snapshot avatars) live in the
@@ -34,7 +34,7 @@ async function rowToGroupItem(r: RawAdminGroupRow): Promise<GroupItem> {
     avatar,
     description: r.description ?? "",
     memberCount: r.memberCount,
-    createdAt: msToIso(r.createdAt),
+    createdAt: msToEpoch(r.createdAt),
     admin: {
       userId: r.admin?.userId ?? "",
       username: r.admin?.username ?? "",
@@ -54,7 +54,7 @@ async function rowToMemberItem(
     email: orNull(r.email),
     avatar: await resolveAvatarOrNull(r.avatarUrl),
     role: r.role,
-    joinedAt: msToIso(r.joinedAt),
+    joinedAt: msToEpoch(r.joinedAt),
   };
 }
 

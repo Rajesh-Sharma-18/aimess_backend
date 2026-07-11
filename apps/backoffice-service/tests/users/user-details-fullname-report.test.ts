@@ -258,12 +258,12 @@ describe("userManagementService.getUser — reportDetails", () => {
       {
         description: "Fake profile pictures",
         reportedBy: "carol",
-        reportedAt: "2026-06-10T00:00:00.000Z",
+        reportedAt: Date.parse("2026-06-10T00:00:00.000Z"),
       },
       {
         description: "Impersonating a celebrity",
         reportedBy: "dave",
-        reportedAt: "2026-06-09T00:00:00.000Z",
+        reportedAt: Date.parse("2026-06-09T00:00:00.000Z"),
       },
     ]);
   });
@@ -295,7 +295,9 @@ describe("userManagementService.getUser — reportDetails", () => {
     const result = await userManagementService.getUser(USER_ID);
 
     expect(result?.reportDetails.reporter).toBe("bob");
-    expect(result?.reportDetails.reportDate).toBe("2026-06-15T12:00:00.000Z");
+    expect(result?.reportDetails.reportDate).toBe(
+      Date.parse("2026-06-15T12:00:00.000Z")
+    );
   });
 
   it("response has no moderationHistory, stats, or reportCategories fields", async () => {

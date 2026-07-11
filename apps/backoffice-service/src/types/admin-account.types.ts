@@ -22,9 +22,9 @@ export type AdminAccountListItem = {
   avatar: MediaObject | null;
   role: AdminAccountRole;
   status: AdminAccountStatus;
-  lastLoginAt: string | null;
-  createdAt: string;
-  updatedAt: string;
+  lastLoginAt: number | null;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type AdminAccountDetail = AdminAccountListItem;

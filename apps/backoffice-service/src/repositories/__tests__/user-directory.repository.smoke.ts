@@ -66,7 +66,7 @@ function main(): void {
   console.log("\n[1] cursor encode/decode round-trip");
   {
     const cursor: Cursor = {
-      joinedAt: "2025-03-01T10:00:00.000Z",
+      joinedAt: Date.parse("2025-03-01T10:00:00.000Z"),
       userId: "u_seed_07",
     };
     const token = encodeCursor(cursor);

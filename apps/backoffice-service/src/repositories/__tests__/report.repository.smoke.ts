@@ -56,7 +56,7 @@ function q(overrides: Partial<ListReportsQuery> = {}): ListReportsQuery {
 
 const actor: ActorRef = {
   moderator: { id: "adm_test", name: "Test Mod" },
-  at: "2026-06-03T12:00:00.000Z",
+  at: Date.parse("2026-06-03T12:00:00.000Z"),
 };
 const resolveInput: ResolveInput = {
   resolution: "ACTION_TAKEN",
@@ -211,7 +211,7 @@ async function main(): Promise<void> {
     eq(
       "SUSPEND_7D effectiveUntil is +7d",
       res.appliedActions[0]?.effectiveUntil,
-      "2026-06-10T12:00:00.000Z"
+      Date.parse("2026-06-10T12:00:00.000Z")
     );
     // Persistence: a re-read reflects the mutation + history append.
     const reread = await repo.getById(firstOpen.reportId);

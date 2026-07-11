@@ -407,10 +407,10 @@ function buildReport(
               ? "Reviewed and actioned"
               : "No violation found",
           resolvedBy: admin.name,
-          resolvedAt: shift(reportedAt, HOUR),
+          resolvedAt: Date.parse(shift(reportedAt, HOUR)),
         }
       : null,
-    createdAt: reportedAt,
+    createdAt: Date.parse(reportedAt),
     evidence: {
       timestampSeconds: j % 2 === 0 ? 120 + j * 30 : null,
       clipUrl:
@@ -429,12 +429,14 @@ function build(seed: Seed, i: number): LivestreamDetail {
   const cancelled = seed.status === "CANCELLED";
   const durationSeconds = seed.durationMinutes * 60;
   // CANCELLED streams never went live; their startedAt == createdAt and they end immediately.
-  const startedAt = seed.createdAt;
-  const endedAt = live
+  const startedAtIso = seed.createdAt;
+  const endedAtIso = live
     ? null
     : cancelled
       ? seed.createdAt
-      : shift(startedAt, seed.durationMinutes * MINUTE);
+      : shift(startedAtIso, seed.durationMinutes * MINUTE);
+  const startedAt = Date.parse(startedAtIso);
+  const endedAt = endedAtIso ? Date.parse(endedAtIso) : null;
 
   const admin = ADMINS[i % ADMINS.length]!;
   const endReasonCode = seed.endReasonCode ?? null;
@@ -482,7 +484,7 @@ function build(seed: Seed, i: number): LivestreamDetail {
       adminName: "System",
       reasonCode: null,
       note: null,
-      createdAt: seed.createdAt,
+      createdAt: Date.parse(seed.createdAt),
     },
   ];
   if (endedBy && endReasonCode) {
@@ -534,7 +536,7 @@ function build(seed: Seed, i: number): LivestreamDetail {
       priorStrikes: i % 3,
     },
     category,
-    createdAt: seed.createdAt,
+    createdAt: Date.parse(seed.createdAt),
     startedAt,
     endedAt,
     durationSeconds: cancelled ? 0 : durationSeconds,

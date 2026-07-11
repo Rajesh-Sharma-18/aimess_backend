@@ -1,5 +1,6 @@
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import { communityClient } from "../grpc/community.client.js";
+import { userClient } from "../grpc/user.client.js";
 import {
   adminUserRepository,
   reportRepository,
@@ -28,12 +29,15 @@ import type {
   ReportListItem,
   ReportModerationDetail,
   ReportModerationUserRef,
-  ReportTarget,
   PaginationMeta,
   ResolveResult,
 } from "../types/moderation.types.js";
+import { normalizeReportReason } from "../lib/report-reason.js";
+import {
+  resolveAvatarOrNull,
+  resolveCommunityImageOrNull,
+} from "../lib/avatar-media.js";
 import { auditService } from "./audit.service.js";
-import { userAvatarService } from "./user-avatar.service.js";
 
 /** Audit/request context derived from `getRequestContext(req)`. */
 type RequestCtx = { ip: string; userAgent: string | null };
@@ -59,6 +63,8 @@ function toModerationUserRef(
     id: string;
     username: string;
     displayName: string;
+    firstName: string;
+    lastName: string;
     avatar: import("@aimess/shared-types").MediaObject | null;
   } | null
 ): ReportModerationUserRef | null {
@@ -66,37 +72,68 @@ function toModerationUserRef(
   return {
     id: ref.id,
     username: ref.username,
+    firstName: ref.firstName,
+    lastName: ref.lastName,
     fullName: ref.displayName,
     avatar: ref.avatar,
   };
 }
 
 /**
- * "Community Report Details" block: name/avatar/category from the existing
- * batch `adminGetCommunitiesByIds` gRPC (community-service). Avatar is presigned
- * via the user-avatar service. `reportedMessage` carries only the message id —
- * no admin RPC exists to fetch message content by id, so it is not fabricated here.
+ * Community + communityAdmin blocks for the Reports & Moderation Details page,
+ * sourced from the existing `adminGetCommunity` RPC (same one
+ * community.grpc.repository.ts uses for the Community Detail page) plus one
+ * admin-profile lookup (user-service) for the community's current ADMIN
+ * member's firstName/lastName. Falls back to community-service's own
+ * admin-snapshot fields (name/username/avatar) if the profile lookup misses,
+ * so a stale/deleted user-service record can't blank the whole block.
  */
-async function buildCommunityReportBlock(
-  communityId: string,
-  reportedDate: string,
-  target: ReportTarget
-): Promise<CommunityReportBlock> {
-  const communities = await communityClient.adminGetCommunitiesByIds([
-    communityId,
+async function buildCommunityBlocks(communityId: string): Promise<{
+  community: CommunityReportBlock | null;
+  communityAdmin: ReportModerationUserRef | null;
+}> {
+  const res = await communityClient.adminGetCommunity(communityId);
+  if (!res.found || !res.community) {
+    return { community: null, communityAdmin: null };
+  }
+  const row = res.community;
+
+  const [avatar, adminProfile, adminAvatar] = await Promise.all([
+    resolveCommunityImageOrNull(row.communityAvatarUrl),
+    userClient.adminGetProfile(row.adminId),
+    resolveAvatarOrNull(row.adminAvatarUrl),
   ]);
-  const c = communities.get(communityId);
-  const avatar = await userAvatarService.resolveAvatarOrNull(
-    c?.avatarUrl || null
-  );
-  return {
-    id: communityId,
-    name: c?.name ?? "",
+
+  const community: CommunityReportBlock = {
+    id: row.communityId,
+    name: row.name,
+    handle: row.handle,
     avatar,
-    category: { id: c?.categoryId ?? "", name: c?.categoryName ?? "" },
-    reportedDate,
-    reportedMessage: target.type === "MESSAGE" ? { id: target.id } : null,
   };
+
+  const communityAdmin: ReportModerationUserRef = adminProfile
+    ? {
+        id: row.adminId,
+        username: adminProfile.username,
+        firstName: adminProfile.firstName,
+        lastName: adminProfile.lastName,
+        fullName:
+          [adminProfile.firstName, adminProfile.lastName]
+            .filter(Boolean)
+            .join(" ")
+            .trim() || adminProfile.username,
+        avatar: adminAvatar,
+      }
+    : {
+        id: row.adminId,
+        username: row.adminUsername,
+        firstName: "",
+        lastName: "",
+        fullName: row.adminName,
+        avatar: adminAvatar,
+      };
+
+  return { community, communityAdmin };
 }
 
 export const moderationService = {
@@ -123,11 +160,12 @@ export const moderationService = {
 
   /**
    * "Reports & Moderation Details" page aggregate for GET /reports/{reportId}:
-   * the report block and the "Community Report Details" block — reusing
-   * {@link reportRepository.getCore} (already enriches reportedUser/reporterUser
-   * via user-service) and `communityClient` (community name/avatar/category).
-   * Null (→ 404) when the report doesn't exist. `community` is null when the
-   * report has no associated community.
+   * a flattened report block plus reporter/reportedUser/communityAdmin/community
+   * — reusing {@link reportRepository.getCore} (already enriches
+   * reportedUser/reporterUser via user-service) and `communityClient`
+   * (community + its current admin). Null (→ 404) when the report doesn't
+   * exist. `community`/`communityAdmin` are null when the report has no
+   * associated community.
    */
   async getReportModerationDetail(
     reportId: string
@@ -137,26 +175,21 @@ export const moderationService = {
 
     const reportedUser = toModerationUserRef(core.reportedUser);
     const reporter = toModerationUserRef(core.reporterUser);
-    const community = core.communityId
-      ? await buildCommunityReportBlock(
-          core.communityId,
-          core.createdAt,
-          core.target
-        )
-      : null;
+    const { community, communityAdmin } = core.communityId
+      ? await buildCommunityBlocks(core.communityId)
+      : { community: null, communityAdmin: null };
 
     return {
-      report: {
-        id: core.reportId,
-        type: core.reportType,
-        status: core.status,
-        createdAt: core.createdAt,
-        ...(core.reportType === "OTHER"
-          ? { otherReason: core.reporterNote }
-          : {}),
-        reportedUser,
-        reporter,
-      },
+      id: core.reportId,
+      type: core.reportType,
+      reportReason: normalizeReportReason(core.reason).label,
+      reportMessage: core.reporterNote,
+      reportStatus: core.status,
+      createdAt: core.createdAt,
+      updatedAt: core.updatedAt,
+      reporter,
+      reportedUser,
+      communityAdmin,
       community,
     };
   },
@@ -302,5 +335,5 @@ export const moderationService = {
 
 /** Build the repository ActorRef (moderator stamp + decision timestamp). */
 async function buildActor(actor: RequestAdmin): Promise<ActorRef> {
-  return { moderator: await toModerator(actor), at: new Date().toISOString() };
+  return { moderator: await toModerator(actor), at: Date.now() };
 }

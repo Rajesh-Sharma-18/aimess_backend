@@ -44,8 +44,8 @@ export const listCommunities: RequestHandler = (req, res, next) => {
 
 /**
  * Reshape the repository's internal {@link CommunityDetail} into the
- * GET /communities/{communityId} wire response: the `community` sub-object
- * is flattened onto the root (no `community` wrapper), `memberStats`/
+ * GET /communities/{communityId} wire response: `community`/`owner`
+ * sub-objects are inlined onto the root (no nested wrappers), `memberStats`/
  * `livestreamStats` collapse from an object to a single number, and
  * `moderationHistory`/`settingsSummary`/`partial` are dropped. No new
  * queries — pure projection of data the repository already fetched.
@@ -53,11 +53,27 @@ export const listCommunities: RequestHandler = (req, res, next) => {
 function toCommunityDetailResponse(
   community: CommunityDetail
 ): CommunityDetailResponse {
+  const { community: core, owner } = community;
   return {
-    ...community.community,
-    owner: community.owner,
-    memberStats: community.memberStats.total,
-    livestreamStats: community.livestreamStats?.total ?? 0,
+    communityId: core.communityId,
+    communityName: core.name,
+    communityHandle: core.handle,
+    communityAvatar: core.avatar,
+    communityType: core.type,
+    category: core.category,
+    status: core.status,
+    createdAt: core.createdAt,
+    description: core.description,
+    coverUrl: core.coverUrl,
+    lastActivityAt: core.lastActivityAt,
+    ownerId: owner.userId,
+    ownerName: owner.displayName,
+    ownerUsername: owner.username,
+    ownerAvatar: owner.avatar,
+    ownerEmail: owner.email,
+    ownerAccountStatus: owner.accountStatus,
+    membersCount: community.memberStats.total,
+    liveStreamsCount: community.livestreamStats?.total ?? 0,
   };
 }
 

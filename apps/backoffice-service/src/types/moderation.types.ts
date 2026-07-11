@@ -75,6 +75,8 @@ export type UserRef = {
   id: string;
   username: string;
   displayName: string;
+  firstName: string;
+  lastName: string;
   // Standard avatar object (see @aimess/shared-types MediaObject); null when
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
@@ -98,8 +100,8 @@ export type ReportListItem = {
   targetType: TargetType;
   status: ReportStatus;
   priority: ReportPriority;
-  createdAt: string;
-  resolvedAt: string | null;
+  createdAt: number;
+  resolvedAt: number | null;
   moderator: ModeratorRef | null;
   // Name of the community the report was filed in, resolved live from
   // community-service via communityId; null for community-less reports
@@ -110,7 +112,7 @@ export type ReportListItem = {
 /** Full reported-user profile with moderation signals (detail view). */
 export type ReportedUserProfile = UserRef & {
   accountStatus: AccountStatus;
-  joinedAt: string;
+  joinedAt: number;
   priorReportsCount: number;
   priorActionsCount: number;
 };
@@ -134,7 +136,7 @@ export type ReportTarget = {
 export type EvidenceItem = {
   id: string;
   type: EvidenceType;
-  capturedAt?: string;
+  capturedAt?: number;
   mimeType?: string;
   url?: string;
   thumbnailUrl?: string;
@@ -149,7 +151,7 @@ export type HistoryItem = {
   actorType: "USER" | "ADMIN" | "SYSTEM";
   actorId: string | null;
   actorName: string | null;
-  at: string;
+  at: number;
   note: string | null;
 };
 
@@ -157,7 +159,7 @@ export type RelatedReport = {
   reportId: string;
   reportType: ReportType;
   status: ReportStatus;
-  createdAt: string;
+  createdAt: number;
 };
 
 /** The full report detail returned by GET /reports/{reportId}. */
@@ -177,10 +179,10 @@ export type ReportDetail = {
   // Resolved live from community-service via communityId on every read —
   // never persisted, so it can't go stale.
   communityName: string | null;
-  createdAt: string;
-  updatedAt: string;
-  resolvedAt: string | null;
-  slaDueAt: string | null;
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt: number | null;
+  slaDueAt: number | null;
   reportedUser: ReportedUserProfile | null;
   reporterUser: ReporterUserProfile | null;
   target: ReportTarget;
@@ -232,7 +234,7 @@ export type Paginated<T> = {
 export type AppliedAction = {
   type: ActionOnReportedUser;
   targetUserId: string;
-  effectiveUntil: string | null;
+  effectiveUntil: number | null;
 };
 
 /** Result of a resolve action. */
@@ -240,7 +242,7 @@ export type ResolveResult = {
   reportId: string;
   status: ReportStatus;
   resolution: ResolutionType;
-  resolvedAt: string;
+  resolvedAt: number;
   moderator: ModeratorRef;
   appliedActions: AppliedAction[];
 };
@@ -250,7 +252,7 @@ export type DismissResult = {
   reportId: string;
   status: ReportStatus;
   dismissReason: DismissReason;
-  resolvedAt: string;
+  resolvedAt: number;
   moderator: ModeratorRef;
 };
 
@@ -298,27 +300,18 @@ export type ListReportsQuery = {
 export type ReportModerationUserRef = {
   id: string;
   username: string;
+  firstName: string;
+  lastName: string;
   fullName: string;
   avatar: MediaObject | null;
 };
 
-/**
- * The reported message reference. No admin RPC exists to fetch a chat/community
- * message's content by id (out of scope for this endpoint — reuse-only), so
- * only the id is carried; null when the report isn't message-based.
- */
-export type ReportedMessageRef = {
-  id: string;
-};
-
-/** "Community Report Details" block. Null when the report has no associated community. */
+/** "Community" block. Null when the report has no associated community. */
 export type CommunityReportBlock = {
   id: string;
   name: string;
+  handle: string;
   avatar: MediaObject | null;
-  category: { id: string; name: string };
-  reportedDate: string;
-  reportedMessage: ReportedMessageRef | null;
 };
 
 /**
@@ -333,7 +326,7 @@ export type ReportModerationMemberRow = {
   username: string;
   fullname: string | null;
   avatar: string | null;
-  joinedAt: string;
+  joinedAt: number;
   role: import("./community.types.js").CommunityMemberRole;
 };
 
@@ -345,15 +338,17 @@ export type CommunityMembersBlock = {
 
 /** Full aggregate returned by GET /reports/{reportId} for the admin Reports & Moderation Details page. */
 export type ReportModerationDetail = {
-  report: {
-    id: string;
-    type: ReportType;
-    status: ReportStatus;
-    createdAt: string;
-    // Only present when `type === "OTHER"` — the reporter's free-text reason.
-    otherReason?: string | null;
-    reportedUser: ReportModerationUserRef | null;
-    reporter: ReportModerationUserRef | null;
-  };
+  id: string;
+  type: ReportType;
+  reportReason: string;
+  reportMessage: string | null;
+  reportStatus: ReportStatus;
+  createdAt: number;
+  updatedAt: number;
+  reporter: ReportModerationUserRef | null;
+  reportedUser: ReportModerationUserRef | null;
+  // Current ADMIN member of `community`; null when there's no associated
+  // community or the community has no resolvable admin.
+  communityAdmin: ReportModerationUserRef | null;
   community: CommunityReportBlock | null;
 };

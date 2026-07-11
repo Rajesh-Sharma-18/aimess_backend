@@ -28,12 +28,33 @@ import {
   type RepoReopenResult,
 } from "./community.repository.js";
 import { moderationActionRepository } from "./moderation-action.repository.js";
-import { msToIso, orNull } from "../lib/grpc-view.js";
+import { msToEpoch, orNull } from "../lib/grpc-view.js";
 import {
   resolveAvatarOrNull,
   resolveCommunityImageOrNull,
   resolveCommunityImageUrl,
 } from "../lib/avatar-media.js";
+import { streamClient } from "../grpc/stream.client.js";
+
+/**
+ * Total stream count for a community — every stream ever conducted (ended)
+ * plus any currently live, via stream-service's AdminListStreams with no
+ * status filter (only `total` is needed, so limit:1). Fail-open to 0 on a
+ * stream-service outage — this is enrichment on the community detail page,
+ * not core data, and must not break the page.
+ */
+async function fetchLiveStreamCount(communityId: string): Promise<number> {
+  try {
+    const { total } = await streamClient.adminListStreams({
+      communityId,
+      page: 1,
+      limit: 1,
+    });
+    return total;
+  } catch {
+    return 0;
+  }
+}
 
 // Community admin/owner snapshot avatars live in the SHARED avatars bucket
 // (`avatars/<userId>/…`). community-service now resolves these on its admin
@@ -73,7 +94,7 @@ async function rowToListItem(
       max: 5,
       stale: true,
     },
-    createdAt: msToIso(r.createdAt),
+    createdAt: msToEpoch(r.createdAt),
     actions: {
       canView: true,
       canClose: status === "ACTIVE",
@@ -155,7 +176,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
     return {
       communityId: id,
       status: "CLOSED",
-      closedAt: msToIso(res.closedAt),
+      closedAt: msToEpoch(res.closedAt),
       reasonCode: input.reasonCode,
     };
   }
@@ -176,7 +197,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
     return {
       communityId: id,
       status: "ACTIVE",
-      reopenedAt: new Date().toISOString(),
+      reopenedAt: Date.now(),
     };
   }
 
@@ -216,7 +237,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
       // Actor display name isn't on the row yet — use actorId as name, matching
       // community.service's toModerator().
       actor: { adminId: row.actorId, name: row.actorId },
-      createdAt: row.createdAt.toISOString(),
+      createdAt: row.createdAt.getTime(),
       metadata: (row.metadata as Record<string, unknown> | null) ?? {},
     }));
   }
@@ -234,18 +255,17 @@ export class GrpcCommunityRepository implements CommunityRepository {
       name: row.categoryName,
       slug: row.categorySlug,
     };
-    const createdAt = msToIso(row.createdAt);
-    // STUB livestream stats — stream-service is not wired yet (proto sends 0).
-    const liveCount = Number(row.livestreamCount);
+    const createdAt = msToEpoch(row.createdAt);
 
     // Resolve-on-read: the detail RPC echoes the RAW admin snapshot avatar key
     // (shared avatars bucket), unlike adminListCommunities which presigns it.
     // Community avatar is resolved with the SAME helper as rowToListItem
     // (resolveCommunityImageOrNull) so list and detail return identical shapes.
-    const [ownerAvatar, avatar, coverUrl] = await Promise.all([
+    const [ownerAvatar, avatar, coverUrl, liveCount] = await Promise.all([
       resolveAvatarOrNull(row.adminAvatarUrl),
       resolveCommunityImageOrNull(row.communityAvatarUrl),
       resolveCommunityImageUrl(res.coverUrl),
+      fetchLiveStreamCount(row.communityId),
     ]);
 
     return {
@@ -269,7 +289,7 @@ export class GrpcCommunityRepository implements CommunityRepository {
         // (proto sends 0 → would otherwise render as the 1970 epoch).
         lastActivityAt:
           Number(res.lastActivityAt) > 0
-            ? msToIso(res.lastActivityAt)
+            ? msToEpoch(res.lastActivityAt)
             : createdAt,
       },
       owner: {

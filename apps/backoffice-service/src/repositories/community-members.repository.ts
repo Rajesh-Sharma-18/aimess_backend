@@ -40,7 +40,8 @@ async function toRow(
     avatar: await resolveAvatarOrNull(r.avatarUrl),
     role: r.role as CommunityMemberRole,
     status: r.status as CommunityMemberStatus,
-    joinedAt: r.joinedAt,
+    // r.joinedAt arrives as an ISO 8601 string from the proto — coerce to epoch ms.
+    joinedAt: new Date(r.joinedAt).getTime(),
   };
 }
 

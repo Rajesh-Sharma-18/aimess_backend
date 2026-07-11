@@ -112,8 +112,8 @@ export type DismissInput = {
 /** The acting admin (subset of req.admin) + a precomputed timestamp. */
 export type ActorRef = {
   moderator: ModeratorRef;
-  /** ISO timestamp the service captured for this mutation. */
-  at: string;
+  /** epoch-ms timestamp the service captured for this mutation. */
+  at: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ function parseSort(sort: string): { field: SortField; dir: 1 | -1 } {
 }
 
 /** Opaque keyset cursor over (createdAt, reportId). */
-type Cursor = { createdAt: string; reportId: string };
+type Cursor = { createdAt: number; reportId: string };
 
 const CURSOR_KEYS = ["createdAt", "reportId"] as const;
 
@@ -165,6 +165,8 @@ function toListItem(r: ReportDetail): ReportListItem {
       id: r.reportedUser!.id,
       username: r.reportedUser!.username,
       displayName: r.reportedUser!.displayName,
+      firstName: r.reportedUser!.firstName,
+      lastName: r.reportedUser!.lastName,
       avatar: r.reportedUser!.avatar,
       accountStatus: r.reportedUser!.accountStatus,
     },
@@ -172,6 +174,8 @@ function toListItem(r: ReportDetail): ReportListItem {
       id: r.reporterUser!.id,
       username: r.reporterUser!.username,
       displayName: r.reporterUser!.displayName,
+      firstName: r.reporterUser!.firstName,
+      lastName: r.reporterUser!.lastName,
       avatar: r.reporterUser!.avatar,
     },
     reportType: r.reportType,
@@ -354,7 +358,7 @@ export class MockReportRepository implements ReportRepository {
     actor: ActorRef
   ): ResolveResult["appliedActions"] {
     if (input.actionOnReportedUser === "NONE") return [];
-    let effectiveUntil: string | null = null;
+    let effectiveUntil: number | null = null;
     if (input.actionOnReportedUser === "SUSPEND_7D") {
       effectiveUntil = this.addDays(actor.at, 7);
     } else if (input.actionOnReportedUser === "SUSPEND_30D") {
@@ -369,10 +373,10 @@ export class MockReportRepository implements ReportRepository {
     ];
   }
 
-  private addDays(iso: string, days: number): string {
-    const d = new Date(iso);
+  private addDays(ms: number, days: number): number {
+    const d = new Date(ms);
     d.setUTCDate(d.getUTCDate() + days);
-    return d.toISOString();
+    return d.getTime();
   }
 
   private async runBulk(
@@ -459,7 +463,7 @@ export class MockReportRepository implements ReportRepository {
           return false;
         }
       }
-      const created = Date.parse(r.createdAt);
+      const created = r.createdAt;
       if (from !== null && created < from) return false;
       if (to !== null && created > to) return false;
       if (search) {
@@ -739,6 +743,8 @@ async function toUserRef(
     id: userId,
     username: profile.username,
     displayName,
+    firstName: profile.firstName,
+    lastName: profile.lastName,
     avatar: await resolveAvatarOrNull(profile.avatarUrl),
     accountStatus: ctx.statuses.get(userId),
   };
@@ -771,8 +777,8 @@ async function toReportListItem(
     targetType: toTargetType(r.type),
     status: toReportStatus(r.status),
     priority: toPriority(r.priority),
-    createdAt: r.createdAt.toISOString(),
-    resolvedAt: r.resolvedAt?.toISOString() ?? null,
+    createdAt: r.createdAt.getTime(),
+    resolvedAt: r.resolvedAt?.getTime() ?? null,
     moderator: toModeratorRef(r.assignedTo, ctx),
     communityName: r.communityId
       ? (ctx.communityNames.get(r.communityId) ?? null)
@@ -798,7 +804,8 @@ async function toReportedProfile(
   return {
     ...ref,
     accountStatus: ref.accountStatus ?? "ACTIVE",
-    joinedAt: ctx.profiles.get(userId)?.createdAt ?? new Date(0).toISOString(),
+    // ctx.profiles' createdAt arrives as an ISO string from user-service — coerce to epoch ms.
+    joinedAt: Date.parse(ctx.profiles.get(userId)?.createdAt ?? "") || 0,
     priorReportsCount,
     priorActionsCount,
   };
@@ -926,19 +933,19 @@ function buildAppliedActionsFor(
   actor: ActorRef
 ): ResolveResult["appliedActions"] {
   if (input.actionOnReportedUser === "NONE") return [];
-  let effectiveUntil: string | null = null;
+  let effectiveUntil: number | null = null;
   if (input.actionOnReportedUser === "SUSPEND_7D") {
-    effectiveUntil = addDaysIso(actor.at, 7);
+    effectiveUntil = addDaysMs(actor.at, 7);
   } else if (input.actionOnReportedUser === "SUSPEND_30D") {
-    effectiveUntil = addDaysIso(actor.at, 30);
+    effectiveUntil = addDaysMs(actor.at, 30);
   }
   return [{ type: input.actionOnReportedUser, targetUserId, effectiveUntil }];
 }
 
-function addDaysIso(iso: string, days: number): string {
-  const d = new Date(iso);
+function addDaysMs(ms: number, days: number): number {
+  const d = new Date(ms);
   d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString();
+  return d.getTime();
 }
 
 export class PrismaReportRepository implements ReportRepository {
@@ -1076,9 +1083,9 @@ export class PrismaReportRepository implements ReportRepository {
         : null,
       // Not carried by AdminReportIngestPayload — see file-header note.
       sourceService: "unknown",
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-      resolvedAt: row.resolvedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.getTime(),
+      updatedAt: row.updatedAt.getTime(),
+      resolvedAt: row.resolvedAt?.getTime() ?? null,
       slaDueAt: null,
       reportedUser,
       reporterUser,
@@ -1118,7 +1125,7 @@ export class PrismaReportRepository implements ReportRepository {
       actorType: "ADMIN",
       actorId: r.actorId,
       actorName: names.get(r.actorId) ?? r.actorId,
-      at: r.createdAt.toISOString(),
+      at: r.createdAt.getTime(),
       note:
         r.metadata && typeof r.metadata === "object" && "note" in r.metadata
           ? ((r.metadata as { note: string | null }).note ?? null)
@@ -1411,7 +1418,7 @@ export class PrismaReportRepository implements ReportRepository {
       nextCursor:
         cursorable && hasNext && last
           ? encodeCursor({
-              createdAt: last.createdAt.toISOString(),
+              createdAt: last.createdAt.getTime(),
               reportId: last.id,
             })
           : null,
@@ -1470,7 +1477,7 @@ export class PrismaReportRepository implements ReportRepository {
       nextCursor:
         hasNext && last
           ? encodeCursor({
-              createdAt: last.createdAt.toISOString(),
+              createdAt: last.createdAt.getTime(),
               reportId: last.id,
             })
           : null,

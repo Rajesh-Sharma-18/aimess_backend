@@ -72,7 +72,7 @@ export type CommunityListItem = {
   status: CommunityModerationStatus;
   memberCount: number;
   livestreamCount: LivestreamCounter;
-  createdAt: string;
+  createdAt: number;
   actions: CommunityActions;
 };
 
@@ -120,7 +120,7 @@ export type CommunityModerationHistoryItem = {
   type: string;
   reason: string;
   actor: ModerationActor;
-  createdAt: string;
+  createdAt: number;
   metadata: Record<string, unknown>;
 };
 
@@ -131,7 +131,7 @@ export type CommunitySettingsSummary = {
   memberCount: number;
   inviteLinksActive: number;
   openReports: number;
-  createdAt: string;
+  createdAt: number;
 };
 
 /** Core community block of the detail payload. */
@@ -147,8 +147,8 @@ export type CommunityCore = {
   // the community has no avatar. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
   coverUrl: string | null;
-  createdAt: string;
-  lastActivityAt: string;
+  createdAt: number;
+  lastActivityAt: number;
 };
 
 /**
@@ -170,19 +170,35 @@ export type CommunityDetail = {
 };
 
 /**
- * The wire response for GET /communities/{communityId}. Reshapes
- * {@link CommunityDetail} at the API boundary: the `community` sub-object is
- * flattened directly onto the root (no `community` wrapper) alongside
- * `owner`; `memberStats`/`livestreamStats` collapse to a single number
- * (current total members / total livestreams); `moderationHistory`/
- * `settingsSummary`/`partial` are dropped entirely.
+ * The wire response for GET /communities/{communityId}. Fully flat — reshaped
+ * from {@link CommunityDetail} at the API boundary: `community`/`owner`
+ * sub-objects are inlined onto the root (no nested wrappers), `memberStats`/
+ * `livestreamStats` collapse to single numbers (`membersCount`/
+ * `liveStreamsCount`), and `moderationHistory`/`settingsSummary`/`partial`
+ * are dropped entirely.
  */
-export type CommunityDetailResponse = CommunityCore & {
-  owner: CommunityOwner;
+export type CommunityDetailResponse = {
+  communityId: string;
+  communityName: string;
+  communityHandle: string;
+  communityAvatar: MediaObject | null;
+  communityType: CommunityType;
+  category: CategoryRef;
+  status: CommunityModerationStatus;
+  createdAt: number;
+  description: string | null;
+  coverUrl: string | null;
+  lastActivityAt: number;
+  ownerId: string;
+  ownerName: string;
+  ownerUsername: string;
+  ownerAvatar: MediaObject | null;
+  ownerEmail: string | null;
+  ownerAccountStatus: AccountStatus;
   /** Current total community members (`memberStats.total`). */
-  memberStats: number;
-  /** Total livestreams associated with the community (`livestreamStats.total`, 0 when absent). */
-  livestreamStats: number;
+  membersCount: number;
+  /** Currently-active (LIVE) livestreams for this community. */
+  liveStreamsCount: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -206,7 +222,7 @@ export type ReopenInput = {
 export type CloseResult = {
   communityId: string;
   status: CommunityModerationStatus;
-  closedAt: string;
+  closedAt: number;
   reasonCode: CloseReasonCode;
   moderationActionId: string;
   auditLogId: string;
@@ -216,7 +232,7 @@ export type CloseResult = {
 export type ReopenResult = {
   communityId: string;
   status: CommunityModerationStatus;
-  reopenedAt: string;
+  reopenedAt: number;
   moderationActionId: string;
   auditLogId: string;
 };
@@ -261,7 +277,7 @@ export type CommunityMemberRow = {
   avatar: MediaObject | null;
   role: CommunityMemberRole;
   status: CommunityMemberStatus;
-  joinedAt: string;
+  joinedAt: number;
 };
 
 /** Normalized member-list query (post-validation/coercion). */
@@ -300,10 +316,10 @@ export type CommunityMutedMemberRow = {
   /** AuthUser.id of the moderator/admin who applied the mute. */
   mutedBy: string;
   reason: string | null;
-  /** ISO 8601. */
-  mutedAt: string;
-  /** ISO 8601, or null when the mute is indefinite. */
-  mutedUntil: string | null;
+  /** epoch ms. */
+  mutedAt: number;
+  /** epoch ms, or null when the mute is indefinite. */
+  mutedUntil: number | null;
 };
 
 /** Normalized muted-members query (post-validation/coercion). */
@@ -329,10 +345,10 @@ export type UserCommunityRow = {
   memberCount: number;
   /** This user's role within the community (ADMIN|MODERATOR|MEMBER). */
   role: string;
-  /** This user's joinedAt (ISO 8601). */
-  joinedAt: string;
-  /** Community createdAt as an ISO 8601 string (from epoch-ms int64). */
-  createdAt: string;
+  /** This user's joinedAt (epoch ms). */
+  joinedAt: number;
+  /** Community createdAt (epoch ms). */
+  createdAt: number;
 };
 
 /** Normalized user-communities query (post-validation/coercion). */

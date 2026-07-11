@@ -86,10 +86,10 @@ export type LivestreamListItem = {
   community: CommunityRef;
   creator: CreatorRef;
   category: LivestreamCategoryRef;
-  createdAt: string;
-  startedAt: string;
+  createdAt: number;
+  startedAt: number;
   /** null while the stream is LIVE. */
-  endedAt: string | null;
+  endedAt: number | null;
   durationSeconds: number;
   status: LivestreamStatus;
   viewerCount: number;
@@ -120,8 +120,8 @@ export type ReportsSummary = {
   dismissed: number;
   severity: ReportSeverity;
   byType: ReportsByType;
-  firstReportedAt: string | null;
-  lastReportedAt: string | null;
+  firstReportedAt: number | null;
+  lastReportedAt: number | null;
 };
 
 /** Ingest/playback technical metadata (detail view). NO raw stream key exposed. */
@@ -157,7 +157,7 @@ export type LivestreamModerationHistoryItem = {
   adminName: string;
   reasonCode: string | null;
   note: string | null;
-  createdAt: string;
+  createdAt: number;
 };
 
 /** A single report filed against a livestream. */
@@ -176,9 +176,9 @@ export type LivestreamReportItem = {
     action: string;
     note: string | null;
     resolvedBy: string;
-    resolvedAt: string;
+    resolvedAt: number;
   };
-  createdAt: string;
+  createdAt: number;
   evidence: {
     timestampSeconds: number | null;
     clipUrl: string | null;
@@ -193,10 +193,10 @@ export type LivestreamDetail = {
   community: CommunityContext;
   creator: CreatorProfile;
   category: LivestreamCategoryRef;
-  createdAt: string;
-  startedAt: string;
+  createdAt: number;
+  startedAt: number;
   /** null while the stream is LIVE. */
-  endedAt: string | null;
+  endedAt: number | null;
   durationSeconds: number;
   status: LivestreamStatus;
   viewerCount: number;
@@ -219,7 +219,7 @@ export type LivestreamDetail = {
 export type EndLivestreamResult = {
   livestreamId: string;
   status: "ENDED";
-  endedAt: string;
+  endedAt: number;
   endedBy: { adminId: string; adminName: string };
   reasonCode: EndReasonCode;
   moderationActionId: string;
@@ -296,10 +296,10 @@ export type LivestreamUserItem = {
   // Standard avatar object (see @aimess/shared-types MediaObject); null when
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
-  /** ISO-8601 — when this viewing session started. */
-  joinedAt: string;
-  /** ISO-8601; null = still watching. */
-  leftAt: string | null;
+  /** epoch ms — when this viewing session started. */
+  joinedAt: number;
+  /** epoch ms; null = still watching. */
+  leftAt: number | null;
   /** Computed live (now - joinedAt) while still watching. */
   watchDurationSeconds: number;
   /** Viewer's current community role; defaults to "Member" if not a member. */

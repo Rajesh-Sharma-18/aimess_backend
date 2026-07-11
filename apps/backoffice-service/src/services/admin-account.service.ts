@@ -51,9 +51,9 @@ async function toListItem(row: AdminRow): Promise<AdminAccountListItem> {
     avatar: await resolveAvatarOrNull(row.avatarUrl),
     role: { key: row.role.key, name: row.role.name },
     status: row.status as AdminAccountListItem["status"],
-    lastLoginAt: row.lastLoginAt ? row.lastLoginAt.toISOString() : null,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
+    lastLoginAt: row.lastLoginAt ? row.lastLoginAt.getTime() : null,
+    createdAt: row.createdAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
   };
 }
 

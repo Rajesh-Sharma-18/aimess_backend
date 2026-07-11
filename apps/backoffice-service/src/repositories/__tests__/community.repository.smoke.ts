@@ -67,7 +67,7 @@ function q(
 
 const actor: ActorRef = {
   moderator: { adminId: "adm_test", name: "Test Mod" },
-  at: "2026-06-03T12:00:00.000Z",
+  at: Date.parse("2026-06-03T12:00:00.000Z"),
 };
 const closeInput: CloseInput = {
   reasonCode: "GUIDELINES_VIOLATION",

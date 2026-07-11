@@ -73,8 +73,8 @@ export type ReviewReportsInput = {
 /** The acting admin (subset of req.admin) + a precomputed timestamp. */
 export type ActorRef = {
   admin: { id: string; name: string };
-  /** ISO timestamp the service captured for this mutation. */
-  at: string;
+  /** epoch-ms timestamp the service captured for this mutation. */
+  at: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ function parseSort(sort: string): { field: SortField; dir: 1 | -1 } {
 }
 
 /** Opaque keyset cursor over (createdAt, livestreamId). */
-type Cursor = { createdAt: string; livestreamId: string };
+type Cursor = { createdAt: number; livestreamId: string };
 
 function encodeCursor(c: Cursor): string {
   return Buffer.from(JSON.stringify(c), "utf8").toString("base64url");
@@ -130,7 +130,7 @@ function decodeCursor(raw: string): Cursor | null {
       Buffer.from(raw, "base64url").toString("utf8")
     ) as Cursor;
     if (
-      typeof parsed.createdAt === "string" &&
+      typeof parsed.createdAt === "number" &&
       typeof parsed.livestreamId === "string"
     ) {
       return parsed;
@@ -387,7 +387,7 @@ export class MockLivestreamRepository implements LivestreamRepository {
       if (query.minReports !== undefined && r.reportCount < query.minReports) {
         return false;
       }
-      const created = Date.parse(r.createdAt);
+      const created = r.createdAt;
       if (from !== null && created < from) return false;
       if (to !== null && created > to) return false;
       if (search) {
@@ -546,9 +546,9 @@ export class MockLivestreamRepository implements LivestreamRepository {
  * Fixtures store `durationSeconds` directly so LIVE rows stay deterministic;
  * this is only invoked by `end()` once a real end timestamp exists.
  */
-function computeDuration(row: LivestreamDetail, now: string): number {
-  const start = Date.parse(row.startedAt);
-  const end = row.endedAt ? Date.parse(row.endedAt) : Date.parse(now);
+function computeDuration(row: LivestreamDetail, now: number): number {
+  const start = row.startedAt;
+  const end = row.endedAt ?? now;
   return Math.max(0, Math.round((end - start) / 1000));
 }
 
@@ -901,7 +901,7 @@ async function toReportItems(
       description: r.details ?? r.reason ?? "",
       status: toReportStatus(r.status),
       resolution: null,
-      createdAt: r.createdAt.toISOString(),
+      createdAt: r.createdAt.getTime(),
       evidence: { timestampSeconds: null, clipUrl: null },
     };
   });
@@ -921,8 +921,8 @@ function buildReportsSummary(items: LivestreamReportItem[]): ReportsSummary {
   let reviewing = 0;
   let resolved = 0;
   let dismissed = 0;
-  let first: string | null = null;
-  let last: string | null = null;
+  let first: number | null = null;
+  let last: number | null = null;
   for (const r of items) {
     byType[r.reportType] += 1;
     if (r.status === "OPEN") open += 1;
@@ -976,12 +976,9 @@ async function toListItemEnriched(
       name: c?.categoryName ?? "",
       slug: c?.categorySlug ?? "",
     },
-    createdAt: new Date(s.createdAt).toISOString(),
-    startedAt:
-      s.livedAt > 0
-        ? new Date(s.livedAt).toISOString()
-        : new Date(s.createdAt).toISOString(),
-    endedAt: s.endedAt > 0 ? new Date(s.endedAt).toISOString() : null,
+    createdAt: s.createdAt,
+    startedAt: s.livedAt > 0 ? s.livedAt : s.createdAt,
+    endedAt: s.endedAt > 0 ? s.endedAt : null,
     durationSeconds: s.durationSeconds,
     status,
     viewerCount: resolveViewerCount(status, s),
@@ -1231,8 +1228,6 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     ]);
     const reports = await toReportItems(id, reportRows);
     const summary = buildReportsSummary(reports);
-    const createdAtIso = new Date(s.createdAt).toISOString();
-    const endedAtIso = s.endedAt > 0 ? new Date(s.endedAt).toISOString() : null;
     const status = toAdminStatus(s.status);
 
     return {
@@ -1261,10 +1256,9 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
         name: c?.categoryName ?? "",
         slug: c?.categorySlug ?? "",
       },
-      createdAt: createdAtIso,
-      startedAt:
-        s.livedAt > 0 ? new Date(s.livedAt).toISOString() : createdAtIso,
-      endedAt: endedAtIso,
+      createdAt: s.createdAt,
+      startedAt: s.livedAt > 0 ? s.livedAt : s.createdAt,
+      endedAt: s.endedAt > 0 ? s.endedAt : null,
       durationSeconds: s.durationSeconds,
       status,
       viewerCount: resolveViewerCount(status, s),
@@ -1300,9 +1294,9 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
           adminName: "System",
           reasonCode: null,
           note: null,
-          createdAt: createdAtIso,
+          createdAt: s.createdAt,
         },
-        ...(endedAtIso
+        ...(s.endedAt > 0
           ? [
               {
                 id: `${s.id}_ended`,
@@ -1311,7 +1305,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
                 adminName: "System",
                 reasonCode: null,
                 note: null,
-                createdAt: endedAtIso,
+                createdAt: s.endedAt,
               },
             ]
           : []),
@@ -1390,9 +1384,9 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
           username: p?.username ?? "",
           handle: p?.username ? `@${p.username}` : null,
           avatar: await resolveAvatarOrNull(p?.avatarUrl),
-          joinedAt: new Date(v.joinedAt).toISOString(),
+          joinedAt: v.joinedAt,
           // 0 from the wire means "still watching" (see AdminViewerSessionRow).
-          leftAt: v.leftAt > 0 ? new Date(v.leftAt).toISOString() : null,
+          leftAt: v.leftAt > 0 ? v.leftAt : null,
           watchDurationSeconds: v.watchDurationSeconds,
           type: toViewerType(roleMap.get(v.userId)),
         };
@@ -1425,7 +1419,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       endedAt: actor.at,
       endedBy: { adminId: actor.admin.id, adminName: actor.admin.name },
       reasonCode: input.reasonCode,
-      moderationActionId: `${id}_ended_${Date.parse(actor.at)}`,
+      moderationActionId: `${id}_ended_${actor.at}`,
       auditLogId: null,
       creatorNotified: input.notifyCreator ?? false,
       strikeIssued: input.issueStrike ?? false,

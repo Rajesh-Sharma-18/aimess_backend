@@ -82,7 +82,7 @@ export const reportDetailRepository = {
     return withDescription.map((r) => ({
       description: r.details,
       reportedBy: profileMap.get(r.reporterId)?.username ?? null,
-      reportedAt: r.createdAt.toISOString(),
+      reportedAt: r.createdAt.getTime(),
     }));
   },
 
@@ -140,7 +140,7 @@ export const reportDetailRepository = {
         // the upstream row happens to carry one.
         otherReason: r.reason === "OTHER" ? (r.details ?? null) : null,
         status: r.status,
-        createdAt: r.createdAt.toISOString(),
+        createdAt: r.createdAt.getTime(),
         communityId: r.communityId ?? null,
         communityName: r.communityId
           ? (communities.get(r.communityId)?.name ?? null)

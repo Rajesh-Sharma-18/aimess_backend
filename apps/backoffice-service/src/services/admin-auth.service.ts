@@ -45,7 +45,7 @@ export type AdminProfile = {
   avatar: MediaObject | null;
   role: RoleKey;
   status: string;
-  lastLoginAt: Date | null;
+  lastLoginAt: number | null;
   permissions: string[];
 };
 
@@ -77,7 +77,7 @@ async function buildAdminProfile(
     avatar: await resolveAvatarOrNull(admin.avatarUrl),
     role: admin.role.key,
     status: admin.status,
-    lastLoginAt: admin.lastLoginAt,
+    lastLoginAt: admin.lastLoginAt?.getTime() ?? null,
     permissions,
   };
 }

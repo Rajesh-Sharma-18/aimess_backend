@@ -59,8 +59,8 @@ export interface CommunityRepository {
 /** The acting admin (subset of req.admin) + a precomputed timestamp. */
 export type ActorRef = {
   moderator: ModerationActor;
-  /** ISO timestamp the service captured for this mutation. */
-  at: string;
+  /** epoch-ms timestamp the service captured for this mutation. */
+  at: number;
 };
 
 /**
@@ -308,7 +308,7 @@ export class MockCommunityRepository implements CommunityRepository {
           return false;
         }
       }
-      const created = Date.parse(c.community.createdAt);
+      const created = c.community.createdAt;
       if (from !== null && created < from) return false;
       if (to !== null && created > to) return false;
       if (search) {

@@ -76,11 +76,11 @@ type OtherCommunityMemberRow = {
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
   role: string;
-  joinedAt: string;
+  joinedAt: number;
 };
 
 /** The acting admin + a precomputed timestamp for this mutation. */
-type Actor = { actorId: string; at: string };
+type Actor = { actorId: string; at: number };
 
 /**
  * One "Reported Details" row as returned to the client: the repo's `ReportRow`
@@ -101,14 +101,25 @@ type UserReportRow = Omit<ReportRow, "reporter"> & {
 };
 
 function buildActor(actor: RequestAdmin): Actor {
-  return { actorId: actor.id, at: new Date().toISOString() };
+  return { actorId: actor.id, at: Date.now() };
 }
 
-/** Add N days to an ISO timestamp (UTC). */
-function addDays(iso: string, days: number): Date {
-  const d = new Date(iso);
+/** Add N days to an epoch-ms timestamp (UTC). */
+function addDays(ms: number, days: number): Date {
+  const d = new Date(ms);
   d.setUTCDate(d.getUTCDate() + days);
   return d;
+}
+
+/**
+ * admin.user_* RabbitMQ events are a cross-service contract (auth-service is
+ * the consumer) that predates and is independent of this ticket's HTTP
+ * response format change — it still expects ISO strings, so the epoch-ms
+ * `Actor.at`/`UserStatusResult` values are converted back at the publish
+ * boundary only.
+ */
+function toIso(ms: number): string {
+  return new Date(ms).toISOString();
 }
 
 /**
@@ -498,10 +509,11 @@ export const userManagementService = {
       publishUserSuspendedSafe({
         userId,
         reason: input.reason,
-        suspendedUntil: result.suspendedUntil,
+        suspendedUntil:
+          result.suspendedUntil != null ? toIso(result.suspendedUntil) : null,
         notifyUser: input.notifyUser,
         actorId: ref.actorId,
-        at: ref.at,
+        at: toIso(ref.at),
       });
     } else {
       publishUserBannedSafe({
@@ -510,7 +522,7 @@ export const userManagementService = {
         forceLogout: input.forceLogout,
         notifyUser: input.notifyUser,
         actorId: ref.actorId,
-        at: ref.at,
+        at: toIso(ref.at),
       });
     }
     // Best-effort: an account ban/suspend must not leave an existing
@@ -570,10 +582,11 @@ export const userManagementService = {
     publishUserSuspendedSafe({
       userId,
       reason: input.reason,
-      suspendedUntil: result.suspendedUntil,
+      suspendedUntil:
+        result.suspendedUntil != null ? toIso(result.suspendedUntil) : null,
       notifyUser: input.notifyUser,
       actorId: ref.actorId,
-      at: ref.at,
+      at: toIso(ref.at),
     });
     // Best-effort — see banUser's identical call for why.
     void streamClient.forceEndStreamsByCreator(userId, "ACCOUNT_SUSPENDED");
@@ -620,7 +633,7 @@ export const userManagementService = {
     publishUserUnbannedSafe({
       userId,
       actorId: ref.actorId,
-      at: ref.at,
+      at: toIso(ref.at),
     });
 
     return result;
@@ -687,7 +700,7 @@ export const userManagementService = {
           suspendedUntil: change.suspendedUntil?.toISOString() ?? null,
           notifyUser: input.notifyUser,
           actorId: ref.actorId,
-          at: ref.at,
+          at: toIso(ref.at),
         });
       } else {
         publishUserBannedSafe({
@@ -696,7 +709,7 @@ export const userManagementService = {
           forceLogout: input.forceLogout,
           notifyUser: input.notifyUser,
           actorId: ref.actorId,
-          at: ref.at,
+          at: toIso(ref.at),
         });
       }
       // Best-effort — see banUser's identical call for why.
@@ -752,7 +765,7 @@ export const userManagementService = {
       publishUserUnbannedSafe({
         userId: item.userId,
         actorId: ref.actorId,
-        at: ref.at,
+        at: toIso(ref.at),
       });
     }
 
@@ -877,7 +890,7 @@ async function buildModerationHistory(
         ? String((m.metadata as { note: unknown }).note)
         : null,
     reportId: m.reportId,
-    expiresAt: m.expiresAt?.toISOString() ?? null,
-    createdAt: m.createdAt.toISOString(),
+    expiresAt: m.expiresAt?.getTime() ?? null,
+    createdAt: m.createdAt.getTime(),
   }));
 }

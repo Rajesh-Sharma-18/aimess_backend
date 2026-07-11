@@ -66,7 +66,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-const nowIso = (): string => new Date().toISOString();
+const nowMs = (): number => Date.now();
 const round = (ms: number): number => Math.round(ms * 10) / 10;
 
 function noteFrom(err: unknown): string {
@@ -187,7 +187,7 @@ async function probeService(def: MonitoredServiceDef): Promise<ServiceHealth> {
     uptimePercent: breakerUptimePercent(def.breakers),
     latencyMs,
     breaker: breakerFlag(def.breakers),
-    lastChecked: nowIso(),
+    lastChecked: nowMs(),
     note,
   };
 }
@@ -211,7 +211,7 @@ export async function probeServices(): Promise<ServiceHealth[]> {
       uptimePercent: null,
       latencyMs: null,
       breaker: null,
-      lastChecked: nowIso(),
+      lastChecked: nowMs(),
       note: noteFrom(r.reason),
     };
   });
@@ -224,7 +224,7 @@ export async function probeServices(): Promise<ServiceHealth[]> {
     uptimePercent: null,
     latencyMs: null,
     breaker: null,
-    lastChecked: nowIso(),
+    lastChecked: nowMs(),
     note: "No backoffice health probe wired — status unknown.",
   }));
 
@@ -243,7 +243,7 @@ function infra(
   latencyMs: number | null,
   note?: string
 ): InfraHealth {
-  return { key, name, status, metrics, latencyMs, lastChecked: nowIso(), note };
+  return { key, name, status, metrics, latencyMs, lastChecked: nowMs(), note };
 }
 
 /** admin_db reachability — the same `SELECT 1` the readiness probe runs. */

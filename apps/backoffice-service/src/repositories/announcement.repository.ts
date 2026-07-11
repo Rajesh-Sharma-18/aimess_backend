@@ -30,13 +30,13 @@ function toDetail(row: Announcement): AnnouncementDetail {
     kind: row.kind,
     communityId: row.communityId,
     status: row.status,
-    scheduledAt: row.scheduledAt ? row.scheduledAt.toISOString() : null,
+    scheduledAt: row.scheduledAt ? row.scheduledAt.getTime() : null,
     recipientCount: row.recipientCount,
     failureReason: row.failureReason,
     createdById: row.createdById,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-    sentAt: row.sentAt ? row.sentAt.toISOString() : null,
+    createdAt: row.createdAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
+    sentAt: row.sentAt ? row.sentAt.getTime() : null,
   };
 }
 
@@ -48,7 +48,7 @@ function toListItem(row: Announcement): AnnouncementListItem {
     communityId: row.communityId,
     recipientCount: row.recipientCount,
     status: row.status,
-    announcedAt: (row.sentAt ?? row.createdAt).toISOString(),
+    announcedAt: (row.sentAt ?? row.createdAt).getTime(),
   };
 }
 

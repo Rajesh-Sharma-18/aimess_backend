@@ -292,5 +292,5 @@ export const communityService = {
 
 /** Build the repository ActorRef (admin stamp + decision timestamp). */
 function buildActor(actor: RequestAdmin): ActorRef {
-  return { moderator: toModerator(actor), at: new Date().toISOString() };
+  return { moderator: toModerator(actor), at: Date.now() };
 }

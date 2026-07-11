@@ -22,7 +22,7 @@ export type AnnouncementListItem = {
   communityId: string | null;
   recipientCount: number;
   status: AnnouncementStatus;
-  announcedAt: string; // sentAt when delivered, else createdAt
+  announcedAt: number; // sentAt when delivered, else createdAt
 };
 
 /** The full announcement detail returned by GET /announcements/{id}. */
@@ -34,13 +34,13 @@ export type AnnouncementDetail = {
   kind: AnnouncementKind;
   communityId: string | null;
   status: AnnouncementStatus;
-  scheduledAt: string | null;
+  scheduledAt: number | null;
   recipientCount: number;
   failureReason: string | null;
   createdById: string;
-  createdAt: string;
-  updatedAt: string;
-  sentAt: string | null;
+  createdAt: number;
+  updatedAt: number;
+  sentAt: number | null;
 };
 
 /** Normalized create input (post-validation). */

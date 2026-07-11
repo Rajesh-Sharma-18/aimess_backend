@@ -97,7 +97,7 @@ export const systemHealthService = {
     const result: SystemHealth = {
       overall: computeOverall(services, infrastructure),
       servicesUp: computeServicesUp(services),
-      lastUpdated: new Date().toISOString(),
+      lastUpdated: Date.now(),
       services,
       infrastructure,
     };

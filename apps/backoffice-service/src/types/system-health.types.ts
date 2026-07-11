@@ -29,7 +29,7 @@ export interface ServiceHealth {
   latencyMs: number | null;
   /** Circuit-breaker posture, when one backs this service. */
   breaker: "open" | "half-open" | null;
-  lastChecked: string;
+  lastChecked: number;
   note?: string;
 }
 
@@ -41,7 +41,7 @@ export interface InfraHealth {
   /** Component-specific metrics (latency, connection state, bucket, …). */
   metrics: Record<string, number | string | null>;
   latencyMs: number | null;
-  lastChecked: string;
+  lastChecked: number;
   note?: string;
 }
 
@@ -56,7 +56,7 @@ export interface ServicesUp {
 export interface SystemHealth {
   overall: HealthStatus;
   servicesUp: ServicesUp;
-  lastUpdated: string;
+  lastUpdated: number;
   services: ServiceHealth[];
   infrastructure: InfraHealth[];
 }

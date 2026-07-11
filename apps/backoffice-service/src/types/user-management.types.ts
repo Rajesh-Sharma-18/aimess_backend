@@ -46,7 +46,7 @@ export type UserListItem = {
   /** null when the user has no email on file (never an empty string). */
   email: string | null;
   status: UserStatus;
-  joinedAt: string;
+  joinedAt: number;
   reportCount: number;
   /**
    * Standard avatar object (see @aimess/shared-types MediaObject); null when
@@ -59,7 +59,7 @@ export type UserListItem = {
    * the Ban/Unban row action with no extra request. */
   isBanned: boolean;
   /** Present only when `isBanned` is true. */
-  bannedAt?: string | null;
+  bannedAt?: number | null;
   /** Present only when `isBanned` is true — the acting admin's id (same concept
    * as the detail endpoint's `accountStatus.appliedBy`). */
   bannedBy?: string | null;
@@ -86,8 +86,8 @@ export type ModerationHistoryItem = {
   reason: string;
   note: string | null;
   reportId: string | null;
-  expiresAt: string | null;
-  createdAt: string;
+  expiresAt: number | null;
+  createdAt: number;
 };
 
 /** One report-category count (ALL categories) shown on the detail view. */
@@ -100,7 +100,7 @@ export type ReportCategoryCount = {
 export type OtherReasonNote = {
   description: string;
   reportedBy: string | null;
-  reportedAt: string;
+  reportedAt: number;
 };
 
 /**
@@ -114,7 +114,7 @@ export type OtherReasonNote = {
  */
 export type ReportDetailsBlock = {
   reporter: string | null;
-  reportDate: string | null;
+  reportDate: number | null;
   reportCount: number;
   topReasons: ReportCategoryCount[];
   otherReasons: OtherReasonNote[];
@@ -128,7 +128,7 @@ export type ReportRow = {
   /** Custom description when `reason` is "OTHER"; null for every predefined reason. */
   otherReason: string | null;
   status: string;
-  createdAt: string;
+  createdAt: number;
   /** Community the report was filed in; null for community-less reports. */
   communityId: string | null;
   /** Name of {@link communityId}'s community; null when absent/unresolved. */
@@ -145,9 +145,9 @@ export type ReportRow = {
 /** Composed account-state block (from the UserIndex row). */
 export type AccountStatusBlock = {
   status: UserStatus;
-  since: string | null;
+  since: number | null;
   reason: string | null;
-  suspendedUntil: string | null;
+  suspendedUntil: number | null;
   appliedBy: string | null;
   /** Derived from `status` — see {@link ModerationStatus}. Never replaces `status`. */
   moderationStatus: ModerationStatus;
@@ -171,8 +171,8 @@ export type UserDetail = {
      * avatar field the detail screen returns.
      */
     avatar: MediaObject | null;
-    joinedAt: string;
-    lastActiveAt: string | null;
+    joinedAt: number;
+    lastActiveAt: number | null;
   };
   accountStatus: AccountStatusBlock;
   reportDetails: ReportDetailsBlock;
@@ -198,7 +198,7 @@ export type UserIndexRow = {
  * `userManagementService.getUser` can compose `profile` + `accountStatus`
  * regardless of whether the row came from the Prisma read-model or live gRPC.
  *
- * All timestamps are ISO strings ("" / null when absent). `status` is the
+ * All timestamps are epoch-ms numbers (null when absent). `status` is the
  * authoritative account status (auth-service is the source of truth under gRPC;
  * the Prisma mirror otherwise). `since`/`reason`/`suspendedUntil` already carry
  * the resolved account-state values so the service does not re-derive them.
@@ -212,14 +212,14 @@ export type UserDirectoryRow = {
   email: string | null;
   avatarUrl: string | null;
   status: UserStatus;
-  joinedAt: string;
-  lastActiveAt: string | null;
+  joinedAt: number;
+  lastActiveAt: number | null;
   /** When the current status took effect (bannedAt/suspendedAt/updatedAt). */
-  since: string | null;
+  since: number | null;
   /** Ban/suspend reason, or null. */
   reason: string | null;
-  /** ISO suspension expiry, or null. */
-  suspendedUntil: string | null;
+  /** epoch-ms suspension expiry, or null. */
+  suspendedUntil: number | null;
 };
 
 /** Normalized list query (post-validation/coercion). */
@@ -264,8 +264,8 @@ export type StatusChange = {
 export type UserStatusResult = {
   userId: string;
   status: UserStatus;
-  suspendedUntil: string | null;
-  bannedAt: string | null;
+  suspendedUntil: number | null;
+  bannedAt: number | null;
 };
 
 /** One entry in a bulk operation's result list. */
