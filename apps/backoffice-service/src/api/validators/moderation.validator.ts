@@ -118,6 +118,33 @@ export const reportIdParamSchema = z.object({
 export type ReportIdParam = z.infer<typeof reportIdParamSchema>;
 
 // ---------------------------------------------------------------------------
+// Report Details "Users" list query (GET /reports/:reportId/users).
+// One schema for both COMMUNITY and LIVESTREAM reports. `role` is a tolerant
+// free string (community-service honors ADMIN|MODERATOR|MEMBER; other values —
+// including livestream roles — are accepted-but-ignored downstream rather than
+// 400ing). `sortBy`/`sortOrder` normalize to `sortBy`/`sortDir`.
+// ---------------------------------------------------------------------------
+const reportUsersSortByEnum = z.enum(["username", "joinedAt", "role"]);
+
+export const listReportUsersQuerySchema = z
+  .object({
+    search: z.string().trim().min(1).optional(),
+    role: z.string().trim().min(1).optional(),
+    sortBy: reportUsersSortByEnum.optional(),
+    sortOrder: z.enum(["asc", "desc"]).optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .transform(({ sortOrder, ...rest }) => ({
+    ...rest,
+    sortBy: rest.sortBy ?? "joinedAt",
+    sortDir: sortOrder ?? "desc",
+  }));
+export type ListReportUsersQueryInput = z.infer<
+  typeof listReportUsersQuerySchema
+>;
+
+// ---------------------------------------------------------------------------
 // Resolve.
 // ---------------------------------------------------------------------------
 export const resolveReportSchema = z.object({

@@ -1774,7 +1774,7 @@ export const communityRepository = {
     search?: string;
     role?: CommunityMemberRole;
     excludeUserId?: string;
-    sortField?: "username" | "handle" | "joinedAt";
+    sortField?: "username" | "handle" | "joinedAt" | "role";
     sortDir?: "asc" | "desc";
     page: number;
     limit: number;
@@ -1808,7 +1808,8 @@ export const communityRepository = {
 
     // Dynamic sort. "username" sorts on the display name (with @handle as a
     // tiebreak); "handle" sorts on the snapshot @handle; "joinedAt" sorts on
-    // join time then role; default is role asc → joinedAt asc.
+    // join time then role; "role" sorts on role (honoring dir) then joinedAt;
+    // default is role asc → joinedAt asc.
     const dir: Prisma.SortOrder = params.sortDir === "desc" ? "desc" : "asc";
     let orderBy: Prisma.CommunityMemberOrderByWithRelationInput[];
     if (params.sortField === "username") {
@@ -1821,6 +1822,8 @@ export const communityRepository = {
       orderBy = [{ snapshotUsername: dir }, { joinedAt: "asc" }];
     } else if (params.sortField === "joinedAt") {
       orderBy = [{ joinedAt: dir }, { role: "asc" }];
+    } else if (params.sortField === "role") {
+      orderBy = [{ role: dir }, { joinedAt: "asc" }];
     } else {
       orderBy = [{ role: "asc" }, { joinedAt: "asc" }];
     }

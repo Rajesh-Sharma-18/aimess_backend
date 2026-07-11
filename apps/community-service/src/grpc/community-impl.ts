@@ -1220,7 +1220,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         const sortField =
           req.sortField === "username" ||
           req.sortField === "handle" ||
-          req.sortField === "joinedAt"
+          req.sortField === "joinedAt" ||
+          req.sortField === "role"
             ? req.sortField
             : undefined;
 

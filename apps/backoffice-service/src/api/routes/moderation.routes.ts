@@ -10,6 +10,7 @@ import {
   getReportHistory,
   getReportRelated,
   listReports,
+  listReportUsers,
   resolveReport,
 } from "../controllers/index.js";
 import {
@@ -24,6 +25,7 @@ import {
   bulkResolveSchema,
   dismissReportSchema,
   listReportsQuerySchema,
+  listReportUsersQuerySchema,
   reportEvidenceQuerySchema,
   reportHistoryQuerySchema,
   reportIdParamSchema,
@@ -87,6 +89,13 @@ moderationRoutes.get(
   validateParams(reportIdParamSchema),
   validateQuery(reportRelatedQuerySchema),
   getReportRelated
+);
+moderationRoutes.get(
+  "/reports/:reportId/users",
+  requirePermission(PERMISSIONS.REPORTS_READ),
+  validateParams(reportIdParamSchema),
+  validateQuery(listReportUsersQuerySchema),
+  listReportUsers
 );
 moderationRoutes.post(
   "/reports/:reportId/resolve",

@@ -16,6 +16,7 @@ export {
   getReportEvidence,
   getReportHistory,
   getReportRelated,
+  listReportUsers,
 } from "./moderation.controller.js";
 export {
   listLivestreams,

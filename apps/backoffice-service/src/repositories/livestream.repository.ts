@@ -591,7 +591,11 @@ import { logger } from "@aimess/logger";
 import { prisma } from "../config/prisma.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
-import { streamClient, type AdminStreamRow } from "../grpc/stream.client.js";
+import {
+  streamClient,
+  type AdminStreamRow,
+  type AdminViewerSessionRow,
+} from "../grpc/stream.client.js";
 import {
   communityClient,
   type AdminCommunityBrief,
@@ -613,6 +617,51 @@ function toViewerType(role: string | undefined): LivestreamViewerType {
   if (role === "ADMIN") return "Admin";
   if (role === "MODERATOR") return "Moderator";
   return "Member";
+}
+
+/**
+ * Bounded candidate-set size for viewer search / role filter / username|role
+ * sort — these fields have no backing column on the viewer-session store, so a
+ * single DB-level query can't do them. See {@link EXTERNAL_SORT_CANDIDATE_CAP}
+ * for the same rationale on the livestream list.
+ */
+const VIEWER_CANDIDATE_CAP = 2000;
+
+/**
+ * A viewer session enriched with the profile + community-role fields needed to
+ * search/filter/sort, but WITHOUT a resolved avatar (presigned only for the
+ * page slice that survives filtering/pagination).
+ */
+type EnrichedViewer = {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | undefined;
+  type: LivestreamViewerType;
+  /** epoch ms. */
+  joinedAt: number;
+  /** epoch ms; 0 = still watching. */
+  leftAt: number;
+  watchDurationSeconds: number;
+};
+
+/** Map an enriched viewer → the wire item, presigning its avatar. */
+async function toViewerItem(
+  no: number,
+  e: EnrichedViewer
+): Promise<LivestreamUserItem> {
+  return {
+    no,
+    userId: e.userId,
+    username: e.username,
+    handle: e.username ? `@${e.username}` : null,
+    avatar: await resolveAvatarOrNull(e.avatarUrl),
+    joinedAt: e.joinedAt,
+    // 0 from the wire means "still watching" (see AdminViewerSessionRow).
+    leftAt: e.leftAt > 0 ? e.leftAt : null,
+    watchDurationSeconds: e.watchDurationSeconds,
+    type: e.type,
+  };
 }
 
 const STREAM_BUCKET = env.MINIO_BUCKET_STREAM;
@@ -1347,8 +1396,19 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
    * The admin "Livestream User List" — the users who ACTUALLY watched this
    * stream, backed by the durable `LivestreamViewerSession` history persisted
    * by stream-service on join/leave (see `apps/stream-service`
-   * `LivestreamViewerSessionRepository`). Replaces the earlier placeholder
-   * that returned the stream's community roster instead of real viewers.
+   * `LivestreamViewerSessionRepository`).
+   *
+   * Two paths:
+   *  - **Native** (default): joinedAt|watchDurationSeconds sort + pagination are
+   *    applied at the DB level by stream-service — the fast path.
+   *  - **Candidate-set**: search, community-role filter, and username|role sort
+   *    have NO backing column on the viewer-session store (it holds only
+   *    userId/joinedAt/leftAt/duration). So when any of those are requested we
+   *    pull a bounded candidate set, enrich each viewer with their profile
+   *    (username/display name) + current community role, filter/sort in memory,
+   *    then paginate — avatars are resolved only for the final page slice. This
+   *    mirrors {@link GrpcLivestreamRepository.listWithExternalSort}. `total`
+   *    then reflects the FILTERED count so the FE pager stays correct.
    */
   async listUsers(
     livestreamId: string,
@@ -1357,43 +1417,127 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
     const s = await streamClient.adminGetStream(livestreamId);
     if (!s) throw new NotFoundError("LIVESTREAM_NOT_FOUND");
 
-    const { sessions, total } = await streamClient.adminListViewerSessions({
+    const sortDir: "asc" | "desc" = query.sortDir === "asc" ? "asc" : "desc";
+    const search = query.search?.trim().toLowerCase();
+    // Only a recognized viewer role (community role) filters; any other value is
+    // ignored (returns all) — matches the community path's "ignore invalid" rule.
+    const rawRole = query.role?.trim().toLowerCase();
+    const roleFilter =
+      rawRole === "admin" || rawRole === "moderator" || rawRole === "member"
+        ? rawRole
+        : undefined;
+    const externalSort =
+      query.sortField === "username" || query.sortField === "role";
+    const needsCandidateSet =
+      Boolean(search) || Boolean(roleFilter) || externalSort;
+
+    if (!needsCandidateSet) {
+      const nativeSort =
+        query.sortField === "watchDurationSeconds"
+          ? "watchDurationSeconds"
+          : "joinedAt";
+      const { sessions, total } = await streamClient.adminListViewerSessions({
+        streamId: livestreamId,
+        page: query.page,
+        limit: query.limit,
+        sortField: nativeSort,
+        sortDir,
+      });
+      const enriched = await this.enrichViewers(s.communityId, sessions);
+      const start = (query.page - 1) * query.limit;
+      const data = await Promise.all(
+        enriched.map((e, i) => toViewerItem(start + i + 1, e))
+      );
+      return { data, pagination: offsetMeta(query.page, query.limit, total) };
+    }
+
+    // Candidate-set path. Pull up to the cap (ordered by joinedAt so a truncated
+    // set is at least deterministic), enrich, then filter/sort/paginate.
+    const { sessions } = await streamClient.adminListViewerSessions({
       streamId: livestreamId,
-      page: query.page,
-      limit: query.limit,
-      sortField: query.sortField,
-      sortDir: query.sortDir,
+      page: 1,
+      limit: VIEWER_CANDIDATE_CAP,
+      sortField: "joinedAt",
+      sortDir,
+    });
+    if (sessions.length >= VIEWER_CANDIDATE_CAP) {
+      logger.warn(
+        `Livestream viewer search/sort candidate set hit cap=${VIEWER_CANDIDATE_CAP} for stream ${livestreamId}; viewers beyond the cap are not searched/sorted`
+      );
+    }
+
+    let enriched = await this.enrichViewers(s.communityId, sessions);
+
+    if (search) {
+      enriched = enriched.filter(
+        (e) =>
+          e.username.toLowerCase().includes(search) ||
+          e.displayName.toLowerCase().includes(search) ||
+          e.userId.toLowerCase() === search
+      );
+    }
+    if (roleFilter) {
+      // Filter on the (only implemented) viewer role — the community role
+      // Admin|Moderator|Member. An unmatched value simply yields no rows.
+      enriched = enriched.filter((e) => e.type.toLowerCase() === roleFilter);
+    }
+
+    const dirMul = sortDir === "asc" ? 1 : -1;
+    enriched.sort((a, b) => {
+      let cmp: number;
+      if (query.sortField === "username") {
+        cmp = a.username.localeCompare(b.username, undefined, {
+          sensitivity: "base",
+        });
+      } else if (query.sortField === "role") {
+        cmp = a.type.localeCompare(b.type, undefined, { sensitivity: "base" });
+      } else {
+        cmp = a.joinedAt - b.joinedAt;
+      }
+      if (cmp !== 0) return cmp * dirMul;
+      // Stable tiebreaker so paging is deterministic across requests.
+      return a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0;
     });
 
+    const total = enriched.length;
+    const start = (query.page - 1) * query.limit;
+    const pageSlice = enriched.slice(start, start + query.limit);
+    const data = await Promise.all(
+      pageSlice.map((e, i) => toViewerItem(start + i + 1, e))
+    );
+    return { data, pagination: offsetMeta(query.page, query.limit, total) };
+  }
+
+  /**
+   * Enrich raw viewer sessions with each viewer's profile (username/display
+   * name/avatar key) + current community role — WITHOUT resolving avatars (the
+   * caller presigns only the page it keeps). Batched (no N+1).
+   */
+  private async enrichViewers(
+    communityId: string,
+    sessions: AdminViewerSessionRow[]
+  ): Promise<EnrichedViewer[]> {
     const userIds = unique(sessions.map((v) => v.userId));
     const [profiles, roleMap] = await Promise.all([
       userIds.length ? userClient.adminGetProfilesByIds(userIds) : [],
       userIds.length
-        ? communityClient.adminGetMemberRoles(s.communityId, userIds)
+        ? communityClient.adminGetMemberRoles(communityId, userIds)
         : new Map<string, string>(),
     ]);
     const profileMap = new Map(profiles.map((p) => [p.userId, p]));
-    const start = (query.page - 1) * query.limit;
-
-    const data: LivestreamUserItem[] = await Promise.all(
-      sessions.map(async (v, i) => {
-        const p = profileMap.get(v.userId);
-        return {
-          no: start + i + 1,
-          userId: v.userId,
-          username: p?.username ?? "",
-          handle: p?.username ? `@${p.username}` : null,
-          avatar: await resolveAvatarOrNull(p?.avatarUrl),
-          joinedAt: v.joinedAt,
-          // 0 from the wire means "still watching" (see AdminViewerSessionRow).
-          leftAt: v.leftAt > 0 ? v.leftAt : null,
-          watchDurationSeconds: v.watchDurationSeconds,
-          type: toViewerType(roleMap.get(v.userId)),
-        };
-      })
-    );
-
-    return { data, pagination: offsetMeta(query.page, query.limit, total) };
+    return sessions.map((v) => {
+      const p = profileMap.get(v.userId);
+      return {
+        userId: v.userId,
+        username: p?.username ?? "",
+        displayName: displayNameOf(p),
+        avatarUrl: p?.avatarUrl,
+        type: toViewerType(roleMap.get(v.userId)),
+        joinedAt: v.joinedAt,
+        leftAt: v.leftAt,
+        watchDurationSeconds: v.watchDurationSeconds,
+      };
+    });
   }
 
   async end(

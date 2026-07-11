@@ -1,3 +1,5 @@
+import { NotFoundError } from "@aimess/errors";
+
 import { AUDIT_ACTIONS } from "../constants/index.js";
 import { communityClient } from "../grpc/community.client.js";
 import { userClient } from "../grpc/user.client.js";
@@ -5,8 +7,11 @@ import { streamClient } from "../grpc/stream.client.js";
 import type { RawAdminCommunityRow } from "../grpc/community.client.js";
 import {
   adminUserRepository,
+  communityMembersRepository,
+  livestreamRepository,
   reportRepository,
 } from "../repositories/index.js";
+import type { CommunityMemberRole } from "../types/community.types.js";
 import type {
   ActorRef,
   DismissInput,
@@ -24,6 +29,7 @@ import type {
   ListReportHistoryQuery,
   ListReportRelatedQuery,
   ListReportsQuery,
+  ListReportUsersQuery,
   MessageReportBlock,
   ModeratorRef,
   Paginated,
@@ -34,6 +40,8 @@ import type {
   ReportModerationDetail,
   ReportModerationKind,
   ReportModerationUserRef,
+  ReportUserItem,
+  ReportUsersPagination,
   PaginationMeta,
   ResolveResult,
 } from "../types/moderation.types.js";
@@ -346,6 +354,34 @@ export const moderationService = {
     }
   },
 
+  /**
+   * Users list at the bottom of the Report Details page (GET
+   * /reports/:reportId/users). One endpoint for both report kinds — reuses the
+   * existing read paths rather than duplicating any roster logic:
+   *   LIVESTREAM              → the stream's viewer sessions (livestreamRepository.listUsers)
+   *   COMMUNITY / MESSAGE     → the reported community's members (communityMembersRepository.listMembers)
+   *   USER (no community)     → empty page (no roster to show)
+   * Returns null (→ 404) only when the report itself doesn't exist.
+   */
+  async listReportUsers(
+    reportId: string,
+    query: ListReportUsersQuery
+  ): Promise<{
+    items: ReportUserItem[];
+    pagination: ReportUsersPagination;
+  } | null> {
+    const core = await reportRepository.getCore(reportId);
+    if (!core) return null;
+
+    if (toReportKind(core) === "LIVESTREAM") {
+      return listLivestreamReportUsers(core.target.id, query);
+    }
+    if (core.communityId) {
+      return listCommunityReportUsers(core.communityId, query);
+    }
+    return { items: [], pagination: emptyUsersPagination(query) };
+  },
+
   listReportEvidence(
     reportId: string,
     query: ListReportEvidenceQuery
@@ -488,4 +524,108 @@ export const moderationService = {
 /** Build the repository ActorRef (moderator stamp + decision timestamp). */
 async function buildActor(actor: RequestAdmin): Promise<ActorRef> {
   return { moderator: await toModerator(actor), at: Date.now() };
+}
+
+// ---------------------------------------------------------------------------
+// Report Details "Users" list helpers (GET /reports/:reportId/users).
+// ---------------------------------------------------------------------------
+
+function emptyUsersPagination(q: {
+  page: number;
+  limit: number;
+}): ReportUsersPagination {
+  return { page: q.page, limit: q.limit, total: 0, totalPages: 0 };
+}
+
+/** Slim the shared PaginationMeta down to the FE's {page,limit,total,totalPages}. */
+function toUsersPagination(p: PaginationMeta): ReportUsersPagination {
+  return {
+    page: p.page,
+    limit: p.limit,
+    total: p.total ?? 0,
+    totalPages: p.totalPages,
+  };
+}
+
+/** COMMUNITY / MESSAGE report → the reported community's members. */
+async function listCommunityReportUsers(
+  communityId: string,
+  query: ListReportUsersQuery
+): Promise<{ items: ReportUserItem[]; pagination: ReportUsersPagination }> {
+  // Unified sortBy → community-members gRPC sortField. All three are honored at
+  // the DB level in community-service (username|joinedAt|role), each respecting
+  // sortDir asc/desc.
+  const sortField =
+    query.sortBy === "username"
+      ? "username"
+      : query.sortBy === "joinedAt"
+        ? "joinedAt"
+        : "role";
+
+  const page = await communityMembersRepository.listMembers(communityId, {
+    search: query.search,
+    // community-service honors ADMIN|MODERATOR|MEMBER; any other value (e.g.
+    // BANNED) is passed through and ignored there rather than 400ing.
+    role: query.role as CommunityMemberRole | undefined,
+    page: query.page,
+    limit: query.limit,
+    sortField,
+    sortDir: query.sortDir,
+  });
+
+  const items: ReportUserItem[] = page.data.map((m) => ({
+    userId: m.userId,
+    username: m.handle.replace(/^@/, ""),
+    displayName: m.username,
+    avatar: m.avatar,
+    // A banned member surfaces role BANNED (status, not role, upstream).
+    role: m.status === "BANNED" ? "BANNED" : m.role,
+    joinedAt: m.joinedAt,
+  }));
+  return { items, pagination: toUsersPagination(page.pagination) };
+}
+
+/** LIVESTREAM report → the stream's actual viewer sessions. */
+async function listLivestreamReportUsers(
+  streamId: string,
+  query: ListReportUsersQuery
+): Promise<{ items: ReportUserItem[]; pagination: ReportUsersPagination }> {
+  try {
+    // Unified sortBy → listUsers sortField. joinedAt sorts natively; username/
+    // role (and any search/role filter) route through livestreamRepository's
+    // bounded candidate-set enrichment path (viewer sessions carry no
+    // username/display-name/role column). role filter matches the viewer's
+    // community role (Admin|Moderator|Member) — the only implemented viewer role.
+    const sortField =
+      query.sortBy === "username"
+        ? "username"
+        : query.sortBy === "role"
+          ? "role"
+          : "joinedAt";
+    const page = await livestreamRepository.listUsers(streamId, {
+      page: query.page,
+      limit: query.limit,
+      sortField,
+      sortDir: query.sortDir,
+      search: query.search,
+      role: query.role,
+    });
+
+    const items: ReportUserItem[] = page.data.map((v) => ({
+      userId: v.userId,
+      username: v.username,
+      // Viewer sessions carry no separate display name — fall back to username.
+      displayName: v.username,
+      avatar: v.avatar,
+      role: v.type,
+      joinedAt: v.joinedAt,
+    }));
+    return { items, pagination: toUsersPagination(page.pagination) };
+  } catch (err) {
+    // The report exists but its stream was deleted → no viewers, not a 404.
+    if (err instanceof NotFoundError) {
+      return { items: [], pagination: emptyUsersPagination(query) };
+    }
+    throw err;
+  }
 }

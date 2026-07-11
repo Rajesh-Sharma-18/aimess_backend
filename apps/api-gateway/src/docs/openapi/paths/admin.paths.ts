@@ -1859,6 +1859,121 @@ export const adminPaths = {
       "x-implementation-status": "implemented",
     },
   },
+  "/admin/v1/reports/{reportId}/users": {
+    get: {
+      tags: [adminTags.reports],
+      operationId: "adminListReportUsers",
+      summary: "List Report Details users",
+      description:
+        "Paginated users list shown at the bottom of the Report Details page. " +
+        "ONE endpoint serving both report kinds — the report's `reportType` " +
+        "selects the source: `COMMUNITY`/`MESSAGE` reports return the reported " +
+        "community's members (via the community-members read path); `LIVESTREAM` " +
+        "reports return the stream's actual viewer sessions. A plain `USER` " +
+        "report (no community/stream context) returns an empty page. Every row " +
+        "is the unified `{userId,username,displayName,avatar,role,joinedAt}` shape " +
+        "(`avatar` is the standard media object; `joinedAt` is epoch ms). " +
+        "`search` (username / display name / user id — case-insensitive, partial, " +
+        "trimmed, empty ignored), `role` filter and `sortBy` " +
+        "(`username`|`joinedAt`|`role`, with `sortOrder` asc/desc) work for BOTH " +
+        "report kinds. COMMUNITY `role` values are `ADMIN`|`MODERATOR`|`MEMBER` " +
+        "(`BANNED` surfaces on rows but is not a filter); LIVESTREAM has no " +
+        "participant-role model, so a viewer's `role` is their community role " +
+        "(`Admin`|`Moderator`|`Member`) and that is what `role`/`sortBy=role` " +
+        "operate on (livestream search/filter/sort run over a bounded candidate " +
+        "set). Unknown/invalid `role` values are ignored. Requires `reports.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "reportId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+          description: "Public report id, e.g. RPT-2026-0001284.",
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Matches username, display name or user id (COMMUNITY reports).",
+        },
+        {
+          name: "role",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Community role filter — ADMIN|MODERATOR|MEMBER (BANNED/other values ignored; not applied to LIVESTREAM reports).",
+        },
+        {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["username", "joinedAt", "role"] },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Report Details users page",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  message: {
+                    type: "string",
+                    example: "Users fetched successfully.",
+                  },
+                  data: {
+                    type: "object",
+                    properties: {
+                      users: {
+                        type: "array",
+                        items: {
+                          $ref: "#/components/schemas/AdminReportUserItem",
+                        },
+                      },
+                      pagination: {
+                        $ref: "#/components/schemas/AdminReportUsersPagination",
+                      },
+                    },
+                    required: ["users", "pagination"],
+                  },
+                },
+                required: ["success", "message", "data"],
+              },
+            },
+          },
+        },
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing reports.read"),
+        "404": errRes("Report not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
   "/admin/v1/reports/bulk/resolve": {
     post: {
       tags: [adminTags.reports],

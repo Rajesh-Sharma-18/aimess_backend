@@ -372,6 +372,45 @@ export type MessageReportBlock = {
   senderId: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// Report Details "Users" list — GET /reports/{reportId}/users.
+// One endpoint serving BOTH report kinds: COMMUNITY/MESSAGE reports return the
+// reported community's members; LIVESTREAM reports return the stream's viewer
+// sessions. Reuses communityMembersRepository / livestreamRepository — no new
+// read path. Shape is unified across both sources.
+// ---------------------------------------------------------------------------
+
+/** One row in the Report Details users list. */
+export type ReportUserItem = {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatar: MediaObject | null;
+  /** Community: ADMIN|MODERATOR|MEMBER|BANNED. Livestream: Admin|Moderator|Member. */
+  role: string;
+  /** epoch ms. */
+  joinedAt: number;
+};
+
+/** Slim pagination for the report users list (matches the FE contract). */
+export type ReportUsersPagination = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+/** Normalized query for GET /reports/:reportId/users (post-validation/coercion). */
+export type ListReportUsersQuery = {
+  search?: string;
+  /** Community role filter (ADMIN|MODERATOR|MEMBER); ignored for livestream reports. */
+  role?: string;
+  page: number;
+  limit: number;
+  sortBy: "username" | "joinedAt" | "role";
+  sortDir: "asc" | "desc";
+};
+
 /**
  * (Future) "comment" block for COMMENT (livestream comment) reports — kept
  * commented until the backend grows a comment entity + report-ingest path.

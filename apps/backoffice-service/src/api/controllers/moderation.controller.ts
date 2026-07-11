@@ -3,12 +3,16 @@ import type { RequestHandler } from "express";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { moderationService } from "../../services/index.js";
-import type { ListReportsQuery } from "../../types/moderation.types.js";
+import type {
+  ListReportsQuery,
+  ListReportUsersQuery,
+} from "../../types/moderation.types.js";
 import type {
   BulkDismissInput,
   BulkResolveInput,
   DismissReportInput,
   ListReportsQueryInput,
+  ListReportUsersQueryInput,
   ReportEvidenceQueryInput,
   ReportHistoryQueryInput,
   ReportRelatedQueryInput,
@@ -50,6 +54,36 @@ export const getReportDetails: RequestHandler = (req, res, next) => {
       res.status(HTTP_STATUS.OK).json({
         success: true,
         data: detail,
+      });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/**
+ * GET /v1/moderation/reports/:reportId/users — paginated users list at the
+ * bottom of the Report Details page (community members OR livestream viewers,
+ * depending on the report kind).
+ */
+export const listReportUsers: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      // Narrowed by reportIdParamSchema on the route.
+      const reportId = req.params.reportId as string;
+      const query = req.query as unknown as ListReportUsersQueryInput;
+      const result = await moderationService.listReportUsers(
+        reportId,
+        query as unknown as ListReportUsersQuery
+      );
+      if (!result) throw new NotFoundError("REPORT_NOT_FOUND");
+      res.status(HTTP_STATUS.OK).json({
+        success: true,
+        message: "Users fetched successfully.",
+        data: {
+          users: result.items,
+          pagination: result.pagination,
+        },
       });
     } catch (error) {
       next(error);

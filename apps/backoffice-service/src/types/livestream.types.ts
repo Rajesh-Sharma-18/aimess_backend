@@ -310,6 +310,16 @@ export type LivestreamUserItem = {
 export type ListLivestreamUsersQuery = {
   page: number;
   limit: number;
-  sortField?: "joinedAt" | "watchDurationSeconds";
+  /**
+   * joinedAt|watchDurationSeconds sort natively at the DB (fast path). username|
+   * role sort — and any search/role filter — have no backing column on the
+   * viewer-session store, so they trigger the bounded candidate-set enrichment
+   * path (see {@link GrpcLivestreamRepository.listUsers}).
+   */
+  sortField?: "joinedAt" | "watchDurationSeconds" | "username" | "role";
   sortDir?: "asc" | "desc";
+  /** Case-insensitive partial match on username / display name / user id. */
+  search?: string;
+  /** Community-role filter (Admin|Moderator|Member) — the only implemented viewer role. */
+  role?: string;
 };

@@ -2309,6 +2309,51 @@ export const openApiSchemas = {
     },
     required: ["success", "data"],
   },
+  AdminReportUserItem: {
+    type: "object",
+    description:
+      "One row in the Report Details users list — a community member (COMMUNITY/MESSAGE reports) or a livestream viewer (LIVESTREAM reports), unified. `avatar` is the standard media object; `joinedAt` is epoch ms.",
+    properties: {
+      userId: { type: "string", example: "u_1" },
+      username: { type: "string", example: "jdoe" },
+      displayName: { type: "string", example: "John Doe" },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+      },
+      role: {
+        type: "string",
+        description:
+          "Community reports: ADMIN|MODERATOR|MEMBER|BANNED. Livestream reports: Admin|Moderator|Member (viewer's current community role).",
+        example: "MEMBER",
+      },
+      joinedAt: {
+        type: "integer",
+        format: "int64",
+        example: 1783745454545,
+        description: "Epoch milliseconds.",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatar",
+      "role",
+      "joinedAt",
+    ],
+  },
+  AdminReportUsersPagination: {
+    type: "object",
+    description: "Slim offset pagination for the Report Details users list.",
+    properties: {
+      page: { type: "integer", example: 1 },
+      limit: { type: "integer", example: 20 },
+      total: { type: "integer", example: 0 },
+      totalPages: { type: "integer", example: 0 },
+    },
+    required: ["page", "limit", "total", "totalPages"],
+  },
   AdminResolveReportRequest: {
     type: "object",
     description:
