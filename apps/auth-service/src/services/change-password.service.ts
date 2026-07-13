@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 
-import { BadRequestError, UnauthorizedError } from "@aimess/errors";
+import { BadRequestError } from "@aimess/errors";
 
 import type { ChangePasswordInput } from "../api/validators/change-password.validator.js";
 import { loadActiveAuthUser } from "../lib/account-guard.js";
@@ -22,7 +22,7 @@ export const changePasswordService = {
       user.passwordHash
     );
     if (!currentValid) {
-      throw new UnauthorizedError("AUTH_CURRENT_PASSWORD_INVALID");
+      throw new BadRequestError("AUTH_CURRENT_PASSWORD_INVALID");
     }
 
     const sameAsNew = await bcrypt.compare(

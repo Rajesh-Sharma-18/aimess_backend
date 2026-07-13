@@ -1577,11 +1577,20 @@ export const authPaths = {
           },
         },
         "400": {
-          description: "Validation failed or new password same as current",
+          description:
+            "Validation failed, wrong current password, or new password same as current",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
               examples: {
+                wrongPassword: {
+                  summary: "Wrong current password",
+                  value: {
+                    success: false,
+                    message: "Current password is incorrect.",
+                    code: "PASSWORD_INCORRECT",
+                  },
+                },
                 samePassword: {
                   summary: "Same password",
                   value: {
@@ -1603,7 +1612,7 @@ export const authPaths = {
           },
         },
         "401": {
-          description: "Unauthorized or wrong current password",
+          description: "Missing/invalid/expired token, or account not active",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -1611,14 +1620,6 @@ export const authPaths = {
                 noToken: {
                   summary: "Missing token",
                   value: { success: false, message: "Unauthorized" },
-                },
-                wrongPassword: {
-                  summary: "Wrong current password",
-                  value: {
-                    success: false,
-                    message: "Current password is incorrect",
-                    code: "PASSWORD_INCORRECT",
-                  },
                 },
               },
             },
