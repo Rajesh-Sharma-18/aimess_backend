@@ -30,11 +30,13 @@ beforeEach(() => {
 
 describe("GET /api/chat/private/conversations", () => {
   it("POSITIVE: returns enriched, paginated conversations for the caller", async () => {
-    mocks.privateRoomRepo.getConversationList.mockResolvedValue([
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
       {
         roomId: "prv_1",
         participants: [TEST_USER_ID, "peer-1"],
         lastMessageAt: new Date(1000),
+        lastMessage: null,
+        unreadCountByUser: { [TEST_USER_ID]: 3 },
         mutedBy: {},
         pinnedCount: 0,
       },
@@ -48,11 +50,23 @@ describe("GET /api/chat/private/conversations", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.data).toHaveLength(1);
-    expect(res.body.data.data[0].peer.id).toBe("peer-1");
+    expect(res.body.data.data[0].peerId).toBe("peer-1");
+    // Community-style additive fields.
+    expect(res.body.data.data[0].unreadMessageCount).toBe(3);
+    expect(typeof res.body.data.data[0].lastActivityAt).toBe("number");
+    expect(res.body.data.data[0].lastActivity).toMatchObject({
+      type: "message",
+    });
+    expect(res.body.data.data[0].avatar).toBeDefined();
+    // Peer fields are flattened onto the item — no nested `peer` object.
+    expect(res.body.data.data[0].peer).toBeUndefined();
+    // No top-level pagination duplicates — only nested under `pagination`.
+    expect(res.body.data.hasMore).toBeUndefined();
+    expect(res.body.data.nextCursor).toBeUndefined();
   });
 
   it("EDGE: empty conversation list → 200 with empty data", async () => {
-    mocks.privateRoomRepo.getConversationList.mockResolvedValue([]);
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([]);
     mocks.privateRoomRepo.countConversations.mockResolvedValue(0);
 
     const res = await request(app)
@@ -66,6 +80,51 @@ describe("GET /api/chat/private/conversations", () => {
   it("SECURITY: 401 without a token", async () => {
     const res = await request(app).get("/api/chat/private/conversations");
     expect(res.status).toBe(401);
+  });
+
+  it("PAGINATION: hasMore is exact (over-fetch by limit+1), matching community's listMine contract", async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => ({
+      roomId: `prv_${i}`,
+      participants: [TEST_USER_ID, `peer-${i}`],
+      lastMessageAt: new Date(3000 - i),
+      lastMessage: null,
+      unreadCountByUser: {},
+      mutedBy: {},
+      pinnedCount: 0,
+    }));
+    // limit=2 → service over-fetches 3; repo returns all 3 → hasMore must be true.
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue(rows);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(3);
+
+    const res = await request(app)
+      .get("/api/chat/private/conversations?limit=2")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(2);
+    expect(res.body.data.pagination.hasMore).toBe(true);
+    expect(res.body.data.pagination.nextCursor).toBe(
+      String(new Date(2999).getTime())
+    );
+    expect(mocks.privateRoomRepo.getInboxConversations).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 3, direction: "before" })
+    );
+  });
+
+  it("PAGINATION: before_ts is honored as the cursor boundary", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(0);
+
+    await request(app)
+      .get("/api/chat/private/conversations?before_ts=1717000000000")
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.privateRoomRepo.getInboxConversations).toHaveBeenCalledWith(
+      expect.objectContaining({
+        direction: "before",
+        ts: new Date(1717000000000),
+      })
+    );
   });
 });
 

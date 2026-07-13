@@ -3,7 +3,6 @@ import type { Request, Response } from "express";
 import { ApiResponse, asyncHandler } from "@aimess/utils";
 import { HTTP_STATUS, t } from "@aimess/constants";
 
-import { buildPaginatedResponse } from "../../lib/pagination.js";
 import type { PrivateRoomService } from "../../services/private-room.service.js";
 
 export class PrivateRoomController {
@@ -16,22 +15,28 @@ export class PrivateRoomController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(room));
   });
 
+  // Cursor (before_ts/after_ts, epoch ms) pagination — same query-param
+  // contract and exact-hasMore semantics as community's `GET /communities/mine`
+  // (before_ts/after_ts/limit only; same limit bounds). Express 5's req.query
+  // is read-only, so validateQuery only rejects malformed input — this still
+  // parses the raw strings itself (same convention as every other controller
+  // in this file).
   getConversationList = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
-    const cursor = req.query.cursor as string | undefined;
-    const limit = Number(req.query.limit) || 20;
-    const page = Number(req.query.page) || 1;
-    const [rooms, totalCount] = await Promise.all([
-      this.service.getConversationList({ userId, limit, cursor }),
-      this.service.countConversations(userId),
-    ]);
-    const paginated = buildPaginatedResponse(
-      rooms as unknown as Record<string, unknown>[],
-      totalCount,
-      page,
+    const beforeTs = req.query.before_ts
+      ? Number(req.query.before_ts)
+      : undefined;
+    const afterTs = req.query.after_ts ? Number(req.query.after_ts) : undefined;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+
+    const direction = afterTs != null ? "after" : "before";
+    const tsMs = afterTs ?? beforeTs ?? Date.now();
+
+    const paginated = await this.service.listMine(userId, {
+      direction,
+      ts: new Date(tsMs),
       limit,
-      "lastMessageAt"
-    );
+    });
     const msg = paginated.data.length
       ? t("CHAT_CONVERSATIONS_FETCHED", req.locale)
       : t("CHAT_NO_CONVERSATIONS_FOUND", req.locale);

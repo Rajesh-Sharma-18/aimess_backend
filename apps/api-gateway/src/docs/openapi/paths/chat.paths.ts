@@ -357,11 +357,43 @@ const privateConversations = {
     operationId: "listConversations",
     summary: "List conversations",
     description:
-      "Cursor-paginated list of the authenticated user's private rooms, ordered by last message.",
+      "Cursor-paginated list of the authenticated user's private rooms, ordered by latest activity desc. " +
+      "Query params, pagination, response envelope (`{pagination,data}`, no top-level hasMore/nextCursor " +
+      "duplicates), sorting, avatar/media resolution, `lastActivity`, and `unreadMessageCount` follow the " +
+      "exact same contract as `GET /communities/mine`: only `before_ts`/`after_ts`/`limit` are accepted " +
+      "(mutually exclusive `before_ts`/`after_ts`, `limit` max 50 default 20), `pagination.hasMore`/`nextCursor` " +
+      "are exact, and `nextCursor` is an epoch-ms string fed back verbatim as the next `before_ts`/`after_ts`. " +
+      "Each item is a lean, community-list-style object with the peer's fields flattened directly onto it " +
+      "(no nested `peer` object): `roomId`, `participants`, `peerId`, `displayName`, `memberId`, `avatar`, " +
+      "`avatarUrl`, `avatarUrlExpiresIn`, `isDeletedUser`, `isOnline`, `unreadMessageCount`, `lastActivityAt` " +
+      "(epoch ms, never an ISO string), `lastActivity`, `isMuted`. Internal per-user maps (mute/archive/delete/ " +
+      "read state for OTHER participants) and redundant raw fields (`lastMessage`, `lastMessageAt`, " +
+      "`createdAt`/`updatedAt`) are never included.",
     security: [{ bearerAuth: [] }],
-    parameters: [cursorParam(), limitParam(20)],
+    parameters: [
+      {
+        name: "before_ts",
+        in: "query" as const,
+        required: false,
+        schema: { type: "integer" as const, minimum: 1 },
+        description:
+          "Epoch ms. Returns rooms with lastActivityAt <= before_ts, newest-first.",
+      },
+      {
+        name: "after_ts",
+        in: "query" as const,
+        required: false,
+        schema: { type: "integer" as const, minimum: 1 },
+        description:
+          "Epoch ms. Returns rooms with lastActivityAt >= after_ts, oldest-first.",
+      },
+      limitParam(20, 50),
+    ],
     responses: {
-      ...successResponse("Conversation list", "ChatPrivateRoomList"),
+      ...successResponse(
+        "Conversation list",
+        "ChatPrivateConversationListData"
+      ),
       "401": unauthorized,
     },
   },

@@ -7975,6 +7975,50 @@ export const openApiSchemas = {
   // ===========================================================================
 
   // --- Private rooms & messages ---
+  ChatPrivateRoomPeerAvatar: {
+    allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+    description:
+      "Nested media object for the peer's avatar — same shape as a community's `avatar` (additive; mirrors `avatarUrl`).",
+  },
+  ChatPrivateRoomPeer: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      displayName: { type: "string" },
+      memberId: { type: "string" },
+      avatar: { $ref: "#/components/schemas/ChatPrivateRoomPeerAvatar" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned download URL (mirrors community's `avatarUrl`).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isDeletedUser: { type: "boolean" },
+      isOnline: { type: "boolean" },
+    },
+    required: [
+      "id",
+      "displayName",
+      "memberId",
+      "avatar",
+      "isDeletedUser",
+      "isOnline",
+    ],
+  },
+  ChatPrivateConversationLastActivity: {
+    type: "object",
+    description:
+      "Normalized last-activity DTO — same {type,userId,username,preview,dateTime} shape as CommunityLastActivity's USER-MESSAGE case.",
+    properties: {
+      type: { type: "string", enum: ["message"] },
+      userId: { type: "string", nullable: true },
+      username: { type: "string" },
+      preview: { type: "string" },
+      dateTime: { type: "integer", format: "int64", description: "Epoch ms." },
+    },
+    required: ["type", "userId", "username", "preview", "dateTime"],
+  },
   ChatPrivateRoom: {
     type: "object",
     properties: {
@@ -7991,11 +8035,109 @@ export const openApiSchemas = {
         description: "Epoch ms.",
       },
       lastMessage: { type: "object", nullable: true },
+      unreadCountByUser: {
+        type: "object",
+        additionalProperties: { type: "integer" },
+        description: "Raw per-participant unread map (internal/back-compat).",
+      },
+      unreadMessageCount: {
+        type: "integer",
+        description:
+          "Caller's own unread count, resolved from unreadCountByUser (community-style single int).",
+      },
+      lastActivityAt: {
+        type: "integer",
+        format: "int64",
+        description:
+          "Epoch ms mirror of lastMessageAt (community-style: always a number).",
+      },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      peer: { $ref: "#/components/schemas/ChatPrivateRoomPeer" },
+      isMuted: { type: "boolean" },
       pinnedCount: { type: "integer" },
       createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
       updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
-    required: ["id", "roomId", "participants", "createdAt", "updatedAt"],
+    required: [
+      "id",
+      "roomId",
+      "participants",
+      "peer",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ChatPrivateConversationListItem: {
+    type: "object",
+    description:
+      "GET /chat/private/conversations list item — lean, community-list-style shape. The peer's fields " +
+      "are flattened directly onto the item (no nested `peer` object). Internal per-user maps and " +
+      "redundant raw fields (lastMessage, lastMessageAt, id, createdAt/updatedAt, pinnedCount) are not " +
+      "included.",
+    properties: {
+      roomId: { type: "string" },
+      participants: {
+        type: "array",
+        items: { type: "string" },
+      },
+      peerId: { type: "string" },
+      displayName: { type: "string" },
+      memberId: { type: "string" },
+      avatar: { $ref: "#/components/schemas/ChatPrivateRoomPeerAvatar" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned download URL (mirrors community's `avatarUrl`).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isDeletedUser: { type: "boolean" },
+      isOnline: { type: "boolean" },
+      unreadMessageCount: {
+        type: "integer",
+        description:
+          "Caller's own unread count, resolved from unreadCountByUser (community-style single int).",
+      },
+      lastActivityAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms — never an ISO string.",
+      },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      isMuted: { type: "boolean" },
+    },
+    required: [
+      "roomId",
+      "participants",
+      "peerId",
+      "displayName",
+      "memberId",
+      "avatar",
+      "isDeletedUser",
+      "isOnline",
+      "unreadMessageCount",
+      "lastActivityAt",
+      "lastActivity",
+      "isMuted",
+    ],
+  },
+  ChatPrivateConversationListData: {
+    type: "object",
+    description:
+      "Response envelope for GET /chat/private/conversations — same {pagination,data} shape as " +
+      "MyCommunitiesResponseData (no top-level hasMore/nextCursor duplicates — only nested under `pagination`).",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatPrivateConversationListItem" },
+      },
+    },
+    required: ["pagination", "data"],
   },
   ChatPrivateRoomList: {
     type: "array",
