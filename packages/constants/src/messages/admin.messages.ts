@@ -41,6 +41,10 @@ export const ADMIN_MESSAGES = {
     vi: "Tài khoản quản trị không hoạt động",
     en: "Your account has been disabled. Please contact the super administrator.",
   },
+  ADMIN_ACCOUNT_DELETED: {
+    vi: "Tài khoản quản trị này không còn tồn tại",
+    en: "Your account is no longer available.",
+  },
   ADMIN_FORBIDDEN: {
     vi: "Bạn không có quyền thực hiện thao tác này",
     en: "You do not have permission to perform this action.",

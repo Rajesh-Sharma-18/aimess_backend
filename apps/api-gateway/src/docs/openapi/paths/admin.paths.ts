@@ -492,7 +492,9 @@ export const adminPaths = {
           "Wrong current password / same as current / policy failure / confirmation mismatch"
         ),
         "401": errRes("Missing, invalid, or expired admin token"),
-        "403": errRes("Admin account not active"),
+        "403": errRes(
+          "Admin account disabled (ADMIN_ACCOUNT_NOT_ACTIVE) or deleted (ADMIN_ACCOUNT_DELETED)"
+        ),
         "404": errRes("Admin account not found"),
       },
       "x-implementation-status": "implemented",

@@ -13,6 +13,7 @@ import {
   parseExpiresInSeconds,
   signAdminAccessToken,
 } from "../lib/admin-jwt.js";
+import { assertAdminAccountAccessible } from "../lib/admin-status-guard.js";
 import {
   markAdminSessionActive,
   markAdminSessionRevoked,
@@ -371,9 +372,7 @@ export const adminAuthService = {
     if (!admin) {
       throw new NotFoundError("ADMIN_NOT_FOUND");
     }
-    if (admin.status !== "ACTIVE") {
-      throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
-    }
+    assertAdminAccountAccessible(admin);
 
     const ok = await verifyPassword(input.currentPassword, admin.passwordHash);
     if (!ok) {

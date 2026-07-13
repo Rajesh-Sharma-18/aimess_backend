@@ -296,7 +296,33 @@ describe("PATCH /v1/change-password", () => {
       .set(bearer(makeAdminAccessToken()))
       .send(goodBody);
     expect(res.status).toBe(403);
+    expect(res.body.message).toBe(
+      "Your account has been disabled. Please contact the super administrator."
+    );
     expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 with a distinct message when the admin account is deleted", async () => {
+    configureActiveAdmin(findById, { status: "DELETED" });
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe("Your account is no longer available.");
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 with a distinct message when the admin is deleted in the service", async () => {
+    svc.changePassword.mockRejectedValueOnce(
+      new ForbiddenError("ADMIN_ACCOUNT_DELETED")
+    );
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe("Your account is no longer available.");
   });
 
   it("returns 404 when the admin record no longer exists at the auth gate", async () => {

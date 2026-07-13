@@ -19,6 +19,10 @@ enum AdminStatus {
   ACTIVE
   DISABLED
   INVITED
+  // Soft-delete: the row is kept (audit trail, FK integrity) but the account
+  // is permanently gone. Distinct from DISABLED so auth flows can tell
+  // "temporarily deactivated" apart from "no longer exists".
+  DELETED
 }
 
 enum AdminOtpPurpose {
