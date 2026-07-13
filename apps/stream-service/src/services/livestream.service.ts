@@ -490,23 +490,19 @@ export class LivestreamService {
   /**
    * SRS on_unpublish hook: the publisher dropped.
    *
-   * LIVE → RECONNECTING: don't declare the stream over yet. SRS can't tell a
-   * deliberate stop from a page refresh or a mobile-data blip — both fire this
-   * identical webhook — so a LIVE stream is given a grace window
-   * (`STREAM_RECONNECT_GRACE_MS`) to republish on the same streamKey before
-   * being finalized. See {@link handlePublish} for the resume path and
-   * {@link sweepStaleReconnectingStreams} for the grace-expiry finalize path.
+   * LIVE → RECONNECTING: gives the publisher a short grace window
+   * (`STREAM_RECONNECT_GRACE_MS`) to come back before the stream is finalized.
+   * Handles legitimate blips (mobile signal drop, browser refresh) without
+   * ending the stream. The sweeper finalizes any RECONNECTING stream whose
+   * grace window expires without a republish.
    *
-   * RECONNECTING/ENDED/CANCELLED → no-op: idempotent against a duplicate or
-   * retried on_unpublish. Critically, a second unpublish while already
-   * RECONNECTING must NOT reset `disconnectedAt` — a flapping connection that
-   * keeps failing to fully republish must not indefinitely extend its own
-   * grace window.
+   * NOTE: heartbeats are intentionally ignored while RECONNECTING (see
+   * {@link recordHeartbeat}) so a still-open companion app cannot keep
+   * `lastHeartbeatAt` fresh and prevent the heartbeat sweeper from acting as
+   * a backstop if the reconnect sweep misses a stale stream.
    *
-   * Anything else (PENDING — an unpublish with no preceding on_publish, e.g. a
-   * malformed/out-of-order webhook) has no live session to preserve — ends
-   * outright via {@link finalizeAsEnded}, matching this hook's original
-   * unconditional-end behavior for that edge case.
+   * RECONNECTING/ENDED/CANCELLED → no-op (idempotent against duplicate hooks).
+   * PENDING → finalized outright (unpublish with no preceding publish = bad state).
    */
   async handleUnpublish(streamKey: string): Promise<void> {
     const stream = await this.streamRepo.findByStreamKey(streamKey);
@@ -902,7 +898,7 @@ export class LivestreamService {
     if (stream.creatorId !== requesterId) {
       throw new ForbiddenError("STREAM_NOT_OWNER");
     }
-    if (stream.status !== "LIVE" && stream.status !== "RECONNECTING") {
+    if (stream.status !== "LIVE") {
       throw new BadRequestError("STREAM_NOT_LIVE");
     }
     await this.streamRepo.updateById(id, { lastHeartbeatAt: new Date() });
