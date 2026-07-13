@@ -7,6 +7,10 @@ import { connectAuthRedis, redis } from "./config/redis.js";
 import { startProfileUpdatedConsumer } from "./messaging/profile-updated-consumer.js";
 import { startAdminUserConsumer } from "./messaging/admin-user-consumer.js";
 import { startGrpcServer } from "./grpc/server.js";
+import {
+  startQrLinkExpirySweeper,
+  stopQrLinkExpirySweeper,
+} from "./jobs/qr-link-expiry-sweeper.js";
 import { logger } from "@aimess/logger";
 import type * as grpc from "@grpc/grpc-js";
 
@@ -77,6 +81,8 @@ const startServer = async () => {
 
     // Admin-dashboard aggregation gRPC server (read-only user/active counts).
     grpcServer = startGrpcServer(env.AUTH_GRPC_PORT);
+
+    startQrLinkExpirySweeper();
   } catch (error) {
     logger.error("Auth service startup failed");
     logger.error(error);
@@ -86,6 +92,8 @@ const startServer = async () => {
 
 async function shutdown(signal: string): Promise<void> {
   logger.info(`Auth service shutting down (${signal})…`);
+
+  stopQrLinkExpirySweeper();
 
   await new Promise<void>((resolve) => {
     if (!httpServer) {

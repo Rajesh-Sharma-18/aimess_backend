@@ -4,6 +4,8 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import { logger } from "@aimess/logger";
 import { getCorsAllowedOrigins } from "../config/env.js";
 import { createGatewayRedisClients } from "./redis.js";
+import { registerAuthNamespace } from "./namespaces/auth.ns.js";
+import { registerSessionRevokeListener } from "./session-revoke.js";
 import { registerChatNamespace } from "./namespaces/chat.ns.js";
 import { registerCommunityNamespace } from "./namespaces/community.ns.js";
 import { registerNotifyNamespace } from "./namespaces/notify.ns.js";
@@ -47,11 +49,15 @@ export async function setupSockets(
   const { sub: communitySub } = createGatewayRedisClients();
   const { sub: notifySub } = createGatewayRedisClients();
   const { sub: streamSub } = createGatewayRedisClients();
+  const { sub: authSub } = createGatewayRedisClients();
+  const { sub: sessionRevokeSub } = createGatewayRedisClients();
   await Promise.all([
     chatSub.connect(),
     communitySub.connect(),
     notifySub.connect(),
     streamSub.connect(),
+    authSub.connect(),
+    sessionRevokeSub.connect(),
   ]);
 
   const communityClient = createCommunityClient();
@@ -77,6 +83,8 @@ export async function setupSockets(
   );
   registerNotifyNamespace(io, notificationClient, notifySub);
   registerStreamNamespace(io, streamClient, streamSub, pub, mediaClient);
+  registerAuthNamespace(io, authSub);
+  registerSessionRevokeListener(io, sessionRevokeSub);
 
   io.engine.on(
     "connection_error",
@@ -88,6 +96,6 @@ export async function setupSockets(
   );
 
   logger.info(
-    "Socket.IO namespaces registered: /chat, /community, /notify, /stream"
+    "Socket.IO namespaces registered: /chat, /community, /notify, /stream, /auth"
   );
 }

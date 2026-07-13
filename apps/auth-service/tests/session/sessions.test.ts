@@ -11,13 +11,22 @@ jest.mock("../../src/repositories/session.repository.js", () => ({
     findActiveForUser: jest.fn(),
     revokeForUser: jest.fn(),
     revokeOthersForUser: jest.fn(),
+    getDeviceId: jest.fn(async () => "dev-1"),
   },
+}));
+jest.mock("../../src/services/audit.service.js", () => ({
+  recordAuditEventSafe: jest.fn(),
+}));
+jest.mock("@aimess/redis", () => ({
+  publishSessionRevokedEvent: jest.fn(async () => 0),
 }));
 
 import request from "supertest";
 
 import app from "../../src/app.js";
 import { sessionRepository } from "../../src/repositories/session.repository.js";
+import { recordAuditEventSafe } from "../../src/services/audit.service.js";
+import { publishSessionRevokedEvent } from "@aimess/redis";
 import {
   bearer,
   makeAccessToken,
@@ -27,6 +36,8 @@ import {
 } from "../helpers/auth.js";
 
 const repo = sessionRepository as unknown as Record<string, jest.Mock>;
+const audit = recordAuditEventSafe as unknown as jest.Mock;
+const publishRevoked = publishSessionRevokedEvent as unknown as jest.Mock;
 
 const OTHER_SESSION_ID = "33333333-3333-4333-8333-333333333333";
 
@@ -110,6 +121,22 @@ describe("DELETE /api/auth/sessions/:sessionId", () => {
       TEST_USER_ID,
       OTHER_SESSION_ID,
       expect.anything()
+    );
+    // Phase 12 (Logout Device) must audit "LINKED_DEVICE_REVOKED".
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "LINKED_DEVICE_REVOKED",
+        targetType: "linked_device",
+        targetId: OTHER_SESSION_ID,
+        userId: TEST_USER_ID,
+      })
+    );
+    // Spec #7: a live socket for this session must be force-disconnected, not
+    // just left to expire naturally.
+    expect(publishRevoked).toHaveBeenCalledWith(
+      expect.anything(),
+      TEST_USER_ID,
+      OTHER_SESSION_ID
     );
   });
 

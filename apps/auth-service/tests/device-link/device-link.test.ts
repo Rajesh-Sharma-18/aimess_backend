@@ -2,7 +2,10 @@
  * Device-link (QR) flow:
  *   POST /api/auth/devices/link/initiate  (no auth) → creates a link session
  *   GET  /api/auth/devices/link/status    (no auth) → polls state + collects tokens
+ *   GET  /api/auth/devices/link/:linkToken(auth)    → preview pending QR details
+ *   POST /api/auth/devices/link/scan      (auth)    → scanner marks PENDING → SCANNED
  *   POST /api/auth/devices/link/approve   (auth)    → approver authorizes the device
+ *   POST /api/auth/devices/link/reject    (auth)    → scanner declines the login
  * The Redis-backed device-link store + token issuance are mocked; real Zod
  * validation (body + query) runs at the route boundary.
  */
@@ -11,6 +14,8 @@ jest.mock("../../src/lib/device-link-store.js", () => ({
   getLinkSession: jest.fn(),
   consumeTokensAtomic: jest.fn(),
   approveLinkSessionAtomic: jest.fn(),
+  scanLinkSessionAtomic: jest.fn(),
+  rejectLinkSessionAtomic: jest.fn(),
 }));
 jest.mock("../../src/lib/token.js", () => ({
   issueAuthTokens: jest.fn(),
@@ -23,6 +28,11 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
     findRoleByUserId: jest.fn(async () => ({ role: "USER" })),
   },
 }));
+// Audit persistence is exercised separately (audit.service.test.ts); no-op it
+// here so a Postgres-less test run never logs the internal try/catch warning.
+jest.mock("../../src/services/audit.service.js", () => ({
+  recordAuditEventSafe: jest.fn(),
+}));
 
 import request from "supertest";
 
@@ -32,15 +42,21 @@ import {
   consumeTokensAtomic,
   createLinkSession,
   getLinkSession,
+  rejectLinkSessionAtomic,
+  scanLinkSessionAtomic,
 } from "../../src/lib/device-link-store.js";
 import { issueAuthTokens } from "../../src/lib/token.js";
+import { recordAuditEventSafe } from "../../src/services/audit.service.js";
 import { bearer, makeAccessToken } from "../helpers/auth.js";
 
 const create = createLinkSession as unknown as jest.Mock;
 const getSession = getLinkSession as unknown as jest.Mock;
 const consume = consumeTokensAtomic as unknown as jest.Mock;
 const approve = approveLinkSessionAtomic as unknown as jest.Mock;
+const scan = scanLinkSessionAtomic as unknown as jest.Mock;
+const reject = rejectLinkSessionAtomic as unknown as jest.Mock;
 const issue = issueAuthTokens as unknown as jest.Mock;
+const audit = recordAuditEventSafe as unknown as jest.Mock;
 
 const TOKENS = {
   accessToken: "access.jwt.token",
@@ -67,6 +83,13 @@ describe("POST /api/auth/devices/link/initiate", () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data.linkToken).toBe("link-token-123");
     expect(res.body.data.pollSecret).toBe("poll-secret-123");
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "QR_CREATED",
+        targetType: "qr_login_session",
+        targetId: "link-token-123",
+      })
+    );
   });
 
   it("accepts an empty body (all device fields optional) → 201", async () => {
@@ -149,6 +172,20 @@ describe("GET /api/auth/devices/link/status", () => {
     expect(res.body.data.tokens).toBeNull();
   });
 
+  it("returns USED (not the old CONSUMED name) for an already-collected session", async () => {
+    getSession.mockResolvedValue({
+      pollSecretHash: "hash:poll-secret-123",
+      state: "USED",
+    });
+
+    const res = await request(app)
+      .get("/api/auth/devices/link/status")
+      .query({ linkToken: "link-token-123", pollSecret: "poll-secret-123" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.state).toBe("USED");
+  });
+
   it.each([
     ["missing pollSecret", { linkToken: "link-token-123" }],
     ["missing linkToken", { pollSecret: "poll-secret-123" }],
@@ -185,6 +222,18 @@ describe("POST /api/auth/devices/link/approve", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.sessionId).toBe("new-sess-1");
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "QR_APPROVED",
+        targetId: "link-token-123",
+      })
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "BROWSER_LOGGED_IN",
+        targetId: "link-token-123",
+      })
+    );
   });
 
   it("returns 404 when the link session is unknown", async () => {
@@ -244,5 +293,213 @@ describe("POST /api/auth/devices/link/approve", () => {
       .send(body);
 
     expect(res.status).toBe(400);
+  });
+
+  it("returns 409 when approving a QR that hasn't been scanned yet", async () => {
+    approve.mockResolvedValue("NOT_SCANNED");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/approve")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 403 when a different user tries to approve a scanned QR", async () => {
+    approve.mockResolvedValue("WRONG_USER");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/approve")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 404 when the QR expired between scan and approve", async () => {
+    approve.mockResolvedValue("EXPIRED");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/approve")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/auth/devices/link/scan", () => {
+  beforeEach(() => {
+    getSession.mockResolvedValue({
+      device: {
+        deviceType: "IOS",
+        deviceName: "iPad",
+        os: "17",
+        appVersion: "1.0.0",
+      },
+    });
+    scan.mockResolvedValue("OK");
+  });
+
+  it("scans a pending link → 200 with scannedAt + device info", async () => {
+    const res = await request(app)
+      .post("/api/auth/devices/link/scan")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.device.deviceName).toBe("iPad");
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "QR_SCANNED",
+        targetId: "link-token-123",
+      })
+    );
+  });
+
+  it("returns 404 when the link session is unknown", async () => {
+    getSession.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/scan")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "ghost" });
+
+    expect(res.status).toBe(404);
+    expect(scan).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when the link was already scanned", async () => {
+    scan.mockResolvedValue("ALREADY");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/scan")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 401 without a token", async () => {
+    const res = await request(app)
+      .post("/api/auth/devices/link/scan")
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 when scanning an expired QR", async () => {
+    scan.mockResolvedValue("EXPIRED");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/scan")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/auth/devices/link/reject", () => {
+  it("rejects a scanned link → 200", async () => {
+    reject.mockResolvedValue("OK");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/reject")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(200);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "QR_REJECTED",
+        targetId: "link-token-123",
+      })
+    );
+  });
+
+  it("returns 404 when the link session is unknown", async () => {
+    reject.mockResolvedValue("NOT_FOUND");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/reject")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "ghost" });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 409 when the QR hasn't been scanned yet", async () => {
+    reject.mockResolvedValue("NOT_SCANNED");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/reject")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 403 when a different user tries to reject", async () => {
+    reject.mockResolvedValue("WRONG_USER");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/reject")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 404 when rejecting an expired QR", async () => {
+    reject.mockResolvedValue("EXPIRED");
+
+    const res = await request(app)
+      .post("/api/auth/devices/link/reject")
+      .set(bearer(makeAccessToken()))
+      .send({ linkToken: "link-token-123" });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/auth/devices/link/:linkToken", () => {
+  it("returns the pending QR's safe device details", async () => {
+    getSession.mockResolvedValue({
+      state: "PENDING",
+      device: {
+        deviceType: "IOS",
+        deviceName: "iPad",
+        os: "17",
+        appVersion: "1.0.0",
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2026-01-01T00:02:00.000Z",
+    });
+
+    const res = await request(app)
+      .get("/api/auth/devices/link/link-token-123")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.state).toBe("PENDING");
+    expect(res.body.data.device.deviceName).toBe("iPad");
+  });
+
+  it("returns 404 when the link session is unknown", async () => {
+    getSession.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get("/api/auth/devices/link/ghost")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 401 without a token", async () => {
+    const res = await request(app).get("/api/auth/devices/link/link-token-123");
+
+    expect(res.status).toBe(401);
   });
 });

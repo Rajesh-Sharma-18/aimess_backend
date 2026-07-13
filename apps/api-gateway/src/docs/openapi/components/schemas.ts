@@ -4815,9 +4815,9 @@ export const openApiSchemas = {
     properties: {
       state: {
         type: "string",
-        enum: ["PENDING", "APPROVED", "CONSUMED", "EXPIRED"],
+        enum: ["PENDING", "APPROVED", "USED", "EXPIRED"],
         description:
-          "PENDING = waiting for the signed-in device to scan and approve; APPROVED = approved, tokens returned exactly once; CONSUMED = tokens already delivered (poll again returns this); EXPIRED = 120 s TTL elapsed, call initiate again.",
+          "PENDING = waiting for the signed-in device to scan and approve; APPROVED = approved, tokens returned exactly once; USED = tokens already delivered (poll again returns this) — this endpoint also reports USED while the session is actually SCANNED (awaiting approval), since polling predates the SCANNED state; prefer the /auth socket namespace or GET /devices/link/{linkToken} to observe SCANNED accurately; EXPIRED = 60 s TTL elapsed (or an unknown linkToken / wrong pollSecret), call initiate again.",
       },
       approvedDeviceLabel: { type: "string", nullable: true },
       tokens: {

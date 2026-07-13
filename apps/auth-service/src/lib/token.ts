@@ -6,6 +6,7 @@ import { env } from "../config/env.js";
 import { markSessionActive } from "./session-active-cache.js";
 import type { SessionContext } from "./session-context.js";
 import { authRepository } from "../repositories/auth.repository.js";
+import { recordAuditEventSafe } from "../services/audit.service.js";
 
 export type AuthTokens = {
   accessToken: string;
@@ -74,6 +75,19 @@ export async function issueAuthTokens(
   });
 
   await markSessionActive(createdSession.id);
+
+  // Single funnel: every new device/session — normal login AND QR device-link
+  // approval both call issueAuthTokens — lands here, so "Linked Device Created"
+  // is audited exactly once per call site instead of duplicated at each caller.
+  recordAuditEventSafe({
+    event: "LINKED_DEVICE_CREATED",
+    targetType: "linked_device",
+    targetId: createdSession.id,
+    userId,
+    metadata: { deviceId: session.deviceId, deviceType: session.deviceType },
+    ip: session.ipAddress,
+    userAgent: session.userAgent,
+  });
 
   return {
     tokens: {

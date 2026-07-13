@@ -55,6 +55,25 @@ const envSchema = z.object({
   /** Proxy hops to trust for rate limiting IP detection (0 = no proxy, 1+ = trust X-Forwarded-For). */
   TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(0),
 
+  /** QR device-link session lifetime (seconds) — spec: 60s. */
+  QR_LINK_TTL_SECONDS: z.coerce.number().int().positive().default(60),
+  /**
+   * Extra seconds the Redis key survives PAST `expiresAt` so the expiry
+   * sweeper (which ticks every QR_LINK_SWEEPER_INTERVAL_MS) has a window to
+   * observe + atomically mark a still-PENDING/SCANNED session EXPIRED before
+   * Redis's own TTL garbage-collects the key out from under it.
+   */
+  QR_LINK_SWEEP_GRACE_SECONDS: z.coerce.number().int().positive().default(30),
+  QR_LINK_SWEEPER_ENABLED: z
+    .string()
+    .default("true")
+    .transform((v) => v !== "false"),
+  QR_LINK_SWEEPER_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30_000),
+
   /**
    * Google OAuth 2.0 client IDs (Google Cloud Console → Credentials), one per
    * mobile platform. Both are passed to `google-auth-library` as the accepted

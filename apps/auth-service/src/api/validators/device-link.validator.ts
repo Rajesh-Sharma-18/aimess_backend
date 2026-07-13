@@ -24,3 +24,21 @@ export const approveDeviceLinkSchema = z.object({
 });
 
 export type ApproveDeviceLinkInput = z.infer<typeof approveDeviceLinkSchema>;
+
+export const scanDeviceLinkSchema = z.object({
+  linkToken: z.string().trim().min(1, "Link token is required"),
+});
+
+export type ScanDeviceLinkInput = z.infer<typeof scanDeviceLinkSchema>;
+
+export const rejectDeviceLinkSchema = z.object({
+  linkToken: z.string().trim().min(1, "Link token is required"),
+});
+
+export type RejectDeviceLinkInput = z.infer<typeof rejectDeviceLinkSchema>;
+
+export const linkTokenParamsSchema = z.object({
+  linkToken: z.string().trim().min(1, "Link token is required"),
+});
+
+export type LinkTokenParams = z.infer<typeof linkTokenParamsSchema>;
