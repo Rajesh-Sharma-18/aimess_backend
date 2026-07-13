@@ -395,6 +395,7 @@ export class ChatMessageOrchestrator {
         type: conversationType,
         roomId: params.roomId,
         senderId: params.senderId,
+        senderName: senderName || "",
         lastMessageId: msg.id,
         lastMessageAt: serverTs,
         preview: {

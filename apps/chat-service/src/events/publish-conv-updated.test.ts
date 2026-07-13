@@ -136,6 +136,27 @@ describe("publishConvUpdated", () => {
     assert.equal(otherMsg.event, "conv:updated");
   });
 
+  it("carries senderName so the gateway can personalize 'You:' (parity with community:updated)", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishConvUpdated({
+      redis,
+      type: "PRIVATE",
+      roomId: "room-name",
+      recipientIds: ["sender", "other"],
+      senderId: "sender",
+      senderName: "Bob",
+      lastMessageId: "msg-1",
+      lastMessageAt: 1,
+      preview: basePreview,
+    });
+
+    for (const call of publishCalls) {
+      const msg = JSON.parse(call.payload);
+      assert.equal(msg.data.senderName, "Bob");
+    }
+  });
+
   it("de-dupes duplicate recipient ids to a single publish", async () => {
     const { redis, publishCalls } = makeFakeRedis();
 

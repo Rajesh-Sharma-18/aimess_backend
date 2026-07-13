@@ -41,6 +41,11 @@ interface PublishConvUpdatedParams {
   roomId: string;
   recipientIds: string[];
   senderId: string;
+  /** Sender's live display name — mirrors `publishCommunityUpdated`'s
+   *  `senderName` so the gateway's "You:"-personalization (which requires both
+   *  senderId AND senderName) fires for `conv:updated` too. Optional/"" for
+   *  call sites (delete-recalc) that don't have it in hand. */
+  senderName?: string;
   lastMessageId: string;
   /** epoch ms */
   lastMessageAt: number;
@@ -97,6 +102,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       roomId: p.roomId,
       recipientIds,
       senderId: p.senderId,
+      senderName: p.senderName,
       lastMessageId: p.lastMessageId,
       lastMessageAt: p.lastMessageAt,
       preview: p.preview,
@@ -138,6 +144,10 @@ export async function publishConvUpdated(
           : (override?.lastMessageAt ?? p.lastMessageAt);
       const senderId =
         override === undefined ? p.senderId : (override?.senderId ?? "");
+      const senderName =
+        override === undefined
+          ? (p.senderName ?? "")
+          : (override?.senderName ?? "");
       // An override is a delete-recalc preview, never a NEW message — it must
       // never raise an unread badge (a null override has senderId "" which would
       // otherwise compute unread:true and show a phantom badge on an empty row).
@@ -153,6 +163,7 @@ export async function publishConvUpdated(
             lastMessage,
             lastMessageAt,
             senderId,
+            senderName,
             unread,
           },
         })

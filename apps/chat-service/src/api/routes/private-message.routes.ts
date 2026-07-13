@@ -20,6 +20,7 @@ import {
   messageTimelineQuerySchema,
   messageSearchQuerySchema,
   mediaListQuerySchema,
+  privateConversationListQuerySchema,
 } from "../validators/query.validator.js";
 import type { PrivateRoomController } from "../controllers/private-room.controller.js";
 import type { PrivateMessageController } from "../controllers/private-message.controller.js";
@@ -39,7 +40,12 @@ export function createPrivateMessageRoutes(
   const router = Router();
 
   // Conversation list
-  router.get("/conversations", authenticate, roomCtrl.getConversationList);
+  router.get(
+    "/conversations",
+    authenticate,
+    validateQuery(privateConversationListQuerySchema),
+    roomCtrl.getConversationList
+  );
 
   // Peer presence (online/offline + last seen)
   router.get("/presence/:userId", authenticate, presenceCtrl.getPresence);
