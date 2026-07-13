@@ -220,7 +220,7 @@ export const openApiSchemas = {
       "Successful admin login / token refresh — standard `{ success, message, data }` envelope with the JWT pair and the authenticated admin profile.",
     properties: {
       success: { type: "boolean", example: true },
-      message: { type: "string", example: "Login successful" },
+      message: { type: "string", example: "Login successful." },
       data: {
         type: "object",
         properties: {

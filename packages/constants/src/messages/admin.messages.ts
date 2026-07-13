@@ -13,7 +13,7 @@ export const ADMIN_MESSAGES = {
   // ── Success ──────────────────────────────────────────────────────────────
   ADMIN_LOGIN_SUCCESS: {
     vi: "Đăng nhập thành công",
-    en: "Signed in successfully.",
+    en: "Login successful.",
   },
   ADMIN_TOKEN_REFRESHED: {
     vi: "Làm mới phiên đăng nhập thành công",
@@ -37,6 +37,13 @@ export const ADMIN_MESSAGES = {
   },
 
   // ── Auth / RBAC / routing guards ──────────────────────────────────────────
+  // Admin login is email-only, unlike the shared AUTH_INVALID_CREDENTIALS key
+  // (used by the regular-user flow, which also accepts a username) — this key
+  // gives the admin panel its own accurate wording without touching that one.
+  ADMIN_INVALID_CREDENTIALS: {
+    vi: "Email hoặc mật khẩu không đúng",
+    en: "Invalid email or password.",
+  },
   ADMIN_ACCOUNT_NOT_ACTIVE: {
     vi: "Tài khoản quản trị không hoạt động",
     en: "Your account has been disabled. Please contact the super administrator.",

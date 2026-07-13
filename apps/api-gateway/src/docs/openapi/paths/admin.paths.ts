@@ -309,7 +309,10 @@ export const adminPaths = {
           "#/components/schemas/AdminTokenResponse"
         ),
         "400": errRes("Validation failed"),
-        "401": errRes("Invalid credentials"),
+        "401": errRes("Invalid email or password (ADMIN_INVALID_CREDENTIALS)"),
+        "403": errRes(
+          "Admin account disabled (ADMIN_ACCOUNT_NOT_ACTIVE) or deleted (ADMIN_ACCOUNT_DELETED)"
+        ),
         "429": errRes("Too many login attempts"),
       },
       "x-implementation-status": "implemented",
