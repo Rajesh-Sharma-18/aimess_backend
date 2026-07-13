@@ -181,6 +181,108 @@ describe("POST /api/chat/private/rooms/:peerId (get-or-create)", () => {
   });
 });
 
+describe("GET /api/chat/private/rooms/:peerId (room details)", () => {
+  it("POSITIVE: returns community-aligned room details with isOffline derived from presence", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue({
+      roomId: "prv_1",
+      participants: [TEST_USER_ID, "peer-1"],
+      mutedBy: {},
+      unreadCountByUser: { [TEST_USER_ID]: 2 },
+      lastMessage: null,
+      lastMessageAt: new Date(1000),
+      createdAt: new Date(500),
+      updatedAt: new Date(1500),
+    });
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([
+        [
+          "peer-1",
+          {
+            displayName: "Peer One",
+            memberId: "peer1",
+            isDeletedUser: false,
+            isOnline: true,
+          },
+        ],
+      ])
+    );
+
+    const res = await request(app)
+      .get("/api/chat/private/rooms/peer-1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.id).toBe("prv_1");
+    expect(res.body.data.roomId).toBe("prv_1");
+    expect(res.body.data.peerId).toBe("peer-1");
+    expect(res.body.data.user).toMatchObject({
+      id: "peer-1",
+      displayName: "Peer One",
+      memberId: "peer1",
+      isDeletedUser: false,
+    });
+    expect(res.body.data.avatar).toBeDefined();
+    expect(res.body.data.isOnline).toBe(true);
+    expect(res.body.data.isOffline).toBe(false);
+    expect(res.body.data.isMuted).toBe(false);
+    expect(res.body.data.muteUntil).toBeNull();
+    expect(res.body.data.unreadMessageCount).toBe(2);
+    expect(typeof res.body.data.createdAt).toBe("number");
+    expect(typeof res.body.data.updatedAt).toBe("number");
+  });
+
+  it("POSITIVE: isOffline is true when the peer is offline", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue({
+      roomId: "prv_1",
+      participants: [TEST_USER_ID, "peer-1"],
+      mutedBy: {},
+      unreadCountByUser: {},
+      lastMessage: null,
+      lastMessageAt: new Date(1000),
+      createdAt: new Date(500),
+      updatedAt: new Date(1500),
+    });
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([
+        [
+          "peer-1",
+          {
+            displayName: "Peer One",
+            memberId: "peer1",
+            isDeletedUser: false,
+            isOnline: false,
+          },
+        ],
+      ])
+    );
+
+    const res = await request(app)
+      .get("/api/chat/private/rooms/peer-1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isOnline).toBe(false);
+    expect(res.body.data.isOffline).toBe(true);
+  });
+
+  it("NEGATIVE/SECURITY: 403 when the two users are not friends and no room exists yet", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
+    mocks.userServiceClient.checkFriendship.mockResolvedValue(false);
+
+    const res = await request(app)
+      .get("/api/chat/private/rooms/peer-1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(403);
+  });
+
+  it("SECURITY: 401 without a token", async () => {
+    const res = await request(app).get("/api/chat/private/rooms/peer-1");
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("DELETE /api/chat/private/rooms/:roomId (delete-for-me)", () => {
   it("POSITIVE: soft-deletes the room for the caller", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue({

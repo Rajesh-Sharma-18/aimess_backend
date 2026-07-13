@@ -130,6 +130,39 @@ function toConversationListItem(
   };
 }
 
+/**
+ * `GET /chat/private/rooms/{peerId}` wire shape — aligned with community's
+ * `CommunityData` (`id`/`avatar`/`isMuted`/`muteUntil`/`createdAt`/`updatedAt`
+ * use the same field names) plus the private-chat-specific `user`/presence
+ * fields. Timestamps are epoch ms (private-chat convention), not the ISO
+ * strings community uses.
+ */
+export interface PrivateRoomDetailsData {
+  id: string;
+  roomId: string;
+  participants: string[];
+  peerId: string;
+  user: {
+    id: string;
+    displayName: string;
+    memberId: string;
+    isDeletedUser: boolean;
+  };
+  avatar: MediaObject;
+  avatarUrl: string | null;
+  avatarUrlExpiresIn: number | null;
+  isOnline: boolean;
+  /** True when the peer is offline — negation of isOnline, from the existing presence pipeline. */
+  isOffline: boolean;
+  isMuted: boolean;
+  muteUntil: number | null;
+  unreadMessageCount: number;
+  lastActivityAt: number;
+  lastActivity: PrivateConversationLastActivity;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** Response envelope for `listMine` — identical {pagination,data} shape as community's `listMine` (no top-level duplicate hasMore/nextCursor). */
 export interface ConversationListPage {
   pagination: {
@@ -194,6 +227,53 @@ export class PrivateRoomService {
     this.redis.publish(`user:${peerId}`, convCreatedPayload).catch(() => {});
 
     return room;
+  }
+
+  /**
+   * `GET /chat/private/rooms/{peerId}` — room details, community-`getById`-aligned.
+   * Reuses `getOrCreateRoom` (get-or-create + friendship gate) and `enrichConversations`
+   * (peer snapshot, avatar, presence) rather than duplicating either.
+   */
+  async getRoomDetails(
+    userId: string,
+    peerId: string
+  ): Promise<PrivateRoomDetailsData> {
+    const room = await this.getOrCreateRoom(userId, peerId);
+    const [enriched] = await this.enrichConversations([room], userId);
+
+    const mutedBy = (room.mutedBy ?? {}) as Record<
+      string,
+      { muteUntil?: string | null }
+    >;
+    const myMute = mutedBy[userId];
+    const muteUntil = myMute?.muteUntil
+      ? new Date(myMute.muteUntil).getTime()
+      : null;
+
+    return {
+      id: enriched.roomId,
+      roomId: enriched.roomId,
+      participants: enriched.participants,
+      peerId: enriched.peerId,
+      user: {
+        id: enriched.peer.id,
+        displayName: enriched.peer.displayName,
+        memberId: enriched.peer.memberId,
+        isDeletedUser: enriched.peer.isDeletedUser,
+      },
+      avatar: enriched.peer.avatar,
+      avatarUrl: enriched.peer.avatarUrl,
+      avatarUrlExpiresIn: enriched.peer.avatarUrlExpiresIn,
+      isOnline: enriched.peer.isOnline,
+      isOffline: !enriched.peer.isOnline,
+      isMuted: enriched.isMuted,
+      muteUntil,
+      unreadMessageCount: enriched.unreadMessageCount,
+      lastActivityAt: enriched.lastActivityAt,
+      lastActivity: enriched.lastActivity,
+      createdAt: enriched.createdAt.getTime(),
+      updatedAt: enriched.updatedAt.getTime(),
+    };
   }
 
   async getConversationList(params: {

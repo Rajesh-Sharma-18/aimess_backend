@@ -7,6 +7,10 @@ export const CHAT_MESSAGES = {
     vi: "Lấy danh sách cuộc trò chuyện thành công",
     en: "Conversations fetched successfully",
   },
+  CHAT_ROOM_DETAILS_FETCHED: {
+    vi: "Lấy thông tin cuộc trò chuyện thành công",
+    en: "Private room details fetched successfully.",
+  },
   CHAT_INBOX_FETCHED: {
     vi: "Lấy danh sách hộp thư thành công",
     en: "Inbox fetched successfully",

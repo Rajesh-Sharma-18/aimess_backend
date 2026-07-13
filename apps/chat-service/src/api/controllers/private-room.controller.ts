@@ -15,6 +15,17 @@ export class PrivateRoomController {
     res.status(HTTP_STATUS.OK).json(new ApiResponse(room));
   });
 
+  getRoomDetails = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const peerId = req.params.peerId as string;
+    const details = await this.service.getRoomDetails(userId, peerId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(details, t("CHAT_ROOM_DETAILS_FETCHED", req.locale))
+      );
+  });
+
   // Cursor (before_ts/after_ts, epoch ms) pagination — same query-param
   // contract and exact-hasMore semantics as community's `GET /communities/mine`
   // (before_ts/after_ts/limit only; same limit bounds). Express 5's req.query

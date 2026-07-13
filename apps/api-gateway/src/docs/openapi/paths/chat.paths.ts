@@ -438,6 +438,31 @@ const chatInbox = {
 };
 
 const privateRoomByPeer = {
+  get: {
+    tags: ["Chat — Private"],
+    operationId: "getPrivateRoomDetails",
+    summary: "Get private room details",
+    description:
+      "Returns the private room details for the peer (get-or-create + friendship gate, same as the POST). " +
+      "Response shape mirrors `GET /communities/{id}` field-for-field wherever applicable " +
+      "(`id`, `avatar`, `isMuted`, `muteUntil`, `createdAt`, `updatedAt`), plus the private-chat-specific " +
+      "`user`/presence fields and `isOffline` (negation of the existing `isOnline` presence field).",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "peerId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+        description: "User ID of the peer.",
+      },
+    ],
+    responses: {
+      ...successResponse("Private room details", "ChatPrivateRoomDetails"),
+      "401": unauthorized,
+      "403": forbidden,
+    },
+  },
   post: {
     tags: ["Chat — Private"],
     operationId: "getOrCreatePrivateRoom",
