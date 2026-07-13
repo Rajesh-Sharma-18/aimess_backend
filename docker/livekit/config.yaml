@@ -8,10 +8,16 @@ rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 50100
-  # LAN IP the browser will actually reach us at (WebRTC ICE candidate).
-  # ponytail: hard-coded external IPs would break dev on other machines;
-  # LiveKit auto-detects when use_external_ip=true.
-  use_external_ip: true
+  # LOCAL DEV (Docker Desktop, same-machine two-tab testing):
+  # advertise 127.0.0.1 as the media (ICE) address. Docker publishes the UDP
+  # range + TCP 7881 to the host, so the host browser reaches media at
+  # localhost. use_external_ip:true would advertise the machine's PUBLIC IP,
+  # which two tabs on the same box usually can't reach → media never connects
+  # even though signaling does ("connected" but no video/audio).
+  # For real-device / LAN / prod testing, set use_external_ip:true (and remove
+  # node_ip) OR set node_ip to the host LAN IP.
+  use_external_ip: false
+  node_ip: 127.0.0.1
 
 redis:
   address: redis:6379
