@@ -545,7 +545,7 @@ export class MockLivestreamRepository implements LivestreamRepository {
 /**
  * Duration of a stream in seconds.
  *  - LIVE → (reference "now" passed via `now`) − startedAt.
- *  - ENDED/CANCELLED → endedAt − startedAt.
+ *  - ENDED → endedAt − startedAt.
  * Fixtures store `durationSeconds` directly so LIVE rows stay deterministic;
  * this is only invoked by `end()` once a real end timestamp exists.
  */
@@ -673,7 +673,7 @@ const STREAM_BUCKET = env.MINIO_BUCKET_STREAM;
 /** stream-service PENDING ⇄ admin-facing SCHEDULED. */
 function toAdminStatus(s: string): LivestreamStatus {
   if (s === "PENDING") return "SCHEDULED";
-  if (s === "LIVE" || s === "ENDED" || s === "CANCELLED" || s === "SCHEDULED") {
+  if (s === "LIVE" || s === "ENDED" || s === "SCHEDULED") {
     return s;
   }
   return s as LivestreamStatus;
@@ -696,6 +696,15 @@ function toStreamStatus(s: LivestreamStatus): string {
  * call, so it over-counts joins and never dedupes by user). Deliberately NOT
  * the stored `viewerCount` column (SRS on_play/on_stop rough counter, drifts
  * from reality).
+ * Shared viewerCount resolution for the admin list/detail responses.
+ * LIVE reports the live count (currently watching, from Redis — intentionally
+ * NOT the same number as the "who ever watched" viewer list). ENDED reports
+ * `uniqueViewerCount` — the distinct-user count from `LivestreamViewerSession`,
+ * the SAME source `/livestreams/:id/users` (AdminListViewerSessions) dedupes
+ * to, so the two endpoints always agree for an ended stream. Deliberately NOT
+ * `totalViews`: that column increments on every `checkAccess` call (each join
+ * attempt/reconnect), so it over-counts and is not deduped by user. All other
+ * status (SCHEDULED) keeps the raw stored `viewerCount`.
  */
 function resolveViewerCount(
   _status: LivestreamStatus,
@@ -1583,10 +1592,7 @@ export class GrpcLivestreamRepository implements LivestreamRepository {
       throw new ConflictError("LIVESTREAM_ALREADY_ENDED");
     }
     const res = await streamClient.adminForceEnd(id, input.reasonCode);
-    if (
-      !res.success &&
-      (res.status === "ENDED" || res.status === "CANCELLED")
-    ) {
+    if (!res.success && res.status === "ENDED") {
       throw new ConflictError("LIVESTREAM_ALREADY_ENDED");
     }
     return {

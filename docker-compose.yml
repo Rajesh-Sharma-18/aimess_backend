@@ -353,6 +353,46 @@ services:
       - aimess-network
 
   # ============================================================================
+  # LiveKit — self-hosted media SFU (+ embedded TURN) for 1-to-1 audio/video
+  # calls. Replaces the old Socket.IO WebRTC signaling + external STUN/TURN.
+  # See Docs/calls/CALLS-LIVEKIT.md.
+  #
+  # Ports:
+  #   7880/tcp  — signaling (WebSocket)
+  #   7881/tcp  — RTC/TCP fallback
+  #   50000-50100/udp — media (UDP), keep the range small for local dev
+  #
+  # Keys via LIVEKIT_KEYS env (format: "<apikey>: <secret>"). Redis reuses
+  # the shared aimess-redis service so we're multi-node-ready by default.
+  # ============================================================================
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: aimess-livekit
+    restart: unless-stopped
+
+    command: ["--config", "/etc/livekit/config.yaml"]
+
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+
+    ports:
+      - "${LIVEKIT_PORT:-7880}:7880"
+      - "${LIVEKIT_RTC_TCP_PORT:-7881}:7881"
+      - "50000-50100:50000-50100/udp"
+
+    volumes:
+      - ./docker/livekit/config.yaml:/etc/livekit/config.yaml:ro
+
+    depends_on:
+      - redis
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - aimess-network
+
+  # ============================================================================
   # stream-service (Node, HTTP 3007 / gRPC 4007) is NOT containerized here.
   # Like every other Node app (api-gateway, auth, user, community, chat, …) it
   # runs via `pnpm dev` (Turborepo) against this infra. docker-compose stays

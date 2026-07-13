@@ -10418,30 +10418,6 @@ export const openApiSchemas = {
     required: ["calls", "nextCursor", "hasMore"],
   },
 
-  // --- WebRTC ---
-  ChatIceServer: {
-    type: "object",
-    properties: {
-      urls: { type: "array", items: { type: "string" } },
-      username: { type: "string" },
-      credential: { type: "string" },
-      credentialType: { type: "string", enum: ["password", "oauth"] },
-    },
-    required: ["urls"],
-  },
-  ChatRtcConfiguration: {
-    type: "object",
-    properties: {
-      iceServers: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ChatIceServer" },
-      },
-      iceCandidatePoolSize: { type: "integer", example: 10 },
-      iceTransportPolicy: { type: "string", enum: ["all", "relay"] },
-    },
-    required: ["iceServers", "iceCandidatePoolSize", "iceTransportPolicy"],
-  },
-
   // --- Message reactions ---
   ChatReactionUser: {
     type: "object",

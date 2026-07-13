@@ -23,6 +23,11 @@ interface BulkSnapshotsResult {
   users: UserSnapshotRecord[];
 }
 
+export interface CallPrivacy {
+  whoCanCallMe: "FRIENDS" | "SELECTED_FRIENDS" | "NO_ONE";
+  allowedUserIds: string[];
+}
+
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
   longs: String,
@@ -49,9 +54,22 @@ const bulkGetUserSnapshotsBreaker: Breaker<
   call<{ userIds: string[] }, BulkSnapshotsResult>("bulkGetUserSnapshots", args)
 );
 
+const getCallPrivacyBreaker: Breaker<{ userId: string }, CallPrivacy> =
+  makeBreaker("user.getCallPrivacy", (args: { userId: string }) =>
+    call<{ userId: string }, CallPrivacy>("getCallPrivacy", args)
+  );
+
 export const userGrpcClient = {
   async bulkGetUserSnapshots(userIds: string[]): Promise<UserSnapshotRecord[]> {
     const result = await bulkGetUserSnapshotsBreaker.fire({ userIds });
     return result.users ?? [];
+  },
+
+  async getCallPrivacy(userId: string): Promise<CallPrivacy> {
+    const r = await getCallPrivacyBreaker.fire({ userId });
+    return {
+      whoCanCallMe: r.whoCanCallMe ?? "FRIENDS",
+      allowedUserIds: r.allowedUserIds ?? [],
+    };
   },
 };

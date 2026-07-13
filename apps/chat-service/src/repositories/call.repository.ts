@@ -43,6 +43,27 @@ export class CallRepository {
     });
   }
 
+  /**
+   * Sweep helpers for the ringing-timeout worker. Multi-node safe:
+   * `claimForMissed` uses an atomic `updateMany` with a `status: RINGING`
+   * filter — whichever node's write lands first wins (`count === 1`); the
+   * other's filter no longer matches and returns `count === 0`. No locks.
+   */
+  async findStuckRinging(cutoff: Date, limit: number): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: { status: "RINGING", initiatedAt: { lt: cutoff } },
+      take: limit,
+    });
+  }
+
+  async claimForMissed(callId: string, now: Date): Promise<{ won: boolean }> {
+    const result = await this.prisma.call.updateMany({
+      where: { callId, status: "RINGING" },
+      data: { status: "MISSED", endedAt: now, endedBy: "SYSTEM" },
+    });
+    return { won: result.count === 1 };
+  }
+
   async findByParticipant(
     userId: string,
     limit: number,

@@ -1,0 +1,145 @@
+/**
+ * Unit tests — CallService sweep (RINGING → MISSED) + reconcile from LiveKit
+ * `room_finished`. See Docs/calls/CALLS-LIVEKIT.md §7 Phase 3.
+ *
+ * Direct service tests. Stubs Redis publish, callRepo, and the Prisma layer.
+ */
+import { CallService } from "../../src/services/call.service.js";
+
+function buildService() {
+  const stubs = {
+    callRepo: {
+      create: jest.fn(),
+      findByCallId: jest.fn(),
+      updateStatus: jest.fn().mockResolvedValue({ callId: "c" }),
+      findByParticipant: jest.fn(),
+      findStuckRinging: jest.fn(),
+      claimForMissed: jest.fn(),
+    },
+    privateRoomRepo: {
+      findByRoomId: jest.fn(),
+      findByParticipantsKey: jest.fn(),
+    },
+    redis: { publish: jest.fn().mockResolvedValue(1) },
+    livekit: { mintToken: jest.fn() },
+    friendshipRepo: { areFriends: jest.fn() },
+    getCallPrivacy: jest.fn(),
+    getUserSnapshot: jest
+      .fn()
+      .mockResolvedValue({ displayName: "", avatarUrl: "" }),
+  };
+  const service = new CallService(
+    stubs.callRepo as never,
+    stubs.privateRoomRepo as never,
+    stubs.redis as never,
+    stubs.livekit as never,
+    stubs.friendshipRepo as never,
+    stubs.getCallPrivacy,
+    stubs.getUserSnapshot
+  );
+  return { service, stubs };
+}
+
+describe("CallService.sweepMissedCalls", () => {
+  it("flips claimed rows and publishes call:missed to both rooms", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findStuckRinging.mockResolvedValue([
+      { callId: "c1", calleeId: "u2" },
+      { callId: "c2", calleeId: "u3" },
+    ]);
+    stubs.callRepo.claimForMissed.mockResolvedValue({ won: true });
+
+    const flipped = await service.sweepMissedCalls(new Date(1_000_000), 60, 50);
+
+    expect(flipped).toBe(2);
+    // Both call rooms AND both user rooms got a publish (2 * 2 = 4).
+    expect(stubs.redis.publish).toHaveBeenCalledTimes(4);
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:missed")
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "user:u2",
+      expect.stringContaining("call:missed")
+    );
+  });
+
+  it("skips publishing for rows the atomic claim lost (multi-node race)", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findStuckRinging.mockResolvedValue([
+      { callId: "c1", calleeId: "u2" },
+    ]);
+    stubs.callRepo.claimForMissed.mockResolvedValue({ won: false });
+
+    const flipped = await service.sweepMissedCalls(new Date(), 60, 50);
+
+    expect(flipped).toBe(0);
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("no candidates → no publishes, returns 0", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findStuckRinging.mockResolvedValue([]);
+    const flipped = await service.sweepMissedCalls(new Date(), 60, 50);
+    expect(flipped).toBe(0);
+    expect(stubs.callRepo.claimForMissed).not.toHaveBeenCalled();
+  });
+});
+
+describe("CallService.reconcileFromLiveKitRoomFinished", () => {
+  it("IN_PROGRESS → ENDED with computed durationSec + publishes call:ended", async () => {
+    const { service, stubs } = buildService();
+    const answered = new Date(1_000_000);
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "IN_PROGRESS",
+      answeredAt: answered,
+      callerId: "u1",
+      calleeId: "u2",
+    });
+
+    await service.reconcileFromLiveKitRoomFinished("c1");
+
+    expect(stubs.callRepo.updateStatus).toHaveBeenCalledWith(
+      "c1",
+      expect.objectContaining({
+        status: "ENDED",
+        endedBy: "SYSTEM_LIVEKIT",
+        durationSec: expect.any(Number),
+      })
+    );
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "call:c1",
+      expect.stringContaining("call:ended")
+    );
+  });
+
+  it("unknown room → no writes, no publishes", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue(null);
+    await service.reconcileFromLiveKitRoomFinished("nope");
+    expect(stubs.callRepo.updateStatus).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("already ENDED → idempotent no-op", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "ENDED",
+    });
+    await service.reconcileFromLiveKitRoomFinished("c1");
+    expect(stubs.callRepo.updateStatus).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+  });
+
+  it("RINGING → leave alone (sweep will pick it up as MISSED)", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "RINGING",
+    });
+    await service.reconcileFromLiveKitRoomFinished("c1");
+    expect(stubs.callRepo.updateStatus).not.toHaveBeenCalled();
+  });
+});

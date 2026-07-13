@@ -12,12 +12,7 @@ import { z } from "zod";
 // Enums (reused across schemas).
 // ---------------------------------------------------------------------------
 // SCHEDULED maps to a stream-service PENDING stream (created, not yet live).
-export const livestreamStatusEnum = z.enum([
-  "LIVE",
-  "ENDED",
-  "SCHEDULED",
-  "CANCELLED",
-]);
+export const livestreamStatusEnum = z.enum(["LIVE", "ENDED", "SCHEDULED"]);
 
 export const endReasonCodeEnum = z.enum([
   "POLICY_VIOLATION",

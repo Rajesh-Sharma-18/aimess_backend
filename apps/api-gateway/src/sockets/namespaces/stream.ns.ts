@@ -24,7 +24,7 @@ const VIEWER_KEY_TTL_SEC = 7200; // 2h
 
 // stream:comment sliding-window rate limit (per user, per stream).
 const COMMENT_RATE_MAX = 10; // comments allowed…
-const COMMENT_RATE_WINDOW_SEC = 3; // …per this window
+const COMMENT_RATE_WINDOW_SEC = 5; // …per this window
 
 // Debounce viewer_count broadcasts to ≤ 1 emit/sec per stream so a join/leave
 // storm cannot fan a flood of identical counts out to a whole room.

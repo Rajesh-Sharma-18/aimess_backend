@@ -7264,7 +7264,7 @@ components:
       properties:
         status:
           type: string
-          enum: [PENDING, LIVE, RECONNECTING, ENDED, CANCELLED]
+          enum: [PENDING, LIVE, RECONNECTING, ENDED]
         chatEnabled:
           type: boolean
           description: "Same value as the ack's top-level canComment."
@@ -7424,7 +7424,7 @@ components:
         streamId: { type: string }
         status:
           type: string
-          enum: [PENDING, LIVE, RECONNECTING, ENDED, CANCELLED]
+          enum: [PENDING, LIVE, RECONNECTING, ENDED]
         communityId:
           type: string
           description: "Lets a viewer screen update the community's isLive badge without a separate /community subscription."

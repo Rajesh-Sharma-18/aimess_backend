@@ -298,10 +298,6 @@ export function registerChatNamespace(
   const CallAnswerSchema = z.object({ callId: z.string().min(1) });
   const CallDeclineSchema = z.object({ callId: z.string().min(1) });
   const CallEndSchema = z.object({ callId: z.string().min(1) });
-  const CallIceSchema = z.object({
-    callId: z.string().min(1),
-    candidate: z.unknown(),
-  });
 
   chat.on("connection", (socket: Socket) => {
     const { userId, locale } = socket.data;
@@ -976,13 +972,17 @@ export function registerChatNamespace(
             type: r.data.callType,
             privateRoomId: r.data.privateRoomId,
           })
-          .then((result) =>
+          .then((result) => {
+            // Join the caller's socket to `call:<callId>` so lifecycle events
+            // (call:answered / call:declined / call:ended) reach them.
+            void socket.join(`call:${result.callId}`);
             ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
               callId: result.callId,
               status: result.status,
-              rtcConfig: result.rtcConfig,
-            })
-          )
+              livekitUrl: result.livekit?.url,
+              token: result.livekit?.token,
+            });
+          })
           .catch((err: unknown) => {
             logger.warn(`/chat call:initiate gRPC error: ${String(err)}`);
             ackError(callback, "SERVICE_ERROR", locale);
@@ -1000,9 +1000,12 @@ export function registerChatNamespace(
         }
         messagingClient
           .answerCall({ ...r.data, calleeId: userId })
-          .then((result) =>
-            ackOk(callback, "SOCKET_CALL_ANSWERED", locale, result)
-          )
+          .then((result) => {
+            // Callee joins `call:<callId>` on answer — mirrors the caller's
+            // join at initiate. Both peers now receive `call:ended` etc.
+            void socket.join(`call:${result.callId}`);
+            ackOk(callback, "SOCKET_CALL_ANSWERED", locale, result);
+          })
           .catch((err: unknown) => {
             logger.warn(`/chat call:answer gRPC error: ${String(err)}`);
             ackError(callback, "SERVICE_ERROR", locale);
@@ -1050,22 +1053,8 @@ export function registerChatNamespace(
       }
     );
 
-    // ICE candidates: relay directly via Redis — no gRPC, no DB
-    socket.on("call:ice", (payload: unknown) => {
-      const r = CallIceSchema.safeParse(payload);
-      if (!r.success) return;
-      void redisPub.publish(
-        `call:${r.data.callId}`,
-        JSON.stringify({
-          event: "call:ice",
-          data: {
-            callId: r.data.callId,
-            candidate: r.data.candidate,
-            from: userId,
-          },
-        })
-      );
-    });
+    // Note: `call:ice` was removed with the LiveKit migration — LiveKit's
+    // client SDKs handle ICE/NAT internally. See Docs/calls/CALLS-LIVEKIT.md.
 
     // ── Friend management ────────────────────────────────────────────────────
     // Gateway calls user-service REST endpoints on behalf of the authenticated

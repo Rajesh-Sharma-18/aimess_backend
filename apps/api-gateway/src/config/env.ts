@@ -124,6 +124,15 @@ const envSchema = z.object({
   APP_VERSION_IOS_MANDATORY: semverLike.default("1.0.0"),
   APP_VERSION_IOS_OPTIONAL: semverLike.default("1.0.0"),
   APP_VERSION_IOS_STORE_URL: z.string().url().optional(),
+
+  // LiveKit webhook — the same api-key/secret pair configured in the LiveKit
+  // server's config.yaml `keys:` block (docker/livekit/config.yaml).
+  // WebhookReceiver uses both to verify the signed webhook payload.
+  LIVEKIT_API_KEY: z.string().min(1).default("devkey"),
+  LIVEKIT_API_SECRET: z
+    .string()
+    .min(1)
+    .default("devsecretchangeme_at_least_32_chars_long"),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -256,7 +256,32 @@ export function buildApp(): BuiltApp {
   );
 
   const notificationService = new NotificationService(notificationRepo);
-  const callService = new CallService(callRepo, privateRoomRepo, redis);
+  // Stubs for CallService's LiveKit + gate deps. The REST call-history tests
+  // (calls.test.ts) never invoke initiateCall so these are effectively unused,
+  // but they satisfy the constructor and keep future initiate-flow tests honest.
+  const stubLiveKit: any = {
+    mintToken: jest
+      .fn()
+      .mockResolvedValue({ url: "ws://livekit", token: "tk" }),
+  };
+  const stubFriendshipRepo: any = {
+    areFriends: jest.fn().mockResolvedValue(true),
+  };
+  const stubGetCallPrivacy = jest
+    .fn()
+    .mockResolvedValue({ whoCanCallMe: "FRIENDS", allowedUserIds: [] });
+  const stubGetUserSnapshot = jest
+    .fn()
+    .mockResolvedValue({ displayName: "", avatarUrl: "" });
+  const callService = new CallService(
+    callRepo,
+    privateRoomRepo,
+    redis,
+    stubLiveKit,
+    stubFriendshipRepo,
+    stubGetCallPrivacy,
+    stubGetUserSnapshot
+  );
 
   // Stub stream-counts gRPC client: default to "no live streams". A livestream
   // test overrides streamCountsClient.getActiveStreamCounts per scenario.

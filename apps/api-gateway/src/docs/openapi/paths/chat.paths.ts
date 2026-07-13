@@ -2710,32 +2710,6 @@ const callById = {
 };
 
 // =============================================================================
-// WebRTC
-// =============================================================================
-const rtcConfig = {
-  get: {
-    tags: ["Chat — WebRTC"],
-    operationId: "getIceServers",
-    summary: "Get WebRTC ICE server configuration",
-    description:
-      "Returns STUN/TURN ICE server configuration for establishing WebRTC peer connections. Fetch at app startup or on `call:initiate`. Falls back to 503 if the config service is unavailable.",
-    security: [{ bearerAuth: [] }],
-    responses: {
-      ...successResponse("ICE server configuration", "ChatRtcConfiguration"),
-      "401": unauthorized,
-      "503": {
-        description: "Config service temporarily unavailable",
-        content: {
-          "application/json": {
-            schema: { $ref: "#/components/schemas/ApiErrorResponse" },
-          },
-        },
-      },
-    },
-  },
-};
-
-// =============================================================================
 // Community message pin / unpin
 // =============================================================================
 const communityMessagePin = {
@@ -2901,9 +2875,6 @@ export const chatPaths = {
   // Calls
   "/chat/calls": callHistory,
   "/chat/calls/{callId}": callById,
-
-  // WebRTC
-  "/webrtc/rtc-config": rtcConfig,
 
   // TODO(notifications): The notifications-service exposes device-token
   // registration endpoints — `POST /v1/devices` and `DELETE /v1/devices/:token`

@@ -30,7 +30,10 @@ service MessagingService {
   rpc DeclineCall             (DeclineCallRequest)             returns (DeclineCallResponse);
   rpc EndCall                 (EndCallRequest)                 returns (EndCallResponse);
   rpc GetCallHistory          (GetCallHistoryRequest)          returns (GetCallHistoryResponse);
-  rpc GetRtcConfig            (GetRtcConfigRequest)            returns (GetRtcConfigResponse);
+  // LiveKit webhook reconciliation. api-gateway verifies the signed webhook
+  // and forwards `room_finished` events; chat-service flips IN_PROGRESS→ENDED
+  // (idempotent for other states).
+  rpc HandleLiveKitRoomFinished (HandleLiveKitRoomFinishedRequest) returns (HandleLiveKitRoomFinishedResponse);
   rpc CatchupRoom             (CatchupRoomRequest)             returns (CatchupRoomResponse);
   // Admin dashboard: count of active group rooms.
   rpc GetGroupCount           (GetGroupCountRequest)           returns (GroupCount);
@@ -431,32 +434,23 @@ message GetCallHistoryResponse {
   bool             has_more    = 3;
 }
 
-message IceServer {
-  repeated string urls           = 1;
-  string          username       = 2;
-  string          credential     = 3;
-  string          credential_type = 4;
-}
-
-message RtcConfiguration {
-  repeated IceServer ice_servers         = 1;
-  int32              ice_candidate_pool_size = 2;
-  string             ice_transport_policy = 3;
+message LiveKitCredentials {
+  string url   = 1;
+  string token = 2;
 }
 
 message InitiateCallResponse {
-  string            call_id   = 1;
-  string            status    = 2;
-  RtcConfiguration rtc_config = 3;
+  string             call_id    = 1;
+  string             status     = 2;
+  // Caller's LiveKit token. Callee's token ships via Redis in `call:incoming`.
+  LiveKitCredentials livekit    = 3;
 }
 
-message GetRtcConfigRequest {
-  string user_id = 1;
+message HandleLiveKitRoomFinishedRequest {
+  // LiveKit room_name == callId by our convention (see call.service.ts).
+  string room_name = 1;
 }
-
-message GetRtcConfigResponse {
-  RtcConfiguration rtc_config = 1;
-}
+message HandleLiveKitRoomFinishedResponse {}
 
 message CatchupRoomRequest {
   string           conversation_id   = 1;

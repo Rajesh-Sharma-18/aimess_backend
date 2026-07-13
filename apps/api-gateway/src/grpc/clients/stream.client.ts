@@ -64,7 +64,7 @@ export interface CheckStreamAccessResult {
   status: string;
   reason: string;
   canComment: boolean;
-  /** Stream lifecycle status: PENDING | LIVE | ENDED | CANCELLED */
+  /** Stream lifecycle status: PENDING | LIVE | ENDED */
   streamStatus: string;
   title: string;
   description: string;
