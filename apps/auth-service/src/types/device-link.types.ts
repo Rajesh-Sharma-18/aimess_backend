@@ -1,17 +1,13 @@
-import type { AuthTokens } from "../lib/token.js";
-
 /**
- * Lifecycle of a QR device-link session stored in Redis. Terminal single-use
- * state is "USED" (spec naming) — "CONSUMED" was the prior name; `getLinkSession`
- * / `consumeTokensAtomic` normalize any pre-existing "CONSUMED" record on read
- * so older in-flight sessions (created before this rename shipped) keep working.
+ * Lifecycle of a QR device-link session stored in Redis. Telegram-style: no
+ * confirmation step — a scan IS the login. "SCANNED" is an internal-only,
+ * sub-millisecond claim marker between the atomic claim and finalize calls
+ * inside `deviceLinkService.login()` (see device-link-store.ts) — it is never
+ * returned by any public API. Terminal single-use state is "USED" ("CONSUMED"
+ * was the prior name; `getLinkSession` normalizes any pre-existing "CONSUMED"
+ * record on read so older in-flight sessions keep working).
  */
-export type DeviceLinkState =
-  | "PENDING"
-  | "SCANNED"
-  | "APPROVED"
-  | "REJECTED"
-  | "USED";
+export type DeviceLinkState = "PENDING" | "SCANNED" | "USED";
 
 /** Device descriptor captured when the new device starts a link session. */
 export type DeviceLinkDeviceInfo = {
@@ -24,50 +20,27 @@ export type DeviceLinkDeviceInfo = {
 /** Full record persisted under `aimess:devlink:{linkToken}`. */
 export type DeviceLinkRecord = {
   state: DeviceLinkState;
-  pollSecretHash: string;
   device: DeviceLinkDeviceInfo;
   createdAt: string;
   expiresAt: string;
+  /** Set for the instant between the atomic claim and finalize calls. */
   scannedAt?: string;
   scannedByUserId?: string;
-  approvedAt?: string;
-  approvedDeviceLabel?: string | null;
-  rejectedAt?: string;
-  tokens?: AuthTokens;
   usedAt?: string;
-};
-
-/** Safe subset returned to any authenticated user viewing a pending QR before acting on it. */
-export type DeviceLinkPendingDetails = {
-  state: DeviceLinkState | "EXPIRED";
-  device: DeviceLinkDeviceInfo;
-  createdAt: string;
-  expiresAt: string;
-};
-
-export type ScanDeviceLinkResult = {
-  scannedAt: string;
-  device: DeviceLinkDeviceInfo;
-};
-
-export type RejectDeviceLinkResult = {
-  rejectedAt: string;
 };
 
 export type InitiateDeviceLinkResult = {
   linkToken: string;
-  pollSecret: string;
   expiresAt: string;
 };
 
-export type DeviceLinkStatusResult = {
-  state: DeviceLinkState | "EXPIRED";
-  approvedDeviceLabel: string | null;
-  tokens: AuthTokens | null;
-};
-
-export type ApproveDeviceLinkResult = {
+/** Result of the merged scan+login call — the browser's new session, delivered once via `auth:qr:success`. */
+export type LoginDeviceLinkResult = {
   linkedAt: string;
-  /** Session id of the newly-linked device — used to undo the link (revoke that session). */
+  /** Session id of the newly-linked browser device — pass to DELETE /users/linked-devices/{sessionId} to undo the link. */
   sessionId: string;
+  accessToken: string;
+  refreshToken: string;
+  accessTokenExpiresIn: number;
+  refreshTokenExpiresIn: number;
 };

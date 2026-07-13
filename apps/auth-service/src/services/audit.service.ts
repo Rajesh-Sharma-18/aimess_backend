@@ -5,13 +5,16 @@ import { authAuditLogRepository } from "../repositories/auth-audit-log.repositor
 /**
  * The full QR-login lifecycle taxonomy plus the two linked-device events —
  * one enum, so every call site is grep-able and nothing silently invents a
- * new event string.
+ * new event string. Telegram-style instant login (scan IS login, no
+ * approve/reject step): QR_LOGIN_ATTEMPT fires when a scan is claimed,
+ * QR_LOGIN_SUCCESS when tokens are issued, QR_REUSED_ATTEMPT when a
+ * second scan hits an already-claimed/used QR.
  */
 export type AuthAuditEvent =
   | "QR_CREATED"
-  | "QR_SCANNED"
-  | "QR_APPROVED"
-  | "QR_REJECTED"
+  | "QR_LOGIN_ATTEMPT"
+  | "QR_LOGIN_SUCCESS"
+  | "QR_REUSED_ATTEMPT"
   | "QR_EXPIRED"
   | "BROWSER_LOGGED_IN"
   | "LINKED_DEVICE_CREATED"

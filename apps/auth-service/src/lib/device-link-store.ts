@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
@@ -7,18 +7,16 @@ import type {
   DeviceLinkRecord,
   DeviceLinkState,
 } from "../types/device-link.types.js";
-import type { AuthTokens } from "./token.js";
-import { hashToken } from "./token.js";
 
-/** QR link sessions are short-lived: 60s to scan + approve (spec). */
+/** QR link sessions are short-lived: 60s to scan (spec). */
 const LINK_TTL_SECONDS = env.QR_LINK_TTL_SECONDS;
 
 /**
  * The Redis key survives a bit past `expiresAt` so the scheduler-driven sweeper
  * (jobs/qr-link-expiry-sweeper.ts) can still SCAN and find it after its logical
- * expiry, before Redis's own TTL garbage-collects it. All state transitions
- * (scan/approve/reject) additionally check `expiresAt` themselves, so a record
- * surviving in this grace window can never be scanned/approved/rejected.
+ * expiry, before Redis's own TTL garbage-collects it. The claim/finalize calls
+ * additionally check `expiresAt` themselves, so a record surviving in this
+ * grace window can never be logged into.
  */
 const REDIS_KEY_TTL_SECONDS =
   LINK_TTL_SECONDS + env.QR_LINK_SWEEP_GRACE_SECONDS;
@@ -34,17 +32,15 @@ function generateLinkToken(): string {
   return randomUUID();
 }
 
-/** Poll secret: a private value the initiating device keeps to itself — not spec'd as UUID. */
-function generatePollSecret(): string {
-  return randomBytes(32).toString("base64url");
-}
-
 /**
- * Scan atomically: only a PENDING, non-expired record may be scanned. Records
- * who scanned it so approve/reject can later enforce "same approving user"
- * (ARGV[1] = userId).
+ * Claim atomically: only a PENDING, non-expired record may be claimed. This
+ * is the exclusivity guarantee — if two requests race to log in with the same
+ * QR, only one wins the PENDING → SCANNED flip; the other gets 'ALREADY'.
+ * Records who claimed it (ARGV[1] = userId) purely for audit/defensive
+ * purposes — the finalize call below always runs with the same userId in the
+ * same request.
  */
-const SCAN_SCRIPT = `
+const CLAIM_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
 if not raw then return 'NOT_FOUND' end
 local rec = cjson.decode(raw)
@@ -58,29 +54,13 @@ return 'OK'
 `;
 
 /**
- * Approve atomically: requires the record to be SCANNED, non-expired, by the
- * SAME user approving (ARGV[3] = approverUserId) before flipping to APPROVED
- * with tokens + label. Single-use guarantee lives in Redis so two approvers
- * cannot both mint tokens.
+ * Finalize atomically: requires the record to be SCANNED (i.e. just claimed
+ * by this same call), non-expired, by the SAME user — then flips straight to
+ * USED (terminal, single-use). No intermediate "approved but not yet
+ * collected" state and no tokens stored in Redis: the caller already has the
+ * freshly-issued tokens in memory and returns/emits them directly.
  */
-const APPROVE_SCRIPT = `
-local raw = redis.call('GET', KEYS[1])
-if not raw then return 'NOT_FOUND' end
-local rec = cjson.decode(raw)
-if rec.expiresAt <= ARGV[2] then return 'EXPIRED' end
-if rec.state == 'PENDING' then return 'NOT_SCANNED' end
-if rec.state ~= 'SCANNED' then return 'ALREADY' end
-if rec.scannedByUserId ~= ARGV[3] then return 'WRONG_USER' end
-rec.state = 'APPROVED'
-rec.tokens = cjson.decode(ARGV[1])
-rec.approvedAt = ARGV[2]
-rec.approvedDeviceLabel = ARGV[4]
-redis.call('SET', KEYS[1], cjson.encode(rec), 'KEEPTTL')
-return 'OK'
-`;
-
-/** Reject atomically: same "scanned by the same user, not expired" guard as approve. */
-const REJECT_SCRIPT = `
+const FINALIZE_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
 if not raw then return 'NOT_FOUND' end
 local rec = cjson.decode(raw)
@@ -88,31 +68,10 @@ if rec.expiresAt <= ARGV[1] then return 'EXPIRED' end
 if rec.state == 'PENDING' then return 'NOT_SCANNED' end
 if rec.state ~= 'SCANNED' then return 'ALREADY' end
 if rec.scannedByUserId ~= ARGV[2] then return 'WRONG_USER' end
-rec.state = 'REJECTED'
-rec.rejectedAt = ARGV[1]
+rec.state = 'USED'
+rec.usedAt = ARGV[1]
 redis.call('SET', KEYS[1], cjson.encode(rec), 'KEEPTTL')
 return 'OK'
-`;
-
-/**
- * Consume atomically: only an APPROVED record yields tokens, and the same call
- * flips it to USED + strips tokens so the polling device receives them once.
- * Returns the current state plus tokens (only on the APPROVED→USED edge).
- */
-const CONSUME_SCRIPT = `
-local raw = redis.call('GET', KEYS[1])
-if not raw then return cjson.encode({ state = 'EXPIRED', tokens = false, label = false }) end
-local rec = cjson.decode(raw)
-if rec.state == 'APPROVED' then
-  local tokens = rec.tokens
-  local label = rec.approvedDeviceLabel
-  rec.state = 'USED'
-  rec.tokens = nil
-  rec.usedAt = ARGV[1]
-  redis.call('SET', KEYS[1], cjson.encode(rec), 'KEEPTTL')
-  return cjson.encode({ state = 'USED', tokens = tokens, label = label })
-end
-return cjson.encode({ state = rec.state, tokens = false, label = rec.approvedDeviceLabel })
 `;
 
 /**
@@ -136,15 +95,13 @@ return 'OK'
 
 export async function createLinkSession(
   device: DeviceLinkDeviceInfo
-): Promise<{ linkToken: string; pollSecret: string; expiresAt: string }> {
+): Promise<{ linkToken: string; expiresAt: string }> {
   const linkToken = generateLinkToken();
-  const pollSecret = generatePollSecret();
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + LINK_TTL_SECONDS * 1000);
 
   const record: DeviceLinkRecord = {
     state: "PENDING",
-    pollSecretHash: hashToken(pollSecret),
     device,
     createdAt: createdAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
@@ -158,7 +115,7 @@ export async function createLinkSession(
     "NX"
   );
 
-  return { linkToken, pollSecret, expiresAt: expiresAt.toISOString() };
+  return { linkToken, expiresAt: expiresAt.toISOString() };
 }
 
 /** Old records may still say "CONSUMED" (pre-rename); normalize on read. */
@@ -175,37 +132,33 @@ export async function getLinkSession(
   return { ...record, state: normalizeState(record.state) as DeviceLinkState };
 }
 
-export async function scanLinkSessionAtomic(
+export async function claimLinkSessionAtomic(
   linkToken: string,
-  scannedByUserId: string
+  userId: string
 ): Promise<"OK" | "NOT_FOUND" | "ALREADY" | "EXPIRED"> {
   const result = (await redis.eval(
-    SCAN_SCRIPT,
+    CLAIM_SCRIPT,
     1,
     linkKey(linkToken),
-    scannedByUserId,
+    userId,
     new Date().toISOString()
   )) as string;
 
   return result as "OK" | "NOT_FOUND" | "ALREADY" | "EXPIRED";
 }
 
-export async function approveLinkSessionAtomic(
+export async function finalizeLoginAtomic(
   linkToken: string,
-  tokens: AuthTokens,
-  approvedDeviceLabel: string | null,
-  approverUserId: string
+  userId: string
 ): Promise<
   "OK" | "NOT_FOUND" | "ALREADY" | "NOT_SCANNED" | "WRONG_USER" | "EXPIRED"
 > {
   const result = (await redis.eval(
-    APPROVE_SCRIPT,
+    FINALIZE_SCRIPT,
     1,
     linkKey(linkToken),
-    JSON.stringify(tokens),
     new Date().toISOString(),
-    approverUserId,
-    approvedDeviceLabel ?? ""
+    userId
   )) as string;
 
   return result as
@@ -215,54 +168,6 @@ export async function approveLinkSessionAtomic(
     | "NOT_SCANNED"
     | "WRONG_USER"
     | "EXPIRED";
-}
-
-export async function rejectLinkSessionAtomic(
-  linkToken: string,
-  rejectingUserId: string
-): Promise<
-  "OK" | "NOT_FOUND" | "ALREADY" | "NOT_SCANNED" | "WRONG_USER" | "EXPIRED"
-> {
-  const result = (await redis.eval(
-    REJECT_SCRIPT,
-    1,
-    linkKey(linkToken),
-    new Date().toISOString(),
-    rejectingUserId
-  )) as string;
-
-  return result as
-    | "OK"
-    | "NOT_FOUND"
-    | "ALREADY"
-    | "NOT_SCANNED"
-    | "WRONG_USER"
-    | "EXPIRED";
-}
-
-export async function consumeTokensAtomic(linkToken: string): Promise<{
-  state: DeviceLinkState | "EXPIRED";
-  approvedDeviceLabel: string | null;
-  tokens: AuthTokens | null;
-}> {
-  const raw = (await redis.eval(
-    CONSUME_SCRIPT,
-    1,
-    linkKey(linkToken),
-    new Date().toISOString()
-  )) as string;
-
-  const parsed = JSON.parse(raw) as {
-    state: string;
-    tokens: AuthTokens | false;
-    label: string | false;
-  };
-
-  return {
-    state: normalizeState(parsed.state),
-    approvedDeviceLabel: parsed.label === false ? null : parsed.label,
-    tokens: parsed.tokens === false ? null : parsed.tokens,
-  };
 }
 
 /**

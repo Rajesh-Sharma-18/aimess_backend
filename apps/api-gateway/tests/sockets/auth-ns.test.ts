@@ -118,14 +118,14 @@ describe("/auth namespace — Redis devlink:<token> relay", () => {
       "message",
       "devlink:abc-123",
       JSON.stringify({
-        event: "auth:qr:approved",
+        event: "auth:qr:success",
         data: { linkToken: "abc-123" },
       })
     );
 
     expect(namespace.emittedTo).toContainEqual({
       room: "qr:abc-123",
-      event: "auth:qr:approved",
+      event: "auth:qr:success",
       data: { linkToken: "abc-123" },
     });
   });

@@ -55,7 +55,7 @@ describe("recordAuditEventSafe", () => {
 
     expect(() =>
       recordAuditEventSafe({
-        event: "QR_SCANNED",
+        event: "QR_LOGIN_ATTEMPT",
         targetType: "qr_login_session",
       })
     ).not.toThrow();

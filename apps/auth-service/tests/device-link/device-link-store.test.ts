@@ -29,18 +29,6 @@ describe("createLinkSession", () => {
     expect(linkToken).toMatch(UUID_V4);
   });
 
-  it("does NOT put the pollSecret in UUID form (it's a separate private value)", async () => {
-    const { pollSecret } = await createLinkSession({
-      deviceName: null,
-      deviceType: "WEB",
-      os: null,
-      appVersion: null,
-    });
-
-    expect(pollSecret).not.toMatch(UUID_V4);
-    expect(pollSecret.length).toBeGreaterThan(20);
-  });
-
   it("expires 60 seconds after creation (spec: reduced from 120s)", async () => {
     const before = Date.now();
     const { expiresAt } = await createLinkSession({

@@ -7,7 +7,6 @@
 jest.mock("../../src/lib/device-link-store.js", () => ({
   createLinkSession: jest.fn(async () => ({
     linkToken: "11111111-1111-4111-8111-111111111111",
-    pollSecret: "poll-secret",
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
   })),
   getLinkSession: jest.fn(async () => ({
@@ -18,7 +17,24 @@ jest.mock("../../src/lib/device-link-store.js", () => ({
       appVersion: null,
     },
   })),
-  scanLinkSessionAtomic: jest.fn(async () => "OK"),
+  claimLinkSessionAtomic: jest.fn(async () => "OK"),
+  finalizeLoginAtomic: jest.fn(async () => "OK"),
+}));
+jest.mock("../../src/lib/token.js", () => ({
+  issueAuthTokens: jest.fn(async () => ({
+    tokens: {
+      accessToken: "access.jwt.token",
+      refreshToken: "refresh-token-value",
+      accessTokenExpiresIn: 3600,
+      refreshTokenExpiresIn: 604800,
+    },
+    sessionId: "new-sess-1",
+  })),
+}));
+jest.mock("../../src/repositories/auth.repository.js", () => ({
+  authRepository: {
+    findRoleByUserId: jest.fn(async () => ({ role: "USER" })),
+  },
 }));
 jest.mock("../../src/services/audit.service.js", () => ({
   recordAuditEventSafe: jest.fn(),

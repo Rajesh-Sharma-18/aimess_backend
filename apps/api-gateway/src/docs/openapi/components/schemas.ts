@@ -4801,53 +4801,41 @@ export const openApiSchemas = {
         type: "string",
         description: "Embed in the QR code shown to the authenticated device.",
       },
-      pollSecret: {
-        type: "string",
-        description:
-          "Secret held only by the new device; required to poll status.",
-      },
       expiresAt: { type: "string", format: "date-time" },
     },
-    required: ["linkToken", "pollSecret", "expiresAt"],
+    required: ["linkToken", "expiresAt"],
   },
-  DeviceLinkStatusResponseData: {
+  DeviceLinkScanRequest: {
     type: "object",
-    properties: {
-      state: {
-        type: "string",
-        enum: ["PENDING", "APPROVED", "USED", "EXPIRED"],
-        description:
-          "PENDING = waiting for the signed-in device to scan and approve; APPROVED = approved, tokens returned exactly once; USED = tokens already delivered (poll again returns this) — this endpoint also reports USED while the session is actually SCANNED (awaiting approval), since polling predates the SCANNED state; prefer the /auth socket namespace or GET /devices/link/{linkToken} to observe SCANNED accurately; EXPIRED = 60 s TTL elapsed (or an unknown linkToken / wrong pollSecret), call initiate again.",
-      },
-      approvedDeviceLabel: { type: "string", nullable: true },
-      tokens: {
-        nullable: true,
-        allOf: [{ $ref: "#/components/schemas/AuthTokens" }],
-        description: "Returned exactly once when the session is approved.",
-      },
-    },
-    required: ["state", "approvedDeviceLabel", "tokens"],
-  },
-  DeviceLinkApproveRequest: {
-    type: "object",
+    description:
+      "Telegram-style instant login: scanning IS logging in — no separate approve/reject step.",
     properties: {
       linkToken: { type: "string" },
+      appVersion: { type: "string", maxLength: 100, example: "1.4.0" },
       deviceLabel: { type: "string", maxLength: 100, example: "My laptop" },
     },
     required: ["linkToken"],
   },
-  DeviceLinkApproveResponseData: {
+  DeviceLinkScanResponseData: {
     type: "object",
+    allOf: [{ $ref: "#/components/schemas/AuthTokens" }],
     properties: {
       linkedAt: { type: "string", format: "date-time" },
       sessionId: {
         type: "string",
         format: "uuid",
         description:
-          "Session id of the newly-linked device; revoke it via DELETE /auth/sessions/{sessionId} to undo the link.",
+          "Session id of the newly-linked (browser) device; revoke it via DELETE /users/linked-devices/{sessionId} to undo the link.",
       },
     },
-    required: ["linkedAt", "sessionId"],
+    required: [
+      "linkedAt",
+      "sessionId",
+      "accessToken",
+      "refreshToken",
+      "accessTokenExpiresIn",
+      "refreshTokenExpiresIn",
+    ],
   },
   DeleteAccountResponseData: {
     type: "object",
@@ -8065,6 +8053,98 @@ export const openApiSchemas = {
       "roomId",
       "participants",
       "peer",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ChatPrivateRoomDetails: {
+    type: "object",
+    description:
+      "GET /chat/private/rooms/{peerId} — mirrors CommunityData field names wherever applicable " +
+      "(`id`, `avatar`, `isMuted`, `muteUntil`, `createdAt`, `updatedAt`), with private-chat-specific " +
+      "`user`/presence fields nested/added. Timestamps are epoch ms, unlike CommunityData's ISO strings.",
+    properties: {
+      id: {
+        type: "string",
+        description: "roomId — mirrors CommunityData.id.",
+      },
+      roomId: { type: "string" },
+      participants: { type: "array", items: { type: "string" } },
+      peerId: { type: "string" },
+      user: {
+        type: "object",
+        description: "Existing private-chat peer information.",
+        properties: {
+          id: { type: "string" },
+          displayName: { type: "string" },
+          memberId: { type: "string" },
+          isDeletedUser: { type: "boolean" },
+        },
+        required: ["id", "displayName", "memberId", "isDeletedUser"],
+      },
+      avatar: {
+        $ref: "#/components/schemas/MediaObject",
+        description: "Mirrors CommunityData.avatar — the peer's avatar object.",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned URL (mirrors CommunityData.avatarUrl).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isOnline: {
+        type: "boolean",
+        description: "Existing presence field.",
+      },
+      isOffline: {
+        type: "boolean",
+        description:
+          "Negation of isOnline, from the existing presence pipeline.",
+      },
+      isMuted: {
+        type: "boolean",
+        description: "Mirrors CommunityData.isMuted.",
+      },
+      muteUntil: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description:
+          "Epoch ms when the caller's mute expires; null = not muted OR muted indefinitely. Mirrors CommunityData.muteUntil.",
+      },
+      unreadMessageCount: { type: "integer" },
+      lastActivityAt: { type: "integer", format: "int64" },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      createdAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms. Mirrors CommunityData.createdAt.",
+      },
+      updatedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms. Mirrors CommunityData.updatedAt.",
+      },
+    },
+    required: [
+      "id",
+      "roomId",
+      "participants",
+      "peerId",
+      "user",
+      "avatar",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "isOnline",
+      "isOffline",
+      "isMuted",
+      "muteUntil",
+      "unreadMessageCount",
+      "lastActivityAt",
+      "lastActivity",
       "createdAt",
       "updatedAt",
     ],
