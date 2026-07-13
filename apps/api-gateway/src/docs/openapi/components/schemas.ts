@@ -330,7 +330,10 @@ export const openApiSchemas = {
     description: "Successful admin self-service password change.",
     properties: {
       success: { type: "boolean", example: true },
-      message: { type: "string", example: "Password changed" },
+      message: {
+        type: "string",
+        example: "Password changed successfully.",
+      },
       data: {
         type: "object",
         properties: {
