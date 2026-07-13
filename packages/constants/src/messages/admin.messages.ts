@@ -39,7 +39,7 @@ export const ADMIN_MESSAGES = {
   // ── Auth / RBAC / routing guards ──────────────────────────────────────────
   ADMIN_ACCOUNT_NOT_ACTIVE: {
     vi: "Tài khoản quản trị không hoạt động",
-    en: "This admin account is not active.",
+    en: "Your account has been disabled. Please contact the super administrator.",
   },
   ADMIN_FORBIDDEN: {
     vi: "Bạn không có quyền thực hiện thao tác này",
@@ -69,7 +69,7 @@ export const ADMIN_MESSAGES = {
   },
   PASSWORD_SAME_AS_CURRENT: {
     vi: "Mật khẩu mới phải khác mật khẩu hiện tại",
-    en: "New password must be different from your current password.",
+    en: "New password must be different from the current password.",
   },
 
   // ── User moderation ─────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ export const ADMIN_MESSAGES = {
   // ── Admin Accounts ──────────────────────────────────────────────────────────
   ADMIN_NOT_FOUND: {
     vi: "Không tìm thấy quản trị viên",
-    en: "Admin not found.",
+    en: "Admin account not found.",
   },
   ADMIN_EMAIL_TAKEN: {
     vi: "Email này đã được sử dụng bởi một quản trị viên khác",

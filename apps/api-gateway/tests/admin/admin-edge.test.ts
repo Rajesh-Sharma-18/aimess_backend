@@ -9,7 +9,8 @@
  * is set (so the proxy mounts). The actual backoffice upstream may or may not be
  * reachable from a dev box, so we DO NOT assert a specific proxied status. The
  * edge rejects with exactly these gateway-authored messages:
- *     "Unauthorized" | "Invalid or expired token" | "Admin auth not configured"
+ *     "Authentication token is required." | "Invalid authentication token." |
+ *     "Authentication token has expired." | "Admin auth not configured"
  * When the edge ACCEPTS, the request is proxied and the body comes from
  * downstream (a 502 graceful error if the upstream is down, or the real service
  * response if up) — and is NEVER one of those edge messages. We therefore prove
@@ -38,8 +39,9 @@ const PUBLIC_LOGIN = "/admin/v1/auth/login";
 
 /** The exact messages the gateway edge (adminJwt) emits when it REJECTS. */
 const EDGE_REJECTION_MESSAGES = new Set([
-  "Unauthorized",
-  "Invalid or expired token",
+  "Authentication token is required.",
+  "Invalid authentication token.",
+  "Authentication token has expired.",
   "Admin auth not configured",
 ]);
 
@@ -54,11 +56,14 @@ function isEdgeRejection(res: { status: number; body: { message?: string } }) {
 
 describe("/admin/* edge — adminJwt", () => {
   // --- NEGATIVE: unauthenticated on a protected path -----------------------
-  it("no Authorization header → 401 Unauthorized", async () => {
+  it("no Authorization header → 401 Authentication token is required.", async () => {
     const res = await request(app).get(PROTECTED);
 
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ success: false, message: "Unauthorized" });
+    expect(res.body).toEqual({
+      success: false,
+      message: "Authentication token is required.",
+    });
   });
 
   it("malformed header (no 'Bearer ' prefix) → 401", async () => {
@@ -67,7 +72,10 @@ describe("/admin/* edge — adminJwt", () => {
       .set("Authorization", "Token abc.def.ghi");
 
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ success: false, message: "Unauthorized" });
+    expect(res.body).toEqual({
+      success: false,
+      message: "Authentication token is required.",
+    });
   });
 
   it("'Bearer ' with empty token → 401", async () => {
@@ -76,10 +84,10 @@ describe("/admin/* edge — adminJwt", () => {
       .set("Authorization", "Bearer ");
 
     expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Unauthorized");
+    expect(res.body.message).toBe("Authentication token is required.");
   });
 
-  it("expired admin token → 401 Invalid or expired token", async () => {
+  it("expired admin token → 401 Authentication token has expired.", async () => {
     const res = await request(app)
       .get(PROTECTED)
       .set(bearer(makeExpiredAdminToken()));
@@ -87,17 +95,17 @@ describe("/admin/* edge — adminJwt", () => {
     expect(res.status).toBe(401);
     expect(res.body).toEqual({
       success: false,
-      message: "Invalid or expired token",
+      message: "Authentication token has expired.",
     });
   });
 
-  it("forged admin token (wrong secret) → 401 Invalid or expired token", async () => {
+  it("forged admin token (wrong secret) → 401 Invalid authentication token.", async () => {
     const res = await request(app)
       .get(PROTECTED)
       .set(bearer(makeForgedAdminToken()));
 
     expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Invalid or expired token");
+    expect(res.body.message).toBe("Invalid authentication token.");
   });
 
   it("garbage (non-JWT) bearer token → 401", async () => {
@@ -106,7 +114,7 @@ describe("/admin/* edge — adminJwt", () => {
       .set("Authorization", "Bearer not-a-jwt");
 
     expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Invalid or expired token");
+    expect(res.body.message).toBe("Invalid authentication token.");
   });
 
   it("a USER access token (wrong audience/secret) is NOT a valid admin token → 401", async () => {
@@ -117,7 +125,7 @@ describe("/admin/* edge — adminJwt", () => {
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Invalid or expired token");
+    expect(res.body.message).toBe("Invalid authentication token.");
   });
 
   // --- POSITIVE: a valid admin token passes the edge -----------------------
@@ -166,6 +174,6 @@ describe("/admin/* edge — adminJwt", () => {
       .set("Authorization", `Bearer ${tampered}`);
 
     expect(res.status).toBe(401);
-    expect(res.body.message).toBe("Invalid or expired token");
+    expect(res.body.message).toBe("Invalid authentication token.");
   });
 });

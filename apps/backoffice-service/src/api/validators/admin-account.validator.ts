@@ -140,7 +140,7 @@ export const changePasswordSchema = z
   })
   .refine((v) => v.newPassword === v.confirmPassword, {
     path: ["confirmPassword"],
-    message: "Password confirmation does not match.",
+    message: "New password and confirm password do not match.",
   })
   .refine((v) => v.newPassword !== v.currentPassword, {
     path: ["newPassword"],

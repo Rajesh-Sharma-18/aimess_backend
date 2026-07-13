@@ -40,15 +40,15 @@ export const AUTH_MESSAGES = {
   },
   AUTH_UNAUTHORIZED: {
     vi: "Yêu cầu xác thực",
-    en: "Authentication required.",
+    en: "Authentication token is required.",
   },
   AUTH_INVALID_TOKEN: {
     vi: "Token không hợp lệ",
-    en: "Invalid access token.",
+    en: "Invalid authentication token.",
   },
   AUTH_TOKEN_EXPIRED: {
     vi: "Token đã hết hạn, vui lòng đăng nhập lại",
-    en: "Your session has expired. Please sign in again.",
+    en: "Authentication token has expired.",
   },
   AUTH_REFRESH_SUCCESS: {
     vi: "Làm mới phiên đăng nhập thành công",
