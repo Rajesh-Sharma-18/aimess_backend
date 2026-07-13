@@ -53,6 +53,14 @@ interface PublishConvUpdatedParams {
   /** Optional per-recipient preview overrides (key present => override applies;
    *  value null => empty preview for that recipient). */
   recipientOverrides?: Map<string, RecipientBump | null>;
+  /**
+   * Canonical online-status lookup (reuses `PresenceService.getIsOnline`,
+   * i.e. the same `presence:user:<id>` Redis source the REST conversation
+   * APIs read). When supplied for `type: "PRIVATE"`, each recipient's payload
+   * gets an `isOffline` field for the OTHER participant in the room. Omitted
+   * entirely for GROUP (no single "peer") or when not supplied.
+   */
+  getIsOnline?: (userId: string) => Promise<boolean>;
 }
 
 /** Empty per-recipient preview (the recipient has hidden every message). */
@@ -107,6 +115,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       lastMessageAt: p.lastMessageAt,
       preview: p.preview,
       recipientOverrides,
+      getIsOnline: p.getIsOnline,
     });
   })().catch((error) => {
     logger.warn(
@@ -120,6 +129,29 @@ export async function publishConvUpdated(
 ): Promise<void> {
   const recipientIds = [...new Set(p.recipientIds)];
   if (recipientIds.length === 0) return;
+
+  // Real-time peer presence (PRIVATE only — a room has exactly one "other"
+  // participant per recipient). Reuses PresenceService.getIsOnline via the
+  // caller-supplied `getIsOnline`, the same Redis source the REST conversation
+  // APIs read, so socket + REST presence never disagree.
+  let onlineById: Map<string, boolean> | undefined;
+  if (p.type === "PRIVATE" && p.getIsOnline) {
+    try {
+      const entries = await Promise.all(
+        recipientIds.map(
+          async (id): Promise<[string, boolean]> => [
+            id,
+            await p.getIsOnline!(id),
+          ]
+        )
+      );
+      onlineById = new Map(entries);
+    } catch (err) {
+      logger.warn(
+        `conv:updated presence lookup failed for ${p.roomId}: ${String(err)}`
+      );
+    }
+  }
 
   try {
     const pipeline = p.redis.pipeline();
@@ -152,6 +184,11 @@ export async function publishConvUpdated(
       // never raise an unread badge (a null override has senderId "" which would
       // otherwise compute unread:true and show a phantom badge on an empty row).
       const unread = override === undefined ? recipientId !== senderId : false;
+      const otherParticipant = recipientIds.find((id) => id !== recipientId);
+      const isOffline =
+        onlineById && otherParticipant
+          ? !(onlineById.get(otherParticipant) ?? false)
+          : undefined;
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
@@ -165,6 +202,7 @@ export async function publishConvUpdated(
             senderId,
             senderName,
             unread,
+            ...(isOffline !== undefined ? { isOffline } : {}),
           },
         })
       );

@@ -41,6 +41,7 @@ import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type { PrivatePinService } from "./private-pin.service.js";
 import type { GroupPinService } from "./group-pin.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
+import type { PresenceService } from "./presence.service.js";
 import { buildDeletePayload } from "../lib/chat-message.serializer.js";
 import { renderConvOverrides } from "../lib/recipient-override-render.js";
 import { buildMessagePreview } from "../events/publish-message-sent.js";
@@ -247,8 +248,18 @@ export class ChatMessageOrchestrator {
     private readonly cacheRepo: CacheRepository,
     private readonly redis: Redis | Cluster,
     private readonly privatePinService: PrivatePinService,
-    private readonly groupPinService: GroupPinService
+    private readonly groupPinService: GroupPinService,
+    // ponytail: optional — omitted in existing unit tests that don't cover
+    // presence; PRIVATE conv:updated bumps just skip the isOffline field then.
+    private readonly presenceService?: PresenceService
   ) {}
+
+  /** Reused by every PRIVATE conv:updated publish — undefined skips isOffline entirely. */
+  private getIsOnline(): ((userId: string) => Promise<boolean>) | undefined {
+    return this.presenceService
+      ? (userId: string) => this.presenceService!.getIsOnline(userId)
+      : undefined;
+  }
 
   /**
    * Send a PRIVATE or GROUP message and run its effects. Authorization
@@ -413,6 +424,7 @@ export class ChatMessageOrchestrator {
         publishConvUpdatedSafe({
           ...bumpBase,
           recipientIds: [params.senderId, params.receiverId ?? ""],
+          getIsOnline: this.getIsOnline(),
         });
       }
 
@@ -957,6 +969,7 @@ export class ChatMessageOrchestrator {
               lastMessageId: recalc.prevMessageId ?? "",
               lastMessageAt: recalc.createdAt.getTime(),
               preview: { contentType: recalc.messageType, text: preview },
+              getIsOnline: this.getIsOnline(),
             });
           }
         })

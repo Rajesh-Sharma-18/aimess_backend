@@ -201,10 +201,14 @@ describe("GET /api/chat/private/rooms/:peerId (room details)", () => {
             displayName: "Peer One",
             memberId: "peer1",
             isDeletedUser: false,
-            isOnline: true,
           },
         ],
       ])
+    );
+    // isOnline/isOffline come from PresenceService (presence:user:<id> Redis
+    // key), not the user snapshot — the snapshot never carries live presence.
+    mocks.cacheRepo.getUserPresences.mockResolvedValue(
+      new Map([["peer-1", "online"]])
     );
 
     const res = await request(app)
@@ -251,10 +255,12 @@ describe("GET /api/chat/private/rooms/:peerId (room details)", () => {
             displayName: "Peer One",
             memberId: "peer1",
             isDeletedUser: false,
-            isOnline: false,
           },
         ],
       ])
+    );
+    mocks.cacheRepo.getUserPresences.mockResolvedValue(
+      new Map([["peer-1", "offline"]])
     );
 
     const res = await request(app)

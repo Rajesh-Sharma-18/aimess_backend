@@ -8175,6 +8175,11 @@ export const openApiSchemas = {
       avatarUrlExpiresIn: { type: "integer", nullable: true },
       isDeletedUser: { type: "boolean" },
       isOnline: { type: "boolean" },
+      isOffline: {
+        type: "boolean",
+        description:
+          "Negation of isOnline, from the same real-time presence pipeline as conv:updated's isOffline.",
+      },
       unreadMessageCount: {
         type: "integer",
         description:
@@ -8199,6 +8204,7 @@ export const openApiSchemas = {
       "avatar",
       "isDeletedUser",
       "isOnline",
+      "isOffline",
       "unreadMessageCount",
       "lastActivityAt",
       "lastActivity",

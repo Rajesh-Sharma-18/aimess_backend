@@ -2413,6 +2413,7 @@ components:
             lastMessageAt: 1749465231234
             senderId: "user_abc123"
             unread: true
+            isOffline: false
         - name: Sender's own copy (unread=false)
           payload:
             type: PRIVATE
@@ -2424,6 +2425,20 @@ components:
             lastMessageAt: 1749465231234
             senderId: "user_abc123"
             unread: false
+            isOffline: true
+        - name: Presence-only bump — peer went offline (no new message)
+          payload:
+            type: PRIVATE
+            roomId: "6843e1a2b5c3d4e5f6a7b8c9"
+            lastMessageId: "msg_9876543210abcdef"
+            lastMessage:
+              contentType: TEXT
+              text: "Hey! How are you?"
+            lastMessageAt: 1749465231234
+            senderId: "user_abc123"
+            senderName: ""
+            unread: false
+            isOffline: true
     CommunityUpdated:
       name: "community:updated"
       title: "community:updated (on /community)"
@@ -5490,10 +5505,20 @@ components:
         lastMessage: { $ref: "#/components/schemas/ListBumpLastMessage" }
         lastMessageAt: { type: integer, description: epoch ms. }
         senderId: { type: string }
+        senderName:
+          {
+            type: string,
+            description: "Display name of the sender — render as 'You:'/'Alice:' prefix (parity with community:updated).",
+          }
         unread:
           {
             type: boolean,
             description: "v1 boolean hint: false on the sender's copy.",
+          }
+        isOffline:
+          {
+            type: boolean,
+            description: "PRIVATE only — true when the OTHER participant (the recipient's chat peer) is currently offline, sourced from the same real-time PresenceService/Redis presence state as GET /chat/private/conversations and GET /chat/private/rooms/:peerId. Omitted for GROUP (no single peer). Re-emitted on its own whenever that peer's presence flips, independent of new messages.",
           }
     CommunityUpdatedPayload:
       type: object

@@ -189,13 +189,23 @@ export function buildApp(): BuiltApp {
   };
 
   // -- Real services wired to mocks --
+  // Constructed early (before privateRoomService/orchestrator) to mirror
+  // server.ts's DI order — presenceService is the single real-time source
+  // both REST (isOnline/isOffline) and conv:updated read.
+  const presenceService = new PresenceService(
+    cacheRepo,
+    redis,
+    privateRoomRepo
+  );
+
   const privateRoomService = new PrivateRoomService(
     privateRoomRepo,
     privateMessageRepo,
     cacheRepo,
     userSnapshotService,
     userServiceClient,
-    redis
+    redis,
+    presenceService
   );
   const privateMessageService = new PrivateMessageService(
     privateMessageRepo,
@@ -286,7 +296,6 @@ export function buildApp(): BuiltApp {
     cacheRepo
   );
 
-  const presenceService = new PresenceService(cacheRepo, redis);
   const inboxService = new InboxService(privateRoomService, groupRoomService);
   const syncService = new SyncService(
     privateMessageService,
@@ -301,7 +310,8 @@ export function buildApp(): BuiltApp {
     cacheRepo,
     redis,
     privatePinService,
-    groupPinService
+    groupPinService,
+    presenceService
   );
 
   // -- Real controllers --

@@ -23,6 +23,7 @@ import type { PrivateMessageRepository } from "../repositories/private-message.r
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
+import type { PresenceService } from "./presence.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 
 const AVATAR_PREFIXES = MEDIA_PREFIXES.userAvatars;
@@ -103,6 +104,8 @@ export interface PrivateConversationListItem {
   avatarUrlExpiresIn: number | null;
   isDeletedUser: boolean;
   isOnline: boolean;
+  /** True when the peer is offline — negation of isOnline, from the existing presence pipeline. */
+  isOffline: boolean;
   unreadMessageCount: number;
   lastActivityAt: number;
   lastActivity: PrivateConversationLastActivity;
@@ -123,6 +126,7 @@ function toConversationListItem(
     avatarUrlExpiresIn: room.peer.avatarUrlExpiresIn,
     isDeletedUser: room.peer.isDeletedUser,
     isOnline: room.peer.isOnline,
+    isOffline: !room.peer.isOnline,
     unreadMessageCount: room.unreadMessageCount,
     lastActivityAt: room.lastActivityAt,
     lastActivity: room.lastActivity,
@@ -183,7 +187,10 @@ export class PrivateRoomService {
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
     private readonly userServiceClient: UserServiceClient,
-    private readonly redis: Redis | Cluster
+    private readonly redis: Redis | Cluster,
+    // ponytail: optional — omitted in existing unit tests; peer isOnline just
+    // falls back to false (matches the pre-existing hardcoded-false behavior).
+    private readonly presenceService?: PresenceService
   ) {}
 
   /**
@@ -360,6 +367,13 @@ export class PrivateRoomService {
       this.cacheRepo
     );
 
+    // Real-time presence — reuses PresenceService (same `presence:user:<id>`
+    // Redis source conv:updated reads) rather than the user-snapshot's
+    // `isOnline` field, which user-service never populates (always false).
+    const onlineByPeer = this.presenceService
+      ? await this.presenceService.getPresenceMany(peerIds)
+      : new Map<string, boolean>();
+
     // Resolve peer avatar object keys → full download URLs (resolve on read).
     const avatarUrls = await resolveMediaUrlMap(
       [...snapshots.values()].map(
@@ -485,7 +499,7 @@ export class PrivateRoomService {
             urlFromMap(avatarUrls, (snapshot.avatar as string) || "") || null,
           avatarUrlExpiresIn: avatarMedia?.downloadUrlExpiresIn ?? null,
           isDeletedUser: snapshot.isDeletedUser === true,
-          isOnline: Boolean(snapshot.isOnline),
+          isOnline: onlineByPeer.get(peerId) ?? false,
         },
         lastActivityAt,
         lastActivity,
