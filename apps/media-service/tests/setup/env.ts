@@ -8,6 +8,7 @@ process.env.MEDIA_SERVICE_PORT = "3009";
 process.env.MEDIA_GRPC_PORT = "4009";
 
 process.env.JWT_ACCESS_SECRET = "test-access-secret-do-not-use-in-prod";
+process.env.JWT_ADMIN_SECRET = "test-admin-secret-do-not-use-in-prod";
 
 process.env.CORS_ALLOWED_ORIGINS = "*";
 

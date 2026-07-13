@@ -110,6 +110,8 @@ const mediaUploadUrl = {
 
 **Security: File ownership is ALWAYS derived from your JWT token and cannot be overridden.** The \`ownerId\` in the storage key (\`{prefix}/{ownerId}/{fileId}\`) is your authenticated user ID — no parameter accepts it.
 
+**Accepted tokens:** a user access token, or a Backoffice admin access token (used for the admin's own \`USER_AVATAR\` upload) — the \`ownerId\` is derived from whichever token authenticated the request.
+
 **Upload flow:**
 1. Call this endpoint to get \`uploadUrl\` + \`objectKey\`. The file owner is automatically set to your user ID from the JWT token.
 2. PUT the file directly to \`uploadUrl\` with the \`Content-Type\` header set to the declared \`contentType\`.
