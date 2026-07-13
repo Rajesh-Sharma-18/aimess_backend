@@ -31,6 +31,20 @@ function buildDeviceId(userAgent: string, ip: string): string {
     .digest("hex");
 }
 
+const PLATFORM_HEADER_MAP: Record<string, DeviceType> = {
+  android: DeviceType.ANDROID,
+  ios: DeviceType.IOS,
+  web: DeviceType.WEB,
+  windows: DeviceType.DESKTOP,
+  macos: DeviceType.DESKTOP,
+  linux: DeviceType.DESKTOP,
+};
+
+function mapPlatformHeader(platform: string | undefined): DeviceType | null {
+  if (!platform) return null;
+  return PLATFORM_HEADER_MAP[platform.trim().toLowerCase()] ?? null;
+}
+
 function mapDeviceType(parser: UAParser): DeviceType {
   const os = parser.getOS();
   const device = parser.getDevice();
@@ -91,9 +105,15 @@ export function buildSessionContext(req: Request): SessionContext {
   const appVersion =
     typeof appVersionHeader === "string" ? appVersionHeader : null;
 
+  const platformHeader = req.headers["x-platform"];
+  const deviceType =
+    mapPlatformHeader(
+      typeof platformHeader === "string" ? platformHeader : undefined
+    ) ?? mapDeviceType(parser);
+
   return {
     deviceId: buildDeviceId(userAgent, ipAddress),
-    deviceType: mapDeviceType(parser),
+    deviceType,
     deviceName: buildDeviceName(parser),
     osVersion: os.version ?? null,
     appVersion,
