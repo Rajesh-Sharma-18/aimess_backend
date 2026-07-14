@@ -2,7 +2,7 @@ import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
-import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
@@ -166,7 +166,7 @@ export function registerChatNamespace(
   mediaClient: MediaClient
 ): void {
   const chat: Namespace = io.of("/chat");
-  chat.use(gatewaySocketAuthMiddleware);
+  chat.use(createGatewaySocketAuthMiddleware(redisPub));
 
   // Dedicated subscriber for conversation, call, and user channels.
   // Backend services publish: { event: "message:new"|"message:edited"|..., data: {...} }
@@ -304,9 +304,10 @@ export function registerChatNamespace(
   });
 
   chat.on("connection", (socket: Socket) => {
-    const { userId, locale } = socket.data;
-    const deviceId = socket.data.sessionId ?? socket.id;
+    const { userId, sessionId, locale } = socket.data;
+    const deviceId = sessionId ?? socket.id;
     void socket.join(`user:${userId}`);
+    void socket.join(`session:${sessionId}`);
     logger.debug(`/chat connected userId=${userId}`);
 
     // Resolve sender identity ONCE per connection (gRPC snapshot + avatar

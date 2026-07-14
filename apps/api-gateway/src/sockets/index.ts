@@ -35,6 +35,13 @@ export async function setupSockets(
     maxHttpBufferSize: 1e6,
     connectionStateRecovery: {
       maxDisconnectionDuration: 2 * 60 * 1000,
+      // Socket.IO defaults this to `true`, which SKIPS `namespace.use()` auth
+      // middleware entirely on a recovered reconnect (e.g. after a silent
+      // network drop) — a session revoked while the device was offline would
+      // silently rejoin its rooms unauthenticated. `false` forces every
+      // reconnect, recovered or not, back through
+      // `createGatewaySocketAuthMiddleware`'s session-active check.
+      skipMiddlewares: false,
     },
     perMessageDeflate: false,
   });
@@ -81,7 +88,7 @@ export async function setupSockets(
     userClient,
     mediaClient
   );
-  registerNotifyNamespace(io, notificationClient, notifySub);
+  registerNotifyNamespace(io, notificationClient, notifySub, pub);
   registerStreamNamespace(io, streamClient, streamSub, pub, mediaClient);
   registerAuthNamespace(io, authSub);
   registerSessionRevokeListener(io, sessionRevokeSub);

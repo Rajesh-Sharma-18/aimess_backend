@@ -13,7 +13,7 @@
  * re-driving them here would require booting the adapter and is intentionally
  * deferred.
  */
-import { gatewaySocketAuthMiddleware } from "../../src/sockets/auth.middleware.js";
+import { createGatewaySocketAuthMiddleware } from "../../src/sockets/auth.middleware.js";
 import {
   makeAccessToken,
   makeExpiredAccessToken,
@@ -27,6 +27,20 @@ type Handshake = {
   headers?: Record<string, string | string[] | undefined>;
 };
 
+/** Fake Redis: `.get()` returns "1" (active) unless a value was preset — e.g. "0" for revoked. */
+class FakeRedis {
+  constructor(private store: Record<string, string> = {}) {}
+  async get(key: string): Promise<string | null> {
+    return this.store[key] ?? null;
+  }
+}
+
+const activeRedis = new FakeRedis() as unknown as Parameters<
+  typeof createGatewaySocketAuthMiddleware
+>[0];
+const gatewaySocketAuthMiddleware =
+  createGatewaySocketAuthMiddleware(activeRedis);
+
 /** Build a minimal Socket.IO-shaped object the middleware reads from/writes to. */
 function fakeSocket(handshake: Handshake) {
   return {
@@ -36,11 +50,12 @@ function fakeSocket(handshake: Handshake) {
 }
 
 /** Run the middleware and resolve with the error it passed to `next` (or null). */
-function run(handshake: Handshake): Promise<Error | null> {
+function run(
+  handshake: Handshake,
+  middleware = gatewaySocketAuthMiddleware
+): Promise<Error | null> {
   return new Promise((resolve) => {
-    gatewaySocketAuthMiddleware(fakeSocket(handshake), (err) =>
-      resolve(err ?? null)
-    );
+    middleware(fakeSocket(handshake), (err) => resolve(err ?? null));
   });
 }
 
@@ -151,5 +166,21 @@ describe("gatewaySocketAuthMiddleware — connection auth", () => {
 
     expect(socket.data.userId).toBeUndefined();
     expect(socket.data.sessionId).toBeUndefined();
+  });
+
+  // --- REJECT: revoked session (closes the offline-reconnect window) -------
+  it("rejects a structurally-valid token whose session was revoked", async () => {
+    const revokedRedis = new FakeRedis({
+      [`aimess:session:active:${TEST_SESSION_ID}`]: "0",
+    }) as unknown as Parameters<typeof createGatewaySocketAuthMiddleware>[0];
+    const middleware = createGatewaySocketAuthMiddleware(revokedRedis);
+
+    const err = await run({ auth: { token: makeAccessToken() } }, middleware);
+    expect(err?.message).toBe("Authentication failed");
+  });
+
+  it("accepts when the session-active cache has no key yet (fail-open for legacy sessions)", async () => {
+    const err = await run({ auth: { token: makeAccessToken() } });
+    expect(err).toBeNull();
   });
 });

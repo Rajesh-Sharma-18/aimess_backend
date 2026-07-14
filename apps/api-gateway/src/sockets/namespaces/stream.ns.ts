@@ -3,7 +3,7 @@ import type { Redis } from "ioredis";
 import { z } from "zod";
 import { status as grpcStatus } from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
-import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import type { StreamClient } from "../../grpc/clients/stream.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
@@ -138,7 +138,7 @@ export function registerStreamNamespace(
   mediaClient: MediaClient
 ): void {
   const streamNs: Namespace = io.of("/stream");
-  streamNs.use(gatewaySocketAuthMiddleware);
+  streamNs.use(createGatewaySocketAuthMiddleware(redisPub));
 
   // Handle a stream:banned event from stream-service: notify + remove the banned
   // user's live sockets from the room (channel === roomKey(streamId)). Their
