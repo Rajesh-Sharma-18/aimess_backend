@@ -158,6 +158,10 @@ export const COMMUNITY_MESSAGES = {
     vi: "Bạn không thể xóa một cộng đồng mà bạn sở hữu. Hãy chuyển quyền sở hữu hoặc xóa cộng đồng từ trang quản trị.",
     en: "You cannot remove a community that you own. Transfer ownership or delete the community from the admin panel.",
   },
+  COMMUNITY_REMOVED_FOR_SELF: {
+    vi: "Đã xóa cộng đồng khỏi danh sách của bạn",
+    en: "Community removed from your list",
+  },
   COMMUNITY_MEMBER_UNBANNED: {
     vi: "Đã bỏ cấm thành viên",
     en: "Member unbanned",

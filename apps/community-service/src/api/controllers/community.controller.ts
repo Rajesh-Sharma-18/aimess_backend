@@ -348,6 +348,18 @@ export const leaveCommunity = asyncHandler(
   }
 );
 
+export const deleteCommunityForSelf = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params as CommunityIdParams;
+
+    await communityService.deleteCommunityForSelf(id, req.auth.userId);
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(null, t("COMMUNITY_REMOVED_FOR_SELF", req.locale)));
+  }
+);
+
 export const bulkLeaveCommunities = asyncHandler(
   async (req: Request, res: Response) => {
     const { communityIds } = req.body as BulkLeaveInput;
