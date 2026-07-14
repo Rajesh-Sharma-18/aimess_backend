@@ -3299,7 +3299,7 @@ export const adminPaths = {
       operationId: "adminListAdminAccounts",
       summary: "List admin accounts",
       description:
-        "Paginated, searchable, filtered admin list (admin_db OWN). search matches name OR email. status enum ACTIVE|DISABLED|INVITED|all (default all). roleKey enum or all (default all). Sort whitelist name|email|createdAt|lastLoginAt with :asc|:desc (default createdAt:desc). Requires admins.manage.",
+        "Paginated, searchable, filtered admin list (admin_db OWN). search matches name/username OR email. status enum ACTIVE|DISABLED|INVITED|all, plus the wire alias INACTIVE (maps to DISABLED); default all. roleKey enum or all (default all). fromDate/toDate filter createdAt (epoch ms, inclusive). Sort either via the combined `sort` param (whitelist name|email|createdAt|lastLoginAt|status with :asc|:desc, default createdAt:desc) or via `sortBy`(username|email|createdAt|status)+`sortOrder`(asc|desc) — `sort` wins if both are given. Requires admins.manage.",
       security: adminSecurity,
       parameters: [
         {
@@ -3314,7 +3314,7 @@ export const adminPaths = {
           required: false,
           schema: {
             type: "string",
-            enum: ["ACTIVE", "DISABLED", "INVITED", "all"],
+            enum: ["ACTIVE", "DISABLED", "INVITED", "INACTIVE", "all"],
             default: "all",
           },
         },
@@ -3336,14 +3336,41 @@ export const adminPaths = {
           },
         },
         {
+          name: "fromDate",
+          in: "query",
+          required: false,
+          schema: { type: "integer", description: "Epoch ms, inclusive." },
+        },
+        {
+          name: "toDate",
+          in: "query",
+          required: false,
+          schema: { type: "integer", description: "Epoch ms, inclusive." },
+        },
+        {
           name: "sort",
           in: "query",
           required: false,
           schema: {
             type: "string",
-            pattern: "^(name|email|createdAt|lastLoginAt):(asc|desc)$",
+            pattern: "^(name|email|createdAt|lastLoginAt|status):(asc|desc)$",
             default: "createdAt:desc",
           },
+        },
+        {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["username", "email", "createdAt", "status"],
+          },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
         },
         {
           name: "page",
@@ -3370,7 +3397,7 @@ export const adminPaths = {
       operationId: "adminCreateAdminAccount",
       summary: "Create an admin account",
       description:
-        "Only a SUPER_ADMIN actor may create a SUPER_ADMIN target (else 403 ADMIN_FORBIDDEN). Audited (admin.created). Requires admins.manage.",
+        "Only a SUPER_ADMIN actor may create a SUPER_ADMIN target (else 403 ADMIN_FORBIDDEN). roleKey defaults to ADMIN when omitted. Both email and username must be unique. Audited (admin.created). Requires admins.manage.",
       security: adminSecurity,
       requestBody: jsonBody("#/components/schemas/AdminAccountCreateRequest"),
       responses: {
@@ -3379,7 +3406,7 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
         "404": errRes("ADMIN_ROLE_NOT_FOUND (defensive)"),
-        "409": errRes("ADMIN_EMAIL_TAKEN"),
+        "409": errRes("ADMIN_EMAIL_TAKEN or ADMIN_USERNAME_TAKEN"),
       },
       "x-implementation-status": "implemented",
     },
@@ -3403,9 +3430,9 @@ export const adminPaths = {
     patch: {
       tags: [adminTags.adminAccounts],
       operationId: "adminUpdateAdminAccount",
-      summary: "Update an admin's profile (name/avatarUrl only)",
+      summary: "Update an admin's profile (username/email/avatarUrl only)",
       description:
-        "Cannot edit an existing SUPER_ADMIN target unless the actor is SUPER_ADMIN. Role changes are NOT accepted here — use .../permissions. Audited (admin.updated). Requires admins.manage.",
+        "Cannot edit an existing SUPER_ADMIN target unless the actor is SUPER_ADMIN, or an already-deleted account. Role changes are NOT accepted here — use .../permissions. New email/username are re-checked for uniqueness. Audited (admin.updated). Requires admins.manage.",
       security: adminSecurity,
       parameters: [idPathParam],
       requestBody: jsonBody("#/components/schemas/AdminAccountUpdateRequest"),
@@ -3414,7 +3441,36 @@ export const adminPaths = {
         "400": errRes("Validation failed"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
-        "404": errRes("ADMIN_NOT_FOUND"),
+        "404": errRes("ADMIN_NOT_FOUND (or account is deleted)"),
+        "409": errRes("ADMIN_EMAIL_TAKEN or ADMIN_USERNAME_TAKEN"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/admin-accounts/{id}/status": {
+    patch: {
+      tags: [adminTags.adminAccounts],
+      operationId: "adminSetAdminAccountStatus",
+      summary: "Activate or deactivate an admin account (unified toggle)",
+      description:
+        "Routes onto the same activate/deactivate logic as the dedicated POST endpoints below — `status: ACTIVE` activates, `status: INACTIVE` deactivates (and immediately revokes all active sessions for the target). 403 ADMIN_CANNOT_DEACTIVATE_SELF if id === actor.id. 409 ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN if the target is the only active SUPER_ADMIN. Audited (admin.activated / admin.deactivated). Requires admins.manage.",
+      security: adminSecurity,
+      parameters: [idPathParam],
+      requestBody: jsonBody("#/components/schemas/AdminAccountStatusRequest"),
+      responses: {
+        "200": okRes(
+          "Admin status updated",
+          "#/components/schemas/AdminAccount"
+        ),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes(
+          "Missing admins.manage, ADMIN_FORBIDDEN, or ADMIN_CANNOT_DEACTIVATE_SELF"
+        ),
+        "404": errRes("ADMIN_NOT_FOUND (or account is deleted)"),
+        "409": errRes(
+          "ADMIN_ALREADY_ACTIVE, ADMIN_ALREADY_INACTIVE, or ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN"
+        ),
       },
       "x-implementation-status": "implemented",
     },

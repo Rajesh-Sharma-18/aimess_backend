@@ -5,7 +5,7 @@
 
 import type { MediaObject } from "@aimess/shared-types";
 
-export type AdminAccountStatus = "ACTIVE" | "DISABLED" | "INVITED";
+export type AdminAccountStatus = "ACTIVE" | "DISABLED" | "INVITED" | "DELETED";
 
 export type AdminAccountRole = {
   key: string;
@@ -41,6 +41,7 @@ export type CreateAdminAccountInput = {
 /** Normalized update input (post-validation) — at least one field present. */
 export type UpdateAdminAccountInput = {
   name?: string;
+  email?: string;
   avatarUrl?: string;
 };
 
@@ -50,8 +51,15 @@ export type ListAdminAccountsQuery = {
   status?: AdminAccountStatus | "all";
   roleKey?: string;
   sort: string;
+  fromDate?: number;
+  toDate?: number;
   page: number;
   limit: number;
+};
+
+/** Normalized "update status" input — the unified activate/deactivate endpoint. */
+export type UpdateAdminAccountStatusInput = {
+  status: "ACTIVE" | "INACTIVE";
 };
 
 /** A single entry in the permission catalogue (GET /admin-accounts/permissions). */

@@ -160,6 +160,14 @@ export const ADMIN_MESSAGES = {
     vi: "Bạn không thể tự vô hiệu hóa tài khoản của mình",
     en: "You cannot deactivate your own account.",
   },
+  ADMIN_USERNAME_TAKEN: {
+    vi: "Tên đăng nhập này đã được sử dụng bởi một quản trị viên khác",
+    en: "This username is already used by another admin.",
+  },
+  ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN: {
+    vi: "Không thể vô hiệu hóa Super Admin cuối cùng",
+    en: "Cannot deactivate the last remaining Super Admin.",
+  },
 } as const satisfies MessageCatalog;
 
 export type AdminMessageKey = keyof typeof ADMIN_MESSAGES;

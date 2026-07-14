@@ -3533,7 +3533,7 @@ export const openApiSchemas = {
       role: { $ref: "#/components/schemas/AdminAccountRoleRef" },
       status: {
         type: "string",
-        enum: ["ACTIVE", "DISABLED", "INVITED"],
+        enum: ["ACTIVE", "DISABLED", "INVITED", "DELETED"],
         example: "ACTIVE",
       },
       lastLoginAt: { type: "string", format: "date-time", nullable: true },
@@ -3544,7 +3544,9 @@ export const openApiSchemas = {
   },
   AdminAccountCreateRequest: {
     type: "object",
-    required: ["email", "password", "name", "roleKey"],
+    description:
+      "One of `username`/`name` is required (`username` is the wire field; `name` is kept accepted for backward compatibility — same field). `roleKey` defaults to `ADMIN` when omitted.",
+    required: ["email", "password"],
     properties: {
       email: { type: "string", format: "email", example: "mod@aimess.io" },
       password: {
@@ -3553,13 +3555,24 @@ export const openApiSchemas = {
         description:
           "Must contain at least one uppercase, one lowercase, one digit, and one special character.",
       },
+      username: {
+        type: "string",
+        minLength: 2,
+        maxLength: 100,
+        example: "mod_user",
+      },
       name: {
         type: "string",
         minLength: 2,
         maxLength: 100,
         example: "Mod User",
+        deprecated: true,
+        description: "Alias for `username`, kept for backward compatibility.",
       },
-      roleKey: { $ref: "#/components/schemas/AdminRoleKey" },
+      roleKey: {
+        allOf: [{ $ref: "#/components/schemas/AdminRoleKey" }],
+        default: "ADMIN",
+      },
       avatarUrl: {
         type: "string",
         format: "uri",
@@ -3571,15 +3584,25 @@ export const openApiSchemas = {
   AdminAccountUpdateRequest: {
     type: "object",
     description:
-      "PATCH profile fields only — role changes go through .../permissions. At least one of name or avatarUrl must be provided.",
+      "PATCH profile fields only — role changes go through .../permissions. At least one of username, email or avatarUrl must be provided. Duplicate email/username are rejected with 409.",
     properties: {
-      name: { type: "string", minLength: 2, maxLength: 100, nullable: true },
+      username: { type: "string", minLength: 2, maxLength: 100 },
+      email: { type: "string", format: "email" },
       avatarUrl: {
         type: "string",
         format: "uri",
         maxLength: 500,
         nullable: true,
       },
+    },
+  },
+  AdminAccountStatusRequest: {
+    type: "object",
+    description:
+      "Unified activate/deactivate toggle. `INACTIVE` maps to the internal `DISABLED` status.",
+    required: ["status"],
+    properties: {
+      status: { type: "string", enum: ["ACTIVE", "INACTIVE"] },
     },
   },
   AdminAccountRoleRequest: {
