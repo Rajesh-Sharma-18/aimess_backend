@@ -9,6 +9,7 @@ import {
   buildListResponse,
   buildCursorResponse,
   buildTimelineResponse,
+  buildAroundResponse,
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
@@ -116,21 +117,21 @@ export class PrivateMessageController {
     const around = req.query.around as string | undefined;
 
     if (around) {
-      const { items } = await this.messageService.getMessagesAround({
-        roomId,
-        userId,
-        messageId: around,
-        limit,
-      });
+      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
+        await this.messageService.getMessagesAround({
+          roomId,
+          userId,
+          messageId: around,
+          limit,
+        });
       const enriched = await this.messageService.enrichMessages(items);
       const totalCount = await this.messageService.countMessages(roomId);
-      const paginated = buildTimelineResponse(
-        enriched,
-        totalCount,
-        limit,
-        false,
-        null
-      );
+      const paginated = buildAroundResponse(enriched, totalCount, limit, {
+        hasMoreOlder,
+        hasMoreNewer,
+        olderCursor,
+        newerCursor,
+      });
       res
         .status(HTTP_STATUS.OK)
         .json(

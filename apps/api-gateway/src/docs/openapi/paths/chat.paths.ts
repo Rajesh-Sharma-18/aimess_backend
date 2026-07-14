@@ -1416,7 +1416,11 @@ const communityMessages = {
       "- Response shape: `ChatCommunityIncrementalSync` (`data[]`, `hasMore`, `nextCursor`) — **no pagination wrapper**.\n" +
       "- Store `nextCursor` as the next `after_ts` to page forward or re-sync.\n\n" +
       "**Jump-to-message** (`around=<messageId>`):\n" +
-      "- Returns ~limit/2 messages on each side of the anchor. Mutually exclusive with before_ts/after_ts.",
+      "- Returns ~limit/2 messages on each side of the anchor (ascending, INCLUDING the target). Mutually exclusive with before_ts/after_ts.\n" +
+      "- Adds **bidirectional continuation** on top of the `ChatCommunityMessagePage` shape so the client can page BOTH ways from the landing point: " +
+      '`hasMoreOlder`/`hasMoreNewer` (booleans) and `olderCursor`/`newerCursor`. Feed `olderCursor` (a compound `"<ms>_<id>"`) back as `before_ts` to page older, ' +
+      "and `newerCursor` (plain epoch-ms) back as `after_ts` to page newer — no new cursor scheme, the existing params consume them directly. " +
+      "The legacy `hasMore`/`nextCursor` mirror the OLDER direction for single-direction clients. `pinnedMessage` is included as usual.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -1432,7 +1436,9 @@ const communityMessages = {
         required: false,
         schema: { type: "string", minLength: 1, maxLength: 100 },
         description:
-          "Message ID to anchor a jump-to-message window. Returns ~limit/2 messages on each side. Mutually exclusive with before_ts/after_ts.",
+          "Message ID to anchor a jump-to-message window. Returns ~limit/2 messages on each side (INCLUDING the target). " +
+          "Mutually exclusive with before_ts/after_ts. The response adds `hasMoreOlder`/`hasMoreNewer` + `olderCursor` " +
+          '(→ `before_ts`, compound `"<ms>_<id>"`) / `newerCursor` (→ `after_ts`, epoch-ms) so the client can page both directions.',
       },
       limitParam(30),
     ],

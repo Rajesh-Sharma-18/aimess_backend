@@ -24,6 +24,10 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
+import {
+  computeSeqAroundCursors,
+  type AroundCursors,
+} from "../lib/around-cursors.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import { markIdempotentReplay } from "../lib/idempotency.js";
 import {
@@ -374,7 +378,7 @@ export class PrivateMessageService {
     userId: string;
     messageId: string;
     limit: number;
-  }): Promise<{ items: PrivateMessage[]; anchorSeq: number }> {
+  }): Promise<{ items: PrivateMessage[]; anchorSeq: number } & AroundCursors> {
     const room = await assertPrivateParticipant(
       this.roomRepo,
       params.roomId,
@@ -388,7 +392,18 @@ export class PrivateMessageService {
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
     });
-    return { items, anchorSeq: anchor.sequenceNumber };
+    // Bidirectional continuation: probe one row strictly beyond each window edge
+    // (reusing the seq keyset paging query), so the client can page up AND down.
+    const cursors = await computeSeqAroundCursors(items, (direction, seq) =>
+      this.messageRepo.findByRoomIdSeq({
+        userId: params.userId,
+        roomId: room.roomId,
+        direction,
+        seq,
+        limit: 1,
+      })
+    );
+    return { items, anchorSeq: anchor.sequenceNumber, ...cursors };
   }
 
   async searchMessages(params: {

@@ -8752,6 +8752,15 @@ export const openApiSchemas = {
         format: "int64",
         description: "Epoch ms.",
       },
+      isAvailable: {
+        type: "boolean",
+        description:
+          "Whether the pinned message still exists (not deleted-for-everyone). " +
+          "Present on the private- and group-room pins lists — lets the banner " +
+          "render a 'pinned-but-deleted' state (tap does not navigate) using the " +
+          "frozen `contentPinned` snapshot. Mirrors community's embedded " +
+          "`pinnedMessage.isAvailable`. Additive — omitted by older responses.",
+      },
     },
     required: ["id", "roomId", "messageId", "pinnedBy", "pinnedAt"],
   },

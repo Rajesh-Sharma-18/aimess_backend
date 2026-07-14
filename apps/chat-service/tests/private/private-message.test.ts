@@ -103,6 +103,62 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  // §5.1/§5.2 — jump-to-message window must signal continuation in BOTH
+  // directions with cursors the existing before_seq/after_seq params consume.
+  it("POSITIVE: ?around= returns a centered window + bidirectional cursors", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+    });
+    mocks.privateMessageRepo.findById.mockResolvedValue({
+      id: "m11",
+      sequenceNumber: 11,
+    });
+    mocks.privateMessageRepo.findAroundSeq.mockResolvedValue([
+      {
+        id: "m10",
+        senderId: "peer",
+        content: { text: "a" },
+        sequenceNumber: 10,
+        createdAt: new Date(10),
+      },
+      {
+        id: "m11",
+        senderId: "peer",
+        content: { text: "b" },
+        sequenceNumber: 11,
+        createdAt: new Date(11),
+      },
+      {
+        id: "m12",
+        senderId: "peer",
+        content: { text: "c" },
+        sequenceNumber: 12,
+        createdAt: new Date(12),
+      },
+    ]);
+    // Older probe (before seq 10) finds a row; newer probe (after seq 12) finds none.
+    mocks.privateMessageRepo.findByRoomIdSeq.mockImplementation(
+      async ({ direction }: { direction: "before" | "after" }) =>
+        direction === "before" ? [{ id: "m9" }] : []
+    );
+    mocks.privateMessageRepo.countMessages.mockResolvedValue(4);
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages?around=m11`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(3);
+    expect(res.body.data.hasMoreOlder).toBe(true);
+    expect(res.body.data.hasMoreNewer).toBe(false);
+    expect(res.body.data.olderCursor).toBe("10"); // → before_seq
+    expect(res.body.data.newerCursor).toBe("12"); // → after_seq
+    // Backward-compat: single-direction clients still page up.
+    expect(res.body.data.hasMore).toBe(true);
+    expect(res.body.data.nextCursor).toBe("10");
+  });
 });
 
 describe("GET /rooms/:roomId/messages/search", () => {
@@ -478,18 +534,30 @@ describe("POST /messages/:messageId/report", () => {
 });
 
 describe("pins: GET list + POST pin + DELETE unpin", () => {
-  it("POSITIVE: lists pins for a room", async () => {
+  it("POSITIVE: lists pins for a room, stamping isAvailable per pin (§5.8)", async () => {
     mocks.privateMessagePinRepo.findPinsByRoom.mockResolvedValue([
-      { id: "pin1", messageId: "m1", pinnedAt: new Date(1) },
+      { id: "pin1", messageId: "m1", pinnedAt: new Date(1) }, // still live
+      { id: "pin2", messageId: "m2", pinnedAt: new Date(2) }, // deleted-for-all
     ]);
-    mocks.privateMessagePinRepo.countPinsByRoom.mockResolvedValue(1);
+    mocks.privateMessagePinRepo.countPinsByRoom.mockResolvedValue(2);
+    // Only m1 survives → its pin is available; m2's is a "pinned-but-deleted" banner.
+    mocks.privateMessageRepo.findLiveIds.mockResolvedValue(new Set(["m1"]));
 
     const res = await request(app)
       .get(`/api/chat/private/rooms/${ROOM}/pins`)
       .set(bearer(makeAccessToken()));
 
     expect(res.status).toBe(200);
-    expect(res.body.data.data).toHaveLength(1);
+    expect(res.body.data.data).toHaveLength(2);
+    const byId = Object.fromEntries(
+      res.body.data.data.map((p: { messageId: string }) => [p.messageId, p])
+    );
+    expect(byId.m1.isAvailable).toBe(true);
+    expect(byId.m2.isAvailable).toBe(false);
+    expect(mocks.privateMessageRepo.findLiveIds).toHaveBeenCalledWith(ROOM, [
+      "m1",
+      "m2",
+    ]);
   });
 
   it("POSITIVE: pin a message returns 201 and publishes pin:updated", async () => {

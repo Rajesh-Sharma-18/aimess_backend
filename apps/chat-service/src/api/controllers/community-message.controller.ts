@@ -11,6 +11,7 @@ import {
   buildListResponse,
   buildCursorResponse,
   buildTimelineResponse,
+  buildAroundResponse,
 } from "../../lib/pagination.js";
 import {
   normalizeMessageType,
@@ -132,18 +133,24 @@ export class CommunityMessageController {
     const around = req.query.around as string | undefined;
 
     if (around) {
-      const { items, total } = await this.service.getMessagesAround({
+      const {
+        items,
+        total,
+        hasMoreOlder,
+        hasMoreNewer,
+        olderCursor,
+        newerCursor,
+      } = await this.service.getMessagesAround({
         roomId,
         userId,
         messageId: around,
         limit,
       });
-      const paginated = buildTimelineResponse(
+      const paginated = buildAroundResponse(
         items as unknown as Record<string, unknown>[],
         total,
         limit,
-        false,
-        null
+        { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
       );
       const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
       res
