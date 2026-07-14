@@ -22,8 +22,9 @@ export const LIVE_NAMESPACES = [
  * Every namespace's socket also joins `session:<sessionId>` on connect (see
  * each namespace's `connection` handler) — that room is what lets us emit
  * `auth:session_terminated` to ONLY the terminated device before disconnecting
- * it, and `session:list_updated` to every OTHER device (`user:<userId>` room)
- * so linked-device lists refresh without polling.
+ * it. `session:list_updated` (every OTHER device, `user:<userId>` room) is
+ * emitted only on `/notify` — that's the only namespace the client listens on
+ * for session/device-list sync.
  */
 export function registerSessionRevokeListener(
   io: SocketIOServer,
@@ -65,12 +66,12 @@ export function registerSessionRevokeListener(
               `session-revoke disconnect lookup failed on ${nsName}: ${String(err)}`
             )
           );
-
-        ns.to(`user:${userId}`).emit("session:list_updated", {
-          action: "terminated",
-          sessionId,
-        });
       }
+
+      io.of("/notify").to(`user:${userId}`).emit("session:list_updated", {
+        action: "terminated",
+        sessionId,
+      });
     }
   );
 

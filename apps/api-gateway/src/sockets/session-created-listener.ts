@@ -2,8 +2,6 @@ import type { Server as SocketIOServer } from "socket.io";
 import type { Redis } from "ioredis";
 import { logger } from "@aimess/logger";
 
-import { LIVE_NAMESPACES } from "./session-revoke.js";
-
 /**
  * Realtime linked-device sync. When auth-service persists a NEW session — normal
  * login, QR device-link approval, or social login, all via the single
@@ -14,6 +12,8 @@ import { LIVE_NAMESPACES } from "./session-revoke.js";
  * `session:list_updated` event the revoke path already emits — just with
  * `action: "created"` plus the full session row — so the Linked Devices /
  * Sessions screen refreshes instantly without a manual refresh or polling.
+ * Emitted only on `/notify` — the only namespace the client listens on for
+ * session/device-list sync.
  *
  * Shares the durable session-revoke PSUBSCRIBE connection: both handlers receive
  * every pmessage and each filters by channel prefix, so no extra Redis
@@ -38,11 +38,9 @@ export function registerSessionCreatedListener(
       }
       if (!session) return;
 
-      for (const nsName of LIVE_NAMESPACES) {
-        io.of(nsName)
-          .to(`user:${userId}`)
-          .emit("session:list_updated", { action: "created", session });
-      }
+      io.of("/notify")
+        .to(`user:${userId}`)
+        .emit("session:list_updated", { action: "created", session });
     }
   );
 

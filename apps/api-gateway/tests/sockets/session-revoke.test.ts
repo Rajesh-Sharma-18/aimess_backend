@@ -7,7 +7,8 @@
  * `auth:session_terminated` to ONLY that device's `session:<id>` room,
  * (b) disconnects its LIVE socket immediately in whichever namespace(s) it's
  * connected to, and (c) emits `session:list_updated` to the user's other
- * devices (`user:<id>` room) so linked-device lists refresh without polling.
+ * devices (`user:<id>` room) on `/notify` ONLY, so linked-device lists
+ * refresh without polling and without duplicate delivery on other namespaces.
  */
 import { EventEmitter } from "node:events";
 
@@ -130,7 +131,7 @@ describe("session-revoke listener", () => {
     }
   });
 
-  it("emits session:list_updated to the user's room in every live namespace", async () => {
+  it("emits session:list_updated to the user's room on /notify only", async () => {
     const { sub, namespaces } = setup({
       "/chat": {},
       "/community": {},
@@ -146,15 +147,21 @@ describe("session-revoke listener", () => {
     );
     await flush();
 
-    for (const nsName of ["/chat", "/community", "/notify", "/stream"]) {
-      const listUpdated = namespaces[nsName].emitted.find(
-        (e) => e.event === "session:list_updated"
-      );
-      expect(listUpdated).toEqual({
-        room: "user:user-1",
-        event: "session:list_updated",
-        data: { action: "terminated", sessionId: "sess-revoked" },
-      });
+    const listUpdated = namespaces["/notify"].emitted.find(
+      (e) => e.event === "session:list_updated"
+    );
+    expect(listUpdated).toEqual({
+      room: "user:user-1",
+      event: "session:list_updated",
+      data: { action: "terminated", sessionId: "sess-revoked" },
+    });
+
+    for (const nsName of ["/chat", "/community", "/stream"]) {
+      expect(
+        namespaces[nsName].emitted.find(
+          (e) => e.event === "session:list_updated"
+        )
+      ).toBeUndefined();
     }
   });
 

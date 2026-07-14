@@ -1,9 +1,9 @@
 /**
  * registerSessionCreatedListener — relays auth-service's `session-created:<userId>`
  * Redis signal to the user's every live device as the existing
- * `session:list_updated` event (action "created"), so linked-device lists
- * refresh without polling. Pure fan-out logic; fakes stand in for Socket.IO +
- * the Redis subscriber (no network).
+ * `session:list_updated` event (action "created"), emitted on `/notify` only,
+ * so linked-device lists refresh without polling. Pure fan-out logic; fakes
+ * stand in for Socket.IO + the Redis subscriber (no network).
  */
 import { EventEmitter } from "node:events";
 import type { Server as SocketIOServer } from "socket.io";
@@ -48,8 +48,8 @@ function makeSub() {
 const SESSION = { sessionId: "sess-9", deviceName: "iOS", isCurrent: false };
 
 describe("registerSessionCreatedListener", () => {
-  it("emits session:list_updated to user:<id> on every live namespace", () => {
-    const { io, emits } = makeIo();
+  it("emits session:list_updated to user:<id> on /notify only", () => {
+    const { io, emits, namespaces } = makeIo();
     const { sub, patterns, fire } = makeSub();
 
     registerSessionCreatedListener(io, sub);
@@ -62,12 +62,13 @@ describe("registerSessionCreatedListener", () => {
       JSON.stringify({ session: SESSION })
     );
 
-    expect(emits).toHaveLength(4); // /chat, /community, /notify, /stream
-    for (const e of emits) {
-      expect(e.room).toBe("user:user-1");
-      expect(e.event).toBe("session:list_updated");
-      expect(e.payload).toEqual({ action: "created", session: SESSION });
-    }
+    expect(emits).toHaveLength(1);
+    expect(namespaces).toEqual(["/notify"]);
+    expect(emits[0]).toEqual({
+      room: "user:user-1",
+      event: "session:list_updated",
+      payload: { action: "created", session: SESSION },
+    });
   });
 
   it("ignores messages on unrelated channels", () => {
