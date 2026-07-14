@@ -58,6 +58,10 @@ service MessagingService {
   // don't, excluding given roomIds), BY_IDS (resolve specific roomIds, e.g.
   // to refresh a recently-viewed group's metadata).
   rpc SearchUserGroups        (SearchUserGroupsRequest)        returns (SearchUserGroupsResponse);
+  // Auto-Connect (user-service): batch get-or-create private rooms for a
+  // user against multiple peers. Returns existing roomId if one exists,
+  // creates new one if not (and friendship is ACCEPTED).
+  rpc GetOrCreatePrivateRooms (GetOrCreatePrivateRoomsRequest)  returns (GetOrCreatePrivateRoomsResponse);
 }
 
 // scope is PRIVATE_CHAT | GROUP_CHAT | COMMUNITY_CHAT; resource_id is the
@@ -88,6 +92,14 @@ message ListPrivateRoomsRequest {
   int32  limit      = 2;
 }
 message ListPrivateRoomsResponse {
+  repeated PrivateRoomMatchDto rooms = 1;
+}
+
+message GetOrCreatePrivateRoomsRequest {
+  string          user_id      = 1;
+  repeated string peer_user_ids = 2;
+}
+message GetOrCreatePrivateRoomsResponse {
   repeated PrivateRoomMatchDto rooms = 1;
 }
 

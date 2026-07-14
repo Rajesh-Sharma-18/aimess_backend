@@ -16,6 +16,7 @@ jest.mock("../../src/repositories/user-profile.repository.js", () => ({
 jest.mock("../../src/repositories/friendship.repository.js", () => ({
   friendshipRepository: {
     findAllBlocks: jest.fn(async () => []),
+    findAllForUser: jest.fn(async () => []),
   },
 }));
 jest.mock("../../src/services/avatar.service.js", () => ({
@@ -98,6 +99,7 @@ beforeEach(() => {
   pRepo.findUsersInList.mockResolvedValue([]);
   pRepo.findUsersNotInList.mockResolvedValue([]);
   friendRepo.findAllBlocks.mockResolvedValue([]);
+  friendRepo.findAllForUser.mockResolvedValue([]);
   grpc.resolvePrivateRooms.mockResolvedValue([]);
   grpc.listPrivateRoomPeers.mockResolvedValue([]);
   grpc.listActiveGroups.mockResolvedValue([]);
@@ -333,6 +335,71 @@ describe("GET /api/v1/users/search", () => {
         }),
       ])
     );
+  });
+
+  it("marks a friend without a room as isFriend in Other (independent of roomId)", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([profile(OTHER_ID)]);
+    friendRepo.findAllForUser.mockResolvedValue([
+      {
+        id: "fr-1",
+        requesterId: TEST_USER_ID,
+        addresseeId: OTHER_ID,
+        status: "ACCEPTED",
+      },
+    ]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(res.body.data.other[0]).toMatchObject({
+      userId: OTHER_ID,
+      roomId: null,
+      isFriend: true,
+      relationshipStatus: "FRIEND",
+      friendshipId: "fr-1",
+    });
+  });
+
+  it("labels a stranger as isFriend:false / NONE", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([profile(OTHER_ID)]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(res.body.data.other[0]).toMatchObject({
+      userId: OTHER_ID,
+      roomId: null,
+      isFriend: false,
+      relationshipStatus: "NONE",
+      friendshipId: null,
+    });
+  });
+
+  it("reflects a pending outgoing request as PENDING_OUT", async () => {
+    pRepo.findUsersNotInList.mockResolvedValue([profile(OTHER_ID)]);
+    friendRepo.findAllForUser.mockResolvedValue([
+      {
+        id: "fr-2",
+        requesterId: TEST_USER_ID,
+        addresseeId: OTHER_ID,
+        status: "PENDING",
+      },
+    ]);
+
+    const res = await request(app)
+      .get("/api/v1/users/search")
+      .query({ q: "jane" })
+      .set(auth());
+
+    expect(res.body.data.other[0]).toMatchObject({
+      isFriend: false,
+      relationshipStatus: "PENDING_OUT",
+      friendshipId: "fr-2",
+    });
   });
 
   it("excludes users that already have a room from the Other user query", async () => {

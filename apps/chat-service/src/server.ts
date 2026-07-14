@@ -531,6 +531,7 @@ const startServer = async () => {
       communityPinService,
       notificationRepo,
       chatMessageOrchestrator,
+      privateRoomService,
     });
 
     // 4. Instantiate controllers

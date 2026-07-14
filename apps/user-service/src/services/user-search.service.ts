@@ -3,6 +3,11 @@ import type { MediaObject } from "@aimess/shared-types";
 
 import { avatarService } from "./avatar.service.js";
 import { friendshipRepository } from "../repositories/friendship.repository.js";
+import {
+  buildRelationshipLookup,
+  type PeerRelationship,
+  type RelationshipStatus,
+} from "../lib/relationship-lookup.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { recentUserSearchRepository } from "../repositories/recent-user-search.repository.js";
 import { RecentSearchTargetType } from "../generated/prisma/client.js";
@@ -33,6 +38,16 @@ export type SearchUserItem = {
   isOnline: boolean;
   /** Existing private-room id with the viewer, resolved dynamically; null if none. */
   roomId: string | null;
+  /**
+   * Explicit friendship indicator — an ACCEPTED friendship with the viewer,
+   * independent of whether a private room (`roomId`) exists. Never infer
+   * friendship from `roomId`.
+   */
+  isFriend: boolean;
+  /** Richer relationship: FRIEND | PENDING_IN | PENDING_OUT | NONE. */
+  relationshipStatus: RelationshipStatus;
+  /** Friendship row id when FRIEND/PENDING; null when NONE. */
+  friendshipId: string | null;
 };
 
 export type SearchGroupItem = {
@@ -74,7 +89,8 @@ async function resolveAvatar(stored: string | null) {
 
 async function toUserItem(
   profile: BasicProfile,
-  roomId: string | null
+  roomId: string | null,
+  relationship: PeerRelationship
 ): Promise<SearchUserItem> {
   const { url, expiresIn, avatar } = await resolveAvatar(profile.avatarUrl);
   return {
@@ -89,6 +105,9 @@ async function toUserItem(
     avatar,
     isOnline: profile.isOnline,
     roomId,
+    isFriend: relationship.isFriend,
+    relationshipStatus: relationship.relationshipStatus,
+    friendshipId: relationship.friendshipId,
   };
 }
 
@@ -125,8 +144,9 @@ export const userSearchService = {
   async searchRecent(
     viewerId: string
   ): Promise<{ recent: SearchResultItem[] }> {
-    const [blocks, recentRows, peers] = await Promise.all([
+    const [blocks, relationships, recentRows, peers] = await Promise.all([
       friendshipRepository.findAllBlocks(viewerId),
+      friendshipRepository.findAllForUser(viewerId),
       recentUserSearchRepository.findByUserId(viewerId),
       messagingGrpcClient.listPrivateRoomPeers(viewerId, PRIVATE_ROOM_PEER_CAP),
     ]);
@@ -134,6 +154,7 @@ export const userSearchService = {
     const blockedIds = new Set(
       blocks.map((b) => (b.blockerId === viewerId ? b.blockedId : b.blockerId))
     );
+    const relationshipOf = buildRelationshipLookup(viewerId, relationships);
     // `peers` arrives ordered by lastMessageAt desc from chat-service.
     const peerRoomByUserId = new Map(
       peers.map((p) => [p.peerUserId, p.roomId])
@@ -176,7 +197,8 @@ export const userSearchService = {
             profile,
             recentRoomByUserId.get(profile.userId) ??
               peerRoomByUserId.get(profile.userId) ??
-              null
+              null,
+            relationshipOf(profile.userId)
           )
         );
       } else {
@@ -198,14 +220,16 @@ export const userSearchService = {
     const skip = (query.page - 1) * query.limit;
     const otherTake = query.limit;
 
-    const [blocks, peers] = await Promise.all([
+    const [blocks, relationships, peers] = await Promise.all([
       friendshipRepository.findAllBlocks(viewerId),
+      friendshipRepository.findAllForUser(viewerId),
       messagingGrpcClient.listPrivateRoomPeers(viewerId, PRIVATE_ROOM_PEER_CAP),
     ]);
 
     const blockedIds = new Set(
       blocks.map((b) => (b.blockerId === viewerId ? b.blockedId : b.blockerId))
     );
+    const relationshipOf = buildRelationshipLookup(viewerId, relationships);
     // `peers` arrives ordered by lastMessageAt desc from chat-service.
     const peerRoomByUserId = new Map(
       peers.map((p) => [p.peerUserId, p.roomId])
@@ -235,7 +259,13 @@ export const userSearchService = {
     const chat: SearchResultItem[] = [];
     for (const p of chatUserProfiles) {
       if (chat.length >= CHAT_LIMIT) break;
-      chat.push(await toUserItem(p, peerRoomByUserId.get(p.userId) ?? null));
+      chat.push(
+        await toUserItem(
+          p,
+          peerRoomByUserId.get(p.userId) ?? null,
+          relationshipOf(p.userId)
+        )
+      );
     }
     for (const g of chatGroupSummaries) {
       if (chat.length >= CHAT_LIMIT) break;
@@ -276,7 +306,7 @@ export const userSearchService = {
     const other: SearchResultItem[] = [];
     for (const p of otherUserProfiles) {
       if (other.length >= otherTake) break;
-      other.push(await toUserItem(p, null));
+      other.push(await toUserItem(p, null, relationshipOf(p.userId)));
     }
     for (const g of otherGroupSummaries) {
       if (other.length >= otherTake) break;

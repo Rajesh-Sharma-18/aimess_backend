@@ -28,6 +28,7 @@ import {
   convertMessageToPreview,
   buildPushPreview,
 } from "../services/message-preview.service.js";
+import type { PrivateRoomService } from "../services/private-room.service.js";
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
@@ -142,6 +143,7 @@ export interface GrpcDeps {
   communityPinService: CommunityPinService;
   notificationRepo: NotificationRepository;
   chatMessageOrchestrator: ChatMessageOrchestrator;
+  privateRoomService: PrivateRoomService;
 }
 
 function parseMessageContent(req: {
@@ -1932,6 +1934,45 @@ export function createMessagingImpl(
           callback(null, { groups });
         } catch (err) {
           logger.error(`gRPC searchUserGroups error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Auto-Connect (user-service): batch get-or-create private rooms for
+    // a user against multiple peers. Returns existing roomId if one exists,
+    // creates new one if not (and friendship is ACCEPTED).
+    getOrCreatePrivateRooms: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            peerUserIds?: string[];
+          };
+          const userId = req.userId ?? "";
+          const peerIds = [...new Set((req.peerUserIds ?? []).filter(Boolean))];
+          if (!userId || peerIds.length === 0) {
+            callback(null, { rooms: [] });
+            return;
+          }
+
+          const matches: { peerUserId: string; roomId: string }[] = [];
+          for (const peerId of peerIds) {
+            const room = await deps.privateRoomService.getOrCreateRoom(
+              userId,
+              peerId
+            );
+            if (room) {
+              matches.push({ peerUserId: peerId, roomId: room.roomId });
+            }
+          }
+
+          callback(null, { rooms: matches });
+        } catch (err) {
+          logger.error(`gRPC getOrCreatePrivateRooms error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();
