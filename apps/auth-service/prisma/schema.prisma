@@ -157,7 +157,13 @@ model Session {
 
   refreshTokens RefreshToken[]
 
-  @@unique([userId, deviceId])
+  // No @@unique([userId, deviceId]): deviceId is a server-computed
+  // userAgent+ip fingerprint (see session-context.ts), not a real
+  // per-installation id, so distinct logins (browser profiles, incognito,
+  // shared-IP devices) can share it. A unique constraint here previously made
+  // createSessionWithRefreshToken delete the other login's still-active
+  // session on every new login that happened to collide.
+  @@index([userId, deviceId])
   @@index([userId, revokedAt])
   @@index([lastActiveAt])
   @@map("sessions")
