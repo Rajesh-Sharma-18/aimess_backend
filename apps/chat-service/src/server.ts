@@ -72,6 +72,7 @@ import { MessageContextController } from "./api/controllers/message-context.cont
 import { startGrpcServer } from "./grpc/server.js";
 import { createUserServiceClient } from "./grpc/user.client.js";
 import { createAuthAdminClient } from "./grpc/auth.client.js";
+import { getCommunityReconcileClient } from "./grpc/community.client.js";
 
 // -- Events --
 import {
@@ -394,7 +395,8 @@ const startServer = async () => {
       cacheRepo,
       userSnapshotService,
       userServiceClient,
-      privateMessageReportRepo
+      privateMessageReportRepo,
+      getCommunityReconcileClient()
     );
     const privatePinService = new PrivatePinService(
       privateMessagePinRepo,

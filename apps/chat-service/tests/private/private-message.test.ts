@@ -62,6 +62,144 @@ describe("GET /rooms/:roomId/messages (timeline)", () => {
     expect(res.body.data.data[0].messageType).toBeUndefined();
   });
 
+  it("POSITIVE: a COMMUNITY_INVITE SYSTEM message carries a resolved systemAction card", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+      deletedFor: {},
+    });
+    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m-invite",
+          senderId: "peer",
+          messageType: "SYSTEM",
+          systemEvent: "COMMUNITY_INVITE",
+          systemData: {
+            communityId: "community-1",
+            communityName: "Mighty Raju",
+            linkCode: "abc123",
+            inviteDeepLink: "aimess://join?code=abc123",
+          },
+          content: { text: "Invitation to join Mighty Raju" },
+          createdAt: new Date(1000),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
+    mocks.communityClient.getCommunityInviteContexts.mockResolvedValue([
+      {
+        communityId: "community-1",
+        found: true,
+        communityName: "Mighty Raju",
+        communityHandle: "mighty-raju",
+        isMember: false,
+        linkStatus: "ACTIVE",
+      },
+    ]);
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(
+      mocks.communityClient.getCommunityInviteContexts
+    ).toHaveBeenCalledWith(TEST_USER_ID, [
+      { communityId: "community-1", code: "abc123" },
+    ]);
+    expect(res.body.data.data[0].systemAction).toEqual({
+      type: "COMMUNITY_INVITATION",
+      communityId: "community-1",
+      communityHandle: "mighty-raju",
+      communityName: "Mighty Raju",
+      inviteCode: "abc123",
+      deepLink: "aimess://join?code=abc123",
+      alreadyJoined: false,
+      status: "ACTIVE",
+      canOpen: true,
+    });
+  });
+
+  it("POSITIVE: systemAction.status reflects a revoked/deleted community as canOpen:false", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+      deletedFor: {},
+    });
+    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m-invite-2",
+          senderId: "peer",
+          messageType: "SYSTEM",
+          systemEvent: "COMMUNITY_INVITE",
+          systemData: {
+            communityId: "community-2",
+            communityName: "Old Community",
+            linkCode: "xyz789",
+          },
+          content: { text: "Invitation to join Old Community" },
+          createdAt: new Date(1000),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
+    mocks.communityClient.getCommunityInviteContexts.mockResolvedValue([
+      {
+        communityId: "community-2",
+        found: false,
+        communityName: "",
+        communityHandle: "",
+        isMember: false,
+        linkStatus: "DELETED",
+      },
+    ]);
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data[0].systemAction).toMatchObject({
+      status: "DELETED",
+      alreadyJoined: false,
+      canOpen: false,
+    });
+  });
+
+  it("POSITIVE: a normal TEXT message never carries systemAction", async () => {
+    mocks.privateRoomRepo.findByRoomId.mockResolvedValue({
+      roomId: ROOM,
+      participants: [TEST_USER_ID, "peer"],
+      deletedFor: {},
+    });
+    mocks.privateMessageRepo.findByRoomIdTimeline.mockResolvedValue({
+      messages: [
+        {
+          id: "m-text",
+          senderId: "peer",
+          content: { text: "hi" },
+          createdAt: new Date(1000),
+        },
+      ],
+      hasMore: false,
+    });
+    mocks.privateMessageRepo.countTimeline.mockResolvedValue(1);
+
+    const res = await request(app)
+      .get(`/api/chat/private/rooms/${ROOM}/messages`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data[0].systemAction).toBeUndefined();
+    expect(
+      mocks.communityClient.getCommunityInviteContexts
+    ).not.toHaveBeenCalled();
+  });
+
   // AUDIT H2 — message timeline must be gated on participation (IDOR on history).
   it("SECURITY: IDOR — 403 reading the timeline of a room you're not in", async () => {
     mocks.privateRoomRepo.findByRoomId.mockResolvedValue({

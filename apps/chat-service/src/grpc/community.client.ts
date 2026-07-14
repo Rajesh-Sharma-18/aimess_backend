@@ -90,6 +90,21 @@ export interface CheckCommunityMembershipResult {
   role: string;
 }
 
+export interface CommunityInviteContextQuery {
+  communityId: string;
+  /** Invite/permanent code carried on the message; "" to skip link-status resolution. */
+  code?: string;
+}
+export interface CommunityInviteContext {
+  communityId: string;
+  /** False when the community was deleted (or never existed). */
+  found: boolean;
+  communityName: string;
+  communityHandle: string;
+  isMember: boolean;
+  linkStatus: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED";
+}
+
 export interface CommunityReconcileClient {
   listCommunities(p: {
     afterId?: string;
@@ -126,6 +141,18 @@ export interface CommunityReconcileClient {
   checkCommunityMembership(
     p: CheckCommunityMembershipParams
   ): Promise<CheckCommunityMembershipResult>;
+  /**
+   * Batch-resolve the `systemAction` card context (community found/name/
+   * handle, viewer membership, invite-code validity) for every COMMUNITY_
+   * INVITATION message on a history page in one round trip. Never throws —
+   * a transport failure degrades to an empty array; callers fall back to
+   * treating the invite as still-valid using the message's own stored data
+   * (a temporary outage must not make every past invite look broken).
+   */
+  getCommunityInviteContexts(
+    userId: string,
+    queries: CommunityInviteContextQuery[]
+  ): Promise<CommunityInviteContext[]>;
 }
 
 /**
@@ -226,6 +253,24 @@ export function createCommunityReconcileClient(): CommunityReconcileClient {
     role: "",
   };
 
+  // Awaited inline while building a REST history page — bounded by page size
+  // (a handful of invite cards at most), so the default timeout is fine.
+  const inviteContextsBreaker = makeBreaker(
+    "community.getCommunityInviteContexts",
+    (p: { userId: string; queries: CommunityInviteContextQuery[] }) =>
+      call<unknown, { contexts?: CommunityInviteContext[] }>(
+        "getCommunityInviteContexts",
+        {
+          userId: p.userId,
+          queries: p.queries.map((q) => ({
+            communityId: q.communityId,
+            code: q.code ?? "",
+          })),
+        }
+      ).then((r) => r.contexts ?? [])
+  );
+  inviteContextsBreaker.fallback(() => []);
+
   return {
     listCommunities: (p) => listBreaker.fire(p),
     updateReactionActivity: async (p) => {
@@ -249,6 +294,14 @@ export function createCommunityReconcileClient(): CommunityReconcileClient {
         return (await checkMembershipBreaker.fire(p)) ?? NOT_A_MEMBER;
       } catch {
         return NOT_A_MEMBER;
+      }
+    },
+    getCommunityInviteContexts: async (userId, queries) => {
+      if (!userId || queries.length === 0) return [];
+      try {
+        return await inviteContextsBreaker.fire({ userId, queries });
+      } catch {
+        return [];
       }
     },
   };

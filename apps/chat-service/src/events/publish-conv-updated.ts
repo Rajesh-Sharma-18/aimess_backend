@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 
 import type { Redis, Cluster } from "ioredis";
+import type { CommunityInvitationSystemAction } from "../lib/chat-message.serializer.js";
 
 /**
  * WhatsApp/Telegram-style "bump-to-top" fan-out for the inbox/community list.
@@ -18,6 +19,13 @@ import type { Redis, Cluster } from "ioredis";
 interface BumpPreview {
   contentType: string;
   text: string;
+  /**
+   * COMMUNITY_INVITATION cards only — mirrors the message's `systemAction`
+   * (see `chat-message.serializer.ts`) so the inbox/list row can render an
+   * "Invitation" chip and navigate straight to the community without a
+   * refetch. Passed straight through into the bumped `lastMessage`.
+   */
+  systemAction?: CommunityInvitationSystemAction;
 }
 
 /**

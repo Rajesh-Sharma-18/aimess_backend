@@ -23,6 +23,13 @@ service CommunityService {
   // `community_id`, and what is their role. Backs the go-live check.
   rpc ValidateMembership (ValidateMembershipRequest) returns (ValidateMembershipResponse);
 
+  // chat-service's private-message `systemAction` card (COMMUNITY_INVITATION):
+  // batch-resolve, per (communityId, code) pair, whether the community still
+  // exists, its current name/handle, whether `user_id` already joined, and
+  // whether the carried invite code/permanent code is still usable. Read-only,
+  // batched to avoid one round trip per invitation message on a history page.
+  rpc GetCommunityInviteContexts (GetCommunityInviteContextsRequest) returns (GetCommunityInviteContextsResponse);
+
   // Synchronous companion to chat-service's async `community.activity.queue`
   // "reaction_added"/"reaction_removed" publish: chat-service calls this
   // RIGHT AFTER a reaction toggle, in addition to (never instead of) the
@@ -547,6 +554,33 @@ message ValidateMembershipResponse {
   // when the community can't be found) — callers use this to block go-live /
   // commenting even for an otherwise-valid ACTIVE member.
   bool   is_community_closed = 4;
+}
+
+// ---- Community invite context (chat-service systemAction card) ----
+message CommunityInviteContextQuery {
+  string community_id = 1;
+  // The invite/permanent code carried on the invitation message. "" when the
+  // caller only needs found/name/handle/membership, not link validity.
+  string code          = 2;
+}
+message GetCommunityInviteContextsRequest {
+  string                              user_id = 1;
+  repeated CommunityInviteContextQuery queries = 2;
+}
+message CommunityInviteContext {
+  string community_id     = 1;
+  // False when the community was deleted (or never existed) — every other
+  // field is meaningless in that case.
+  bool   found             = 2;
+  string community_name   = 3;
+  string community_handle = 4;
+  // True only when `user_id` is a current ACTIVE member.
+  bool   is_member         = 5;
+  // ACTIVE | EXPIRED | REVOKED | DELETED (DELETED mirrors `found=false`).
+  string link_status      = 6;
+}
+message GetCommunityInviteContextsResponse {
+  repeated CommunityInviteContext contexts = 1;
 }
 
 message SendCommunityMessageRequest {

@@ -21,6 +21,8 @@ import {
   reactionUserIdMap,
   toggleStoredReaction,
   toWireMessage,
+  isCommunityInvitationMessage,
+  buildCommunityInvitationAction,
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
@@ -57,6 +59,7 @@ import type { PrivateMessageRepository } from "../repositories/private-message.r
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { PrivateMessageReportRepository } from "../repositories/private-message-report.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
+import type { CommunityReconcileClient } from "../grpc/community.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "./user-snapshot.service.js";
 import type {
@@ -71,7 +74,12 @@ export class PrivateMessageService {
     private readonly cacheRepo: CacheRepository,
     private readonly userSnapshotService: UserSnapshotService,
     private readonly userServiceClient: UserServiceClient,
-    private readonly reportRepo: PrivateMessageReportRepository
+    private readonly reportRepo: PrivateMessageReportRepository,
+    // ponytail: optional — omitted in existing unit tests; COMMUNITY_INVITE
+    // messages just fall back to "assume the invite is still usable" (see
+    // enrichMessages) when no client is wired, same fail-open policy as an
+    // actual gRPC/community-service outage.
+    private readonly communityClient?: CommunityReconcileClient
   ) {}
 
   async sendMessage(params: {
@@ -1092,7 +1100,11 @@ export class PrivateMessageService {
   }
 
   async enrichMessages(
-    messages: PrivateMessage[]
+    messages: PrivateMessage[],
+    /** Requesting user — used only to resolve `systemAction.alreadyJoined` on
+     *  COMMUNITY_INVITE cards. Omitted callers just don't get that field
+     *  personalized (falls back to `false`), same as a community-service outage. */
+    viewerId?: string
   ): Promise<Array<Record<string, unknown>>> {
     const senderIds = [
       ...new Set(
@@ -1141,6 +1153,77 @@ export class PrivateMessageService {
     }
     const urlMap = await resolveMediaUrlMap(mediaKeys);
 
+    // Resolve `systemAction` for every COMMUNITY_INVITE card on this page in
+    // ONE batched gRPC call (deduped by communityId+code) — unlike the live
+    // send path (`deliverInviteLinkDm`), a historical read can't assume the
+    // invite is still fresh: the recipient may have joined since, or the
+    // link may have been revoked/expired/the community deleted.
+    const systemActionByMessageId = new Map<
+      string,
+      ReturnType<typeof buildCommunityInvitationAction>
+    >();
+    const inviteMessages = messages.filter(isCommunityInvitationMessage);
+    if (inviteMessages.length > 0) {
+      const queriesByKey = new Map<
+        string,
+        { communityId: string; code: string }
+      >();
+      for (const m of inviteMessages) {
+        const sd = (m.systemData ?? {}) as Record<string, unknown>;
+        const communityId = String(sd.communityId ?? "");
+        if (!communityId) continue;
+        const code = String(sd.linkCode ?? "");
+        queriesByKey.set(`${communityId}::${code}`, { communityId, code });
+      }
+      const contexts = this.communityClient
+        ? await this.communityClient.getCommunityInviteContexts(
+            viewerId ?? "",
+            [...queriesByKey.values()]
+          )
+        : [];
+      // Re-matched by communityId alone: `getCommunityInviteContexts` doesn't
+      // echo `code` back, and in practice every invite card for the same
+      // community on one page (one room/conversation) shares the same code.
+      const contextByCommunityId = new Map(
+        contexts.map((c) => [c.communityId, c])
+      );
+
+      for (const m of inviteMessages) {
+        const sd = (m.systemData ?? {}) as Record<string, unknown>;
+        const communityId = String(sd.communityId ?? "");
+        const communityName = String(sd.communityName ?? "");
+        const inviteCode = sd.linkCode ? String(sd.linkCode) : null;
+        const deepLink = String(sd.inviteDeepLink ?? sd.inviteUrl ?? "");
+        const ctx = communityId
+          ? contextByCommunityId.get(communityId)
+          : undefined;
+
+        systemActionByMessageId.set(
+          m.id,
+          ctx
+            ? buildCommunityInvitationAction({
+                communityId,
+                communityName: ctx.found ? ctx.communityName : communityName,
+                communityHandle: ctx.found ? ctx.communityHandle : null,
+                inviteCode,
+                deepLink,
+                alreadyJoined: ctx.isMember,
+                status: ctx.found ? ctx.linkStatus : "DELETED",
+              })
+            : // gRPC unresolved/unavailable — fail open using the message's own
+              // stored data rather than telling every past invite it's dead.
+              buildCommunityInvitationAction({
+                communityId,
+                communityName,
+                inviteCode,
+                deepLink,
+                alreadyJoined: false,
+                status: "ACTIVE",
+              })
+        );
+      }
+    }
+
     return messages.map((message) => {
       const snapshot = (snapshots.get(message.senderId || "") || {}) as Record<
         string,
@@ -1158,6 +1241,8 @@ export class PrivateMessageService {
         explicit: (message as unknown as { countInUnread?: boolean | null })
           .countInUnread,
       });
+      const systemAction = systemActionByMessageId.get(message.id);
+      if (systemAction) wire.systemAction = systemAction;
       const displayName = (snapshot.displayName as string) || "";
       const avatar = urlFromMap(urlMap, (snapshot.avatar as string) || "");
 

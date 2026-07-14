@@ -127,6 +127,7 @@ export interface BuiltMocks {
   cacheRepo: any;
   // peers / infra
   userServiceClient: any;
+  communityClient: any;
   streamCountsClient: any;
   redis: any;
   userSnapshotService: UserSnapshotService;
@@ -187,6 +188,9 @@ export function buildApp(): BuiltApp {
   const userServiceClient: any = {
     checkFriendship: jest.fn(async () => true),
   };
+  const communityClient: any = {
+    getCommunityInviteContexts: jest.fn(async () => []),
+  };
 
   // -- Real services wired to mocks --
   // Constructed early (before privateRoomService/orchestrator) to mirror
@@ -213,7 +217,8 @@ export function buildApp(): BuiltApp {
     cacheRepo,
     userSnapshotService,
     userServiceClient,
-    privateMessageReportRepo
+    privateMessageReportRepo,
+    communityClient
   );
   const privatePinService = new PrivatePinService(
     privateMessagePinRepo,
@@ -376,6 +381,7 @@ export function buildApp(): BuiltApp {
       callRepo,
       cacheRepo,
       userServiceClient,
+      communityClient,
       streamCountsClient,
       redis,
       userSnapshotService,
