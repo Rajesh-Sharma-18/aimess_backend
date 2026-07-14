@@ -16,6 +16,7 @@ import {
 } from "../handlers/notification.handler.js";
 import { env } from "../config/env.js";
 import { logger } from "@aimess/logger";
+import { buildNewLoginNotification } from "../lib/new-login-notification.js";
 import { pushToUser } from "../services/push.service.js";
 
 const QUEUE_NAME = "notification.queue";
@@ -155,14 +156,7 @@ export async function startConsumer() {
 
         case AuthEvents.SECURITY_NEW_LOGIN: {
           const p = parsed.data as SecurityNewLoginPayload;
-          await pushToUser({
-            userId: p.userId,
-            category: "systemEnabled",
-            type: parsed.type,
-            bypassSettings: true,
-            title: "New login",
-            body: "Your account was just signed in from a new session.",
-          });
+          await pushToUser(buildNewLoginNotification(parsed.type, p));
           break;
         }
         case AuthEvents.PASSWORD_CHANGED: {

@@ -38,6 +38,20 @@ export type SecurityNewLoginPayload = {
   userId: string;
   /** ISO-8601 timestamp the login completed. */
   at: string;
+  /**
+   * Id of the session/device just created — lets the client render the alert
+   * and drive the existing "Terminate Session" flow. Optional for backward
+   * compatibility with any already-queued events lacking it.
+   */
+  sessionId?: string;
+  /** Composite device label, e.g. "iPhone · Chrome · iOS". */
+  deviceName?: string | null;
+  /** Platform bucket, e.g. WEB / ANDROID / IOS / DESKTOP. */
+  deviceType?: string | null;
+  /** Raw client IP (masked before it reaches the client). */
+  ipAddress?: string | null;
+  /** ISO country code when geo is available (not populated yet). */
+  countryCode?: string | null;
 };
 
 export type PasswordChangedPayload = {

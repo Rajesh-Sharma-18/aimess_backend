@@ -14,12 +14,17 @@ jest.mock("../../src/repositories/auth.repository.js", () => ({
 jest.mock("../../src/services/audit.service.js", () => ({
   recordAuditEventSafe: jest.fn(),
 }));
+jest.mock("../../src/messaging/publish-auth-security.js", () => ({
+  publishSecurityNewLoginSafe: jest.fn(),
+}));
 
 import { issueAuthTokens } from "../../src/lib/token.js";
+import { publishSecurityNewLoginSafe } from "../../src/messaging/publish-auth-security.js";
 import { recordAuditEventSafe } from "../../src/services/audit.service.js";
 import type { SessionContext } from "../../src/lib/session-context.js";
 
 const audit = recordAuditEventSafe as unknown as jest.Mock;
+const newLogin = publishSecurityNewLoginSafe as unknown as jest.Mock;
 
 const SESSION: SessionContext = {
   deviceId: "device-abc",
@@ -32,7 +37,10 @@ const SESSION: SessionContext = {
 };
 
 describe("issueAuthTokens → LINKED_DEVICE_CREATED audit", () => {
-  beforeEach(() => audit.mockClear());
+  beforeEach(() => {
+    audit.mockClear();
+    newLogin.mockClear();
+  });
 
   it("records LINKED_DEVICE_CREATED with the new session id as targetId", async () => {
     const { sessionId } = await issueAuthTokens("user-1", "USER", SESSION);
@@ -46,5 +54,27 @@ describe("issueAuthTokens → LINKED_DEVICE_CREATED audit", () => {
         userId: "user-1",
       })
     );
+  });
+
+  it("publishes the new-login alert with the session id + device metadata", async () => {
+    await issueAuthTokens("user-1", "USER", SESSION);
+
+    expect(newLogin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-1",
+        sessionId: "new-session-1",
+        deviceName: "Chrome",
+        deviceType: "WEB",
+        ipAddress: "1.2.3.4",
+      })
+    );
+  });
+
+  it("suppresses the new-login alert when notifyNewLogin is false (register)", async () => {
+    await issueAuthTokens("user-1", "USER", SESSION, undefined, {
+      notifyNewLogin: false,
+    });
+
+    expect(newLogin).not.toHaveBeenCalled();
   });
 });
