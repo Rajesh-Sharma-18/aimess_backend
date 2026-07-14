@@ -3,7 +3,12 @@ import type { Redis } from "ioredis";
 import { logger } from "@aimess/logger";
 
 /** Every namespace a user's device might be connected to, all joined via `user:<userId>` + `session:<sessionId>`. */
-const LIVE_NAMESPACES = ["/chat", "/community", "/notify", "/stream"] as const;
+export const LIVE_NAMESPACES = [
+  "/chat",
+  "/community",
+  "/notify",
+  "/stream",
+] as const;
 
 /**
  * Force-disconnects an already-connected socket the instant its session is

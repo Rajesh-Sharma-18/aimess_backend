@@ -6,6 +6,7 @@ import { getCorsAllowedOrigins } from "../config/env.js";
 import { createGatewayRedisClients } from "./redis.js";
 import { registerAuthNamespace } from "./namespaces/auth.ns.js";
 import { registerSessionRevokeListener } from "./session-revoke.js";
+import { registerSessionCreatedListener } from "./session-created-listener.js";
 import { registerChatNamespace } from "./namespaces/chat.ns.js";
 import { registerCommunityNamespace } from "./namespaces/community.ns.js";
 import { registerNotifyNamespace } from "./namespaces/notify.ns.js";
@@ -92,6 +93,8 @@ export async function setupSockets(
   registerStreamNamespace(io, streamClient, streamSub, pub, mediaClient);
   registerAuthNamespace(io, authSub);
   registerSessionRevokeListener(io, sessionRevokeSub);
+  // Reuses the same durable PSUBSCRIBE connection (filters by channel prefix).
+  registerSessionCreatedListener(io, sessionRevokeSub);
 
   io.engine.on(
     "connection_error",

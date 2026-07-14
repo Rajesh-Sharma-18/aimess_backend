@@ -472,7 +472,20 @@ export const authRepository = {
           ipAddress: params.ipAddress ?? undefined,
           userAgent: params.userAgent ?? undefined,
         },
-        select: { id: true },
+        // Full session-list projection so callers (issueAuthTokens) can emit the
+        // persisted row via the shared serializer without a second query.
+        select: {
+          id: true,
+          deviceId: true,
+          deviceName: true,
+          deviceType: true,
+          osVersion: true,
+          appVersion: true,
+          ipAddress: true,
+          countryCode: true,
+          lastActiveAt: true,
+          createdAt: true,
+        },
       });
 
       await tx.refreshToken.create({

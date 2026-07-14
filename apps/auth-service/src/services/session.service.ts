@@ -16,6 +16,7 @@ import {
   markSessionRevoked,
   markSessionsRevoked,
 } from "../lib/session-active-cache.js";
+import { toActiveSessionItem } from "../lib/session-serializer.js";
 import { env } from "../config/env.js";
 import { redis } from "../config/redis.js";
 import { refreshTokenRepository } from "../repositories/refresh-token.repository.js";
@@ -207,19 +208,9 @@ export const sessionService = {
   ): Promise<ListSessionsResult> {
     const rows = await sessionRepository.listActiveByUserId(userId);
 
-    const sessions: ActiveSessionItem[] = rows.map((row) => ({
-      sessionId: row.id,
-      deviceId: row.deviceId,
-      deviceName: row.deviceName,
-      deviceType: row.deviceType,
-      osVersion: row.osVersion,
-      appVersion: row.appVersion,
-      ipAddress: row.ipAddress,
-      countryCode: row.countryCode,
-      lastActiveAt: row.lastActiveAt.toISOString(),
-      createdAt: row.createdAt.toISOString(),
-      isCurrent: row.id === currentSessionId,
-    }));
+    const sessions: ActiveSessionItem[] = rows.map((row) =>
+      toActiveSessionItem(row, currentSessionId)
+    );
 
     return { sessions };
   },

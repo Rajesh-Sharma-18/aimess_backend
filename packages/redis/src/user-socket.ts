@@ -82,3 +82,25 @@ export function publishSessionRevokedEvent(
     JSON.stringify({ sessionId })
   );
 }
+
+/**
+ * Publish a "a new session/linked device was just created" signal so a user's
+ * OTHER live devices refresh their linked-device / sessions list without polling.
+ *
+ * Mirror of `publishSessionRevokedEvent`: the api-gateway PSUBSCRIBEs
+ * `session-created:*` (durable, like session-revoke) and relays the persisted
+ * session DTO as the SAME client-facing `session:list_updated` event the revoke
+ * path already emits — just with `action: "created"`. Fire-and-forget from the
+ * caller; a Redis hiccup must never fail login/device-linking. `session` is the
+ * already-serialized session-list row.
+ */
+export function publishSessionCreatedEvent(
+  redis: Redis | Cluster,
+  userId: string,
+  session: unknown
+): Promise<number> {
+  return redis.publish(
+    `session-created:${userId}`,
+    JSON.stringify({ session })
+  );
+}

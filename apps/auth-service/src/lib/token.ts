@@ -1,10 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { signAccessToken, type PlatformRole } from "@aimess/auth-jwt";
+import { logger } from "@aimess/logger";
+import { publishSessionCreatedEvent } from "@aimess/redis";
 
 import { env } from "../config/env.js";
+import { redis } from "../config/redis.js";
 import { markSessionActive } from "./session-active-cache.js";
 import type { SessionContext } from "./session-context.js";
+import { toActiveSessionItem } from "./session-serializer.js";
 import { publishSecurityNewLoginSafe } from "../messaging/publish-auth-security.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import { recordAuditEventSafe } from "../services/audit.service.js";
@@ -101,6 +105,24 @@ export async function issueAuthTokens(
     ip: session.ipAddress,
     userAgent: session.userAgent,
   });
+
+  // Realtime linked-device sync: the session is now persisted + ACTIVE, so push
+  // the persisted DTO to the user's OTHER live devices via the existing
+  // session:list_updated event. Fully guarded — a serialize/publish hiccup must
+  // never fail login or QR device-linking.
+  try {
+    void publishSessionCreatedEvent(
+      redis,
+      userId,
+      toActiveSessionItem(createdSession)
+    ).catch((error) => {
+      logger.error("Failed to publish session-created socket event");
+      logger.error(error);
+    });
+  } catch (error) {
+    logger.error("Failed to serialize session for session-created event");
+    logger.error(error);
+  }
 
   // Same single funnel drives the "New login detected" alert, so it fires
   // exactly once per new ACTIVE session with a real sessionId + device metadata,
