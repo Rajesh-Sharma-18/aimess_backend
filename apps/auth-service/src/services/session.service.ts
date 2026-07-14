@@ -292,6 +292,15 @@ export const sessionService = {
 
     if (result.revokedCount > 0) {
       publishAllSessionsRevokedSafe({ userId });
+
+      // Reuse the same per-session force-disconnect + list-sync signal as
+      // revokeSession, so every revoked device is kicked immediately and the
+      // caller's remaining session(s) get session:list_updated.
+      for (const sessionId of otherSessionIds) {
+        void publishSessionRevokedEvent(redis, userId, sessionId).catch(
+          () => undefined
+        );
+      }
     }
 
     return result;

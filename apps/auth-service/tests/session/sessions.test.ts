@@ -199,6 +199,30 @@ describe("POST /api/auth/sessions/revoke-all", () => {
       TEST_SESSION_ID,
       expect.anything()
     );
+    // Same realtime signal as single-session terminate: each revoked device
+    // must be force-disconnected + trigger session:list_updated on the caller.
+    expect(publishRevoked).toHaveBeenCalledWith(
+      expect.anything(),
+      TEST_USER_ID,
+      OTHER_SESSION_ID
+    );
+    expect(publishRevoked).not.toHaveBeenCalledWith(
+      expect.anything(),
+      TEST_USER_ID,
+      TEST_SESSION_ID
+    );
+  });
+
+  it("does not publish any realtime revoke event when nothing was revoked", async () => {
+    repo.revokeOthersForUser.mockResolvedValue({ revokedCount: 0 });
+    publishRevoked.mockClear();
+
+    const res = await request(app)
+      .post("/api/auth/sessions/revoke-all")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(publishRevoked).not.toHaveBeenCalled();
   });
 
   it("returns 401 without a token", async () => {
