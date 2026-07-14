@@ -79,6 +79,7 @@ export async function issueAuthTokens(
     appVersion: session.appVersion,
     ipAddress: session.ipAddress,
     userAgent: session.userAgent,
+    countryCode: session.countryCode,
     refreshTokenHash: hashToken(refreshToken),
     refreshExpiresAt,
   });

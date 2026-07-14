@@ -9,12 +9,21 @@
  */
 export type DeviceLinkState = "PENDING" | "SCANNED" | "USED";
 
-/** Device descriptor captured when the new device starts a link session. */
+/**
+ * Device descriptor captured when the new device (the browser showing the QR)
+ * starts a link session. ipAddress/userAgent/countryCode come from THAT
+ * browser's own initiate() request — the only point at which its request
+ * context is available; login() is called from the scanning mobile device's
+ * request, which has different network info entirely.
+ */
 export type DeviceLinkDeviceInfo = {
   deviceName: string | null;
   deviceType: string | null;
   os: string | null;
   appVersion: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  countryCode: string | null;
 };
 
 /** Full record persisted under `aimess:devlink:{linkToken}`. */

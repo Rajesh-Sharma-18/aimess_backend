@@ -87,3 +87,102 @@ describe("buildSessionContext deviceType resolution", () => {
     expect(ctx.deviceType).toBe(DeviceType.DESKTOP);
   });
 });
+
+describe("buildSessionContext countryCode resolution", () => {
+  it("reads cf-ipcountry when present", () => {
+    const ctx = buildSessionContext(fakeReq({ "cf-ipcountry": "in" }));
+    expect(ctx.countryCode).toBe("IN");
+  });
+
+  it("falls back to x-country-code when cf-ipcountry is absent", () => {
+    const ctx = buildSessionContext(fakeReq({ "x-country-code": "us" }));
+    expect(ctx.countryCode).toBe("US");
+  });
+
+  it("treats Cloudflare's unknown-country placeholder (XX) as null", () => {
+    const ctx = buildSessionContext(fakeReq({ "cf-ipcountry": "XX" }));
+    expect(ctx.countryCode).toBeNull();
+  });
+
+  it("treats Cloudflare's Tor placeholder (T1) as null", () => {
+    const ctx = buildSessionContext(fakeReq({ "cf-ipcountry": "T1" }));
+    expect(ctx.countryCode).toBeNull();
+  });
+
+  it("is null when no country header is present — never fabricated", () => {
+    const ctx = buildSessionContext(fakeReq({}));
+    expect(ctx.countryCode).toBeNull();
+  });
+});
+
+describe("buildSessionContext full device detection per platform", () => {
+  it("Android login: X-Platform + X-App-Version populate deviceType/appVersion", () => {
+    const ctx = buildSessionContext(
+      fakeReq({
+        "x-platform": "android",
+        "x-app-version": "2.4.1",
+        "user-agent": ANDROID_UA,
+      })
+    );
+    expect(ctx.deviceType).toBe(DeviceType.ANDROID);
+    expect(ctx.appVersion).toBe("2.4.1");
+    // Browser-shaped Android UA (e.g. WebView) parses cleanly via ua-parser-js.
+    expect(ctx.osVersion).toBe("14");
+  });
+
+  it("iOS login: X-Platform + X-App-Version populate deviceType/appVersion", () => {
+    const ctx = buildSessionContext(
+      fakeReq({
+        "x-platform": "ios",
+        "x-app-version": "3.0.0",
+        "user-agent": IPHONE_UA,
+      })
+    );
+    expect(ctx.deviceType).toBe(DeviceType.IOS);
+    expect(ctx.appVersion).toBe("3.0.0");
+    expect(ctx.osVersion).toBe("17.0");
+  });
+
+  it("Web login: Chrome UA resolves deviceName/deviceType/osVersion without X-Platform", () => {
+    const ctx = buildSessionContext(fakeReq({ "user-agent": CHROME_UA }));
+    expect(ctx.deviceType).toBe(DeviceType.DESKTOP);
+    expect(ctx.deviceName).toContain("Chrome");
+    // Web has no app version to send — null is correct, not a bug.
+    expect(ctx.appVersion).toBeNull();
+  });
+
+  it("a bare non-browser native UA (e.g. raw OkHttp) legitimately yields null deviceName/osVersion — X-Platform still saves deviceType", () => {
+    // ua-parser-js only understands browser-shaped UAs; a bare HTTP client UA
+    // carries no OS/device tokens for it to extract. This is a genuine "the
+    // client didn't send parseable info" case, not a backend bug — nothing
+    // here may be fabricated to fill the gap.
+    const ctx = buildSessionContext(
+      fakeReq({ "x-platform": "android", "user-agent": OKHTTP_UA })
+    );
+    expect(ctx.deviceType).toBe(DeviceType.ANDROID);
+    expect(ctx.deviceName).toBeNull();
+    expect(ctx.osVersion).toBeNull();
+  });
+});
+
+describe("buildSessionContext ipAddress resolution priority", () => {
+  it("prefers X-Forwarded-For over everything else", () => {
+    const ctx = buildSessionContext(
+      fakeReq({
+        "x-forwarded-for": "198.51.100.1, 10.0.0.1",
+        "x-real-ip": "198.51.100.2",
+      })
+    );
+    expect(ctx.ipAddress).toBe("198.51.100.1");
+  });
+
+  it("falls back to X-Real-IP when X-Forwarded-For is absent", () => {
+    const ctx = buildSessionContext(fakeReq({ "x-real-ip": "198.51.100.2" }));
+    expect(ctx.ipAddress).toBe("198.51.100.2");
+  });
+
+  it("falls back to req.ip when neither proxy header is present", () => {
+    const ctx = buildSessionContext(fakeReq({}));
+    expect(ctx.ipAddress).toBe("127.0.0.1");
+  });
+});

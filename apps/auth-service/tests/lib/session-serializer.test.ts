@@ -39,4 +39,16 @@ describe("toActiveSessionItem", () => {
     expect(toActiveSessionItem(ROW).isCurrent).toBe(false);
     expect(toActiveSessionItem(ROW, "other").isCurrent).toBe(false);
   });
+
+  it("REST (GET /auth/sessions) and the session:list_updated broadcast are byte-for-byte identical for every shared field", () => {
+    // GET /auth/sessions passes the viewer's own sessionId (session.service.ts);
+    // the socket broadcast (token.ts) passes none. Both go through this exact
+    // same function on the exact same row — only isCurrent may legitimately differ.
+    const restPayload = toActiveSessionItem(ROW, "sess-1");
+    const socketPayload = toActiveSessionItem(ROW);
+
+    const { isCurrent: _restCurrent, ...restRest } = restPayload;
+    const { isCurrent: _socketCurrent, ...socketRest } = socketPayload;
+    expect(restRest).toEqual(socketRest);
+  });
 });

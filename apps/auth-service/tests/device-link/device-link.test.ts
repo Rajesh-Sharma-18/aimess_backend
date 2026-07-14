@@ -91,6 +91,44 @@ describe("POST /api/auth/devices/link/initiate", () => {
     expect(res.status).toBe(201);
   });
 
+  it("carries the initiating browser's ip/userAgent/countryCode onto the link record", async () => {
+    await request(app)
+      .post("/api/auth/devices/link/initiate")
+      .set("User-Agent", "test-browser-ua")
+      .set("CF-IPCountry", "IN")
+      .send({});
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userAgent: "test-browser-ua",
+        countryCode: "IN",
+        ipAddress: expect.any(String),
+      })
+    );
+  });
+
+  it("ignores body-supplied device fields — buildSessionContext(req) is the only source", async () => {
+    // A client bug (or a hostile client) putting its own raw User-Agent string
+    // into the `deviceName` body field must never end up as the stored
+    // deviceName — only the header-derived value from buildSessionContext may.
+    await request(app)
+      .post("/api/auth/devices/link/initiate")
+      .set(
+        "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"
+      )
+      .send({
+        deviceName: "Mozilla/5.0 (evil-injected-value)",
+        deviceType: "SMART_FRIDGE",
+        os: "not-a-real-os",
+        appVersion: "9.9.9-body-value",
+      });
+
+    const call = create.mock.calls[0][0];
+    expect(call.deviceName).not.toBe("Mozilla/5.0 (evil-injected-value)");
+    expect(call.appVersion).not.toBe("9.9.9-body-value");
+  });
+
   it("returns 400 when a device field exceeds 100 chars", async () => {
     const res = await request(app)
       .post("/api/auth/devices/link/initiate")
@@ -109,6 +147,9 @@ describe("POST /api/auth/devices/link/scan (instant login)", () => {
         deviceName: "iPad",
         os: "17",
         appVersion: "1.0.0",
+        ipAddress: "203.0.113.9",
+        userAgent: "browser-ua-at-initiate",
+        countryCode: "IN",
       },
     });
     claim.mockResolvedValue("OK");
@@ -129,6 +170,18 @@ describe("POST /api/auth/devices/link/scan (instant login)", () => {
     expect(res.body.data.refreshToken).toBe(TOKENS.refreshToken);
     expect(claim).toHaveBeenCalledWith("link-token-123", expect.any(String));
     expect(finalize).toHaveBeenCalledWith("link-token-123", expect.any(String));
+    // The new session's network info comes from the QR record (captured at
+    // initiate(), from the browser being linked) — never from this scan
+    // request, which belongs to a different device (the phone scanning it).
+    expect(issue).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({
+        ipAddress: "203.0.113.9",
+        userAgent: "browser-ua-at-initiate",
+        countryCode: "IN",
+      })
+    );
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "QR_LOGIN_ATTEMPT",
@@ -146,6 +199,25 @@ describe("POST /api/auth/devices/link/scan (instant login)", () => {
         event: "BROWSER_LOGGED_IN",
         targetId: "link-token-123",
       })
+    );
+  });
+
+  it("ignores the scanning device's own appVersion body field for the new session", async () => {
+    // input.appVersion here belongs to the scanning PHONE, not the browser
+    // being linked — the new session's appVersion must come only from
+    // record.device.appVersion (captured from the browser at initiate()).
+    await request(app)
+      .post("/api/auth/devices/link/scan")
+      .set(bearer(makeAccessToken()))
+      .send({
+        linkToken: "link-token-123",
+        appVersion: "phone-app-version-9.9.9",
+      });
+
+    expect(issue).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.objectContaining({ appVersion: "1.0.0" })
     );
   });
 

@@ -45,22 +45,31 @@ function resolveDeviceType(value: string | null): DeviceType {
 export const deviceLinkService = {
   async initiate(
     req: Request,
-    input: InitiateDeviceLinkInput
+    // Body may still carry legacy deviceName/deviceType/os/appVersion fields
+    // (accepted by the validator for backward compat with older clients) but
+    // they are intentionally never read: buildSessionContext(req) is the ONE
+    // source of truth for device metadata, shared byte-for-byte with
+    // login/register, so a client can no longer poison deviceName with an
+    // arbitrary string (e.g. its own raw User-Agent) by putting it in the body.
+    _input: InitiateDeviceLinkInput
   ): Promise<InitiateDeviceLinkResult> {
-    const fallback = buildSessionContext(req);
+    const context = buildSessionContext(req);
 
     const { linkToken, expiresAt } = await createLinkSession({
-      deviceName: input.deviceName ?? fallback.deviceName,
-      deviceType: input.deviceType ?? fallback.deviceType,
-      os: input.os ?? fallback.osVersion,
-      appVersion: input.appVersion ?? fallback.appVersion,
+      deviceName: context.deviceName,
+      deviceType: context.deviceType,
+      os: context.osVersion,
+      appVersion: context.appVersion,
+      ipAddress: context.ipAddress,
+      userAgent: context.userAgent,
+      countryCode: context.countryCode,
     });
 
     recordAuditEventSafe({
       event: "QR_CREATED",
       targetType: "qr_login_session",
       targetId: linkToken,
-      ip: fallback.ipAddress,
+      ip: context.ipAddress,
     });
 
     // auth:qr:expired is pushed by the scheduler-driven sweeper
@@ -111,17 +120,25 @@ export const deviceLinkService = {
       userId,
     });
 
-    // Synthetic context for the NEW device with a FRESH random deviceId so
-    // createSessionWithRefreshToken's deleteMany cannot wipe the caller's own
-    // (mobile) session, which would happen if we reused buildSessionContext(req).
+    // Synthetic context for the NEW (web) device with a FRESH random deviceId
+    // so createSessionWithRefreshToken's deleteMany cannot wipe the caller's
+    // own (mobile) session, which would happen if we reused buildSessionContext(req)
+    // here. Note `req` in this handler is the SCANNING (mobile) device's
+    // request — every field on it (ip/userAgent/appVersion/...) belongs to the
+    // phone, not the browser being linked, so NONE of it may leak into the new
+    // session (this previously happened for appVersion via `input.appVersion`,
+    // the same class of bug as the ip/userAgent mix-up). The browser's own
+    // metadata — via the ONE shared buildSessionContext(req) call — was
+    // captured once at initiate() time and carried on the QR record instead.
     const syntheticContext: SessionContext = {
       deviceId: randomBytes(16).toString("hex"),
       deviceType: resolveDeviceType(record.device.deviceType),
       deviceName: record.device.deviceName,
       osVersion: record.device.os,
-      appVersion: input.appVersion ?? record.device.appVersion,
-      ipAddress: null,
-      userAgent: null,
+      appVersion: record.device.appVersion,
+      ipAddress: record.device.ipAddress,
+      userAgent: record.device.userAgent,
+      countryCode: record.device.countryCode,
     };
 
     // The scanning user is linking a NEW device to their OWN account, so the

@@ -30,6 +30,7 @@ jest.mock("../../src/messaging/publish-auth-security.js", () => ({
 }));
 
 import { issueAuthTokens } from "../../src/lib/token.js";
+import { authRepository } from "../../src/repositories/auth.repository.js";
 import { redis } from "../../src/config/redis.js";
 import { publishSecurityNewLoginSafe } from "../../src/messaging/publish-auth-security.js";
 import { recordAuditEventSafe } from "../../src/services/audit.service.js";
@@ -47,6 +48,7 @@ const SESSION: SessionContext = {
   appVersion: null,
   ipAddress: "1.2.3.4",
   userAgent: "test-agent",
+  countryCode: "IN",
 };
 
 describe("issueAuthTokens → LINKED_DEVICE_CREATED audit", () => {
@@ -60,6 +62,9 @@ describe("issueAuthTokens → LINKED_DEVICE_CREATED audit", () => {
     const { sessionId } = await issueAuthTokens("user-1", "USER", SESSION);
 
     expect(sessionId).toBe("new-session-1");
+    expect(authRepository.createSessionWithRefreshToken).toHaveBeenCalledWith(
+      expect.objectContaining({ countryCode: "IN", ipAddress: "1.2.3.4" })
+    );
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "LINKED_DEVICE_CREATED",
