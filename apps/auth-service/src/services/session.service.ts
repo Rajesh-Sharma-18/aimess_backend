@@ -199,6 +199,15 @@ export const sessionService = {
       if (deviceId) {
         publishSessionDeviceRevokedSafe({ userId, deviceId });
       }
+
+      // Same realtime signal as revokeSession/revokeAllSessions: force-
+      // disconnect this session's LIVE socket(s) and tell the user's other
+      // devices to drop it from the Linked Devices list right now — reuses
+      // the existing session-revoke:<userId> channel/"terminated" payload,
+      // no new event. Fire-and-forget: a Redis hiccup must not fail logout.
+      void publishSessionRevokedEvent(redis, userId, sessionId).catch(
+        () => undefined
+      );
     }
   },
 

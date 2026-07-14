@@ -231,3 +231,53 @@ describe("POST /api/auth/sessions/revoke-all", () => {
     expect(repo.revokeOthersForUser).not.toHaveBeenCalled();
   });
 });
+
+// POST /api/auth/logout — logout must trigger the SAME realtime signal as
+// DELETE /sessions/:id (force-disconnect any live socket for this session +
+// session:list_updated on the caller's other devices), reusing
+// publishSessionRevokedEvent/session-revoke:<userId> rather than a new event.
+describe("POST /api/auth/logout", () => {
+  beforeEach(() => {
+    repo.revokeForUser.mockResolvedValue({ revoked: true });
+    publishRevoked.mockClear();
+  });
+
+  it("revokes the current session and publishes the realtime revoke signal → 200", async () => {
+    const res = await request(app)
+      .post("/api/auth/logout")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(repo.revokeForUser).toHaveBeenCalledWith(
+      TEST_USER_ID,
+      TEST_SESSION_ID,
+      expect.anything()
+    );
+    // Other devices must get session:list_updated + this device's live
+    // socket(s) must be force-disconnected, same as DELETE /sessions/:id.
+    expect(publishRevoked).toHaveBeenCalledWith(
+      expect.anything(),
+      TEST_USER_ID,
+      TEST_SESSION_ID
+    );
+  });
+
+  it("does not publish the realtime revoke signal when the revoke races to a no-op", async () => {
+    repo.revokeForUser.mockResolvedValue({ revoked: false });
+
+    const res = await request(app)
+      .post("/api/auth/logout")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(publishRevoked).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 without a token and never touches revoke or the realtime signal", async () => {
+    const res = await request(app).post("/api/auth/logout");
+    expect(res.status).toBe(401);
+    expect(repo.revokeForUser).not.toHaveBeenCalled();
+    expect(publishRevoked).not.toHaveBeenCalled();
+  });
+});
