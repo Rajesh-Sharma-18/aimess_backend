@@ -2,6 +2,10 @@ import { logger } from "@aimess/logger";
 
 import { redis } from "../config/redis.js";
 import { probeInfrastructure, probeServices } from "../lib/health-probes.js";
+import {
+  healthInfrastructureRegistry,
+  healthServiceRegistry,
+} from "../lib/health-registry.js";
 import type {
   HealthStatus,
   InfraHealth,
@@ -90,8 +94,8 @@ export const systemHealthService = {
     if (cached) return cached;
 
     const [services, infrastructure] = await Promise.all([
-      probeServices(),
-      probeInfrastructure(),
+      probeServices(healthServiceRegistry.getServices()),
+      probeInfrastructure(healthInfrastructureRegistry.getInfrastructure()),
     ]);
 
     const result: SystemHealth = {

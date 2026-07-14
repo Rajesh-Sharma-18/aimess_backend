@@ -27,8 +27,13 @@ jest.mock("../../src/grpc/chat.client.js", () => ({
 }));
 
 import { probeServices } from "../../src/lib/health-probes.js";
+import { healthServiceRegistry } from "../../src/lib/health-registry.js";
+import { bootstrapHealthChecks } from "../../src/lib/health.bootstrap.js";
 
 const HTTP_KEYS = ["user", "media", "notification", "stream"];
+
+bootstrapHealthChecks();
+const registeredServices = healthServiceRegistry.getServices();
 
 describe("probeServices — HTTP-probed services", () => {
   const originalFetch = global.fetch;
@@ -43,7 +48,7 @@ describe("probeServices — HTTP-probed services", () => {
       return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
     }) as unknown as typeof fetch;
 
-    const rows = await probeServices();
+    const rows = await probeServices(registeredServices);
     const httpRows = rows.filter((r) => HTTP_KEYS.includes(r.key));
     expect(httpRows).toHaveLength(4);
     for (const r of httpRows) {
@@ -63,7 +68,7 @@ describe("probeServices — HTTP-probed services", () => {
       async () => new Response("nope", { status: 503 })
     ) as unknown as typeof fetch;
 
-    const rows = await probeServices();
+    const rows = await probeServices(registeredServices);
     const media = rows.find((r) => r.key === "media");
     expect(media?.status).toBe("down");
     expect(media?.note).toContain("503");
@@ -74,7 +79,7 @@ describe("probeServices — HTTP-probed services", () => {
       Promise.reject(new Error("connect ECONNREFUSED"))
     ) as unknown as typeof fetch;
 
-    const rows = await probeServices();
+    const rows = await probeServices(registeredServices);
     const stream = rows.find((r) => r.key === "stream");
     expect(stream?.status).toBe("down");
     expect(stream?.monitored).toBe(true);

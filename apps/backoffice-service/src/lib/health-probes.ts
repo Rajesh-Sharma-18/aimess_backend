@@ -7,29 +7,24 @@ import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { presignClient } from "../config/storage.js";
 import { env } from "../config/env.js";
-import {
-  authClient,
-  getUserCountsBreaker,
-  getActiveUserCountsBreaker,
-} from "../grpc/auth.client.js";
-import {
-  communityClient,
-  getCommunityCountBreaker,
-} from "../grpc/community.client.js";
-import { chatClient, getGroupCountBreaker } from "../grpc/chat.client.js";
 import type {
   InfraHealth,
   ServiceHealth,
 } from "../types/system-health.types.js";
+import type { InfraProbeDef, ServiceProbeDef } from "./health-registry.js";
 
 /**
- * Live health probes for the System Health dashboard. Every probe is BOUNDED
- * (per-probe timeout) and NON-THROWING — it resolves to a normalized health row
- * even on failure/timeout — so one down dependency can never 500 or hang the
- * `/system-health` endpoint. Probes reuse the SAME primitives the readiness
- * probe and the dashboard service-status panel already use (Prisma `SELECT 1`,
- * `redis.ping`, the opossum count breakers, a bounded amqp connect, and an S3
- * HeadBucket) — no new monitoring framework is introduced.
+ * Reusable, framework-free health-probe primitives for the System Health
+ * dashboard. Every probe is BOUNDED (per-probe timeout) and NON-THROWING — it
+ * resolves to a normalized health row even on failure/timeout — so one down
+ * dependency can never 500 or hang the `/system-health` endpoint. Probes reuse
+ * the SAME primitives the readiness probe and the dashboard service-status
+ * panel already use (Prisma `SELECT 1`, `redis.ping`, the opossum count
+ * breakers, a bounded amqp connect, and an S3 HeadBucket).
+ *
+ * This module owns HOW to probe a dependency. WHICH dependencies exist lives
+ * in `src/probes/*.probe.ts`, registered once in `health.bootstrap.ts` — this
+ * file never lists services/infrastructure by name.
  */
 
 /** Wall-clock ceiling for any single probe. Matches the gRPC breaker timeout. */
@@ -113,7 +108,13 @@ function breakerUptimePercent(breakers: BreakerLike[]): number | null {
   return total === 0 ? null : Math.round((ok / total) * 1000) / 10;
 }
 
-interface MonitoredServiceDef {
+/**
+ * Shape for a service probed live via an existing lightweight gRPC method
+ * (e.g. `getUserCounts`/`getCommunityCount`/`getGroupCount` — the SAME calls
+ * the dashboard overview already issues, no new RPC is added). One of these
+ * is built per service inside its own `src/probes/*.service.probe.ts` file.
+ */
+export interface MonitoredServiceDef {
   key: string;
   name: string;
   breakers: BreakerLike[];
@@ -122,59 +123,22 @@ interface MonitoredServiceDef {
 }
 
 /**
- * Services backoffice can probe live via an existing lightweight gRPC method.
- * The ping methods (`getUserCounts`/`getCommunityCount`/`getGroupCount`) are the
- * SAME calls the dashboard overview already issues — no new RPC is added.
- */
-const MONITORED_SERVICES: MonitoredServiceDef[] = [
-  {
-    key: "auth",
-    name: "Auth Service",
-    breakers: [
-      getUserCountsBreaker as BreakerLike,
-      getActiveUserCountsBreaker as BreakerLike,
-    ],
-    ping: () => authClient.getUserCounts(),
-  },
-  {
-    key: "community",
-    name: "Community Service",
-    breakers: [getCommunityCountBreaker as BreakerLike],
-    ping: () => communityClient.getCommunityCount(),
-  },
-  {
-    key: "chat",
-    name: "Chat Service",
-    breakers: [getGroupCountBreaker as BreakerLike],
-    ping: () => chatClient.getGroupCount(),
-  },
-];
-
-/**
- * Services probed via their HTTP `/health` endpoint. Every service in the
- * monorepo already exposes one (see each app's routes/health.routes.ts,
+ * Shape for a service probed via its HTTP `/health` endpoint. Every service in
+ * the monorepo already exposes one (see each app's routes/health.routes.ts,
  * returns `{status:"ok"}` on 200) — reusing it keeps the probe uniform and
  * dependency-free (no new gRPC clients). `breaker`/`uptimePercent` stay null
  * because no backoffice-side circuit backs the call — the ping is the whole
  * signal.
  */
-interface HttpMonitoredServiceDef {
+export interface HttpMonitoredServiceDef {
   key: string;
   name: string;
   url: string;
 }
-const HTTP_MONITORED_SERVICES: HttpMonitoredServiceDef[] = [
-  { key: "user", name: "User Service", url: env.USER_HTTP_URL },
-  { key: "media", name: "Media Service", url: env.MEDIA_HTTP_URL },
-  {
-    key: "notification",
-    name: "Notification Service",
-    url: env.NOTIFICATIONS_HTTP_URL,
-  },
-  { key: "stream", name: "Livestream Service", url: env.STREAM_HTTP_URL },
-];
 
-async function probeService(def: MonitoredServiceDef): Promise<ServiceHealth> {
+export async function probeService(
+  def: MonitoredServiceDef
+): Promise<ServiceHealth> {
   const start = performance.now();
   let status: ServiceHealth["status"];
   let latencyMs: number;
@@ -227,7 +191,7 @@ function recordHttpProbe(key: string, ok: boolean): number {
  * Any non-2xx or network failure resolves to `down`; a slow-but-2xx response
  * degrades to `degraded`. Never throws.
  */
-async function probeHttpService(
+export async function probeHttpService(
   def: HttpMonitoredServiceDef
 ): Promise<ServiceHealth> {
   const start = performance.now();
@@ -268,23 +232,38 @@ async function probeHttpService(
   };
 }
 
+/** A registered service with no probe wired yet — visible but unmonitored. */
+function unknownService(def: { key: string; name: string }): ServiceHealth {
+  return {
+    key: def.key,
+    name: def.name,
+    status: "unknown",
+    monitored: false,
+    uptimePercent: null,
+    latencyMs: null,
+    breaker: null,
+    lastChecked: nowMs(),
+  };
+}
+
 /**
- * Probe every monitored service (gRPC + HTTP) concurrently. Never throws — a
- * rejected probe is coerced to a `down` row so one down dependency can never
- * fail the whole /system-health response.
+ * Probe every service registered in `entries` (read from
+ * `healthServiceRegistry.getServices()` by the caller) concurrently. Never
+ * throws — a rejected probe is coerced to a `down` row so one down dependency
+ * can never fail the whole /system-health response. A registered service with
+ * no probe is reported `monitored:false`/`unknown` without being called.
  */
-export async function probeServices(): Promise<ServiceHealth[]> {
-  const settled = await Promise.allSettled([
-    ...MONITORED_SERVICES.map(probeService),
-    ...HTTP_MONITORED_SERVICES.map(probeHttpService),
-  ]);
-  const defs: Array<{ key: string; name: string }> = [
-    ...MONITORED_SERVICES,
-    ...HTTP_MONITORED_SERVICES,
-  ];
+export async function probeServices(
+  entries: ServiceProbeDef[]
+): Promise<ServiceHealth[]> {
+  const settled = await Promise.allSettled(
+    entries.map((e) =>
+      e.probe ? e.probe() : Promise.resolve(unknownService(e))
+    )
+  );
   return settled.map((r, i) => {
     if (r.status === "fulfilled") return r.value;
-    const def = defs[i];
+    const def = entries[i];
     return {
       key: def.key,
       name: def.name,
@@ -440,26 +419,25 @@ export async function probeObjectStorage(): Promise<InfraHealth> {
   }
 }
 
-/** Probe all four infrastructure components concurrently; never throws. */
-export async function probeInfrastructure(): Promise<InfraHealth[]> {
-  const probes: Array<Promise<InfraHealth>> = [
-    probePostgres(),
-    probeRedis(),
-    probeRabbitMq(),
-    probeObjectStorage(),
-  ];
-  const settled = await Promise.allSettled(probes);
-  const fallbackKeys = ["database", "redis", "message_queue", "object_storage"];
-  return settled.map((r, i) =>
-    r.status === "fulfilled"
-      ? r.value
-      : infra(
-          fallbackKeys[i],
-          fallbackKeys[i],
-          "down",
-          { latencyMs: null },
-          null,
-          noteFrom(r.reason)
-        )
-  );
+/**
+ * Probe every infrastructure dependency registered in `entries` (read from
+ * `healthInfrastructureRegistry.getInfrastructure()` by the caller)
+ * concurrently; never throws.
+ */
+export async function probeInfrastructure(
+  entries: InfraProbeDef[]
+): Promise<InfraHealth[]> {
+  const settled = await Promise.allSettled(entries.map((e) => e.probe()));
+  return settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const def = entries[i];
+    return infra(
+      def.key,
+      def.name,
+      "down",
+      { latencyMs: null },
+      null,
+      noteFrom(r.reason)
+    );
+  });
 }
