@@ -769,6 +769,10 @@ export const communityRepository = {
    * Single-document status update keyed by the (communityId, userId) unique.
    * Optionally also sets/clears the ban metadata (bannedAt/bannedBy/banReason)
    * in the same write — used by banMember (set) and unbanMember (clear to null).
+   * `resetRole`, when passed, downgrades the stored role in the same write —
+   * used by banMember so a banned MODERATOR/ADMIN can never have their rank
+   * silently restored on a later reactivation (reactivateMemberWithSnapshot
+   * reads its priorRole off this row).
    */
   async updateMemberStatus(
     communityId: string,
@@ -778,11 +782,16 @@ export const communityRepository = {
       bannedAt: Date | null;
       bannedBy: string | null;
       banReason: string | null;
-    }
+    },
+    resetRole?: CommunityMemberRole
   ) {
     const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
-      data: banMeta ? { status, ...banMeta } : { status },
+      data: {
+        status,
+        ...(banMeta ?? {}),
+        ...(resetRole ? { role: resetRole } : {}),
+      },
       select: {
         id: true,
         userId: true,

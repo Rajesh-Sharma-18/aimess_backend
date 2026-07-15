@@ -20,6 +20,7 @@ import {
   publishCommunityMemberLeftSafe,
 } from "../../src/messaging/publish-community.js";
 import { publishCommunitySystemMessageForChatSafe } from "../../src/messaging/publish-community-chat.js";
+import { fetchUserSnapshots } from "../../src/lib/user-client.js";
 
 const repo = communityRepository as unknown as Record<string, jest.Mock>;
 const pubRoomEvent = publishCommunityRoomEvent as jest.Mock;
@@ -65,6 +66,10 @@ const activeTargetMember = {
   snapshotAvatarKey: null,
 };
 
+// A promoted target — used to prove ban strips the elevated rank instead of
+// leaving it on the row for a later reactivation to silently restore.
+const moderatorTargetMember = { ...activeTargetMember, role: "MODERATOR" };
+
 beforeEach(() => {
   jest.clearAllMocks();
   repo.findById.mockResolvedValue(publicCommunity);
@@ -90,7 +95,8 @@ describe("banMember — reuses the leave removal core (architecture requirement)
       CID,
       TARGET,
       "BANNED",
-      expect.objectContaining({ bannedBy: ADMIN, banReason: "spam" })
+      expect.objectContaining({ bannedBy: ADMIN, banReason: "spam" }),
+      "MEMBER"
     );
   });
 
@@ -108,7 +114,11 @@ describe("banMember — reuses the leave removal core (architecture requirement)
       expect.anything(),
       CID,
       "community:member:removed",
-      expect.objectContaining({ communityId: CID, userId: TARGET, reason: "banned" })
+      expect.objectContaining({
+        communityId: CID,
+        userId: TARGET,
+        reason: "banned",
+      })
     );
   });
 
@@ -132,28 +142,57 @@ describe("banMember — reuses the leave removal core (architecture requirement)
 
     expect(pubMemberLeft).not.toHaveBeenCalled();
     expect(pubBanned).toHaveBeenCalledWith(
-      expect.objectContaining({ communityId: CID, targetUserId: TARGET, actorId: ADMIN })
+      expect.objectContaining({
+        communityId: CID,
+        targetUserId: TARGET,
+        actorId: ADMIN,
+      })
+    );
+  });
+
+  it("resets role to MEMBER in the same write, so a banned MODERATOR can never have rank restored on a later reactivation", async () => {
+    repo.findMemberByUserId.mockResolvedValue(moderatorTargetMember);
+    repo.updateMemberStatus.mockResolvedValue({
+      ...moderatorTargetMember,
+      role: "MEMBER",
+      status: "BANNED",
+    });
+
+    await communityService.banMember(CID, ADMIN, TARGET, "spam");
+
+    expect(repo.updateMemberStatus).toHaveBeenCalledWith(
+      CID,
+      TARGET,
+      "BANNED",
+      expect.objectContaining({ bannedBy: ADMIN, banReason: "spam" }),
+      "MEMBER"
     );
   });
 });
 
 describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", () => {
-  const bannedTarget = { ...activeTargetMember, status: "BANNED", bannedAt: new Date() };
+  const bannedTarget = {
+    ...activeTargetMember,
+    status: "BANNED",
+    bannedAt: new Date(),
+  };
 
   beforeEach(() => {
     repo.findMemberByUserId.mockResolvedValue(bannedTarget);
-    repo.updateMemberStatus.mockResolvedValue({ ...bannedTarget, status: "LEFT" });
+    repo.updateMemberStatus.mockResolvedValue({
+      ...bannedTarget,
+      status: "LEFT",
+    });
   });
 
   it("flips status to LEFT (not ACTIVE) and clears ban metadata", async () => {
     const result = await communityService.unbanMember(CID, ADMIN, TARGET);
 
-    expect(repo.updateMemberStatus).toHaveBeenCalledWith(
-      CID,
-      TARGET,
-      "LEFT",
-      { bannedAt: null, bannedBy: null, banReason: null }
-    );
+    expect(repo.updateMemberStatus).toHaveBeenCalledWith(CID, TARGET, "LEFT", {
+      bannedAt: null,
+      bannedBy: null,
+      banReason: null,
+    });
     expect(result.status).toBe("LEFT");
   });
 
@@ -237,3 +276,63 @@ describe("Rejoin after unban — respects existing join rules, never auto-restor
   });
 });
 
+describe("Full ban/unban cycle never restores a previous MODERATOR/ADMIN role (regression)", () => {
+  // The row as it exists in the DB after banMember's role-reset write and
+  // unbanMember's status flip: role is already MEMBER, not the MODERATOR
+  // rank the user held before the ban — this is what makes every rejoin
+  // path below correct without any change to the rejoin code itself.
+  const leftAfterBanUnbanCycle = {
+    ...moderatorTargetMember,
+    role: "MEMBER",
+    status: "LEFT",
+  };
+
+  it("re-join (PUBLIC) reactivates as MEMBER, never the pre-ban MODERATOR rank", async () => {
+    repo.findById.mockResolvedValue(publicCommunity);
+    repo.findMemberByUserId.mockResolvedValue(leftAfterBanUnbanCycle);
+    repo.reactivateMemberWithSnapshot.mockResolvedValue({
+      ...leftAfterBanUnbanCycle,
+      status: "ACTIVE",
+    });
+    repo.countActiveMembers.mockResolvedValue(5);
+    repo.findActiveMemberIdsByRoles.mockResolvedValue([ADMIN]);
+
+    await communityService.joinCommunity(CID, TARGET);
+
+    expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledWith(
+      CID,
+      TARGET,
+      expect.anything(),
+      "MEMBER"
+    );
+  });
+
+  it("admin re-add (addMembers) reactivates as MEMBER, never the pre-ban MODERATOR rank", async () => {
+    repo.findMembersByUserIds.mockResolvedValue([leftAfterBanUnbanCycle]);
+    (fetchUserSnapshots as jest.Mock).mockResolvedValue(
+      new Map([
+        [
+          TARGET,
+          {
+            username: "target",
+            displayName: "Target User",
+            avatarObjectKey: null,
+          },
+        ],
+      ])
+    );
+    repo.reactivateMemberWithSnapshot.mockResolvedValue({
+      ...leftAfterBanUnbanCycle,
+      status: "ACTIVE",
+    });
+
+    await communityService.addMembers(CID, ADMIN, [TARGET]);
+
+    expect(repo.reactivateMemberWithSnapshot).toHaveBeenCalledWith(
+      CID,
+      TARGET,
+      expect.anything(),
+      "MEMBER"
+    );
+  });
+});

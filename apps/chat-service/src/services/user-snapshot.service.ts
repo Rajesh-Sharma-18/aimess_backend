@@ -15,6 +15,37 @@ export interface UserSnapshot {
   isOnline: boolean;
 }
 
+// Auth-service has an account but user-service hasn't consumed `user.registered`
+// yet, so the profile (and its displayName) doesn't exist. Cache this placeholder
+// briefly instead of the normal 1h TTL so it self-heals as soon as the profile
+// shows up, instead of serving an empty displayName for up to an hour.
+const INCOMPLETE_SNAPSHOT_TTL_SECONDS = 30;
+
+/**
+ * Best available display name, in priority order: fullName → displayName →
+ * username → memberId → "Unknown User". Centralized here so every caller of
+ * getUserSnapshotsMap resolves a name the same way instead of each serializer
+ * inventing its own fallback (or none at all, which is how empty strings leak
+ * into API responses).
+ */
+export function resolveDisplayName(
+  snapshot: Record<string, unknown> | null | undefined
+): string {
+  if (!snapshot) return "Unknown User";
+  const candidates = [
+    snapshot.fullName,
+    snapshot.displayName,
+    snapshot.username,
+    snapshot.memberId,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+  return "Unknown User";
+}
+
 /**
  * User snapshot service — fetches user info from Redis cache.
  * Falls back to a minimal placeholder if not cached.
@@ -64,11 +95,18 @@ export class UserSnapshotService {
             displayName: "", // no full name yet
             avatar: "",
             memberId: entry.account, // account = the login username
+            username: entry.account,
             isDeletedUser: false,
             isOnline: false,
           };
           cached.set(entry.userId, snapshot);
-          cacheRepo.setUserSnapshot(entry.userId, snapshot).catch(() => {});
+          cacheRepo
+            .setUserSnapshot(
+              entry.userId,
+              snapshot,
+              INCOMPLETE_SNAPSHOT_TTL_SECONDS
+            )
+            .catch(() => {});
         }
       }
 
@@ -113,15 +151,14 @@ export class UserSnapshotService {
   ): { displayName: string; avatar: string; isDeletedUser: boolean } {
     if (!snapshot) {
       return {
-        displayName: fallback.displayName || "",
+        displayName: fallback.displayName || "Unknown User",
         avatar: fallback.avatar || "",
         isDeletedUser: false,
       };
     }
 
     return {
-      displayName:
-        (snapshot.displayName as string) || fallback.displayName || "",
+      displayName: resolveDisplayName(snapshot) || fallback.displayName || "",
       avatar: (snapshot.avatar as string) || fallback.avatar || "",
       isDeletedUser: snapshot.isDeletedUser === true,
     };
