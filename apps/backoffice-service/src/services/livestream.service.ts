@@ -209,7 +209,7 @@ export const livestreamService = {
 
 /** Build the repository ActorRef (admin stamp + action timestamp). */
 function buildActor(actor: RequestAdmin): ActorRef {
-  return { admin: toAdmin(actor), at: new Date().toISOString() };
+  return { admin: toAdmin(actor), at: Date.now() };
 }
 
 export const thumbnailService = {

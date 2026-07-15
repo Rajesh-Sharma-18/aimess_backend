@@ -399,6 +399,66 @@ describe("GET /rooms/:roomId/messages (timeline + history)", () => {
     const res = await request(app).get(`${BASE}/rooms/${ROOM}/messages`);
     expect(res.status).toBe(401);
   });
+
+  // §5.1/§5.2 — community jump-to-message window: compound olderCursor for
+  // before_ts, plain epoch-ms newerCursor for after_ts, + both-direction flags.
+  it("POSITIVE: ?around= returns a window + bidirectional cursors (+ pinnedMessage)", async () => {
+    mocks.roomMemberRepo.findByRoomAndUser.mockResolvedValue({
+      status: "active",
+    });
+    mocks.generalRoomMessageRepo.findById.mockResolvedValue({
+      id: "m2",
+      createdAt: new Date(2000),
+    });
+    mocks.generalRoomMessageRepo.findAroundDate.mockResolvedValue([
+      {
+        id: "m1",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "a",
+        messageType: "text",
+        createdAt: new Date(1000),
+      },
+      {
+        id: "m2",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "b",
+        messageType: "text",
+        createdAt: new Date(2000),
+      },
+      {
+        id: "m3",
+        roomId: ROOM,
+        sentBy: "u",
+        message: "c",
+        messageType: "text",
+        createdAt: new Date(3000),
+      },
+    ]);
+    mocks.roomMemberRepo.findReadStatusByRoom.mockResolvedValue([]);
+    mocks.generalRoomMessageRepo.countTimeline.mockResolvedValue(5);
+    // Older probe (before the first row) finds a row; newer probe finds none.
+    mocks.generalRoomMessageRepo.findByRoomIdTimeline.mockImplementation(
+      async ({ direction }: { direction: "before" | "after" }) => ({
+        messages: direction === "before" ? [{ id: "m0" }] : [],
+        hasMore: false,
+      })
+    );
+    mocks.communityMessagePinRepo.findActivePinByRoom.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get(`${BASE}/rooms/${ROOM}/messages?around=m2`)
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(3);
+    expect(res.body.data.hasMoreOlder).toBe(true);
+    expect(res.body.data.hasMoreNewer).toBe(false);
+    expect(res.body.data.olderCursor).toBe("1000_m1"); // → before_ts (compound)
+    expect(res.body.data.newerCursor).toBe("3000"); // → after_ts (epoch-ms)
+    expect(res.body.data.pinnedMessage).toBeNull();
+  });
 });
 
 describe("GET /rooms/:roomId/messages/search (membership-gated)", () => {

@@ -89,7 +89,7 @@ describe("userManagementService.listUserReports — additive fields", () => {
       reason: "HARASSMENT",
       details: null,
       status: "open",
-      createdAt: "2026-06-01T00:00:00.000Z",
+      createdAt: Date.parse("2026-06-01T00:00:00.000Z"),
     });
     expect(data[0]!.reporter).toMatchObject({
       userId: "reporter-1",

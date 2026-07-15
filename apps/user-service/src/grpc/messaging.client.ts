@@ -187,4 +187,27 @@ export const messagingGrpcClient = {
       return [];
     }
   },
+
+  /**
+   * Auto-Connect: batch get-or-create private rooms for a user against
+   * multiple peers. Returns existing roomId if one exists, creates new one
+   * if not (and friendship is ACCEPTED).
+   */
+  async getOrCreatePrivateRooms(
+    userId: string,
+    peerUserIds: string[]
+  ): Promise<PrivateRoomMatch[]> {
+    if (!userId || peerUserIds.length === 0) return [];
+    try {
+      return await call<
+        { userId: string; peerUserIds: string[] },
+        { rooms?: PrivateRoomMatch[] }
+      >("getOrCreatePrivateRooms", { userId, peerUserIds }).then(
+        (r) => r.rooms ?? []
+      );
+    } catch (err) {
+      logger.warn(`messaging.getOrCreatePrivateRooms failed: ${String(err)}`);
+      return [];
+    }
+  },
 };

@@ -269,7 +269,7 @@ source (routes / validators / controllers / services / middleware).
 - **Positive**
   - `[E]` Correct current password → **200**, sessions revoked.
 - **Negative**
-  - `[E]` Wrong current password → **401** `AUTH_CURRENT_PASSWORD_INVALID`.
+  - `[E]` Wrong current password → **400** `AUTH_CURRENT_PASSWORD_INVALID`.
   - `[E]` New password equals current → **400** `AUTH_PASSWORD_SAME_AS_CURRENT`.
   - `[E]` Account has no password (social-only) → **400** `AUTH_PASSWORD_NOT_SET`.
   - `[E]` Account not active (guard) → **401**.

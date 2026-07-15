@@ -181,3 +181,24 @@ export const inboxQuerySchema = z
     message: "Please provide only one pagination parameter at a time",
     path: ["before_ts"],
   });
+
+/**
+ * `GET /chat/private/conversations` — cursor (before_ts/after_ts, epoch ms)
+ * pagination, using the exact same query-param contract as `myCommunitiesQuerySchema`'s
+ * joined-mode (`before_ts`/`after_ts`/`limit`, same `limit` bounds) so the private
+ * conversation list and the community list share one pagination strategy.
+ */
+export const privateConversationListQuerySchema = z
+  .object({
+    before_ts: z.coerce.number().int().positive().optional(),
+    after_ts: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().positive().max(50).default(20),
+  })
+  .refine((q) => !(q.before_ts != null && q.after_ts != null), {
+    message: "Only one pagination parameter is allowed at a time",
+    path: ["before_ts"],
+  });
+
+export type PrivateConversationListQuery = z.infer<
+  typeof privateConversationListQuerySchema
+>;

@@ -16,6 +16,7 @@ import { UserSnapshotService } from "../services/user-snapshot.service.js";
 import {
   buildChatMessageEvent,
   buildDeletePayload,
+  buildCommunityInvitationAction,
 } from "../lib/chat-message.serializer.js";
 import { publishConvUpdatedSafe } from "../events/publish-conv-updated.js";
 import { publishMessageSentSafe } from "../events/publish-message-sent.js";
@@ -624,9 +625,25 @@ export class CommunityRoomSyncConsumer {
         )
       );
 
+    // 5b. The `systemAction` card — built synchronously (no gRPC lookup) since
+    //     this event is firing the invite into existence right now: the
+    //     recipient is guaranteed not-yet-a-member (bulk-send filters out
+    //     ACTIVE members before publishing) and the code was just minted, so
+    //     ACTIVE/false is the only truthful answer. Historical reads (REST
+    //     `enrichMessages`) re-resolve this dynamically since either fact can
+    //     go stale later.
+    const systemAction = buildCommunityInvitationAction({
+      communityId,
+      communityName,
+      inviteCode: linkCode,
+      deepLink: inviteDeepLink ?? inviteUrl ?? "",
+      alreadyJoined: false,
+      status: "ACTIVE",
+    });
+
     // 6. Live broadcast — the canonical message:new wire event (identical shape
-    //    to a normal private message; systemEvent/systemData ride along for the
-    //    card). Reaches every device joined to the conversation room.
+    //    to a normal private message; systemEvent/systemData/systemAction ride
+    //    along for the card). Reaches every device joined to the conversation room.
     const wireEvent = buildChatMessageEvent({
       id: message.id,
       clientMessageId,
@@ -642,6 +659,7 @@ export class CommunityRoomSyncConsumer {
       serverTs: sentAt,
       systemEvent: "COMMUNITY_INVITE",
       systemData,
+      systemAction,
       countInUnread: (message as unknown as { countInUnread?: boolean | null })
         .countInUnread,
     });
@@ -666,7 +684,7 @@ export class CommunityRoomSyncConsumer {
       recipientIds: [inviterId, recipientId],
       lastMessageId: message.id,
       lastMessageAt: sentAt,
-      preview: { contentType: "SYSTEM", text: previewText },
+      preview: { contentType: "SYSTEM", text: previewText, systemAction },
     });
 
     // 8. FCM/APNs push for the recipient when offline — reuses the normal chat

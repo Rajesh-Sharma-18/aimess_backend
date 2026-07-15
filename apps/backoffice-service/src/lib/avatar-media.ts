@@ -9,7 +9,11 @@
  * non-community repositories (e.g. livestream) can import it without creating
  * a module cycle back through `community.repository.ts`.
  */
-import { MEDIA_PREFIXES, toMediaObject } from "@aimess/storage";
+import {
+  MEDIA_PREFIXES,
+  parseFileMetaFromObjectKey,
+  toMediaObject,
+} from "@aimess/storage";
 import type { MediaObject } from "@aimess/shared-types";
 
 import { mediaUrlStrategy } from "../config/storage.js";
@@ -97,4 +101,42 @@ export async function resolveCommunityImageOrNull(
   stored: string | null | undefined
 ): Promise<MediaObject | null> {
   return toAvatarOrNull(await resolveCommunityImageMediaObject(stored));
+}
+
+const STREAM_BUCKET = env.MINIO_BUCKET_STREAM;
+
+/**
+ * Stream thumbnail object key → {@link MediaObject} (stream bucket). Stream
+ * thumbnails aren't covered by `MEDIA_PREFIXES` (no `stream/` prefix bucket
+ * exists there), so this resolves the bare key directly against the stream
+ * bucket instead of going through `toMediaObject`'s prefix-matching — same
+ * approach `livestream.repository.ts`'s `resolveThumb` uses, just returning
+ * the full MediaObject shape (this endpoint's contract) instead of a bare URL.
+ * Null when there's no stored key or the presign fails.
+ */
+export async function resolveStreamThumbnailOrNull(
+  key: string | null | undefined
+): Promise<MediaObject | null> {
+  if (!key) return null;
+  try {
+    const { url, expiresIn } = await mediaUrlStrategy.resolveDownloadUrl(
+      STREAM_BUCKET,
+      key
+    );
+    const { fileId } = parseFileMetaFromObjectKey(key);
+    return {
+      mediaId: null,
+      fileId,
+      objectKey: key,
+      fileName: null,
+      contentType: null,
+      size: null,
+      downloadUrl: url,
+      downloadUrlExpiresIn: expiresIn,
+      uploadUrl: null,
+      uploadUrlExpiresIn: null,
+    };
+  } catch {
+    return null;
+  }
 }

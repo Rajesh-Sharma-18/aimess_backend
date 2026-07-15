@@ -6,4 +6,5 @@ import { env } from "../config/env.js";
 export const authenticateAccessToken: RequestHandler =
   createAuthenticateAccessToken({
     accessTokenSecret: env.JWT_ACCESS_SECRET,
+    adminTokenSecret: env.JWT_ADMIN_SECRET,
   });

@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 
 import {
   acceptFriendRequest,
+  autoDisconnectFriends,
   cancelFriendRequest,
   listFriendRequests,
   makeUsersFriends,
@@ -61,6 +62,12 @@ friendshipRoutes.post(
   "/auto-connect",
   authenticateAccessToken,
   makeUsersFriends
+);
+
+friendshipRoutes.post(
+  "/auto-disconnect",
+  authenticateAccessToken,
+  autoDisconnectFriends
 );
 
 friendshipRoutes.delete(

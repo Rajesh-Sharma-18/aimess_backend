@@ -890,12 +890,14 @@ const MAX_ACTIVE_LIVESTREAMS = 5;
 function livestreamFields(liveCount: number): {
   isLive: boolean;
   hasActiveLivestream: boolean;
+  activeLivestreamCount: number;
   liveStreamCount: number;
 } {
   const count = Math.min(Math.max(0, liveCount), MAX_ACTIVE_LIVESTREAMS);
   return {
     isLive: count > 0,
     hasActiveLivestream: count > 0,
+    activeLivestreamCount: count,
     liveStreamCount: count,
   };
 }
@@ -3700,7 +3702,7 @@ export const communityService = {
         });
       }
 
-      throw new BadRequestError("ADMIN_CANNOT_LEAVE_COMMUNITY");
+      throw new BadRequestError("COMMUNITY_ADMIN_CANNOT_LEAVE");
     }
 
     // Non-admin leave: status → LEFT + recompute. Single-document update +
@@ -3758,12 +3760,16 @@ export const communityService = {
     const removedReason = opts.removedReason ?? "left";
     const auditAction = opts.auditAction ?? "MEMBER_LEFT";
 
+    // Banning resets role to MEMBER in the same write so a banned
+    // MODERATOR/ADMIN can never have their rank silently restored when they
+    // rejoin later — rejoin flows read priorRole off this row.
     const updated = opts.banMeta
       ? await communityRepository.updateMemberStatus(
           communityId,
           targetUserId,
           status,
-          opts.banMeta
+          opts.banMeta,
+          CommunityMemberRole.MEMBER
         )
       : await communityRepository.updateMemberStatus(
           communityId,
@@ -3839,6 +3845,99 @@ export const communityService = {
     }
 
     return { updated, memberCount: count };
+  },
+
+  /**
+   * Shared branch logic for "remove this community from MY account", used by
+   * both the singular deleteCommunityForSelf and the per-item loop inside
+   * bulkDeleteCommunities. Takes already-fetched community/membership rows so
+   * callers keep control of batching (bulk fetches both in two queries up
+   * front; the singular caller fetches once). Mutates via removeActiveMember
+   * — the same shared core leaveCommunity and banMember use — so the ACTIVE
+   * non-admin path is byte-for-byte the existing leave workflow.
+   */
+  async resolveSelfRemoval(
+    callerId: string,
+    community: { id: string } | null | undefined,
+    membership:
+      | { status: CommunityMemberStatus; role: CommunityMemberRole }
+      | null
+      | undefined,
+    eventAt: string
+  ): Promise<
+    | "NOT_FOUND"
+    | "MEMBER_NOT_FOUND"
+    | "ALREADY_REMOVED"
+    | "OWNER_CANNOT_DELETE"
+    | "REMOVED"
+  > {
+    if (!community) {
+      return "NOT_FOUND";
+    }
+
+    if (!membership || membership.status === CommunityMemberStatus.PENDING) {
+      return "MEMBER_NOT_FOUND";
+    }
+
+    if (membership.status === CommunityMemberStatus.LEFT) {
+      return "ALREADY_REMOVED";
+    }
+
+    if (membership.status === CommunityMemberStatus.BANNED) {
+      // Banned members are already excluded from "my communities" (ACTIVE-only
+      // filter in listMineByActivity) — nothing left to mutate.
+      return "REMOVED";
+    }
+
+    if (membership.role === CommunityMemberRole.ADMIN) {
+      return "OWNER_CANNOT_DELETE";
+    }
+
+    await this.removeActiveMember(community.id, callerId, { eventAt });
+    this.emitMemberSystemMessage({
+      communityId: community.id,
+      systemMessageType: "MEMBER_LEFT",
+      actorId: callerId,
+      targetUserId: callerId,
+    });
+
+    return "REMOVED";
+  },
+
+  /**
+   * Delete a single community from the CALLER's own account/list only — never
+   * touches other members. Active member → same removal as leaveCommunity.
+   * Banned member → silent no-op success (already hidden from their list).
+   * Admin/owner → rejected; they must transfer ownership or use the admin
+   * delete flow.
+   */
+  async deleteCommunityForSelf(
+    communityId: string,
+    callerId: string
+  ): Promise<void> {
+    const [community, membership] = await Promise.all([
+      communityRepository.findById(communityId),
+      communityRepository.findMemberByUserId(communityId, callerId),
+    ]);
+
+    const outcome = await this.resolveSelfRemoval(
+      callerId,
+      community,
+      membership,
+      new Date().toISOString()
+    );
+
+    if (outcome === "NOT_FOUND") {
+      throw new NotFoundError("COMMUNITY_NOT_FOUND");
+    }
+    if (outcome === "MEMBER_NOT_FOUND") {
+      throw new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND");
+    }
+    if (outcome === "OWNER_CANNOT_DELETE") {
+      throw new BadRequestError("COMMUNITY_OWNER_CANNOT_DELETE");
+    }
+    // ALREADY_REMOVED and REMOVED are both idempotent success from the
+    // caller's perspective — the community is (now) gone from their list.
   },
 
   /**
@@ -4063,54 +4162,46 @@ export const communityService = {
     const eventAt = new Date().toISOString();
 
     for (const communityId of communityIds) {
-      if (!communityIdSet.has(communityId)) {
-        results.push({ communityId, status: "FAILED", errorCode: "NOT_FOUND" });
-        failedCount++;
-        continue;
-      }
-
+      const community = communityIdSet.has(communityId)
+        ? { id: communityId }
+        : undefined;
       const membership = membershipMap.get(communityId);
 
-      if (!membership || membership.status === CommunityMemberStatus.LEFT) {
-        results.push({ communityId, status: "SKIPPED" });
-        continue;
+      // Same branch logic (and same removeActiveMember mutation) as the
+      // singular deleteCommunityForSelf — kept in one place.
+      const outcome = await this.resolveSelfRemoval(
+        callerId,
+        community,
+        membership,
+        eventAt
+      );
+
+      switch (outcome) {
+        case "NOT_FOUND":
+          results.push({
+            communityId,
+            status: "FAILED",
+            errorCode: "NOT_FOUND",
+          });
+          failedCount++;
+          break;
+        case "OWNER_CANNOT_DELETE":
+          results.push({
+            communityId,
+            status: "FAILED",
+            errorCode: "OWNER_CANNOT_DELETE",
+          });
+          failedCount++;
+          break;
+        case "MEMBER_NOT_FOUND":
+        case "ALREADY_REMOVED":
+          results.push({ communityId, status: "SKIPPED" });
+          break;
+        case "REMOVED":
+          results.push({ communityId, status: "REMOVED" });
+          removedCount++;
+          break;
       }
-
-      if (membership.status === CommunityMemberStatus.BANNED) {
-        results.push({ communityId, status: "REMOVED" });
-        removedCount++;
-        continue;
-      }
-
-      if (membership.status !== CommunityMemberStatus.ACTIVE) {
-        results.push({ communityId, status: "SKIPPED" });
-        continue;
-      }
-
-      if (membership.role === CommunityMemberRole.ADMIN) {
-        results.push({
-          communityId,
-          status: "FAILED",
-          errorCode: "OWNER_CANNOT_DELETE",
-        });
-        failedCount++;
-        continue;
-      }
-
-      // ACTIVE non-admin member: reuse the same leave workflow as
-      // leaveCommunity — membership removal, memberCount recompute, audit,
-      // and the socket/notification fan-out that drops the community from
-      // every device's list in real time.
-      await this.removeActiveMember(communityId, callerId, { eventAt });
-      this.emitMemberSystemMessage({
-        communityId,
-        systemMessageType: "MEMBER_LEFT",
-        actorId: callerId,
-        targetUserId: callerId,
-      });
-
-      results.push({ communityId, status: "REMOVED" });
-      removedCount++;
     }
 
     return {
@@ -6806,6 +6897,10 @@ export const communityService = {
           size?: number | null;
         }[]
       | null = input.reportedContentMedia ?? null;
+    // Message sender resolved from the chat snapshot when the reporter's own
+    // targetUserId is absent — the admin.report.ingest event needs one so the
+    // backoffice can hydrate `reportedUser` on the report row.
+    let resolvedMessageSenderId: string | null = null;
     if (input.reportedMessageId) {
       const snap = await getChatClient().getCommunityMessageById({
         communityId,
@@ -6825,6 +6920,7 @@ export const communityService = {
               size: m.size || null,
             }))
           : null;
+        resolvedMessageSenderId = snap.senderId || null;
       }
     }
 
@@ -6875,13 +6971,28 @@ export const communityService = {
       moderatorRecipientIds: reportModeratorRecipientIds,
     });
 
+    // Message reports carry the messageId as targetId + the sender as
+    // reportedUserId; the backoffice's toReportKind maps `type: "message"` →
+    // MESSAGE, which unlocks the entity-specific `message` block in the
+    // Report Details response.
+    const messageSenderId = input.reportedMessageId
+      ? (targetUserId ?? resolvedMessageSenderId)
+      : null;
+    const ingestType: "user" | "community" | "message" = input.reportedMessageId
+      ? "message"
+      : targetUserId
+        ? "user"
+        : "community";
+    const ingestTargetId =
+      input.reportedMessageId ?? targetUserId ?? communityId;
     publishAdminReportIngestSafe({
-      type: targetUserId ? "user" : "community",
-      targetId: targetUserId ?? communityId,
+      type: ingestType,
+      targetId: ingestTargetId,
       reporterId: callerId,
       reason: input.reason,
       details: otherReason,
       communityId,
+      reportedUserId: messageSenderId,
       eventAt: reportEventAt,
       sourceReportId: row.id,
     });

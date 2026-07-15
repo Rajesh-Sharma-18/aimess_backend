@@ -7,10 +7,12 @@ import { mediaRateLimiter } from "../../middleware/rate-limiter.js";
 export function createMediaRoutes(): IRouter {
   const router = Router();
 
+  // authenticateAccessToken runs before mediaRateLimiter so the limiter can
+  // key off req.auth.userId (per-user buckets) instead of req.ip.
   router.post(
     "/upload-url",
-    mediaRateLimiter,
     authenticateAccessToken,
+    mediaRateLimiter,
     mediaController.getUploadUrl
   );
 
@@ -18,23 +20,23 @@ export function createMediaRoutes(): IRouter {
   // is only downloadable once this returns scanStatus: "CLEAN".
   router.post(
     "/confirm",
-    mediaRateLimiter,
     authenticateAccessToken,
+    mediaRateLimiter,
     mediaController.confirmUpload
   );
 
   router.post(
     "/download-url",
-    mediaRateLimiter,
     authenticateAccessToken,
+    mediaRateLimiter,
     mediaController.getDownloadUrl
   );
 
   // Poll async AV scan status. GET /media/scan-status?objectKey=...&category=...
   router.get(
     "/scan-status",
-    mediaRateLimiter,
     authenticateAccessToken,
+    mediaRateLimiter,
     mediaController.getScanStatus
   );
 
@@ -43,8 +45,8 @@ export function createMediaRoutes(): IRouter {
   // objectKey must be URL-encoded if it contains slashes.
   router.delete(
     "/uploads/:objectKey",
-    mediaRateLimiter,
     authenticateAccessToken,
+    mediaRateLimiter,
     mediaController.cancelUpload
   );
 

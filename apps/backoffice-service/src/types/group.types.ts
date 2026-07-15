@@ -28,7 +28,7 @@ export interface GroupItem {
   avatar: MediaObject | null;
   description: string;
   memberCount: number;
-  createdAt: string;
+  createdAt: number;
   admin: GroupAdmin;
 }
 
@@ -41,7 +41,7 @@ export interface GroupMemberItem {
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
   role: string;
-  joinedAt: string;
+  joinedAt: number;
 }
 
 /** Offset-pagination meta for group list responses. */

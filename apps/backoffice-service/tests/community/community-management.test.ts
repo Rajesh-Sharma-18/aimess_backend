@@ -123,26 +123,26 @@ describe("GET /v1/communities", () => {
 });
 
 describe("GET /v1/communities/:communityId", () => {
-  it("returns 200 with the detail, numeric memberStats/livestreamStats, and no dropped fields", async () => {
+  it("returns 200 with a fully flat detail (no nested objects), membersCount/liveStreamsCount", async () => {
     const res = await request(app).get(`/v1/communities/${CID}`).set(auth());
     expect(res.status).toBe(200);
-    // Community fields are flattened onto the root — no `community` wrapper.
+    // Community + owner fields are flattened onto the root — no wrappers.
     expect(res.body.data).not.toHaveProperty("community");
+    expect(res.body.data).not.toHaveProperty("owner");
     expect(res.body.data.communityId).toBe(CID);
-    expect(res.body.data.owner).toEqual({
-      userId: "u_1",
-      displayName: "Owner",
-    });
+    expect(res.body.data.communityName).toBe("Builders");
+    expect(res.body.data.ownerId).toBe("u_1");
+    expect(res.body.data.ownerName).toBe("Owner");
     // memberStats/livestreamStats collapse from an object to a number.
-    expect(res.body.data.memberStats).toBe(21);
-    expect(res.body.data.livestreamStats).toBe(4);
+    expect(res.body.data.membersCount).toBe(21);
+    expect(res.body.data.liveStreamsCount).toBe(4);
     // These fields must never appear in the response.
     expect(res.body.data).not.toHaveProperty("moderationHistory");
     expect(res.body.data).not.toHaveProperty("settingsSummary");
     expect(res.body.data).not.toHaveProperty("partial");
   });
 
-  it("livestreamStats defaults to 0 when the repository has no livestream data", async () => {
+  it("liveStreamsCount defaults to 0 when the repository has no livestream data", async () => {
     svc.getCommunity.mockResolvedValue({
       community: { communityId: CID, name: "Builders" },
       owner: { userId: "u_1", displayName: "Owner" },
@@ -154,8 +154,8 @@ describe("GET /v1/communities/:communityId", () => {
     });
     const res = await request(app).get(`/v1/communities/${CID}`).set(auth());
     expect(res.status).toBe(200);
-    expect(res.body.data.memberStats).toBe(5);
-    expect(res.body.data.livestreamStats).toBe(0);
+    expect(res.body.data.membersCount).toBe(5);
+    expect(res.body.data.liveStreamsCount).toBe(0);
   });
 
   it("returns 404 when the community is unknown", async () => {

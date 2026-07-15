@@ -184,7 +184,7 @@ describe("systemHealthService.getSystemHealth", () => {
     expect(result.servicesUp).toEqual({ up: 3, total: 3, label: "3/3" });
     expect(result.services).toHaveLength(4);
     expect(result.infrastructure).toHaveLength(4);
-    expect(typeof result.lastUpdated).toBe("string");
+    expect(typeof result.lastUpdated).toBe("number");
   });
 
   it("reports degraded + 2/3 up on a partial service failure", async () => {

@@ -5,11 +5,16 @@ import { localeMiddleware } from "@aimess/utils";
 
 import { serviceRoutes } from "./api/routes/index.js";
 import { env } from "./config/env.js";
+import { bootstrapHealthChecks } from "./lib/health.bootstrap.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { notFound } from "./middleware/not-found.js";
 import { healthRouter } from "./routes/health.routes.js";
 
 export function createApp(): Express {
+  // Registers every System Health service/infrastructure probe exactly once,
+  // before routes are mounted.
+  bootstrapHealthChecks();
+
   const app = express();
 
   app.disable("x-powered-by");

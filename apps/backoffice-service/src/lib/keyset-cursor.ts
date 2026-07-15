@@ -10,8 +10,8 @@
  * previous per-repo copies.
  */
 
-/** A cursor is a flat record of string fields (the compound sort key). */
-export type CursorShape = Record<string, string>;
+/** A cursor is a flat record of string/number fields (the compound sort key) — date fields are epoch-ms numbers, id fields are strings. */
+export type CursorShape = Record<string, string | number>;
 
 /** Encode a cursor object to an opaque base64url token. */
 export function encodeCursor<C extends CursorShape>(c: C): string {
@@ -35,7 +35,8 @@ export function decodeCursor<C extends CursorShape>(
       Buffer.from(raw, "base64url").toString("utf8")
     ) as Record<string, unknown>;
     for (const key of requiredKeys) {
-      if (typeof parsed[key as string] !== "string") return null;
+      const v = parsed[key as string];
+      if (typeof v !== "string" && typeof v !== "number") return null;
     }
     return parsed as C;
   } catch {

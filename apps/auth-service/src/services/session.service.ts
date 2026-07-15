@@ -1,5 +1,6 @@
 import { signAccessToken } from "@aimess/auth-jwt";
 import { NotFoundError, UnauthorizedError } from "@aimess/errors";
+import { publishSessionRevokedEvent } from "@aimess/redis";
 
 import {
   AccountStatus,
@@ -15,13 +16,16 @@ import {
   markSessionRevoked,
   markSessionsRevoked,
 } from "../lib/session-active-cache.js";
+import { toActiveSessionItem } from "../lib/session-serializer.js";
 import { env } from "../config/env.js";
+import { redis } from "../config/redis.js";
 import { refreshTokenRepository } from "../repositories/refresh-token.repository.js";
 import { sessionRepository } from "../repositories/session.repository.js";
 import {
   publishSessionDeviceRevokedSafe,
   publishAllSessionsRevokedSafe,
 } from "../messaging/publish-session-revoked.js";
+import { recordAuditEventSafe } from "./audit.service.js";
 import type {
   AccessTokenResponse,
   AuthTokensResponse,
@@ -195,6 +199,15 @@ export const sessionService = {
       if (deviceId) {
         publishSessionDeviceRevokedSafe({ userId, deviceId });
       }
+
+      // Same realtime signal as revokeSession/revokeAllSessions: force-
+      // disconnect this session's LIVE socket(s) and tell the user's other
+      // devices to drop it from the Linked Devices list right now — reuses
+      // the existing session-revoke:<userId> channel/"terminated" payload,
+      // no new event. Fire-and-forget: a Redis hiccup must not fail logout.
+      void publishSessionRevokedEvent(redis, userId, sessionId).catch(
+        () => undefined
+      );
     }
   },
 
@@ -204,19 +217,9 @@ export const sessionService = {
   ): Promise<ListSessionsResult> {
     const rows = await sessionRepository.listActiveByUserId(userId);
 
-    const sessions: ActiveSessionItem[] = rows.map((row) => ({
-      sessionId: row.id,
-      deviceId: row.deviceId,
-      deviceName: row.deviceName,
-      deviceType: row.deviceType,
-      osVersion: row.osVersion,
-      appVersion: row.appVersion,
-      ipAddress: row.ipAddress,
-      countryCode: row.countryCode,
-      lastActiveAt: row.lastActiveAt.toISOString(),
-      createdAt: row.createdAt.toISOString(),
-      isCurrent: row.id === currentSessionId,
-    }));
+    const sessions: ActiveSessionItem[] = rows.map((row) =>
+      toActiveSessionItem(row, currentSessionId)
+    );
 
     return { sessions };
   },
@@ -258,9 +261,24 @@ export const sessionService = {
 
     await markSessionRevoked(targetSessionId);
 
+    recordAuditEventSafe({
+      event: "LINKED_DEVICE_REVOKED",
+      targetType: "linked_device",
+      targetId: targetSessionId,
+      userId,
+      metadata: { reason },
+    });
+
     if (deviceId) {
       publishSessionDeviceRevokedSafe({ userId, deviceId });
     }
+
+    // Force-disconnect this device's LIVE socket(s), if any, right now —
+    // otherwise it would stay connected until its access token naturally
+    // expires. Fire-and-forget: a Redis hiccup must not fail the revoke.
+    void publishSessionRevokedEvent(redis, userId, targetSessionId).catch(
+      () => undefined
+    );
   },
 
   /** "Sign out from all other devices" — keeps the caller's current session active. */
@@ -283,6 +301,15 @@ export const sessionService = {
 
     if (result.revokedCount > 0) {
       publishAllSessionsRevokedSafe({ userId });
+
+      // Reuse the same per-session force-disconnect + list-sync signal as
+      // revokeSession, so every revoked device is kicked immediately and the
+      // caller's remaining session(s) get session:list_updated.
+      for (const sessionId of otherSessionIds) {
+        void publishSessionRevokedEvent(redis, userId, sessionId).catch(
+          () => undefined
+        );
+      }
     }
 
     return result;

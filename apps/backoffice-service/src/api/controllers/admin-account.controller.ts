@@ -8,6 +8,7 @@ import type {
   CreateAdminAccountInput,
   ListAdminAccountsQueryInput,
   UpdateAdminAccountInput,
+  UpdateAdminAccountStatusInput,
   UpdateAdminPermissionsInput,
 } from "../validators/index.js";
 
@@ -103,6 +104,25 @@ export const deactivateAdminAccount: RequestHandler = (req, res, next) => {
       const adminId = req.params.adminId as string;
       const result = await adminAccountService.deactivateAdminAccount(
         adminId,
+        req.admin!,
+        getRequestContext(req)
+      );
+      res.status(HTTP_STATUS.OK).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  })();
+};
+
+/** PATCH /v1/admin-accounts/:adminId/status — unified activate/deactivate. */
+export const updateAdminAccountStatus: RequestHandler = (req, res, next) => {
+  void (async () => {
+    try {
+      const adminId = req.params.adminId as string;
+      const body = req.body as UpdateAdminAccountStatusInput;
+      const result = await adminAccountService.updateAdminAccountStatus(
+        adminId,
+        body,
         req.admin!,
         getRequestContext(req)
       );

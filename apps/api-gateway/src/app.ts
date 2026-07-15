@@ -13,6 +13,7 @@ import { createApiRouter } from "./routes/api.routes.js";
 import { createLinkHostRouter } from "./routes/linkhost.routes.js";
 import { healthRouter } from "./routes/health.routes.js";
 import { createInternalSrsRouter } from "./routes/internal-srs.routes.js";
+import { createLiveKitWebhookRouter } from "./routes/livekit-webhook.routes.js";
 import type { MessagingClient } from "./grpc/clients/messaging.client.js";
 import type { MediaClient } from "./grpc/clients/media.client.js";
 
@@ -81,6 +82,10 @@ export function createApp(
   setupAsyncApiDocs(app);
 
   app.use("/health", healthRouter);
+
+  // LiveKit signed webhooks. Mounted BEFORE express.json — the raw request body
+  // is required for signature verification (see routes/livekit-webhook.routes.ts).
+  app.use("/livekit", createLiveKitWebhookRouter(messagingClient));
 
   // Admin surface â€” proxied to backoffice-service. Mounted BEFORE express.json
   // (proxy must forward the raw body) and before the generic /api mount.

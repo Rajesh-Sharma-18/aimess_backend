@@ -53,6 +53,9 @@ importers:
       jest:
         specifier: ^30.4.2
         version: 30.4.2(@types/node@25.6.2)
+      jest-environment-node:
+        specifier: ^30.4.1
+        version: 30.4.1
       lint-staged:
         specifier: ^17.0.4
         version: 17.0.4
@@ -137,6 +140,9 @@ importers:
       jsonwebtoken:
         specifier: ^9.0.2
         version: 9.0.3
+      livekit-server-sdk:
+        specifier: ^2.9.0
+        version: 2.17.0
       lodash:
         specifier: ^4.18.1
         version: 4.18.1
@@ -174,6 +180,9 @@ importers:
       "@types/swagger-ui-express":
         specifier: ^4.1.8
         version: 4.1.8
+      socket.io-client:
+        specifier: 4.8.3
+        version: 4.8.3
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -446,6 +455,9 @@ importers:
       ioredis:
         specifier: ^5.10.1
         version: 5.10.1
+      livekit-server-sdk:
+        specifier: ^2.9.0
+        version: 2.17.0
       nanoid:
         specifier: ^5.1.5
         version: 5.1.11
@@ -1562,6 +1574,12 @@ packages:
         integrity: sha512-0hYQ8SB4Db5zvZB4axdMHGwEaQjkZzFjQiN9LVYvIFB2nSUHW9tYpxWriPrWDASIxiaXax83REcLxuSdnGPZtw==,
       }
 
+  "@bufbuild/protobuf@1.10.1":
+    resolution:
+      {
+        integrity: sha512-wJ8ReQbHxsAfXhrf9ixl0aYbZorRuOWpBNzm8pL8ftmSxQx/wnJD5Eg861NwJU/czy2VXFIebCeZnZrI9rktIQ==,
+      }
+
   "@colors/colors@1.6.0":
     resolution:
       {
@@ -2392,6 +2410,12 @@ packages:
     resolution:
       {
         integrity: sha512-M5UknZPHRu3DEDWoipU6sE8PdkZ6Z/S+v4dD+Ke8IaNlpdSQah50lz1KtcFBa2vsdOnwbbnxJwVM4wty6udA5w==,
+      }
+
+  "@livekit/protocol@1.49.0":
+    resolution:
+      {
+        integrity: sha512-TCmihwjHBWAUdNrqvmrN/K59r7vDnPIy3OEaE3p0g4FvdcQTiLynmFC3igR25Q2fnifahhAJjnnfSCtWUK7kYg==,
       }
 
   "@mongodb-js/saslprep@1.4.11":
@@ -4756,6 +4780,12 @@ packages:
         integrity: sha512-ooEGc6HP26xXq/N+GCGOT0JKCLDGrq2bQUZrQ7gyrJiZANJ/8YDTxTpQBXGMn+WbIQXNVpyWymm7KYVICQnyOg==,
       }
 
+  engine.io-client@6.6.6:
+    resolution:
+      {
+        integrity: sha512-iY6QdftLQ9pyiPoX082bpf/u1UewnOaJrtJIF9T0++QB34lZrj0uP+Q/bj8AlUsAxqhnkTV2BS8SBZSxOmoV5Q==,
+      }
+
   engine.io-parser@5.2.3:
     resolution:
       {
@@ -6277,6 +6307,12 @@ packages:
         integrity: sha512-1vUQX+IdDMVPj4k8kOxgUqlcK518yluMuGZwqlr44FS1ppZB/5GWh4rZG89erpOBOJjU/OBsnCVFfapsRz6nEA==,
       }
 
+  jose@5.10.0:
+    resolution:
+      {
+        integrity: sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg==,
+      }
+
   jose@6.2.3:
     resolution:
       {
@@ -6454,6 +6490,13 @@ packages:
         integrity: sha512-7I5knELsJKTUjXG+A6BkKAiGkW1i25fNa/xlUl9hFtk15WbE9jndA89xu5FzQKrY5llajE1hfZZFMILXkDHk/Q==,
       }
     engines: { node: ">=22.13.0" }
+
+  livekit-server-sdk@2.17.0:
+    resolution:
+      {
+        integrity: sha512-GWNEQrUD13UwZNrmosyTVFPgeBvSU2lFKGxdA4DaUI5F4sMb1cGeep/PPEE9vvRNELJYpxWS0ImS4gQmovKUDA==,
+      }
+    engines: { node: ">=18" }
 
   load-tsconfig@0.2.5:
     resolution:
@@ -7887,6 +7930,13 @@ packages:
         integrity: sha512-DkkO/dz7MGln0dHn5bmN3pPy+JmywNICWrJqVWiVOyvXjWQFIv9c2h24JrQLLFJ2aQVQf/Cvl1vblnd4r2apLQ==,
       }
 
+  socket.io-client@4.8.3:
+    resolution:
+      {
+        integrity: sha512-uP0bpjWrjQmUt5DTHq9RuoCBdFJF10cdX9X+a368j/Ft0wmaVgxlrjvK3kjvgCODOMMOz9lcaRzxmso0bTWZ/g==,
+      }
+    engines: { node: ">=10.0.0" }
+
   socket.io-parser@4.2.6:
     resolution:
       {
@@ -8684,6 +8734,13 @@ packages:
       }
     engines: { node: ">=16.0.0" }
 
+  xmlhttprequest-ssl@2.1.2:
+    resolution:
+      {
+        integrity: sha512-TEU+nJVUUnA4CYJFLvK5X9AOeH4KvDvhIfm0vV1GaQRtchnG0hgK5p8hw/xjv8cunWYCsiPCSDzObPyhEwq3KQ==,
+      }
+    engines: { node: ">=0.4.0" }
+
   xtend@4.0.2:
     resolution:
       {
@@ -9214,6 +9271,8 @@ snapshots:
       "@babel/helper-validator-identifier": 7.29.7
 
   "@bcoe/v8-coverage@0.2.3": {}
+
+  "@bufbuild/protobuf@1.10.1": {}
 
   "@colors/colors@1.6.0": {}
 
@@ -9877,6 +9936,10 @@ snapshots:
   "@js-sdsl/ordered-map@4.4.2": {}
 
   "@kurkle/color@0.3.4": {}
+
+  "@livekit/protocol@1.49.0":
+    dependencies:
+      "@bufbuild/protobuf": 1.10.1
 
   "@mongodb-js/saslprep@1.4.11":
     dependencies:
@@ -11227,6 +11290,18 @@ snapshots:
     dependencies:
       once: 1.4.0
     optional: true
+
+  engine.io-client@6.6.6:
+    dependencies:
+      "@socket.io/component-emitter": 3.1.2
+      debug: 4.4.3(supports-color@5.5.0)
+      engine.io-parser: 5.2.3
+      ws: 8.21.0
+      xmlhttprequest-ssl: 2.1.2
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - utf-8-validate
 
   engine.io-parser@5.2.3: {}
 
@@ -12658,6 +12733,8 @@ snapshots:
 
   jose@4.15.9: {}
 
+  jose@5.10.0: {}
+
   jose@6.2.3: {}
 
   joycon@3.1.1: {}
@@ -12759,6 +12836,12 @@ snapshots:
       log-update: 6.1.0
       rfdc: 1.4.1
       wrap-ansi: 10.0.0
+
+  livekit-server-sdk@2.17.0:
+    dependencies:
+      "@bufbuild/protobuf": 1.10.1
+      "@livekit/protocol": 1.49.0
+      jose: 5.10.0
 
   load-tsconfig@0.2.5: {}
 
@@ -13550,6 +13633,17 @@ snapshots:
       - supports-color
       - utf-8-validate
 
+  socket.io-client@4.8.3:
+    dependencies:
+      "@socket.io/component-emitter": 3.1.2
+      debug: 4.4.3(supports-color@5.5.0)
+      engine.io-client: 6.6.6
+      socket.io-parser: 4.2.6
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+
   socket.io-parser@4.2.6:
     dependencies:
       "@socket.io/component-emitter": 3.1.2
@@ -14076,6 +14170,8 @@ snapshots:
   ws@8.21.0: {}
 
   xml-naming@0.1.0: {}
+
+  xmlhttprequest-ssl@2.1.2: {}
 
   xtend@4.0.2: {}
 

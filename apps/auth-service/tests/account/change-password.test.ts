@@ -63,7 +63,7 @@ describe("POST /api/auth/change-password", () => {
     );
   });
 
-  it("returns 401 for an incorrect current password", async () => {
+  it("returns 400 for an incorrect current password", async () => {
     const res = await request(app)
       .post("/api/auth/change-password")
       .set(bearer(makeAccessToken()))
@@ -72,7 +72,9 @@ describe("POST /api/auth/change-password", () => {
         newPassword: "BrandNewPass456",
       });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.message).toBe("Current password is incorrect.");
     expect(repo.updatePasswordHash).not.toHaveBeenCalled();
   });
 

@@ -508,7 +508,10 @@ export const authPaths = {
         "- 401 ACCOUNT_BANNED — the account has been platform-banned.\n" +
         "- 401 ACCOUNT_SUSPENDED — temporary suspension.\n" +
         "- 401 ACCOUNT_DELETED — soft-deleted (30-day grace period active).",
-      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      parameters: [
+        { $ref: "#/components/parameters/LanguageHeader" },
+        { $ref: "#/components/parameters/PlatformHeader" },
+      ],
       requestBody: {
         required: true,
         content: {
@@ -1577,11 +1580,20 @@ export const authPaths = {
           },
         },
         "400": {
-          description: "Validation failed or new password same as current",
+          description:
+            "Validation failed, wrong current password, or new password same as current",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
               examples: {
+                wrongPassword: {
+                  summary: "Wrong current password",
+                  value: {
+                    success: false,
+                    message: "Current password is incorrect.",
+                    code: "PASSWORD_INCORRECT",
+                  },
+                },
                 samePassword: {
                   summary: "Same password",
                   value: {
@@ -1603,7 +1615,7 @@ export const authPaths = {
           },
         },
         "401": {
-          description: "Unauthorized or wrong current password",
+          description: "Missing/invalid/expired token, or account not active",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
@@ -1611,14 +1623,6 @@ export const authPaths = {
                 noToken: {
                   summary: "Missing token",
                   value: { success: false, message: "Unauthorized" },
-                },
-                wrongPassword: {
-                  summary: "Wrong current password",
-                  value: {
-                    success: false,
-                    message: "Current password is incorrect",
-                    code: "PASSWORD_INCORRECT",
-                  },
                 },
               },
             },
@@ -1892,12 +1896,12 @@ export const authPaths = {
       summary: "Start a QR device-link session",
       operationId: "initiateDeviceLink",
       description:
-        "Called by a new, unauthenticated device (web/desktop). Returns a `linkToken` and a `pollSecret`; the session expires in 120s.\n\n" +
+        "Called by a new, unauthenticated device (web/desktop). Returns a `linkToken`; the session expires in 60s.\n\n" +
         "**Client responsibilities (QR is entirely client-side — the backend never generates or scans it):**\n" +
-        '- Encode **only the `linkToken`** into the QR (e.g. as `aimess://device-link?token=<linkToken>` or `{"t":"device-link","token":"<linkToken>"}`). NEVER put `pollSecret` in the QR — keep it in memory on this device; it is what authorizes token retrieval, so a photographed QR alone cannot steal the session.\n' +
-        "- Poll `GET /auth/devices/link/status` with `linkToken` + `pollSecret` until `APPROVED`, then store the returned tokens (delivered once).\n" +
-        "- When the 120s TTL lapses, regenerate by calling this endpoint again and refresh the QR.\n\n" +
-        "The already-signed-in device scans the QR, extracts the `linkToken`, and calls `POST /auth/devices/link/approve`.",
+        "- Encode **only the `linkToken`** into the QR (e.g. as `aimess://login?token=<linkToken>`).\n" +
+        "- Connect to Socket.IO namespace `/auth` and emit `auth:qr:subscribe` with `{ token: linkToken }` to receive `auth:qr:success` / `auth:qr:expired` / `auth:qr:failed` in real time. There is no polling endpoint.\n" +
+        "- When the 60s TTL lapses, regenerate by calling this endpoint again and refresh the QR.\n\n" +
+        "**Telegram-style instant login:** the already-signed-in mobile device scans the QR and immediately calls `POST /auth/devices/link/scan` with its own access token — that single call validates the QR, mints a brand-new web session, and logs the browser in. There is no separate approve/reject step and no confirmation screen.",
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: false,
@@ -1931,11 +1935,11 @@ export const authPaths = {
               },
               example: {
                 success: true,
-                message: "Link session created",
+                message:
+                  "Device linking initiated. Please approve on your existing device.",
                 data: {
-                  linkToken: "lt_abc123xyz...",
-                  pollSecret: "ps_secret_abc123...",
-                  expiresIn: 120,
+                  linkToken: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                  expiresAt: "2026-07-14T10:31:00.000Z",
                 },
               },
             },
@@ -1944,110 +1948,28 @@ export const authPaths = {
       },
     },
   },
-  "/auth/devices/link/status": {
-    get: {
-      tags: ["Auth"],
-      summary: "Poll a QR device-link session",
-      operationId: "getDeviceLinkStatus",
-      description:
-        "Called by the new device with its linkToken + pollSecret. Returns PENDING until approved, then APPROVED with tokens exactly once (subsequent polls return CONSUMED). A missing session or wrong pollSecret returns EXPIRED.",
-      parameters: [
-        { $ref: "#/components/parameters/LanguageHeader" },
-        {
-          name: "linkToken",
-          in: "query",
-          required: true,
-          schema: { type: "string" },
-          example: "lt_abc123xyz...",
-        },
-        {
-          name: "pollSecret",
-          in: "query",
-          required: true,
-          schema: { type: "string" },
-          example: "ps_secret_abc123...",
-        },
-      ],
-      responses: {
-        "200": {
-          description: "Current link status",
-          content: {
-            "application/json": {
-              schema: {
-                allOf: [
-                  { $ref: "#/components/schemas/ApiSuccessResponse" },
-                  {
-                    type: "object",
-                    properties: {
-                      data: {
-                        $ref: "#/components/schemas/DeviceLinkStatusResponseData",
-                      },
-                    },
-                  },
-                ],
-              },
-              examples: {
-                pending: {
-                  summary: "Waiting for approval",
-                  value: {
-                    success: true,
-                    message: "Waiting for approval",
-                    data: { status: "PENDING" },
-                  },
-                },
-                approved: {
-                  summary: "Approved — tokens delivered once",
-                  value: {
-                    success: true,
-                    message: "Device linked",
-                    data: {
-                      status: "APPROVED",
-                      tokens: {
-                        accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                        refreshToken: "newDeviceRefreshToken...",
-                        accessTokenExpiresIn: 3600,
-                        refreshTokenExpiresIn: 604800,
-                      },
-                    },
-                  },
-                },
-                expired: {
-                  summary: "Session expired or wrong pollSecret",
-                  value: {
-                    success: true,
-                    message: "Link session expired",
-                    data: { status: "EXPIRED" },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-  "/auth/devices/link/approve": {
+  "/auth/devices/link/scan": {
     post: {
       tags: ["Auth"],
-      summary: "Approve a QR device-link",
-      operationId: "approveDeviceLink",
+      summary: "Scan a QR device-link — instant login (Telegram-style)",
+      operationId: "scanDeviceLink",
       description:
-        "Called by an already-signed-in device after scanning the QR. The client decodes the QR locally and sends the extracted `linkToken` here. Issues a fresh session for the new device and marks the link approved. Returns the new device's `sessionId` so this device can immediately undo the link via DELETE /auth/sessions/{sessionId}.",
+        "Called by the already-signed-in mobile device right after scanning the QR. A single call: validates the QR (exists, `PENDING`, not expired), atomically claims it, mints a brand-new web session/tokens via the same token-issuance path as password/social login, marks the QR `USED`, and pushes `auth:qr:success` (with the tokens) to the browser's `/auth` socket room `qr:{linkToken}`. There is no separate approve/reject step and no confirmation screen — the response IS the login result.",
       security: [{ bearerAuth: [] }],
       parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
       requestBody: {
         required: true,
         content: {
           "application/json": {
-            schema: { $ref: "#/components/schemas/DeviceLinkApproveRequest" },
-            example: { linkToken: "lt_abc123xyz..." },
+            schema: { $ref: "#/components/schemas/DeviceLinkScanRequest" },
+            example: { linkToken: "3fa85f64-5717-4562-b3fc-2c963f66afa6" },
           },
         },
       },
       responses: {
         "200": {
           description:
-            "New device linked — tokens now available for the new device to collect",
+            "Device linked and the browser logged in — tokens are also pushed via `auth:qr:success`",
           content: {
             "application/json": {
               schema: {
@@ -2057,7 +1979,7 @@ export const authPaths = {
                     type: "object",
                     properties: {
                       data: {
-                        $ref: "#/components/schemas/DeviceLinkApproveResponseData",
+                        $ref: "#/components/schemas/DeviceLinkScanResponseData",
                       },
                     },
                   },
@@ -2065,10 +1987,14 @@ export const authPaths = {
               },
               example: {
                 success: true,
-                message: "Device linked",
+                message: "Device linked successfully.",
                 data: {
                   sessionId: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
                   linkedAt: "2026-06-25T10:30:00.000Z",
+                  accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                  refreshToken: "newDeviceRefreshToken...",
+                  accessTokenExpiresIn: 3600,
+                  refreshTokenExpiresIn: 604800,
                 },
               },
             },
@@ -2082,25 +2008,24 @@ export const authPaths = {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
               example: {
                 success: false,
-                message: "Link session not found or expired",
-                code: "LINK_SESSION_NOT_FOUND",
+                message: "This QR code has expired.",
               },
             },
           },
         },
         "409": {
-          description: "Link session already approved",
+          description: "QR already used/claimed (single-use)",
           content: {
             "application/json": {
               schema: { $ref: "#/components/schemas/ApiErrorResponse" },
               example: {
                 success: false,
-                message: "This link session has already been approved",
-                code: "LINK_SESSION_ALREADY_APPROVED",
+                message: "This QR code has already been scanned.",
               },
             },
           },
         },
+        "429": tooManyRequests,
       },
     },
   },

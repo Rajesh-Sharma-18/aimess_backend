@@ -54,6 +54,13 @@ export function personalizeGroupSocketMessage(
 ): unknown {
   if (!viewerUserId) return data;
   const d = data as Record<string, unknown>;
+  // `/chat` carries both PRIVATE and GROUP messages on `conv:*`. A private
+  // SYSTEM message (for example CALL_ENDED) has its own complete fallback text
+  // and must never be run through the group lifecycle renderer, whose unknown-
+  // event fallback would rewrite it to "Someone updated the group".
+  const conversationType = String(d.conversationType ?? "").toUpperCase();
+  if (conversationType !== "GROUP") return data;
+
   const contentType = String(
     d.contentType ?? d.messageType ?? ""
   ).toUpperCase();

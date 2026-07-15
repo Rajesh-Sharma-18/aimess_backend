@@ -9,6 +9,7 @@ import {
   buildListResponse,
   buildCursorResponse,
   buildTimelineResponse,
+  buildAroundResponse,
   parseTsCursor,
 } from "../../lib/pagination.js";
 import { publishConvUpdatedSafe } from "../../events/publish-conv-updated.js";
@@ -116,21 +117,21 @@ export class PrivateMessageController {
     const around = req.query.around as string | undefined;
 
     if (around) {
-      const { items } = await this.messageService.getMessagesAround({
-        roomId,
-        userId,
-        messageId: around,
-        limit,
-      });
-      const enriched = await this.messageService.enrichMessages(items);
+      const { items, hasMoreOlder, hasMoreNewer, olderCursor, newerCursor } =
+        await this.messageService.getMessagesAround({
+          roomId,
+          userId,
+          messageId: around,
+          limit,
+        });
+      const enriched = await this.messageService.enrichMessages(items, userId);
       const totalCount = await this.messageService.countMessages(roomId);
-      const paginated = buildTimelineResponse(
-        enriched,
-        totalCount,
-        limit,
-        false,
-        null
-      );
+      const paginated = buildAroundResponse(enriched, totalCount, limit, {
+        hasMoreOlder,
+        hasMoreNewer,
+        olderCursor,
+        newerCursor,
+      });
       res
         .status(HTTP_STATUS.OK)
         .json(
@@ -157,7 +158,10 @@ export class PrivateMessageController {
         }),
         this.messageService.countMessages(roomId),
       ]);
-      const enriched = await this.messageService.enrichMessages(result.items);
+      const enriched = await this.messageService.enrichMessages(
+        result.items,
+        userId
+      );
       const paginated = buildTimelineResponse(
         enriched,
         totalCount,
@@ -198,7 +202,10 @@ export class PrivateMessageController {
       inclusive: cursor == null,
       limit,
     });
-    const enriched = await this.messageService.enrichMessages(result.items);
+    const enriched = await this.messageService.enrichMessages(
+      result.items,
+      userId
+    );
     const paginated = buildTimelineResponse(
       enriched,
       result.total,

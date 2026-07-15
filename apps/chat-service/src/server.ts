@@ -49,7 +49,11 @@ import { ChatMessageOrchestrator } from "./services/chat-message-orchestrator.js
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
 import { AdminGroupService } from "./services/admin-group.service.js";
 import { CallService } from "./services/call.service.js";
-import { WebRtcConfigService } from "./services/webrtc-config.service.js";
+import { CallChatMessageService } from "./services/call-chat-message.service.js";
+import { LiveKitService } from "./services/livekit.service.js";
+import { FriendshipRepository } from "./repositories/friendship.repository.js";
+import { userGrpcClient } from "./grpc/user-snapshot.client.js";
+import { resolveMediaUrl } from "./lib/media-resolve.js";
 import { PresenceService } from "./services/presence.service.js";
 
 // -- Controllers --
@@ -72,6 +76,7 @@ import { MessageContextController } from "./api/controllers/message-context.cont
 import { startGrpcServer } from "./grpc/server.js";
 import { createUserServiceClient } from "./grpc/user.client.js";
 import { createAuthAdminClient } from "./grpc/auth.client.js";
+import { getCommunityReconcileClient } from "./grpc/community.client.js";
 
 // -- Events --
 import {
@@ -81,6 +86,7 @@ import {
 import { reconcileCommunityRooms } from "./startup/reconcile-community-rooms.js";
 
 let httpServer: Server | undefined;
+let callTimeoutSweepHandle: ReturnType<typeof setInterval> | undefined;
 
 const startServer = async () => {
   logger.info("Chat service starting...");
@@ -144,15 +150,12 @@ const startServer = async () => {
     }
 
     function isMongoIndexNotFoundError(error: unknown): boolean {
-      return (
-        typeof error === "object" &&
-        error !== null &&
-        "message" in error &&
-        typeof (error as { message?: string }).message === "string" &&
-        /index not found|ns not found/i.test(
-          (error as { message: string }).message
-        )
-      );
+      if (!error || typeof error !== "object") return false;
+      const meta = (error as { meta?: { message?: unknown } }).meta;
+      const msg =
+        (typeof meta?.message === "string" ? meta.message : "") ||
+        (error instanceof Error ? error.message : "");
+      return /index not found|ns not found/i.test(msg);
     }
 
     /**
@@ -373,13 +376,23 @@ const startServer = async () => {
       authAdminClient
     );
 
+    // Constructed early so it can be injected into PrivateRoomService (REST
+    // isOnline/isOffline) and ChatMessageOrchestrator (conv:updated isOffline)
+    // below — single source of truth for real-time presence.
+    const presenceService = new PresenceService(
+      cacheRepo,
+      redis,
+      privateRoomRepo
+    );
+
     const privateRoomService = new PrivateRoomService(
       privateRoomRepo,
       privateMessageRepo,
       cacheRepo,
       userSnapshotService,
       userServiceClient,
-      redis
+      redis,
+      presenceService
     );
     const privateMessageService = new PrivateMessageService(
       privateMessageRepo,
@@ -387,7 +400,8 @@ const startServer = async () => {
       cacheRepo,
       userSnapshotService,
       userServiceClient,
-      privateMessageReportRepo
+      privateMessageReportRepo,
+      getCommunityReconcileClient()
     );
     const privatePinService = new PrivatePinService(
       privateMessagePinRepo,
@@ -440,7 +454,42 @@ const startServer = async () => {
     );
 
     const notificationService = new NotificationService(notificationRepo);
-    const callService = new CallService(callRepo, privateRoomRepo, redis);
+    const liveKitService = new LiveKitService();
+    const friendshipRepo = new FriendshipRepository();
+    const resolveCallUserSnapshot = async (userId: string) => {
+      try {
+        const [snap] = await userGrpcClient.bulkGetUserSnapshots([userId]);
+        if (!snap) return { displayName: "", avatarUrl: "" };
+        const avatarUrl = snap.avatarObjectKey
+          ? await resolveMediaUrl(snap.avatarObjectKey)
+          : "";
+        return {
+          displayName: snap.displayName || snap.username || "",
+          avatarUrl,
+        };
+      } catch {
+        return { displayName: "", avatarUrl: "" };
+      }
+    };
+    const callChatMessageService = new CallChatMessageService(
+      privateMessageRepo,
+      privateRoomRepo,
+      redis,
+      resolveCallUserSnapshot,
+      (userId) => presenceService.getIsOnline(userId)
+    );
+    const callService = new CallService(
+      callRepo,
+      privateRoomRepo,
+      redis,
+      liveKitService,
+      friendshipRepo,
+      (userId) => userGrpcClient.getCallPrivacy(userId),
+      // Caller snapshot for the `call:incoming` ringing UI. Best-effort:
+      // on gRPC/S3 failure we still ring — just with empty name/avatar.
+      resolveCallUserSnapshot,
+      callChatMessageService
+    );
 
     const communityRoomService = new CommunityRoomService(
       generalRoomRepo,
@@ -478,9 +527,6 @@ const startServer = async () => {
       cacheRepo
     );
 
-    const webRtcConfigService = new WebRtcConfigService();
-    const presenceService = new PresenceService(cacheRepo, redis);
-
     // Unified inbox = private rooms + group chats merged by lastMessageAt
     const inboxService = new InboxService(privateRoomService, groupRoomService);
 
@@ -502,7 +548,8 @@ const startServer = async () => {
       cacheRepo,
       redis,
       privatePinService,
-      groupPinService
+      groupPinService,
+      presenceService
     );
 
     // Start gRPC server with real service delegates
@@ -518,12 +565,12 @@ const startServer = async () => {
       cacheRepo,
       userSnapshotService,
       callService,
-      webRtcConfigService,
       presenceService,
       communityMessageService,
       communityPinService,
       notificationRepo,
       chatMessageOrchestrator,
+      privateRoomService,
     });
 
     // 4. Instantiate controllers
@@ -610,6 +657,24 @@ const startServer = async () => {
     // pull communities from community-service over gRPC and provision any missing
     // rooms / deactivate rooms of deleted communities. Self-heals dropped events.
     void reconcileCommunityRooms();
+
+    // Ringing-call timeout sweeper — flips RINGING → MISSED after
+    // CALL_RINGING_TIMEOUT_SEC. Multi-node safe (atomic per-row updateMany).
+    callTimeoutSweepHandle = setInterval(() => {
+      void callService
+        .sweepMissedCalls(
+          new Date(),
+          env.CALL_RINGING_TIMEOUT_SEC,
+          env.CALL_TIMEOUT_SWEEP_BATCH
+        )
+        .catch((err: unknown) => {
+          logger.warn(`callTimeoutSweep failed: ${String(err)}`);
+        });
+    }, env.CALL_TIMEOUT_SWEEP_INTERVAL_SEC * 1000);
+    // Don't hold the event loop open on shutdown.
+    if (typeof callTimeoutSweepHandle.unref === "function") {
+      callTimeoutSweepHandle.unref();
+    }
   } catch (error) {
     logger.error("Chat service startup failed");
     logger.error(error);
@@ -619,6 +684,11 @@ const startServer = async () => {
 
 async function shutdown(signal: string): Promise<void> {
   logger.info(`Chat service shutting down (${signal})...`);
+
+  if (callTimeoutSweepHandle) {
+    clearInterval(callTimeoutSweepHandle);
+    callTimeoutSweepHandle = undefined;
+  }
 
   await new Promise<void>((resolve) => {
     if (!httpServer) {

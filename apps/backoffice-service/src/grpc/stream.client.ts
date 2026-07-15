@@ -66,6 +66,8 @@ export interface AdminListStreamsArgs {
   restrictCommunityIds?: string[];
   /** AND-restrict to these stream ids (drives the has-reports/min-reports filter). */
   restrictStreamIds?: string[];
+  /** AND-exclude these stream ids (drives reportStatus=NOT_REPORTED). */
+  excludeStreamIds?: string[];
   /** epoch ms inclusive; 0/undefined = no bound. */
   dateFrom?: number;
   dateTo?: number;
@@ -262,6 +264,7 @@ const adminListStreamsBreaker = makeBreaker(
       creatorIds: args.creatorIds ?? [],
       restrictCommunityIds: args.restrictCommunityIds ?? [],
       restrictStreamIds: args.restrictStreamIds ?? [],
+      excludeStreamIds: args.excludeStreamIds ?? [],
       dateFrom: args.dateFrom ?? 0,
       dateTo: args.dateTo ?? 0,
       sortField: args.sortField ?? "createdAt",
@@ -304,6 +307,30 @@ const adminListViewerSessionsBreaker = makeBreaker(
     }))
 );
 
+interface RawAdminLivestreamReportCount {
+  livestreamId: string;
+  count: string | number;
+}
+interface RawAdminLivestreamReportCountsRes {
+  counts: RawAdminLivestreamReportCount[];
+}
+const adminGetLivestreamReportCountsBreaker = makeBreaker(
+  "stream.adminGetLivestreamReportCounts",
+  (args: { livestreamIds: string[]; minCount: number }) =>
+    call<
+      { livestreamIds: string[]; minCount: number },
+      RawAdminLivestreamReportCountsRes
+    >("adminGetLivestreamReportCounts", args).then((r) => ({
+      counts: (r.counts ?? []).map((c) => ({
+        livestreamId: c.livestreamId,
+        count: Number(c.count ?? 0),
+      })),
+    }))
+);
+// Fail-open: a stream-service outage on the count enrichment must not fail the
+// whole admin list. `reportCount` degrades to 0, matching prior behavior.
+adminGetLivestreamReportCountsBreaker.fallback(() => ({ counts: [] }));
+
 export const streamClient = {
   /** Backoffice admin list — fail-closed (propagates on outage). */
   async adminListStreams(
@@ -323,6 +350,23 @@ export const streamClient = {
     args: AdminListViewerSessionsArgs
   ): Promise<{ sessions: AdminViewerSessionRow[]; total: number }> {
     return adminListViewerSessionsBreaker.fire(args);
+  },
+
+  /**
+   * Report counts for the admin Livestream Management list/detail. Empty
+   * `livestreamIds` returns every stream with `count >= minCount`
+   * (drives has-reports/min-reports filter); a non-empty list returns counts
+   * for exactly those ids (used for row enrichment; missing ⇒ 0).
+   */
+  async adminGetLivestreamReportCounts(args: {
+    livestreamIds?: string[];
+    minCount?: number;
+  }): Promise<{ livestreamId: string; count: number }[]> {
+    const r = await adminGetLivestreamReportCountsBreaker.fire({
+      livestreamIds: args.livestreamIds ?? [],
+      minCount: args.minCount ?? 0,
+    });
+    return r.counts;
   },
 
   async getStreamStats(streamId: string): Promise<StreamStatsResult> {

@@ -75,6 +75,8 @@ export type UserRef = {
   id: string;
   username: string;
   displayName: string;
+  firstName: string;
+  lastName: string;
   // Standard avatar object (see @aimess/shared-types MediaObject); null when
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
@@ -98,8 +100,8 @@ export type ReportListItem = {
   targetType: TargetType;
   status: ReportStatus;
   priority: ReportPriority;
-  createdAt: string;
-  resolvedAt: string | null;
+  createdAt: number;
+  resolvedAt: number | null;
   moderator: ModeratorRef | null;
   // Name of the community the report was filed in, resolved live from
   // community-service via communityId; null for community-less reports
@@ -110,7 +112,7 @@ export type ReportListItem = {
 /** Full reported-user profile with moderation signals (detail view). */
 export type ReportedUserProfile = UserRef & {
   accountStatus: AccountStatus;
-  joinedAt: string;
+  joinedAt: number;
   priorReportsCount: number;
   priorActionsCount: number;
 };
@@ -134,7 +136,7 @@ export type ReportTarget = {
 export type EvidenceItem = {
   id: string;
   type: EvidenceType;
-  capturedAt?: string;
+  capturedAt?: number;
   mimeType?: string;
   url?: string;
   thumbnailUrl?: string;
@@ -149,7 +151,7 @@ export type HistoryItem = {
   actorType: "USER" | "ADMIN" | "SYSTEM";
   actorId: string | null;
   actorName: string | null;
-  at: string;
+  at: number;
   note: string | null;
 };
 
@@ -157,7 +159,7 @@ export type RelatedReport = {
   reportId: string;
   reportType: ReportType;
   status: ReportStatus;
-  createdAt: string;
+  createdAt: number;
 };
 
 /** The full report detail returned by GET /reports/{reportId}. */
@@ -177,10 +179,10 @@ export type ReportDetail = {
   // Resolved live from community-service via communityId on every read —
   // never persisted, so it can't go stale.
   communityName: string | null;
-  createdAt: string;
-  updatedAt: string;
-  resolvedAt: string | null;
-  slaDueAt: string | null;
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt: number | null;
+  slaDueAt: number | null;
   reportedUser: ReportedUserProfile | null;
   reporterUser: ReporterUserProfile | null;
   target: ReportTarget;
@@ -232,7 +234,7 @@ export type Paginated<T> = {
 export type AppliedAction = {
   type: ActionOnReportedUser;
   targetUserId: string;
-  effectiveUntil: string | null;
+  effectiveUntil: number | null;
 };
 
 /** Result of a resolve action. */
@@ -240,7 +242,7 @@ export type ResolveResult = {
   reportId: string;
   status: ReportStatus;
   resolution: ResolutionType;
-  resolvedAt: string;
+  resolvedAt: number;
   moderator: ModeratorRef;
   appliedActions: AppliedAction[];
 };
@@ -250,7 +252,7 @@ export type DismissResult = {
   reportId: string;
   status: ReportStatus;
   dismissReason: DismissReason;
-  resolvedAt: string;
+  resolvedAt: number;
   moderator: ModeratorRef;
 };
 
@@ -298,28 +300,129 @@ export type ListReportsQuery = {
 export type ReportModerationUserRef = {
   id: string;
   username: string;
+  firstName: string;
+  lastName: string;
   fullName: string;
   avatar: MediaObject | null;
 };
 
 /**
- * The reported message reference. No admin RPC exists to fetch a chat/community
- * message's content by id (out of scope for this endpoint — reuse-only), so
- * only the id is carried; null when the report isn't message-based.
+ * Explicit report-kind identifier for the Reports & Moderation Details page —
+ * derived from the REPORTED ENTITY (not the reason category). A community
+ * itself is never reportable; inside a community a reported MEMBER is a
+ * COMMUNITY report and a reported MESSAGE is a MESSAGE report. A reported user
+ * outside any community is a USER report.
+ *   USER       → private (non-community) user report
+ *   COMMUNITY  → community member report
+ *   LIVESTREAM → livestream report
+ *   MESSAGE    → community message report
+ * Future: COMMENT (livestream comment) — mapping kept commented below until
+ * the backend grows a comment entity + report path.
  */
-export type ReportedMessageRef = {
-  id: string;
-};
+export type ReportModerationKind =
+  | "USER"
+  | "COMMUNITY"
+  | "LIVESTREAM"
+  | "MESSAGE";
+// | "COMMENT"; // (Future) livestream comment reports — not yet wired.
 
-/** "Community Report Details" block. Null when the report has no associated community. */
+/** "community" block — compact community reference. */
 export type CommunityReportBlock = {
   id: string;
   name: string;
+  handle: string;
   avatar: MediaObject | null;
-  category: { id: string; name: string };
-  reportedDate: string;
-  reportedMessage: ReportedMessageRef | null;
 };
+
+/**
+ * "livestream" block — the reported stream's useful details, sourced from the
+ * existing stream-service admin read (`streamClient.adminGetStream`).
+ */
+export type LivestreamReportBlock = {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  thumbnail: MediaObject | null;
+  /** Total distinct viewers (ended) or running total (live). */
+  viewerCount: number;
+  /** Currently watching; 0 once the stream has ended. */
+  activeViewerCount: number;
+  /** Milliseconds. */
+  duration: number;
+  startedAt: number | null;
+  endedAt: number | null;
+  host: ReportModerationUserRef | null;
+};
+
+/**
+ * "message" block — the reported community message. Content fields are
+ * best-effort: there is no admin message-content-fetch RPC into chat-service
+ * yet, so a message report currently exposes the identifiers it carries
+ * (id/senderId) with content/media null until that path exists. Shape matches
+ * the eventual full contract so the FE can type against it now.
+ */
+export type MessageReportBlock = {
+  id: string;
+  messageType: string | null;
+  text: string | null;
+  content: string | null;
+  media: MediaObject[];
+  sentAt: number | null;
+  senderId: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Report Details "Users" list — GET /reports/{reportId}/users.
+// One endpoint serving BOTH report kinds: COMMUNITY/MESSAGE reports return the
+// reported community's members; LIVESTREAM reports return the stream's viewer
+// sessions. Reuses communityMembersRepository / livestreamRepository — no new
+// read path. Shape is unified across both sources.
+// ---------------------------------------------------------------------------
+
+/** One row in the Report Details users list. */
+export type ReportUserItem = {
+  userId: string;
+  username: string;
+  displayName: string;
+  avatar: MediaObject | null;
+  /** Community: ADMIN|MODERATOR|MEMBER|BANNED. Livestream: Admin|Moderator|Member. */
+  role: string;
+  /** epoch ms. */
+  joinedAt: number;
+};
+
+/** Slim pagination for the report users list (matches the FE contract). */
+export type ReportUsersPagination = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+/** Normalized query for GET /reports/:reportId/users (post-validation/coercion). */
+export type ListReportUsersQuery = {
+  search?: string;
+  /** Community role filter (ADMIN|MODERATOR|MEMBER); ignored for livestream reports. */
+  role?: string;
+  page: number;
+  limit: number;
+  sortBy: "username" | "joinedAt" | "role";
+  sortDir: "asc" | "desc";
+};
+
+/**
+ * (Future) "comment" block for COMMENT (livestream comment) reports — kept
+ * commented until the backend grows a comment entity + report-ingest path.
+ *
+ * export type CommentReportBlock = {
+ *   id: string;
+ *   message: string | null;
+ *   sender: ReportModerationUserRef | null;
+ *   livestream: { id: string; title: string } | null;
+ *   createdAt: number | null;
+ * };
+ */
 
 /**
  * One row in the "Community Members" grid on the Reports & Moderation Details
@@ -333,7 +436,7 @@ export type ReportModerationMemberRow = {
   username: string;
   fullname: string | null;
   avatar: string | null;
-  joinedAt: string;
+  joinedAt: number;
   role: import("./community.types.js").CommunityMemberRole;
 };
 
@@ -343,17 +446,33 @@ export type CommunityMembersBlock = {
   pagination: PaginationMeta;
 };
 
-/** Full aggregate returned by GET /reports/{reportId} for the admin Reports & Moderation Details page. */
+/**
+ * Full aggregate returned by GET /reports/{reportId} for the admin Reports &
+ * Moderation Details page. Preserves the original flat structure (id /
+ * reportReason / reportMessage / reportStatus / reporter / reportedUser /
+ * community / communityAdmin) and adds `reportType` (the reported-entity kind)
+ * plus the entity-specific `livestream` / `message` blocks. Entity blocks are
+ * present only for the report types that use them (see {@link ReportModerationKind}):
+ *   USER       → reportedUser
+ *   COMMUNITY  → reportedUser, community, communityAdmin
+ *   LIVESTREAM → reportedUser, community, communityAdmin, livestream
+ *   MESSAGE    → reportedUser, community, communityAdmin, message
+ */
 export type ReportModerationDetail = {
-  report: {
-    id: string;
-    type: ReportType;
-    status: ReportStatus;
-    createdAt: string;
-    // Only present when `type === "OTHER"` — the reporter's free-text reason.
-    otherReason?: string | null;
-    reportedUser: ReportModerationUserRef | null;
-    reporter: ReportModerationUserRef | null;
-  };
-  community: CommunityReportBlock | null;
+  id: string;
+  reportType: ReportModerationKind;
+  reportReason: string;
+  reportMessage: string | null;
+  reportStatus: ReportStatus;
+  createdAt: number;
+  updatedAt: number;
+  reporter: ReportModerationUserRef | null;
+  reportedUser: ReportModerationUserRef | null;
+  // Present for COMMUNITY / LIVESTREAM / MESSAGE reports (omitted for USER).
+  community?: CommunityReportBlock | null;
+  communityAdmin?: ReportModerationUserRef | null;
+  // Present only for LIVESTREAM reports.
+  livestream?: LivestreamReportBlock | null;
+  // Present only for MESSAGE reports.
+  message?: MessageReportBlock | null;
 };

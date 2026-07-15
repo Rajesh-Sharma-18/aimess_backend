@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 import { ForbiddenError, NotFoundError } from "@aimess/errors";
 import { env } from "../config/env.js";
+import { publishAdminReportIngestSafe } from "../events/publish-admin-report.js";
 import type { communityGrpcClient as CommunityGrpcClient } from "../grpc/community.client.js";
 
 import type { LivestreamComment } from "../generated/prisma/index.js";
@@ -455,6 +456,23 @@ export class LivestreamCommentService {
       details: params.details ?? null,
     });
 
+    // Mirror community-service: fan the report into the backoffice via
+    // admin.report.ingest so it surfaces in the Admin Reports list/details.
+    // Best-effort — stream-service owns the source of truth (stream_comment_reports),
+    // so a publish failure never blocks the reporter.
+    const stream = await this.streamRepo.findById(params.livestreamId);
+    publishAdminReportIngestSafe({
+      type: "stream",
+      targetId: params.livestreamId,
+      reporterId: params.reportedBy,
+      reason: params.reason,
+      details: params.details ?? null,
+      communityId: stream?.communityId ?? null,
+      reportedUserId: comment.sentBy,
+      eventAt: new Date().toISOString(),
+      sourceReportId: report.id,
+    });
+
     return {
       id: report.id,
       commentId: report.commentId,
@@ -538,6 +556,26 @@ export class LivestreamCommentService {
     const nextCursor =
       hasMore && page.length > 0 ? page[page.length - 1]!.id : null;
     return { items, nextCursor, hasMore };
+  }
+
+  /**
+   * Bulk report counts for the admin Livestream Management screen. Passing a
+   * non-empty `livestreamIds` scopes the aggregation to that set (missing keys
+   * ⇒ 0). Passing an empty/undefined `livestreamIds` returns every livestream
+   * with `count >= minCount` (used by the has-reports/min-reports filter).
+   * Backs the `AdminGetLivestreamReportCounts` gRPC.
+   */
+  async adminGetReportCounts(params: {
+    livestreamIds?: string[];
+    minCount?: number;
+  }): Promise<{ livestreamId: string; count: number }[]> {
+    const rows = await this.reportRepo.groupCountsByLivestream(
+      params.livestreamIds
+    );
+    const scoped = params.livestreamIds && params.livestreamIds.length > 0;
+    if (scoped) return rows;
+    const min = Math.max(1, params.minCount ?? 1);
+    return rows.filter((r) => r.count >= min);
   }
 
   /**

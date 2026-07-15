@@ -2,7 +2,7 @@ import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
-import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError } from "../ack.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
 import type { NotificationClient } from "../../grpc/clients/notification.client.js";
@@ -28,10 +28,11 @@ interface RedisSocketEvent {
 export function registerNotifyNamespace(
   io: SocketIOServer,
   notificationClient: NotificationClient,
-  redisSub: Redis
+  redisSub: Redis,
+  redisPub: Redis
 ): void {
   const notify: Namespace = io.of("/notify");
-  notify.use(gatewaySocketAuthMiddleware);
+  notify.use(createGatewaySocketAuthMiddleware(redisPub));
 
   // Per-user channel subscription tracking
   const userSubCount = new Map<string, number>();
@@ -55,8 +56,9 @@ export function registerNotifyNamespace(
   });
 
   notify.on("connection", (socket: Socket) => {
-    const { userId, locale } = socket.data;
+    const { userId, sessionId, locale } = socket.data;
     void socket.join(`user:${userId}`);
+    void socket.join(`session:${sessionId}`);
     logger.debug(`/notify connected userId=${userId}`);
 
     // Subscribe this user's notification channel (ref-counted for multi-socket)

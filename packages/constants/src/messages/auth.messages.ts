@@ -40,15 +40,15 @@ export const AUTH_MESSAGES = {
   },
   AUTH_UNAUTHORIZED: {
     vi: "Yêu cầu xác thực",
-    en: "Authentication required.",
+    en: "Authentication token is required.",
   },
   AUTH_INVALID_TOKEN: {
     vi: "Token không hợp lệ",
-    en: "Invalid access token.",
+    en: "Invalid authentication token.",
   },
   AUTH_TOKEN_EXPIRED: {
     vi: "Token đã hết hạn, vui lòng đăng nhập lại",
-    en: "Your session has expired. Please sign in again.",
+    en: "Authentication token has expired.",
   },
   AUTH_REFRESH_SUCCESS: {
     vi: "Làm mới phiên đăng nhập thành công",
@@ -237,6 +237,30 @@ export const AUTH_MESSAGES = {
   AUTH_DEVICE_LINK_ALREADY_APPROVED: {
     vi: "Phiên liên kết thiết bị này đã được phê duyệt",
     en: "This device link session has already been approved.",
+  },
+  AUTH_DEVICE_LINK_SCANNED: {
+    vi: "Đã quét mã QR liên kết thiết bị",
+    en: "QR code scanned. Approve or reject the login on this device.",
+  },
+  AUTH_DEVICE_LINK_REJECTED: {
+    vi: "Đã từ chối liên kết thiết bị",
+    en: "Device link request rejected.",
+  },
+  AUTH_DEVICE_LINK_ALREADY_SCANNED: {
+    vi: "Mã QR này đã được quét",
+    en: "This QR code has already been scanned.",
+  },
+  AUTH_DEVICE_LINK_NOT_SCANNED: {
+    vi: "Mã QR này cần được quét trước khi phê duyệt hoặc từ chối",
+    en: "This QR code must be scanned before it can be approved or rejected.",
+  },
+  AUTH_DEVICE_LINK_WRONG_USER: {
+    vi: "Chỉ người dùng đã quét mã QR mới có thể phê duyệt hoặc từ chối",
+    en: "Only the user who scanned this QR code can approve or reject it.",
+  },
+  AUTH_DEVICE_LINK_EXPIRED: {
+    vi: "Mã QR này đã hết hạn",
+    en: "This QR code has expired.",
   },
   AUTH_ACCOUNT_DELETE_OTP_SENT: {
     vi: "Mã xác minh xóa tài khoản đã được gửi tới email của bạn",

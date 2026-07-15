@@ -157,7 +157,13 @@ model Session {
 
   refreshTokens RefreshToken[]
 
-  @@unique([userId, deviceId])
+  // No @@unique([userId, deviceId]): deviceId is a server-computed
+  // userAgent+ip fingerprint (see session-context.ts), not a real
+  // per-installation id, so distinct logins (browser profiles, incognito,
+  // shared-IP devices) can share it. A unique constraint here previously made
+  // createSessionWithRefreshToken delete the other login's still-active
+  // session on every new login that happened to collide.
+  @@index([userId, deviceId])
   @@index([userId, revokedAt])
   @@index([lastActiveAt])
   @@map("sessions")
@@ -202,6 +208,32 @@ model LoginAttempt {
   @@index([ipAddress, attemptedAt])
   @@index([userId, attemptedAt])
   @@map("login_attempts")
+}
+
+// -----------------------------------------------------------------------------
+// AuthAuditLog — append-only security/audit trail for auth-service events that
+// don't fit LoginAttempt's login-only shape (QR device-link lifecycle, etc).
+// No FK to AuthUser: `userId` may be null (e.g. QR_CREATED happens before any
+// user is involved) and must never block the write on referential integrity —
+// mirrors LoginAttempt's plain optional `userId` above rather than a `@relation`.
+// This is auth-service's own audit trail; backoffice's `AuditLog` model is
+// admin-only (`actorId` FK → AdminUser) and cannot record end-user events.
+// -----------------------------------------------------------------------------
+model AuthAuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @db.Uuid
+  event      String // "QR_CREATED" | "QR_SCANNED" | "QR_APPROVED" | ...
+  targetType String // "qr_login_session" | "linked_device"
+  targetId   String? // linkToken or sessionId
+  metadata   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([event, createdAt])
+  @@index([targetType, targetId])
+  @@index([userId, createdAt])
+  @@map("auth_audit_logs")
 }
 
 // =============================================================================

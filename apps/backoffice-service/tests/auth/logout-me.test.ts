@@ -113,21 +113,21 @@ describe("POST /v1/auth/logout (admin auth required)", () => {
     expect(svc.logout).not.toHaveBeenCalled();
   });
 
-  it("returns 401 when the admin account is no longer ACTIVE", async () => {
+  it("returns 403 when the admin account is no longer ACTIVE", async () => {
     configureActiveAdmin(findById, { status: "SUSPENDED" });
     const res = await request(app)
       .post("/v1/auth/logout")
       .set(bearer(makeAdminAccessToken()));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
     expect(svc.logout).not.toHaveBeenCalled();
   });
 
-  it("returns 401 when the admin record no longer exists", async () => {
+  it("returns 404 when the admin record no longer exists", async () => {
     findById.mockResolvedValue(null);
     const res = await request(app)
       .post("/v1/auth/logout")
       .set(bearer(makeAdminAccessToken()));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(404);
     expect(svc.logout).not.toHaveBeenCalled();
   });
 });

@@ -3,11 +3,7 @@ import { fileURLToPath } from "node:url";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
 import { env } from "../../config/env.js";
-import {
-  makeBreaker,
-  makeBreakerNoArgs,
-  makeGrpcCall,
-} from "@aimess/grpc-utils";
+import { makeBreaker, makeGrpcCall } from "@aimess/grpc-utils";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
@@ -237,21 +233,9 @@ export interface GetMessageReactionsResult {
   reactions: ReactionGroupDto[];
 }
 
-export interface IceServer {
-  urls: string[];
-  username?: string;
-  credential?: string;
-  credentialType?: string;
-}
-
-export interface RtcConfiguration {
-  iceServers: IceServer[];
-  iceCandidatePoolSize: number;
-  iceTransportPolicy: string;
-}
-
-export interface GetRtcConfigResult {
-  rtcConfig: RtcConfiguration;
+export interface LiveKitCredentials {
+  url: string;
+  token: string;
 }
 
 export interface InitiateCallParams {
@@ -263,7 +247,7 @@ export interface InitiateCallParams {
 export interface CallStatusResult {
   callId: string;
   status: string;
-  rtcConfig?: RtcConfiguration;
+  livekit?: LiveKitCredentials;
 }
 export interface AnswerCallParams {
   callId: string;
@@ -331,7 +315,7 @@ export interface MessagingClient {
   declineCall(p: DeclineCallParams): Promise<CallStatusResult>;
   endCall(p: EndCallParams): Promise<EndCallResult>;
   getCallHistory(p: GetCallHistoryParams): Promise<GetCallHistoryResult>;
-  getRtcConfig(): Promise<GetRtcConfigResult>;
+  handleLiveKitRoomFinished(p: { roomName: string }): Promise<unknown>;
   catchupRoom(p: CatchupRoomParams): Promise<CatchupRoomResult>;
 }
 
@@ -663,6 +647,14 @@ export function createMessagingClient(): MessagingClient {
       }))
   );
 
+  const handleLiveKitRoomFinishedBreaker = makeBreaker(
+    "messaging.handleLiveKitRoomFinished",
+    (p: { roomName: string }) =>
+      call<unknown, Record<string, never>>("handleLiveKitRoomFinished", {
+        roomName: p.roomName,
+      })
+  );
+
   const catchupRoomBreaker = makeBreaker(
     "messaging.catchupRoom",
     (p: CatchupRoomParams) => {
@@ -676,13 +668,6 @@ export function createMessagingClient(): MessagingClient {
         limit: p.limit,
         conversationType: conversationType === "GROUP" ? "GROUP" : "PRIVATE",
       });
-    }
-  );
-
-  const getRtcConfigBreaker = makeBreakerNoArgs(
-    "messaging.getRtcConfig",
-    () => {
-      return call<unknown, GetRtcConfigResult>("getRtcConfig", { userId: "" });
     }
   );
 
@@ -706,7 +691,7 @@ export function createMessagingClient(): MessagingClient {
     declineCall: (p) => declineCallBreaker.fire(p),
     endCall: (p) => endCallBreaker.fire(p),
     getCallHistory: (p) => getCallHistoryBreaker.fire(p),
-    getRtcConfig: () => getRtcConfigBreaker.fire(),
+    handleLiveKitRoomFinished: (p) => handleLiveKitRoomFinishedBreaker.fire(p),
     catchupRoom: (p) => catchupRoomBreaker.fire(p),
   };
 }

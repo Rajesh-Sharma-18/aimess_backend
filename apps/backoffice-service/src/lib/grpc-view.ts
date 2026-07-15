@@ -5,9 +5,9 @@
  * reused across every gRPC-backed repository (community, group, …).
  */
 
-/** epoch-ms-as-string (longs:String) → ISO 8601. */
-export function msToIso(ms: string | number): string {
-  return new Date(Number(ms)).toISOString();
+/** epoch-ms-as-string (longs:String) → epoch-ms number. All admin API date/time fields are epoch ms. */
+export function msToEpoch(ms: string | number): number {
+  return Number(ms);
 }
 
 /** "" → null normaliser for optional string fields the proto sends as "". */

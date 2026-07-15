@@ -30,6 +30,7 @@ import {
   declineCommunityInvite,
   closeCommunity,
   deleteCommunity,
+  deleteCommunityForSelf,
   deleteCommunityReport,
   discoverCommunities,
   dismissCommunityReport,
@@ -351,6 +352,16 @@ communityRoutes.post(
   validateParams(communityIdParamsSchema),
   validateBody(leaveReasonSchema),
   leaveCommunity
+);
+
+// Remove this community from the caller's own account only (active member =
+// same effect as leave; banned member = silent no-op; admin = rejected).
+// Distinct from DELETE "/:id" above, which is the admin hard-delete of the
+// whole community.
+communityRoutes.delete(
+  "/:id/me",
+  validateParams(communityIdParamsSchema),
+  deleteCommunityForSelf
 );
 
 // Owner lifecycle: close (status → CLOSED, evict all members) / reopen.

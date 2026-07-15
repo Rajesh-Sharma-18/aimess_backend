@@ -222,6 +222,45 @@ export const friendshipRepository = {
     });
   },
 
+  /**
+   * Bulk-unfriends N ACCEPTED friendship rows belonging to `userId` in one
+   * atomic transaction — the disconnect-side mirror of {@link autoAcceptBatch}
+   * (updateMany + counter decrement instead of createMany + counter increment).
+   * `peerIds` is the parallel other-side-userId array for `friendshipIds`
+   * (index-for-index), used only for the bulk per-peer counter decrement.
+   * Returns the number of rows actually flipped to UNFRIENDED (may be less
+   * than `friendshipIds.length` if a row was concurrently unfriended first).
+   */
+  async autoDisconnectBatch(
+    userId: string,
+    friendshipIds: string[],
+    peerIds: string[]
+  ): Promise<number> {
+    if (friendshipIds.length === 0) return 0;
+    return prisma.$transaction(async (tx) => {
+      const now = new Date();
+
+      const { count } = await tx.friendship.updateMany({
+        where: { id: { in: friendshipIds }, status: "ACCEPTED" },
+        data: { status: "UNFRIENDED", unfriendedAt: now, unfriendedBy: userId },
+      });
+
+      await Promise.all([
+        tx.userProfile.update({
+          where: { userId },
+          data: { friendsCount: { decrement: count } },
+          select: { userId: true },
+        }),
+        tx.userProfile.updateMany({
+          where: { userId: { in: peerIds } },
+          data: { friendsCount: { decrement: 1 } },
+        }),
+      ]);
+
+      return count;
+    });
+  },
+
   /** All ACCEPTED friendships for a user — returns peer userId + friendship id. */
   findAcceptedFriends(userId: string) {
     return prisma.friendship.findMany({

@@ -7,7 +7,12 @@ import type {
 import type { ListAdminAccountsQuery } from "../types/admin-account.types.js";
 
 /** Whitelisted sort columns for the list endpoint (validator enforces the shape). */
-type AdminAccountSortField = "name" | "email" | "createdAt" | "lastLoginAt";
+type AdminAccountSortField =
+  | "name"
+  | "email"
+  | "createdAt"
+  | "lastLoginAt"
+  | "status";
 
 function parseAdminAccountSort(sort: string): {
   field: AdminAccountSortField;
@@ -33,6 +38,21 @@ export const adminUserRepository = {
     return prisma.adminUser.findUnique({
       where: { id },
       include: { role: true },
+    });
+  },
+
+  /** Case-insensitive username (`name`) lookup for the uniqueness check. */
+  findByName(name: string) {
+    return prisma.adminUser.findFirst({
+      where: { name: { equals: name, mode: "insensitive" } },
+      include: { role: true },
+    });
+  },
+
+  /** Count of ACTIVE admins holding a given role — used by the "last Super Admin" guard. */
+  countActiveByRoleKey(roleKey: RoleKey) {
+    return prisma.adminUser.count({
+      where: { role: { key: roleKey }, status: "ACTIVE" },
     });
   },
 
@@ -84,11 +104,20 @@ export const adminUserRepository = {
     });
   },
 
-  updateProfile(id: string, input: { name?: string; avatarUrl?: string }) {
+  updateProfile(
+    id: string,
+    input: {
+      name?: string;
+      email?: string;
+      // `null` clears the avatar (self-service PATCH /me flow).
+      avatarUrl?: string | null;
+    }
+  ) {
     return prisma.adminUser.update({
       where: { id },
       data: {
         ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.email !== undefined ? { email: input.email } : {}),
         ...(input.avatarUrl !== undefined
           ? { avatarUrl: input.avatarUrl }
           : {}),
@@ -128,6 +157,12 @@ export const adminUserRepository = {
         { name: { contains: query.search, mode: "insensitive" } },
         { email: { contains: query.search, mode: "insensitive" } },
       ];
+    }
+    if (query.fromDate || query.toDate) {
+      where.createdAt = {
+        ...(query.fromDate ? { gte: new Date(query.fromDate) } : {}),
+        ...(query.toDate ? { lte: new Date(query.toDate) } : {}),
+      };
     }
 
     const skip = (query.page - 1) * query.limit;

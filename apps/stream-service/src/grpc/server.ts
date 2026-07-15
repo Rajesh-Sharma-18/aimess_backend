@@ -299,6 +299,7 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
             creatorIds?: string[];
             restrictCommunityIds?: string[];
             restrictStreamIds?: string[];
+            excludeStreamIds?: string[];
             dateFrom?: string | number;
             dateTo?: string | number;
             sortField?: string;
@@ -344,6 +345,10 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
               restrictStreamIds:
                 req.restrictStreamIds && req.restrictStreamIds.length > 0
                   ? req.restrictStreamIds
+                  : undefined,
+              excludeStreamIds:
+                req.excludeStreamIds && req.excludeStreamIds.length > 0
+                  ? req.excludeStreamIds
                   : undefined,
               dateFrom: dateFrom > 0 ? new Date(dateFrom) : undefined,
               dateTo: dateTo > 0 ? new Date(dateTo) : undefined,
@@ -421,6 +426,41 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
           callback(null, { success: true });
         } catch (err) {
           logger.error(`gRPC recordViewerLeave error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // AdminGetLivestreamReportCounts — backoffice `reportCount` on the
+    // Livestream Management list/detail + the hasReports/minReports filter.
+    // Source of truth is LivestreamCommentReport (the ONLY report kind that
+    // exists for a livestream); `admin_db.Report` type="stream" was previously
+    // queried here but nothing ever writes to it — root cause of "reportCount
+    // is always 0". Empty livestream_ids ⇒ every stream with count >= min_count.
+    adminGetLivestreamReportCounts: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            livestreamIds?: string[];
+            minCount?: number;
+          };
+          const counts = await deps.commentService.adminGetReportCounts({
+            livestreamIds: req.livestreamIds ?? [],
+            minCount: req.minCount ?? 0,
+          });
+          callback(null, {
+            counts: counts.map((c) => ({
+              livestreamId: c.livestreamId,
+              count: c.count,
+            })),
+          });
+        } catch (err) {
+          logger.error(
+            `gRPC adminGetLivestreamReportCounts error: ${String(err)}`
+          );
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

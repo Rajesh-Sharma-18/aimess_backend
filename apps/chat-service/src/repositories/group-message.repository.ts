@@ -73,6 +73,22 @@ export class GroupMessageRepository {
     return this.prisma.groupMessage.findUnique({ where: { id: messageId } });
   }
 
+  /**
+   * Which of `ids` are still live (exist in this room, not deleted-for-
+   * everyone). One batched query — used by the pins list to stamp each pin's
+   * `isAvailable` so the banner can show a "pinned-but-deleted" state without
+   * an N+1. Per-user delete-for-me is intentionally NOT considered (per-viewer
+   * concern the client resolves via message-context on navigation).
+   */
+  async findLiveIds(roomId: string, ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const rows = await this.prisma.groupMessage.findMany({
+      where: { roomId, id: { in: ids }, isDeleted: false },
+      select: { id: true },
+    });
+    return new Set(rows.map((r) => r.id));
+  }
+
   async findAfterSeq(
     roomId: string,
     sinceSeq: number,

@@ -22,8 +22,8 @@ function toItem(row: RawAdminCategoryRow): CategoryListItem {
     slug: row.slug,
     visible: row.visible,
     order: row.order,
-    createdAt: new Date(Number(row.createdAt)).toISOString(),
-    updatedAt: new Date(Number(row.updatedAt)).toISOString(),
+    createdAt: Number(row.createdAt),
+    updatedAt: Number(row.updatedAt),
     communityCount: row.communityCount,
   };
 }

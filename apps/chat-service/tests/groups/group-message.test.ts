@@ -543,10 +543,11 @@ describe("pins + forward + reactions", () => {
     );
   });
 
-  it("POSITIVE: lists pins (resolves snapshot avatar + attachment keys)", async () => {
+  it("POSITIVE: lists pins (resolves snapshot media + stamps isAvailable §5.8)", async () => {
     mocks.groupMessagePinRepo.findPinsByRoom.mockResolvedValue([
       {
         id: "p1",
+        messageId: "m1",
         pinnedAt: new Date(1),
         senderAvatar: "avatars/u/a.png",
         contentPinned: {
@@ -556,6 +557,7 @@ describe("pins + forward + reactions", () => {
       },
     ]);
     mocks.groupMessagePinRepo.countPinsByRoom.mockResolvedValue(1);
+    mocks.groupMessageRepo.findLiveIds.mockResolvedValue(new Set(["m1"]));
 
     const res = await request(app)
       .get(`${BASE}/${ROOM}/pins`)
@@ -570,6 +572,7 @@ describe("pins + forward + reactions", () => {
     expect(res.body.data.data[0].contentPinned.files[0].url).toBe(
       "https://media.test/aimess-chat-test/group-chat-uploads/grp/doc.pdf"
     );
+    expect(res.body.data.data[0].isAvailable).toBe(true);
   });
 
   it("POSITIVE: forward to a target room emits message:new", async () => {

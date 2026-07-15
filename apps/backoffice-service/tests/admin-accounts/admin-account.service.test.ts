@@ -7,12 +7,14 @@
 jest.mock("../../src/repositories/index.js", () => ({
   adminUserRepository: {
     findByEmail: jest.fn(),
+    findByName: jest.fn(async () => null),
     findById: jest.fn(),
     findRoleByKey: jest.fn(),
     createAdmin: jest.fn(),
     updateProfile: jest.fn(),
     setStatus: jest.fn(),
     updateRole: jest.fn(),
+    countActiveByRoleKey: jest.fn(async () => 5),
     list: jest.fn(),
   },
   adminSessionRepository: {
@@ -96,6 +98,15 @@ describe("createAdminAccount", () => {
     expect(repo.createAdmin).not.toHaveBeenCalled();
   });
 
+  it("rejects a duplicate username", async () => {
+    repo.findByEmail.mockResolvedValue(null);
+    repo.findByName.mockResolvedValueOnce(adminRow());
+    await expect(
+      adminAccountService.createAdminAccount(input, actor("ADMIN"), CTX)
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.createAdmin).not.toHaveBeenCalled();
+  });
+
   it("maps a P2002 unique-constraint race to ConflictError", async () => {
     repo.findByEmail.mockResolvedValue(null);
     repo.findRoleByKey.mockResolvedValue({ id: "role-1", key: "MODERATOR" });
@@ -173,6 +184,44 @@ describe("deactivateAdminAccount", () => {
     ).rejects.toBeInstanceOf(ConflictError);
   });
 
+  it("rejects deactivating the last active SUPER_ADMIN", async () => {
+    repo.findById.mockResolvedValue(
+      adminRow({ role: { key: "SUPER_ADMIN", name: "Super Admin" } })
+    );
+    repo.countActiveByRoleKey.mockResolvedValue(1);
+    await expect(
+      adminAccountService.deactivateAdminAccount(
+        TARGET_ID,
+        actor("SUPER_ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.setStatus).not.toHaveBeenCalled();
+  });
+
+  it("allows deactivating a SUPER_ADMIN when another one is still active", async () => {
+    repo.findById
+      .mockResolvedValueOnce(
+        adminRow({ role: { key: "SUPER_ADMIN", name: "Super Admin" } })
+      )
+      .mockResolvedValueOnce(
+        adminRow({
+          status: "DISABLED",
+          role: { key: "SUPER_ADMIN", name: "Super Admin" },
+        })
+      );
+    repo.countActiveByRoleKey.mockResolvedValue(2);
+    repo.setStatus.mockResolvedValue(undefined);
+
+    await expect(
+      adminAccountService.deactivateAdminAccount(
+        TARGET_ID,
+        actor("SUPER_ADMIN"),
+        CTX
+      )
+    ).resolves.toMatchObject({ status: "DISABLED" });
+  });
+
   it("deactivates and revokes every active session for the target", async () => {
     repo.findById
       .mockResolvedValueOnce(adminRow({ status: "ACTIVE" }))
@@ -205,6 +254,14 @@ describe("activateAdminAccount", () => {
     ).rejects.toBeInstanceOf(ConflictError);
   });
 
+  it("rejects activating a deleted admin", async () => {
+    repo.findById.mockResolvedValue(adminRow({ status: "DELETED" }));
+    await expect(
+      adminAccountService.activateAdminAccount(TARGET_ID, actor("ADMIN"), CTX)
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect(repo.setStatus).not.toHaveBeenCalled();
+  });
+
   it("activates a disabled admin", async () => {
     repo.findById
       .mockResolvedValueOnce(adminRow({ status: "DISABLED" }))
@@ -218,6 +275,95 @@ describe("activateAdminAccount", () => {
     );
     expect(result.status).toBe("ACTIVE");
     expect(repo.setStatus).toHaveBeenCalledWith(TARGET_ID, "ACTIVE");
+  });
+});
+
+describe("updateAdminAccount", () => {
+  it("rejects updating a deleted admin", async () => {
+    repo.findById.mockResolvedValue(adminRow({ status: "DELETED" }));
+    await expect(
+      adminAccountService.updateAdminAccount(
+        TARGET_ID,
+        { name: "New Name" },
+        actor("ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("rejects a duplicate email owned by another admin", async () => {
+    repo.findById.mockResolvedValue(adminRow());
+    repo.findByEmail.mockResolvedValue(adminRow({ id: "someone-else" }));
+    await expect(
+      adminAccountService.updateAdminAccount(
+        TARGET_ID,
+        { email: "taken@aimess.local" },
+        actor("ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it("rejects a duplicate username owned by another admin", async () => {
+    repo.findById.mockResolvedValue(adminRow());
+    repo.findByName.mockResolvedValueOnce(adminRow({ id: "someone-else" }));
+    await expect(
+      adminAccountService.updateAdminAccount(
+        TARGET_ID,
+        { name: "Taken Name" },
+        actor("ADMIN"),
+        CTX
+      )
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(repo.updateProfile).not.toHaveBeenCalled();
+  });
+
+  it("updates profile fields", async () => {
+    repo.findById.mockResolvedValue(adminRow());
+    repo.updateProfile.mockResolvedValue(adminRow({ name: "New Name" }));
+    const result = await adminAccountService.updateAdminAccount(
+      TARGET_ID,
+      { name: "New Name" },
+      actor("ADMIN"),
+      CTX
+    );
+    expect(result.name).toBe("New Name");
+    expect(auditService.record).toHaveBeenCalled();
+  });
+});
+
+describe("updateAdminAccountStatus", () => {
+  it("routes status ACTIVE to activateAdminAccount", async () => {
+    repo.findById
+      .mockResolvedValueOnce(adminRow({ status: "DISABLED" }))
+      .mockResolvedValueOnce(adminRow({ status: "ACTIVE" }));
+    repo.setStatus.mockResolvedValue(undefined);
+
+    const result = await adminAccountService.updateAdminAccountStatus(
+      TARGET_ID,
+      { status: "ACTIVE" },
+      actor("ADMIN"),
+      CTX
+    );
+    expect(result.status).toBe("ACTIVE");
+    expect(repo.setStatus).toHaveBeenCalledWith(TARGET_ID, "ACTIVE");
+  });
+
+  it("routes status INACTIVE to deactivateAdminAccount", async () => {
+    repo.findById
+      .mockResolvedValueOnce(adminRow({ status: "ACTIVE" }))
+      .mockResolvedValueOnce(adminRow({ status: "DISABLED" }));
+    repo.setStatus.mockResolvedValue(undefined);
+
+    const result = await adminAccountService.updateAdminAccountStatus(
+      TARGET_ID,
+      { status: "INACTIVE" },
+      actor("ADMIN"),
+      CTX
+    );
+    expect(result.status).toBe("DISABLED");
+    expect(repo.setStatus).toHaveBeenCalledWith(TARGET_ID, "DISABLED");
   });
 });
 

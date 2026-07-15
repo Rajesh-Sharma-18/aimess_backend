@@ -78,7 +78,7 @@ export interface ServiceStatus {
     breaker?: string | null;
     note?: string;
   }>;
-  checkedAt: string;
+  checkedAt: number;
 }
 
 async function readCache<T>(key: string): Promise<T | null> {
@@ -168,7 +168,7 @@ function buildServiceStatus(): ServiceStatus {
         note: "No health probe wired yet — status unknown.",
       },
     ],
-    checkedAt: new Date().toISOString(),
+    checkedAt: Date.now(),
   };
 }
 

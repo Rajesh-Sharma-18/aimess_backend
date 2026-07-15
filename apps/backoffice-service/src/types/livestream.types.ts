@@ -21,7 +21,7 @@ export type { AccountStatus, Paginated, PaginationMeta };
 
 // SCHEDULED is the admin-facing label for a stream-service PENDING stream
 // (created but not yet live). The repository maps PENDING⇄SCHEDULED at the edge.
-export type LivestreamStatus = "LIVE" | "ENDED" | "CANCELLED" | "SCHEDULED";
+export type LivestreamStatus = "LIVE" | "ENDED" | "SCHEDULED";
 
 export type EndReasonCode =
   | "POLICY_VIOLATION"
@@ -86,10 +86,10 @@ export type LivestreamListItem = {
   community: CommunityRef;
   creator: CreatorRef;
   category: LivestreamCategoryRef;
-  createdAt: string;
-  startedAt: string;
+  createdAt: number;
+  startedAt: number;
   /** null while the stream is LIVE. */
-  endedAt: string | null;
+  endedAt: number | null;
   durationSeconds: number;
   status: LivestreamStatus;
   viewerCount: number;
@@ -120,8 +120,8 @@ export type ReportsSummary = {
   dismissed: number;
   severity: ReportSeverity;
   byType: ReportsByType;
-  firstReportedAt: string | null;
-  lastReportedAt: string | null;
+  firstReportedAt: number | null;
+  lastReportedAt: number | null;
 };
 
 /** Ingest/playback technical metadata (detail view). NO raw stream key exposed. */
@@ -157,7 +157,7 @@ export type LivestreamModerationHistoryItem = {
   adminName: string;
   reasonCode: string | null;
   note: string | null;
-  createdAt: string;
+  createdAt: number;
 };
 
 /** A single report filed against a livestream. */
@@ -176,9 +176,9 @@ export type LivestreamReportItem = {
     action: string;
     note: string | null;
     resolvedBy: string;
-    resolvedAt: string;
+    resolvedAt: number;
   };
-  createdAt: string;
+  createdAt: number;
   evidence: {
     timestampSeconds: number | null;
     clipUrl: string | null;
@@ -193,10 +193,10 @@ export type LivestreamDetail = {
   community: CommunityContext;
   creator: CreatorProfile;
   category: LivestreamCategoryRef;
-  createdAt: string;
-  startedAt: string;
+  createdAt: number;
+  startedAt: number;
   /** null while the stream is LIVE. */
-  endedAt: string | null;
+  endedAt: number | null;
   durationSeconds: number;
   status: LivestreamStatus;
   viewerCount: number;
@@ -219,7 +219,7 @@ export type LivestreamDetail = {
 export type EndLivestreamResult = {
   livestreamId: string;
   status: "ENDED";
-  endedAt: string;
+  endedAt: number;
   endedBy: { adminId: string; adminName: string };
   reasonCode: EndReasonCode;
   moderationActionId: string;
@@ -264,8 +264,10 @@ export type ListLivestreamsQuery = {
   page: number;
   limit: number;
   cursor?: string;
-  dateFrom?: string;
-  dateTo?: string;
+  /** Epoch-ms lower bound on createdAt (inclusive). */
+  dateFrom?: number;
+  /** Epoch-ms upper bound on createdAt (inclusive). */
+  dateTo?: number;
 };
 
 /** Normalized per-stream reports list query (post-validation/coercion). */
@@ -284,25 +286,35 @@ export type ListLivestreamReportsQuery = {
  * durable `LivestreamViewerSession` table. A user who rejoined has multiple
  * rows (one per join→leave session).
  */
-/** Community role of a viewer, as shown in the admin viewer-list "type" column. */
-export type LivestreamViewerType = "Admin" | "Moderator" | "Member";
+/**
+ * Viewer's "type" column in the admin viewer list. "Host" is the stream
+ * creator (always surfaced regardless of their community role); the remaining
+ * values reflect the viewer's CURRENT community role, defaulting to Member.
+ */
+export type LivestreamViewerType = "Host" | "Admin" | "Moderator" | "Member";
 
 export type LivestreamUserItem = {
-  /** Pagination-based sequence number: (page - 1) * limit + index + 1. */
-  no: number;
   userId: string;
   username: string;
-  handle: string | null;
+  /**
+   * Same format as the livestream detail's `creator.displayName`:
+   * `firstName lastName` trimmed, falling back to `username` if both name
+   * parts are empty. Empty string only when the user profile can't be resolved.
+   */
+  fullName: string;
   // Standard avatar object (see @aimess/shared-types MediaObject); null when
   // no avatar is set. Replaces the legacy bare avatarUrl string.
   avatar: MediaObject | null;
-  /** ISO-8601 — when this viewing session started. */
-  joinedAt: string;
-  /** ISO-8601; null = still watching. */
-  leftAt: string | null;
+  /** epoch ms — when this viewing session started. */
+  joinedAt: number;
+  /** epoch ms; null = still watching. */
+  leftAt: number | null;
   /** Computed live (now - joinedAt) while still watching. */
   watchDurationSeconds: number;
-  /** Viewer's current community role; defaults to "Member" if not a member. */
+  /**
+   * "Host" for the stream creator; otherwise the viewer's current community
+   * role, defaulting to "Member" when they are no longer a community member.
+   */
   type: LivestreamViewerType;
 };
 
@@ -310,6 +322,16 @@ export type LivestreamUserItem = {
 export type ListLivestreamUsersQuery = {
   page: number;
   limit: number;
-  sortField?: "joinedAt" | "watchDurationSeconds";
+  /**
+   * joinedAt|watchDurationSeconds sort natively at the DB (fast path). username|
+   * role sort — and any search/role filter — have no backing column on the
+   * viewer-session store, so they trigger the bounded candidate-set enrichment
+   * path (see {@link GrpcLivestreamRepository.listUsers}).
+   */
+  sortField?: "joinedAt" | "watchDurationSeconds" | "username" | "role";
   sortDir?: "asc" | "desc";
+  /** Case-insensitive partial match on username / display name / user id. */
+  search?: string;
+  /** Community-role filter (Admin|Moderator|Member) — the only implemented viewer role. */
+  role?: string;
 };

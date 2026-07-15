@@ -19,6 +19,10 @@ enum AdminStatus {
   ACTIVE
   DISABLED
   INVITED
+  // Soft-delete: the row is kept (audit trail, FK integrity) but the account
+  // is permanently gone. Distinct from DISABLED so auth flows can tell
+  // "temporarily deactivated" apart from "no longer exists".
+  DELETED
 }
 
 enum AdminOtpPurpose {
@@ -360,6 +364,12 @@ model Report {
   // resolved live from community-service via this id on every read, so it's
   // never stale (see report.repository.ts buildListEnrichment).
   communityId String?
+  // The reported USER when the target itself isn't a user (message sender for
+  // message reports; comment author for stream reports). Null for user/community
+  // reports (target already IS the user, or there is none). Carried on the
+  // admin.report.ingest event so getCore can hydrate reportedUser for non-USER
+  // report types without a cross-service lookup on every read.
+  reportedUserId String? @db.Uuid
   status     String   @default("open") // open | reviewing | resolved | dismissed
   priority   String   @default("normal")
   assignedTo String?  @db.Uuid
@@ -386,6 +396,7 @@ model Report {
   @@index([type, targetId, createdAt(sort: Desc)])
   @@index([reporterId])
   @@index([communityId])
+  @@index([reportedUserId])
 }
 
 model ReportNote {

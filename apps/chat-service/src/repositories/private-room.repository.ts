@@ -72,6 +72,53 @@ export class PrivateRoomRepository {
       .filter((x): x is { peerId: string; roomId: string } => x !== null);
   }
 
+  /**
+   * Presence fan-out: lean {roomId, peerId, lastMessage snapshot} for every
+   * private room the user participates in — used to re-bump `conv:updated`
+   * (with a fresh `isOffline`) to each peer when this user's presence flips.
+   * Same participants-array query shape as {@link findPeersForUser}, just with
+   * the last-message fields the bump payload needs.
+   */
+  async findRoomsForPresenceBump(
+    userId: string,
+    limit: number
+  ): Promise<
+    Array<{
+      roomId: string;
+      peerId: string;
+      lastMessageId: string | null;
+      lastMessage: unknown;
+      lastMessageAt: Date | null;
+    }>
+  > {
+    const rooms = await this.prisma.privateRoom.findMany({
+      where: { participants: { has: userId } },
+      select: {
+        roomId: true,
+        participants: true,
+        lastMessageId: true,
+        lastMessage: true,
+        lastMessageAt: true,
+      },
+      orderBy: { lastMessageAt: "desc" },
+      take: limit,
+    });
+    return rooms
+      .map((r) => {
+        const peerId = r.participants.find((p) => p !== userId);
+        return peerId
+          ? {
+              roomId: r.roomId,
+              peerId,
+              lastMessageId: r.lastMessageId,
+              lastMessage: r.lastMessage,
+              lastMessageAt: r.lastMessageAt,
+            }
+          : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+  }
+
   async create(data: {
     roomId: string;
     participants: string[];

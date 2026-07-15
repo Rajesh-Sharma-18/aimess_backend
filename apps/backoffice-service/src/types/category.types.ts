@@ -9,8 +9,8 @@ export type CategoryListItem = {
   slug: string;
   visible: boolean;
   order: number;
-  createdAt: string;
-  updatedAt: string;
+  createdAt: number;
+  updatedAt: number;
   /** Communities in this category with status=ACTIVE and deletedAt unset. */
   communityCount: number;
 };

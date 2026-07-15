@@ -103,11 +103,21 @@ export class GroupPinService {
   async list(
     roomId: string,
     params: { limit: number; cursor?: string | null }
-  ): Promise<GroupMessagePin[]> {
+  ): Promise<Array<GroupMessagePin & { isAvailable: boolean }>> {
     const pins = await this.pinRepo.findPinsByRoom(roomId, params);
     // Resolve the pinned snapshot's sender avatar + attachment keys on read so
     // the pinned-banner FE never receives a raw object key (URLs not persisted).
-    return resolvePinsMedia(pins);
+    const resolved = await resolvePinsMedia(pins);
+    // Stamp `isAvailable` (message still exists, not deleted-for-everyone) so the
+    // banner can render a "pinned-but-deleted" state. Parity with private/community.
+    const liveIds = await this.messageRepo.findLiveIds(
+      roomId,
+      resolved.map((p) => p.messageId)
+    );
+    return resolved.map((pin) => ({
+      ...pin,
+      isAvailable: liveIds.has(pin.messageId),
+    }));
   }
 
   async countPins(roomId: string): Promise<number> {

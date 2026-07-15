@@ -35,7 +35,15 @@ import {
 // the comment atop community.repository.ts).
 import { communityRepository } from "../community.repository.js";
 import { moderationActionRepository } from "../moderation-action.repository.js";
+import { streamClient } from "../../grpc/stream.client.js";
 import type { ListCommunitiesQuery } from "../../types/community.types.js";
+
+// getById now also asks stream-service for the live count — stub it so this
+// stays a fast, offline unit test (no live gRPC).
+streamClient.adminListStreams = (async () => ({
+  streams: [],
+  total: 0,
+})) as typeof streamClient.adminListStreams;
 
 let nextRes: AdminListCommunitiesRes = { communities: [], total: 0 };
 let lastReq: AdminListCommunitiesReq | undefined;

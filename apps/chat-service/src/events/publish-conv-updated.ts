@@ -1,6 +1,7 @@
 import { logger } from "@aimess/logger";
 
 import type { Redis, Cluster } from "ioredis";
+import type { CommunityInvitationSystemAction } from "../lib/chat-message.serializer.js";
 
 /**
  * WhatsApp/Telegram-style "bump-to-top" fan-out for the inbox/community list.
@@ -18,6 +19,13 @@ import type { Redis, Cluster } from "ioredis";
 interface BumpPreview {
   contentType: string;
   text: string;
+  /**
+   * COMMUNITY_INVITATION cards only — mirrors the message's `systemAction`
+   * (see `chat-message.serializer.ts`) so the inbox/list row can render an
+   * "Invitation" chip and navigate straight to the community without a
+   * refetch. Passed straight through into the bumped `lastMessage`.
+   */
+  systemAction?: CommunityInvitationSystemAction;
 }
 
 /**
@@ -41,13 +49,28 @@ interface PublishConvUpdatedParams {
   roomId: string;
   recipientIds: string[];
   senderId: string;
+  /** Sender's live display name — mirrors `publishCommunityUpdated`'s
+   *  `senderName` so the gateway's "You:"-personalization (which requires both
+   *  senderId AND senderName) fires for `conv:updated` too. Optional/"" for
+   *  call sites (delete-recalc) that don't have it in hand. */
+  senderName?: string;
   lastMessageId: string;
   /** epoch ms */
   lastMessageAt: number;
   preview: BumpPreview;
+  /** Persisted unread policy for the new row (SYSTEM call audit rows pass false). */
+  countInUnread?: boolean;
   /** Optional per-recipient preview overrides (key present => override applies;
    *  value null => empty preview for that recipient). */
   recipientOverrides?: Map<string, RecipientBump | null>;
+  /**
+   * Canonical online-status lookup (reuses `PresenceService.getIsOnline`,
+   * i.e. the same `presence:user:<id>` Redis source the REST conversation
+   * APIs read). When supplied for `type: "PRIVATE"`, each recipient's payload
+   * gets an `isOffline` field for the OTHER participant in the room. Omitted
+   * entirely for GROUP (no single "peer") or when not supplied.
+   */
+  getIsOnline?: (userId: string) => Promise<boolean>;
 }
 
 /** Empty per-recipient preview (the recipient has hidden every message). */
@@ -97,10 +120,13 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       roomId: p.roomId,
       recipientIds,
       senderId: p.senderId,
+      senderName: p.senderName,
       lastMessageId: p.lastMessageId,
       lastMessageAt: p.lastMessageAt,
       preview: p.preview,
       recipientOverrides,
+      getIsOnline: p.getIsOnline,
+      countInUnread: p.countInUnread,
     });
   })().catch((error) => {
     logger.warn(
@@ -114,6 +140,29 @@ export async function publishConvUpdated(
 ): Promise<void> {
   const recipientIds = [...new Set(p.recipientIds)];
   if (recipientIds.length === 0) return;
+
+  // Real-time peer presence (PRIVATE only — a room has exactly one "other"
+  // participant per recipient). Reuses PresenceService.getIsOnline via the
+  // caller-supplied `getIsOnline`, the same Redis source the REST conversation
+  // APIs read, so socket + REST presence never disagree.
+  let onlineById: Map<string, boolean> | undefined;
+  if (p.type === "PRIVATE" && p.getIsOnline) {
+    try {
+      const entries = await Promise.all(
+        recipientIds.map(
+          async (id): Promise<[string, boolean]> => [
+            id,
+            await p.getIsOnline!(id),
+          ]
+        )
+      );
+      onlineById = new Map(entries);
+    } catch (err) {
+      logger.warn(
+        `conv:updated presence lookup failed for ${p.roomId}: ${String(err)}`
+      );
+    }
+  }
 
   try {
     const pipeline = p.redis.pipeline();
@@ -138,10 +187,26 @@ export async function publishConvUpdated(
           : (override?.lastMessageAt ?? p.lastMessageAt);
       const senderId =
         override === undefined ? p.senderId : (override?.senderId ?? "");
+      const senderName =
+        override === undefined
+          ? (p.senderName ?? "")
+          : (override?.senderName ?? "");
       // An override is a delete-recalc preview, never a NEW message — it must
       // never raise an unread badge (a null override has senderId "" which would
       // otherwise compute unread:true and show a phantom badge on an empty row).
-      const unread = override === undefined ? recipientId !== senderId : false;
+      const isSystem =
+        String(lastMessage.contentType ?? "").toUpperCase() === "SYSTEM";
+      const effectiveSenderId = isSystem ? "" : senderId;
+      const effectiveSenderName = isSystem ? "" : senderName;
+      const unread =
+        override === undefined
+          ? (p.countInUnread ?? !isSystem) && recipientId !== effectiveSenderId
+          : false;
+      const otherParticipant = recipientIds.find((id) => id !== recipientId);
+      const isOffline =
+        onlineById && otherParticipant
+          ? !(onlineById.get(otherParticipant) ?? false)
+          : undefined;
       pipeline.publish(
         `user:${recipientId}`,
         JSON.stringify({
@@ -152,8 +217,10 @@ export async function publishConvUpdated(
             lastMessageId,
             lastMessage,
             lastMessageAt,
-            senderId,
+            senderId: effectiveSenderId,
+            senderName: effectiveSenderName,
             unread,
+            ...(isOffline !== undefined ? { isOffline } : {}),
           },
         })
       );

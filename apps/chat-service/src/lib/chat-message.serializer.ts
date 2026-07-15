@@ -357,6 +357,79 @@ export function flattenStoredReactions(
   return out;
 }
 
+export type CommunityInvitationStatus =
+  | "ACTIVE"
+  | "EXPIRED"
+  | "REVOKED"
+  | "DELETED";
+
+export interface CommunityInvitationSystemAction {
+  type: "COMMUNITY_INVITATION";
+  communityId: string;
+  communityHandle?: string | null;
+  communityName: string;
+  inviteCode?: string | null;
+  deepLink: string;
+  alreadyJoined: boolean;
+  status: CommunityInvitationStatus;
+  canOpen: boolean;
+}
+
+/** True for a stored SYSTEM message that carries a COMMUNITY_INVITE card. */
+export function isCommunityInvitationMessage(m: {
+  messageType?: string | null;
+  systemEvent?: string | null;
+}): boolean {
+  return (
+    normalizeMessageType(m.messageType) === "SYSTEM" &&
+    m.systemEvent === "COMMUNITY_INVITE"
+  );
+}
+
+/**
+ * The SINGLE builder for a COMMUNITY_INVITE message's `systemAction` card —
+ * shared by the REST history mapper (`enrichMessages`, resolves fresh
+ * membership/link state via gRPC) and the live `message:new`/`conv:updated`
+ * publish path (`deliverInviteLinkDm`, which already knows the state is fresh
+ * because it just created the invite). Callers differ only in how they source
+ * `alreadyJoined`/`status`; the shape and the `canOpen` derivation live here once.
+ */
+export function buildCommunityInvitationAction(params: {
+  communityId: string;
+  communityName: string;
+  communityHandle?: string | null;
+  inviteCode?: string | null;
+  deepLink: string;
+  alreadyJoined: boolean;
+  status: CommunityInvitationStatus;
+}): CommunityInvitationSystemAction {
+  const {
+    communityId,
+    communityName,
+    communityHandle = null,
+    inviteCode = null,
+    deepLink,
+    alreadyJoined,
+    status,
+  } = params;
+  // A deleted community can never be opened. Otherwise the viewer can open it
+  // either because they're already a member (the invite/link state is moot at
+  // that point) or because the invite itself is still usable.
+  const canOpen =
+    status !== "DELETED" && (alreadyJoined || status === "ACTIVE");
+  return {
+    type: "COMMUNITY_INVITATION",
+    communityId,
+    communityHandle,
+    communityName,
+    inviteCode,
+    deepLink,
+    alreadyJoined,
+    status,
+    canOpen,
+  };
+}
+
 export interface ChatMessageEventInput {
   id: string;
   clientMessageId?: string | null;
@@ -385,6 +458,8 @@ export interface ChatMessageEventInput {
   /** Group lifecycle SYSTEM messages only (messageType=SYSTEM). */
   systemEvent?: string | null;
   systemData?: unknown;
+  /** COMMUNITY_INVITE cards only — see {@link buildCommunityInvitationAction}. */
+  systemAction?: CommunityInvitationSystemAction | null;
   countInUnread?: boolean | null;
 }
 
@@ -470,6 +545,7 @@ export function buildChatMessageEvent(
     // Group lifecycle system messages (messageType=SYSTEM) carry structured data.
     ...(input.systemEvent ? { systemEvent: input.systemEvent } : {}),
     ...(input.systemData !== undefined ? { systemData: input.systemData } : {}),
+    ...(input.systemAction ? { systemAction: input.systemAction } : {}),
     // ── V1-compat aliases (kept so existing clients keep working) ───────────
     messageId: input.id,
     conversationId: input.roomId,

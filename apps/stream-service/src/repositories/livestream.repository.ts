@@ -9,7 +9,7 @@ import type {
  * perspective — a genuinely broadcasting LIVE stream, or one mid-reconnect-grace
  * after a publisher drop (RECONNECTING). Deliberately excludes PENDING (still
  * setting up, never published — never occupies a live slot) and the terminal
- * ENDED/CANCELLED statuses.
+ * ENDED status.
  */
 const LIVE_STATUSES = ["LIVE", "RECONNECTING"] as const;
 
@@ -91,7 +91,7 @@ export class LivestreamRepository {
     const where: Prisma.LivestreamWhereInput = {
       ...(communityId ? { communityId } : {}),
       // No explicit status filter → only currently-relevant streams (PENDING/LIVE).
-      // Ended/cancelled streams must be requested explicitly via ?status=.
+      // Ended streams must be requested explicitly via ?status=.
       ...(status ? { status } : { status: { in: [...ACTIVE_STATUSES] } }),
       ...(cursor ? { id: { lt: cursor } } : {}),
     };
@@ -372,7 +372,7 @@ export interface AdminStreamFilter {
   communityIds?: string[];
   /** Search-resolved creator ids (creator-name match); OR-ed with search. */
   creatorIds?: string[];
-  /** Exact status (PENDING|LIVE|ENDED|CANCELLED); undefined = all. */
+  /** Exact status (PENDING|LIVE|ENDED); undefined = all. */
   status?: string;
   /** Exact community filter (AND). */
   communityId?: string;
@@ -382,6 +382,8 @@ export interface AdminStreamFilter {
   restrictCommunityIds?: string[];
   /** AND-restrict to these stream ids (report filter). Empty/undefined = no restriction. */
   restrictStreamIds?: string[];
+  /** AND-exclude these stream ids (reportStatus=NOT_REPORTED). Empty/undefined = no exclusion. */
+  excludeStreamIds?: string[];
   /** createdAt lower bound (inclusive). */
   dateFrom?: Date;
   /** createdAt upper bound (inclusive). */
@@ -400,6 +402,9 @@ function buildAdminWhere(f: AdminStreamFilter): Prisma.LivestreamWhereInput {
   }
   if (f.restrictStreamIds?.length) {
     and.push({ id: { in: f.restrictStreamIds } });
+  }
+  if (f.excludeStreamIds?.length) {
+    and.push({ id: { notIn: f.excludeStreamIds } });
   }
   if (f.dateFrom || f.dateTo) {
     and.push({

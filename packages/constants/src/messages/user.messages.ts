@@ -146,6 +146,10 @@ export const USER_MESSAGES = {
     vi: "Đã kết bạn tự động thành công",
     en: "Auto-connect completed.",
   },
+  FRIENDS_AUTO_DISCONNECTED: {
+    vi: "Đã hủy kết bạn tất cả bạn bè thành công",
+    en: "Auto-disconnect completed.",
+  },
   USER_RECENT_SEARCH_RECORDED: {
     vi: "Đã lưu mục vừa xem",
     en: "Recently viewed item saved.",

@@ -99,7 +99,7 @@ export function parseSort(sort: string): {
 }
 
 /** Opaque keyset cursor over (joinedAt, userId) — the only cursorable order. */
-export type Cursor = { joinedAt: string; userId: string };
+export type Cursor = { joinedAt: number; userId: string };
 
 const CURSOR_KEYS = ["joinedAt", "userId"] as const;
 
@@ -255,11 +255,11 @@ function toRow(r: {
     // UserIndex does not carry avatarUrl (user-service owns it); null for now.
     avatarUrl: null,
     status: r.status,
-    joinedAt: r.joinedAt.toISOString(),
-    lastActiveAt: r.lastActiveAt?.toISOString() ?? null,
-    since: r.bannedAt?.toISOString() ?? r.updatedAt.toISOString(),
+    joinedAt: r.joinedAt.getTime(),
+    lastActiveAt: r.lastActiveAt?.getTime() ?? null,
+    since: r.bannedAt?.getTime() ?? r.updatedAt.getTime(),
     reason: r.banReason,
-    suspendedUntil: r.suspendedUntil?.toISOString() ?? null,
+    suspendedUntil: r.suspendedUntil?.getTime() ?? null,
   };
 }
 
@@ -286,14 +286,14 @@ function toListItem(
     email: orNull(r.email),
     status: r.status,
     reportCount: r.reportCount,
-    joinedAt: r.joinedAt.toISOString(),
+    joinedAt: r.joinedAt.getTime(),
     // UserIndex does not carry avatarUrl (user-service owns it); null for now.
     avatarUrl: null,
     moderationStatus,
     isBanned,
     ...(isBanned
       ? {
-          bannedAt: r.bannedAt?.toISOString() ?? null,
+          bannedAt: r.bannedAt?.getTime() ?? null,
           banReason: r.banReason,
           bannedBy: banAction?.actorId ?? null,
         }
@@ -354,8 +354,8 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
         result: {
           userId: current.userId,
           status: current.status,
-          suspendedUntil: current.suspendedUntil?.toISOString() ?? null,
-          bannedAt: current.bannedAt?.toISOString() ?? null,
+          suspendedUntil: current.suspendedUntil?.getTime() ?? null,
+          bannedAt: current.bannedAt?.getTime() ?? null,
         },
       };
     }
@@ -379,8 +379,8 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
       result: {
         userId: updated.userId,
         status: updated.status,
-        suspendedUntil: updated.suspendedUntil?.toISOString() ?? null,
-        bannedAt: updated.bannedAt?.toISOString() ?? null,
+        suspendedUntil: updated.suspendedUntil?.getTime() ?? null,
+        bannedAt: updated.bannedAt?.getTime() ?? null,
       },
     };
   }
@@ -462,7 +462,7 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
       nextCursor:
         cursorable && hasNext && last
           ? encodeCursor({
-              joinedAt: last.joinedAt.toISOString(),
+              joinedAt: last.joinedAt.getTime(),
               userId: last.userId,
             })
           : null,
@@ -526,7 +526,7 @@ export class PrismaUserDirectoryRepository implements UserDirectoryRepository {
       nextCursor:
         hasNext && last
           ? encodeCursor({
-              joinedAt: last.joinedAt.toISOString(),
+              joinedAt: last.joinedAt.getTime(),
               userId: last.userId,
             })
           : null,
@@ -734,7 +734,8 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
         userId: u.id,
         email: orNull(u.email),
         status,
-        joinedAt: u.createdAt,
+        // u.createdAt arrives as an ISO string from auth-service — coerce to epoch ms.
+        joinedAt: Date.parse(u.createdAt),
         username: profile?.username ?? u.account,
         fullName: buildFullName(profile?.firstName, profile?.lastName),
         avatarUrl: profile?.avatarUrl || null,
@@ -743,7 +744,7 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
         isBanned,
         ...(isBanned
           ? {
-              bannedAt: mirror?.bannedAt?.toISOString() ?? null,
+              bannedAt: mirror?.bannedAt?.getTime() ?? null,
               banReason: mirror?.banReason ?? null,
               bannedBy: banAction?.actorId ?? null,
             }
@@ -808,17 +809,22 @@ export class GrpcUserDirectoryRepository implements UserDirectoryRepository {
       email: orNull(record.email),
       avatarUrl: profile?.avatarUrl || null,
       status,
-      joinedAt: record.createdAt,
+      // auth-service's *At/*Until fields arrive as ISO strings — coerce to epoch ms.
+      joinedAt: Date.parse(record.createdAt),
       // auth-service does not expose a last-active timestamp on this contract.
-      lastActiveAt: record.lastLoginAt || null,
+      lastActiveAt: record.lastLoginAt ? Date.parse(record.lastLoginAt) : null,
       since:
         status === "DELETED"
-          ? record.deletedAt || null
+          ? record.deletedAt
+            ? Date.parse(record.deletedAt)
+            : null
           : mirror?.bannedAt
-            ? mirror.bannedAt.toISOString()
-            : record.suspendedAt || null,
+            ? mirror.bannedAt.getTime()
+            : record.suspendedAt
+              ? Date.parse(record.suspendedAt)
+              : null,
       reason: mirror?.banReason || record.suspendedReason || null,
-      suspendedUntil: mirror?.suspendedUntil?.toISOString() || null,
+      suspendedUntil: mirror?.suspendedUntil?.getTime() ?? null,
     };
   }
 

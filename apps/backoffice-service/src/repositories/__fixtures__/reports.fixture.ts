@@ -34,9 +34,16 @@ import type { MediaObject } from "@aimess/shared-types";
  * repository satisfies the same `avatar: MediaObject | null` contract as the
  * live Prisma repository.
  */
+/** "John Doe" → { firstName: "John", lastName: "Doe" } (single-word names get an empty lastName). */
+function splitName(fullName: string): { firstName: string; lastName: string } {
+  const [firstName, ...rest] = fullName.trim().split(/\s+/);
+  return { firstName: firstName ?? "", lastName: rest.join(" ") };
+}
+
 function fixtureAvatar(url: string | null): MediaObject | null {
   if (!url) return null;
   return {
+    mediaId: null,
     fileId: null,
     objectKey: null,
     fileName: null,
@@ -336,7 +343,8 @@ function build(seed: Seed, i: number): ReportDetail {
   const closed = seed.status === "RESOLVED" || seed.status === "DISMISSED";
   const assigned = seed.status !== "PENDING";
   const moderator = assigned ? MODERATORS[i % MODERATORS.length]! : null;
-  const resolvedAt = closed ? shift(seed.createdAt, DAY) : null;
+  const resolvedAtIso = closed ? shift(seed.createdAt, DAY) : null;
+  const resolvedAt = resolvedAtIso ? Date.parse(resolvedAtIso) : null;
 
   const availableActions = closed
     ? ["VIEW"]
@@ -358,7 +366,7 @@ function build(seed: Seed, i: number): ReportDetail {
       actorType: "USER",
       actorId: `u_rp_${n}`,
       actorName: seed.reporter,
-      at: seed.createdAt,
+      at: Date.parse(seed.createdAt),
       note: null,
     },
   ];
@@ -369,7 +377,7 @@ function build(seed: Seed, i: number): ReportDetail {
       actorType: "ADMIN",
       actorId: moderator.id,
       actorName: moderator.name,
-      at: shift(seed.createdAt, HOUR),
+      at: Date.parse(shift(seed.createdAt, HOUR)),
       note: "Picked up from queue",
     });
   }
@@ -391,7 +399,7 @@ function build(seed: Seed, i: number): ReportDetail {
         {
           id: `ev_${n}_1`,
           type: "MESSAGE_SNAPSHOT",
-          capturedAt: seed.createdAt,
+          capturedAt: Date.parse(seed.createdAt),
           content: {
             text: `Offending content sample for ${reportId}`,
             messageId: `msg_${n}`,
@@ -423,19 +431,20 @@ function build(seed: Seed, i: number): ReportDetail {
       : "messaging-service",
     communityId: isCommunity(seed.targetType) ? `comm_${n}` : null,
     communityName: isCommunity(seed.targetType) ? `Community ${n}` : null,
-    createdAt: seed.createdAt,
-    updatedAt: shift(seed.createdAt, HOUR),
+    createdAt: Date.parse(seed.createdAt),
+    updatedAt: Date.parse(shift(seed.createdAt, HOUR)),
     resolvedAt,
-    slaDueAt: shift(seed.createdAt, DAY),
+    slaDueAt: Date.parse(shift(seed.createdAt, DAY)),
     reportedUser: {
       id: `u_rd_${n}`,
       username: slug(seed.reported),
       displayName: seed.reported,
+      ...splitName(seed.reported),
       avatar: fixtureAvatar(
         i % 3 === 0 ? null : `https://cdn.aimess.app/av/u_rd_${n}.jpg`
       ),
       accountStatus: seed.reportedStatus,
-      joinedAt: "2025-06-01T08:00:00Z",
+      joinedAt: Date.parse("2025-06-01T08:00:00Z"),
       priorReportsCount: i % 6,
       priorActionsCount: i % 3,
     },
@@ -443,6 +452,7 @@ function build(seed: Seed, i: number): ReportDetail {
       id: `u_rp_${n}`,
       username: slug(seed.reporter),
       displayName: seed.reporter,
+      ...splitName(seed.reporter),
       avatar: fixtureAvatar(
         i % 2 === 0 ? `https://cdn.aimess.app/av/u_rp_${n}.jpg` : null
       ),
@@ -471,7 +481,7 @@ function build(seed: Seed, i: number): ReportDetail {
             reportId: `RPT-2026-${String(1000 + n).padStart(7, "0")}`,
             reportType: seed.reportType,
             status: "RESOLVED",
-            createdAt: "2026-01-05T00:00:00Z",
+            createdAt: Date.parse("2026-01-05T00:00:00Z"),
           },
         ]
       : [],

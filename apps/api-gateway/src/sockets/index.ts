@@ -4,6 +4,9 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import { logger } from "@aimess/logger";
 import { getCorsAllowedOrigins } from "../config/env.js";
 import { createGatewayRedisClients } from "./redis.js";
+import { registerAuthNamespace } from "./namespaces/auth.ns.js";
+import { registerSessionRevokeListener } from "./session-revoke.js";
+import { registerSessionCreatedListener } from "./session-created-listener.js";
 import { registerChatNamespace } from "./namespaces/chat.ns.js";
 import { registerCommunityNamespace } from "./namespaces/community.ns.js";
 import { registerNotifyNamespace } from "./namespaces/notify.ns.js";
@@ -33,6 +36,13 @@ export async function setupSockets(
     maxHttpBufferSize: 1e6,
     connectionStateRecovery: {
       maxDisconnectionDuration: 2 * 60 * 1000,
+      // Socket.IO defaults this to `true`, which SKIPS `namespace.use()` auth
+      // middleware entirely on a recovered reconnect (e.g. after a silent
+      // network drop) — a session revoked while the device was offline would
+      // silently rejoin its rooms unauthenticated. `false` forces every
+      // reconnect, recovered or not, back through
+      // `createGatewaySocketAuthMiddleware`'s session-active check.
+      skipMiddlewares: false,
     },
     perMessageDeflate: false,
   });
@@ -47,11 +57,15 @@ export async function setupSockets(
   const { sub: communitySub } = createGatewayRedisClients();
   const { sub: notifySub } = createGatewayRedisClients();
   const { sub: streamSub } = createGatewayRedisClients();
+  const { sub: authSub } = createGatewayRedisClients();
+  const { sub: sessionRevokeSub } = createGatewayRedisClients();
   await Promise.all([
     chatSub.connect(),
     communitySub.connect(),
     notifySub.connect(),
     streamSub.connect(),
+    authSub.connect(),
+    sessionRevokeSub.connect(),
   ]);
 
   const communityClient = createCommunityClient();
@@ -75,8 +89,12 @@ export async function setupSockets(
     userClient,
     mediaClient
   );
-  registerNotifyNamespace(io, notificationClient, notifySub);
+  registerNotifyNamespace(io, notificationClient, notifySub, pub);
   registerStreamNamespace(io, streamClient, streamSub, pub, mediaClient);
+  registerAuthNamespace(io, authSub);
+  registerSessionRevokeListener(io, sessionRevokeSub);
+  // Reuses the same durable PSUBSCRIBE connection (filters by channel prefix).
+  registerSessionCreatedListener(io, sessionRevokeSub);
 
   io.engine.on(
     "connection_error",
@@ -88,6 +106,6 @@ export async function setupSockets(
   );
 
   logger.info(
-    "Socket.IO namespaces registered: /chat, /community, /notify, /stream"
+    "Socket.IO namespaces registered: /chat, /community, /notify, /stream, /auth"
   );
 }

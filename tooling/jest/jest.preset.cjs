@@ -21,7 +21,15 @@
  */
 module.exports = {
   displayName: "service",
-  testEnvironment: "node",
+  // Resolve to an absolute path instead of the bare string "node". In this
+  // pnpm workspace, media-service still pins jest@29 (and its own
+  // jest-environment-node@29.7.0); Jest's dynamic by-name resolution for the
+  // "node" testEnvironment can walk up into pnpm's shared virtual-store
+  // node_modules and grab THAT older copy instead of the jest@30 one this
+  // preset needs, producing a jest-runtime/jest-mock version mismatch
+  // (`clearMocksOnScope is not a function`). Resolving here, relative to this
+  // file, is deterministic regardless of that ambiguity.
+  testEnvironment: require.resolve("jest-environment-node"),
   roots: ["<rootDir>/tests"],
   testMatch: ["<rootDir>/tests/**/*.test.ts"],
   moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json", "node"],

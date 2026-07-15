@@ -16,7 +16,7 @@ jest.mock("../../src/config/prisma.js", () => ({
 
 // --- Redis: never open a real connection ----------------------------------
 jest.mock("../../src/config/redis.js", () => ({
-  redis: { status: "ready" },
+  redis: { status: "ready", publish: jest.fn(async () => 0) },
   connectAuthRedis: jest.fn(async () => undefined),
 }));
 

@@ -28,6 +28,7 @@ import {
   convertMessageToPreview,
   buildPushPreview,
 } from "../services/message-preview.service.js";
+import type { PrivateRoomService } from "../services/private-room.service.js";
 import type { PrivateMessageService } from "../services/private-message.service.js";
 import type { GroupMessageService } from "../services/group-message.service.js";
 import type { GroupMemberService } from "../services/group-member.service.js";
@@ -39,7 +40,6 @@ import type { AdminGroupService } from "../services/admin-group.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
 import type { CallService } from "../services/call.service.js";
-import type { WebRtcConfigService } from "../services/webrtc-config.service.js";
 import type { PresenceService } from "../services/presence.service.js";
 import type { CommunityMessageService } from "../services/community-message.service.js";
 import type { CommunityPinService } from "../services/community-pin.service.js";
@@ -136,12 +136,12 @@ export interface GrpcDeps {
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
   callService: CallService;
-  webRtcConfigService: WebRtcConfigService;
   presenceService: PresenceService;
   communityMessageService: CommunityMessageService;
   communityPinService: CommunityPinService;
   notificationRepo: NotificationRepository;
   chatMessageOrchestrator: ChatMessageOrchestrator;
+  privateRoomService: PrivateRoomService;
 }
 
 function parseMessageContent(req: {
@@ -1392,19 +1392,12 @@ export function createMessagingImpl(
             privateRoomId: req.privateRoomId ?? null,
           });
 
-          const rtcConfig = deps.webRtcConfigService.getRtcConfiguration();
           callback(null, {
             callId: result.callId,
             status: result.status,
-            rtcConfig: {
-              iceServers: rtcConfig.iceServers.map((server) => ({
-                urls: server.urls,
-                username: server.username ?? "",
-                credential: server.credential ?? "",
-                credentialType: server.credentialType ?? "password",
-              })),
-              iceCandidatePoolSize: rtcConfig.iceCandidatePoolSize,
-              iceTransportPolicy: rtcConfig.iceTransportPolicy,
+            livekit: {
+              url: result.livekit.url,
+              token: result.livekit.token,
             },
           });
         } catch (err) {
@@ -1514,28 +1507,22 @@ export function createMessagingImpl(
       })();
     },
 
-    getRtcConfig: (
+    handleLiveKitRoomFinished: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
-      callback: grpc.sendUnaryData<unknown>
+      callback: grpc.sendUnaryData<Record<string, never>>
     ) => {
-      try {
-        const rtcConfig = deps.webRtcConfigService.getRtcConfiguration();
-        callback(null, {
-          rtcConfig: {
-            iceServers: rtcConfig.iceServers.map((server) => ({
-              urls: server.urls,
-              username: server.username ?? "",
-              credential: server.credential ?? "",
-              credentialType: server.credentialType ?? "password",
-            })),
-            iceCandidatePoolSize: rtcConfig.iceCandidatePoolSize,
-            iceTransportPolicy: rtcConfig.iceTransportPolicy,
-          },
-        });
-      } catch (err) {
-        logger.error(`gRPC getRtcConfig error: ${String(err)}`);
-        callback({ code: grpc.status.INTERNAL, message: String(err) });
-      }
+      void (async () => {
+        try {
+          const req = call.request as { roomName?: string };
+          await deps.callService.reconcileFromLiveKitRoomFinished(
+            req.roomName ?? ""
+          );
+          callback(null, {});
+        } catch (err) {
+          logger.error(`gRPC handleLiveKitRoomFinished error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
     },
 
     catchupRoom: (
@@ -1932,6 +1919,45 @@ export function createMessagingImpl(
           callback(null, { groups });
         } catch (err) {
           logger.error(`gRPC searchUserGroups error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
+    // Auto-Connect (user-service): batch get-or-create private rooms for
+    // a user against multiple peers. Returns existing roomId if one exists,
+    // creates new one if not (and friendship is ACCEPTED).
+    getOrCreatePrivateRooms: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            userId?: string;
+            peerUserIds?: string[];
+          };
+          const userId = req.userId ?? "";
+          const peerIds = [...new Set((req.peerUserIds ?? []).filter(Boolean))];
+          if (!userId || peerIds.length === 0) {
+            callback(null, { rooms: [] });
+            return;
+          }
+
+          const matches: { peerUserId: string; roomId: string }[] = [];
+          for (const peerId of peerIds) {
+            const room = await deps.privateRoomService.getOrCreateRoom(
+              userId,
+              peerId
+            );
+            if (room) {
+              matches.push({ peerUserId: peerId, roomId: room.roomId });
+            }
+          }
+
+          callback(null, { rooms: matches });
+        } catch (err) {
+          logger.error(`gRPC getOrCreatePrivateRooms error: ${String(err)}`);
           callback({ code: grpc.status.INTERNAL, message: String(err) });
         }
       })();

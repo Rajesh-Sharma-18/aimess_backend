@@ -220,7 +220,7 @@ export const openApiSchemas = {
       "Successful admin login / token refresh — standard `{ success, message, data }` envelope with the JWT pair and the authenticated admin profile.",
     properties: {
       success: { type: "boolean", example: true },
-      message: { type: "string", example: "Login successful" },
+      message: { type: "string", example: "Login successful." },
       data: {
         type: "object",
         properties: {
@@ -281,13 +281,68 @@ export const openApiSchemas = {
     },
     required: ["success", "data"],
   },
+  AdminUpdateMeRequest: {
+    type: "object",
+    description:
+      "Self-service profile update body. At least one field required. `avatarObjectKey` is the MinIO object key returned by the shared `/media/upload-url` USER_AVATAR flow; pass `null` to clear the avatar.",
+    properties: {
+      username: {
+        type: "string",
+        minLength: 2,
+        maxLength: 100,
+        example: "Ops Admin",
+      },
+      email: {
+        type: "string",
+        format: "email",
+        example: "ops@aimess.io",
+      },
+      avatarObjectKey: {
+        type: "string",
+        nullable: true,
+        example: "avatars/adm_1/2026-07/abc.png",
+        description:
+          "MinIO object key from the shared upload flow. `null` clears the current avatar.",
+      },
+    },
+  },
   AdminChangePasswordRequest: {
     type: "object",
-    required: ["current", "next"],
+    required: ["currentPassword", "newPassword", "confirmPassword"],
     properties: {
-      current: { type: "string", example: "old-pass" },
-      next: { type: "string", minLength: 8, example: "new-stronger-pass" },
+      currentPassword: { type: "string", example: "OldP@ss1" },
+      newPassword: {
+        type: "string",
+        minLength: 6,
+        example: "NewStr0ng!",
+        description:
+          "≥6 chars with at least one upper, lower, digit and special char.",
+      },
+      confirmPassword: {
+        type: "string",
+        example: "NewStr0ng!",
+        description: "Must equal `newPassword`.",
+      },
     },
+  },
+  AdminChangePasswordResponse: {
+    type: "object",
+    description: "Successful admin self-service password change.",
+    properties: {
+      success: { type: "boolean", example: true },
+      message: {
+        type: "string",
+        example: "Password changed successfully.",
+      },
+      data: {
+        type: "object",
+        properties: {
+          passwordChanged: { type: "boolean", example: true },
+        },
+        required: ["passwordChanged"],
+      },
+    },
+    required: ["success", "data"],
   },
 
   // ---- Forgot / reset password (public — a locked-out admin must reach these) ----
@@ -569,7 +624,7 @@ export const openApiSchemas = {
             note: {
               type: "string",
               description:
-                "Present for services with no backoffice gRPC client (status unknown, reported degraded).",
+                "Optional short reason string — set on degraded/down rows (probe error, HTTP status code, slow-response warning).",
             },
           },
         },
@@ -2102,107 +2157,257 @@ export const openApiSchemas = {
     },
     required: ["id", "username", "fullName", "avatar"],
   },
+  AdminCommunityReportBlock: {
+    type: "object",
+    description: "Compact community reference on a report.",
+    properties: {
+      id: { type: "string", example: "comm_001" },
+      name: { type: "string", example: "Indie Game Devs" },
+      handle: { type: "string", example: "@indie_devs" },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description: "Standard avatar object; `null` when no avatar is set.",
+      },
+    },
+    required: ["id", "name", "handle", "avatar"],
+  },
+  AdminLivestreamReportBlock: {
+    type: "object",
+    description:
+      "Reported livestream — the stream's useful details (present only for LIVESTREAM reports).",
+    properties: {
+      id: { type: "string", example: "stream_9f2" },
+      title: { type: "string", example: "Late-night live coding" },
+      description: { type: "string", example: "Building the admin panel" },
+      status: {
+        type: "string",
+        example: "ENDED",
+        description: "LIVE | ENDED | SCHEDULED | CANCELLED (as stored).",
+      },
+      thumbnail: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+        description: "Standard media object; `null` when no thumbnail is set.",
+      },
+      viewerCount: {
+        type: "integer",
+        example: 200,
+        description:
+          "TOTAL unique viewers over the stream's lifetime (host + co-hosts + speakers + viewers, current and departed; reconnects deduped). Independent of status.",
+      },
+      activeViewerCount: {
+        type: "integer",
+        example: 0,
+        description: "Currently watching; 0 once the stream has ended.",
+      },
+      duration: {
+        type: "integer",
+        format: "int64",
+        example: 3600000,
+        description: "Stream duration in milliseconds.",
+      },
+      startedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        example: 1783765815123,
+        description: "Epoch milliseconds; `null` if never went live.",
+      },
+      endedAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        example: 1783769415123,
+        description: "Epoch milliseconds; `null` while still live/scheduled.",
+      },
+      host: {
+        allOf: [{ $ref: "#/components/schemas/AdminReportModerationUserRef" }],
+        nullable: true,
+      },
+    },
+    required: [
+      "id",
+      "title",
+      "description",
+      "status",
+      "thumbnail",
+      "viewerCount",
+      "activeViewerCount",
+      "duration",
+      "startedAt",
+      "endedAt",
+      "host",
+    ],
+  },
+  AdminMessageReportBlock: {
+    type: "object",
+    description:
+      "Reported community message (present only for MESSAGE reports). Content/media are best-effort `null` until an admin message-content RPC exists in chat-service; the reported `id`/`senderId` are always available.",
+    properties: {
+      id: { type: "string", example: "msg_42" },
+      messageType: { type: "string", nullable: true, example: "TEXT" },
+      text: { type: "string", nullable: true, example: "spam spam spam" },
+      content: { type: "string", nullable: true },
+      media: {
+        type: "array",
+        items: { $ref: "#/components/schemas/MediaObject" },
+      },
+      sentAt: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        example: 1783765815123,
+        description: "Epoch milliseconds.",
+      },
+      senderId: { type: "string", nullable: true, example: "u_1" },
+    },
+    required: [
+      "id",
+      "messageType",
+      "text",
+      "content",
+      "media",
+      "sentAt",
+      "senderId",
+    ],
+  },
   AdminReportModerationDetail: {
     type: "object",
     description:
-      "Aggregate for the admin Reports & Moderation Details page: `{ success, data: { report, community, members } }`.",
+      "Aggregate for the admin Reports & Moderation Details page: `{ success, data }`. `data.reportType` identifies the reported entity and drives which entity blocks are present:\n- `USER` → reportedUser only\n- `COMMUNITY` → reportedUser, community, communityAdmin\n- `LIVESTREAM` → reportedUser, community, communityAdmin, livestream\n- `MESSAGE` → reportedUser, community, communityAdmin, message\n\nA community is never itself reportable: a reported community MEMBER is a `COMMUNITY` report; a reported community MESSAGE is a `MESSAGE` report. All timestamps are epoch milliseconds.",
     properties: {
       success: { type: "boolean", example: true },
       data: {
         type: "object",
         properties: {
-          report: {
-            type: "object",
-            description: "Report Details.",
-            properties: {
-              id: { type: "string", example: "RPT-2026-0001284" },
-              type: { $ref: "#/components/schemas/AdminModerationTargetType" },
-              status: { $ref: "#/components/schemas/AdminModerationStatus" },
-              createdAt: { type: "string", format: "date-time" },
-              reportedUser: {
-                allOf: [
-                  { $ref: "#/components/schemas/AdminReportModerationUserRef" },
-                ],
-                nullable: true,
-              },
-              reporter: {
-                allOf: [
-                  { $ref: "#/components/schemas/AdminReportModerationUserRef" },
-                ],
-                nullable: true,
-              },
-            },
-            required: [
-              "id",
-              "type",
-              "status",
-              "createdAt",
-              "reportedUser",
-              "reporter",
+          id: { type: "string", example: "RPT-2026-0001284" },
+          reportType: {
+            type: "string",
+            enum: ["USER", "COMMUNITY", "LIVESTREAM", "MESSAGE"],
+            example: "COMMUNITY",
+            description:
+              "Reported entity kind. (COMMENT is reserved for future livestream-comment reports and is not emitted yet.)",
+          },
+          reportReason: { type: "string", example: "Spam Messages" },
+          reportMessage: {
+            type: "string",
+            nullable: true,
+            example: "Kept posting spam links",
+          },
+          reportStatus: {
+            $ref: "#/components/schemas/AdminModerationStatus",
+          },
+          createdAt: {
+            type: "integer",
+            format: "int64",
+            example: 1783765815123,
+            description: "Epoch milliseconds.",
+          },
+          updatedAt: {
+            type: "integer",
+            format: "int64",
+            example: 1783765824000,
+            description: "Epoch milliseconds.",
+          },
+          reporter: {
+            allOf: [
+              { $ref: "#/components/schemas/AdminReportModerationUserRef" },
             ],
+            nullable: true,
+          },
+          reportedUser: {
+            allOf: [
+              { $ref: "#/components/schemas/AdminReportModerationUserRef" },
+            ],
+            nullable: true,
           },
           community: {
-            type: "object",
+            allOf: [{ $ref: "#/components/schemas/AdminCommunityReportBlock" }],
             nullable: true,
             description:
-              "Community Report Details. Null when the report has no associated community.",
-            properties: {
-              id: { type: "string", example: "comm_001" },
-              name: { type: "string", example: "Indie Game Devs" },
-              avatar: {
-                allOf: [{ $ref: "#/components/schemas/MediaObject" }],
-                nullable: true,
-                description:
-                  "Standard avatar object; `null` when no avatar is set. Replaces the legacy bare avatarUrl string.",
-              },
-              category: {
-                type: "object",
-                properties: {
-                  id: { type: "string", example: "cat_07" },
-                  name: { type: "string", example: "Gaming" },
-                },
-                required: ["id", "name"],
-              },
-              reportedDate: { type: "string", format: "date-time" },
-              reportedMessage: {
-                type: "object",
-                nullable: true,
-                description:
-                  "Only the message id — null for non-message-based reports. No admin RPC exists yet to fetch message content.",
-                properties: {
-                  id: { type: "string", example: "msg_42" },
-                },
-                required: ["id"],
-              },
-            },
-            required: [
-              "id",
-              "name",
-              "avatar",
-              "category",
-              "reportedDate",
-              "reportedMessage",
-            ],
+              "Present for COMMUNITY / LIVESTREAM / MESSAGE reports; omitted for USER reports.",
           },
-          members: {
-            type: "object",
+          communityAdmin: {
+            allOf: [
+              { $ref: "#/components/schemas/AdminReportModerationUserRef" },
+            ],
             nullable: true,
             description:
-              "Community Member List — identical shape/filters to GET /admin/v1/communities/{communityId}/members. Null when there is no community.",
-            properties: {
-              items: {
-                type: "array",
-                items: { $ref: "#/components/schemas/AdminCommunityMember" },
-              },
-              pagination: { $ref: "#/components/schemas/AdminPagination" },
-            },
-            required: ["items", "pagination"],
+              "Community's current ADMIN. Present for COMMUNITY / LIVESTREAM / MESSAGE reports; omitted for USER reports.",
+          },
+          livestream: {
+            allOf: [
+              { $ref: "#/components/schemas/AdminLivestreamReportBlock" },
+            ],
+            nullable: true,
+            description: "Present only for LIVESTREAM reports.",
+          },
+          message: {
+            allOf: [{ $ref: "#/components/schemas/AdminMessageReportBlock" }],
+            nullable: true,
+            description: "Present only for MESSAGE reports.",
           },
         },
-        required: ["report", "community", "members"],
+        required: [
+          "id",
+          "reportType",
+          "reportReason",
+          "reportMessage",
+          "reportStatus",
+          "createdAt",
+          "updatedAt",
+          "reporter",
+          "reportedUser",
+        ],
       },
     },
     required: ["success", "data"],
+  },
+  AdminReportUserItem: {
+    type: "object",
+    description:
+      "One row in the Report Details users list — a community member (COMMUNITY/MESSAGE reports) or a livestream viewer (LIVESTREAM reports), unified. `avatar` is the standard media object; `joinedAt` is epoch ms.",
+    properties: {
+      userId: { type: "string", example: "u_1" },
+      username: { type: "string", example: "jdoe" },
+      displayName: { type: "string", example: "John Doe" },
+      avatar: {
+        allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+        nullable: true,
+      },
+      role: {
+        type: "string",
+        description:
+          "Community reports: ADMIN|MODERATOR|MEMBER|BANNED. Livestream reports: Admin|Moderator|Member (viewer's current community role).",
+        example: "MEMBER",
+      },
+      joinedAt: {
+        type: "integer",
+        format: "int64",
+        example: 1783745454545,
+        description: "Epoch milliseconds.",
+      },
+    },
+    required: [
+      "userId",
+      "username",
+      "displayName",
+      "avatar",
+      "role",
+      "joinedAt",
+    ],
+  },
+  AdminReportUsersPagination: {
+    type: "object",
+    description: "Slim offset pagination for the Report Details users list.",
+    properties: {
+      page: { type: "integer", example: 1 },
+      limit: { type: "integer", example: 20 },
+      total: { type: "integer", example: 0 },
+      totalPages: { type: "integer", example: 0 },
+    },
+    required: ["page", "limit", "total", "totalPages"],
   },
   AdminResolveReportRequest: {
     type: "object",
@@ -2751,7 +2956,12 @@ export const openApiSchemas = {
       startedAt: { type: "string", format: "date-time" },
       endedAt: { type: "string", format: "date-time", nullable: true },
       durationSeconds: { type: "integer", example: 3600 },
-      viewerCount: { type: "integer", example: 134 },
+      viewerCount: {
+        type: "integer",
+        example: 134,
+        description:
+          "TOTAL unique users who joined this stream at least once during its lifetime (host + co-hosts + speakers + viewers, current and departed; reconnects deduped by userId). Independent of status.",
+      },
       reportCount: { type: "integer", example: 2 },
       reportSeverity: {
         type: "string",
@@ -2905,15 +3115,14 @@ export const openApiSchemas = {
     description:
       "A viewer-session row for this stream (who watched, not the community roster — see the endpoint description).",
     properties: {
-      no: {
-        type: "integer",
-        description:
-          "Pagination-based sequence number: (page - 1) * limit + index + 1.",
-        example: 1,
-      },
       userId: { type: "string" },
-      username: { type: "string" },
-      handle: { type: "string", nullable: true },
+      username: { type: "string", example: "john_doe" },
+      fullName: {
+        type: "string",
+        example: "John Doe",
+        description:
+          "Same format as the livestream detail's `creator.displayName`: `firstName lastName` trimmed, falling back to `username` when both name parts are empty. Empty string only when the user profile cannot be resolved.",
+      },
       avatar: {
         allOf: [{ $ref: "#/components/schemas/MediaObject" }],
         nullable: true,
@@ -2930,15 +3139,15 @@ export const openApiSchemas = {
       watchDurationSeconds: { type: "integer", example: 340 },
       type: {
         type: "string",
-        enum: ["Admin", "Moderator", "Member"],
+        enum: ["Host", "Admin", "Moderator", "Member"],
         description:
-          "Viewer's CURRENT community role. Defaults to 'Member' if they are no longer a member of the stream's community.",
+          "`Host` for the stream creator (always surfaced, even if they broadcast via RTMP and never emit `stream:join`). Otherwise the viewer's CURRENT community role, defaulting to `Member` when they are no longer a member of the stream's community.",
       },
     },
     required: [
-      "no",
       "userId",
       "username",
+      "fullName",
       "joinedAt",
       "watchDurationSeconds",
       "type",
@@ -3324,7 +3533,7 @@ export const openApiSchemas = {
       role: { $ref: "#/components/schemas/AdminAccountRoleRef" },
       status: {
         type: "string",
-        enum: ["ACTIVE", "DISABLED", "INVITED"],
+        enum: ["ACTIVE", "DISABLED", "INVITED", "DELETED"],
         example: "ACTIVE",
       },
       lastLoginAt: { type: "string", format: "date-time", nullable: true },
@@ -3335,7 +3544,9 @@ export const openApiSchemas = {
   },
   AdminAccountCreateRequest: {
     type: "object",
-    required: ["email", "password", "name", "roleKey"],
+    description:
+      "One of `username`/`name` is required (`username` is the wire field; `name` is kept accepted for backward compatibility — same field). `roleKey` defaults to `ADMIN` when omitted.",
+    required: ["email", "password"],
     properties: {
       email: { type: "string", format: "email", example: "mod@aimess.io" },
       password: {
@@ -3344,13 +3555,24 @@ export const openApiSchemas = {
         description:
           "Must contain at least one uppercase, one lowercase, one digit, and one special character.",
       },
+      username: {
+        type: "string",
+        minLength: 2,
+        maxLength: 100,
+        example: "mod_user",
+      },
       name: {
         type: "string",
         minLength: 2,
         maxLength: 100,
         example: "Mod User",
+        deprecated: true,
+        description: "Alias for `username`, kept for backward compatibility.",
       },
-      roleKey: { $ref: "#/components/schemas/AdminRoleKey" },
+      roleKey: {
+        allOf: [{ $ref: "#/components/schemas/AdminRoleKey" }],
+        default: "ADMIN",
+      },
       avatarUrl: {
         type: "string",
         format: "uri",
@@ -3362,15 +3584,25 @@ export const openApiSchemas = {
   AdminAccountUpdateRequest: {
     type: "object",
     description:
-      "PATCH profile fields only — role changes go through .../permissions. At least one of name or avatarUrl must be provided.",
+      "PATCH profile fields only — role changes go through .../permissions. At least one of username, email or avatarUrl must be provided. Duplicate email/username are rejected with 409.",
     properties: {
-      name: { type: "string", minLength: 2, maxLength: 100, nullable: true },
+      username: { type: "string", minLength: 2, maxLength: 100 },
+      email: { type: "string", format: "email" },
       avatarUrl: {
         type: "string",
         format: "uri",
         maxLength: 500,
         nullable: true,
       },
+    },
+  },
+  AdminAccountStatusRequest: {
+    type: "object",
+    description:
+      "Unified activate/deactivate toggle. `INACTIVE` maps to the internal `DISABLED` status.",
+    required: ["status"],
+    properties: {
+      status: { type: "string", enum: ["ACTIVE", "INACTIVE"] },
     },
   },
   AdminAccountRoleRequest: {
@@ -3435,14 +3667,20 @@ export const openApiSchemas = {
       monitored: {
         type: "boolean",
         description:
-          "false for media/notification/stream/user — no backoffice health probe is wired for them yet; status is always unknown and they are excluded from the overall/servicesUp roll-up.",
+          "Always true today — every service (auth/chat/community via gRPC ping, user/media/notification/stream via HTTP /health) is actively probed and rolled up into overall/servicesUp.",
       },
-      uptimePercent: { type: "number", nullable: true, example: 99.8 },
+      uptimePercent: {
+        type: "number",
+        nullable: true,
+        example: 99.8,
+        description:
+          "Rolling availability (%): from the opossum circuit-breaker window for gRPC-probed services (auth/chat/community); from an in-memory 100-slot probe window for the HTTP-probed services (user/media/notification/stream). Null only until the first sample lands.",
+      },
       latencyMs: {
         type: "integer",
         nullable: true,
         description:
-          "Only populated for the 3 monitored services (auth/community/chat).",
+          "Measured round-trip of the live probe (gRPC ping or HTTP /health). Null only when the probe never began (rare — settle failure).",
       },
       breaker: {
         type: "string",
@@ -4586,53 +4824,41 @@ export const openApiSchemas = {
         type: "string",
         description: "Embed in the QR code shown to the authenticated device.",
       },
-      pollSecret: {
-        type: "string",
-        description:
-          "Secret held only by the new device; required to poll status.",
-      },
       expiresAt: { type: "string", format: "date-time" },
     },
-    required: ["linkToken", "pollSecret", "expiresAt"],
+    required: ["linkToken", "expiresAt"],
   },
-  DeviceLinkStatusResponseData: {
+  DeviceLinkScanRequest: {
     type: "object",
-    properties: {
-      state: {
-        type: "string",
-        enum: ["PENDING", "APPROVED", "CONSUMED", "EXPIRED"],
-        description:
-          "PENDING = waiting for the signed-in device to scan and approve; APPROVED = approved, tokens returned exactly once; CONSUMED = tokens already delivered (poll again returns this); EXPIRED = 120 s TTL elapsed, call initiate again.",
-      },
-      approvedDeviceLabel: { type: "string", nullable: true },
-      tokens: {
-        nullable: true,
-        allOf: [{ $ref: "#/components/schemas/AuthTokens" }],
-        description: "Returned exactly once when the session is approved.",
-      },
-    },
-    required: ["state", "approvedDeviceLabel", "tokens"],
-  },
-  DeviceLinkApproveRequest: {
-    type: "object",
+    description:
+      "Telegram-style instant login: scanning IS logging in — no separate approve/reject step.",
     properties: {
       linkToken: { type: "string" },
+      appVersion: { type: "string", maxLength: 100, example: "1.4.0" },
       deviceLabel: { type: "string", maxLength: 100, example: "My laptop" },
     },
     required: ["linkToken"],
   },
-  DeviceLinkApproveResponseData: {
+  DeviceLinkScanResponseData: {
     type: "object",
+    allOf: [{ $ref: "#/components/schemas/AuthTokens" }],
     properties: {
       linkedAt: { type: "string", format: "date-time" },
       sessionId: {
         type: "string",
         format: "uuid",
         description:
-          "Session id of the newly-linked device; revoke it via DELETE /auth/sessions/{sessionId} to undo the link.",
+          "Session id of the newly-linked (browser) device; revoke it via DELETE /users/linked-devices/{sessionId} to undo the link.",
       },
     },
-    required: ["linkedAt", "sessionId"],
+    required: [
+      "linkedAt",
+      "sessionId",
+      "accessToken",
+      "refreshToken",
+      "accessTokenExpiresIn",
+      "refreshTokenExpiresIn",
+    ],
   },
   DeleteAccountResponseData: {
     type: "object",
@@ -7760,6 +7986,50 @@ export const openApiSchemas = {
   // ===========================================================================
 
   // --- Private rooms & messages ---
+  ChatPrivateRoomPeerAvatar: {
+    allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+    description:
+      "Nested media object for the peer's avatar — same shape as a community's `avatar` (additive; mirrors `avatarUrl`).",
+  },
+  ChatPrivateRoomPeer: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      displayName: { type: "string" },
+      memberId: { type: "string" },
+      avatar: { $ref: "#/components/schemas/ChatPrivateRoomPeerAvatar" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned download URL (mirrors community's `avatarUrl`).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isDeletedUser: { type: "boolean" },
+      isOnline: { type: "boolean" },
+    },
+    required: [
+      "id",
+      "displayName",
+      "memberId",
+      "avatar",
+      "isDeletedUser",
+      "isOnline",
+    ],
+  },
+  ChatPrivateConversationLastActivity: {
+    type: "object",
+    description:
+      "Normalized last-activity DTO — same {type,userId,username,preview,dateTime} shape as CommunityLastActivity's USER-MESSAGE case.",
+    properties: {
+      type: { type: "string", enum: ["message"] },
+      userId: { type: "string", nullable: true },
+      username: { type: "string" },
+      preview: { type: "string" },
+      dateTime: { type: "integer", format: "int64", description: "Epoch ms." },
+    },
+    required: ["type", "userId", "username", "preview", "dateTime"],
+  },
   ChatPrivateRoom: {
     type: "object",
     properties: {
@@ -7776,11 +8046,207 @@ export const openApiSchemas = {
         description: "Epoch ms.",
       },
       lastMessage: { type: "object", nullable: true },
+      unreadCountByUser: {
+        type: "object",
+        additionalProperties: { type: "integer" },
+        description: "Raw per-participant unread map (internal/back-compat).",
+      },
+      unreadMessageCount: {
+        type: "integer",
+        description:
+          "Caller's own unread count, resolved from unreadCountByUser (community-style single int).",
+      },
+      lastActivityAt: {
+        type: "integer",
+        format: "int64",
+        description:
+          "Epoch ms mirror of lastMessageAt (community-style: always a number).",
+      },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      peer: { $ref: "#/components/schemas/ChatPrivateRoomPeer" },
+      isMuted: { type: "boolean" },
       pinnedCount: { type: "integer" },
       createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
       updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
-    required: ["id", "roomId", "participants", "createdAt", "updatedAt"],
+    required: [
+      "id",
+      "roomId",
+      "participants",
+      "peer",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ChatPrivateRoomDetails: {
+    type: "object",
+    description:
+      "GET /chat/private/rooms/{peerId} — mirrors CommunityData field names wherever applicable " +
+      "(`id`, `avatar`, `isMuted`, `muteUntil`, `createdAt`, `updatedAt`), with private-chat-specific " +
+      "`user`/presence fields nested/added. Timestamps are epoch ms, unlike CommunityData's ISO strings.",
+    properties: {
+      id: {
+        type: "string",
+        description: "roomId — mirrors CommunityData.id.",
+      },
+      roomId: { type: "string" },
+      participants: { type: "array", items: { type: "string" } },
+      peerId: { type: "string" },
+      user: {
+        type: "object",
+        description: "Existing private-chat peer information.",
+        properties: {
+          id: { type: "string" },
+          displayName: { type: "string" },
+          memberId: { type: "string" },
+          isDeletedUser: { type: "boolean" },
+        },
+        required: ["id", "displayName", "memberId", "isDeletedUser"],
+      },
+      avatar: {
+        $ref: "#/components/schemas/MediaObject",
+        description: "Mirrors CommunityData.avatar — the peer's avatar object.",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned URL (mirrors CommunityData.avatarUrl).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isOnline: {
+        type: "boolean",
+        description: "Existing presence field.",
+      },
+      isOffline: {
+        type: "boolean",
+        description:
+          "Negation of isOnline, from the existing presence pipeline.",
+      },
+      isMuted: {
+        type: "boolean",
+        description: "Mirrors CommunityData.isMuted.",
+      },
+      muteUntil: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description:
+          "Epoch ms when the caller's mute expires; null = not muted OR muted indefinitely. Mirrors CommunityData.muteUntil.",
+      },
+      unreadMessageCount: { type: "integer" },
+      lastActivityAt: { type: "integer", format: "int64" },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      createdAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms. Mirrors CommunityData.createdAt.",
+      },
+      updatedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms. Mirrors CommunityData.updatedAt.",
+      },
+    },
+    required: [
+      "id",
+      "roomId",
+      "participants",
+      "peerId",
+      "user",
+      "avatar",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "isOnline",
+      "isOffline",
+      "isMuted",
+      "muteUntil",
+      "unreadMessageCount",
+      "lastActivityAt",
+      "lastActivity",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ChatPrivateConversationListItem: {
+    type: "object",
+    description:
+      "GET /chat/private/conversations list item — lean, community-list-style shape. The peer's fields " +
+      "are flattened directly onto the item (no nested `peer` object). Internal per-user maps and " +
+      "redundant raw fields (lastMessage, lastMessageAt, id, createdAt/updatedAt, pinnedCount) are not " +
+      "included.",
+    properties: {
+      roomId: { type: "string" },
+      participants: {
+        type: "array",
+        items: { type: "string" },
+      },
+      peerId: { type: "string" },
+      displayName: { type: "string" },
+      memberId: { type: "string" },
+      avatar: { $ref: "#/components/schemas/ChatPrivateRoomPeerAvatar" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned download URL (mirrors community's `avatarUrl`).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isDeletedUser: { type: "boolean" },
+      isOnline: { type: "boolean" },
+      isOffline: {
+        type: "boolean",
+        description:
+          "Negation of isOnline, from the same real-time presence pipeline as conv:updated's isOffline.",
+      },
+      unreadMessageCount: {
+        type: "integer",
+        description:
+          "Caller's own unread count, resolved from unreadCountByUser (community-style single int).",
+      },
+      lastActivityAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms — never an ISO string.",
+      },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      isMuted: { type: "boolean" },
+    },
+    required: [
+      "roomId",
+      "participants",
+      "peerId",
+      "displayName",
+      "memberId",
+      "avatar",
+      "isDeletedUser",
+      "isOnline",
+      "isOffline",
+      "unreadMessageCount",
+      "lastActivityAt",
+      "lastActivity",
+      "isMuted",
+    ],
+  },
+  ChatPrivateConversationListData: {
+    type: "object",
+    description:
+      "Response envelope for GET /chat/private/conversations — same {pagination,data} shape as " +
+      "MyCommunitiesResponseData (no top-level hasMore/nextCursor duplicates — only nested under `pagination`).",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatPrivateConversationListItem" },
+      },
+    },
+    required: ["pagination", "data"],
   },
   ChatPrivateRoomList: {
     type: "array",
@@ -8285,6 +8751,15 @@ export const openApiSchemas = {
         type: "integer",
         format: "int64",
         description: "Epoch ms.",
+      },
+      isAvailable: {
+        type: "boolean",
+        description:
+          "Whether the pinned message still exists (not deleted-for-everyone). " +
+          "Present on the private- and group-room pins lists — lets the banner " +
+          "render a 'pinned-but-deleted' state (tap does not navigate) using the " +
+          "frozen `contentPinned` snapshot. Mirrors community's embedded " +
+          "`pinnedMessage.isAvailable`. Additive — omitted by older responses.",
       },
     },
     required: ["id", "roomId", "messageId", "pinnedBy", "pinnedAt"],
@@ -10204,30 +10679,6 @@ export const openApiSchemas = {
       hasMore: { type: "boolean" },
     },
     required: ["calls", "nextCursor", "hasMore"],
-  },
-
-  // --- WebRTC ---
-  ChatIceServer: {
-    type: "object",
-    properties: {
-      urls: { type: "array", items: { type: "string" } },
-      username: { type: "string" },
-      credential: { type: "string" },
-      credentialType: { type: "string", enum: ["password", "oauth"] },
-    },
-    required: ["urls"],
-  },
-  ChatRtcConfiguration: {
-    type: "object",
-    properties: {
-      iceServers: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ChatIceServer" },
-      },
-      iceCandidatePoolSize: { type: "integer", example: 10 },
-      iceTransportPolicy: { type: "string", enum: ["all", "relay"] },
-    },
-    required: ["iceServers", "iceCandidatePoolSize", "iceTransportPolicy"],
   },
 
   // --- Message reactions ---

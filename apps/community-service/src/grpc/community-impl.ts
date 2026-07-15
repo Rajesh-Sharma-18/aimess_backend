@@ -765,6 +765,109 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
     })();
   },
 
+  // chat-service's private-message `systemAction` card: for each
+  // (communityId, code) pair on a COMMUNITY_INVITATION system message, resolve
+  // whether the community still exists, its live name/handle, whether the
+  // caller already joined, and whether the code is still usable. Batched
+  // (Promise.all over the small per-page query list) so a history page with
+  // several invite cards costs one gRPC round trip, not one per card.
+  getCommunityInviteContexts: (
+    call: grpc.ServerUnaryCall<unknown, unknown>,
+    callback: grpc.sendUnaryData<unknown>
+  ) => {
+    void (async () => {
+      try {
+        const req = call.request as {
+          userId?: string;
+          queries?: { communityId?: string; code?: string }[];
+        };
+        const userId = (req.userId ?? "").trim();
+        const queries = req.queries ?? [];
+
+        const contexts = await Promise.all(
+          queries.map(async (q) => {
+            const communityId = (q.communityId ?? "").trim();
+            const code = (q.code ?? "").trim();
+            if (!communityId) {
+              return {
+                communityId,
+                found: false,
+                communityName: "",
+                communityHandle: "",
+                isMember: false,
+                linkStatus: "DELETED",
+              };
+            }
+
+            const community = await communityRepository.findById(communityId);
+            if (!community) {
+              return {
+                communityId,
+                found: false,
+                communityName: "",
+                communityHandle: "",
+                isMember: false,
+                linkStatus: "DELETED",
+              };
+            }
+
+            const [membership, link] = await Promise.all([
+              userId
+                ? communityRepository.findMembership(communityId, userId)
+                : Promise.resolve(null),
+              code
+                ? communityRepository.findInviteLinkByCode(code)
+                : Promise.resolve(null),
+            ]);
+            const isMember =
+              membership?.status === CommunityMemberStatus.ACTIVE;
+
+            // Same three checks as `assertInviteLinkActive`/`toInviteLinkData`'s
+            // `isActive` in community.service.ts, expressed as a status string
+            // instead of a throw/boolean — no code with an ephemeral link row
+            // uses a permanent code, so the branches are mutually exclusive.
+            let linkStatus: "ACTIVE" | "EXPIRED" | "REVOKED" | "DELETED" =
+              "ACTIVE";
+            if (code) {
+              if (link) {
+                if (link.revokedAt) linkStatus = "REVOKED";
+                else if (
+                  link.expiresAt &&
+                  link.expiresAt.getTime() <= Date.now()
+                )
+                  linkStatus = "EXPIRED";
+                else if (
+                  link.maxUses !== null &&
+                  link.usedCount >= link.maxUses
+                )
+                  linkStatus = "REVOKED";
+                else linkStatus = "ACTIVE";
+              } else if (community.invitationCode === code) {
+                linkStatus = "ACTIVE"; // permanent code — never expires
+              } else {
+                linkStatus = "REVOKED"; // no longer matches anything live
+              }
+            }
+
+            return {
+              communityId,
+              found: true,
+              communityName: community.name,
+              communityHandle: community.handle,
+              isMember,
+              linkStatus,
+            };
+          })
+        );
+
+        callback(null, { contexts });
+      } catch (err) {
+        logger.error("getCommunityInviteContexts gRPC handler failed", err);
+        callback(null, { contexts: [] });
+      }
+    })();
+  },
+
   /**
    * Synchronous companion to the async `community.activity.queue`
    * "reaction_added"/"reaction_removed" event — see the proto doc. Delegates
@@ -1220,7 +1323,8 @@ export const communityImpl: grpc.UntypedServiceImplementation = {
         const sortField =
           req.sortField === "username" ||
           req.sortField === "handle" ||
-          req.sortField === "joinedAt"
+          req.sortField === "joinedAt" ||
+          req.sortField === "role"
             ? req.sortField
             : undefined;
 

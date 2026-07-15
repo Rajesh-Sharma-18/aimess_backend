@@ -74,7 +74,7 @@ async function toListItem(row: AuditLogWithActor): Promise<AuditLogListItem> {
     action: row.action,
     targetType: row.targetType,
     targetId: row.targetId,
-    createdAt: row.createdAt.toISOString(),
+    createdAt: row.createdAt.getTime(),
   };
 }
 
@@ -85,7 +85,7 @@ async function toDetail(row: AuditLogWithActor): Promise<AuditLogDetail> {
     action: row.action,
     targetType: row.targetType,
     targetId: row.targetId,
-    createdAt: row.createdAt.toISOString(),
+    createdAt: row.createdAt.getTime(),
     reason: extractReason(row),
     metadata: {
       before: row.before ?? null,

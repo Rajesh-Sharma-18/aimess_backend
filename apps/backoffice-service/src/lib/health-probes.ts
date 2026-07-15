@@ -7,29 +7,24 @@ import { prisma } from "../config/prisma.js";
 import { redis } from "../config/redis.js";
 import { presignClient } from "../config/storage.js";
 import { env } from "../config/env.js";
-import {
-  authClient,
-  getUserCountsBreaker,
-  getActiveUserCountsBreaker,
-} from "../grpc/auth.client.js";
-import {
-  communityClient,
-  getCommunityCountBreaker,
-} from "../grpc/community.client.js";
-import { chatClient, getGroupCountBreaker } from "../grpc/chat.client.js";
 import type {
   InfraHealth,
   ServiceHealth,
 } from "../types/system-health.types.js";
+import type { InfraProbeDef, ServiceProbeDef } from "./health-registry.js";
 
 /**
- * Live health probes for the System Health dashboard. Every probe is BOUNDED
- * (per-probe timeout) and NON-THROWING — it resolves to a normalized health row
- * even on failure/timeout — so one down dependency can never 500 or hang the
- * `/system-health` endpoint. Probes reuse the SAME primitives the readiness
- * probe and the dashboard service-status panel already use (Prisma `SELECT 1`,
- * `redis.ping`, the opossum count breakers, a bounded amqp connect, and an S3
- * HeadBucket) — no new monitoring framework is introduced.
+ * Reusable, framework-free health-probe primitives for the System Health
+ * dashboard. Every probe is BOUNDED (per-probe timeout) and NON-THROWING — it
+ * resolves to a normalized health row even on failure/timeout — so one down
+ * dependency can never 500 or hang the `/system-health` endpoint. Probes reuse
+ * the SAME primitives the readiness probe and the dashboard service-status
+ * panel already use (Prisma `SELECT 1`, `redis.ping`, the opossum count
+ * breakers, a bounded amqp connect, and an S3 HeadBucket).
+ *
+ * This module owns HOW to probe a dependency. WHICH dependencies exist lives
+ * in `src/probes/*.probe.ts`, registered once in `health.bootstrap.ts` — this
+ * file never lists services/infrastructure by name.
  */
 
 /** Wall-clock ceiling for any single probe. Matches the gRPC breaker timeout. */
@@ -66,7 +61,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-const nowIso = (): string => new Date().toISOString();
+const nowMs = (): number => Date.now();
 const round = (ms: number): number => Math.round(ms * 10) / 10;
 
 function noteFrom(err: unknown): string {
@@ -113,7 +108,13 @@ function breakerUptimePercent(breakers: BreakerLike[]): number | null {
   return total === 0 ? null : Math.round((ok / total) * 1000) / 10;
 }
 
-interface MonitoredServiceDef {
+/**
+ * Shape for a service probed live via an existing lightweight gRPC method
+ * (e.g. `getUserCounts`/`getCommunityCount`/`getGroupCount` — the SAME calls
+ * the dashboard overview already issues, no new RPC is added). One of these
+ * is built per service inside its own `src/probes/*.service.probe.ts` file.
+ */
+export interface MonitoredServiceDef {
   key: string;
   name: string;
   breakers: BreakerLike[];
@@ -122,47 +123,22 @@ interface MonitoredServiceDef {
 }
 
 /**
- * Services backoffice can probe live via an existing lightweight gRPC method.
- * The ping methods (`getUserCounts`/`getCommunityCount`/`getGroupCount`) are the
- * SAME calls the dashboard overview already issues — no new RPC is added.
+ * Shape for a service probed via its HTTP `/health` endpoint. Every service in
+ * the monorepo already exposes one (see each app's routes/health.routes.ts,
+ * returns `{status:"ok"}` on 200) — reusing it keeps the probe uniform and
+ * dependency-free (no new gRPC clients). `breaker`/`uptimePercent` stay null
+ * because no backoffice-side circuit backs the call — the ping is the whole
+ * signal.
  */
-const MONITORED_SERVICES: MonitoredServiceDef[] = [
-  {
-    key: "auth",
-    name: "Auth Service",
-    breakers: [
-      getUserCountsBreaker as BreakerLike,
-      getActiveUserCountsBreaker as BreakerLike,
-    ],
-    ping: () => authClient.getUserCounts(),
-  },
-  {
-    key: "community",
-    name: "Community Service",
-    breakers: [getCommunityCountBreaker as BreakerLike],
-    ping: () => communityClient.getCommunityCount(),
-  },
-  {
-    key: "chat",
-    name: "Chat Service",
-    breakers: [getGroupCountBreaker as BreakerLike],
-    ping: () => chatClient.getGroupCount(),
-  },
-];
+export interface HttpMonitoredServiceDef {
+  key: string;
+  name: string;
+  url: string;
+}
 
-/**
- * Services with no backoffice-side probe wired. Listed for completeness so the
- * panel shows the full topology, but `monitored:false` keeps them out of the
- * overall roll-up and the services-up tally (we never fabricate a status).
- */
-const UNMONITORED_SERVICES: Array<{ key: string; name: string }> = [
-  { key: "media", name: "Media Service" },
-  { key: "notification", name: "Notification Service" },
-  { key: "stream", name: "Livestream Service" },
-  { key: "user", name: "User Service" },
-];
-
-async function probeService(def: MonitoredServiceDef): Promise<ServiceHealth> {
+export async function probeService(
+  def: MonitoredServiceDef
+): Promise<ServiceHealth> {
   const start = performance.now();
   let status: ServiceHealth["status"];
   let latencyMs: number;
@@ -187,22 +163,107 @@ async function probeService(def: MonitoredServiceDef): Promise<ServiceHealth> {
     uptimePercent: breakerUptimePercent(def.breakers),
     latencyMs,
     breaker: breakerFlag(def.breakers),
-    lastChecked: nowIso(),
+    lastChecked: nowMs(),
     note,
   };
 }
 
 /**
- * Probe every monitored service concurrently, then append the unmonitored
- * (status `unknown`) rows. Never throws — a rejected probe is coerced to `down`.
+ * Rolling-window uptime% for the HTTP-probed services. No backoffice-side
+ * circuit breaker backs the /health call, so we keep the last N observations
+ * per service key in memory and derive availability as ok/(ok+bad)*100.
+ * ~5s cache × 100 slots ≈ 8min of history — plenty for a live dashboard.
+ * ponytail: in-memory only; a service restart resets to null-until-first-probe.
  */
-export async function probeServices(): Promise<ServiceHealth[]> {
+const HTTP_UPTIME_WINDOW = 100;
+const httpUptimeWindow = new Map<string, boolean[]>();
+function recordHttpProbe(key: string, ok: boolean): number {
+  const arr = httpUptimeWindow.get(key) ?? [];
+  arr.push(ok);
+  if (arr.length > HTTP_UPTIME_WINDOW) arr.shift();
+  httpUptimeWindow.set(key, arr);
+  const good = arr.filter(Boolean).length;
+  return Math.round((good / arr.length) * 1000) / 10;
+}
+
+/**
+ * HTTP `/health` probe — bounded via AbortSignal so it honors PROBE_TIMEOUT_MS.
+ * Any non-2xx or network failure resolves to `down`; a slow-but-2xx response
+ * degrades to `degraded`. Never throws.
+ */
+export async function probeHttpService(
+  def: HttpMonitoredServiceDef
+): Promise<ServiceHealth> {
+  const start = performance.now();
+  let status: ServiceHealth["status"];
+  let latencyMs: number;
+  let note: string | undefined;
+
+  try {
+    const res = await fetch(`${def.url}/health`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    latencyMs = round(performance.now() - start);
+    if (!res.ok) {
+      status = "down";
+      note = `HTTP ${String(res.status)}`;
+    } else {
+      status = latencyMs > SLOW_SERVICE_MS ? "degraded" : "healthy";
+      if (status === "degraded")
+        note = `slow response (${String(latencyMs)}ms)`;
+    }
+  } catch (err) {
+    latencyMs = round(performance.now() - start);
+    status = "down";
+    note = noteFrom(err);
+  }
+
+  const uptimePercent = recordHttpProbe(def.key, status !== "down");
+  return {
+    key: def.key,
+    name: def.name,
+    status,
+    monitored: true,
+    uptimePercent,
+    latencyMs,
+    breaker: null,
+    lastChecked: nowMs(),
+    note,
+  };
+}
+
+/** A registered service with no probe wired yet — visible but unmonitored. */
+function unknownService(def: { key: string; name: string }): ServiceHealth {
+  return {
+    key: def.key,
+    name: def.name,
+    status: "unknown",
+    monitored: false,
+    uptimePercent: null,
+    latencyMs: null,
+    breaker: null,
+    lastChecked: nowMs(),
+  };
+}
+
+/**
+ * Probe every service registered in `entries` (read from
+ * `healthServiceRegistry.getServices()` by the caller) concurrently. Never
+ * throws — a rejected probe is coerced to a `down` row so one down dependency
+ * can never fail the whole /system-health response. A registered service with
+ * no probe is reported `monitored:false`/`unknown` without being called.
+ */
+export async function probeServices(
+  entries: ServiceProbeDef[]
+): Promise<ServiceHealth[]> {
   const settled = await Promise.allSettled(
-    MONITORED_SERVICES.map(probeService)
+    entries.map((e) =>
+      e.probe ? e.probe() : Promise.resolve(unknownService(e))
+    )
   );
-  const monitored: ServiceHealth[] = settled.map((r, i) => {
+  return settled.map((r, i) => {
     if (r.status === "fulfilled") return r.value;
-    const def = MONITORED_SERVICES[i];
+    const def = entries[i];
     return {
       key: def.key,
       name: def.name,
@@ -211,24 +272,10 @@ export async function probeServices(): Promise<ServiceHealth[]> {
       uptimePercent: null,
       latencyMs: null,
       breaker: null,
-      lastChecked: nowIso(),
+      lastChecked: nowMs(),
       note: noteFrom(r.reason),
     };
   });
-
-  const unmonitored: ServiceHealth[] = UNMONITORED_SERVICES.map((s) => ({
-    key: s.key,
-    name: s.name,
-    status: "unknown",
-    monitored: false,
-    uptimePercent: null,
-    latencyMs: null,
-    breaker: null,
-    lastChecked: nowIso(),
-    note: "No backoffice health probe wired — status unknown.",
-  }));
-
-  return [...monitored, ...unmonitored];
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +290,7 @@ function infra(
   latencyMs: number | null,
   note?: string
 ): InfraHealth {
-  return { key, name, status, metrics, latencyMs, lastChecked: nowIso(), note };
+  return { key, name, status, metrics, latencyMs, lastChecked: nowMs(), note };
 }
 
 /** admin_db reachability — the same `SELECT 1` the readiness probe runs. */
@@ -372,26 +419,25 @@ export async function probeObjectStorage(): Promise<InfraHealth> {
   }
 }
 
-/** Probe all four infrastructure components concurrently; never throws. */
-export async function probeInfrastructure(): Promise<InfraHealth[]> {
-  const probes: Array<Promise<InfraHealth>> = [
-    probePostgres(),
-    probeRedis(),
-    probeRabbitMq(),
-    probeObjectStorage(),
-  ];
-  const settled = await Promise.allSettled(probes);
-  const fallbackKeys = ["database", "redis", "message_queue", "object_storage"];
-  return settled.map((r, i) =>
-    r.status === "fulfilled"
-      ? r.value
-      : infra(
-          fallbackKeys[i],
-          fallbackKeys[i],
-          "down",
-          { latencyMs: null },
-          null,
-          noteFrom(r.reason)
-        )
-  );
+/**
+ * Probe every infrastructure dependency registered in `entries` (read from
+ * `healthInfrastructureRegistry.getInfrastructure()` by the caller)
+ * concurrently; never throws.
+ */
+export async function probeInfrastructure(
+  entries: InfraProbeDef[]
+): Promise<InfraHealth[]> {
+  const settled = await Promise.allSettled(entries.map((e) => e.probe()));
+  return settled.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const def = entries[i];
+    return infra(
+      def.key,
+      def.name,
+      "down",
+      { latencyMs: null },
+      null,
+      noteFrom(r.reason)
+    );
+  });
 }

@@ -73,13 +73,6 @@ export interface ChatClient {
     userId: string;
     communityIds: string[];
   }): Promise<CommunityChatSummary[]>;
-  communityCatchup(params: {
-    roomId: string;
-    requesterId: string;
-    sinceId: string;
-    limit: number;
-    sinceTs: number;
-  }): Promise<unknown>;
   reactToCommunityMessage(params: {
     messageId: string;
     communityId: string;
@@ -104,12 +97,6 @@ export interface ChatClient {
     roomId: string;
     userId: string;
   }): Promise<unknown>;
-  markCommunityMessageRead(params: {
-    communityId: string;
-    roomId: string;
-    readerId: string;
-    upToMessageId: string;
-  }): Promise<unknown>;
   getCommunityMessageReactions(params: {
     messageId: string;
     communityId: string;
@@ -122,12 +109,6 @@ export interface ChatClient {
     targetRoomId: string;
     senderId: string;
     clientMessageId: string;
-  }): Promise<unknown>;
-  markCommunityMessageDelivered(params: {
-    communityId: string;
-    roomId: string;
-    recipientId: string;
-    upToMessageId: string;
   }): Promise<unknown>;
   bulkMarkCommunityRead(params: {
     userId: string;
@@ -225,6 +206,32 @@ export interface ChatClient {
     roomId: string;
     deleteType: string;
   }>;
+  communityCatchup(params: {
+    roomId: string;
+    requesterId: string;
+    sinceId: string;
+    limit: number;
+    sinceTs: number;
+  }): Promise<{
+    roomId: string;
+    events: unknown[];
+    hasMore: boolean;
+    lastId: string;
+    authorized: boolean;
+    nextTs: number;
+  }>;
+  markCommunityMessageRead(params: {
+    communityId: string;
+    roomId: string;
+    readerId: string;
+    upToMessageId: string;
+  }): Promise<{ ok: boolean; communityId: string; readAt: number }>;
+  markCommunityMessageDelivered(params: {
+    communityId: string;
+    roomId: string;
+    recipientId: string;
+    upToMessageId: string;
+  }): Promise<{ ok: boolean; communityId: string; deliveredAt: number }>;
 }
 
 export function createChatClient(): ChatClient {
@@ -400,7 +407,12 @@ export function createChatClient(): ChatClient {
       sinceId: string;
       limit: number;
       sinceTs: number;
-    }) => makeGrpcCall<unknown, unknown>(client, "communityCatchup", p)
+    }) =>
+      makeGrpcCall<unknown, Record<string, unknown>>(
+        client,
+        "communityCatchup",
+        p
+      )
   );
   const reactBreaker = makeBreaker(
     "chat.reactToCommunityMessage",
@@ -445,7 +457,11 @@ export function createChatClient(): ChatClient {
       roomId: string;
       readerId: string;
       upToMessageId: string;
-    }) => makeGrpcCall<unknown, unknown>(client, "markCommunityMessageRead", p)
+    }) =>
+      makeGrpcCall<
+        unknown,
+        { ok?: boolean; communityId?: string; readAt?: string | number }
+      >(client, "markCommunityMessageRead", p)
   );
   const getReactionsBreaker = makeBreaker(
     "chat.getCommunityMessageReactions",
@@ -471,7 +487,10 @@ export function createChatClient(): ChatClient {
       recipientId: string;
       upToMessageId: string;
     }) =>
-      makeGrpcCall<unknown, unknown>(client, "markCommunityMessageDelivered", p)
+      makeGrpcCall<
+        unknown,
+        { ok?: boolean; communityId?: string; deliveredAt?: string | number }
+      >(client, "markCommunityMessageDelivered", p)
   );
 
   return {
@@ -621,16 +640,39 @@ export function createChatClient(): ChatClient {
       };
     },
 
-    communityCatchup: (params) => catchupBreaker.fire(params),
+    communityCatchup: async (params) => {
+      const res = await catchupBreaker.fire(params);
+      return {
+        roomId: (res.roomId as string) ?? "",
+        events: (res.events as unknown[]) ?? [],
+        hasMore: Boolean(res.hasMore),
+        lastId: (res.lastId as string) ?? "",
+        authorized: Boolean(res.authorized),
+        nextTs: Number(res.nextTs ?? 0),
+      };
+    },
     reactToCommunityMessage: (params) => reactBreaker.fire(params),
     editCommunityMessage: (params) => editMessageBreaker.fire(params),
     pinCommunityMessage: (params) => pinMessageBreaker.fire(params),
     unpinCommunityMessage: (params) => unpinMessageBreaker.fire(params),
-    markCommunityMessageRead: (params) => markReadBreaker.fire(params),
+    markCommunityMessageRead: async (params) => {
+      const res = await markReadBreaker.fire(params);
+      return {
+        ok: Boolean(res.ok),
+        communityId: res.communityId ?? "",
+        readAt: Number(res.readAt ?? 0),
+      };
+    },
     getCommunityMessageReactions: (params) => getReactionsBreaker.fire(params),
     forwardCommunityMessage: (params) => forwardMessageBreaker.fire(params),
-    markCommunityMessageDelivered: (params) =>
-      markDeliveredBreaker.fire(params),
+    markCommunityMessageDelivered: async (params) => {
+      const res = await markDeliveredBreaker.fire(params);
+      return {
+        ok: Boolean(res.ok),
+        communityId: res.communityId ?? "",
+        deliveredAt: Number(res.deliveredAt ?? 0),
+      };
+    },
   };
 }
 

@@ -23,6 +23,7 @@ jest.mock("../../src/services/index.js", () => {
       updateAdminAccount: jest.fn(),
       activateAdminAccount: jest.fn(),
       deactivateAdminAccount: jest.fn(),
+      updateAdminAccountStatus: jest.fn(),
       listPermissions: jest.fn(),
       getAdminPermissions: jest.fn(),
       updateAdminPermissions: jest.fn(),
@@ -90,6 +91,9 @@ beforeEach(() => {
   svc.deactivateAdminAccount.mockResolvedValue(
     adminDetail({ status: "DISABLED" })
   );
+  svc.updateAdminAccountStatus.mockResolvedValue(
+    adminDetail({ status: "ACTIVE" })
+  );
   svc.listPermissions.mockResolvedValue([
     { key: "dashboard.read", group: "dashboard" },
     { key: "admins.manage", group: "admins" },
@@ -136,6 +140,24 @@ describe("GET /v1/admin-accounts", () => {
     expect(res.status).toBe(400);
   });
 
+  it("forwards fromDate/toDate and sortBy/sortOrder as the combined sort", async () => {
+    await request(app)
+      .get(
+        "/v1/admin-accounts?fromDate=1700000000000&toDate=1800000000000&sortBy=username&sortOrder=asc"
+      )
+      .set(auth());
+    const arg = svc.listAdminAccounts.mock.calls[0][0];
+    expect(arg.fromDate).toBe(1700000000000);
+    expect(arg.toDate).toBe(1800000000000);
+    expect(arg.sort).toBe("name:asc");
+  });
+
+  it("maps status=INACTIVE to the internal DISABLED filter", async () => {
+    await request(app).get("/v1/admin-accounts?status=INACTIVE").set(auth());
+    const arg = svc.listAdminAccounts.mock.calls[0][0];
+    expect(arg.status).toBe("DISABLED");
+  });
+
   it("returns 401 without a token", async () => {
     const res = await request(app).get("/v1/admin-accounts");
     expect(res.status).toBe(401);
@@ -174,6 +196,38 @@ describe("POST /v1/admin-accounts (create)", () => {
       .send({ ...validBody, email: "not-an-email" });
     expect(res.status).toBe(400);
     expect(svc.createAdminAccount).not.toHaveBeenCalled();
+  });
+
+  it("accepts `username` as an alias for `name`", async () => {
+    const { name, ...withoutName } = validBody;
+    const res = await request(app)
+      .post("/v1/admin-accounts")
+      .set(auth())
+      .send({ ...withoutName, username: "New Admin" });
+    expect(res.status).toBe(201);
+    const body = svc.createAdminAccount.mock.calls[0][0];
+    expect(body.name).toBe("New Admin");
+  });
+
+  it("defaults roleKey to ADMIN when omitted", async () => {
+    const { roleKey, ...withoutRole } = validBody;
+    const res = await request(app)
+      .post("/v1/admin-accounts")
+      .set(auth())
+      .send(withoutRole);
+    expect(res.status).toBe(201);
+    expect(svc.createAdminAccount.mock.calls[0][0].roleKey).toBe("ADMIN");
+  });
+
+  it("returns 409 when the username is already taken", async () => {
+    svc.createAdminAccount.mockRejectedValue(
+      new ConflictError("ADMIN_USERNAME_TAKEN")
+    );
+    const res = await request(app)
+      .post("/v1/admin-accounts")
+      .set(auth())
+      .send(validBody);
+    expect(res.status).toBe(409);
   });
 
   it("returns 400 for a weak password", async () => {
@@ -270,6 +324,29 @@ describe("PATCH /v1/admin-accounts/:adminId (update)", () => {
     expect(res.body.data.name).toBe("Renamed");
   });
 
+  it("updates email → 200", async () => {
+    svc.updateAdminAccount.mockResolvedValue(
+      adminDetail({ email: "renamed@aimess.local" })
+    );
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${OTHER_ADMIN}`)
+      .set(auth())
+      .send({ email: "renamed@aimess.local" });
+    expect(res.status).toBe(200);
+    expect(res.body.data.email).toBe("renamed@aimess.local");
+  });
+
+  it("returns 409 when the email is already taken", async () => {
+    svc.updateAdminAccount.mockRejectedValue(
+      new ConflictError("ADMIN_EMAIL_TAKEN")
+    );
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${OTHER_ADMIN}`)
+      .set(auth())
+      .send({ email: "taken@aimess.local" });
+    expect(res.status).toBe(409);
+  });
+
   it("returns 400 with an empty body", async () => {
     const res = await request(app)
       .patch(`/v1/admin-accounts/${OTHER_ADMIN}`)
@@ -364,6 +441,82 @@ describe("POST /v1/admin-accounts/:adminId/deactivate", () => {
       .set(auth());
     expect(res.status).toBe(403);
     expect(svc.deactivateAdminAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /v1/admin-accounts/:adminId/status", () => {
+  it("sets status ACTIVE → 200", async () => {
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${OTHER_ADMIN}/status`)
+      .set(auth())
+      .send({ status: "ACTIVE" });
+    expect(res.status).toBe(200);
+    expect(svc.updateAdminAccountStatus).toHaveBeenCalledWith(
+      OTHER_ADMIN,
+      { status: "ACTIVE" },
+      expect.any(Object),
+      expect.any(Object)
+    );
+  });
+
+  it("sets status INACTIVE → 200", async () => {
+    svc.updateAdminAccountStatus.mockResolvedValue(
+      adminDetail({ status: "DISABLED" })
+    );
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${OTHER_ADMIN}/status`)
+      .set(auth())
+      .send({ status: "INACTIVE" });
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe("DISABLED");
+  });
+
+  it("returns 400 for an invalid status value", async () => {
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${OTHER_ADMIN}/status`)
+      .set(auth())
+      .send({ status: "DISABLED" });
+    expect(res.status).toBe(400);
+    expect(svc.updateAdminAccountStatus).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when deactivating the last Super Admin", async () => {
+    svc.updateAdminAccountStatus.mockRejectedValue(
+      new ConflictError("ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN")
+    );
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${OTHER_ADMIN}/status`)
+      .set(auth())
+      .send({ status: "INACTIVE" });
+    expect(res.status).toBe(409);
+  });
+
+  it("returns 403 when self-deactivating", async () => {
+    svc.updateAdminAccountStatus.mockRejectedValue(
+      new ForbiddenError("ADMIN_CANNOT_DEACTIVATE_SELF")
+    );
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${TEST_ADMIN_ID}/status`)
+      .set(auth())
+      .send({ status: "INACTIVE" });
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 401 without a token", async () => {
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${OTHER_ADMIN}/status`)
+      .send({ status: "ACTIVE" });
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 without admins.manage", async () => {
+    grantPermissions(perms, []);
+    const res = await request(app)
+      .patch(`/v1/admin-accounts/${OTHER_ADMIN}/status`)
+      .set(auth())
+      .send({ status: "ACTIVE" });
+    expect(res.status).toBe(403);
+    expect(svc.updateAdminAccountStatus).not.toHaveBeenCalled();
   });
 });
 

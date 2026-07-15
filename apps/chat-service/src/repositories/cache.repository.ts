@@ -156,6 +156,19 @@ export class CacheRepository {
     return this.redis.get(`presence:user:${userId}`);
   }
 
+  /** Batch presence lookup — same `presence:user:<id>` keys as {@link getUserPresence}, one round trip. */
+  async getUserPresences(
+    userIds: string[]
+  ): Promise<Map<string, string | null>> {
+    const map = new Map<string, string | null>();
+    if (!userIds.length) return map;
+    const values = await this.redis.mget(
+      ...userIds.map((id) => `presence:user:${id}`)
+    );
+    userIds.forEach((id, i) => map.set(id, values[i] ?? null));
+    return map;
+  }
+
   async setLastSeen(userId: string, ts: number): Promise<void> {
     // Retain ~30 days so the chat header can show "last seen" long after a user
     // goes offline.
@@ -178,13 +191,14 @@ export class CacheRepository {
 
   async setUserSnapshot(
     userId: string,
-    snapshot: Record<string, unknown>
+    snapshot: Record<string, unknown>,
+    ttlSeconds = 3600
   ): Promise<void> {
     await this.redis.set(
       `user:snapshot:${userId}`,
       JSON.stringify(snapshot),
       "EX",
-      3600 // 1 hour
+      ttlSeconds
     );
   }
 

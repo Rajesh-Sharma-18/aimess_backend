@@ -1040,6 +1040,75 @@ export const userPaths = {
       },
     },
   },
+  "/users/friends/auto-disconnect": {
+    post: {
+      tags: ["Users"],
+      summary: "Auto-disconnect caller from all accepted friends",
+      operationId: "autoDisconnectFriends",
+      description:
+        "Removes (UNFRIENDS) every **ACCEPTED** friendship the authenticated user currently has — the bulk mirror of `DELETE /users/friends/{userId}` applied to all friends at once.\n\n" +
+        "**Idempotency**: calling this endpoint again after all friends are already disconnected returns `totalFriends: 0, friendsDisconnected: 0` — safe to call repeatedly.\n\n" +
+        "**Side effects**: for every removed friendship, a `friend.unfriended` event is published via RabbitMQ (same event manual unfriend publishes) and `friendsCount` is decremented on both user profiles. Private conversations, messages, community memberships, and block relationships are **not** affected — only the friendship rows are removed.",
+      security: [{ bearerAuth: [] }],
+      parameters: [{ $ref: "#/components/parameters/LanguageHeader" }],
+      responses: {
+        "200": {
+          description: "Auto-disconnect summary",
+          content: {
+            "application/json": {
+              schema: {
+                allOf: [
+                  { $ref: "#/components/schemas/ApiSuccessResponse" },
+                  {
+                    type: "object",
+                    properties: {
+                      data: {
+                        type: "object",
+                        required: [
+                          "totalFriends",
+                          "friendsDisconnected",
+                          "friends",
+                        ],
+                        properties: {
+                          totalFriends: {
+                            type: "integer",
+                            description:
+                              "ACCEPTED friendships found for the caller before disconnecting.",
+                            example: 12,
+                          },
+                          friendsDisconnected: {
+                            type: "integer",
+                            description:
+                              "Friendships actually flipped to UNFRIENDED in this call.",
+                            example: 12,
+                          },
+                          friends: {
+                            type: "array",
+                            items: { type: "string", format: "uuid" },
+                            description: "userIds of every friend removed.",
+                          },
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+              example: {
+                success: true,
+                message: "Auto-disconnect completed.",
+                data: {
+                  totalFriends: 12,
+                  friendsDisconnected: 12,
+                  friends: ["660e8400-e29b-41d4-a716-446655440001"],
+                },
+              },
+            },
+          },
+        },
+        "401": unauthorized,
+      },
+    },
+  },
   "/users/friends/{userId}": {
     delete: {
       tags: ["Users"],

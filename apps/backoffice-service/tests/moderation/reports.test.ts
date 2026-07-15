@@ -66,14 +66,16 @@ beforeEach(() => {
     status: "PENDING",
   });
   svc.getReportModerationDetail.mockResolvedValue({
-    report: {
-      id: "RPT-2026-0000001",
-      type: "USER",
-      status: "PENDING",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      reportedUser: null,
-      reporter: null,
-    },
+    id: "RPT-2026-0000001",
+    reportType: "COMMUNITY",
+    reportReason: "Spam Messages",
+    reportMessage: null,
+    reportStatus: "PENDING",
+    createdAt: 1783741146000,
+    updatedAt: 1783741146000,
+    reportedUser: null,
+    reporter: null,
+    communityAdmin: null,
     community: null,
   });
   svc.listReportEvidence.mockResolvedValue(PAGE);
@@ -147,13 +149,14 @@ describe("GET /v1/reports", () => {
 });
 
 describe("GET /v1/reports/:reportId", () => {
-  it("returns 200 with the report and community blocks", async () => {
+  it("returns 200 with the flattened report + community blocks", async () => {
     const res = await request(app)
       .get("/v1/reports/RPT-2026-0000001")
       .set(auth());
     expect(res.status).toBe(200);
-    expect(res.body.data.report.id).toBe("RPT-2026-0000001");
+    expect(res.body.data.id).toBe("RPT-2026-0000001");
     expect(res.body.data.community).toBeNull();
+    expect(res.body.data.communityAdmin).toBeNull();
     expect(res.body.data).not.toHaveProperty("members");
   });
 

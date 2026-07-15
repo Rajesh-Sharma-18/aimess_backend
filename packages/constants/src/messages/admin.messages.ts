@@ -13,7 +13,7 @@ export const ADMIN_MESSAGES = {
   // ── Success ──────────────────────────────────────────────────────────────
   ADMIN_LOGIN_SUCCESS: {
     vi: "Đăng nhập thành công",
-    en: "Signed in successfully.",
+    en: "Login successful.",
   },
   ADMIN_TOKEN_REFRESHED: {
     vi: "Làm mới phiên đăng nhập thành công",
@@ -37,9 +37,20 @@ export const ADMIN_MESSAGES = {
   },
 
   // ── Auth / RBAC / routing guards ──────────────────────────────────────────
+  // Admin login is email-only, unlike the shared AUTH_INVALID_CREDENTIALS key
+  // (used by the regular-user flow, which also accepts a username) — this key
+  // gives the admin panel its own accurate wording without touching that one.
+  ADMIN_INVALID_CREDENTIALS: {
+    vi: "Email hoặc mật khẩu không đúng",
+    en: "Invalid email or password.",
+  },
   ADMIN_ACCOUNT_NOT_ACTIVE: {
     vi: "Tài khoản quản trị không hoạt động",
-    en: "This admin account is not active.",
+    en: "Your account has been disabled. Please contact the super administrator.",
+  },
+  ADMIN_ACCOUNT_DELETED: {
+    vi: "Tài khoản quản trị này không còn tồn tại",
+    en: "Your account is no longer available.",
   },
   ADMIN_FORBIDDEN: {
     vi: "Bạn không có quyền thực hiện thao tác này",
@@ -69,7 +80,7 @@ export const ADMIN_MESSAGES = {
   },
   PASSWORD_SAME_AS_CURRENT: {
     vi: "Mật khẩu mới phải khác mật khẩu hiện tại",
-    en: "New password must be different from your current password.",
+    en: "New password must be different from the current password.",
   },
 
   // ── User moderation ─────────────────────────────────────────────────────────
@@ -127,7 +138,7 @@ export const ADMIN_MESSAGES = {
   // ── Admin Accounts ──────────────────────────────────────────────────────────
   ADMIN_NOT_FOUND: {
     vi: "Không tìm thấy quản trị viên",
-    en: "Admin not found.",
+    en: "Admin account not found.",
   },
   ADMIN_EMAIL_TAKEN: {
     vi: "Email này đã được sử dụng bởi một quản trị viên khác",
@@ -148,6 +159,14 @@ export const ADMIN_MESSAGES = {
   ADMIN_CANNOT_DEACTIVATE_SELF: {
     vi: "Bạn không thể tự vô hiệu hóa tài khoản của mình",
     en: "You cannot deactivate your own account.",
+  },
+  ADMIN_USERNAME_TAKEN: {
+    vi: "Tên đăng nhập này đã được sử dụng bởi một quản trị viên khác",
+    en: "This username is already used by another admin.",
+  },
+  ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN: {
+    vi: "Không thể vô hiệu hóa Super Admin cuối cùng",
+    en: "Cannot deactivate the last remaining Super Admin.",
   },
 } as const satisfies MessageCatalog;
 

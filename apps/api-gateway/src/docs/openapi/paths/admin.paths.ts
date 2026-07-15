@@ -309,7 +309,10 @@ export const adminPaths = {
           "#/components/schemas/AdminTokenResponse"
         ),
         "400": errRes("Validation failed"),
-        "401": errRes("Invalid credentials"),
+        "401": errRes("Invalid email or password (ADMIN_INVALID_CREDENTIALS)"),
+        "403": errRes(
+          "Admin account disabled (ADMIN_ACCOUNT_NOT_ACTIVE) or deleted (ADMIN_ACCOUNT_DELETED)"
+        ),
         "429": errRes("Too many login attempts"),
       },
       "x-implementation-status": "implemented",
@@ -451,24 +454,53 @@ export const adminPaths = {
       },
       "x-implementation-status": "implemented",
     },
+    patch: {
+      tags: [adminTags.authAccount],
+      operationId: "updateAdminProfile",
+      summary: "Update my profile (username, email, avatar)",
+      description:
+        "Self-service profile update for the My Account page. Accepts any " +
+        "subset of `username`, `email`, `avatarObjectKey` (the object key from " +
+        "the shared `/media/upload-url` USER_AVATAR flow; `null` clears the " +
+        "avatar). Response mirrors GET /admin/v1/me. Audited.",
+      security: adminSecurity,
+      requestBody: jsonBody("#/components/schemas/AdminUpdateMeRequest"),
+      responses: {
+        "200": okRes("Profile updated", "#/components/schemas/AdminProfile"),
+        "400": errRes("Validation failed"),
+        "401": errRes("Missing or invalid admin token"),
+        "409": errRes("Email already in use (ADMIN_EMAIL_TAKEN)"),
+      },
+      "x-implementation-status": "implemented",
+    },
   },
-  "/admin/v1/me/password": {
+  "/admin/v1/change-password": {
     patch: {
       tags: [adminTags.authAccount],
       operationId: "changeAdminPassword",
       summary: "Change my password",
       description:
-        PLANNED +
-        "Self-service password change. 🔐 step-up TOTP required (`X-Totp-Code`). Audited.",
+        "Self-service password change. Verifies the current password, applies " +
+        "the admin password policy to the new one (≥6 chars, upper + lower + " +
+        "digit + special), and revokes every OTHER active session (the caller's " +
+        "session stays alive). Audited.",
       security: adminSecurity,
-      parameters: [totpHeaderParam],
       requestBody: jsonBody("#/components/schemas/AdminChangePasswordRequest"),
       responses: {
-        "200": okRes("Password changed", "#/components/schemas/AdminProfile"),
-        "400": errRes("Validation failed or same password"),
-        "401": errRes("Wrong current password / invalid TOTP / missing token"),
+        "200": okRes(
+          "Password changed successfully",
+          "#/components/schemas/AdminChangePasswordResponse"
+        ),
+        "400": errRes(
+          "Wrong current password / same as current / policy failure / confirmation mismatch"
+        ),
+        "401": errRes("Missing, invalid, or expired admin token"),
+        "403": errRes(
+          "Admin account disabled (ADMIN_ACCOUNT_NOT_ACTIVE) or deleted (ADMIN_ACCOUNT_DELETED)"
+        ),
+        "404": errRes("Admin account not found"),
       },
-      "x-implementation-status": "planned",
+      "x-implementation-status": "implemented",
     },
   },
 
@@ -1700,15 +1732,16 @@ export const adminPaths = {
       operationId: "adminGetReport",
       summary: "Get Reports & Moderation Details",
       description:
-        "Aggregate for the admin Reports & Moderation Details page, composed in one call: " +
-        "(1) the report block — id/type/status/createdAt + enriched `reportedUser`/`reporter` " +
-        "(id/username/fullName/avatar); (2) `community` — the Community Report Details block " +
-        "(id/name/avatar/category/reportedDate/`reportedMessage`), null when the report has no " +
-        "associated community; (3) `members` — the community's member list (`items`/`pagination`), " +
-        "reusing the same read-through as GET /admin/v1/communities/{communityId}/members " +
-        "(supports `page`/`limit`/`search`/`role`), null when there is no community. " +
-        "`reportedMessage` is null for non-message-based reports, and only carries the message id " +
-        "(no admin RPC exists yet to fetch message content). Requires `reports.read`.",
+        "Aggregate for the admin Reports & Moderation Details page, composed in one call. " +
+        "`reportType` identifies the reported entity and drives which blocks are returned: " +
+        "`USER` → `reportedUser`; `COMMUNITY` (a reported community member) → " +
+        "`reportedUser`/`community`/`communityAdmin`; `LIVESTREAM` → additionally `livestream`; " +
+        "`MESSAGE` (a reported community message) → additionally `message`. A community is " +
+        "never itself reportable. User objects (`reporter`/`reportedUser`/`communityAdmin`/" +
+        "`livestream.host`) are the standard `{id,fullName,username,avatar}` shape; `avatar` is " +
+        "the standard media object. `message` content/media are best-effort `null` until an " +
+        "admin message-content RPC exists in chat-service. All timestamps are epoch " +
+        "milliseconds. Requires `reports.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -1718,43 +1751,13 @@ export const adminPaths = {
           schema: { type: "string" },
           description: "Public report id, e.g. RPT-2026-0001284.",
         },
-        {
-          name: "page",
-          in: "query",
-          required: false,
-          schema: { type: "integer", minimum: 1, default: 1 },
-          description:
-            "Community member list page (ignored when the report has no community).",
-        },
-        {
-          name: "limit",
-          in: "query",
-          required: false,
-          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
-          description: "Community member list page size.",
-        },
-        {
-          name: "search",
-          in: "query",
-          required: false,
-          schema: { type: "string" },
-          description:
-            "Community member search by username, display name, or exact userId.",
-        },
-        {
-          name: "role",
-          in: "query",
-          required: false,
-          schema: { type: "string", enum: ["ADMIN", "MODERATOR", "MEMBER"] },
-          description: "Filter the community member list by role.",
-        },
       ],
       responses: {
         "200": okRes(
           "Reports & Moderation Details",
           "#/components/schemas/AdminReportModerationDetail"
         ),
-        "400": errRes("Validation failed (bad page/limit/role)"),
+        "400": errRes("Validation failed (bad reportId)"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing reports.read"),
         "404": errRes("Report not found"),
@@ -1881,6 +1884,121 @@ export const adminPaths = {
           "Related reports",
           "#/components/schemas/AdminModerationRelatedReport"
         ),
+        "401": errRes("Unauthorized"),
+        "403": errRes("Missing reports.read"),
+        "404": errRes("Report not found"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/reports/{reportId}/users": {
+    get: {
+      tags: [adminTags.reports],
+      operationId: "adminListReportUsers",
+      summary: "List Report Details users",
+      description:
+        "Paginated users list shown at the bottom of the Report Details page. " +
+        "ONE endpoint serving both report kinds — the report's `reportType` " +
+        "selects the source: `COMMUNITY`/`MESSAGE` reports return the reported " +
+        "community's members (via the community-members read path); `LIVESTREAM` " +
+        "reports return the stream's actual viewer sessions. A plain `USER` " +
+        "report (no community/stream context) returns an empty page. Every row " +
+        "is the unified `{userId,username,displayName,avatar,role,joinedAt}` shape " +
+        "(`avatar` is the standard media object; `joinedAt` is epoch ms). " +
+        "`search` (username / display name / user id — case-insensitive, partial, " +
+        "trimmed, empty ignored), `role` filter and `sortBy` " +
+        "(`username`|`joinedAt`|`role`, with `sortOrder` asc/desc) work for BOTH " +
+        "report kinds. COMMUNITY `role` values are `ADMIN`|`MODERATOR`|`MEMBER` " +
+        "(`BANNED` surfaces on rows but is not a filter); LIVESTREAM has no " +
+        "participant-role model, so a viewer's `role` is their community role " +
+        "(`Admin`|`Moderator`|`Member`) and that is what `role`/`sortBy=role` " +
+        "operate on (livestream search/filter/sort run over a bounded candidate " +
+        "set). Unknown/invalid `role` values are ignored. Requires `reports.read`.",
+      security: adminSecurity,
+      parameters: [
+        {
+          name: "reportId",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+          description: "Public report id, e.g. RPT-2026-0001284.",
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+        {
+          name: "search",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Matches username, display name or user id (COMMUNITY reports).",
+        },
+        {
+          name: "role",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description:
+            "Community role filter — ADMIN|MODERATOR|MEMBER (BANNED/other values ignored; not applied to LIVESTREAM reports).",
+        },
+        {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["username", "joinedAt", "role"] },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Report Details users page",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  message: {
+                    type: "string",
+                    example: "Users fetched successfully.",
+                  },
+                  data: {
+                    type: "object",
+                    properties: {
+                      users: {
+                        type: "array",
+                        items: {
+                          $ref: "#/components/schemas/AdminReportUserItem",
+                        },
+                      },
+                      pagination: {
+                        $ref: "#/components/schemas/AdminReportUsersPagination",
+                      },
+                    },
+                    required: ["users", "pagination"],
+                  },
+                },
+                required: ["success", "message", "data"],
+              },
+            },
+          },
+        },
+        "400": errRes("Validation failed"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing reports.read"),
         "404": errRes("Report not found"),
@@ -2078,13 +2196,17 @@ export const adminPaths = {
       description:
         "Paginated, filtered livestreams read LIVE from stream-service over gRPC " +
         "(source of truth — no event-fed read-model). Each row is enriched with " +
-        "community/creator/category/avatars and a report count (admin_db `Report`, " +
-        "type=stream). `search` matches livestream title, community name, OR creator " +
-        "name. Filters: `category` (slug/id), `status` (LIVE/ENDED/SCHEDULED/CANCELLED — " +
-        "SCHEDULED⇄PENDING), `hasReports`, `minReports`, `communityId`, `creatorId`, " +
-        "`dateFrom`/`dateTo`. Sort whitelist: `createdAt|viewerCount|reportCount|duration` " +
-        "with `:asc|:desc` (default `createdAt:desc`). All media fields are full " +
-        "presigned URLs (never object keys). Requires `livestreams.read`.",
+        "community/creator/category/avatars and a report count. `search` is " +
+        "case-insensitive and matches livestream title, community name, community " +
+        "handle, creator username, OR creator full name. Filters: `category` " +
+        "(slug/id/name) OR `categoryId` (id-only alias), `status` (LIVE/ENDED/" +
+        "SCHEDULED/CANCELLED — SCHEDULED⇄PENDING), `reportStatus` " +
+        "(REPORTED=reportCount>0 / NOT_REPORTED=reportCount==0), `hasReports`, " +
+        "`minReports`, `communityId`, `creatorId`, `dateFrom`/`dateTo` (epoch ms). " +
+        "Sort: `sortBy` (createdAt|title|viewerCount|reportCount|duration|status|" +
+        "category|creatorName|communityName) + `sortOrder` (asc|desc) — or the " +
+        "legacy `sort=field:asc|:desc` (default `createdAt:desc`). All media " +
+        "fields are full presigned URLs. Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -2103,9 +2225,24 @@ export const adminPaths = {
           name: "search",
           in: "query",
           required: false,
+          schema: { type: "string", example: "react" },
+          description:
+            "Case-insensitive. Matches livestream title, community name, community handle, creator username, OR creator full name.",
+        },
+        {
+          name: "categoryId",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+          description: "Filter to a single category by id.",
+        },
+        {
+          name: "category",
+          in: "query",
+          required: false,
           schema: { type: "string" },
           description:
-            "Matches livestream title, community name, OR creator name (case-insensitive).",
+            "Legacy alias for categoryId. Matches by slug, id, or name.",
         },
         {
           name: "status",
@@ -2115,6 +2252,17 @@ export const adminPaths = {
             type: "string",
             enum: ["LIVE", "ENDED", "SCHEDULED", "CANCELLED"],
           },
+        },
+        {
+          name: "reportStatus",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["REPORTED", "NOT_REPORTED"],
+          },
+          description:
+            "REPORTED = reportCount > 0. NOT_REPORTED = reportCount == 0. Computed via the reports relation; no new DB field.",
         },
         {
           name: "communityId",
@@ -2133,6 +2281,7 @@ export const adminPaths = {
           in: "query",
           required: false,
           schema: { type: "boolean" },
+          description: "Legacy alias for reportStatus.",
         },
         {
           name: "minReports",
@@ -2141,27 +2290,57 @@ export const adminPaths = {
           schema: { type: "integer", minimum: 0 },
         },
         {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: [
+              "createdAt",
+              "title",
+              "viewerCount",
+              "reportCount",
+              "duration",
+              "status",
+              "category",
+              "creatorName",
+              "communityName",
+            ],
+          },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
+        },
+        {
           name: "sort",
           in: "query",
           required: false,
           schema: {
             type: "string",
             pattern:
-              "^(createdAt|viewerCount|reportCount|duration):(asc|desc)$",
+              "^(createdAt|viewerCount|reportCount|duration|title|status|category|creatorName|communityName):(asc|desc)$",
             default: "createdAt:desc",
           },
+          description: "Legacy `field:dir` form. Prefer sortBy + sortOrder.",
         },
         {
           name: "dateFrom",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date" },
+          schema: { type: "integer", format: "int64", example: 1783600000000 },
+          description:
+            "Inclusive lower bound on createdAt (epoch milliseconds).",
         },
         {
           name: "dateTo",
           in: "query",
           required: false,
-          schema: { type: "string", format: "date" },
+          schema: { type: "integer", format: "int64", example: 1784200000000 },
+          description:
+            "Inclusive upper bound on createdAt (epoch milliseconds).",
         },
       ],
       responses: {
@@ -2414,12 +2593,14 @@ export const adminPaths = {
         "Paginated VIEWER-SESSION HISTORY for this stream (who watched, when they " +
         "joined/left, how long) — read from stream-service's durable " +
         "LivestreamViewerSession records via streamClient.adminListViewerSessions, " +
-        "enriched per row with `no` (page-based sequence number) and `type` " +
-        "(the viewer's CURRENT community role — Admin|Moderator|Member, via a " +
-        "single batched communityClient.adminGetMemberRoles call keyed by the " +
-        "page's userIds; defaults to Member if they've since left the community). " +
-        "This is NOT the community roster — there is no `search` or role/`type` " +
-        "filter on the query; sort only via sortField/sortDir. Requires `livestreams.read`.",
+        "enriched per row with `fullName` (same format as the detail's `creator.displayName` — firstName + lastName, trimmed, username fallback) and " +
+        "`type` (`Host` for the stream creator — always surfaced since the host publishes via SRS/RTMP and never emits `stream:join`; " +
+        "otherwise the viewer's CURRENT community role — Admin|Moderator|Member, " +
+        "via a single batched communityClient.adminGetMemberRoles call keyed by " +
+        "the page's userIds; defaults to Member if they've since left the " +
+        "community). This is NOT the community roster — there is no `search` " +
+        "or role/`type` filter on the query; sort only via sortField/sortDir. " +
+        "Requires `livestreams.read`.",
       security: adminSecurity,
       parameters: [
         {
@@ -3118,7 +3299,7 @@ export const adminPaths = {
       operationId: "adminListAdminAccounts",
       summary: "List admin accounts",
       description:
-        "Paginated, searchable, filtered admin list (admin_db OWN). search matches name OR email. status enum ACTIVE|DISABLED|INVITED|all (default all). roleKey enum or all (default all). Sort whitelist name|email|createdAt|lastLoginAt with :asc|:desc (default createdAt:desc). Requires admins.manage.",
+        "Paginated, searchable, filtered admin list (admin_db OWN). search matches name/username OR email. status enum ACTIVE|DISABLED|INVITED|all, plus the wire alias INACTIVE (maps to DISABLED); default all. roleKey enum or all (default all). fromDate/toDate filter createdAt (epoch ms, inclusive). Sort either via the combined `sort` param (whitelist name|email|createdAt|lastLoginAt|status with :asc|:desc, default createdAt:desc) or via `sortBy`(username|email|createdAt|status)+`sortOrder`(asc|desc) — `sort` wins if both are given. Requires admins.manage.",
       security: adminSecurity,
       parameters: [
         {
@@ -3133,7 +3314,7 @@ export const adminPaths = {
           required: false,
           schema: {
             type: "string",
-            enum: ["ACTIVE", "DISABLED", "INVITED", "all"],
+            enum: ["ACTIVE", "DISABLED", "INVITED", "INACTIVE", "all"],
             default: "all",
           },
         },
@@ -3155,14 +3336,41 @@ export const adminPaths = {
           },
         },
         {
+          name: "fromDate",
+          in: "query",
+          required: false,
+          schema: { type: "integer", description: "Epoch ms, inclusive." },
+        },
+        {
+          name: "toDate",
+          in: "query",
+          required: false,
+          schema: { type: "integer", description: "Epoch ms, inclusive." },
+        },
+        {
           name: "sort",
           in: "query",
           required: false,
           schema: {
             type: "string",
-            pattern: "^(name|email|createdAt|lastLoginAt):(asc|desc)$",
+            pattern: "^(name|email|createdAt|lastLoginAt|status):(asc|desc)$",
             default: "createdAt:desc",
           },
+        },
+        {
+          name: "sortBy",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: ["username", "email", "createdAt", "status"],
+          },
+        },
+        {
+          name: "sortOrder",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: ["asc", "desc"], default: "desc" },
         },
         {
           name: "page",
@@ -3189,7 +3397,7 @@ export const adminPaths = {
       operationId: "adminCreateAdminAccount",
       summary: "Create an admin account",
       description:
-        "Only a SUPER_ADMIN actor may create a SUPER_ADMIN target (else 403 ADMIN_FORBIDDEN). Audited (admin.created). Requires admins.manage.",
+        "Only a SUPER_ADMIN actor may create a SUPER_ADMIN target (else 403 ADMIN_FORBIDDEN). roleKey defaults to ADMIN when omitted. Both email and username must be unique. Audited (admin.created). Requires admins.manage.",
       security: adminSecurity,
       requestBody: jsonBody("#/components/schemas/AdminAccountCreateRequest"),
       responses: {
@@ -3198,7 +3406,7 @@ export const adminPaths = {
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
         "404": errRes("ADMIN_ROLE_NOT_FOUND (defensive)"),
-        "409": errRes("ADMIN_EMAIL_TAKEN"),
+        "409": errRes("ADMIN_EMAIL_TAKEN or ADMIN_USERNAME_TAKEN"),
       },
       "x-implementation-status": "implemented",
     },
@@ -3222,9 +3430,9 @@ export const adminPaths = {
     patch: {
       tags: [adminTags.adminAccounts],
       operationId: "adminUpdateAdminAccount",
-      summary: "Update an admin's profile (name/avatarUrl only)",
+      summary: "Update an admin's profile (username/email/avatarUrl only)",
       description:
-        "Cannot edit an existing SUPER_ADMIN target unless the actor is SUPER_ADMIN. Role changes are NOT accepted here — use .../permissions. Audited (admin.updated). Requires admins.manage.",
+        "Cannot edit an existing SUPER_ADMIN target unless the actor is SUPER_ADMIN, or an already-deleted account. Role changes are NOT accepted here — use .../permissions. New email/username are re-checked for uniqueness. Audited (admin.updated). Requires admins.manage.",
       security: adminSecurity,
       parameters: [idPathParam],
       requestBody: jsonBody("#/components/schemas/AdminAccountUpdateRequest"),
@@ -3233,7 +3441,36 @@ export const adminPaths = {
         "400": errRes("Validation failed"),
         "401": errRes("Unauthorized"),
         "403": errRes("Missing admins.manage or ADMIN_FORBIDDEN"),
-        "404": errRes("ADMIN_NOT_FOUND"),
+        "404": errRes("ADMIN_NOT_FOUND (or account is deleted)"),
+        "409": errRes("ADMIN_EMAIL_TAKEN or ADMIN_USERNAME_TAKEN"),
+      },
+      "x-implementation-status": "implemented",
+    },
+  },
+  "/admin/v1/admin-accounts/{id}/status": {
+    patch: {
+      tags: [adminTags.adminAccounts],
+      operationId: "adminSetAdminAccountStatus",
+      summary: "Activate or deactivate an admin account (unified toggle)",
+      description:
+        "Routes onto the same activate/deactivate logic as the dedicated POST endpoints below — `status: ACTIVE` activates, `status: INACTIVE` deactivates (and immediately revokes all active sessions for the target). 403 ADMIN_CANNOT_DEACTIVATE_SELF if id === actor.id. 409 ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN if the target is the only active SUPER_ADMIN. Audited (admin.activated / admin.deactivated). Requires admins.manage.",
+      security: adminSecurity,
+      parameters: [idPathParam],
+      requestBody: jsonBody("#/components/schemas/AdminAccountStatusRequest"),
+      responses: {
+        "200": okRes(
+          "Admin status updated",
+          "#/components/schemas/AdminAccount"
+        ),
+        "400": errRes("Validation failed"),
+        "401": errRes("Unauthorized"),
+        "403": errRes(
+          "Missing admins.manage, ADMIN_FORBIDDEN, or ADMIN_CANNOT_DEACTIVATE_SELF"
+        ),
+        "404": errRes("ADMIN_NOT_FOUND (or account is deleted)"),
+        "409": errRes(
+          "ADMIN_ALREADY_ACTIVE, ADMIN_ALREADY_INACTIVE, or ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN"
+        ),
       },
       "x-implementation-status": "implemented",
     },

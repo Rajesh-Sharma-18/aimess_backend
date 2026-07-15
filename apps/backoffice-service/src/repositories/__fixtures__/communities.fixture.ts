@@ -34,6 +34,7 @@ import type { MediaObject } from "@aimess/shared-types";
 function fixtureAvatar(url: string | null): MediaObject | null {
   if (!url) return null;
   return {
+    mediaId: null,
     fileId: null,
     objectKey: null,
     fileName: null,
@@ -394,7 +395,7 @@ function buildRow(seed: Seed, index: number): CommunityDetail {
               adminId: MODERATORS[index % MODERATORS.length].adminId,
               name: MODERATORS[index % MODERATORS.length].name,
             },
-            createdAt: seed.closedAt,
+            createdAt: Date.parse(seed.closedAt),
             metadata: { reasonCode: seed.closeReasonCode },
           },
         ]
@@ -413,11 +414,9 @@ function buildRow(seed: Seed, index: number): CommunityDetail {
         `community/avatar/${seed.ownerUserId}/${slug(seed.name)}.png`
       ),
       coverUrl: null,
-      createdAt: seed.createdAt,
+      createdAt: Date.parse(seed.createdAt),
       // Deterministic "last activity" 2 days after creation.
-      lastActivityAt: new Date(
-        new Date(seed.createdAt).getTime() + 2 * 86_400_000
-      ).toISOString(),
+      lastActivityAt: Date.parse(seed.createdAt) + 2 * 86_400_000,
     },
     owner: {
       userId: seed.ownerUserId,
@@ -442,7 +441,7 @@ function buildRow(seed: Seed, index: number): CommunityDetail {
       memberCount: seed.memberCount,
       inviteLinksActive: seed.type === "PRIVATE" ? 1 : 0,
       openReports: isClosed ? 2 : 0,
-      createdAt: seed.createdAt,
+      createdAt: Date.parse(seed.createdAt),
     },
     partial: false,
   };

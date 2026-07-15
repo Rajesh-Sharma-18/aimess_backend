@@ -36,8 +36,8 @@ async function toRow(
     avatar: await resolveAvatarOrNull(r.avatarUrl),
     mutedBy: r.mutedBy,
     reason: r.reason || null,
-    mutedAt: new Date(Number(r.mutedAt)).toISOString(),
-    mutedUntil: mutedUntil > 0 ? new Date(mutedUntil).toISOString() : null,
+    mutedAt: Number(r.mutedAt),
+    mutedUntil: mutedUntil > 0 ? mutedUntil : null,
   };
 }
 

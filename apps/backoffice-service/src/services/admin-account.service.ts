@@ -18,6 +18,7 @@ import type {
   Paginated,
   PermissionCatalogueItem,
   UpdateAdminAccountInput,
+  UpdateAdminAccountStatusInput,
   UpdateAdminPermissionsInput,
 } from "../types/admin-account.types.js";
 import type { RequestAdmin } from "../types/index.js";
@@ -51,9 +52,9 @@ async function toListItem(row: AdminRow): Promise<AdminAccountListItem> {
     avatar: await resolveAvatarOrNull(row.avatarUrl),
     role: { key: row.role.key, name: row.role.name },
     status: row.status as AdminAccountListItem["status"],
-    lastLoginAt: row.lastLoginAt ? row.lastLoginAt.toISOString() : null,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
+    lastLoginAt: row.lastLoginAt ? row.lastLoginAt.getTime() : null,
+    createdAt: row.createdAt.getTime(),
+    updatedAt: row.updatedAt.getTime(),
   };
 }
 
@@ -69,6 +70,13 @@ function assertCanManageRole(actorRole: string, roleKey: string): void {
     actorRole !== ROLE_KEYS.SUPER_ADMIN
   ) {
     throw new ForbiddenError("ADMIN_FORBIDDEN");
+  }
+}
+
+/** Soft-deleted admins are gone in every functional sense — treat them as not found. */
+function assertNotDeleted(status: string): void {
+  if (status === "DELETED") {
+    throw new NotFoundError("ADMIN_NOT_FOUND");
   }
 }
 
@@ -107,6 +115,9 @@ export const adminAccountService = {
 
     const existing = await adminUserRepository.findByEmail(input.email);
     if (existing) throw new ConflictError("ADMIN_EMAIL_TAKEN");
+
+    const existingByName = await adminUserRepository.findByName(input.name);
+    if (existingByName) throw new ConflictError("ADMIN_USERNAME_TAKEN");
 
     const role = await adminUserRepository.findRoleByKey(
       input.roleKey as RoleKey
@@ -156,17 +167,47 @@ export const adminAccountService = {
   ): Promise<AdminAccountDetail> {
     const existing = await adminUserRepository.findById(id);
     if (!existing) throw new NotFoundError("ADMIN_NOT_FOUND");
+    assertNotDeleted(existing.status);
     assertCanManageRole(actor.role, existing.role.key);
 
-    const updated = await adminUserRepository.updateProfile(id, input);
+    if (input.email !== undefined && input.email !== existing.email) {
+      const emailOwner = await adminUserRepository.findByEmail(input.email);
+      if (emailOwner && emailOwner.id !== id) {
+        throw new ConflictError("ADMIN_EMAIL_TAKEN");
+      }
+    }
+    if (input.name !== undefined && input.name !== existing.name) {
+      const nameOwner = await adminUserRepository.findByName(input.name);
+      if (nameOwner && nameOwner.id !== id) {
+        throw new ConflictError("ADMIN_USERNAME_TAKEN");
+      }
+    }
+
+    let updated;
+    try {
+      updated = await adminUserRepository.updateProfile(id, input);
+    } catch (error) {
+      if (isUniqueEmailViolation(error)) {
+        throw new ConflictError("ADMIN_EMAIL_TAKEN");
+      }
+      throw error;
+    }
 
     await auditService.record({
       actorId: actor.id,
       action: AUDIT_ACTIONS.ADMIN_UPDATED,
       targetType: "admin",
       targetId: id,
-      before: { name: existing.name, avatarUrl: existing.avatarUrl },
-      after: { name: updated.name, avatarUrl: updated.avatarUrl },
+      before: {
+        name: existing.name,
+        email: existing.email,
+        avatarUrl: existing.avatarUrl,
+      },
+      after: {
+        name: updated.name,
+        email: updated.email,
+        avatarUrl: updated.avatarUrl,
+      },
       ip: ctx.ip,
       userAgent: ctx.userAgent ?? null,
     });
@@ -182,6 +223,7 @@ export const adminAccountService = {
   ): Promise<AdminAccountDetail> {
     const existing = await adminUserRepository.findById(id);
     if (!existing) throw new NotFoundError("ADMIN_NOT_FOUND");
+    assertNotDeleted(existing.status);
     assertCanManageRole(actor.role, existing.role.key);
 
     if (existing.status === "ACTIVE") {
@@ -227,6 +269,15 @@ export const adminAccountService = {
       throw new ConflictError("ADMIN_ALREADY_INACTIVE");
     }
 
+    if (existing.role.key === ROLE_KEYS.SUPER_ADMIN) {
+      const activeSuperAdmins = await adminUserRepository.countActiveByRoleKey(
+        ROLE_KEYS.SUPER_ADMIN as RoleKey
+      );
+      if (activeSuperAdmins <= 1) {
+        throw new ConflictError("ADMIN_CANNOT_DEACTIVATE_LAST_SUPER_ADMIN");
+      }
+    }
+
     await adminUserRepository.setStatus(id, "DISABLED");
     const updated = await adminUserRepository.findById(id);
     if (!updated) throw new NotFoundError("ADMIN_NOT_FOUND");
@@ -247,6 +298,22 @@ export const adminAccountService = {
     });
 
     return toListItem(updated);
+  },
+
+  /**
+   * Unified status toggle (PATCH .../status — Figma spec). Pure routing onto
+   * activate/deactivate so the guardrails (self, last Super Admin, deleted)
+   * live in exactly one place each.
+   */
+  updateAdminAccountStatus(
+    id: string,
+    input: UpdateAdminAccountStatusInput,
+    actor: RequestAdmin,
+    ctx: AdminAccountRequestContext
+  ): Promise<AdminAccountDetail> {
+    return input.status === "ACTIVE"
+      ? this.activateAdminAccount(id, actor, ctx)
+      : this.deactivateAdminAccount(id, actor, ctx);
   },
 
   /** The full permission catalogue (for building a role/permission picker UI). */

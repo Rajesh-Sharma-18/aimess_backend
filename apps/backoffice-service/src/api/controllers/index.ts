@@ -5,7 +5,7 @@ export {
   resendOtp,
   resetPassword,
 } from "./password-reset.controller.js";
-export { getMe } from "./me.controller.js";
+export { getMe, updateMe, changePassword } from "./me.controller.js";
 export {
   listReports,
   getReportDetails,
@@ -16,6 +16,7 @@ export {
   getReportEvidence,
   getReportHistory,
   getReportRelated,
+  listReportUsers,
 } from "./moderation.controller.js";
 export {
   listLivestreams,
@@ -82,6 +83,7 @@ export {
   updateAdminAccount,
   activateAdminAccount,
   deactivateAdminAccount,
+  updateAdminAccountStatus,
   listPermissions,
   getAdminPermissions,
   updateAdminPermissions,

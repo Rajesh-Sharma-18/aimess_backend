@@ -1,0 +1,40 @@
+# LiveKit self-hosted config. See Docs/calls/CALLS-LIVEKIT.md.
+# Keys injected via env (LIVEKIT_KEYS_YAML) — kept out of source control.
+
+port: 7880
+log_level: info
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  # LOCAL DEV (Docker Desktop, same-machine two-tab testing):
+  # advertise 127.0.0.1 as the media (ICE) address. Docker publishes the UDP
+  # range + TCP 7881 to the host, so the host browser reaches media at
+  # localhost. use_external_ip:true would advertise the machine's PUBLIC IP,
+  # which two tabs on the same box usually can't reach → media never connects
+  # even though signaling does ("connected" but no video/audio).
+  # For real-device / LAN / prod testing, set use_external_ip:true (and remove
+  # node_ip) OR set node_ip to the host LAN IP.
+  use_external_ip: false
+  node_ip: 127.0.0.1
+
+redis:
+  address: redis:6379
+
+# Embedded TURN. TLS/production port config lives in a prod overlay.
+# ponytail: dev mode leaves TURN off — direct/STUN works on same LAN.
+turn:
+  enabled: false
+
+# Webhooks: LiveKit signs each request with the api_key below and POSTs to the
+# gateway. `host.docker.internal` resolves to the Docker host (Windows/mac
+# out of the box; on Linux we set extra_hosts). The gateway's public port
+# defaults to API_GATEWAY_PORT — update the URL if you change it.
+# LIVEKIT_WEBHOOK_URL env override lets non-default gateways receive events.
+webhook:
+  api_key: devkey
+  urls:
+    # api-gateway listens on API_GATEWAY_PORT=3000. host.docker.internal
+    # resolves to the Docker host (Windows/mac out-of-the-box).
+    - http://host.docker.internal:3000/livekit/webhook
