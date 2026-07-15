@@ -191,13 +191,14 @@ export class CacheRepository {
 
   async setUserSnapshot(
     userId: string,
-    snapshot: Record<string, unknown>
+    snapshot: Record<string, unknown>,
+    ttlSeconds = 3600
   ): Promise<void> {
     await this.redis.set(
       `user:snapshot:${userId}`,
       JSON.stringify(snapshot),
       "EX",
-      3600 // 1 hour
+      ttlSeconds
     );
   }
 

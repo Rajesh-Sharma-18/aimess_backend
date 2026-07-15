@@ -22,7 +22,10 @@ import type { PrivateRoomRepository } from "../repositories/private-room.reposit
 import type { PrivateMessageRepository } from "../repositories/private-message.repository.js";
 import type { UserServiceClient } from "../grpc/user.client.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
-import type { UserSnapshotService } from "./user-snapshot.service.js";
+import {
+  resolveDisplayName,
+  type UserSnapshotService,
+} from "./user-snapshot.service.js";
 import type { PresenceService } from "./presence.service.js";
 import type { PrivateRoom } from "../generated/prisma/index.js";
 
@@ -492,7 +495,7 @@ export class PrivateRoomService {
         peerId,
         peer: {
           id: peerId,
-          displayName: (snapshot.displayName as string) || "",
+          displayName: resolveDisplayName(snapshot),
           memberId: (snapshot.memberId as string) || "",
           avatar: avatarMedia,
           avatarUrl:
