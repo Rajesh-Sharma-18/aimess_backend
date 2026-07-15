@@ -3758,12 +3758,16 @@ export const communityService = {
     const removedReason = opts.removedReason ?? "left";
     const auditAction = opts.auditAction ?? "MEMBER_LEFT";
 
+    // Banning resets role to MEMBER in the same write so a banned
+    // MODERATOR/ADMIN can never have their rank silently restored when they
+    // rejoin later — rejoin flows read priorRole off this row.
     const updated = opts.banMeta
       ? await communityRepository.updateMemberStatus(
           communityId,
           targetUserId,
           status,
-          opts.banMeta
+          opts.banMeta,
+          CommunityMemberRole.MEMBER
         )
       : await communityRepository.updateMemberStatus(
           communityId,
