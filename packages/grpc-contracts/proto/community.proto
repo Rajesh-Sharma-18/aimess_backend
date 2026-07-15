@@ -700,6 +700,11 @@ message CommunityCatchupRequest {
   // new messages. Use this after returning from the background for a full
   // mutation sweep. since_ts takes precedence over since_id when both are set.
   int64  since_ts      = 5;
+  // ZERO-LOSS revision cursor (highest precedence). Exclusive lower bound on the
+  // per-room CHANGE revision. When set, the server returns every message whose
+  // revision > since_revision — inserts AND mutations — via the same core as the
+  // REST /changes feed. Feed back the response's last_revision to continue.
+  int64  since_revision = 6;
 }
 message CommunityCatchupEventDto {
   string message_id    = 1;
@@ -719,6 +724,9 @@ message CommunityCatchupEventDto {
   string sync_event_type                       = 12;
   // Current grouped reaction state for this message at the time of catch-up.
   repeated CommunityReactionGroupDto reactions = 13;
+  // ZERO-LOSS CHANGE cursor for this message (Telegram pts). Present in every
+  // catch-up mode; the client tracks the per-room max as its high-water.
+  int64  revision                              = 14;
 }
 message CommunityCatchupResponse {
   string room_id                             = 1;
@@ -729,6 +737,10 @@ message CommunityCatchupResponse {
   // Epoch-ms cursor for since_ts mode — equals the last event's updatedAt.
   // Feed back as the next since_ts to continue paging. Zero in since_id mode.
   int64  next_ts                             = 6;
+  // ZERO-LOSS revision-mode fields (0/false in id/ts modes):
+  int64  room_revision                       = 7; // room's current CHANGE max
+  int64  last_revision                       = 8; // client's new high-water; feed back as since_revision
+  bool   reset_required                      = 9; // since_revision below retention → re-baseline
 }
 
 // ---- Membership check (gateway socket ban gate) ----

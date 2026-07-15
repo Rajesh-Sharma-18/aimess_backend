@@ -304,6 +304,13 @@ model GeneralRoom {
   pinnedCount      Int       @default(0)
   lastPinnedAt     DateTime?
   lastSequence     Int       @default(0)
+  // Zero-loss sync CHANGE cursor (Telegram `pts`). Per-room, strictly monotonic,
+  // bumped on EVERY state change in the room (insert, edit, delete-for-all,
+  // reaction change, pin/unpin, system message) — unlike `lastSequence`, which
+  // is bumped only on message INSERT. Allocated via `allocateRevision`; each
+  // allocation is stamped onto the mutated message's `revision`. See the
+  // `/changes` feed + `community:catchup(sinceRevision)`.
+  lastRevision     Int       @default(0)
   // PUBLIC | PRIVATE — the parent community's visibility, synced from
   // community-service. Drives non-member read access (PUBLIC history is
   // browsable by guests). null = unknown → treated as PRIVATE (fail-closed).
@@ -333,6 +340,12 @@ model GeneralRoomMessage {
   attachments     Json     @default("[]")
   clientMessageId String?
   sequenceNumber  Int      @default(0)
+  // Zero-loss sync CHANGE cursor — the room's `lastRevision` at the time of this
+  // message's most recent state change (insert/edit/delete-for-all/reaction).
+  // Immutable `sequenceNumber` fixes PLACEMENT; mutable `revision` advances to the
+  // room's newest on every change so the `/changes` feed can return an old
+  // message's current state after an edit/delete/reaction. 0 = pre-backfill row.
+  revision        Int      @default(0)
   deletedBy       Json     @default("[]")
   deletedForAll   Boolean  @default(false)
   // Audit trail for delete-for-everyone, mirroring GroupMessage's deletedType/
@@ -370,6 +383,16 @@ model GeneralRoomMessage {
   // _id as the implicit trailing sort key, so this covers the timeline scan.
   @@index([roomId, createdAt(sort: Desc)])
   @@index([roomId, sequenceNumber])
+  // Covering index for the V2 sequence history page (findByRoomIdSeq /
+  // findAroundSeq): equality roomId + deletedForAll, range+sort sequenceNumber.
+  // The plain [roomId, sequenceNumber] above does NOT cover the deletedForAll
+  // equality the seq history $match adds, so without this the seq reads scan.
+  @@index([roomId, deletedForAll, sequenceNumber])
+  // Backs the zero-loss CHANGES feed + community:catchup(sinceRevision):
+  // WHERE roomId=? AND revision > ? ORDER BY revision ASC. Tombstones are
+  // intentionally NOT filtered by the changes query (a delete must replay), so
+  // deletedForAll is excluded from this index — mirrors the updatedAt sync index.
+  @@index([roomId, revision])
   @@index([roomId, systemMessageType, createdAt(sort: Desc)])
   @@index([roomId, visibleToUserId, createdAt(sort: Desc)])
   // Covering index for findByRoomIdTimeline (scroll/history): equality roomId +

@@ -90,6 +90,22 @@ export interface CommunityMemberUnbannedPayload {
 }
 
 /**
+ * Server → client, on the banned user's OWN personal channel (`user:<id>`,
+ * every device). Unlike {@link CommunityMemberRemovedPayload}'s
+ * `community:membership:removed` (which tells the client to DROP the row —
+ * used for kick/leave), a ban must NOT remove the community from the list:
+ * the membership row is kept and the community stays visible. This event
+ * tells every one of the banned user's devices to flip the row to a locked
+ * "banned" state in place (no open, no send, no live updates) instead.
+ */
+export interface CommunityMembershipBannedPayload {
+  communityId: string;
+  userId: string; // who was banned
+  actorId: string;
+  updatedAt: number; // epoch ms
+}
+
+/**
  * Server → client. A member was muted by an admin/moderator (moderation mute —
  * the member can still read/receive but cannot post). Broadcast to the
  * `community:<id>` room (so every member's roster badge flips) AND to the muted

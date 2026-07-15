@@ -312,6 +312,13 @@ export type CommunityListItem = {
    * a user can only broadcast in one community at a time.
    */
   currentUserIsStreaming: boolean;
+  /**
+   * True when the caller's membership is BANNED. The community stays visible
+   * in `mine` for a banned member (membership row is never deleted), but the
+   * client must lock the row to read-only / show a "banned" state — no open,
+   * no send, no live updates. False for every other membership status.
+   */
+  isBanned: boolean;
 };
 
 /**

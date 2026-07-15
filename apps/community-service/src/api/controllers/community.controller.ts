@@ -39,6 +39,7 @@ import type {
   ModerationReasonInput,
   MutedMembersQuery,
   MyCommunitiesQuery,
+  MyCommunitiesV2Query,
   MyInvitesQuery,
   MyJoinRequestsQuery,
   MyReportsQuery,
@@ -196,6 +197,65 @@ export const listMyCommunities = asyncHandler(
       .json(
         new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
       );
+  }
+);
+
+/**
+ * `GET /api/v2/communities/mine` — V2 of {@link listMyCommunities}. The joined
+ * list now pages on an opaque COMPOUND cursor (`"<lastActivityAtMs>_<id>"`)
+ * instead of V1's `before_ts`/`after_ts`, closing the same-millisecond skip/dup
+ * at page edges. Search mode (q/categoryId) is byte-identical to V1.
+ *
+ * Mode inference: q/categoryId present → search (offset); otherwise joined
+ * (cursor). Unlike V1 (which needed a cursor param to enter joined mode), the
+ * V2 default with no params IS the joined newest page — the sidebar's first load.
+ */
+export const listMyCommunitiesV2 = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { cursor, q, categoryId, filter, page, limit } =
+      req.query as unknown as MyCommunitiesV2Query;
+
+    // Search mode only when a search filter is present (matches V1's search mode).
+    if (q != null || categoryId != null) {
+      const result = await communityService.discover(req.auth.userId, {
+        q,
+        categoryId,
+        filter,
+        page,
+        limit,
+        includeJoined: true,
+        includeChatActivity: true,
+      });
+
+      return res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(result, t("COMMUNITY_DISCOVER_FETCHED", req.locale))
+        );
+    }
+
+    // Joined mode: compound-keyset cursor pagination. The cursor is opaque —
+    // EITHER a bare epoch-ms (first page / coarse jump, no tiebreaker) OR the
+    // "<ms>_<id>" nextCursor handed back verbatim. Absent → newest page.
+    let parsedCursor: { ts: Date; id: string } | null = null;
+    if (cursor) {
+      const sep = cursor.indexOf("_");
+      const ms = Number(sep === -1 ? cursor : cursor.slice(0, sep));
+      const id = sep === -1 ? "" : cursor.slice(sep + 1);
+      // A bare-ms cursor has no id tiebreaker; use an all-`f` ObjectId sentinel
+      // so the compound boundary degrades to a pure `lastActivityAt < ms` bound
+      // (every real id sorts strictly below it), matching a first/coarse jump.
+      parsedCursor = { ts: new Date(ms), id: id || "ffffffffffffffffffffffff" };
+    }
+
+    const result = await communityService.listMineV2(req.auth.userId, {
+      cursor: parsedCursor,
+      limit,
+    });
+
+    return res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse(result, t("COMMUNITY_LIST_FETCHED", req.locale)));
   }
 );
 

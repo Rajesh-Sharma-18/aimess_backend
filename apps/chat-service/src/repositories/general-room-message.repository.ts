@@ -159,6 +159,7 @@ export class GeneralRoomMessageRepository {
         attachments: (data.attachments as object) ?? [],
         clientMessageId: (data.clientMessageId as string) ?? null,
         sequenceNumber: (data.sequenceNumber as number) ?? 0,
+        revision: (data.revision as number) ?? 0,
         deletedBy: (data.deletedBy as object) ?? [],
         deletedForAll: (data.deletedForAll as boolean) ?? false,
         reports: (data.reports as object) ?? [],
@@ -177,6 +178,8 @@ export class GeneralRoomMessageRepository {
     triggeredByUserId: string;
     triggeredByName: string;
     sequenceNumber: number;
+    /** Room CHANGE revision for this insert (zero-loss changes feed). */
+    revision?: number;
     fallbackText: string;
     /** When set, the message is PERSONAL: only this user sees it in history. */
     visibleToUserId?: string | null;
@@ -213,6 +216,7 @@ export class GeneralRoomMessageRepository {
         deletedForAll: false,
         reports: [],
         sequenceNumber: params.sequenceNumber,
+        revision: params.revision ?? 0,
       },
     });
   }
@@ -717,6 +721,107 @@ export class GeneralRoomMessageRepository {
   }
 
   /**
+   * V2 sequence keyset history page — the gap-safe counterpart to
+   * `findByRoomIdTimeline`. `sequenceNumber` is a per-room MONOTONIC, UNIQUE
+   * counter (`allocateSequence`), so — unlike the `(createdAt,_id)` timestamp
+   * keyset — it needs no `_id` tiebreaker and no snap-to-millisecond cluster
+   * handling: every message is reachable exactly once and pages can never split
+   * a same-millisecond burst.
+   *
+   * Reuses the EXACT community visibility rules by building on `timelineMatch`
+   * (deletedForAll / deletedBy / visibleToUserId / hidden-system / personal-join
+   * / ban `readCutoff`) and executing through `runTimelinePage` (aggregateRaw →
+   * typed re-fetch → order restore). Only the boundary + sort differ from the
+   * timestamp path. NOTE: this deliberately does NOT copy the private/group
+   * `findByRoomIdSeq` (a typed `findMany` with a `deletedFor`-map filter) — that
+   * simpler filter would drop community's visibleToUserId / system-message /
+   * personal-join rules.
+   *
+   *  - `direction="before"` → older page, newest-first; `sequenceNumber < seq`.
+   *  - `direction="after"`  → newer page, oldest-first; `sequenceNumber > seq`.
+   *  - `seq === null`       → first page (no lower bound), newest-first.
+   *
+   * Over-fetches ONE row to detect `hasMore` exactly (the DB does all filtering,
+   * so the surviving count is authoritative — no early-termination underflow).
+   */
+  async findByRoomIdSeq(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    /** Exclusive boundary; null for the newest page (no lower bound). */
+    seq: number | null;
+    limit: number;
+    viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
+  }): Promise<{ messages: GeneralRoomMessage[]; hasMore: boolean }> {
+    const before = params.direction === "before";
+    const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
+    const latestPersonalJoinMessageId = viewerIsActiveMember
+      ? await this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
+      : null;
+    const match: Record<string, unknown> = this.timelineMatch({
+      roomId: params.roomId,
+      userId: params.userId,
+      viewerIsActiveMember,
+      latestPersonalJoinMessageId,
+      readCutoff: params.readCutoff,
+    });
+    if (params.seq != null) {
+      match.sequenceNumber = before ? { $lt: params.seq } : { $gt: params.seq };
+    }
+
+    const sort = before ? { sequenceNumber: -1 } : { sequenceNumber: 1 };
+    const ordered = await this.runTimelinePage(match, sort, params.limit + 1);
+    const hasMore = ordered.length > params.limit;
+    return { messages: ordered.slice(0, params.limit), hasMore };
+  }
+
+  /**
+   * V2 sequence jump-to-message window — the seq counterpart to
+   * `findAroundDate`. Fetches ~half the limit on each side of the anchor's
+   * `sequenceNumber`, anchor-inclusive on the newer side. Reuses `timelineMatch`
+   * + `runTimelinePage`, so the anchor is correctly omitted when the viewer has
+   * hidden it (deleted-for-me / personal-visibility) while the surrounding window
+   * stays full-size. Returned oldest→newest for `computeSeqAroundCursors`.
+   */
+  async findAroundSeq(params: {
+    roomId: string;
+    userId: string;
+    anchorSeq: number;
+    limit: number;
+    viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
+  }): Promise<GeneralRoomMessage[]> {
+    const half = Math.max(1, Math.floor(params.limit / 2));
+    const viewerIsActiveMember = params.viewerIsActiveMember ?? true;
+    const latestPersonalJoinMessageId = viewerIsActiveMember
+      ? await this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
+      : null;
+    const base = this.timelineMatch({
+      roomId: params.roomId,
+      userId: params.userId,
+      viewerIsActiveMember,
+      latestPersonalJoinMessageId,
+      readCutoff: params.readCutoff,
+    });
+    const [before, anchorAndAfter] = await Promise.all([
+      this.runTimelinePage(
+        { ...base, sequenceNumber: { $lt: params.anchorSeq } },
+        { sequenceNumber: -1 },
+        half
+      ),
+      this.runTimelinePage(
+        { ...base, sequenceNumber: { $gte: params.anchorSeq } },
+        { sequenceNumber: 1 },
+        half + 1
+      ),
+    ]);
+    return [...before.reverse(), ...anchorAndAfter];
+  }
+
+  /**
    * Mongo `$match` for a community conversation page: not deleted-for-all, older
    * than `beforeMs`, and not deleted-for-me by this user. `deletedBy` is a Json
    * array (not a Prisma scalar list), so the per-user exclusion can't use the typed
@@ -1120,11 +1225,16 @@ export class GeneralRoomMessageRepository {
   async updateById(
     _roomId: string,
     messageId: string,
-    reactions: Record<string, unknown[]>
+    reactions: Record<string, unknown[]>,
+    /** Room CHANGE revision for this reaction mutation (zero-loss changes feed). */
+    revision?: number
   ): Promise<GeneralRoomMessage | null> {
     return this.prisma.generalRoomMessage.update({
       where: { id: messageId },
-      data: { reactions: reactions as unknown as Prisma.InputJsonValue },
+      data: {
+        reactions: reactions as unknown as Prisma.InputJsonValue,
+        ...(revision != null ? { revision } : {}),
+      },
     });
   }
 
@@ -1142,26 +1252,36 @@ export class GeneralRoomMessageRepository {
 
   async deleteForAll(
     messageId: string,
-    params?: { deletedType: "SELF_DELETE" | "ADMIN_DELETE"; deletedBy: string }
+    params?: {
+      deletedType?: "SELF_DELETE" | "ADMIN_DELETE";
+      deletedBy?: string;
+      /** Room CHANGE revision for this tombstone (zero-loss changes feed). */
+      revision?: number;
+    }
   ): Promise<GeneralRoomMessage | null> {
     return this.prisma.generalRoomMessage.update({
       where: { id: messageId },
       data: {
         deletedForAll: true,
-        ...(params
+        // Audit fields only when the caller attributes the delete (user action);
+        // system retraction (pin undo) passes only a revision.
+        ...(params?.deletedType
           ? {
               deletedForAllType: params.deletedType,
               deletedForAllAt: new Date(),
               deletedForAllBy: params.deletedBy,
             }
           : {}),
+        ...(params?.revision != null ? { revision: params.revision } : {}),
       },
     });
   }
 
   async editMessage(
     messageId: string,
-    text: string
+    text: string,
+    /** Room CHANGE revision for this edit (zero-loss changes feed). */
+    revision?: number
   ): Promise<GeneralRoomMessage> {
     // `message` is a top-level String field here (community schema), so we edit
     // it directly while pushing the prior text into editHistory.
@@ -1183,6 +1303,7 @@ export class GeneralRoomMessageRepository {
         message: text,
         editedAt: now,
         editHistory: updatedHistory as unknown as Prisma.InputJsonValue,
+        ...(revision != null ? { revision } : {}),
       },
     });
   }
@@ -1374,6 +1495,93 @@ export class GeneralRoomMessageRepository {
     });
 
     return { messages, hasMore };
+  }
+
+  /**
+   * ZERO-LOSS CHANGES FEED — the canonical mutation-aware catch-up query.
+   *
+   * Returns every message whose room CHANGE `revision > sinceRevision`, current
+   * state, ordered `revision ASC`. Unlike the seq history / `after_seq` path
+   * (inserts only, `sequenceNumber > X`), this returns an OLD message's current
+   * state after an edit / reaction / delete-for-all, because a mutation bumps the
+   * row's `revision` to the room's newest even though its `sequenceNumber` never
+   * moves. This is what closes mutation-loss for an offline client.
+   *
+   * Like `findUpdatedAtSince`, tombstones (`deletedForAll=true`) are INCLUDED so a
+   * delete replays; per-user `deletedBy` + PERSONAL visibility are filtered in
+   * memory. Boundary is EXCLUSIVE (`> sinceRevision`) — revision is unique per
+   * change so there's no same-value straddle. Over-fetches by 1 for an exact
+   * `hasMore`.
+   *
+   * `nextRevision` is the MAX revision of the raw page (the +1 over-fetch row
+   * excluded) — NOT the last visible row's. Advancing the client's cursor to it
+   * is safe even when the boundary row was filtered out of `messages` (someone
+   * else's personal line): revision is monotonic, so no visible change is skipped,
+   * and a fully-filtered page still lets the client make progress. `null` when the
+   * page is empty (caught up).
+   */
+  async findByRoomIdRevisionSince(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+    viewerIsActiveMember?: boolean;
+    /** Upper bound for a BANNED viewer — see {@link findUpdatedAtSince}. */
+    readCutoff?: Date | null;
+  }): Promise<{
+    messages: GeneralRoomMessage[];
+    hasMore: boolean;
+    nextRevision: number | null;
+  }> {
+    const [raw, latestPersonalJoinMessageId] = await Promise.all([
+      this.prisma.generalRoomMessage.findMany({
+        where: {
+          roomId: params.roomId,
+          revision: { gt: params.sinceRevision },
+          ...(params.readCutoff
+            ? { createdAt: { lte: params.readCutoff } }
+            : {}),
+          // deletedForAll intentionally NOT filtered — tombstones must replay.
+        },
+        orderBy: { revision: "asc" },
+        take: params.limit + 1,
+      }),
+      (params.viewerIsActiveMember ?? true)
+        ? this.findLatestPersonalJoinMessageId(params.roomId, params.userId)
+        : Promise.resolve(null),
+    ]);
+
+    const hasMore = raw.length > params.limit;
+    const page = raw.slice(0, params.limit);
+    const nextRevision = page.length ? page[page.length - 1]!.revision : null;
+
+    const messages = page.filter((msg) => {
+      const deletedBy = (msg.deletedBy ?? []) as string[];
+      return (
+        !deletedBy.includes(params.userId) &&
+        isVisibleToUser(
+          msg,
+          params.userId,
+          params.viewerIsActiveMember ?? true
+        ) &&
+        isLatestPersonalJoinSessionForUser(
+          msg,
+          params.userId,
+          latestPersonalJoinMessageId
+        )
+      );
+    });
+
+    return { messages, hasMore, nextRevision };
+  }
+
+  /** Current room CHANGE high-water (`lastRevision`) — the client's new cursor. */
+  async getRoomRevision(roomId: string): Promise<number> {
+    const room = await this.prisma.generalRoom.findUnique({
+      where: { id: roomId },
+      select: { lastRevision: true },
+    });
+    return room?.lastRevision ?? 0;
   }
 
   async addReport(

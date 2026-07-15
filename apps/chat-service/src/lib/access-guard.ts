@@ -216,17 +216,17 @@ export function assertCommunityMemberNotMuted(
 }
 
 /**
- * Community read access (Telegram-style): the caller is either an ACTIVE member,
- * a BANNED member (capped to history up to their ban timestamp — see
- * `bannedAtCutoff` below), OR the community is PUBLIC (non-members can read
- * PUBLIC community chat history). For PRIVATE communities, active membership is
- * required.
+ * Community read access: the caller is either an ACTIVE member, or the
+ * community is PUBLIC (non-members can read PUBLIC community chat history).
+ * For PRIVATE communities, active membership is required. A BANNED member is
+ * denied outright — a ban revokes ALL access (open/read/catchup/sync/search/
+ * media), not just writes; the membership row is kept only so the community
+ * stays visible (locked) in their own community list.
  *
  * Returns `{ member: RoomMember | null, canRead: boolean, bannedAtCutoff?: Date }`
- * so callers know if they're a member without a separate query, and — for a
- * banned member — the upper bound every history/sync read must apply so nothing
- * created after the ban is ever returned (Telegram parity: a banned user keeps
- * their pre-ban history, but never sees anything newer, even on rejoin/resync).
+ * so callers know if they're a member without a separate query.
+ * `bannedAtCutoff` is retained in the return shape for call-site compat but is
+ * never populated — no status grants capped-history read anymore.
  *
  * The community visibility (PUBLIC/PRIVATE) is persisted on the GeneralRoom
  * (`communityType`, synced from community-service by the room provisioner, the
@@ -235,8 +235,8 @@ export function assertCommunityMemberNotMuted(
  * never leaks a PRIVATE community's history to a non-member. The room is only
  * loaded for non-members; ACTIVE members short-circuit first.
  *
- * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller is a non-member of
- *   a PRIVATE (or not-yet-synced) community.
+ * @throws ForbiddenError `CHAT_NOT_A_MEMBER` when the caller is BANNED, or is a
+ *   non-member of a PRIVATE (or not-yet-synced) community.
  */
 export async function assertCommunityReadAccess(
   roomRepo: Pick<GeneralRoomRepository, "findRoomById">,
@@ -250,15 +250,11 @@ export async function assertCommunityReadAccess(
 }> {
   const member = await memberRepo.findByRoomAndUser(roomId, userId);
 
-  // Banned members keep read access to their pre-ban history ONLY — every
-  // history/sync call site MUST pass `bannedAtCutoff` through to its query so
-  // nothing created after the ban is ever returned.
+  // Banned: denied outright, even for a PUBLIC community — a ban revokes all
+  // access, so this must NOT fall through to the "PUBLIC non-member" branch
+  // below (an existing-but-banned member is not a "non-member").
   if (member?.status === "banned") {
-    return {
-      member,
-      canRead: true,
-      bannedAtCutoff: member.bannedAt ?? new Date(0),
-    };
+    throw new ForbiddenError("CHAT_NOT_A_MEMBER");
   }
 
   // Active members can always read.

@@ -14,6 +14,44 @@ import {
 import type { CommunityAuditAction } from "../types/community.types.js";
 import { publishCommunityMemberSyncedForChatSafe } from "../messaging/publish-community-chat.js";
 
+/**
+ * The `select` shared by the V1 timestamp `listMineByActivity` and the V2
+ * compound-keyset `listMineByActivityKeyset`. Both MUST return an identical row
+ * shape so the single `enrichMineCommunities` serializer works for either
+ * pagination axis. The caller's own membership role is pulled via the filtered
+ * `members` include (dynamic on `userId`), which is why this is a factory.
+ */
+function mineActivitySelect(userId: string) {
+  return {
+    id: true,
+    name: true,
+    handle: true,
+    type: true,
+    memberCount: true,
+    avatarUrl: true,
+    lastActivityAt: true,
+    lastActivityType: true,
+    lastActivityPreview: true,
+    lastActivityUsername: true,
+    lastActivityUserId: true,
+    lastActivitySelfPreview: true,
+    lastActivityTargetUserId: true,
+    lastActivityTargetPreview: true,
+    lastActivityReactionAt: true,
+    lastActivityReactionActorId: true,
+    lastActivityReactionActorPreview: true,
+    lastActivityReactionTargetId: true,
+    lastActivityReactionTargetPreview: true,
+    createdAt: true,
+    moderationStatus: true,
+    status: true,
+    members: {
+      where: { userId },
+      select: { role: true, status: true },
+    },
+  } satisfies Prisma.CommunitySelect;
+}
+
 export const communityRepository = {
   // ---------------------------------------------------------------------------
   // Categories
@@ -637,6 +675,9 @@ export const communityRepository = {
         // is @default(now()) which only applies on create, so reactivation must
         // set it explicitly.
         joinedAt: new Date(),
+        // Clear any prior manual "remove from list" — a genuine rejoin/re-add
+        // restores visibility (only rejoin/admin re-add may do this).
+        removedAt: null,
         ...snapshot,
       },
       select: {
@@ -808,6 +849,29 @@ export const communityRepository = {
     });
     publishCommunityMemberSyncedForChatSafe({ communityId, userId, status });
     return row;
+  },
+
+  /**
+   * "Remove from my list" — a viewer hiding a non-ACTIVE (BANNED/LEFT)
+   * membership row from their own `mine` list without deleting it (mirrors
+   * chat's `PrivateRoom.deletedFor` pattern). Cleared only by a genuine
+   * rejoin/re-add (see `reactivateMemberWithSnapshot`). Idempotent no-op if
+   * the row is already hidden or doesn't exist.
+   */
+  async markRemovedFromList(communityId: string, userId: string) {
+    // Keeping current change in comment:
+    // await prisma.communityMember.updateMany({
+    //   where: { communityId, userId, removedAt: null },
+    //   data: { removedAt: new Date() },
+    // });
+    await prisma.communityMember.updateMany({
+      where: {
+        communityId,
+        userId,
+        OR: [{ removedAt: null }, { removedAt: { isSet: false } }],
+      },
+      data: { removedAt: new Date() },
+    });
   },
 
   /**
@@ -1025,15 +1089,26 @@ export const communityRepository = {
     const bound =
       params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
 
+    // ACTIVE + BANNED both stay in `mine` — a ban revokes access, not roster
+    // visibility (membership row is kept). A BANNED row disappears only via an
+    // explicit "remove from list" (removedAt) or a genuine rejoin/re-add.
+    // Keeping current change in comment:
+    // const membershipSome = {
+    //   userId: params.userId,
+    //   status: { in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED] },
+    //   removedAt: null,
+    // };
+    const membershipSome = {
+      userId: params.userId,
+      status: {
+        in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
+      },
+      OR: [{ removedAt: null }, { removedAt: { isSet: false } }],
+    };
     const where = {
       deletedAt: { isSet: false },
       lastActivityAt: bound,
-      members: {
-        some: {
-          userId: params.userId,
-          status: CommunityMemberStatus.ACTIVE,
-        },
-      },
+      members: { some: membershipSome },
     };
 
     const [rows, total] = await Promise.all([
@@ -1041,51 +1116,88 @@ export const communityRepository = {
         where,
         orderBy: [{ lastActivityAt: dir }, { id: dir }],
         take: params.limit,
-        select: {
-          id: true,
-          name: true,
-          handle: true,
-          type: true,
-          memberCount: true,
-          avatarUrl: true,
-          lastActivityAt: true,
-          lastActivityType: true,
-          lastActivityPreview: true,
-          lastActivityUsername: true,
-          lastActivityUserId: true,
-          lastActivitySelfPreview: true,
-          // NOTE: previously missing from this select — selectListPreview's
-          // target-branch (role-change/join second viewer) was silently dead
-          // in `listMine` because these were always undefined here. Fixed
-          // alongside adding the reaction-overlay columns below.
-          lastActivityTargetUserId: true,
-          lastActivityTargetPreview: true,
-          lastActivityReactionAt: true,
-          lastActivityReactionActorId: true,
-          lastActivityReactionActorPreview: true,
-          lastActivityReactionTargetId: true,
-          lastActivityReactionTargetPreview: true,
-          createdAt: true,
-          moderationStatus: true,
-          status: true,
-          // At most one row per (communityId, userId) by unique constraint, so
-          // no take needed (Prisma's mongodb provider doesn't support take on a
-          // nested relation read anyway).
-          members: {
-            where: { userId: params.userId },
-            select: { role: true },
-          },
-        },
+        select: mineActivitySelect(params.userId),
       }),
       prisma.community.count({
         where: {
           deletedAt: { isSet: false },
-          members: {
-            some: {
-              userId: params.userId,
-              status: CommunityMemberStatus.ACTIVE,
+          members: { some: membershipSome },
+        },
+      }),
+    ]);
+
+    return { rows, total };
+  },
+
+  /**
+   * V2 counterpart of {@link listMineByActivity}: the caller's ACTIVE
+   * communities, newest-activity first, paged by a gap-safe COMPOUND
+   * `(lastActivityAt, id)` keyset instead of the V1 bare-timestamp bound.
+   *
+   * The V1 method tie-breaks on `id` only in `orderBy`, not in the `where`, so
+   * communities sharing one `lastActivityAt` millisecond can skip/duplicate at a
+   * page edge. Here the `id` tiebreaker is IN the boundary (`$or`), giving a true
+   * total order — every community reachable exactly once. `cursor === null` →
+   * newest page. Same `select`/`total` as V1, so `enrichMineCommunities` serves
+   * both.
+   */
+  async listMineByActivityKeyset(params: {
+    userId: string;
+    /** Compound keyset boundary; null for the newest (first) page. */
+    cursor: { ts: Date; id: string } | null;
+    limit: number;
+  }) {
+    // ACTIVE + BANNED both stay in `mine` (see listMineByActivity for why).
+    // Keeping current change in comment:
+    // const membershipSome = {
+    //   some: {
+    //     userId: params.userId,
+    //     status: { in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED] },
+    //     removedAt: null,
+    //   },
+    // };
+    const membershipSome = {
+      some: {
+        userId: params.userId,
+        status: {
+          in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
+        },
+        OR: [{ removedAt: null }, { removedAt: { isSet: false } }],
+      },
+    };
+
+    // Exclusive compound boundary: strictly-older activity, OR same activity ms
+    // with a strictly-smaller id. Mirrors the (createdAt,_id) keyset used across
+    // the chat/stream services. Newest-first (desc) to match V1's "before" scroll.
+    const boundary: Prisma.CommunityWhereInput = params.cursor
+      ? {
+          OR: [
+            { lastActivityAt: { lt: params.cursor.ts } },
+            {
+              lastActivityAt: params.cursor.ts,
+              id: { lt: params.cursor.id },
             },
-          },
+          ],
+        }
+      : {};
+
+    const where: Prisma.CommunityWhereInput = {
+      deletedAt: { isSet: false },
+      members: membershipSome,
+      ...boundary,
+    };
+
+    const [rows, total] = await Promise.all([
+      prisma.community.findMany({
+        where,
+        orderBy: [{ lastActivityAt: "desc" }, { id: "desc" }],
+        take: params.limit,
+        select: mineActivitySelect(params.userId),
+      }),
+      prisma.community.count({
+        where: {
+          deletedAt: { isSet: false },
+          members: membershipSome,
         },
       }),
     ]);

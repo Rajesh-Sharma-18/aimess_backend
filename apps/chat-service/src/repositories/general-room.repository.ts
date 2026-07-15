@@ -38,6 +38,33 @@ export class GeneralRoomRepository {
     return r.lastSequence;
   }
 
+  /**
+   * Atomically allocate the next per-room CHANGE revision (Telegram `pts`).
+   * Identical atomic-`$inc` + write-conflict-retry pattern as `allocateSequence`,
+   * but on `lastRevision` and bumped on EVERY room state change (insert, edit,
+   * delete-for-all, reaction, pin/unpin, system message) — the caller stamps the
+   * returned value onto the mutated message's `revision`.
+   *
+   * The allocation is intended to be gapless (concurrent writers serialize on the
+   * same GeneralRoom doc → consecutive values). A revision CAN still be burned if
+   * the message write fails after allocation (rare); the changes feed always
+   * returns the room's current `roomRevision`, so a client re-baselines its
+   * high-water on drain and a burned value self-heals (empty catch-up ⇒ advance).
+   * ponytail: allocate-then-write, not a single multi-doc txn — burn window is a
+   * rare no-op for the client; upgrade to a $transaction only if gap-strictness
+   * ever needs to survive mid-write crashes.
+   */
+  async allocateRevision(roomId: string): Promise<number> {
+    const r = await withWriteConflictRetry(() =>
+      this.prisma.generalRoom.update({
+        where: { id: roomId },
+        data: { lastRevision: { increment: 1 } },
+        select: { lastRevision: true },
+      })
+    );
+    return r.lastRevision;
+  }
+
   /** Bulk fetch rooms by id (community-chat summaries enrichment). */
   async findManyByIds(ids: string[]): Promise<GeneralRoom[]> {
     if (!ids.length) return [];

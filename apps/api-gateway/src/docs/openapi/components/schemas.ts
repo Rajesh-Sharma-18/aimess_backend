@@ -5908,6 +5908,11 @@ export const openApiSchemas = {
           "Typed summary of the latest community activity (message, reaction, join, etc.). " +
           "Always present; type='created' when no chat activity has occurred.",
       },
+      isBanned: {
+        type: "boolean",
+        description:
+          "True when the caller's membership is BANNED. The community stays in `mine` (membership is kept, never deleted) but the client must lock the row read-only — no open, no send, no live updates — until unbanned and rejoined.",
+      },
     },
     required: [
       "id",
@@ -5924,6 +5929,7 @@ export const openApiSchemas = {
       "muteUntil",
       "isMemberMuted",
       "memberMutedUntil",
+      "isBanned",
       "streamEnabled",
       "chatEnabled",
       "announcementEnabled",

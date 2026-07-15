@@ -6,9 +6,9 @@ import { makeBreaker, makeGrpcCall, type Breaker } from "@aimess/grpc-utils";
 
 import { env } from "../config/env.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __dir = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
-  __dirname,
+  __dir,
   "../../../../packages/grpc-contracts/proto/user.proto"
 );
 

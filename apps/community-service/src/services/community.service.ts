@@ -19,6 +19,7 @@ import type {
   CommunityMemberJoinedSocketPayload,
   CommunityMemberMutedSocketPayload,
   CommunityMemberRemovedPayload,
+  CommunityMembershipBannedPayload,
   CommunityMemberUnbannedPayload,
   CommunityMemberUnmutedSocketPayload,
   CommunityMemberUpdatedPayload,
@@ -891,12 +892,14 @@ function livestreamFields(liveCount: number): {
   isLive: boolean;
   hasActiveLivestream: boolean;
   liveStreamCount: number;
+  activeLivestreamCount: number;
 } {
   const count = Math.min(Math.max(0, liveCount), MAX_ACTIVE_LIVESTREAMS);
   return {
     isLive: count > 0,
     hasActiveLivestream: count > 0,
     liveStreamCount: count,
+    activeLivestreamCount: count,
   };
 }
 
@@ -1491,6 +1494,146 @@ async function fetchCommunityLiveStreams(
 type CommunityRow = NonNullable<
   Awaited<ReturnType<typeof communityRepository.findById>>
 >;
+
+/** One `/mine` page row — the shared `mineActivitySelect` shape (V1 == V2). */
+type MineActivityRow = Awaited<
+  ReturnType<typeof communityRepository.listMineByActivity>
+>["rows"][number];
+
+/**
+ * Serialize a `/mine` page of raw community rows into `CommunityListItem`s —
+ * the FULL enrichment shared verbatim by V1 (`listMine`, timestamp cursor) and
+ * V2 (`listMineV2`, compound keyset cursor). Only the DB boundary + the emitted
+ * `nextCursor` differ between the two; everything a client actually sees (chat
+ * enrichment, mute/moderation state, live sender names, per-viewer lastActivity
+ * reconciliation, livestream + streaming flags) is produced identically here.
+ */
+async function enrichMineCommunities(
+  userId: string,
+  pageRows: MineActivityRow[]
+): Promise<CommunityListItem[]> {
+  const communityIds = pageRows.map((row) => row.id);
+
+  // Resolve the last-activity sender name from the LIVE member snapshot — the
+  // same fresh source the chat room renders — overriding the denormalized
+  // `lastActivityUsername`, which is frozen at message-send time and goes
+  // stale after a rename (the cause of "<old name>: 📷 Photo" lingering on the
+  // list while the chat shows the new name). Only user-message activities
+  // carry a sender; system lines render sender-less in buildLastActivity.
+  const senderIds = pageRows
+    .map((row) => row.lastActivityUserId)
+    .filter((id): id is string => Boolean(id));
+
+  // Bulk-fetch chat enrichment, notification mute settings, moderation mutes,
+  // live sender names, live status, and whether the caller is already streaming.
+  const [
+    chatMap,
+    muteMap,
+    modMuteMap,
+    senderNameMap,
+    liveCountMap,
+    currentUserIsStreaming,
+  ] = await Promise.all([
+    fetchChatEnrichment(userId, communityIds),
+    loadMuteMap(userId, communityIds),
+    communityRepository.findCallerMutesByCommunityIds(userId, communityIds),
+    communityRepository.getDisplayNamesByUserIds(senderIds),
+    fetchLiveStreamCounts(communityIds),
+    getStreamClient().checkCreatorHasActiveStream(userId),
+  ]);
+
+  return Promise.all(
+    pageRows.map(async (row) => {
+      const avatarView = await communityImageService.resolveViewUrlForClient(
+        row.avatarUrl
+      );
+      const avatar = await buildCommunityImageMedia(row.avatarUrl);
+      const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
+
+      // Per-viewer lastActivity (display-only; the pagination cursor still uses
+      // the stored row.lastActivityAt so community-wide ordering is unchanged).
+      // Two signals reconcile into a base, then the viewer's own "You joined"
+      // personal line overlays when it is genuinely newest:
+      //   - the denormalized community-wide column (rich lifecycle semantics), and
+      //   - chat-service's per-viewer latest-visible message — AUTHORITATIVE when
+      //     the viewer hid the shared last (perUserResolved), else a strictly-
+      //     newer override that repairs missed-ADD lost-event staleness.
+      const columnBase = {
+        lastActivityAt: row.lastActivityAt.getTime(),
+        lastActivity: buildLastActivity({
+          ...row,
+          // Prefer the live member-snapshot name; fall back to the stored
+          // value when the sender has since left every community.
+          lastActivityUsername:
+            (row.lastActivityUserId
+              ? senderNameMap.get(row.lastActivityUserId)
+              : null) ?? row.lastActivityUsername,
+          // Self-referential SYSTEM line (role change / join): the viewer who
+          // IS the subject sees the first-person "You …" preview; everyone
+          // else keeps the third-person text.
+          lastActivityPreview: selectListPreview(row, userId),
+        }),
+      };
+      // Per-viewer base preview:
+      //  - perUserResolved => the viewer HID the community-wide last, so
+      //    chat-service's resolution is AUTHORITATIVE: use their previous-visible
+      //    (real timestamp), or CLEAR to empty when they have hidden everything.
+      //    This never trusts the (now stale-for-them) column.
+      //  - else => the rich column is the base; a strictly-newer chat message
+      //    overrides it (repairs missed-ADD lost-event staleness).
+      const reconciledBase = chat.perUserResolved
+        ? chat.lastMessage
+          ? {
+              lastActivity: chatLastMessageToActivity(chat.lastMessage),
+              lastActivityAt: chat.lastMessage.dateTime,
+            }
+          : emptyLastActivity()
+        : applyChatLastMessageOverlay(columnBase, chat.lastMessage);
+      // Reaction overlay: visible ONLY to the reaction's own actor/target,
+      // and ONLY while it is genuinely newer than everything else above —
+      // see applyReactionOverlay's doc for why this fully replaces the old
+      // "reaction via selectListPreview" mechanism.
+      const reactionOverlaid = applyReactionOverlay(
+        reconciledBase,
+        row,
+        userId
+      );
+      // The viewer's own "You joined the community" personal line still wins
+      // when it is genuinely the newest visible thing (compared against the
+      // base's REAL timestamp — no +1ms inflation can wrongly suppress it).
+      const { lastActivity, lastActivityAt } = applyPersonalLastActivityOverlay(
+        reactionOverlaid,
+        chat.personalLastMessage
+      );
+
+      return {
+        id: row.id,
+        name: row.name,
+        handle: row.handle,
+        type: row.type,
+        memberCount: row.memberCount,
+        memberLimit: COMMUNITY_MEMBER_LIMIT,
+        avatarUrl: avatarView?.url ?? null,
+        avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
+        avatar,
+        role: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
+        isJoined: true,
+        lastActivityAt,
+        unreadMessageCount: chat.unreadMessageCount,
+        lastActivity,
+        ...muteFields(muteMap.get(row.id) ?? null),
+        ...livestreamFields(liveCountMap.get(row.id) ?? 0),
+        currentUserIsStreaming,
+        moderationStatus: row.moderationStatus,
+        status: communityAccessPolicy.deriveStatus(row),
+        isMemberMuted: modMuteMap.has(row.id),
+        memberMutedUntil:
+          modMuteMap.get(row.id)?.mutedUntil?.toISOString() ?? null,
+        isBanned: row.members[0]?.status === CommunityMemberStatus.BANNED,
+      };
+    })
+  );
+}
 
 export const communityService = {
   async listCategories(): Promise<CommunityCategoryData[]> {
@@ -2328,7 +2471,6 @@ export const communityService = {
     const hasMore = rows.length > params.limit;
     const pageRows = rows.slice(0, params.limit);
 
-    const communityIds = pageRows.map((row) => row.id);
     logger.info(
       `[LIVE-SIDEBAR:COMMUNITY] listMine rawPage userId=${userId} direction=${params.direction} ts=${params.ts.toISOString()} limit=${params.limit} rowCount=${pageRows.length} rows=${pageRows
         .map(
@@ -2338,125 +2480,7 @@ export const communityService = {
         .join(",")}`
     );
 
-    // Resolve the last-activity sender name from the LIVE member snapshot — the
-    // same fresh source the chat room renders — overriding the denormalized
-    // `lastActivityUsername`, which is frozen at message-send time and goes
-    // stale after a rename (the cause of "<old name>: 📷 Photo" lingering on the
-    // list while the chat shows the new name). Only user-message activities
-    // carry a sender; system lines render sender-less in buildLastActivity.
-    const senderIds = pageRows
-      .map((row) => row.lastActivityUserId)
-      .filter((id): id is string => Boolean(id));
-
-    // Bulk-fetch chat enrichment, notification mute settings, moderation mutes,
-    // live sender names, live status, and whether the caller is already streaming.
-    const [
-      chatMap,
-      muteMap,
-      modMuteMap,
-      senderNameMap,
-      liveCountMap,
-      currentUserIsStreaming,
-    ] = await Promise.all([
-      fetchChatEnrichment(userId, communityIds),
-      loadMuteMap(userId, communityIds),
-      communityRepository.findCallerMutesByCommunityIds(userId, communityIds),
-      communityRepository.getDisplayNamesByUserIds(senderIds),
-      fetchLiveStreamCounts(communityIds),
-      getStreamClient().checkCreatorHasActiveStream(userId),
-    ]);
-
-    const communities: CommunityListItem[] = await Promise.all(
-      pageRows.map(async (row) => {
-        const avatarView = await communityImageService.resolveViewUrlForClient(
-          row.avatarUrl
-        );
-        const avatar = await buildCommunityImageMedia(row.avatarUrl);
-        const chat = chatMap.get(row.id) ?? EMPTY_CHAT_ENRICHMENT;
-
-        // Per-viewer lastActivity (display-only; the pagination cursor below
-        // still uses the stored row.lastActivityAt so community-wide ordering is
-        // unchanged). Two signals reconcile into a base, then the viewer's own
-        // "You joined" personal line overlays when it is genuinely newest:
-        //   - the denormalized community-wide column (rich lifecycle semantics), and
-        //   - chat-service's per-viewer latest-visible message — AUTHORITATIVE when
-        //     the viewer hid the shared last (perUserResolved), else a strictly-
-        //     newer override that repairs missed-ADD lost-event staleness.
-        const columnBase = {
-          lastActivityAt: row.lastActivityAt.getTime(),
-          lastActivity: buildLastActivity({
-            ...row,
-            // Prefer the live member-snapshot name; fall back to the stored
-            // value when the sender has since left every community.
-            lastActivityUsername:
-              (row.lastActivityUserId
-                ? senderNameMap.get(row.lastActivityUserId)
-                : null) ?? row.lastActivityUsername,
-            // Self-referential SYSTEM line (role change / join): the viewer who
-            // IS the subject sees the first-person "You …" preview; everyone
-            // else keeps the third-person text.
-            lastActivityPreview: selectListPreview(row, userId),
-          }),
-        };
-        // Per-viewer base preview:
-        //  - perUserResolved => the viewer HID the community-wide last, so
-        //    chat-service's resolution is AUTHORITATIVE: use their previous-visible
-        //    (real timestamp), or CLEAR to empty when they have hidden everything.
-        //    This never trusts the (now stale-for-them) column.
-        //  - else => the rich column is the base; a strictly-newer chat message
-        //    overrides it (repairs missed-ADD lost-event staleness).
-        const reconciledBase = chat.perUserResolved
-          ? chat.lastMessage
-            ? {
-                lastActivity: chatLastMessageToActivity(chat.lastMessage),
-                lastActivityAt: chat.lastMessage.dateTime,
-              }
-            : emptyLastActivity()
-          : applyChatLastMessageOverlay(columnBase, chat.lastMessage);
-        // Reaction overlay: visible ONLY to the reaction's own actor/target,
-        // and ONLY while it is genuinely newer than everything else above —
-        // see applyReactionOverlay's doc for why this fully replaces the old
-        // "reaction via selectListPreview" mechanism.
-        const reactionOverlaid = applyReactionOverlay(
-          reconciledBase,
-          row,
-          userId
-        );
-        // The viewer's own "You joined the community" personal line still wins
-        // when it is genuinely the newest visible thing (compared against the
-        // base's REAL timestamp — no +1ms inflation can wrongly suppress it).
-        const { lastActivity, lastActivityAt } =
-          applyPersonalLastActivityOverlay(
-            reactionOverlaid,
-            chat.personalLastMessage
-          );
-
-        return {
-          id: row.id,
-          name: row.name,
-          handle: row.handle,
-          type: row.type,
-          memberCount: row.memberCount,
-          memberLimit: COMMUNITY_MEMBER_LIMIT,
-          avatarUrl: avatarView?.url ?? null,
-          avatarUrlExpiresIn: avatarView?.expiresIn ?? null,
-          avatar,
-          role: row.members[0]?.role ?? CommunityMemberRole.MEMBER,
-          isJoined: true,
-          lastActivityAt,
-          unreadMessageCount: chat.unreadMessageCount,
-          lastActivity,
-          ...muteFields(muteMap.get(row.id) ?? null),
-          ...livestreamFields(liveCountMap.get(row.id) ?? 0),
-          currentUserIsStreaming,
-          moderationStatus: row.moderationStatus,
-          status: communityAccessPolicy.deriveStatus(row),
-          isMemberMuted: modMuteMap.has(row.id),
-          memberMutedUntil:
-            modMuteMap.get(row.id)?.mutedUntil?.toISOString() ?? null,
-        };
-      })
-    );
+    const communities = await enrichMineCommunities(userId, pageRows);
 
     // Inclusive boundary (as specified) → consecutive pages can share the
     // boundary community; clients de-duplicate by id. nextCursor is epoch-ms to
@@ -2479,6 +2503,51 @@ export const communityService = {
     const lastRow = pageRows[pageRows.length - 1];
     const nextCursor =
       hasMore && lastRow ? String(lastRow.lastActivityAt.getTime()) : null;
+
+    return {
+      pagination: {
+        totalData: total,
+        totalPage: Math.ceil(total / params.limit) || 1,
+        currentPage: 1,
+        limit: params.limit,
+        nextCursor,
+        hasMore,
+      },
+      data: communities,
+    };
+  },
+
+  /**
+   * V2 of {@link listMine} for `GET /api/v2/communities/mine`: same enriched
+   * page ({@link enrichMineCommunities}), but paged by a gap-safe COMPOUND
+   * `(lastActivityAt, id)` keyset instead of V1's bare-millisecond bound — so
+   * same-ms communities can no longer skip/duplicate at a page edge. `cursor`
+   * null → newest page; `nextCursor` is the opaque compound `"<ms>_<id>"` the
+   * client feeds straight back as the next `cursor`.
+   */
+  async listMineV2(
+    userId: string,
+    params: { cursor: { ts: Date; id: string } | null; limit: number }
+  ): Promise<PaginatedResponse<CommunityListItem>> {
+    // Over-fetch one extra row so hasMore is exact.
+    const { rows, total } = await communityRepository.listMineByActivityKeyset({
+      userId,
+      cursor: params.cursor,
+      limit: params.limit + 1,
+    });
+
+    const hasMore = rows.length > params.limit;
+    const pageRows = rows.slice(0, params.limit);
+
+    const communities = await enrichMineCommunities(userId, pageRows);
+
+    // Compound exclusive cursor: the id tiebreaker keeps same-ms communities
+    // reachable exactly once (the V1 bare-ms leak this endpoint fixes).
+    const lastRow = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && lastRow
+        ? `${lastRow.lastActivityAt.getTime()}_${lastRow.id}`
+        : null;
 
     return {
       pagination: {
@@ -3821,20 +3890,36 @@ export const communityService = {
           } satisfies CommunityStatsUpdatedPayload
         ),
         // Personal channel — reaches ALL of the removed member's devices,
-        // including those NOT inside the community room. Mirrors leave/ban so
-        // removal on one device drops the community from the list on every
-        // other tab/device in real time.
-        publishChatUserEvent(
-          redis,
-          targetUserId,
-          "community:membership:removed",
-          {
-            communityId,
-            membershipStatus: "REMOVED",
-            reason: removedReason,
-            removedAt: now,
-          }
-        ),
+        // including those NOT inside the community room.
+        // Ban is deliberately NOT a list-removal: the membership row (and the
+        // community) must stay visible in the banned user's list, only
+        // access is revoked. So a ban pushes the distinct
+        // `community:membership:banned` (flip row to locked state in place);
+        // kick/leave keep the existing `community:membership:removed`
+        // (drop the row) on every other tab/device in real time.
+        removedReason === "banned"
+          ? publishChatUserEvent(
+              redis,
+              targetUserId,
+              "community:membership:banned",
+              {
+                communityId,
+                userId: targetUserId,
+                actorId,
+                updatedAt: now,
+              } satisfies CommunityMembershipBannedPayload
+            )
+          : publishChatUserEvent(
+              redis,
+              targetUserId,
+              "community:membership:removed",
+              {
+                communityId,
+                membershipStatus: "REMOVED",
+                reason: removedReason,
+                removedAt: now,
+              }
+            ),
       ]);
     } catch (err) {
       logger.warn(
@@ -3882,8 +3967,31 @@ export const communityService = {
     }
 
     if (membership.status === CommunityMemberStatus.BANNED) {
-      // Banned members are already excluded from "my communities" (ACTIVE-only
-      // filter in listMineByActivity) — nothing left to mutate.
+      // A BANNED membership now stays visible in "my communities" (the ban
+      // only revokes access, per product requirement) — so removing it from
+      // the list is a real, persisted action: mark the row removedAt so it's
+      // excluded going forward, and mirror the drop across every one of the
+      // caller's devices via the same personal-channel event used for
+      // kick/leave. Never auto-restored — only a genuine rejoin/admin
+      // re-add clears removedAt (see reactivateMemberWithSnapshot).
+      await communityRepository.markRemovedFromList(community.id, callerId);
+      try {
+        await publishChatUserEvent(
+          redis,
+          callerId,
+          "community:membership:removed",
+          {
+            communityId: community.id,
+            membershipStatus: "REMOVED",
+            reason: "left",
+            removedAt: Date.now(),
+          }
+        );
+      } catch (err) {
+        logger.warn(
+          `community list-removal broadcast failed community=${community.id} user=${callerId}: ${String(err)}`
+        );
+      }
       return "REMOVED";
     }
 
@@ -3905,7 +4013,9 @@ export const communityService = {
   /**
    * Delete a single community from the CALLER's own account/list only — never
    * touches other members. Active member → same removal as leaveCommunity.
-   * Banned member → silent no-op success (already hidden from their list).
+   * Banned member → persists a per-user list-hide (removedAt) so the row
+   * disappears without touching the (BANNED) membership row or the
+   * community; never auto-restored on unban — only rejoin/admin re-add does.
    * Admin/owner → rejected; they must transfer ownership or use the admin
    * delete flow.
    */

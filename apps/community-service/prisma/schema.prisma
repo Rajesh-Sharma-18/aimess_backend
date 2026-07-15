@@ -177,6 +177,11 @@ model CommunityMember {
   bannedAt    DateTime?
   bannedBy    String?
   banReason   String?
+  // Set when the viewer manually removes this community from their own list
+  // while not ACTIVE (BANNED or LEFT) — Telegram-style "delete for me" on the
+  // roster row. Never cleared automatically; only a fresh join (new ACTIVE
+  // row via rejoin/admin re-add) restores visibility. Excluded from `mine`.
+  removedAt   DateTime?
   joinedAt    DateTime              @default(now())
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt

@@ -247,6 +247,122 @@ export class CommunityMessageController {
       .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
   });
 
+  /**
+   * V2 — `GET /api/v2/chat/community/rooms/:roomId/messages`. Replaces V1's
+   * timestamp cursor with the gap-safe `sequenceNumber` keyset (the exact seq
+   * contract private/group already expose). Precedence: `around` (jump-to-message)
+   * → `before_seq`/`after_seq` (older/newer page) → newest page (no cursor).
+   * Response envelope is identical to V1 (same `buildTimelineResponse` /
+   * `buildAroundResponse` + `pinnedMessage`); only the cursor axis changed.
+   */
+  getMessagesV2 = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const limit = Number(req.query.limit) || 30;
+    const around = req.query.around as string | undefined;
+
+    if (around) {
+      const {
+        items,
+        total,
+        hasMoreOlder,
+        hasMoreNewer,
+        olderCursor,
+        newerCursor,
+      } = await this.service.getMessagesAroundV2({
+        roomId,
+        userId,
+        messageId: around,
+        limit,
+      });
+      const paginated = buildAroundResponse(
+        items as unknown as Record<string, unknown>[],
+        total,
+        limit,
+        { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
+      );
+      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+      res
+        .status(HTTP_STATUS.OK)
+        .json(
+          new ApiResponse(
+            { ...paginated, pinnedMessage },
+            items.length
+              ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+              : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
+          )
+        );
+      return;
+    }
+
+    // Seq keyset: before_seq → older (sequenceNumber < seq, newest-first);
+    // after_seq → newer (> seq, oldest-first); neither → newest page (seq null).
+    const beforeSeq =
+      req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
+    const afterSeq =
+      req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
+    const direction = afterSeq != null ? "after" : "before";
+    const seq = afterSeq ?? beforeSeq ?? null;
+
+    const result = await this.service.getMessagesSeqV2({
+      roomId,
+      userId,
+      direction,
+      seq,
+      limit,
+    });
+    const paginated = buildTimelineResponse(
+      result.items as unknown as Record<string, unknown>[],
+      result.total,
+      limit,
+      result.hasMore,
+      result.nextCursor
+    );
+    const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+    const msg = paginated.data.length
+      ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+      : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
+  });
+
+  /**
+   * V2 — `GET /api/v2/chat/community/rooms/:roomId/changes` — the ZERO-LOSS
+   * changes feed. Returns every message whose room CHANGE `revision >
+   * since_revision` (inserts AND edits/deletes/reactions), current state, ordered
+   * revision ASC, plus `roomRevision` (new high-water), `resetRequired` (deep-gap
+   * re-baseline), `pinnedMessage`, and a `nextRevisionCursor` to drain. This is
+   * what closes mutation-loss that V2 `after_seq` (inserts only) can't.
+   */
+  getChanges = asyncHandler(async (req: Request, res: Response) => {
+    const { userId } = req.auth;
+    const roomId = req.params.roomId as string;
+    const sinceRevision = Number(req.query.since_revision) || 0;
+    const limit = Number(req.query.limit) || 100;
+
+    const [result, pinnedMessage] = await Promise.all([
+      this.service.getChanges({ roomId, userId, sinceRevision, limit }),
+      this.pinService.getActivePinSummary(roomId),
+    ]);
+
+    res.status(HTTP_STATUS.OK).json(
+      new ApiResponse(
+        {
+          roomRevision: result.roomRevision,
+          resetRequired: result.resetRequired,
+          pinnedMessage,
+          hasMore: result.hasMore,
+          nextRevisionCursor: result.nextRevisionCursor,
+          data: result.items,
+        },
+        result.items.length
+          ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
+          : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
+      )
+    );
+  });
+
   getConversation = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
@@ -329,6 +445,8 @@ export class CommunityMessageController {
         result.editedAt instanceof Date
           ? result.editedAt.getTime()
           : Date.now(),
+      // Zero-loss CHANGE cursor for live gap detection.
+      revision: (result as unknown as { revision?: number }).revision ?? 0,
     };
     await this.redis.publish(
       `community:${result.roomId}`,
@@ -396,6 +514,8 @@ export class CommunityMessageController {
             messageId: result.messageId,
             communityId: result.roomId,
             reactions: result.reactions,
+            // Zero-loss CHANGE cursor for live gap detection.
+            revision: result.revision,
           },
         })
       )
@@ -623,10 +743,22 @@ export class CommunityMessageController {
           }
         : {}),
     });
+    // delete-for-everyone bumps the room CHANGE revision (delete-for-me is a
+    // per-user view state and MUST NOT — §8). Carry revision only in that case.
+    const deletedEvent =
+      type === "forEveryone"
+        ? {
+            ...tombstone,
+            revision: (result as { revision?: number }).revision ?? 0,
+          }
+        : tombstone;
     if (result?.roomId) {
       await this.redis.publish(
         `community:${result.roomId}`,
-        JSON.stringify({ event: "community:message:deleted", data: tombstone })
+        JSON.stringify({
+          event: "community:message:deleted",
+          data: deletedEvent,
+        })
       );
     }
 

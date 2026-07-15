@@ -799,16 +799,19 @@ describe("assertCommunityReadAccess", () => {
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
 
-  it("allows a BANNED user to read, capped to their ban timestamp (Telegram parity), even when the community is PUBLIC", async () => {
-    const res = await assertCommunityReadAccess(
-      makeRoomRepo("PUBLIC") as never,
-      makeMemberRepo("banned") as never,
-      ROOM_ID,
-      USER_ID
-    );
-    expect(res.canRead).toBe(true);
-    expect(res.member?.status).toBe("banned");
-    expect(res.bannedAtCutoff).toBeInstanceOf(Date);
+  it("blocks a BANNED user outright, even when the community is PUBLIC — a ban revokes all access", async () => {
+    const roomRepo = makeRoomRepo("PUBLIC");
+    await expect(
+      assertCommunityReadAccess(
+        roomRepo as never,
+        makeMemberRepo("banned") as never,
+        ROOM_ID,
+        USER_ID
+      )
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    // Denied on the membership row alone — never falls through to the
+    // PUBLIC non-member branch (an existing-but-banned member isn't one).
+    expect(roomRepo.findRoomById).not.toHaveBeenCalled();
   });
 });
 

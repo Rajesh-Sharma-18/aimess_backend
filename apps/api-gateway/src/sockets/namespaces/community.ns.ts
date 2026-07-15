@@ -122,6 +122,14 @@ const CommunityCatchupRoomSchema = z.object({
    * Mutually exclusive with sinceId; sinceTs takes precedence when both given.
    */
   sinceTs: z.number().int().positive().optional(),
+  /**
+   * ZERO-LOSS revision cursor (highest precedence). The client's per-room CHANGE
+   * high-water. When provided (including 0 for a cold start) the server returns
+   * every message whose revision > sinceRevision — inserts AND mutations
+   * (edits/reactions/deletes) — plus roomRevision/lastRevision/resetRequired.
+   * Preferred over sinceId/sinceTs for reconnect. See the REST /changes feed.
+   */
+  sinceRevision: z.number().int().min(0).optional(),
 });
 // P2 §13: max 10 rooms per catchup request to prevent oversized payloads.
 // Users in many communities must batch requests; the ack includes hasMore + cursors.
@@ -1056,6 +1064,9 @@ export function registerCommunityNamespace(
                 sinceId: room.sinceId ?? "",
                 limit: room.limit ?? 100,
                 sinceTs: room.sinceTs,
+                // Only forward when the client opted in (undefined ⇒ gateway sends
+                // the -1 "not revision mode" sentinel; 0 IS a valid cold start).
+                sinceRevision: room.sinceRevision,
               })
             )
           );
@@ -1066,6 +1077,9 @@ export function registerCommunityNamespace(
             lastId: string;
             nextTs: number;
             authorized: boolean;
+            lastRevision: number;
+            roomRevision: number;
+            resetRequired: boolean;
           }> = [];
 
           results.forEach((res, idx) => {
@@ -1079,10 +1093,16 @@ export function registerCommunityNamespace(
                   sentAt: Number(e.sentAt),
                   editedAt: Number(e.editedAt),
                   reactions: e.reactions ?? [],
+                  // Zero-loss CHANGE cursor per message.
+                  revision: Number(e.revision ?? 0),
                 })),
                 hasMore: r.hasMore,
                 lastId: r.lastId,
                 nextTs: Number(r.nextTs ?? 0),
+                // Zero-loss revision-mode fields (0/false in id/ts modes).
+                lastRevision: Number(r.lastRevision ?? 0),
+                roomRevision: Number(r.roomRevision ?? 0),
+                resetRequired: Boolean(r.resetRequired),
               });
               ackRooms.push({
                 roomId: room.roomId,
@@ -1090,6 +1110,9 @@ export function registerCommunityNamespace(
                 lastId: r.lastId,
                 nextTs: Number(r.nextTs ?? 0),
                 authorized: r.authorized,
+                lastRevision: Number(r.lastRevision ?? 0),
+                roomRevision: Number(r.roomRevision ?? 0),
+                resetRequired: Boolean(r.resetRequired),
               });
             } else {
               logger.warn(

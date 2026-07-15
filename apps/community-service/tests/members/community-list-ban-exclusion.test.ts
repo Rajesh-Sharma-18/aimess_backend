@@ -1,8 +1,8 @@
 /**
- * "My Communities" list must exclude BANNED and LEFT members — the single
- * `status: ACTIVE` filter in listMineByActivity is what makes ban/unban
- * removal from the list immediate with no extra list-management code, and
- * what keeps an unbanned-but-not-rejoined user out of the list.
+ * "My Communities" list must include ACTIVE and BANNED members (a ban revokes
+ * access only, never roster visibility — the community stays in the banned
+ * user's list, locked), exclude LEFT members, and exclude any row the caller
+ * manually removed from their list (`removedAt`). See listMineByActivity.
  */
 jest.mock("../../src/config/prisma.js", () => ({
   prisma: {
@@ -17,16 +17,19 @@ jest.unmock("../../src/repositories/community.repository.js");
 import { prisma } from "../../src/config/prisma.js";
 import { communityRepository } from "../../src/repositories/community.repository.js";
 
-const db = prisma.community as unknown as { findMany: jest.Mock; count: jest.Mock };
+const db = prisma.community as unknown as {
+  findMany: jest.Mock;
+  count: jest.Mock;
+};
 
-describe("communityRepository.listMineByActivity — ban/unban list exclusion", () => {
+describe("communityRepository.listMineByActivity — ban/unban list inclusion", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     db.findMany.mockResolvedValue([]);
     db.count.mockResolvedValue(0);
   });
 
-  it("filters strictly to an ACTIVE membership row — BANNED and LEFT members never match", async () => {
+  it("matches ACTIVE or BANNED, excludes LEFT, and excludes a manually-removed row", async () => {
     await communityRepository.listMineByActivity({
       userId: "user-1",
       direction: "before",
@@ -38,7 +41,33 @@ describe("communityRepository.listMineByActivity — ban/unban list exclusion", 
       expect.objectContaining({
         where: expect.objectContaining({
           members: {
-            some: { userId: "user-1", status: "ACTIVE" },
+            some: {
+              userId: "user-1",
+              status: { in: ["ACTIVE", "BANNED"] },
+              OR: [{ removedAt: null }, { removedAt: { isSet: false } }],
+            },
+          },
+        }),
+      })
+    );
+  });
+
+  it("V2 keyset variant uses the identical membership filter", async () => {
+    await communityRepository.listMineByActivityKeyset({
+      userId: "user-1",
+      cursor: null,
+      limit: 20,
+    });
+
+    expect(db.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          members: {
+            some: {
+              userId: "user-1",
+              status: { in: ["ACTIVE", "BANNED"] },
+              OR: [{ removedAt: null }, { removedAt: { isSet: false } }],
+            },
           },
         }),
       })

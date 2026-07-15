@@ -60,10 +60,13 @@ import {
   getCommunityLiveRole,
 } from "../lib/access-guard.js";
 import {
-  computeDateAroundCursors,
   EMPTY_AROUND_CURSORS,
   type AroundCursors,
 } from "../lib/around-cursors.js";
+import {
+  makeTimelineAdapter,
+  type PaginationCursor,
+} from "../lib/timeline-pagination.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
   attachAlbumMessages,
@@ -401,6 +404,8 @@ export class CommunityMessageService {
       const sequenceNumber = await this.roomRepo.allocateSequence(
         params.roomId
       );
+      // Insert bumps the room CHANGE revision too (zero-loss changes feed).
+      const revision = await this.roomRepo.allocateRevision(params.roomId);
       const entity: Record<string, unknown> = {
         roomId: params.roomId,
         sentBy: params.sentBy,
@@ -411,6 +416,7 @@ export class CommunityMessageService {
         parentMessageId: resolvedParentId,
         clientMessageId: part.clientMessageId || null,
         sequenceNumber,
+        revision,
         ...(part.attachments.length ? { attachments: part.attachments } : {}),
         ...(i === 0 && quoteData ? { quoteData } : {}),
         ...(params.forwardData
@@ -495,6 +501,14 @@ export class CommunityMessageService {
     userId: string;
     sinceId: string;
     sinceTs?: Date;
+    /**
+     * ZERO-LOSS revision mode (highest precedence). When set, returns every
+     * message whose room CHANGE `revision > sinceRevision` — inserts AND
+     * mutations (edits/deletes/reactions) — via the same core as the REST
+     * `/changes` feed. `lastRevision`/`roomRevision`/`resetRequired` are then
+     * meaningful; id/ts modes leave them at 0/false.
+     */
+    sinceRevision?: number;
     limit: number;
   }): Promise<{
     events: GeneralRoomMessage[];
@@ -502,6 +516,9 @@ export class CommunityMessageService {
     lastId: string;
     nextTs: number;
     authorized: boolean;
+    lastRevision: number;
+    roomRevision: number;
+    resetRequired: boolean;
   }> {
     const member = await this.memberRepo.findByRoomAndUser(
       params.roomId,
@@ -514,11 +531,39 @@ export class CommunityMessageService {
         lastId: params.sinceId,
         nextTs: 0,
         authorized: false,
+        lastRevision: 0,
+        roomRevision: 0,
+        resetRequired: false,
       };
     }
 
     // P2 §13: max 100 events per room per catchup to prevent oversized payloads.
     const limit = Math.min(Math.max(params.limit || 100, 1), 100);
+
+    // Revision mode — the mutation-aware, gap-safe catch-up axis (preferred).
+    if (params.sinceRevision != null) {
+      const changes = await this.resolveChanges({
+        roomId: params.roomId,
+        userId: params.userId,
+        sinceRevision: params.sinceRevision,
+        limit,
+        viewerIsActiveMember: true,
+        readCutoff: null,
+      });
+      return {
+        events: changes.messages,
+        hasMore: changes.hasMore,
+        lastId:
+          changes.messages.length > 0
+            ? changes.messages[changes.messages.length - 1]!.id
+            : params.sinceId,
+        nextTs: 0,
+        authorized: true,
+        lastRevision: changes.nextRevision ?? params.sinceRevision,
+        roomRevision: changes.roomRevision,
+        resetRequired: changes.resetRequired,
+      };
+    }
 
     // since_ts mode: updatedAt-based query that catches all mutation types.
     if (params.sinceTs && !Number.isNaN(params.sinceTs.getTime())) {
@@ -540,6 +585,9 @@ export class CommunityMessageService {
         lastId,
         nextTs,
         authorized: true,
+        lastRevision: 0,
+        roomRevision: 0,
+        resetRequired: false,
       };
     }
 
@@ -552,7 +600,133 @@ export class CommunityMessageService {
     });
     const lastId =
       messages.length > 0 ? messages[messages.length - 1]!.id : params.sinceId;
-    return { events: messages, hasMore, lastId, nextTs: 0, authorized: true };
+    return {
+      events: messages,
+      hasMore,
+      lastId,
+      nextTs: 0,
+      authorized: true,
+      lastRevision: 0,
+      roomRevision: 0,
+      resetRequired: false,
+    };
+  }
+
+  /** Deep-gap horizon: a `since_revision` more than this far below the room's
+   *  current revision triggers a bounded re-baseline instead of replaying the
+   *  full backlog (§7). Rows are never deleted, so we CAN serve older cursors;
+   *  this bound just caps a cold client's catch-up to one newest page. */
+  private readonly REVISION_RESET_HORIZON = 10_000;
+
+  /**
+   * Shared core for the zero-loss changes feed — used by BOTH the REST
+   * `/changes` endpoint and the socket `community:catchup(sinceRevision)` path.
+   * Resolves the room's current revision, decides `resetRequired`, and (unless
+   * reset) returns the page of changed messages via `findByRoomIdRevisionSince`.
+   * Serialization + `pinnedMessage` are added by the caller.
+   */
+  private async resolveChanges(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+    viewerIsActiveMember: boolean;
+    readCutoff: Date | null;
+  }): Promise<{
+    roomRevision: number;
+    resetRequired: boolean;
+    hasMore: boolean;
+    nextRevision: number | null;
+    messages: GeneralRoomMessage[];
+  }> {
+    const roomRevision = await this.messageRepo.getRoomRevision(params.roomId);
+
+    // Deep gap: cursor below the retained horizon ⇒ tell the client to drop local
+    // state and re-baseline from the newest page (bounded catch-up). since=0 (cold
+    // start) is NOT a reset — it drains from the beginning within the horizon.
+    const resetRequired =
+      params.sinceRevision > 0 &&
+      roomRevision - params.sinceRevision > this.REVISION_RESET_HORIZON;
+    if (resetRequired) {
+      return {
+        roomRevision,
+        resetRequired: true,
+        hasMore: false,
+        nextRevision: null,
+        messages: [],
+      };
+    }
+
+    const { messages, hasMore, nextRevision } =
+      await this.messageRepo.findByRoomIdRevisionSince({
+        roomId: params.roomId,
+        userId: params.userId,
+        sinceRevision: params.sinceRevision,
+        limit: params.limit,
+        viewerIsActiveMember: params.viewerIsActiveMember,
+        readCutoff: params.readCutoff,
+      });
+
+    return {
+      roomRevision,
+      resetRequired: false,
+      hasMore,
+      nextRevision,
+      messages,
+    };
+  }
+
+  /**
+   * ZERO-LOSS CHANGES FEED (REST). Returns every message whose room CHANGE
+   * `revision > sinceRevision`, current state, serialized like V2 history +
+   * `revision`. Inserts AND mutations (edit/delete/reaction) regardless of how
+   * old the message's `sequenceNumber` is. Drains via `nextRevisionCursor` until
+   * `hasMore=false`. Access is the same PUBLIC-or-member rule as V2 reads.
+   */
+  async getChanges(params: {
+    roomId: string;
+    userId: string;
+    sinceRevision: number;
+    limit: number;
+  }): Promise<{
+    roomRevision: number;
+    resetRequired: boolean;
+    hasMore: boolean;
+    nextRevisionCursor: string | null;
+    items: CommunityMessageWire[];
+  }> {
+    const { member, bannedAtCutoff } = await assertCommunityReadAccess(
+      this.roomRepo,
+      this.memberRepo,
+      params.roomId,
+      params.userId
+    );
+    const viewerIsActiveMember = isActiveMember(member);
+    const changes = await this.resolveChanges({
+      roomId: params.roomId,
+      userId: params.userId,
+      sinceRevision: params.sinceRevision,
+      limit: params.limit,
+      viewerIsActiveMember,
+      readCutoff: bannedAtCutoff ?? null,
+    });
+
+    const members = await this.memberRepo.findReadStatusByRoom(params.roomId);
+    const items = await this.enrichTimelinePage(
+      changes.messages,
+      members,
+      params.userId
+    );
+    return {
+      roomRevision: changes.roomRevision,
+      resetRequired: changes.resetRequired,
+      hasMore: changes.hasMore,
+      nextRevisionCursor:
+        changes.hasMore && changes.nextRevision != null
+          ? String(changes.nextRevision)
+          : null,
+      items,
+    };
   }
 
   /**
@@ -918,6 +1092,11 @@ export class CommunityMessageService {
     wire.isEdited = editedMs !== null && editedMs > 0;
     wire.editedAt = editedMs;
 
+    // Zero-loss CHANGE cursor — present on every serialized message so the client
+    // tracks its per-room high-water and gap-checks live events. Additive; V1/V2
+    // clients ignore it.
+    wire.revision = m.revision ?? 0;
+
     const msgTs = m.createdAt;
 
     const readBy = members
@@ -1046,6 +1225,72 @@ export class CommunityMessageService {
     nextCursor: string | null;
     total: number;
   }> {
+    return this.getTimelinePageShared({
+      roomId: params.roomId,
+      userId: params.userId,
+      direction: params.direction,
+      limit: params.limit,
+      cursor: {
+        strategy: "TIMESTAMP",
+        ts: params.ts,
+        boundaryId: params.boundaryId ?? null,
+        inclusive: params.inclusive ?? false,
+      },
+    });
+  }
+
+  /**
+   * V2 sequence timeline page
+   * (`GET /api/v2/chat/community/rooms/:roomId/messages`). Gap-safe monotonic
+   * `sequenceNumber` keyset — the SAME shared core as the V1 timestamp path
+   * ({@link getTimelinePageShared}); only the cursor axis differs, so a
+   * same-millisecond burst can never split across a page boundary. `seq === null`
+   * → newest page; `nextCursor` is the plain seq string the client feeds back as
+   * `before_seq` (older) / `after_seq` (newer).
+   */
+  async getMessagesSeqV2(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    seq: number | null;
+    limit: number;
+  }): Promise<{
+    items: CommunityMessageWire[];
+    hasMore: boolean;
+    nextCursor: string | null;
+    total: number;
+  }> {
+    return this.getTimelinePageShared({
+      roomId: params.roomId,
+      userId: params.userId,
+      direction: params.direction,
+      limit: params.limit,
+      cursor: { strategy: "SEQUENCE", seq: params.seq },
+    });
+  }
+
+  /**
+   * Shared community-timeline page core for BOTH the V1 timestamp endpoint and
+   * the V2 sequence endpoint. The ONLY thing that differs between them is the
+   * pagination axis, fully encapsulated in the {@link PaginationCursor} + its
+   * adapter (fetch the page, stringify the `nextCursor`). Access guards,
+   * membership/ban resolution, the history-visible `total`, ordering,
+   * reaction-snapshot enrichment, media URL resolution and serialization are
+   * identical and live here once — so V1 and V2 return byte-identical message
+   * objects and envelopes. V1 passes a TIMESTAMP cursor; V2 a SEQUENCE cursor.
+   */
+  private async getTimelinePageShared(params: {
+    roomId: string;
+    userId: string;
+    direction: "before" | "after";
+    limit: number;
+    cursor: PaginationCursor;
+  }): Promise<{
+    items: CommunityMessageWire[];
+    hasMore: boolean;
+    nextCursor: string | null;
+    total: number;
+  }> {
     // For community messages, allow reads if:
     // 1. User is an active member, OR
     // 2. The community is PUBLIC (non-members can read history)
@@ -1056,15 +1301,13 @@ export class CommunityMessageService {
       params.userId
     );
     const viewerIsActiveMember = isActiveMember(member);
+    const adapter = makeTimelineAdapter(this.messageRepo, params.cursor);
     const [{ messages: pageRows, hasMore }, members, total] = await Promise.all(
       [
-        this.messageRepo.findByRoomIdTimeline({
+        adapter.timeline({
           roomId: params.roomId,
           userId: params.userId,
           direction: params.direction,
-          ts: params.ts,
-          boundaryId: params.boundaryId ?? null,
-          inclusive: params.inclusive ?? false,
           limit: params.limit,
           viewerIsActiveMember,
           readCutoff: bannedAtCutoff,
@@ -1079,18 +1322,37 @@ export class CommunityMessageService {
       ]
     );
 
+    // Boundary = last DB-order row; the adapter stringifies the axis-correct
+    // nextCursor (compound "<ms>_<id>" for TIMESTAMP, plain seq for SEQUENCE).
     // For "before" the DB returns newest-first, so the boundary for the next
-    // (older) page is the oldest item in the window — the tail. Reverse before
-    // returning so every response surface is oldest→newest (ascending order).
+    // (older) page is the tail — reverse so every surface is oldest→newest.
     const boundary = pageRows[pageRows.length - 1];
     const nextCursor =
-      hasMore && boundary
-        ? `${boundary.createdAt.getTime()}_${boundary.id}`
-        : null;
+      hasMore && boundary ? adapter.nextCursor(boundary) : null;
 
     const orderedItems =
       params.direction === "before" ? [...pageRows].reverse() : pageRows;
 
+    const items = await this.enrichTimelinePage(
+      orderedItems,
+      members,
+      params.userId
+    );
+    return { items, hasMore, nextCursor, total };
+  }
+
+  /**
+   * Reaction-snapshot-rich enrichment shared by the V1 + V2 timeline pages:
+   * fetch reactor snapshots, resolve their avatars alongside every message's
+   * media in one batch, then serialize each row to the canonical wire shape.
+   * Extracted from {@link getTimelinePageShared} so both pagination axes produce
+   * byte-identical message objects.
+   */
+  private async enrichTimelinePage(
+    orderedItems: GeneralRoomMessage[],
+    members: MemberReadStatus[],
+    userId: string
+  ): Promise<CommunityMessageWire[]> {
     // Fetch reactor snapshots first so we can collect their avatar object-keys
     // and resolve them to full presigned download URLs in the same batch as the
     // rest of the message media.
@@ -1110,8 +1372,8 @@ export class CommunityMessageService {
     // with a single urlMap lookup, with no separate map needed in the caller.
     const urlMap = new Map([...msgUrlMap, ...snapAvatarUrlMap]);
 
-    const resolveReactionUser = (userId: string) => {
-      const snap = snapsMap.get(userId);
+    const resolveReactionUser = (reactorId: string) => {
+      const snap = snapsMap.get(reactorId);
       return snap
         ? {
             displayName: (snap.displayName as string) || "",
@@ -1121,14 +1383,9 @@ export class CommunityMessageService {
         : undefined;
     };
 
-    return {
-      items: orderedItems.map((m) =>
-        this.toWire(m, members, urlMap, resolveReactionUser, params.userId)
-      ),
-      hasMore,
-      nextCursor,
-      total,
-    };
+    return orderedItems.map((m) =>
+      this.toWire(m, members, urlMap, resolveReactionUser, userId)
+    );
   }
 
   /**
@@ -1173,6 +1430,7 @@ export class CommunityMessageService {
       editedAt: number | null;
       createdAt: number;
       updatedAt: number;
+      revision: number;
       syncEventType: "new" | "edited" | "deleted" | "reacted";
     }>;
     hasMore: boolean;
@@ -1313,6 +1571,7 @@ export class CommunityMessageService {
         editedAt: editedMs,
         createdAt: createdMs,
         updatedAt: updatedMs,
+        revision: msg.revision ?? 0,
         syncEventType,
         systemMessageType:
           (msg as Record<string, unknown>).systemMessageType ?? null,
@@ -1342,6 +1601,43 @@ export class CommunityMessageService {
   }): Promise<
     { items: CommunityMessageWire[]; total: number } & AroundCursors
   > {
+    return this.getAroundWindowShared({ ...params, strategy: "TIMESTAMP" });
+  }
+
+  /**
+   * V2 seq-anchored jump-to-message window. Same shared core as V1
+   * ({@link getAroundWindowShared}); the SEQUENCE strategy anchors the window on
+   * the message's `sequenceNumber` and returns seq continuation cursors
+   * (`olderCursor`/`newerCursor` fed back as `before_seq`/`after_seq`).
+   */
+  async getMessagesAroundV2(params: {
+    roomId: string;
+    userId: string;
+    messageId: string;
+    limit: number;
+  }): Promise<
+    { items: CommunityMessageWire[]; total: number } & AroundCursors
+  > {
+    return this.getAroundWindowShared({ ...params, strategy: "SEQUENCE" });
+  }
+
+  /**
+   * Shared jump-to-message window core for the V1 (date-anchored) and V2
+   * (seq-anchored) `around` reads. The window anchors on the message row itself;
+   * the adapter reads only the cursor's STRATEGY (not its boundary), so a
+   * strategy-tagged placeholder cursor selects the seq-vs-date window query AND
+   * the matching continuation-cursor format. Access guard, `total`, media
+   * resolution and serialization are identical for both axes.
+   */
+  private async getAroundWindowShared(params: {
+    roomId: string;
+    userId: string;
+    messageId: string;
+    limit: number;
+    strategy: PaginationCursor["strategy"];
+  }): Promise<
+    { items: CommunityMessageWire[]; total: number } & AroundCursors
+  > {
     const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
@@ -1353,11 +1649,21 @@ export class CommunityMessageService {
     if (!anchor) {
       return { items: [], total: 0, ...EMPTY_AROUND_CURSORS };
     }
-    const [rows, members, total] = await Promise.all([
-      this.messageRepo.findAroundDate({
+    const cursor: PaginationCursor =
+      params.strategy === "SEQUENCE"
+        ? { strategy: "SEQUENCE", seq: null }
+        : {
+            strategy: "TIMESTAMP",
+            ts: new Date(0),
+            boundaryId: null,
+            inclusive: false,
+          };
+    const adapter = makeTimelineAdapter(this.messageRepo, cursor);
+    const [{ rows, cursors }, members, total] = await Promise.all([
+      adapter.around({
         roomId: params.roomId,
         userId: params.userId,
-        anchorDate: anchor.createdAt,
+        anchor,
         limit: params.limit,
         viewerIsActiveMember,
         readCutoff: bannedAtCutoff,
@@ -1374,24 +1680,6 @@ export class CommunityMessageService {
       }),
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
-    // Bidirectional continuation: probe one visible row strictly beyond each
-    // window edge (reusing the keyset history query, which applies the exact
-    // same visibility/ban filter), so the client can page up AND down.
-    const cursors = await computeDateAroundCursors(rows, (direction, ts, id) =>
-      this.messageRepo
-        .findByRoomIdTimeline({
-          roomId: params.roomId,
-          userId: params.userId,
-          direction,
-          ts,
-          boundaryId: id,
-          inclusive: false,
-          limit: 1,
-          viewerIsActiveMember,
-          readCutoff: bannedAtCutoff,
-        })
-        .then((r) => r.messages)
-    );
     return {
       items: rows.map((m) =>
         this.toWire(m, members, urlMap, undefined, params.userId)
@@ -1605,9 +1893,13 @@ export class CommunityMessageService {
       throw new BadRequestError("CHAT_TEXT_TOO_LONG");
     if (Date.now() - message.createdAt.getTime() > CHAT_EDIT_WINDOW_MS)
       throw new GoneError("CHAT_EDIT_WINDOW_EXPIRED");
+    // Edit bumps the room CHANGE revision so the changes feed replays the new
+    // content to offline clients even though the message's sequenceNumber is old.
+    const revision = await this.roomRepo.allocateRevision(message.roomId);
     const updated = await this.messageRepo.editMessage(
       params.messageId,
-      params.content.text
+      params.content.text,
+      revision
     );
     // Best-effort: keep every existing reply's `quoteData.preview` in sync with
     // the new text (edits are TEXT-only, so preview === the new text verbatim).
@@ -1674,6 +1966,8 @@ export class CommunityMessageService {
   }): Promise<{
     messageId: string;
     roomId: string;
+    /** Room CHANGE revision assigned to this reaction mutation (zero-loss feed). */
+    revision: number;
     reactions: Array<{
       emoji: string;
       count: number;
@@ -1759,10 +2053,14 @@ export class CommunityMessageService {
       });
     }
 
+    // Reaction change bumps the room CHANGE revision so the changes feed replays
+    // the message's current aggregate to offline clients.
+    const revision = await this.roomRepo.allocateRevision(message.roomId);
     await this.messageRepo.updateById(
       message.roomId,
       params.messageId,
-      enrichedReactions
+      enrichedReactions,
+      revision
     );
 
     // Resolve the stored avatar object-keys to full presigned download URLs so
@@ -1788,6 +2086,7 @@ export class CommunityMessageService {
     return {
       messageId: params.messageId,
       roomId: message.roomId,
+      revision,
       reactions: reactionGroups,
       added,
       // Only guaranteed present in `snaps` when added===true (the actor was just
@@ -1911,9 +2210,13 @@ export class CommunityMessageService {
     // Audit trail (deletedForAllType/At/By) mirrors GroupMessage's tombstone —
     // previously this was a bare boolean with no record of who deleted it or
     // when, unlike Group's fully-audited equivalent.
+    // Delete-for-everyone bumps the room CHANGE revision so the changes feed
+    // replays the tombstone (row kept, content neutralized) to offline clients.
+    const revision = await this.roomRepo.allocateRevision(message.roomId);
     const deleted = await this.messageRepo.deleteForAll(messageId, {
       deletedType,
       deletedBy: userId,
+      revision,
     });
     // Best-effort: flip `quoteData.isDeleted` on every existing reply to this
     // message so "Message deleted" shows up everywhere, not just for replies

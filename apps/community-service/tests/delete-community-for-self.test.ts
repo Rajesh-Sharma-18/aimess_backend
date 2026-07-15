@@ -5,8 +5,9 @@
  * Scenarios:
  *  1. Active member  → removed via the shared leave workflow; other members
  *     untouched (no repo call touches any other userId).
- *  2. Banned member  → silent success, no repository mutation (already
- *     invisible in "my communities" via the ACTIVE-only list filter).
+ *  2. Banned member  → persists a per-user list-hide (removedAt) via
+ *     markRemovedFromList — a BANNED membership now STAYS in "my communities"
+ *     (ban only revokes access), so removal is a real, persisted action.
  *  3. Admin/owner    → rejected with COMMUNITY_OWNER_CANNOT_DELETE, no writes.
  *  4. Validation     → community not found / never a member → 404-mapped errors.
  *  5. Regression     → leaveCommunity's own admin-restriction error uses the
@@ -119,12 +120,25 @@ describe("deleteCommunityForSelf — banned member", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("does not mutate membership — banned members are already excluded from the list", async () => {
+  it("persists removedAt via markRemovedFromList and broadcasts the list-drop to every device — never touches status/role", async () => {
     await communityService.deleteCommunityForSelf(COMMUNITY_ID, CALLER_ID);
 
+    expect(repo.markRemovedFromList).toHaveBeenCalledWith(
+      COMMUNITY_ID,
+      CALLER_ID
+    );
+    // The BANNED status/role itself is never mutated by a list-removal.
     expect(repo.updateMemberStatus).not.toHaveBeenCalled();
     expect(publishRoomEvent).not.toHaveBeenCalled();
-    expect(publishUserEvent).not.toHaveBeenCalled();
+    expect(publishUserEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      CALLER_ID,
+      "community:membership:removed",
+      expect.objectContaining({
+        communityId: COMMUNITY_ID,
+        membershipStatus: "REMOVED",
+      })
+    );
   });
 });
 

@@ -7,9 +7,9 @@ import { logger } from "@aimess/logger";
 
 import { env } from "../config/env.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __dir = path.dirname(fileURLToPath(import.meta.url));
 const PROTO_PATH = path.resolve(
-  __dirname,
+  __dir,
   "../../../../packages/grpc-contracts/proto/community.proto"
 );
 

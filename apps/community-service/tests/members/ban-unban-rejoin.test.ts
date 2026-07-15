@@ -122,18 +122,25 @@ describe("banMember — reuses the leave removal core (architecture requirement)
     );
   });
 
-  it("drops the community from the target's active list via community:membership:removed", async () => {
+  it("keeps the community in the target's list — pushes the distinct community:membership:banned (lock in place, never a list-drop)", async () => {
     await communityService.banMember(CID, ADMIN, TARGET);
 
     expect(pubUserEvent).toHaveBeenCalledWith(
       expect.anything(),
       TARGET,
-      "community:membership:removed",
+      "community:membership:banned",
       expect.objectContaining({
         communityId: CID,
-        membershipStatus: "REMOVED",
-        reason: "banned",
+        userId: TARGET,
+        actorId: ADMIN,
       })
+    );
+    // The list-drop event (used by kick/leave) must NOT fire for a ban.
+    expect(pubUserEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      TARGET,
+      "community:membership:removed",
+      expect.anything()
     );
   });
 

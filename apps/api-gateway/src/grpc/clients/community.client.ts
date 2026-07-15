@@ -126,6 +126,9 @@ export interface CommunityCatchupParams {
   limit?: number;
   /** Epoch-ms; when > 0 the server uses updatedAt-based query (catches edits/reactions/tombstones). */
   sinceTs?: number;
+  /** ZERO-LOSS revision cursor (highest precedence). Exclusive lower bound on the
+   *  per-room CHANGE revision — returns inserts AND mutations. */
+  sinceRevision?: number;
 }
 export interface CommunityCatchupEventDto {
   messageId: string;
@@ -142,6 +145,8 @@ export interface CommunityCatchupEventDto {
   /** "new" | "edited" | "deleted" | "reacted" */
   syncEventType: string;
   reactions: CommunityReactionGroupDto[];
+  /** Per-message CHANGE cursor (zero-loss). */
+  revision: number;
 }
 export interface CommunityCatchupResponse {
   roomId: string;
@@ -151,6 +156,12 @@ export interface CommunityCatchupResponse {
   authorized: boolean;
   /** Epoch-ms of the last event's updatedAt; use as next sinceTs when paging. 0 in sinceId mode. */
   nextTs: number;
+  /** Room's current CHANGE max (revision mode; 0 otherwise). */
+  roomRevision: number;
+  /** Client's new high-water; feed back as sinceRevision (revision mode; 0 otherwise). */
+  lastRevision: number;
+  /** since_revision below retention → client re-baselines (revision mode). */
+  resetRequired: boolean;
 }
 
 // ---- Edit ----
@@ -475,6 +486,9 @@ export function createCommunityClient(): CommunityClient {
         sinceId: p.sinceId,
         limit: p.limit ?? 100,
         sinceTs: p.sinceTs ?? 0,
+        // -1 sentinel = "not revision mode" (0 is a VALID cold-start revision
+        // cursor, so it can't double as absent). Chat-service treats < 0 as unset.
+        sinceRevision: p.sinceRevision ?? -1,
       })
   );
   const reactBreaker = makeBreaker(

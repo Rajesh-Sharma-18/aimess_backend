@@ -2162,6 +2162,7 @@ export function createCommunityImpl(
                   serverTs: rowSentAt,
                   sentAt: rowSentAt,
                   sequenceNumber: row.sequenceNumber,
+                  revision: (row as { revision?: number }).revision ?? 0,
                 },
                 `communityId=${req.communityId} roomId=${row.roomId} messageId=${row.id} sequenceNumber=${row.sequenceNumber}`
               );
@@ -2460,6 +2461,7 @@ export function createCommunityImpl(
             sinceId: string;
             limit: number;
             sinceTs: number; // epoch-ms; 0 or absent → use sinceId mode
+            sinceRevision: number | string; // int64 (string at runtime); -1 = not revision mode
           };
 
           // sinceTs is an int64 (a string at runtime via proto-loader) — coerce
@@ -2471,11 +2473,23 @@ export function createCommunityImpl(
               ? new Date(sinceTsMs)
               : undefined;
 
+          // ZERO-LOSS revision cursor (highest precedence). proto-loader delivers
+          // int64 as a string. The gateway sends -1 when the client did NOT opt
+          // into revision mode (0 is a VALID cold-start cursor), so only >= 0
+          // enables revision mode. A raw request that omits the field (int64
+          // default 0) is treated as legacy id/ts to preserve back-compat.
+          const sinceRevisionRaw = Number(req.sinceRevision);
+          const sinceRevision =
+            Number.isFinite(sinceRevisionRaw) && sinceRevisionRaw >= 0
+              ? sinceRevisionRaw
+              : undefined;
+
           const result = await deps.communityMessageService.catchup({
             roomId: req.roomId,
             userId: req.requesterId,
             sinceId: req.sinceId || "",
             sinceTs,
+            sinceRevision,
             limit: req.limit || 100,
           });
 
@@ -2519,6 +2533,8 @@ export function createCommunityImpl(
                 reactions: groupStoredReactions(
                   m.reactions as Record<string, unknown> | null | undefined
                 ),
+                // Zero-loss CHANGE cursor per message.
+                revision: (m as { revision?: number }).revision ?? 0,
                 systemMessageType:
                   (m as Record<string, unknown>).systemMessageType ?? null,
                 systemMetadata:
@@ -2529,6 +2545,10 @@ export function createCommunityImpl(
             lastId: result.lastId,
             authorized: result.authorized,
             nextTs: result.nextTs,
+            // Zero-loss revision-mode fields (0/false in id/ts modes).
+            roomRevision: result.roomRevision,
+            lastRevision: result.lastRevision,
+            resetRequired: result.resetRequired,
           });
         } catch (err) {
           logger.error(`gRPC communityCatchup error: ${String(err)}`);
@@ -2566,6 +2586,7 @@ export function createCommunityImpl(
                 messageId: result.messageId,
                 communityId: result.roomId,
                 reactions: result.reactions,
+                revision: result.revision,
               },
             })
           );
@@ -2788,6 +2809,7 @@ export function createCommunityImpl(
                 contentType: normalizeMessageType(result.messageType),
                 isEdited: true,
                 editedAt: editedAtMs,
+                revision: (result as { revision?: number }).revision ?? 0,
               },
             })
           );
@@ -2849,6 +2871,12 @@ export function createCommunityImpl(
                 roomId: result?.roomId ?? "",
                 deleteType: req.deleteType,
                 deletedBy: req.userId,
+                // Only delete-for-everyone bumps the room revision (§8).
+                ...(req.deleteType === "forEveryone"
+                  ? {
+                      revision: (result as { revision?: number }).revision ?? 0,
+                    }
+                  : {}),
               },
             })
           );

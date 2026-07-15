@@ -546,6 +546,9 @@ export class ChatMessageOrchestrator {
       // The community gRPC handler predates per-room sequencing; the field now
       // exists, so include it for parity with private/group broadcasts.
       sequenceNumber: saved.sequenceNumber,
+      // Zero-loss CHANGE cursor — the client tracks per-room localMaxRevision and
+      // gap-checks (revision > local+1 ⇒ missed a change ⇒ call /changes).
+      revision: (saved as unknown as { revision?: number }).revision ?? 0,
     };
 
     if (!alreadySent) {
@@ -596,6 +599,7 @@ export class ChatMessageOrchestrator {
           serverTs: rowSentAt,
           sentAt: rowSentAt,
           sequenceNumber: row.sequenceNumber,
+          revision: (row as unknown as { revision?: number }).revision ?? 0,
         };
         publishRealtimeSafe(
           this.redis,
@@ -770,6 +774,7 @@ export class ChatMessageOrchestrator {
       serverTs: sentAt,
       sentAt,
       sequenceNumber: saved.sequenceNumber,
+      revision: (saved as unknown as { revision?: number }).revision ?? 0,
     };
 
     if (!alreadySent) {
