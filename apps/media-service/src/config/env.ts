@@ -18,6 +18,11 @@ const envSchema = z.object({
   CHAT_GRPC_URL: z.string().default("127.0.0.1:4004"),
 
   JWT_ACCESS_SECRET: z.string().min(1),
+  // Optional: when set, upload-url/confirm/etc. also accept a backoffice
+  // admin access token (same secret backoffice-service signs with) so admin
+  // uploads (e.g. USER_AVATAR for an admin's own profile) reuse this flow
+  // instead of a duplicate one. Unset in deployments that don't need it.
+  JWT_ADMIN_SECRET: z.preprocess(emptyToUndef, z.string().min(1).optional()),
 
   CORS_ALLOWED_ORIGINS: z.string().default("*"),
 

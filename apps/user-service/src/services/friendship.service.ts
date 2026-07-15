@@ -11,6 +11,7 @@ import {
 import { friendshipRepository } from "../repositories/friendship.repository.js";
 import { userProfileRepository } from "../repositories/user-profile.repository.js";
 import { userCache } from "../lib/user-cache.js";
+import { messagingGrpcClient } from "../grpc/messaging.client.js";
 import { env } from "../config/env.js";
 import { mediaUrlStrategy } from "../config/storage.js";
 import { avatarService } from "./avatar.service.js";
@@ -34,6 +35,11 @@ type FriendshipRow = {
   updatedAt: Date;
 };
 
+type FriendWithRoom = {
+  userId: string;
+  roomId: string;
+};
+
 type AutoConnectResult = {
   totalUsersScanned: number;
   eligibleUsers: number;
@@ -42,6 +48,8 @@ type AutoConnectResult = {
   blockedUsers: number;
   pendingRequests: number;
   skippedUsers: number;
+  /** Friends (created + already existing) with their private room IDs. */
+  friends: FriendWithRoom[];
 };
 
 const BATCH_CHUNK_SIZE = 500;
@@ -365,6 +373,35 @@ export const friendshipService = {
       publishFriendshipCreatedSafe(f.requesterId, f.addresseeId);
     }
 
+    // Collect all friend peer IDs (created + already existing ACCEPTED friends)
+    const allFriendIds = new Set<string>();
+    for (const peer of friendedUserIds) {
+      allFriendIds.add(peer);
+    }
+    for (const f of created) {
+      allFriendIds.add(f.addresseeId);
+    }
+
+    // Ensure all friends have private rooms (get-or-create batch).
+    const roomMatches =
+      allFriendIds.size > 0
+        ? await messagingGrpcClient.getOrCreatePrivateRooms(callerId, [
+            ...allFriendIds,
+          ])
+        : [];
+
+    const roomByPeer = new Map(
+      roomMatches.map((m) => [m.peerUserId, m.roomId])
+    );
+
+    const friends: FriendWithRoom[] = [];
+    for (const peerId of allFriendIds) {
+      const roomId = roomByPeer.get(peerId);
+      if (roomId) {
+        friends.push({ userId: peerId, roomId });
+      }
+    }
+
     return {
       totalUsersScanned: allUsers.length,
       eligibleUsers: eligiblePairs.length,
@@ -373,6 +410,7 @@ export const friendshipService = {
       blockedUsers,
       pendingRequests,
       skippedUsers,
+      friends,
     };
   },
 

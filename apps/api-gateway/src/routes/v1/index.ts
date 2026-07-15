@@ -11,6 +11,7 @@ import { env } from "../../config/env.js";
 import { appVersionRouter } from "./app-version.routes.js";
 import { createLegacyUploadsRouter } from "./legacy-uploads.routes.js";
 import { createNotificationsAliasRouter } from "./notifications.routes.js";
+import { createLinkedDevicesAliasRouter } from "./linked-devices.routes.js";
 import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
 
 export function createV1Router(_messagingClient: MessagingClient): IRouter {
@@ -25,6 +26,11 @@ export function createV1Router(_messagingClient: MessagingClient): IRouter {
   if (env.MEDIA_SERVICE_URL) {
     v1Router.use(createLegacyUploadsRouter(env.MEDIA_SERVICE_URL));
   }
+
+  // Stable alias: GET/DELETE /api/v1/users/linked-devices(/:deviceId) forward
+  // to auth-service's existing sessions list/revoke. Registered before the
+  // generic `/users` proxy below so it intercepts these two paths.
+  v1Router.use(createLinkedDevicesAliasRouter(env.AUTH_SERVICE_URL));
 
   // Dedicated limiter for the public invite-link preview endpoint (unauthenticated,
   // enumeration risk). Must be registered before the generic service proxy.

@@ -136,6 +136,27 @@ describe("publishConvUpdated", () => {
     assert.equal(otherMsg.event, "conv:updated");
   });
 
+  it("carries senderName so the gateway can personalize 'You:' (parity with community:updated)", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishConvUpdated({
+      redis,
+      type: "PRIVATE",
+      roomId: "room-name",
+      recipientIds: ["sender", "other"],
+      senderId: "sender",
+      senderName: "Bob",
+      lastMessageId: "msg-1",
+      lastMessageAt: 1,
+      preview: basePreview,
+    });
+
+    for (const call of publishCalls) {
+      const msg = JSON.parse(call.payload);
+      assert.equal(msg.data.senderName, "Bob");
+    }
+  });
+
   it("de-dupes duplicate recipient ids to a single publish", async () => {
     const { redis, publishCalls } = makeFakeRedis();
 
@@ -202,6 +223,79 @@ describe("publishConvUpdated", () => {
       assert.match(String(warn.calls[0][0]), /room-fail/);
     } finally {
       warn.restore();
+    }
+  });
+
+  it("appends isOffline per recipient (negation of the OTHER participant's presence) for PRIVATE when getIsOnline is supplied", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+    const online = new Set(["sender"]); // sender online, other offline
+
+    await publishConvUpdated({
+      redis,
+      type: "PRIVATE",
+      roomId: "room-presence",
+      recipientIds: ["sender", "other"],
+      senderId: "sender",
+      lastMessageId: "msg-1",
+      lastMessageAt: 1,
+      preview: basePreview,
+      getIsOnline: async (id) => online.has(id),
+    });
+
+    const senderMsg = JSON.parse(
+      publishCalls.find((c) => c.channel === "user:sender")!.payload
+    );
+    const otherMsg = JSON.parse(
+      publishCalls.find((c) => c.channel === "user:other")!.payload
+    );
+
+    // "sender" recipient's peer is "other" (offline) → isOffline true.
+    assert.equal(senderMsg.data.isOffline, true);
+    // "other" recipient's peer is "sender" (online) → isOffline false.
+    assert.equal(otherMsg.data.isOffline, false);
+    // Everything else about the payload is unchanged.
+    assert.equal(senderMsg.data.lastMessageId, "msg-1");
+    assert.deepEqual(senderMsg.data.lastMessage, basePreview);
+  });
+
+  it("omits isOffline for GROUP even when getIsOnline is supplied", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishConvUpdated({
+      redis,
+      type: "GROUP",
+      roomId: "room-group-presence",
+      recipientIds: ["u1", "u2"],
+      senderId: "u1",
+      lastMessageId: "m",
+      lastMessageAt: 1,
+      preview: basePreview,
+      getIsOnline: async () => true,
+    });
+
+    for (const call of publishCalls) {
+      const msg = JSON.parse(call.payload);
+      assert.equal("isOffline" in msg.data, false);
+    }
+  });
+
+  it("omits isOffline when getIsOnline is not supplied (existing payload shape unchanged)", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishConvUpdated({
+      redis,
+      type: "PRIVATE",
+      roomId: "room-no-presence",
+      recipientIds: ["sender", "other"],
+      senderId: "sender",
+      lastMessageId: "msg-1",
+      lastMessageAt: 1,
+      preview: basePreview,
+    });
+
+    for (const call of publishCalls) {
+      const msg = JSON.parse(call.payload);
+      assert.equal("isOffline" in msg.data, false);
     }
   });
 });

@@ -35,7 +35,13 @@ import { app } from "../../src/app.js";
 import { adminUserRepository } from "../../src/repositories/index.js";
 import { getCachedAdminPermissions } from "../../src/lib/admin-perms-cache.js";
 import { adminAuthService } from "../../src/services/index.js";
-import { bearer, makeAdminAccessToken } from "../helpers/auth.js";
+import {
+  bearer,
+  makeAdminAccessToken,
+  makeExpiredAdminAccessToken,
+  makeForgedAdminAccessToken,
+  makeWrongTypeAdminToken,
+} from "../helpers/auth.js";
 import { configureActiveAdmin, grantPermissions } from "../helpers/admin.js";
 
 const findById = adminUserRepository.findById as jest.Mock;
@@ -163,6 +169,10 @@ describe("PATCH /v1/change-password", () => {
       .set(bearer(makeAdminAccessToken()))
       .send({ ...goodBody, confirmPassword: "different" });
     expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.message).toBe(
+      "New password and confirm password do not match."
+    );
     expect(svc.changePassword).not.toHaveBeenCalled();
   });
 
@@ -215,7 +225,7 @@ describe("PATCH /v1/change-password", () => {
       .send(goodBody);
     expect(res.status).toBe(400);
     expect(res.body.message).toBe(
-      "New password must be different from your current password."
+      "New password must be different from the current password."
     );
   });
 
@@ -228,6 +238,7 @@ describe("PATCH /v1/change-password", () => {
       .set(bearer(makeAdminAccessToken()))
       .send(goodBody);
     expect(res.status).toBe(404);
+    expect(res.body.message).toBe("Admin account not found.");
   });
 
   it("returns 403 when the admin account is inactive in the service", async () => {
@@ -239,11 +250,118 @@ describe("PATCH /v1/change-password", () => {
       .set(bearer(makeAdminAccessToken()))
       .send(goodBody);
     expect(res.status).toBe(403);
+    expect(res.body.message).toBe(
+      "Your account has been disabled. Please contact the super administrator."
+    );
   });
 
   it("returns 401 without a token", async () => {
     const res = await request(app).patch("/v1/change-password").send(goodBody);
     expect(res.status).toBe(401);
+    expect(res.body.message).toBe("Authentication token is required.");
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an expired admin token", async () => {
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeExpiredAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(401);
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for a forged (wrong-secret) admin token", async () => {
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeForgedAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(401);
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for a token with the wrong type claim", async () => {
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeWrongTypeAdminToken()))
+      .send(goodBody);
+    expect(res.status).toBe(401);
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the admin account is inactive at the auth gate (not the service)", async () => {
+    configureActiveAdmin(findById, { status: "SUSPENDED" });
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe(
+      "Your account has been disabled. Please contact the super administrator."
+    );
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 with a distinct message when the admin account is deleted", async () => {
+    configureActiveAdmin(findById, { status: "DELETED" });
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe("Your account is no longer available.");
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 with a distinct message when the admin is deleted in the service", async () => {
+    svc.changePassword.mockRejectedValueOnce(
+      new ForbiddenError("ADMIN_ACCOUNT_DELETED")
+    );
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(403);
+    expect(res.body.message).toBe("Your account is no longer available.");
+  });
+
+  it("returns 404 when the admin record no longer exists at the auth gate", async () => {
+    findById.mockResolvedValue(null);
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(goodBody);
+    expect(res.status).toBe(404);
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when currentPassword is missing", async () => {
+    const { currentPassword, ...rest } = goodBody;
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(rest);
+    expect(res.status).toBe(400);
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when newPassword is missing", async () => {
+    const { newPassword, ...rest } = goodBody;
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(rest);
+    expect(res.status).toBe(400);
+    expect(svc.changePassword).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when confirmPassword is missing", async () => {
+    const { confirmPassword, ...rest } = goodBody;
+    const res = await request(app)
+      .patch("/v1/change-password")
+      .set(bearer(makeAdminAccessToken()))
+      .send(rest);
+    expect(res.status).toBe(400);
     expect(svc.changePassword).not.toHaveBeenCalled();
   });
 });

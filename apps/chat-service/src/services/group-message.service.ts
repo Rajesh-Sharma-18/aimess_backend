@@ -24,6 +24,10 @@ import {
   type CanonicalQuote,
 } from "../lib/chat-message.serializer.js";
 import { assertGroupMember } from "../lib/access-guard.js";
+import {
+  computeSeqAroundCursors,
+  type AroundCursors,
+} from "../lib/around-cursors.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
   attachAlbumMessages,
@@ -388,7 +392,7 @@ export class GroupMessageService {
     userId: string;
     messageId: string;
     limit: number;
-  }): Promise<{ items: GroupMessage[]; anchorSeq: number }> {
+  }): Promise<{ items: GroupMessage[]; anchorSeq: number } & AroundCursors> {
     await assertGroupMember(this.memberRepo, params.roomId, params.userId);
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) throw new NotFoundError("CHAT_MESSAGE_NOT_FOUND");
@@ -398,7 +402,18 @@ export class GroupMessageService {
       anchorSeq: anchor.sequenceNumber,
       limit: params.limit,
     });
-    return { items, anchorSeq: anchor.sequenceNumber };
+    // Bidirectional continuation: probe one row strictly beyond each window edge
+    // (reusing the seq keyset paging query), so the client can page up AND down.
+    const cursors = await computeSeqAroundCursors(items, (direction, seq) =>
+      this.messageRepo.findByRoomIdSeq({
+        userId: params.userId,
+        roomId: params.roomId,
+        direction,
+        seq,
+        limit: 1,
+      })
+    );
+    return { items, anchorSeq: anchor.sequenceNumber, ...cursors };
   }
 
   /**

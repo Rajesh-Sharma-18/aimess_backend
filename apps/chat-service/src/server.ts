@@ -75,6 +75,7 @@ import { MessageContextController } from "./api/controllers/message-context.cont
 import { startGrpcServer } from "./grpc/server.js";
 import { createUserServiceClient } from "./grpc/user.client.js";
 import { createAuthAdminClient } from "./grpc/auth.client.js";
+import { getCommunityReconcileClient } from "./grpc/community.client.js";
 
 // -- Events --
 import {
@@ -374,13 +375,23 @@ const startServer = async () => {
       authAdminClient
     );
 
+    // Constructed early so it can be injected into PrivateRoomService (REST
+    // isOnline/isOffline) and ChatMessageOrchestrator (conv:updated isOffline)
+    // below — single source of truth for real-time presence.
+    const presenceService = new PresenceService(
+      cacheRepo,
+      redis,
+      privateRoomRepo
+    );
+
     const privateRoomService = new PrivateRoomService(
       privateRoomRepo,
       privateMessageRepo,
       cacheRepo,
       userSnapshotService,
       userServiceClient,
-      redis
+      redis,
+      presenceService
     );
     const privateMessageService = new PrivateMessageService(
       privateMessageRepo,
@@ -388,7 +399,8 @@ const startServer = async () => {
       cacheRepo,
       userSnapshotService,
       userServiceClient,
-      privateMessageReportRepo
+      privateMessageReportRepo,
+      getCommunityReconcileClient()
     );
     const privatePinService = new PrivatePinService(
       privateMessagePinRepo,
@@ -505,8 +517,6 @@ const startServer = async () => {
       cacheRepo
     );
 
-    const presenceService = new PresenceService(cacheRepo, redis);
-
     // Unified inbox = private rooms + group chats merged by lastMessageAt
     const inboxService = new InboxService(privateRoomService, groupRoomService);
 
@@ -528,7 +538,8 @@ const startServer = async () => {
       cacheRepo,
       redis,
       privatePinService,
-      groupPinService
+      groupPinService,
+      presenceService
     );
 
     // Start gRPC server with real service delegates
@@ -549,6 +560,7 @@ const startServer = async () => {
       communityPinService,
       notificationRepo,
       chatMessageOrchestrator,
+      privateRoomService,
     });
 
     // 4. Instantiate controllers

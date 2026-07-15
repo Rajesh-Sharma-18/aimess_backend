@@ -127,6 +127,7 @@ export interface BuiltMocks {
   cacheRepo: any;
   // peers / infra
   userServiceClient: any;
+  communityClient: any;
   streamCountsClient: any;
   redis: any;
   userSnapshotService: UserSnapshotService;
@@ -187,15 +188,28 @@ export function buildApp(): BuiltApp {
   const userServiceClient: any = {
     checkFriendship: jest.fn(async () => true),
   };
+  const communityClient: any = {
+    getCommunityInviteContexts: jest.fn(async () => []),
+  };
 
   // -- Real services wired to mocks --
+  // Constructed early (before privateRoomService/orchestrator) to mirror
+  // server.ts's DI order — presenceService is the single real-time source
+  // both REST (isOnline/isOffline) and conv:updated read.
+  const presenceService = new PresenceService(
+    cacheRepo,
+    redis,
+    privateRoomRepo
+  );
+
   const privateRoomService = new PrivateRoomService(
     privateRoomRepo,
     privateMessageRepo,
     cacheRepo,
     userSnapshotService,
     userServiceClient,
-    redis
+    redis,
+    presenceService
   );
   const privateMessageService = new PrivateMessageService(
     privateMessageRepo,
@@ -203,7 +217,8 @@ export function buildApp(): BuiltApp {
     cacheRepo,
     userSnapshotService,
     userServiceClient,
-    privateMessageReportRepo
+    privateMessageReportRepo,
+    communityClient
   );
   const privatePinService = new PrivatePinService(
     privateMessagePinRepo,
@@ -311,7 +326,6 @@ export function buildApp(): BuiltApp {
     cacheRepo
   );
 
-  const presenceService = new PresenceService(cacheRepo, redis);
   const inboxService = new InboxService(privateRoomService, groupRoomService);
   const syncService = new SyncService(
     privateMessageService,
@@ -326,7 +340,8 @@ export function buildApp(): BuiltApp {
     cacheRepo,
     redis,
     privatePinService,
-    groupPinService
+    groupPinService,
+    presenceService
   );
 
   // -- Real controllers --
@@ -391,6 +406,7 @@ export function buildApp(): BuiltApp {
       callRepo,
       cacheRepo,
       userServiceClient,
+      communityClient,
       streamCountsClient,
       redis,
       userSnapshotService,

@@ -220,7 +220,7 @@ export const openApiSchemas = {
       "Successful admin login / token refresh — standard `{ success, message, data }` envelope with the JWT pair and the authenticated admin profile.",
     properties: {
       success: { type: "boolean", example: true },
-      message: { type: "string", example: "Login successful" },
+      message: { type: "string", example: "Login successful." },
       data: {
         type: "object",
         properties: {
@@ -330,7 +330,10 @@ export const openApiSchemas = {
     description: "Successful admin self-service password change.",
     properties: {
       success: { type: "boolean", example: true },
-      message: { type: "string", example: "Password changed" },
+      message: {
+        type: "string",
+        example: "Password changed successfully.",
+      },
       data: {
         type: "object",
         properties: {
@@ -3530,7 +3533,7 @@ export const openApiSchemas = {
       role: { $ref: "#/components/schemas/AdminAccountRoleRef" },
       status: {
         type: "string",
-        enum: ["ACTIVE", "DISABLED", "INVITED"],
+        enum: ["ACTIVE", "DISABLED", "INVITED", "DELETED"],
         example: "ACTIVE",
       },
       lastLoginAt: { type: "string", format: "date-time", nullable: true },
@@ -3541,7 +3544,9 @@ export const openApiSchemas = {
   },
   AdminAccountCreateRequest: {
     type: "object",
-    required: ["email", "password", "name", "roleKey"],
+    description:
+      "One of `username`/`name` is required (`username` is the wire field; `name` is kept accepted for backward compatibility — same field). `roleKey` defaults to `ADMIN` when omitted.",
+    required: ["email", "password"],
     properties: {
       email: { type: "string", format: "email", example: "mod@aimess.io" },
       password: {
@@ -3550,13 +3555,24 @@ export const openApiSchemas = {
         description:
           "Must contain at least one uppercase, one lowercase, one digit, and one special character.",
       },
+      username: {
+        type: "string",
+        minLength: 2,
+        maxLength: 100,
+        example: "mod_user",
+      },
       name: {
         type: "string",
         minLength: 2,
         maxLength: 100,
         example: "Mod User",
+        deprecated: true,
+        description: "Alias for `username`, kept for backward compatibility.",
       },
-      roleKey: { $ref: "#/components/schemas/AdminRoleKey" },
+      roleKey: {
+        allOf: [{ $ref: "#/components/schemas/AdminRoleKey" }],
+        default: "ADMIN",
+      },
       avatarUrl: {
         type: "string",
         format: "uri",
@@ -3568,15 +3584,25 @@ export const openApiSchemas = {
   AdminAccountUpdateRequest: {
     type: "object",
     description:
-      "PATCH profile fields only — role changes go through .../permissions. At least one of name or avatarUrl must be provided.",
+      "PATCH profile fields only — role changes go through .../permissions. At least one of username, email or avatarUrl must be provided. Duplicate email/username are rejected with 409.",
     properties: {
-      name: { type: "string", minLength: 2, maxLength: 100, nullable: true },
+      username: { type: "string", minLength: 2, maxLength: 100 },
+      email: { type: "string", format: "email" },
       avatarUrl: {
         type: "string",
         format: "uri",
         maxLength: 500,
         nullable: true,
       },
+    },
+  },
+  AdminAccountStatusRequest: {
+    type: "object",
+    description:
+      "Unified activate/deactivate toggle. `INACTIVE` maps to the internal `DISABLED` status.",
+    required: ["status"],
+    properties: {
+      status: { type: "string", enum: ["ACTIVE", "INACTIVE"] },
     },
   },
   AdminAccountRoleRequest: {
@@ -4798,53 +4824,41 @@ export const openApiSchemas = {
         type: "string",
         description: "Embed in the QR code shown to the authenticated device.",
       },
-      pollSecret: {
-        type: "string",
-        description:
-          "Secret held only by the new device; required to poll status.",
-      },
       expiresAt: { type: "string", format: "date-time" },
     },
-    required: ["linkToken", "pollSecret", "expiresAt"],
+    required: ["linkToken", "expiresAt"],
   },
-  DeviceLinkStatusResponseData: {
+  DeviceLinkScanRequest: {
     type: "object",
-    properties: {
-      state: {
-        type: "string",
-        enum: ["PENDING", "APPROVED", "CONSUMED", "EXPIRED"],
-        description:
-          "PENDING = waiting for the signed-in device to scan and approve; APPROVED = approved, tokens returned exactly once; CONSUMED = tokens already delivered (poll again returns this); EXPIRED = 120 s TTL elapsed, call initiate again.",
-      },
-      approvedDeviceLabel: { type: "string", nullable: true },
-      tokens: {
-        nullable: true,
-        allOf: [{ $ref: "#/components/schemas/AuthTokens" }],
-        description: "Returned exactly once when the session is approved.",
-      },
-    },
-    required: ["state", "approvedDeviceLabel", "tokens"],
-  },
-  DeviceLinkApproveRequest: {
-    type: "object",
+    description:
+      "Telegram-style instant login: scanning IS logging in — no separate approve/reject step.",
     properties: {
       linkToken: { type: "string" },
+      appVersion: { type: "string", maxLength: 100, example: "1.4.0" },
       deviceLabel: { type: "string", maxLength: 100, example: "My laptop" },
     },
     required: ["linkToken"],
   },
-  DeviceLinkApproveResponseData: {
+  DeviceLinkScanResponseData: {
     type: "object",
+    allOf: [{ $ref: "#/components/schemas/AuthTokens" }],
     properties: {
       linkedAt: { type: "string", format: "date-time" },
       sessionId: {
         type: "string",
         format: "uuid",
         description:
-          "Session id of the newly-linked device; revoke it via DELETE /auth/sessions/{sessionId} to undo the link.",
+          "Session id of the newly-linked (browser) device; revoke it via DELETE /users/linked-devices/{sessionId} to undo the link.",
       },
     },
-    required: ["linkedAt", "sessionId"],
+    required: [
+      "linkedAt",
+      "sessionId",
+      "accessToken",
+      "refreshToken",
+      "accessTokenExpiresIn",
+      "refreshTokenExpiresIn",
+    ],
   },
   DeleteAccountResponseData: {
     type: "object",
@@ -7972,6 +7986,50 @@ export const openApiSchemas = {
   // ===========================================================================
 
   // --- Private rooms & messages ---
+  ChatPrivateRoomPeerAvatar: {
+    allOf: [{ $ref: "#/components/schemas/MediaObject" }],
+    description:
+      "Nested media object for the peer's avatar — same shape as a community's `avatar` (additive; mirrors `avatarUrl`).",
+  },
+  ChatPrivateRoomPeer: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      displayName: { type: "string" },
+      memberId: { type: "string" },
+      avatar: { $ref: "#/components/schemas/ChatPrivateRoomPeerAvatar" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned download URL (mirrors community's `avatarUrl`).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isDeletedUser: { type: "boolean" },
+      isOnline: { type: "boolean" },
+    },
+    required: [
+      "id",
+      "displayName",
+      "memberId",
+      "avatar",
+      "isDeletedUser",
+      "isOnline",
+    ],
+  },
+  ChatPrivateConversationLastActivity: {
+    type: "object",
+    description:
+      "Normalized last-activity DTO — same {type,userId,username,preview,dateTime} shape as CommunityLastActivity's USER-MESSAGE case.",
+    properties: {
+      type: { type: "string", enum: ["message"] },
+      userId: { type: "string", nullable: true },
+      username: { type: "string" },
+      preview: { type: "string" },
+      dateTime: { type: "integer", format: "int64", description: "Epoch ms." },
+    },
+    required: ["type", "userId", "username", "preview", "dateTime"],
+  },
   ChatPrivateRoom: {
     type: "object",
     properties: {
@@ -7988,11 +8046,207 @@ export const openApiSchemas = {
         description: "Epoch ms.",
       },
       lastMessage: { type: "object", nullable: true },
+      unreadCountByUser: {
+        type: "object",
+        additionalProperties: { type: "integer" },
+        description: "Raw per-participant unread map (internal/back-compat).",
+      },
+      unreadMessageCount: {
+        type: "integer",
+        description:
+          "Caller's own unread count, resolved from unreadCountByUser (community-style single int).",
+      },
+      lastActivityAt: {
+        type: "integer",
+        format: "int64",
+        description:
+          "Epoch ms mirror of lastMessageAt (community-style: always a number).",
+      },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      peer: { $ref: "#/components/schemas/ChatPrivateRoomPeer" },
+      isMuted: { type: "boolean" },
       pinnedCount: { type: "integer" },
       createdAt: { type: "integer", format: "int64", description: "Epoch ms." },
       updatedAt: { type: "integer", format: "int64", description: "Epoch ms." },
     },
-    required: ["id", "roomId", "participants", "createdAt", "updatedAt"],
+    required: [
+      "id",
+      "roomId",
+      "participants",
+      "peer",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ChatPrivateRoomDetails: {
+    type: "object",
+    description:
+      "GET /chat/private/rooms/{peerId} — mirrors CommunityData field names wherever applicable " +
+      "(`id`, `avatar`, `isMuted`, `muteUntil`, `createdAt`, `updatedAt`), with private-chat-specific " +
+      "`user`/presence fields nested/added. Timestamps are epoch ms, unlike CommunityData's ISO strings.",
+    properties: {
+      id: {
+        type: "string",
+        description: "roomId — mirrors CommunityData.id.",
+      },
+      roomId: { type: "string" },
+      participants: { type: "array", items: { type: "string" } },
+      peerId: { type: "string" },
+      user: {
+        type: "object",
+        description: "Existing private-chat peer information.",
+        properties: {
+          id: { type: "string" },
+          displayName: { type: "string" },
+          memberId: { type: "string" },
+          isDeletedUser: { type: "boolean" },
+        },
+        required: ["id", "displayName", "memberId", "isDeletedUser"],
+      },
+      avatar: {
+        $ref: "#/components/schemas/MediaObject",
+        description: "Mirrors CommunityData.avatar — the peer's avatar object.",
+      },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned URL (mirrors CommunityData.avatarUrl).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isOnline: {
+        type: "boolean",
+        description: "Existing presence field.",
+      },
+      isOffline: {
+        type: "boolean",
+        description:
+          "Negation of isOnline, from the existing presence pipeline.",
+      },
+      isMuted: {
+        type: "boolean",
+        description: "Mirrors CommunityData.isMuted.",
+      },
+      muteUntil: {
+        type: "integer",
+        format: "int64",
+        nullable: true,
+        description:
+          "Epoch ms when the caller's mute expires; null = not muted OR muted indefinitely. Mirrors CommunityData.muteUntil.",
+      },
+      unreadMessageCount: { type: "integer" },
+      lastActivityAt: { type: "integer", format: "int64" },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      createdAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms. Mirrors CommunityData.createdAt.",
+      },
+      updatedAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms. Mirrors CommunityData.updatedAt.",
+      },
+    },
+    required: [
+      "id",
+      "roomId",
+      "participants",
+      "peerId",
+      "user",
+      "avatar",
+      "avatarUrl",
+      "avatarUrlExpiresIn",
+      "isOnline",
+      "isOffline",
+      "isMuted",
+      "muteUntil",
+      "unreadMessageCount",
+      "lastActivityAt",
+      "lastActivity",
+      "createdAt",
+      "updatedAt",
+    ],
+  },
+  ChatPrivateConversationListItem: {
+    type: "object",
+    description:
+      "GET /chat/private/conversations list item — lean, community-list-style shape. The peer's fields " +
+      "are flattened directly onto the item (no nested `peer` object). Internal per-user maps and " +
+      "redundant raw fields (lastMessage, lastMessageAt, id, createdAt/updatedAt, pinnedCount) are not " +
+      "included.",
+    properties: {
+      roomId: { type: "string" },
+      participants: {
+        type: "array",
+        items: { type: "string" },
+      },
+      peerId: { type: "string" },
+      displayName: { type: "string" },
+      memberId: { type: "string" },
+      avatar: { $ref: "#/components/schemas/ChatPrivateRoomPeerAvatar" },
+      avatarUrl: {
+        type: "string",
+        nullable: true,
+        description:
+          "Flattened presigned download URL (mirrors community's `avatarUrl`).",
+      },
+      avatarUrlExpiresIn: { type: "integer", nullable: true },
+      isDeletedUser: { type: "boolean" },
+      isOnline: { type: "boolean" },
+      isOffline: {
+        type: "boolean",
+        description:
+          "Negation of isOnline, from the same real-time presence pipeline as conv:updated's isOffline.",
+      },
+      unreadMessageCount: {
+        type: "integer",
+        description:
+          "Caller's own unread count, resolved from unreadCountByUser (community-style single int).",
+      },
+      lastActivityAt: {
+        type: "integer",
+        format: "int64",
+        description: "Epoch ms — never an ISO string.",
+      },
+      lastActivity: {
+        $ref: "#/components/schemas/ChatPrivateConversationLastActivity",
+      },
+      isMuted: { type: "boolean" },
+    },
+    required: [
+      "roomId",
+      "participants",
+      "peerId",
+      "displayName",
+      "memberId",
+      "avatar",
+      "isDeletedUser",
+      "isOnline",
+      "isOffline",
+      "unreadMessageCount",
+      "lastActivityAt",
+      "lastActivity",
+      "isMuted",
+    ],
+  },
+  ChatPrivateConversationListData: {
+    type: "object",
+    description:
+      "Response envelope for GET /chat/private/conversations — same {pagination,data} shape as " +
+      "MyCommunitiesResponseData (no top-level hasMore/nextCursor duplicates — only nested under `pagination`).",
+    properties: {
+      pagination: { $ref: "#/components/schemas/PaginationMeta" },
+      data: {
+        type: "array",
+        items: { $ref: "#/components/schemas/ChatPrivateConversationListItem" },
+      },
+    },
+    required: ["pagination", "data"],
   },
   ChatPrivateRoomList: {
     type: "array",
@@ -8497,6 +8751,15 @@ export const openApiSchemas = {
         type: "integer",
         format: "int64",
         description: "Epoch ms.",
+      },
+      isAvailable: {
+        type: "boolean",
+        description:
+          "Whether the pinned message still exists (not deleted-for-everyone). " +
+          "Present on the private- and group-room pins lists — lets the banner " +
+          "render a 'pinned-but-deleted' state (tap does not navigate) using the " +
+          "frozen `contentPinned` snapshot. Mirrors community's embedded " +
+          "`pinnedMessage.isAvailable`. Additive — omitted by older responses.",
       },
     },
     required: ["id", "roomId", "messageId", "pinnedBy", "pinnedAt"],

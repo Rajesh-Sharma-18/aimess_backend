@@ -47,19 +47,23 @@ export const adminJwt: RequestHandler = (req, res, next) => {
 
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
-    unauthorized(res, "Unauthorized");
+    unauthorized(res, "Authentication token is required.");
     return;
   }
   const token = header.slice("Bearer ".length).trim();
   if (!token) {
-    unauthorized(res, "Unauthorized");
+    unauthorized(res, "Authentication token is required.");
     return;
   }
 
   try {
     jwt.verify(token, env.JWT_ADMIN_SECRET, { algorithms: ["HS256"] });
     next();
-  } catch {
-    unauthorized(res, "Invalid or expired token");
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      unauthorized(res, "Authentication token has expired.");
+    } else {
+      unauthorized(res, "Invalid authentication token.");
+    }
   }
 };

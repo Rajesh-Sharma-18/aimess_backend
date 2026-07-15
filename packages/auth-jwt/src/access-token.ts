@@ -45,6 +45,15 @@ export function signAccessToken(params: {
   });
 }
 
+/** Maps jsonwebtoken verify failures to stable @aimess/errors codes. */
+function toUnauthorized(error: unknown): UnauthorizedError {
+  if (error instanceof UnauthorizedError) return error;
+  if (error instanceof jwt.TokenExpiredError) {
+    return new UnauthorizedError("AUTH_TOKEN_EXPIRED");
+  }
+  return new UnauthorizedError("AUTH_INVALID_TOKEN");
+}
+
 export function verifyAccessToken(
   token: string,
   secret: string
@@ -56,22 +65,7 @@ export function verifyAccessToken(
       algorithms: ["HS256"],
     }) as AccessTokenPayload;
   } catch (error) {
-    if (error instanceof UnauthorizedError) {
-      throw error;
-    }
-
-    if (error instanceof jwt.TokenExpiredError) {
-      throw new UnauthorizedError("AUTH_TOKEN_EXPIRED");
-    }
-
-    if (
-      error instanceof jwt.JsonWebTokenError ||
-      error instanceof jwt.NotBeforeError
-    ) {
-      throw new UnauthorizedError("AUTH_INVALID_TOKEN");
-    }
-
-    throw new UnauthorizedError("AUTH_INVALID_TOKEN");
+    throw toUnauthorized(error);
   }
 
   if (payload.type !== ACCESS_TOKEN_TYPE || !payload.sub || !payload.sid) {
@@ -87,6 +81,53 @@ export function verifyAccessToken(
     sessionId: payload.sid,
     role,
   };
+}
+
+/** Must match the `type` claim set when backoffice-service signs admin access tokens. */
+export const ADMIN_ACCESS_TOKEN_TYPE = "admin_access" as const;
+
+export type AdminAccessTokenPayload = {
+  /** Admin user id (UUID). */
+  sub: string;
+  /** Admin session id (UUID). */
+  sid: string;
+  type: typeof ADMIN_ACCESS_TOKEN_TYPE;
+};
+
+export type VerifiedAdminAccessToken = {
+  adminId: string;
+  sessionId: string;
+};
+
+/**
+ * Verifies a backoffice admin access token (separate secret + `type` claim
+ * from the user access token). Shared here so services that need to accept
+ * both token kinds — e.g. media-service's upload-url endpoint, used by the
+ * Backoffice avatar upload flow — don't reimplement JWT verification.
+ */
+export function verifyAdminAccessToken(
+  token: string,
+  secret: string
+): VerifiedAdminAccessToken {
+  let payload: AdminAccessTokenPayload;
+
+  try {
+    payload = jwt.verify(token, secret, {
+      algorithms: ["HS256"],
+    }) as AdminAccessTokenPayload;
+  } catch (error) {
+    throw toUnauthorized(error);
+  }
+
+  if (
+    payload.type !== ADMIN_ACCESS_TOKEN_TYPE ||
+    !payload.sub ||
+    !payload.sid
+  ) {
+    throw new UnauthorizedError("AUTH_INVALID_TOKEN");
+  }
+
+  return { adminId: payload.sub, sessionId: payload.sid };
 }
 
 export function extractBearerToken(

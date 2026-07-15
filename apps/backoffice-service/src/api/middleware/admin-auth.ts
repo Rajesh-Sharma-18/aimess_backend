@@ -1,11 +1,8 @@
 import { extractBearerToken } from "@aimess/auth-jwt";
-import {
-  ForbiddenError,
-  NotFoundError,
-  UnauthorizedError,
-} from "@aimess/errors";
+import { NotFoundError, UnauthorizedError } from "@aimess/errors";
 import type { RequestHandler } from "express";
 
+import { assertAdminAccountAccessible } from "../../lib/admin-status-guard.js";
 import { verifyAdminAccessToken } from "../../lib/admin-jwt.js";
 import { getCachedAdminPermissions } from "../../lib/admin-perms-cache.js";
 import { isAdminSessionActiveForRequest } from "../../lib/admin-session-cache.js";
@@ -30,9 +27,7 @@ export const adminAuth: RequestHandler = (req, _res, next) => {
       if (!admin) {
         throw new NotFoundError("ADMIN_NOT_FOUND");
       }
-      if (admin.status !== "ACTIVE") {
-        throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
-      }
+      assertAdminAccountAccessible(admin);
 
       const permissions = await getCachedAdminPermissions(
         adminId,

@@ -13,6 +13,7 @@ import {
   parseExpiresInSeconds,
   signAdminAccessToken,
 } from "../lib/admin-jwt.js";
+import { assertAdminAccountAccessible } from "../lib/admin-status-guard.js";
 import {
   markAdminSessionActive,
   markAdminSessionRevoked,
@@ -141,15 +142,16 @@ export const adminAuthService = {
   ): Promise<AdminAuthResult> {
     const admin = await adminUserRepository.findByEmail(email);
     if (!admin) {
-      throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
+      // Deliberately the same message/status as "wrong password" (below) —
+      // do not throw a distinct not-found error here, or the endpoint becomes
+      // an account-enumeration oracle for attackers probing admin emails.
+      throw new UnauthorizedError("ADMIN_INVALID_CREDENTIALS");
     }
-    if (admin.status !== "ACTIVE") {
-      throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
-    }
+    assertAdminAccountAccessible(admin);
 
     const ok = await verifyPassword(password, admin.passwordHash);
     if (!ok) {
-      throw new UnauthorizedError("AUTH_INVALID_CREDENTIALS");
+      throw new UnauthorizedError("ADMIN_INVALID_CREDENTIALS");
     }
 
     const result = await issueAdminSession(admin, ctx);
@@ -371,9 +373,7 @@ export const adminAuthService = {
     if (!admin) {
       throw new NotFoundError("ADMIN_NOT_FOUND");
     }
-    if (admin.status !== "ACTIVE") {
-      throw new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE");
-    }
+    assertAdminAccountAccessible(admin);
 
     const ok = await verifyPassword(input.currentPassword, admin.passwordHash);
     if (!ok) {

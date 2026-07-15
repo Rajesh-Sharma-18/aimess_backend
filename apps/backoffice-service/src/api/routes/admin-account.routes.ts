@@ -10,6 +10,7 @@ import {
   listAdminAccounts,
   listPermissions,
   updateAdminAccount,
+  updateAdminAccountStatus,
   updateAdminPermissions,
 } from "../controllers/index.js";
 import {
@@ -24,6 +25,7 @@ import {
   createAdminAccountSchema,
   listAdminAccountsQuerySchema,
   updateAdminAccountSchema,
+  updateAdminAccountStatusSchema,
   updateAdminPermissionsSchema,
 } from "../validators/index.js";
 
@@ -85,6 +87,15 @@ adminAccountRoutes.post(
   requirePermission(PERMISSIONS.ADMINS_MANAGE),
   validateParams(adminAccountIdParamSchema),
   deactivateAdminAccount
+);
+// Unified activate/deactivate toggle (Figma spec) — routes onto the same
+// service methods as the two endpoints above, no duplicated business logic.
+adminAccountRoutes.patch(
+  "/admin-accounts/:adminId/status",
+  requirePermission(PERMISSIONS.ADMINS_MANAGE),
+  validateParams(adminAccountIdParamSchema),
+  validateBody(updateAdminAccountStatusSchema),
+  updateAdminAccountStatus
 );
 
 // Permission management for one admin.

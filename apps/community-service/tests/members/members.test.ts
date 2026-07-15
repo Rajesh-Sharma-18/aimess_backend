@@ -22,6 +22,7 @@ jest.mock("../../src/services/community.service.js", () => ({
     leaveCommunity: jest.fn(),
     bulkLeaveCommunities: jest.fn(),
     bulkDeleteCommunities: jest.fn(),
+    deleteCommunityForSelf: jest.fn(),
     transferAdmin: jest.fn(),
     joinCommunity: jest.fn(),
   },
@@ -438,6 +439,71 @@ describe("DELETE /api/v1/communities (bulk delete)", () => {
       removed: 1,
       failed: 1,
     });
+  });
+});
+
+describe("DELETE /:id/me (delete community for self)", () => {
+  it("active member → 200, delegates to the service", async () => {
+    svc.deleteCommunityForSelf.mockResolvedValue(undefined);
+    const res = await request(app)
+      .delete(`/api/v1/communities/${CID}/me`)
+      .set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(svc.deleteCommunityForSelf).toHaveBeenCalledWith(CID, SELF);
+  });
+
+  it("banned member → 200 (idempotent no-op, no error surfaced)", async () => {
+    svc.deleteCommunityForSelf.mockResolvedValue(undefined);
+    const res = await request(app)
+      .delete(`/api/v1/communities/${CID}/me`)
+      .set(auth());
+    expect(res.status).toBe(200);
+  });
+
+  it("admin/owner → 400 with the owner-cannot-delete error", async () => {
+    svc.deleteCommunityForSelf.mockRejectedValue(
+      new BadRequestError("COMMUNITY_OWNER_CANNOT_DELETE")
+    );
+    const res = await request(app)
+      .delete(`/api/v1/communities/${CID}/me`)
+      .set(auth());
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+  });
+
+  it("community not found → 404", async () => {
+    svc.deleteCommunityForSelf.mockRejectedValue(
+      new NotFoundError("COMMUNITY_NOT_FOUND")
+    );
+    const res = await request(app)
+      .delete(`/api/v1/communities/${CID}/me`)
+      .set(auth());
+    expect(res.status).toBe(404);
+  });
+
+  it("membership not found (never a member) → 404", async () => {
+    svc.deleteCommunityForSelf.mockRejectedValue(
+      new NotFoundError("COMMUNITY_MEMBER_NOT_FOUND")
+    );
+    const res = await request(app)
+      .delete(`/api/v1/communities/${CID}/me`)
+      .set(auth());
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 for an invalid community id", async () => {
+    const res = await request(app)
+      .delete("/api/v1/communities/bad-id/me")
+      .set(auth());
+    expect(res.status).toBe(400);
+    expect(svc.deleteCommunityForSelf).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 without auth", async () => {
+    const res = await request(app).delete(`/api/v1/communities/${CID}/me`);
+    expect(res.status).toBe(401);
+    expect(svc.deleteCommunityForSelf).not.toHaveBeenCalled();
   });
 });
 

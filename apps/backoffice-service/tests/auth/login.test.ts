@@ -51,6 +51,7 @@ describe("POST /v1/auth/login", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
+    expect(res.body.message).toBe("Login successful.");
     expect(res.body.data.tokens.accessToken).toBe(TOKENS.accessToken);
     expect(res.body.data.admin.email).toBe(PROFILE.email);
     expect(svc.login).toHaveBeenCalledWith(
@@ -60,9 +61,9 @@ describe("POST /v1/auth/login", () => {
     );
   });
 
-  it("returns 401 for invalid credentials", async () => {
+  it("returns 401 with a generic message for invalid credentials (wrong password)", async () => {
     svc.login.mockRejectedValue(
-      new UnauthorizedError("AUTH_INVALID_CREDENTIALS")
+      new UnauthorizedError("ADMIN_INVALID_CREDENTIALS")
     );
 
     const res = await request(app)
@@ -71,9 +72,23 @@ describe("POST /v1/auth/login", () => {
 
     expect(res.status).toBe(401);
     expect(res.body.success).toBe(false);
+    expect(res.body.message).toBe("Invalid email or password.");
   });
 
-  it("returns 403 when the admin account is not ACTIVE", async () => {
+  it("returns the SAME 401 + message for an unknown email (no account enumeration)", async () => {
+    svc.login.mockRejectedValue(
+      new UnauthorizedError("ADMIN_INVALID_CREDENTIALS")
+    );
+
+    const res = await request(app)
+      .post("/v1/auth/login")
+      .send({ email: "nobody@aimess.local", password: "Sup3rSecret!" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.message).toBe("Invalid email or password.");
+  });
+
+  it("returns 403 when the admin account is disabled", async () => {
     svc.login.mockRejectedValue(new ForbiddenError("ADMIN_ACCOUNT_NOT_ACTIVE"));
 
     const res = await request(app)
@@ -82,6 +97,21 @@ describe("POST /v1/auth/login", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.success).toBe(false);
+    expect(res.body.message).toBe(
+      "Your account has been disabled. Please contact the super administrator."
+    );
+  });
+
+  it("returns 403 with a distinct message when the admin account is deleted", async () => {
+    svc.login.mockRejectedValue(new ForbiddenError("ADMIN_ACCOUNT_DELETED"));
+
+    const res = await request(app)
+      .post("/v1/auth/login")
+      .send({ email: "gone@aimess.local", password: "Sup3rSecret!" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+    expect(res.body.message).toBe("Your account is no longer available.");
   });
 
   it.each([

@@ -59,6 +59,11 @@ import {
   assertCommunityRoomWritable,
   getCommunityLiveRole,
 } from "../lib/access-guard.js";
+import {
+  computeDateAroundCursors,
+  EMPTY_AROUND_CURSORS,
+  type AroundCursors,
+} from "../lib/around-cursors.js";
 import { isDuplicateKeyError } from "../lib/db-errors.js";
 import {
   attachAlbumMessages,
@@ -1334,7 +1339,9 @@ export class CommunityMessageService {
     userId: string;
     messageId: string;
     limit: number;
-  }): Promise<{ items: CommunityMessageWire[]; total: number }> {
+  }): Promise<
+    { items: CommunityMessageWire[]; total: number } & AroundCursors
+  > {
     const { member, bannedAtCutoff } = await assertCommunityReadAccess(
       this.roomRepo,
       this.memberRepo,
@@ -1344,7 +1351,7 @@ export class CommunityMessageService {
     const viewerIsActiveMember = isActiveMember(member);
     const anchor = await this.messageRepo.findById(params.messageId);
     if (!anchor) {
-      return { items: [], total: 0 };
+      return { items: [], total: 0, ...EMPTY_AROUND_CURSORS };
     }
     const [rows, members, total] = await Promise.all([
       this.messageRepo.findAroundDate({
@@ -1367,11 +1374,30 @@ export class CommunityMessageService {
       }),
     ]);
     const urlMap = await this.resolveRowsMedia(rows);
+    // Bidirectional continuation: probe one visible row strictly beyond each
+    // window edge (reusing the keyset history query, which applies the exact
+    // same visibility/ban filter), so the client can page up AND down.
+    const cursors = await computeDateAroundCursors(rows, (direction, ts, id) =>
+      this.messageRepo
+        .findByRoomIdTimeline({
+          roomId: params.roomId,
+          userId: params.userId,
+          direction,
+          ts,
+          boundaryId: id,
+          inclusive: false,
+          limit: 1,
+          viewerIsActiveMember,
+          readCutoff: bannedAtCutoff,
+        })
+        .then((r) => r.messages)
+    );
     return {
       items: rows.map((m) =>
         this.toWire(m, members, urlMap, undefined, params.userId)
       ),
       total,
+      ...cursors,
     };
   }
 

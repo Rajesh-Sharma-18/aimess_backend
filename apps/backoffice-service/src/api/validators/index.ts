@@ -175,8 +175,10 @@ export {
 export {
   roleKeyEnum,
   adminAccountStatusEnum,
+  adminAccountWireStatusEnum,
   createAdminAccountSchema,
   updateAdminAccountSchema,
+  updateAdminAccountStatusSchema,
   updateAdminPermissionsSchema,
   updateMeSchema,
   changePasswordSchema,
@@ -184,6 +186,7 @@ export {
   adminAccountIdParamSchema,
   type CreateAdminAccountInput,
   type UpdateAdminAccountInput,
+  type UpdateAdminAccountStatusInput,
   type UpdateAdminPermissionsInput,
   type UpdateMeInput,
   type ChangePasswordInput,

@@ -308,7 +308,10 @@ function seqPaginationParams() {
       required: false,
       schema: { type: "string" as const },
       description:
-        "Message ID to center the fetch around — returns limit/2 messages before and after. Mutually exclusive with before_seq and after_seq.",
+        "Message ID to center the fetch around — returns limit/2 messages before and after (ascending, INCLUDING the target). " +
+        "Mutually exclusive with before_seq and after_seq. The response adds bidirectional continuation on top of the usual " +
+        "timeline shape: `hasMoreOlder`/`hasMoreNewer` (booleans) and `olderCursor`/`newerCursor` — both are plain `sequenceNumber` " +
+        "values you feed straight back as `before_seq` (older) / `after_seq` (newer). The legacy `hasMore`/`nextCursor` mirror the OLDER direction.",
     },
     {
       name: "before_ts",

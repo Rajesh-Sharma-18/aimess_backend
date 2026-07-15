@@ -436,6 +436,23 @@ export class PrivateMessageRepository {
     return [...beforeKept, ...afterKept];
   }
 
+  /**
+   * Which of `ids` are still live (exist in this room and not deleted-for-
+   * everyone). One batched query — used by the pins list to stamp each pin's
+   * `isAvailable` so the banner can show a "pinned-but-deleted" state without
+   * an N+1. Per-user delete-for-me is intentionally NOT considered here: it's a
+   * per-viewer concern the client resolves via the message-context call when it
+   * actually navigates (mirrors community's `deletedForAll`-based availability).
+   */
+  async findLiveIds(roomId: string, ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const rows = await this.prisma.privateMessage.findMany({
+      where: { roomId, id: { in: ids }, isDeleted: false },
+      select: { id: true },
+    });
+    return new Set(rows.map((r) => r.id));
+  }
+
   async searchByText(
     roomId: string,
     query: string,

@@ -2,7 +2,7 @@ import type { RequestHandler } from "express";
 
 import { getRequestContext } from "../../lib/request-context.js";
 import { adminAuthService } from "../../services/index.js";
-import { HTTP_STATUS } from "@aimess/constants";
+import { HTTP_STATUS, t } from "@aimess/constants";
 import type {
   ChangePasswordInput,
   UpdateMeInput,
@@ -59,7 +59,7 @@ export const changePassword: RequestHandler = (req, res, next) => {
       );
       res.status(HTTP_STATUS.OK).json({
         success: true,
-        message: "Password changed successfully.",
+        message: t("AUTH_CHANGE_PASSWORD_SUCCESS", req.locale),
         data: { passwordChanged: true },
       });
     } catch (error) {

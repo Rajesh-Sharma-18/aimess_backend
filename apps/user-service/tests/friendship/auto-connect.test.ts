@@ -30,6 +30,11 @@ jest.mock("../../src/messaging/publish-friendship.js", () => ({
   publishFriendshipCreatedSafe: jest.fn(),
   publishFriendshipDeletedSafe: jest.fn(),
 }));
+jest.mock("../../src/grpc/messaging.client.js", () => ({
+  messagingGrpcClient: {
+    getOrCreatePrivateRooms: jest.fn(async () => []),
+  },
+}));
 
 import request from "supertest";
 
@@ -38,6 +43,7 @@ import { friendshipRepository } from "../../src/repositories/friendship.reposito
 import { userProfileRepository } from "../../src/repositories/user-profile.repository.js";
 import { userCache } from "../../src/lib/user-cache.js";
 import { publishFriendAcceptedSafe } from "../../src/messaging/publish-friendship.js";
+import { messagingGrpcClient } from "../../src/grpc/messaging.client.js";
 import { TEST_USER_ID, bearer, makeAccessToken } from "../helpers/auth.js";
 
 // Typed mock helpers
@@ -45,6 +51,7 @@ const fRepo = friendshipRepository as unknown as Record<string, jest.Mock>;
 const pRepo = userProfileRepository as unknown as Record<string, jest.Mock>;
 const cache = userCache as unknown as Record<string, jest.Mock>;
 const accepted = publishFriendAcceptedSafe as unknown as jest.Mock;
+const grpc = messagingGrpcClient as unknown as Record<string, jest.Mock>;
 
 const ME = TEST_USER_ID;
 const auth = () => bearer(makeAccessToken());
@@ -104,6 +111,7 @@ describe("POST /api/v1/users/friends/auto-connect", () => {
     // The caller's profile exists by default (provisioned). The missing-profile
     // race is exercised explicitly in its own test.
     pRepo.findByUserId.mockResolvedValue({ userId: ME });
+    grpc.getOrCreatePrivateRooms.mockResolvedValue([]);
   });
 
   // --- Auth ---
@@ -387,9 +395,92 @@ describe("POST /api/v1/users/friends/auto-connect", () => {
     expect(fRepo.autoAcceptBatch).not.toHaveBeenCalled();
   });
 
+  // --- Private rooms: ensure rooms exist for all friends ---
+
+  it("14a. When friends are created, getOrCreatePrivateRooms is called for all peers", async () => {
+    pRepo.findAllActiveExcept.mockResolvedValue([
+      activeUser(PEER_A),
+      activeUser(PEER_B),
+    ]);
+    fRepo.autoAcceptBatch.mockResolvedValue([
+      createdRow(PEER_A),
+      createdRow(PEER_B),
+    ]);
+    grpc.getOrCreatePrivateRooms.mockResolvedValue([
+      { peerUserId: PEER_A, roomId: "prv_a" },
+      { peerUserId: PEER_B, roomId: "prv_b" },
+    ]);
+
+    const res = await request(app).post(URL).set(auth());
+
+    expect(res.status).toBe(200);
+    expect(grpc.getOrCreatePrivateRooms).toHaveBeenCalledWith(
+      ME,
+      expect.arrayContaining([PEER_A, PEER_B])
+    );
+    expect(res.body.data.friends).toEqual(
+      expect.arrayContaining([
+        { userId: PEER_A, roomId: "prv_a" },
+        { userId: PEER_B, roomId: "prv_b" },
+      ])
+    );
+  });
+
+  it("14b. Existing friends also get rooms created if missing", async () => {
+    pRepo.findAllActiveExcept.mockResolvedValue([
+      activeUser(PEER_A),
+      activeUser(PEER_B),
+      activeUser(PEER_C),
+    ]);
+    fRepo.findAllForUser.mockResolvedValue([
+      existingRow(PEER_B, "ACCEPTED"),
+      existingRow(PEER_C, "ACCEPTED"),
+    ]);
+    fRepo.autoAcceptBatch.mockResolvedValue([createdRow(PEER_A)]);
+    grpc.getOrCreatePrivateRooms.mockResolvedValue([
+      { peerUserId: PEER_A, roomId: "prv_a" },
+      { peerUserId: PEER_B, roomId: "prv_b" },
+      { peerUserId: PEER_C, roomId: "prv_c" },
+    ]);
+
+    const res = await request(app).post(URL).set(auth());
+
+    expect(res.status).toBe(200);
+    expect(grpc.getOrCreatePrivateRooms).toHaveBeenCalledWith(
+      ME,
+      expect.arrayContaining([PEER_A, PEER_B, PEER_C])
+    );
+    expect(res.body.data.friends).toEqual(
+      expect.arrayContaining([
+        { userId: PEER_A, roomId: "prv_a" },
+        { userId: PEER_B, roomId: "prv_b" },
+        { userId: PEER_C, roomId: "prv_c" },
+      ])
+    );
+    expect(res.body.data.alreadyFriends).toBe(2);
+    expect(res.body.data.friendsCreated).toBe(1);
+  });
+
+  it("14c. Empty friends array when no friends exist", async () => {
+    pRepo.findAllActiveExcept.mockResolvedValue([
+      activeUser(PEER_A),
+      activeUser(PEER_B),
+    ]);
+    fRepo.findAllBlocks.mockResolvedValue([
+      { blockerId: ME, blockedId: PEER_A },
+      { blockerId: ME, blockedId: PEER_B },
+    ]);
+
+    const res = await request(app).post(URL).set(auth());
+
+    expect(res.status).toBe(200);
+    expect(grpc.getOrCreatePrivateRooms).not.toHaveBeenCalled();
+    expect(res.body.data.friends).toEqual([]);
+  });
+
   // --- Argument shape ---
 
-  it("14. autoAcceptBatch receives pairs with requesterId === callerId", async () => {
+  it("14d. autoAcceptBatch receives pairs with requesterId === callerId", async () => {
     pRepo.findAllActiveExcept.mockResolvedValue([
       activeUser(PEER_A),
       activeUser(PEER_B),

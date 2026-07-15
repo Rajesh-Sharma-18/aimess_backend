@@ -11,16 +11,11 @@ export const initiateDeviceLinkSchema = z.object({
 
 export type InitiateDeviceLinkInput = z.infer<typeof initiateDeviceLinkSchema>;
 
-export const deviceLinkStatusQuerySchema = z.object({
+/** Telegram-style: scanning IS logging in — no separate approve step. */
+export const scanDeviceLinkSchema = z.object({
   linkToken: z.string().trim().min(1, "Link token is required"),
-  pollSecret: z.string().trim().min(1, "Poll secret is required"),
-});
-
-export type DeviceLinkStatusQuery = z.infer<typeof deviceLinkStatusQuerySchema>;
-
-export const approveDeviceLinkSchema = z.object({
-  linkToken: z.string().trim().min(1, "Link token is required"),
+  appVersion: optionalDeviceField,
   deviceLabel: z.string().trim().max(100).optional(),
 });
 
-export type ApproveDeviceLinkInput = z.infer<typeof approveDeviceLinkSchema>;
+export type ScanDeviceLinkInput = z.infer<typeof scanDeviceLinkSchema>;

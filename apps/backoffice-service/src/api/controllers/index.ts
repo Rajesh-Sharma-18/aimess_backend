@@ -83,6 +83,7 @@ export {
   updateAdminAccount,
   activateAdminAccount,
   deactivateAdminAccount,
+  updateAdminAccountStatus,
   listPermissions,
   getAdminPermissions,
   updateAdminPermissions,

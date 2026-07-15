@@ -30,11 +30,13 @@ beforeEach(() => {
 
 describe("GET /api/chat/private/conversations", () => {
   it("POSITIVE: returns enriched, paginated conversations for the caller", async () => {
-    mocks.privateRoomRepo.getConversationList.mockResolvedValue([
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([
       {
         roomId: "prv_1",
         participants: [TEST_USER_ID, "peer-1"],
         lastMessageAt: new Date(1000),
+        lastMessage: null,
+        unreadCountByUser: { [TEST_USER_ID]: 3 },
         mutedBy: {},
         pinnedCount: 0,
       },
@@ -48,11 +50,23 @@ describe("GET /api/chat/private/conversations", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.data).toHaveLength(1);
-    expect(res.body.data.data[0].peer.id).toBe("peer-1");
+    expect(res.body.data.data[0].peerId).toBe("peer-1");
+    // Community-style additive fields.
+    expect(res.body.data.data[0].unreadMessageCount).toBe(3);
+    expect(typeof res.body.data.data[0].lastActivityAt).toBe("number");
+    expect(res.body.data.data[0].lastActivity).toMatchObject({
+      type: "message",
+    });
+    expect(res.body.data.data[0].avatar).toBeDefined();
+    // Peer fields are flattened onto the item — no nested `peer` object.
+    expect(res.body.data.data[0].peer).toBeUndefined();
+    // No top-level pagination duplicates — only nested under `pagination`.
+    expect(res.body.data.hasMore).toBeUndefined();
+    expect(res.body.data.nextCursor).toBeUndefined();
   });
 
   it("EDGE: empty conversation list → 200 with empty data", async () => {
-    mocks.privateRoomRepo.getConversationList.mockResolvedValue([]);
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([]);
     mocks.privateRoomRepo.countConversations.mockResolvedValue(0);
 
     const res = await request(app)
@@ -66,6 +80,51 @@ describe("GET /api/chat/private/conversations", () => {
   it("SECURITY: 401 without a token", async () => {
     const res = await request(app).get("/api/chat/private/conversations");
     expect(res.status).toBe(401);
+  });
+
+  it("PAGINATION: hasMore is exact (over-fetch by limit+1), matching community's listMine contract", async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => ({
+      roomId: `prv_${i}`,
+      participants: [TEST_USER_ID, `peer-${i}`],
+      lastMessageAt: new Date(3000 - i),
+      lastMessage: null,
+      unreadCountByUser: {},
+      mutedBy: {},
+      pinnedCount: 0,
+    }));
+    // limit=2 → service over-fetches 3; repo returns all 3 → hasMore must be true.
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue(rows);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(3);
+
+    const res = await request(app)
+      .get("/api/chat/private/conversations?limit=2")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.data).toHaveLength(2);
+    expect(res.body.data.pagination.hasMore).toBe(true);
+    expect(res.body.data.pagination.nextCursor).toBe(
+      String(new Date(2999).getTime())
+    );
+    expect(mocks.privateRoomRepo.getInboxConversations).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 3, direction: "before" })
+    );
+  });
+
+  it("PAGINATION: before_ts is honored as the cursor boundary", async () => {
+    mocks.privateRoomRepo.getInboxConversations.mockResolvedValue([]);
+    mocks.privateRoomRepo.countConversations.mockResolvedValue(0);
+
+    await request(app)
+      .get("/api/chat/private/conversations?before_ts=1717000000000")
+      .set(bearer(makeAccessToken()));
+
+    expect(mocks.privateRoomRepo.getInboxConversations).toHaveBeenCalledWith(
+      expect.objectContaining({
+        direction: "before",
+        ts: new Date(1717000000000),
+      })
+    );
   });
 });
 
@@ -118,6 +177,114 @@ describe("POST /api/chat/private/rooms/:peerId (get-or-create)", () => {
 
   it("SECURITY: 401 without a token", async () => {
     const res = await request(app).post("/api/chat/private/rooms/peer-1");
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /api/chat/private/rooms/:peerId (room details)", () => {
+  it("POSITIVE: returns community-aligned room details with isOffline derived from presence", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue({
+      roomId: "prv_1",
+      participants: [TEST_USER_ID, "peer-1"],
+      mutedBy: {},
+      unreadCountByUser: { [TEST_USER_ID]: 2 },
+      lastMessage: null,
+      lastMessageAt: new Date(1000),
+      createdAt: new Date(500),
+      updatedAt: new Date(1500),
+    });
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([
+        [
+          "peer-1",
+          {
+            displayName: "Peer One",
+            memberId: "peer1",
+            isDeletedUser: false,
+          },
+        ],
+      ])
+    );
+    // isOnline/isOffline come from PresenceService (presence:user:<id> Redis
+    // key), not the user snapshot — the snapshot never carries live presence.
+    mocks.cacheRepo.getUserPresences.mockResolvedValue(
+      new Map([["peer-1", "online"]])
+    );
+
+    const res = await request(app)
+      .get("/api/chat/private/rooms/peer-1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.id).toBe("prv_1");
+    expect(res.body.data.roomId).toBe("prv_1");
+    expect(res.body.data.peerId).toBe("peer-1");
+    expect(res.body.data.user).toMatchObject({
+      id: "peer-1",
+      displayName: "Peer One",
+      memberId: "peer1",
+      isDeletedUser: false,
+    });
+    expect(res.body.data.avatar).toBeDefined();
+    expect(res.body.data.isOnline).toBe(true);
+    expect(res.body.data.isOffline).toBe(false);
+    expect(res.body.data.isMuted).toBe(false);
+    expect(res.body.data.muteUntil).toBeNull();
+    expect(res.body.data.unreadMessageCount).toBe(2);
+    expect(typeof res.body.data.createdAt).toBe("number");
+    expect(typeof res.body.data.updatedAt).toBe("number");
+  });
+
+  it("POSITIVE: isOffline is true when the peer is offline", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue({
+      roomId: "prv_1",
+      participants: [TEST_USER_ID, "peer-1"],
+      mutedBy: {},
+      unreadCountByUser: {},
+      lastMessage: null,
+      lastMessageAt: new Date(1000),
+      createdAt: new Date(500),
+      updatedAt: new Date(1500),
+    });
+    mocks.cacheRepo.getUserSnapshots.mockResolvedValue(
+      new Map([
+        [
+          "peer-1",
+          {
+            displayName: "Peer One",
+            memberId: "peer1",
+            isDeletedUser: false,
+          },
+        ],
+      ])
+    );
+    mocks.cacheRepo.getUserPresences.mockResolvedValue(
+      new Map([["peer-1", "offline"]])
+    );
+
+    const res = await request(app)
+      .get("/api/chat/private/rooms/peer-1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.isOnline).toBe(false);
+    expect(res.body.data.isOffline).toBe(true);
+  });
+
+  it("NEGATIVE/SECURITY: 403 when the two users are not friends and no room exists yet", async () => {
+    mocks.privateRoomRepo.findByParticipantsKey.mockResolvedValue(null);
+    mocks.userServiceClient.checkFriendship.mockResolvedValue(false);
+
+    const res = await request(app)
+      .get("/api/chat/private/rooms/peer-1")
+      .set(bearer(makeAccessToken()));
+
+    expect(res.status).toBe(403);
+  });
+
+  it("SECURITY: 401 without a token", async () => {
+    const res = await request(app).get("/api/chat/private/rooms/peer-1");
     expect(res.status).toBe(401);
   });
 });

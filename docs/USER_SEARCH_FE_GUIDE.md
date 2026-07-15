@@ -96,13 +96,33 @@ Every item is one of two shapes, discriminated by `type`:
   "avatarUrlExpiresIn": 3600,
   "avatar": { "url": "...", "expiresIn": 3600 },
   "isOnline": false,
-  "roomId": "room_abc123"
+  "roomId": "room_abc123",
+  "isFriend": true,
+  "relationshipStatus": "FRIEND",
+  "friendshipId": "fr_abc123"
 }
 ```
 
 - `roomId` is `null` when no private room exists with this user yet — treat
   the "message" action for that item as "start a new conversation" rather
   than "open room `roomId`".
+- `isFriend` is the explicit friendship indicator — `true` only for an
+  **ACCEPTED** friendship, **independent of `roomId`**. A friend you've never
+  messaged lands in `other` with `roomId: null` **and** `isFriend: true`.
+  Never infer friendship from `roomId`.
+- `relationshipStatus` (`FRIEND` | `PENDING_IN` | `PENDING_OUT` | `NONE`) is
+  the richer form; `PENDING_IN` = they requested you, `PENDING_OUT` = you
+  requested them. `friendshipId` is the row id for accept/cancel/unfriend
+  actions (`null` when `NONE`). Group items carry none of these fields.
+
+Distinguish the three states the FE cares about from any `USER` item:
+
+| State         | `isFriend` | `roomId` |                               |
+| ------------- | ---------- | -------- | ----------------------------- |
+| Existing chat | either     | non-null | private conversation exists   |
+| Friend        | `true`     | any      | friends regardless of a room  |
+| Stranger      | `false`    | `null`   | not a friend, no conversation |
+
 - `avatarUrl`/`avatarUrlExpiresIn` are the legacy flat fields; `avatar` is
   the nested `MediaObject` — use whichever your client already standardizes
   on, both are populated identically.
@@ -135,6 +155,11 @@ Every item is one of two shapes, discriminated by `type`:
 | `other`  | Private Users you have **no** room with + Groups you are **not** an active member of. Never duplicates anything already shown in `recent` or `chat`.                                                   | 10 (paginated) |
 
 Blocked users (either direction) never appear in any section.
+
+**`chat`/`other` is a conversation split, not a friendship split.** It reflects
+only whether a private room exists, not whether the two users are friends. To
+render friendship state (badge, "Add friend" button, pending request), read
+`isFriend` / `relationshipStatus` on each item — not which section it came from.
 
 ### Suggested FE flow
 

@@ -15,7 +15,6 @@ import {
 } from "../lib/login-identifier.js";
 import { buildSessionContext } from "../lib/session-context.js";
 import { issueAuthTokens } from "../lib/token.js";
-import { publishSecurityNewLoginSafe } from "../messaging/publish-auth-security.js";
 import { publishUserCreatedSafe } from "../messaging/publish-user-created.js";
 import { authRepository } from "../repositories/auth.repository.js";
 import type { LoginResult, RegisterResult } from "../types/index.js";
@@ -41,7 +40,10 @@ export const authService = {
     const { tokens } = await issueAuthTokens(
       user.id,
       user.role === "ADMIN" ? "ADMIN" : "USER",
-      session
+      session,
+      undefined,
+      // First session on a brand-new account — no other devices to alert.
+      { notifyNewLogin: false }
     );
 
     publishUserCreatedSafe({
@@ -103,11 +105,9 @@ export const authService = {
 
     await authRepository.recordSuccessfulLogin(user.id);
     await authRepository.mergeFcmTokens(user.id, input.fcmTokens);
-    publishSecurityNewLoginSafe({
-      userId: user.id,
-      at: new Date().toISOString(),
-    });
 
+    // The "New login detected" alert now fires from issueAuthTokens (the shared
+    // new-session funnel) once the session row + id + device metadata exist.
     const session = buildSessionContext(req);
     const { tokens } = await issueAuthTokens(
       user.id,

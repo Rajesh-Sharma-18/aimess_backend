@@ -357,11 +357,43 @@ const privateConversations = {
     operationId: "listConversations",
     summary: "List conversations",
     description:
-      "Cursor-paginated list of the authenticated user's private rooms, ordered by last message.",
+      "Cursor-paginated list of the authenticated user's private rooms, ordered by latest activity desc. " +
+      "Query params, pagination, response envelope (`{pagination,data}`, no top-level hasMore/nextCursor " +
+      "duplicates), sorting, avatar/media resolution, `lastActivity`, and `unreadMessageCount` follow the " +
+      "exact same contract as `GET /communities/mine`: only `before_ts`/`after_ts`/`limit` are accepted " +
+      "(mutually exclusive `before_ts`/`after_ts`, `limit` max 50 default 20), `pagination.hasMore`/`nextCursor` " +
+      "are exact, and `nextCursor` is an epoch-ms string fed back verbatim as the next `before_ts`/`after_ts`. " +
+      "Each item is a lean, community-list-style object with the peer's fields flattened directly onto it " +
+      "(no nested `peer` object): `roomId`, `participants`, `peerId`, `displayName`, `memberId`, `avatar`, " +
+      "`avatarUrl`, `avatarUrlExpiresIn`, `isDeletedUser`, `isOnline`, `unreadMessageCount`, `lastActivityAt` " +
+      "(epoch ms, never an ISO string), `lastActivity`, `isMuted`. Internal per-user maps (mute/archive/delete/ " +
+      "read state for OTHER participants) and redundant raw fields (`lastMessage`, `lastMessageAt`, " +
+      "`createdAt`/`updatedAt`) are never included.",
     security: [{ bearerAuth: [] }],
-    parameters: [cursorParam(), limitParam(20)],
+    parameters: [
+      {
+        name: "before_ts",
+        in: "query" as const,
+        required: false,
+        schema: { type: "integer" as const, minimum: 1 },
+        description:
+          "Epoch ms. Returns rooms with lastActivityAt <= before_ts, newest-first.",
+      },
+      {
+        name: "after_ts",
+        in: "query" as const,
+        required: false,
+        schema: { type: "integer" as const, minimum: 1 },
+        description:
+          "Epoch ms. Returns rooms with lastActivityAt >= after_ts, oldest-first.",
+      },
+      limitParam(20, 50),
+    ],
     responses: {
-      ...successResponse("Conversation list", "ChatPrivateRoomList"),
+      ...successResponse(
+        "Conversation list",
+        "ChatPrivateConversationListData"
+      ),
       "401": unauthorized,
     },
   },
@@ -406,6 +438,31 @@ const chatInbox = {
 };
 
 const privateRoomByPeer = {
+  get: {
+    tags: ["Chat — Private"],
+    operationId: "getPrivateRoomDetails",
+    summary: "Get private room details",
+    description:
+      "Returns the private room details for the peer (get-or-create + friendship gate, same as the POST). " +
+      "Response shape mirrors `GET /communities/{id}` field-for-field wherever applicable " +
+      "(`id`, `avatar`, `isMuted`, `muteUntil`, `createdAt`, `updatedAt`), plus the private-chat-specific " +
+      "`user`/presence fields and `isOffline` (negation of the existing `isOnline` presence field).",
+    security: [{ bearerAuth: [] }],
+    parameters: [
+      {
+        name: "peerId",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+        description: "User ID of the peer.",
+      },
+    ],
+    responses: {
+      ...successResponse("Private room details", "ChatPrivateRoomDetails"),
+      "401": unauthorized,
+      "403": forbidden,
+    },
+  },
   post: {
     tags: ["Chat — Private"],
     operationId: "getOrCreatePrivateRoom",
@@ -1359,7 +1416,11 @@ const communityMessages = {
       "- Response shape: `ChatCommunityIncrementalSync` (`data[]`, `hasMore`, `nextCursor`) — **no pagination wrapper**.\n" +
       "- Store `nextCursor` as the next `after_ts` to page forward or re-sync.\n\n" +
       "**Jump-to-message** (`around=<messageId>`):\n" +
-      "- Returns ~limit/2 messages on each side of the anchor. Mutually exclusive with before_ts/after_ts.",
+      "- Returns ~limit/2 messages on each side of the anchor (ascending, INCLUDING the target). Mutually exclusive with before_ts/after_ts.\n" +
+      "- Adds **bidirectional continuation** on top of the `ChatCommunityMessagePage` shape so the client can page BOTH ways from the landing point: " +
+      '`hasMoreOlder`/`hasMoreNewer` (booleans) and `olderCursor`/`newerCursor`. Feed `olderCursor` (a compound `"<ms>_<id>"`) back as `before_ts` to page older, ' +
+      "and `newerCursor` (plain epoch-ms) back as `after_ts` to page newer — no new cursor scheme, the existing params consume them directly. " +
+      "The legacy `hasMore`/`nextCursor` mirror the OLDER direction for single-direction clients. `pinnedMessage` is included as usual.",
     security: [{ bearerAuth: [] }],
     parameters: [
       {
@@ -1375,7 +1436,9 @@ const communityMessages = {
         required: false,
         schema: { type: "string", minLength: 1, maxLength: 100 },
         description:
-          "Message ID to anchor a jump-to-message window. Returns ~limit/2 messages on each side. Mutually exclusive with before_ts/after_ts.",
+          "Message ID to anchor a jump-to-message window. Returns ~limit/2 messages on each side (INCLUDING the target). " +
+          "Mutually exclusive with before_ts/after_ts. The response adds `hasMoreOlder`/`hasMoreNewer` + `olderCursor` " +
+          '(→ `before_ts`, compound `"<ms>_<id>"`) / `newerCursor` (→ `after_ts`, epoch-ms) so the client can page both directions.',
       },
       limitParam(30),
     ],

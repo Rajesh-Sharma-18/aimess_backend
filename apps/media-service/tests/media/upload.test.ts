@@ -54,6 +54,10 @@ import {
   makeAccessToken,
   makeExpiredAccessToken,
   makeForgedAccessToken,
+  makeAdminAccessToken,
+  makeExpiredAdminAccessToken,
+  makeForgedAdminAccessToken,
+  TEST_ADMIN_ID,
 } from "../helpers/auth.js";
 
 const auth = () => bearer(makeAccessToken());
@@ -320,5 +324,62 @@ describe("POST /api/v1/media/upload-url", () => {
       });
 
     expect(res.status).toBe(401);
+  });
+
+  it("200: valid Admin Access Token uploads USER_AVATAR, owned by the admin id", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(bearer(makeAdminAccessToken()))
+      .send({
+        category: "USER_AVATAR",
+        contentType: "image/png",
+        contentLength: 1024,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.objectKey).toMatch(
+      new RegExp(`^avatars/${TEST_ADMIN_ID}/`)
+    );
+  });
+
+  it("401: expired admin token", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(bearer(makeExpiredAdminAccessToken()))
+      .send({
+        category: "USER_AVATAR",
+        contentType: "image/png",
+        contentLength: 1024,
+      });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("401: forged admin token", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(bearer(makeForgedAdminAccessToken()))
+      .send({
+        category: "USER_AVATAR",
+        contentType: "image/png",
+        contentLength: 1024,
+      });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("existing user upload flow is unaffected by admin-token support", async () => {
+    const res = await request(app)
+      .post("/api/v1/media/upload-url")
+      .set(auth())
+      .send({
+        category: "USER_AVATAR",
+        contentType: "image/png",
+        contentLength: 1024,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.objectKey).toMatch(/^avatars\//);
   });
 });

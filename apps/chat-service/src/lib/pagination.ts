@@ -114,6 +114,35 @@ export function buildTimelineResponse<T>(
 }
 
 /**
+ * Extend a jump-to-message (`?around=`) page with bidirectional continuation
+ * signals. Additive over `buildTimelineResponse`: the existing single-direction
+ * `hasMore`/`nextCursor` are mapped to the OLDER direction (default scroll-up)
+ * so pre-existing single-direction clients still page up, while new clients read
+ * `hasMoreOlder`/`hasMoreNewer`/`olderCursor`/`newerCursor` to page BOTH ways
+ * from the anchor. See {@link AroundCursors}.
+ */
+export function buildAroundResponse<T>(
+  items: T[],
+  totalCount: number,
+  limit: number,
+  cursors: {
+    hasMoreOlder: boolean;
+    hasMoreNewer: boolean;
+    olderCursor: string | null;
+    newerCursor: string | null;
+  }
+): PaginatedResponse<T> & typeof cursors {
+  const base = buildTimelineResponse(
+    items,
+    totalCount,
+    limit,
+    cursors.hasMoreOlder,
+    cursors.olderCursor
+  );
+  return { ...base, ...cursors };
+}
+
+/**
  * Parse a timestamp pagination cursor (`before_ts` / `after_ts`). The wire value
  * is EITHER a plain epoch-ms ("1782133107521") OR the opaque COMPOUND keyset
  * cursor "<ms>_<objectId>" handed back as `nextCursor`. Returns the millisecond

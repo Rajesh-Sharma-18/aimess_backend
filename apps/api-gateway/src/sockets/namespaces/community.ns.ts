@@ -3,7 +3,7 @@ import type { Server as SocketIOServer, Namespace, Socket } from "socket.io";
 import type { Redis } from "ioredis";
 import { z } from "zod";
 import { logger } from "@aimess/logger";
-import { gatewaySocketAuthMiddleware } from "../auth.middleware.js";
+import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import type { CommunityClient } from "../../grpc/clients/community.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
@@ -225,7 +225,7 @@ export function registerCommunityNamespace(
   mediaClient: MediaClient
 ): void {
   const community: Namespace = io.of("/community");
-  community.use(gatewaySocketAuthMiddleware);
+  community.use(createGatewaySocketAuthMiddleware(redisPub));
 
   // Process-local, best-effort cache of communities currently CLOSED/SUSPENDED.
   // Populated reactively from the community:closed/community:reopened Redis
@@ -469,8 +469,9 @@ export function registerCommunityNamespace(
   );
 
   community.on("connection", (socket: Socket) => {
-    const { userId, locale } = socket.data;
+    const { userId, sessionId, locale } = socket.data;
     void socket.join(`user:${userId}`);
+    void socket.join(`session:${sessionId}`);
     logger.debug(`/community connected userId=${userId}`);
 
     // Resolve sender identity ONCE per connection (gRPC snapshot + avatar
