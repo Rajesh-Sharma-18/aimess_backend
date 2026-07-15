@@ -7,6 +7,10 @@ import type { CallRepository } from "../repositories/call.repository.js";
 import type { FriendshipRepository } from "../repositories/friendship.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { LiveKitCredentials, LiveKitService } from "./livekit.service.js";
+import type {
+  CallChatMessageService,
+  CallChatMessageOutcome,
+} from "./call-chat-message.service.js";
 import type { CallPrivacy } from "../grpc/user-snapshot.client.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 import { CallStatus, CallType } from "../types/enums.js";
@@ -36,7 +40,8 @@ export class CallService {
     private readonly livekit: LiveKitService,
     private readonly friendshipRepo: FriendshipRepository,
     private readonly getCallPrivacy: GetCallPrivacyFn,
-    private readonly getUserSnapshot: GetUserSnapshotFn
+    private readonly getUserSnapshot: GetUserSnapshotFn,
+    private readonly callChatMessages?: Pick<CallChatMessageService, "post">
   ) {}
 
   async initiateCall(params: {
@@ -110,7 +115,9 @@ export class CallService {
       calleeId: params.calleeId,
       type: params.type || CallType.AUDIO,
       status: CallStatus.RINGING,
-      privateRoomId: params.privateRoomId ?? null,
+      // Always persist the canonical room we authorized above. The website
+      // normally omits privateRoomId and lets us derive it from the pair.
+      privateRoomId: room.roomId,
     });
 
     // Mint both LiveKit tokens up-front + fetch caller snapshot for the ringing
@@ -163,10 +170,22 @@ export class CallService {
     if (call.status !== CallStatus.RINGING)
       throw new BadRequestError("CALL_NOT_RINGING");
 
-    const updated = await this.callRepo.updateStatus(params.callId, {
+    const answeredAt = new Date();
+    const { won } = await this.callRepo.claimStatusTransition(
+      params.callId,
+      CallStatus.RINGING,
+      {
+        status: CallStatus.IN_PROGRESS,
+        answeredAt,
+      }
+    );
+    if (!won) throw new BadRequestError("CALL_NOT_RINGING");
+    const updated: Call = {
+      ...call,
       status: CallStatus.IN_PROGRESS,
-      answeredAt: new Date(),
-    });
+      answeredAt,
+      updatedAt: answeredAt,
+    };
 
     await this.redis
       .publish(
@@ -196,11 +215,24 @@ export class CallService {
     if (call.status !== CallStatus.RINGING)
       throw new BadRequestError("CALL_NOT_RINGING");
 
-    const updated = await this.callRepo.updateStatus(params.callId, {
+    const endedAt = new Date();
+    const { won } = await this.callRepo.claimStatusTransition(
+      params.callId,
+      CallStatus.RINGING,
+      {
+        status: CallStatus.DECLINED,
+        endedAt,
+        endedBy: params.calleeId,
+      }
+    );
+    if (!won) throw new BadRequestError("CALL_NOT_RINGING");
+    const updated: Call = {
+      ...call,
       status: CallStatus.DECLINED,
-      endedAt: new Date(),
+      endedAt,
       endedBy: params.calleeId,
-    });
+      updatedAt: endedAt,
+    };
 
     await this.redis
       .publish(
@@ -239,15 +271,31 @@ export class CallService {
     const endedAt = new Date();
     const wasRinging = call.status === CallStatus.RINGING;
     const durationSec = call.answeredAt
-      ? Math.floor((endedAt.getTime() - call.answeredAt.getTime()) / 1000)
+      ? Math.max(
+          0,
+          Math.floor((endedAt.getTime() - call.answeredAt.getTime()) / 1000)
+        )
       : 0;
 
-    const updated = await this.callRepo.updateStatus(params.callId, {
+    const { won } = await this.callRepo.claimStatusTransition(
+      params.callId,
+      call.status,
+      {
+        status: CallStatus.ENDED,
+        endedAt,
+        durationSec,
+        endedBy: params.userId,
+      }
+    );
+    if (!won) throw new BadRequestError("CALL_ALREADY_ENDED");
+    const updated: Call = {
+      ...call,
       status: CallStatus.ENDED,
       endedAt,
       durationSec,
       endedBy: params.userId,
-    });
+      updatedAt: endedAt,
+    };
 
     // Pre-answer cancel: callee never joined `call:<id>` room, reach them via
     // their personal `user:<id>` channel with `call:cancelled` instead.
@@ -283,6 +331,14 @@ export class CallService {
             `CallService|endCall|redis publish failed: ${String(err)}`
           );
         });
+
+      await this.postCallChatMessageSafe(
+        call,
+        "ENDED",
+        endedAt,
+        durationSec,
+        params.userId
+      );
     }
 
     return { ...updated, durationSec };
@@ -360,6 +416,7 @@ export class CallService {
             )
           ),
       ]);
+      await this.postCallChatMessageSafe(call, "MISSED", now, 0, "SYSTEM");
     }
     if (flipped > 0) {
       logger.info(`CallService|sweep|flipped ${flipped} call(s) to MISSED`);
@@ -383,15 +440,23 @@ export class CallService {
 
     const endedAt = new Date();
     const durationSec = call.answeredAt
-      ? Math.floor((endedAt.getTime() - call.answeredAt.getTime()) / 1000)
+      ? Math.max(
+          0,
+          Math.floor((endedAt.getTime() - call.answeredAt.getTime()) / 1000)
+        )
       : 0;
 
-    await this.callRepo.updateStatus(callId, {
-      status: CallStatus.ENDED,
-      endedAt,
-      durationSec,
-      endedBy: "SYSTEM_LIVEKIT",
-    });
+    const { won } = await this.callRepo.claimStatusTransition(
+      callId,
+      CallStatus.IN_PROGRESS,
+      {
+        status: CallStatus.ENDED,
+        endedAt,
+        durationSec,
+        endedBy: "SYSTEM_LIVEKIT",
+      }
+    );
+    if (!won) return;
 
     await this.redis
       .publish(
@@ -406,5 +471,41 @@ export class CallService {
           `CallService|reconcile|redis publish failed: ${String(err)}`
         );
       });
+
+    await this.postCallChatMessageSafe(
+      call,
+      "ENDED",
+      endedAt,
+      durationSec,
+      "SYSTEM_LIVEKIT"
+    );
+  }
+
+  private async postCallChatMessageSafe(
+    call: Call,
+    outcome: CallChatMessageOutcome,
+    endedAt: Date,
+    durationSec: number,
+    endedBy: string
+  ): Promise<void> {
+    if (!this.callChatMessages) return;
+    try {
+      await this.callChatMessages.post({
+        callId: call.callId,
+        callerId: call.callerId,
+        calleeId: call.calleeId,
+        privateRoomId: call.privateRoomId,
+        callType: call.type,
+        outcome,
+        durationSec,
+        endedAt,
+        endedBy,
+      });
+    } catch (error) {
+      // A chat-side effect must never prevent the authoritative call transition.
+      logger.warn(
+        `CallService|chat message failed callId=${call.callId} outcome=${outcome}: ${String(error)}`
+      );
+    }
   }
 }

@@ -12,6 +12,7 @@ function buildService() {
       create: jest.fn(),
       findByCallId: jest.fn(),
       updateStatus: jest.fn().mockResolvedValue({ callId: "c" }),
+      claimStatusTransition: jest.fn().mockResolvedValue({ won: true }),
       findByParticipant: jest.fn(),
       findStuckRinging: jest.fn(),
       claimForMissed: jest.fn(),
@@ -27,6 +28,7 @@ function buildService() {
     getUserSnapshot: jest
       .fn()
       .mockResolvedValue({ displayName: "", avatarUrl: "" }),
+    callChatMessages: { post: jest.fn().mockResolvedValue(null) },
   };
   const service = new CallService(
     stubs.callRepo as never,
@@ -35,7 +37,8 @@ function buildService() {
     stubs.livekit as never,
     stubs.friendshipRepo as never,
     stubs.getCallPrivacy,
-    stubs.getUserSnapshot
+    stubs.getUserSnapshot,
+    stubs.callChatMessages as never
   );
   return { service, stubs };
 }
@@ -44,8 +47,20 @@ describe("CallService.sweepMissedCalls", () => {
   it("flips claimed rows and publishes call:missed to both rooms", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findStuckRinging.mockResolvedValue([
-      { callId: "c1", calleeId: "u2" },
-      { callId: "c2", calleeId: "u3" },
+      {
+        callId: "c1",
+        callerId: "u1",
+        calleeId: "u2",
+        privateRoomId: "r1",
+        type: "AUDIO",
+      },
+      {
+        callId: "c2",
+        callerId: "u1",
+        calleeId: "u3",
+        privateRoomId: "r2",
+        type: "VIDEO",
+      },
     ]);
     stubs.callRepo.claimForMissed.mockResolvedValue({ won: true });
 
@@ -62,6 +77,10 @@ describe("CallService.sweepMissedCalls", () => {
       "user:u2",
       expect.stringContaining("call:missed")
     );
+    expect(stubs.callChatMessages.post).toHaveBeenCalledTimes(2);
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "c1", outcome: "MISSED" })
+    );
   });
 
   it("skips publishing for rows the atomic claim lost (multi-node race)", async () => {
@@ -75,6 +94,7 @@ describe("CallService.sweepMissedCalls", () => {
 
     expect(flipped).toBe(0);
     expect(stubs.redis.publish).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
   });
 
   it("no candidates → no publishes, returns 0", async () => {
@@ -96,12 +116,15 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       answeredAt: answered,
       callerId: "u1",
       calleeId: "u2",
+      privateRoomId: "r1",
+      type: "AUDIO",
     });
 
     await service.reconcileFromLiveKitRoomFinished("c1");
 
-    expect(stubs.callRepo.updateStatus).toHaveBeenCalledWith(
+    expect(stubs.callRepo.claimStatusTransition).toHaveBeenCalledWith(
       "c1",
+      "IN_PROGRESS",
       expect.objectContaining({
         status: "ENDED",
         endedBy: "SYSTEM_LIVEKIT",
@@ -112,13 +135,16 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       "call:c1",
       expect.stringContaining("call:ended")
     );
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({ callId: "c1", outcome: "ENDED" })
+    );
   });
 
   it("unknown room → no writes, no publishes", async () => {
     const { service, stubs } = buildService();
     stubs.callRepo.findByCallId.mockResolvedValue(null);
     await service.reconcileFromLiveKitRoomFinished("nope");
-    expect(stubs.callRepo.updateStatus).not.toHaveBeenCalled();
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
     expect(stubs.redis.publish).not.toHaveBeenCalled();
   });
 
@@ -129,7 +155,7 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       status: "ENDED",
     });
     await service.reconcileFromLiveKitRoomFinished("c1");
-    expect(stubs.callRepo.updateStatus).not.toHaveBeenCalled();
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
     expect(stubs.redis.publish).not.toHaveBeenCalled();
   });
 
@@ -140,6 +166,71 @@ describe("CallService.reconcileFromLiveKitRoomFinished", () => {
       status: "RINGING",
     });
     await service.reconcileFromLiveKitRoomFinished("c1");
-    expect(stubs.callRepo.updateStatus).not.toHaveBeenCalled();
+    expect(stubs.callRepo.claimStatusTransition).not.toHaveBeenCalled();
+  });
+
+  it("losing the atomic terminal transition emits no event or chat row", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "IN_PROGRESS",
+      answeredAt: new Date(),
+      callerId: "u1",
+      calleeId: "u2",
+      privateRoomId: "r1",
+      type: "AUDIO",
+    });
+    stubs.callRepo.claimStatusTransition.mockResolvedValue({ won: false });
+
+    await service.reconcileFromLiveKitRoomFinished("c1");
+
+    expect(stubs.redis.publish).not.toHaveBeenCalled();
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("CallService.endCall chat messages", () => {
+  it("posts a duration audit row only for an answered call", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "IN_PROGRESS",
+      answeredAt: new Date(Date.now() - 65_000),
+      callerId: "u1",
+      calleeId: "u2",
+      privateRoomId: "r1",
+      type: "VIDEO",
+    });
+
+    await service.endCall({ callId: "c1", userId: "u1" });
+
+    expect(stubs.callChatMessages.post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "c1",
+        outcome: "ENDED",
+        durationSec: expect.any(Number),
+      })
+    );
+  });
+
+  it("does not post a chat row when the caller cancels before answer", async () => {
+    const { service, stubs } = buildService();
+    stubs.callRepo.findByCallId.mockResolvedValue({
+      callId: "c1",
+      status: "RINGING",
+      answeredAt: null,
+      callerId: "u1",
+      calleeId: "u2",
+      privateRoomId: "r1",
+      type: "AUDIO",
+    });
+
+    await service.endCall({ callId: "c1", userId: "u1" });
+
+    expect(stubs.callChatMessages.post).not.toHaveBeenCalled();
+    expect(stubs.redis.publish).toHaveBeenCalledWith(
+      "user:u2",
+      expect.stringContaining("call:cancelled")
+    );
   });
 });

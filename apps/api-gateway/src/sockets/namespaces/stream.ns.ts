@@ -321,7 +321,40 @@ export function registerStreamNamespace(
 
   streamNs.on("connection", (socket: Socket) => {
     const { userId, locale } = socket.data;
-    logger.debug(`/stream connected userId=${userId}`);
+    logger.debug(
+      `/stream connected userId=${userId} recovered=${socket.recovered}`
+    );
+
+    // connectionStateRecovery: Socket.IO restored this socket into its previous
+    // rooms after a brief network drop. The disconnecting handler already ran
+    // SREM, so re-add the userId to keep the live count correct without a
+    // full stream:join from the client.
+    if (socket.recovered) {
+      for (const room of socket.rooms) {
+        if (room.startsWith("stream:") && !room.startsWith("stream:viewers:")) {
+          const streamId = room.slice("stream:".length);
+          void redisPub
+            .sadd(sessionKey(streamId), userId)
+            .then(() =>
+              redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC)
+            )
+            .then(() => redisPub.scard(sessionKey(streamId)))
+            .then((count) => {
+              streamNs
+                .to(roomKey(streamId))
+                .emit("stream:viewer_count", {
+                  streamId,
+                  viewerCount: Math.max(0, count),
+                });
+            })
+            .catch((err: unknown) => {
+              logger.warn(
+                `/stream recovery Redis error for ${streamId}: ${String(err)}`
+              );
+            });
+        }
+      }
+    }
 
     // Per-socket debounce timers for viewer_count, keyed by streamId. A pending
     // timer means "an emit is already scheduled within the window" — we coalesce.
@@ -786,8 +819,12 @@ export function registerStreamNamespace(
         });
     });
 
-    socket.on("disconnect", (reason: string) => {
-      logger.debug(`/stream disconnected userId=${userId} reason=${reason}`);
+    // "disconnecting" fires before Socket.IO calls leaveAll(), so socket.rooms
+    // is still populated here. "disconnect" fires after leaveAll() — rooms are
+    // already empty by then, which is why dirty-disconnect cleanup was silently
+    // skipped before this fix.
+    socket.on("disconnecting", (reason: string) => {
+      logger.debug(`/stream disconnecting userId=${userId} reason=${reason}`);
 
       // Decrement the viewer counter for every stream room this socket was in
       // and broadcast the updated count so the room never shows a phantom viewer.

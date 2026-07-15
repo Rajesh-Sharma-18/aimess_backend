@@ -101,4 +101,29 @@ describe("publishConvUpdated — isOffline", () => {
       expect("isOffline" in JSON.parse(call.payload).data).toBe(false);
     }
   });
+
+  it("keeps a private SYSTEM audit bump sender-less and unread for nobody", async () => {
+    const { redis, publishCalls } = makeFakeRedis();
+
+    await publishConvUpdated({
+      redis,
+      type: "PRIVATE",
+      roomId: "room-call",
+      recipientIds: ["caller", "callee"],
+      senderId: "",
+      senderName: "",
+      lastMessageId: "call-message",
+      lastMessageAt: 1,
+      preview: { contentType: "SYSTEM", text: "Voice call lasted 02:05" },
+      countInUnread: false,
+    });
+
+    for (const call of publishCalls) {
+      expect(JSON.parse(call.payload).data).toMatchObject({
+        senderId: "",
+        senderName: "",
+        unread: false,
+      });
+    }
+  });
 });

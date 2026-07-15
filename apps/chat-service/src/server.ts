@@ -49,6 +49,7 @@ import { ChatMessageOrchestrator } from "./services/chat-message-orchestrator.js
 import { UserSnapshotService } from "./services/user-snapshot.service.js";
 import { AdminGroupService } from "./services/admin-group.service.js";
 import { CallService } from "./services/call.service.js";
+import { CallChatMessageService } from "./services/call-chat-message.service.js";
 import { LiveKitService } from "./services/livekit.service.js";
 import { FriendshipRepository } from "./repositories/friendship.repository.js";
 import { userGrpcClient } from "./grpc/user-snapshot.client.js";
@@ -455,6 +456,28 @@ const startServer = async () => {
     const notificationService = new NotificationService(notificationRepo);
     const liveKitService = new LiveKitService();
     const friendshipRepo = new FriendshipRepository();
+    const resolveCallUserSnapshot = async (userId: string) => {
+      try {
+        const [snap] = await userGrpcClient.bulkGetUserSnapshots([userId]);
+        if (!snap) return { displayName: "", avatarUrl: "" };
+        const avatarUrl = snap.avatarObjectKey
+          ? await resolveMediaUrl(snap.avatarObjectKey)
+          : "";
+        return {
+          displayName: snap.displayName || snap.username || "",
+          avatarUrl,
+        };
+      } catch {
+        return { displayName: "", avatarUrl: "" };
+      }
+    };
+    const callChatMessageService = new CallChatMessageService(
+      privateMessageRepo,
+      privateRoomRepo,
+      redis,
+      resolveCallUserSnapshot,
+      (userId) => presenceService.getIsOnline(userId)
+    );
     const callService = new CallService(
       callRepo,
       privateRoomRepo,
@@ -464,21 +487,8 @@ const startServer = async () => {
       (userId) => userGrpcClient.getCallPrivacy(userId),
       // Caller snapshot for the `call:incoming` ringing UI. Best-effort:
       // on gRPC/S3 failure we still ring — just with empty name/avatar.
-      async (userId) => {
-        try {
-          const [snap] = await userGrpcClient.bulkGetUserSnapshots([userId]);
-          if (!snap) return { displayName: "", avatarUrl: "" };
-          const avatarUrl = snap.avatarObjectKey
-            ? await resolveMediaUrl(snap.avatarObjectKey)
-            : "";
-          return {
-            displayName: snap.displayName || snap.username || "",
-            avatarUrl,
-          };
-        } catch {
-          return { displayName: "", avatarUrl: "" };
-        }
-      }
+      resolveCallUserSnapshot,
+      callChatMessageService
     );
 
     const communityRoomService = new CommunityRoomService(

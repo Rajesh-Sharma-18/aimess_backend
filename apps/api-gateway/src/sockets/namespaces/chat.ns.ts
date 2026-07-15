@@ -6,7 +6,10 @@ import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
-import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
+import type {
+  CatchupEventDto,
+  MessagingClient,
+} from "../../grpc/clients/messaging.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 import {
@@ -155,6 +158,57 @@ const FriendCancelRequestSchema = z.object({
 interface RedisSocketEvent {
   event: string;
   data: unknown;
+}
+
+/** Restore the canonical message shape stripped down by the catch-up protobuf. */
+export function normalizeCatchupEvent(
+  event: CatchupEventDto,
+  conversationType: string
+): Record<string, unknown> {
+  const { systemData: rawSystemData, ...eventWithoutRawSystemData } = event;
+  let content: Record<string, unknown> = {
+    text: event.contentText ?? "",
+    urls: [],
+    files: [],
+  };
+  if (event.contentJson) {
+    try {
+      const parsedContent = JSON.parse(event.contentJson) as unknown;
+      if (parsedContent && typeof parsedContent === "object") {
+        content = parsedContent as Record<string, unknown>;
+      }
+    } catch {
+      // Keep the contentText fallback above.
+    }
+  }
+
+  let systemData: Record<string, unknown> | undefined;
+  if (rawSystemData) {
+    try {
+      const parsedSystemData = JSON.parse(rawSystemData) as unknown;
+      if (parsedSystemData && typeof parsedSystemData === "object") {
+        systemData = parsedSystemData as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed optional metadata must not hide the message.
+    }
+  }
+
+  const serverTs = Number(event.sentAt);
+  return {
+    ...eventWithoutRawSystemData,
+    id: event.messageId,
+    roomId: event.conversationId,
+    conversationType: conversationType.toUpperCase(),
+    content,
+    reactions: [],
+    sequenceNumber: Number(event.sequenceNumber),
+    serverTs,
+    sentAt: serverTs,
+    createdAt: new Date(serverTs).toISOString(),
+    editedAt: Number(event.editedAt),
+    ...(systemData ? { systemData } : {}),
+  };
 }
 
 export function registerChatNamespace(
@@ -530,12 +584,13 @@ export function registerChatNamespace(
               const r = res.value;
               socket.emit("chat:catchup:result", {
                 roomId: room.roomId,
-                events: r.events.map((e) => ({
-                  ...e,
-                  sequenceNumber: Number(e.sequenceNumber),
-                  sentAt: Number(e.sentAt),
-                  editedAt: Number(e.editedAt),
-                })),
+                // Normalize the thin gRPC CatchupEventDto back to the same
+                // canonical shape as live message:new. Without this, reconnect
+                // gap-fill rows have no `id`/`content`, so DM SYSTEM call audit
+                // entries (and ordinary text) cannot render until a full reload.
+                events: r.events.map((event) =>
+                  normalizeCatchupEvent(event, room.conversationType)
+                ),
                 hasMore: r.hasMore,
                 lastSeq: Number(r.lastSeq),
               });

@@ -50,10 +50,12 @@ function buildService(overrides: Partial<CallPrivacy> = {}): {
     },
     privateRoomRepo: {
       findByRoomId: jest.fn().mockResolvedValue({
+        roomId: "room-1",
         participants: ["caller", "callee"],
         blockedBy: [],
       }),
       findByParticipantsKey: jest.fn().mockResolvedValue({
+        roomId: "derived-room",
         participants: ["caller", "callee"],
         blockedBy: [],
       }),
@@ -99,10 +101,24 @@ describe("CallService.initiateCall gate", () => {
     expect(result.livekit).toEqual({ url: "ws://livekit", token: "tk" });
     expect(stubs.callRepo.create).toHaveBeenCalledTimes(1);
     expect(stubs.livekit.mintToken).toHaveBeenCalledTimes(2); // caller + callee
+    expect(stubs.callRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ privateRoomId: "room-1" })
+    );
     // Callee gets their token via user:<calleeId> channel.
     expect(stubs.redis.publish).toHaveBeenCalledWith(
       "user:callee",
       expect.stringContaining("call:incoming")
+    );
+  });
+
+  it("persists the derived canonical room when privateRoomId is omitted", async () => {
+    const { service, stubs } = buildService({ whoCanCallMe: "FRIENDS" });
+
+    await service.initiateCall({ ...params, privateRoomId: undefined });
+
+    expect(stubs.privateRoomRepo.findByParticipantsKey).toHaveBeenCalled();
+    expect(stubs.callRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ privateRoomId: "derived-room" })
     );
   });
 

@@ -58,6 +58,8 @@ interface PublishConvUpdatedParams {
   /** epoch ms */
   lastMessageAt: number;
   preview: BumpPreview;
+  /** Persisted unread policy for the new row (SYSTEM call audit rows pass false). */
+  countInUnread?: boolean;
   /** Optional per-recipient preview overrides (key present => override applies;
    *  value null => empty preview for that recipient). */
   recipientOverrides?: Map<string, RecipientBump | null>;
@@ -124,6 +126,7 @@ export function publishConvUpdatedSafe(p: PublishConvUpdatedSafeParams): void {
       preview: p.preview,
       recipientOverrides,
       getIsOnline: p.getIsOnline,
+      countInUnread: p.countInUnread,
     });
   })().catch((error) => {
     logger.warn(
@@ -191,7 +194,14 @@ export async function publishConvUpdated(
       // An override is a delete-recalc preview, never a NEW message — it must
       // never raise an unread badge (a null override has senderId "" which would
       // otherwise compute unread:true and show a phantom badge on an empty row).
-      const unread = override === undefined ? recipientId !== senderId : false;
+      const isSystem =
+        String(lastMessage.contentType ?? "").toUpperCase() === "SYSTEM";
+      const effectiveSenderId = isSystem ? "" : senderId;
+      const effectiveSenderName = isSystem ? "" : senderName;
+      const unread =
+        override === undefined
+          ? (p.countInUnread ?? !isSystem) && recipientId !== effectiveSenderId
+          : false;
       const otherParticipant = recipientIds.find((id) => id !== recipientId);
       const isOffline =
         onlineById && otherParticipant
@@ -207,8 +217,8 @@ export async function publishConvUpdated(
             lastMessageId,
             lastMessage,
             lastMessageAt,
-            senderId,
-            senderName,
+            senderId: effectiveSenderId,
+            senderName: effectiveSenderName,
             unread,
             ...(isOffline !== undefined ? { isOffline } : {}),
           },
