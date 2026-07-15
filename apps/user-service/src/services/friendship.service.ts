@@ -52,6 +52,13 @@ type AutoConnectResult = {
   friends: FriendWithRoom[];
 };
 
+type AutoDisconnectResult = {
+  totalFriends: number;
+  friendsDisconnected: number;
+  /** userIds of every friend removed by this call. */
+  friends: string[];
+};
+
 const BATCH_CHUNK_SIZE = 500;
 
 export const friendshipService = {
@@ -454,5 +461,76 @@ export const friendshipService = {
       friendship.requesterId,
       friendship.addresseeId
     );
+  },
+
+  /**
+   * Bulk-unfriends every ACCEPTED friend of `callerId` — the disconnect-side
+   * mirror of {@link autoConnectAll}. Reuses the same precondition guard
+   * (unprovisioned caller → 404 before touching the DB), the same
+   * `findAcceptedFriends` read used by discovery, the same
+   * `BATCH_CHUNK_SIZE` chunking, and publishes the identical event pair
+   * (`publishFriendUnfriendedSafe` + `publishFriendshipDeletedSafe`) that a
+   * manual {@link unfriend} call fires — one per removed friendship, so every
+   * downstream consumer (notifications no-op, chat-service read-model) sees
+   * auto-disconnect exactly like N manual unfriends.
+   *
+   * Does NOT touch private rooms/messages/community membership/blocks —
+   * those are untouched by manual unfriend too, so this stays consistent.
+   */
+  async autoDisconnectAll(callerId: string): Promise<AutoDisconnectResult> {
+    const callerProfile = await userProfileRepository.findByUserId(callerId);
+    // Same onboarding-race guard as autoConnectAll: fail fast with a clear,
+    // retryable 404 instead of letting a missing profile surface as a
+    // confusing downstream error.
+    if (!callerProfile) {
+      throw new NotFoundError("USER_PROFILE_NOT_FOUND");
+    }
+
+    const friendships =
+      await friendshipRepository.findAcceptedFriends(callerId);
+
+    if (friendships.length === 0) {
+      return { totalFriends: 0, friendsDisconnected: 0, friends: [] };
+    }
+
+    const pairs = friendships.map((f) => ({
+      friendshipId: f.id,
+      peerId: f.requesterId === callerId ? f.addresseeId : f.requesterId,
+    }));
+
+    let friendsDisconnected = 0;
+    for (let i = 0; i < pairs.length; i += BATCH_CHUNK_SIZE) {
+      const chunk = pairs.slice(i, i + BATCH_CHUNK_SIZE);
+      friendsDisconnected += await friendshipRepository.autoDisconnectBatch(
+        callerId,
+        chunk.map((p) => p.friendshipId),
+        chunk.map((p) => p.peerId)
+      );
+    }
+
+    const uniqueIds = new Set<string>([
+      callerId,
+      ...pairs.map((p) => p.peerId),
+    ]);
+    await Promise.all(
+      [...uniqueIds].map((id) => userCache.invalidateProfile(id))
+    );
+
+    const unfriendedAt = new Date().toISOString();
+    for (const { friendshipId, peerId } of pairs) {
+      publishFriendUnfriendedSafe({
+        friendshipId,
+        unfriendedById: callerId,
+        otherUserId: peerId,
+        unfriendedAt,
+      });
+      publishFriendshipDeletedSafe(callerId, peerId);
+    }
+
+    return {
+      totalFriends: friendships.length,
+      friendsDisconnected,
+      friends: pairs.map((p) => p.peerId),
+    };
   },
 };

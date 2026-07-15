@@ -108,3 +108,14 @@ export const makeUsersFriends = asyncHandler(
       .json(new ApiResponse(result, t("FRIENDS_AUTO_CONNECTED", req.locale)));
   }
 );
+
+export const autoDisconnectFriends = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const result = await friendshipService.autoDisconnectAll(req.auth.userId);
+    res
+      .status(HTTP_STATUS.OK)
+      .json(
+        new ApiResponse(result, t("FRIENDS_AUTO_DISCONNECTED", req.locale))
+      );
+  }
+);
