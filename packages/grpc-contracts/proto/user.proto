@@ -12,6 +12,9 @@ service UserService {
   rpc AdminSearchProfileIds (AdminSearchProfileIdsRequest) returns (AdminSearchProfileIdsResponse);
   rpc BulkGetUserSnapshots (BulkGetUserSnapshotsRequest) returns (BulkGetUserSnapshotsResponse);
   rpc CheckFriendships (CheckFriendshipsRequest) returns (CheckFriendshipsResponse);
+  // Internal: chat-service reads the callee's call-privacy setting to gate 1-to-1
+  // calls (whoCanCallMe + allow-list). Callee-scoped, not per-caller.
+  rpc GetCallPrivacy (GetCallPrivacyRequest) returns (GetCallPrivacyResponse);
 }
 
 message CheckFriendshipRequest {
@@ -98,4 +101,15 @@ message CheckFriendshipsRequest {
 
 message CheckFriendshipsResponse {
   repeated string friend_ids = 1;
+}
+
+message GetCallPrivacyRequest {
+  string user_id = 1;
+}
+
+// who_can_call_me is "FRIENDS" | "SELECTED_FRIENDS" | "NO_ONE".
+// allowed_user_ids is only meaningful when who_can_call_me == "SELECTED_FRIENDS".
+message GetCallPrivacyResponse {
+  string          who_can_call_me  = 1;
+  repeated string allowed_user_ids = 2;
 }

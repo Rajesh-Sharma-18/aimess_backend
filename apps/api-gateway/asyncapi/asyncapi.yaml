@@ -5282,11 +5282,11 @@ components:
         **1-1 calls only (V1).** Signaling targets a single `calleeId`; group /
         community calls are out of scope — see SOCKET_EVENTS.md §7.5.
 
-        **Canceling a ringing call (V1):** the caller emits `call:end { callId }` before
-        the callee answers. The callee receives `call:ended { durationSec: 0 }`. There is
-        no server-side ring timeout in V1 — implement a client-side auto-cancel after ~60 s
-        of ringing. `call:cancel`, `call:missed`, and server-enforced ring timeout are
-        deferred to V2.
+        **Canceling a ringing call:** the caller emits `call:end { callId }` before
+        the callee answers and the callee receives `call:cancelled`. If nobody answers,
+        chat-service enforces the configured ring timeout (60 s by default), records the
+        call as `MISSED`, and emits `call:missed` to both participants. Clients should not
+        emit `call:end` for that server-owned timeout.
       properties:
         calleeId: { type: string, minLength: 1, maxLength: 200 }
         callType: { type: string, enum: [AUDIO, VIDEO], default: AUDIO }
@@ -7289,7 +7289,7 @@ components:
       properties:
         status:
           type: string
-          enum: [PENDING, LIVE, RECONNECTING, ENDED, CANCELLED]
+          enum: [PENDING, LIVE, RECONNECTING, ENDED]
         chatEnabled:
           type: boolean
           description: "Same value as the ack's top-level canComment."
@@ -7449,7 +7449,7 @@ components:
         streamId: { type: string }
         status:
           type: string
-          enum: [PENDING, LIVE, RECONNECTING, ENDED, CANCELLED]
+          enum: [PENDING, LIVE, RECONNECTING, ENDED]
         communityId:
           type: string
           description: "Lets a viewer screen update the community's isLive badge without a separate /community subscription."

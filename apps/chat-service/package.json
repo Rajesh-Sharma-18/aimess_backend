@@ -33,6 +33,7 @@
     "express": "^5.2.1",
     "helmet": "^8.1.0",
     "ioredis": "^5.10.1",
+    "livekit-server-sdk": "^2.9.0",
     "@prisma/client": "^6.9.0",
     "nanoid": "^5.1.5",
     "opossum": "^8.1.4",

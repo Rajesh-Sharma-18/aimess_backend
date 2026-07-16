@@ -8,7 +8,7 @@
  * Phase 2 this file is dropped entirely — a PrismaLivestreamRepository reads
  * `admin_db` (and OSSRS telemetry) instead.
  *
- * The dataset spreads 19 rows across LIVE / ENDED / CANCELLED, every category,
+ * The dataset spreads 19 rows across LIVE / ENDED, every category,
  * varying viewerCount / reportCount / reportSeverity, and dates Jan–Jun 2026.
  * The first rows are realistic, fully-populated livestreams.
  */
@@ -29,6 +29,7 @@ import type {
 /** Deterministic mock MediaObject — fixtures never hit real storage. */
 function mockAvatar(url: string | null): MediaObject {
   return {
+    mediaId: null,
     fileId: null,
     objectKey: null,
     fileName: null,
@@ -101,7 +102,7 @@ type Seed = {
   reportCount: number;
   reportSeverity: ReportSeverity;
   creatorStatus: AccountStatus;
-  /** Reason an ENDED/CANCELLED stream was closed by an admin (if any). */
+  /** Reason an ENDED stream was closed by an admin (if any). */
   endReasonCode?: EndReasonCode;
   isRecording?: boolean;
 };
@@ -241,7 +242,7 @@ const SEEDS: Seed[] = [
     community: "Court Side",
     creator: "Bianca Cruz",
     categoryIdx: 3,
-    status: "CANCELLED",
+    status: "ENDED",
     createdAt: "2026-03-01T21:00:00Z",
     durationMinutes: 0,
     viewerCount: 0,
@@ -310,7 +311,7 @@ const SEEDS: Seed[] = [
     community: "Indie Makers",
     creator: "Greta Nilsson",
     categoryIdx: 2,
-    status: "CANCELLED",
+    status: "ENDED",
     createdAt: "2026-04-13T14:00:00Z",
     durationMinutes: 0,
     viewerCount: 0,
@@ -426,17 +427,11 @@ function build(seed: Seed, i: number): LivestreamDetail {
   const livestreamId = `LS-2026-${String(n).padStart(5, "0")}`;
   const category = CATEGORIES[seed.categoryIdx]!;
   const live = seed.status === "LIVE";
-  const cancelled = seed.status === "CANCELLED";
   const durationSeconds = seed.durationMinutes * 60;
-  // CANCELLED streams never went live; their startedAt == createdAt and they end immediately.
-  const startedAtIso = seed.createdAt;
-  const endedAtIso = live
+  const startedAt = Date.parse(seed.createdAt);
+  const endedAt = live
     ? null
-    : cancelled
-      ? seed.createdAt
-      : shift(startedAtIso, seed.durationMinutes * MINUTE);
-  const startedAt = Date.parse(startedAtIso);
-  const endedAt = endedAtIso ? Date.parse(endedAtIso) : null;
+    : Date.parse(shift(seed.createdAt, seed.durationMinutes * MINUTE));
 
   const admin = ADMINS[i % ADMINS.length]!;
   const endReasonCode = seed.endReasonCode ?? null;
@@ -490,7 +485,7 @@ function build(seed: Seed, i: number): LivestreamDetail {
   if (endedBy && endReasonCode) {
     moderationHistory.push({
       id: `lsh_${n}_2`,
-      action: cancelled ? "STREAM_CANCELLED" : "STREAM_ENDED",
+      action: "STREAM_ENDED",
       adminId: endedBy.adminId,
       adminName: endedBy.adminName,
       reasonCode: endReasonCode,
@@ -539,7 +534,7 @@ function build(seed: Seed, i: number): LivestreamDetail {
     createdAt: Date.parse(seed.createdAt),
     startedAt,
     endedAt,
-    durationSeconds: cancelled ? 0 : durationSeconds,
+    durationSeconds,
     status: seed.status,
     viewerCount: seed.viewerCount,
     reportCount: seed.reportCount,

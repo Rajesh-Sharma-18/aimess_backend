@@ -141,7 +141,7 @@ export interface AdminStreamRow {
  *  - never went live (no livedAt) → 0
  *  - LIVE or RECONNECTING → now − livedAt (a reconnect-grace blip is still
  *    part of the same ongoing session, not a pause in its runtime)
- *  - ENDED/CANCELLED → endedAt − livedAt (0 if it ended before going live)
+ *  - ENDED → endedAt − livedAt (0 if it ended before going live)
  */
 function computeDurationSeconds(s: Livestream): number {
   if (!s.livedAt) return 0;
@@ -407,7 +407,7 @@ export class LivestreamService {
       logger.warn(`on_publish for unknown stream key=${streamKey} — denying`);
       return false;
     }
-    if (stream.status === "ENDED" || stream.status === "CANCELLED") {
+    if (stream.status === "ENDED") {
       logger.warn(
         `on_publish for ${stream.status} stream id=${stream.id} — denying`
       );
@@ -506,6 +506,11 @@ export class LivestreamService {
    * ending the stream. The sweeper finalizes any RECONNECTING stream whose
    * grace window expires without a republish.
    *
+   * RECONNECTING/ENDED → no-op: idempotent against a duplicate or
+   * retried on_unpublish. Critically, a second unpublish while already
+   * RECONNECTING must NOT reset `disconnectedAt` — a flapping connection that
+   * keeps failing to fully republish must not indefinitely extend its own
+   * grace window.
    * NOTE: heartbeats are intentionally ignored while RECONNECTING (see
    * {@link recordHeartbeat}) so a still-open companion app cannot keep
    * `lastHeartbeatAt` fresh and prevent the heartbeat sweeper from acting as
@@ -522,11 +527,7 @@ export class LivestreamService {
       );
       return;
     }
-    if (
-      stream.status === "ENDED" ||
-      stream.status === "CANCELLED" ||
-      stream.status === "RECONNECTING"
-    ) {
+    if (stream.status === "ENDED" || stream.status === "RECONNECTING") {
       return;
     }
 
@@ -620,7 +621,7 @@ export class LivestreamService {
       throw new ForbiddenError("STREAM_NOT_OWNER");
     }
 
-    if (stream.status === "ENDED" || stream.status === "CANCELLED") {
+    if (stream.status === "ENDED") {
       return toView(stream);
     }
 
@@ -644,7 +645,7 @@ export class LivestreamService {
     if (stream.creatorId !== requesterId) {
       throw new ForbiddenError("STREAM_NOT_OWNER");
     }
-    if (stream.status === "ENDED" || stream.status === "CANCELLED") {
+    if (stream.status === "ENDED") {
       throw new BadRequestError("STREAM_ALREADY_ENDED");
     }
     if (stream.status === "LIVE") {
@@ -715,7 +716,7 @@ export class LivestreamService {
   }
 
   /**
-   * Admin: force-end a stream. Idempotent — already ENDED/CANCELLED streams
+   * Admin: force-end a stream. Idempotent — already ENDED streams
    * return { success: false } without error. Otherwise finalizes it ENDED
    * (kicks SRS, broadcasts ENDED status, emits stream.ended) regardless of
    * whether it was LIVE, RECONNECTING, or PENDING.
@@ -726,7 +727,7 @@ export class LivestreamService {
   ): Promise<{ success: boolean; status: string }> {
     const stream = await this.streamRepo.findById(streamId);
     if (!stream) throw new NotFoundError("STREAM_NOT_FOUND");
-    if (stream.status === "ENDED" || stream.status === "CANCELLED") {
+    if (stream.status === "ENDED") {
       return { success: false, status: stream.status };
     }
 
@@ -743,10 +744,9 @@ export class LivestreamService {
    * ban/kick removes their membership in ONE community (scoped — leave any
    * stream they're legitimately still broadcasting in a different community
    * untouched). Same `finalizeAsEnded` tail as {@link adminForceEnd} — a
-   * PENDING stream ends up ENDED here too, not CANCELLED, matching
-   * adminForceEnd's existing "deliberate moderation action" precedent (only
-   * the *automatic* timeout sweeper uses CANCELLED for an abandoned PENDING
-   * stream). One failure never blocks the rest; never throws to the caller.
+   * PENDING stream ends up ENDED here too, matching adminForceEnd's existing
+   * "deliberate moderation action" precedent. One failure never blocks the
+   * rest; never throws to the caller.
    */
   async forceEndStreamsByCreator(
     creatorId: string,
@@ -840,7 +840,7 @@ export class LivestreamService {
   }
 
   /**
-   * Owner deletes the stream record. Only PENDING, ENDED, and CANCELLED streams
+   * Owner deletes the stream record. Only PENDING and ENDED streams
    * may be deleted — a LIVE stream (or one mid reconnect-grace, still the same
    * ongoing session) must be stopped first.
    */
@@ -1021,12 +1021,12 @@ export class LivestreamService {
     if (!stale.length) return;
 
     logger.info(
-      `sweepStalePendingStreams: cancelling ${stale.length} stale PENDING stream(s)`
+      `sweepStalePendingStreams: ending ${stale.length} stale PENDING stream(s)`
     );
     for (const stream of stale) {
       try {
         const updated = await this.streamRepo.updateById(stream.id, {
-          status: "CANCELLED",
+          status: "ENDED",
           endedAt: new Date(),
         });
         // Best-effort — a PENDING stream never published, but a client may have
@@ -1047,11 +1047,11 @@ export class LivestreamService {
           liveStreamCount,
         });
         logger.info(
-          `sweepStalePendingStreams: cancelled stream=${stream.id} community=${stream.communityId}`
+          `sweepStalePendingStreams: ended stream=${stream.id} community=${stream.communityId}`
         );
       } catch (err) {
         logger.warn(
-          `sweepStalePendingStreams: failed to cancel stream=${stream.id} — ${String(err)}`
+          `sweepStalePendingStreams: failed to end stream=${stream.id} — ${String(err)}`
         );
       }
     }

@@ -34,6 +34,7 @@ import type { MediaObject } from "@aimess/shared-types";
 function fixtureAvatar(url: string | null): MediaObject | null {
   if (!url) return null;
   return {
+    mediaId: null,
     fileId: null,
     objectKey: null,
     fileName: null,

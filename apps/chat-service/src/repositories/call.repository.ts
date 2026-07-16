@@ -43,6 +43,50 @@ export class CallRepository {
     });
   }
 
+  /**
+   * Atomically transition a call only while it is still in the expected state.
+   * This prevents answer/decline/end/webhook handlers from racing the ringing
+   * timeout (or each other) and resurrecting an already-terminal call.
+   */
+  async claimStatusTransition(
+    callId: string,
+    expectedStatus: string,
+    update: {
+      status: string;
+      answeredAt?: Date | null;
+      endedAt?: Date | null;
+      durationSec?: number | null;
+      endedBy?: string | null;
+    }
+  ): Promise<{ won: boolean }> {
+    const result = await this.prisma.call.updateMany({
+      where: { callId, status: expectedStatus },
+      data: update,
+    });
+    return { won: result.count === 1 };
+  }
+
+  /**
+   * Sweep helpers for the ringing-timeout worker. Multi-node safe:
+   * `claimForMissed` uses an atomic `updateMany` with a `status: RINGING`
+   * filter — whichever node's write lands first wins (`count === 1`); the
+   * other's filter no longer matches and returns `count === 0`. No locks.
+   */
+  async findStuckRinging(cutoff: Date, limit: number): Promise<Call[]> {
+    return this.prisma.call.findMany({
+      where: { status: "RINGING", initiatedAt: { lt: cutoff } },
+      take: limit,
+    });
+  }
+
+  async claimForMissed(callId: string, now: Date): Promise<{ won: boolean }> {
+    const result = await this.prisma.call.updateMany({
+      where: { callId, status: "RINGING" },
+      data: { status: "MISSED", endedAt: now, endedBy: "SYSTEM" },
+    });
+    return { won: result.count === 1 };
+  }
+
   async findByParticipant(
     userId: string,
     limit: number,

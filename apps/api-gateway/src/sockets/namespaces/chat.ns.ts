@@ -6,7 +6,10 @@ import { createGatewaySocketAuthMiddleware } from "../auth.middleware.js";
 import { ackOk, ackError, resolveGrpcAckError } from "../ack.js";
 import { personalizeGroupSocketMessage } from "../system-message-personalize.js";
 import { emitPersonalizedSender } from "../emit-personalized.js";
-import type { MessagingClient } from "../../grpc/clients/messaging.client.js";
+import type {
+  CatchupEventDto,
+  MessagingClient,
+} from "../../grpc/clients/messaging.client.js";
 import type { UserClient } from "../../grpc/clients/user.client.js";
 import type { MediaClient } from "../../grpc/clients/media.client.js";
 import {
@@ -157,6 +160,57 @@ interface RedisSocketEvent {
   data: unknown;
 }
 
+/** Restore the canonical message shape stripped down by the catch-up protobuf. */
+export function normalizeCatchupEvent(
+  event: CatchupEventDto,
+  conversationType: string
+): Record<string, unknown> {
+  const { systemData: rawSystemData, ...eventWithoutRawSystemData } = event;
+  let content: Record<string, unknown> = {
+    text: event.contentText ?? "",
+    urls: [],
+    files: [],
+  };
+  if (event.contentJson) {
+    try {
+      const parsedContent = JSON.parse(event.contentJson) as unknown;
+      if (parsedContent && typeof parsedContent === "object") {
+        content = parsedContent as Record<string, unknown>;
+      }
+    } catch {
+      // Keep the contentText fallback above.
+    }
+  }
+
+  let systemData: Record<string, unknown> | undefined;
+  if (rawSystemData) {
+    try {
+      const parsedSystemData = JSON.parse(rawSystemData) as unknown;
+      if (parsedSystemData && typeof parsedSystemData === "object") {
+        systemData = parsedSystemData as Record<string, unknown>;
+      }
+    } catch {
+      // Malformed optional metadata must not hide the message.
+    }
+  }
+
+  const serverTs = Number(event.sentAt);
+  return {
+    ...eventWithoutRawSystemData,
+    id: event.messageId,
+    roomId: event.conversationId,
+    conversationType: conversationType.toUpperCase(),
+    content,
+    reactions: [],
+    sequenceNumber: Number(event.sequenceNumber),
+    serverTs,
+    sentAt: serverTs,
+    createdAt: new Date(serverTs).toISOString(),
+    editedAt: Number(event.editedAt),
+    ...(systemData ? { systemData } : {}),
+  };
+}
+
 export function registerChatNamespace(
   io: SocketIOServer,
   messagingClient: MessagingClient,
@@ -298,10 +352,6 @@ export function registerChatNamespace(
   const CallAnswerSchema = z.object({ callId: z.string().min(1) });
   const CallDeclineSchema = z.object({ callId: z.string().min(1) });
   const CallEndSchema = z.object({ callId: z.string().min(1) });
-  const CallIceSchema = z.object({
-    callId: z.string().min(1),
-    candidate: z.unknown(),
-  });
 
   chat.on("connection", (socket: Socket) => {
     const { userId, sessionId, locale } = socket.data;
@@ -534,12 +584,13 @@ export function registerChatNamespace(
               const r = res.value;
               socket.emit("chat:catchup:result", {
                 roomId: room.roomId,
-                events: r.events.map((e) => ({
-                  ...e,
-                  sequenceNumber: Number(e.sequenceNumber),
-                  sentAt: Number(e.sentAt),
-                  editedAt: Number(e.editedAt),
-                })),
+                // Normalize the thin gRPC CatchupEventDto back to the same
+                // canonical shape as live message:new. Without this, reconnect
+                // gap-fill rows have no `id`/`content`, so DM SYSTEM call audit
+                // entries (and ordinary text) cannot render until a full reload.
+                events: r.events.map((event) =>
+                  normalizeCatchupEvent(event, room.conversationType)
+                ),
                 hasMore: r.hasMore,
                 lastSeq: Number(r.lastSeq),
               });
@@ -977,13 +1028,17 @@ export function registerChatNamespace(
             type: r.data.callType,
             privateRoomId: r.data.privateRoomId,
           })
-          .then((result) =>
+          .then((result) => {
+            // Join the caller's socket to `call:<callId>` so lifecycle events
+            // (call:answered / call:declined / call:ended) reach them.
+            void socket.join(`call:${result.callId}`);
             ackOk(callback, "SOCKET_CALL_INITIATED", locale, {
               callId: result.callId,
               status: result.status,
-              rtcConfig: result.rtcConfig,
-            })
-          )
+              livekitUrl: result.livekit?.url,
+              token: result.livekit?.token,
+            });
+          })
           .catch((err: unknown) => {
             logger.warn(`/chat call:initiate gRPC error: ${String(err)}`);
             ackError(callback, "SERVICE_ERROR", locale);
@@ -1001,9 +1056,12 @@ export function registerChatNamespace(
         }
         messagingClient
           .answerCall({ ...r.data, calleeId: userId })
-          .then((result) =>
-            ackOk(callback, "SOCKET_CALL_ANSWERED", locale, result)
-          )
+          .then((result) => {
+            // Callee joins `call:<callId>` on answer — mirrors the caller's
+            // join at initiate. Both peers now receive `call:ended` etc.
+            void socket.join(`call:${result.callId}`);
+            ackOk(callback, "SOCKET_CALL_ANSWERED", locale, result);
+          })
           .catch((err: unknown) => {
             logger.warn(`/chat call:answer gRPC error: ${String(err)}`);
             ackError(callback, "SERVICE_ERROR", locale);
@@ -1051,22 +1109,8 @@ export function registerChatNamespace(
       }
     );
 
-    // ICE candidates: relay directly via Redis — no gRPC, no DB
-    socket.on("call:ice", (payload: unknown) => {
-      const r = CallIceSchema.safeParse(payload);
-      if (!r.success) return;
-      void redisPub.publish(
-        `call:${r.data.callId}`,
-        JSON.stringify({
-          event: "call:ice",
-          data: {
-            callId: r.data.callId,
-            candidate: r.data.candidate,
-            from: userId,
-          },
-        })
-      );
-    });
+    // Note: `call:ice` was removed with the LiveKit migration — LiveKit's
+    // client SDKs handle ICE/NAT internally. See Docs/calls/CALLS-LIVEKIT.md.
 
     // ── Friend management ────────────────────────────────────────────────────
     // Gateway calls user-service REST endpoints on behalf of the authenticated

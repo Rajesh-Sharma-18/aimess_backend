@@ -43,6 +43,7 @@ function splitName(fullName: string): { firstName: string; lastName: string } {
 function fixtureAvatar(url: string | null): MediaObject | null {
   if (!url) return null;
   return {
+    mediaId: null,
     fileId: null,
     objectKey: null,
     fileName: null,

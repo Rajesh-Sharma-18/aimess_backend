@@ -75,6 +75,28 @@ export function startUserGrpcServer(): grpc.Server {
       })();
     },
 
+    // Callee-scoped call-privacy read for the chat-service `initiateCall` gate.
+    // See Docs/calls/CALLS-LIVEKIT.md §7 Phase 2.
+    getCallPrivacy: (
+      call: grpc.ServerUnaryCall<{ userId: string }, unknown>,
+      callback: grpc.sendUnaryData<{
+        whoCanCallMe: string;
+        allowedUserIds: string[];
+      }>
+    ) => {
+      void (async () => {
+        try {
+          const row = await userSettingsRepository.findCallPrivacy(
+            call.request.userId
+          );
+          callback(null, row);
+        } catch (err) {
+          logger.error(`gRPC getCallPrivacy error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // Per-category notification preferences. When no row exists yet, default to
     // "all enabled" so notifications-service still delivers (allow-by-default).
     getNotificationSettings: (

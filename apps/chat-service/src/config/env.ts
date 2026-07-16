@@ -80,19 +80,25 @@ const envSchema = z.object({
 
   FRIENDSHIP_CACHE_TTL_SEC: z.coerce.number().positive().default(600), // 10 minutes
 
-  WEBRTC_STUN_SERVERS: z
+  // LiveKit (self-hosted). See Docs/calls/CALLS-LIVEKIT.md.
+  // LIVEKIT_URL is the WS URL clients connect to (ws://localhost:7880 dev,
+  // wss://livekit.example.com in prod). API key/secret must match the
+  // docker-compose LIVEKIT_KEYS pair.
+  LIVEKIT_URL: z.string().default("ws://localhost:7880"),
+  // Dev defaults match docker/livekit/config.yaml + docker-compose LIVEKIT_KEYS —
+  // chat-service boots without any manual .env editing. Prod overrides these.
+  LIVEKIT_API_KEY: z.string().min(1).default("devkey"),
+  LIVEKIT_API_SECRET: z
     .string()
-    .default("stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"),
-  WEBRTC_TURN_SERVER: z.string().optional().default(""),
-  WEBRTC_TURN_USERNAME: z.string().optional().default(""),
-  WEBRTC_TURN_PASSWORD: z.string().optional().default(""),
-  WEBRTC_TURN_CREDENTIAL_EXPIRES_IN_HOURS: z.coerce
-    .number()
-    .positive()
-    .default(24),
-  WEBRTC_ICE_CANDIDATE_POOL_SIZE: z.coerce.number().nonnegative().default(10),
-  WEBRTC_RTC_CODEC_PREFERENCES: z.string().default("opus,h264"),
-  WEBRTC_CALL_TIMEOUT_SEC: z.coerce.number().positive().default(120),
+    .min(1)
+    .default("devsecretchangeme_at_least_32_chars_long"),
+  LIVEKIT_TOKEN_TTL: z.coerce.number().positive().default(3600),
+
+  // Ringing timeout: a Call left in RINGING for longer than this flips to
+  // MISSED via a periodic sweep. Multi-node safe (atomic updateMany).
+  CALL_RINGING_TIMEOUT_SEC: z.coerce.number().positive().default(60),
+  CALL_TIMEOUT_SWEEP_INTERVAL_SEC: z.coerce.number().positive().default(15),
+  CALL_TIMEOUT_SWEEP_BATCH: z.coerce.number().positive().default(100),
 });
 
 const parsed = envSchema.safeParse(process.env);

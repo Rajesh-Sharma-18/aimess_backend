@@ -891,6 +891,7 @@ const MAX_ACTIVE_LIVESTREAMS = 5;
 function livestreamFields(liveCount: number): {
   isLive: boolean;
   hasActiveLivestream: boolean;
+  activeLivestreamCount: number;
   liveStreamCount: number;
   activeLivestreamCount: number;
 } {
@@ -898,6 +899,7 @@ function livestreamFields(liveCount: number): {
   return {
     isLive: count > 0,
     hasActiveLivestream: count > 0,
+    activeLivestreamCount: count,
     liveStreamCount: count,
     activeLivestreamCount: count,
   };

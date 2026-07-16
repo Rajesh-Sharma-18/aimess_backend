@@ -15,9 +15,7 @@ export const createStreamSchema = z.object({
 /** GET /streams query — filterable, cursor-paginated list. */
 export const listStreamsQuerySchema = z.object({
   communityId: z.string().min(1).optional(),
-  status: z
-    .enum(["PENDING", "LIVE", "RECONNECTING", "ENDED", "CANCELLED"])
-    .optional(),
+  status: z.enum(["PENDING", "LIVE", "RECONNECTING", "ENDED"]).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   cursor: z.string().min(1).optional(),
 });

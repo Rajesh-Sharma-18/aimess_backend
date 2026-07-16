@@ -139,6 +139,29 @@ export const userSettingsRepository = {
     });
   },
 
+  /**
+   * Callee-scoped call-privacy read for the chat-service `initiateCall` gate.
+   * Returns default FRIENDS + empty allow-list when no row exists yet (matches
+   * the Prisma-schema default so unset users still receive calls from friends).
+   */
+  async findCallPrivacy(
+    userId: string
+  ): Promise<{ whoCanCallMe: string; allowedUserIds: string[] }> {
+    const row = await prisma.userProfile.findUnique({
+      where: { userId },
+      select: {
+        privacySettings: { select: { whoCanCallMe: true } },
+        callPrivacyAllowList: { select: { allowedUserId: true } },
+      },
+    });
+    return {
+      whoCanCallMe: row?.privacySettings?.whoCanCallMe ?? "FRIENDS",
+      allowedUserIds: (row?.callPrivacyAllowList ?? []).map(
+        (r) => r.allowedUserId
+      ),
+    };
+  },
+
   findSettingsBundle(userId: string): Promise<SettingsBundle | null> {
     return prisma.userProfile.findUnique({
       where: { userId },

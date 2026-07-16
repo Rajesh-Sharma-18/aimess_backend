@@ -21,7 +21,7 @@ export type { AccountStatus, Paginated, PaginationMeta };
 
 // SCHEDULED is the admin-facing label for a stream-service PENDING stream
 // (created but not yet live). The repository maps PENDING⇄SCHEDULED at the edge.
-export type LivestreamStatus = "LIVE" | "ENDED" | "CANCELLED" | "SCHEDULED";
+export type LivestreamStatus = "LIVE" | "ENDED" | "SCHEDULED";
 
 export type EndReasonCode =
   | "POLICY_VIOLATION"

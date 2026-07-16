@@ -23,7 +23,7 @@ datasource db {
 // -----------------------------------------------------------------------------
 // Livestream — one go-live session for a community, either ingest mode.
 //   sourceType: PHONE_CAMERA (WebRTC/WHIP) | URL (backend ffmpeg re-stream)
-//   status:     PENDING | LIVE | RECONNECTING | ENDED | CANCELLED
+//   status:     PENDING | LIVE | RECONNECTING | ENDED
 //
 //   RECONNECTING is a transient sub-state of a LIVE session: SRS reported
 //   on_unpublish (publisher dropped — refresh, mobile blip, network hiccup),
