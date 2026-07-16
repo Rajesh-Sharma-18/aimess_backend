@@ -1218,6 +1218,8 @@ export class GeneralRoomMessageRepository {
     type?: string;
     cursor?: string | null;
     limit: number;
+    /** Upper bound for a BANNED viewer — see {@link timelineMatch}. */
+    readCutoff?: Date | null;
   }): Promise<GeneralRoomMessage[]> {
     // Community enum is lowercase (e.g. "image"); GIF/VIDEO/DOCUMENT are carried
     // as "custom" today. Map the incoming upper-case filter to its community
@@ -1238,8 +1240,13 @@ export class GeneralRoomMessageRepository {
             // instead of silently returning everything.
             (mappedType ?? "__none__")
           : { in: mediaTypes },
-        ...(params.cursor
-          ? { createdAt: { lt: new Date(params.cursor) } }
+        ...(params.cursor || params.readCutoff
+          ? {
+              createdAt: {
+                ...(params.cursor ? { lt: new Date(params.cursor) } : {}),
+                ...(params.readCutoff ? { lte: params.readCutoff } : {}),
+              },
+            }
           : {}),
       },
       orderBy: { createdAt: "desc" },

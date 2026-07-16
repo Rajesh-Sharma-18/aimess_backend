@@ -118,3 +118,45 @@ describe("evict-on-removal — no-op guard", () => {
     expect(shouldEvict).toBe(false);
   });
 });
+
+describe("evict-on-removal — the removed user's OWN socket never receives the room-wide community:member:removed broadcast", () => {
+  /** Mirrors the `isTarget` exclusion filter added to community.ns.ts. */
+  function resolveBroadcastRecipients(
+    sockets: FakeSocket[],
+    removedUserId: string | undefined
+  ): FakeSocket[] {
+    const isTarget = (s: FakeSocket) =>
+      removedUserId != null && s.data.userId === removedUserId;
+    return sockets.filter((s) => !isTarget(s));
+  }
+
+  it("excludes ALL of the removed/banned user's own devices from the broadcast", () => {
+    const sockets: FakeSocket[] = [
+      { id: "sock-1", data: { userId: REMOVED_USER } },
+      { id: "sock-2", data: { userId: OTHER_MEMBER } },
+      { id: "sock-3", data: { userId: REMOVED_USER } }, // removed user's 2nd device
+    ];
+
+    const recipients = resolveBroadcastRecipients(sockets, REMOVED_USER);
+
+    expect(recipients.map((s) => s.id)).toEqual(["sock-2"]);
+  });
+
+  it("still broadcasts to every OTHER member normally", () => {
+    const sockets: FakeSocket[] = [
+      { id: "sock-a", data: { userId: "member-a" } },
+      { id: "sock-b", data: { userId: "member-b" } },
+    ];
+    const recipients = resolveBroadcastRecipients(sockets, REMOVED_USER);
+    expect(recipients).toHaveLength(2);
+  });
+
+  it("degrades to a full broadcast (excludes nobody) when the payload is missing userId — defense-in-depth, not a silent drop", () => {
+    const sockets: FakeSocket[] = [
+      { id: "sock-1", data: { userId: REMOVED_USER } },
+      { id: "sock-2", data: { userId: OTHER_MEMBER } },
+    ];
+    const recipients = resolveBroadcastRecipients(sockets, undefined);
+    expect(recipients).toHaveLength(2);
+  });
+});

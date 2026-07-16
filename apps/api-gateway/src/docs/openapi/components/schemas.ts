@@ -5522,6 +5522,11 @@ export const openApiSchemas = {
         description:
           "True when the caller is an active member of this community.",
       },
+      isBanned: {
+        type: "boolean",
+        description:
+          "True when the caller is BANNED from this community. The community stays visible/openable and historical messages remain readable, but every write action (send/react/pin/invite/settings/join/livestream) is blocked server-side — clients render a read-only banner and hide write affordances, including the Join button.",
+      },
       moderationStatus: {
         type: "string",
         enum: ["ACTIVE", "SUSPENDED"],
@@ -5843,6 +5848,11 @@ export const openApiSchemas = {
         type: "boolean",
         description:
           "True when the caller is an active member of this community. Always true in joined mode.",
+      },
+      isBanned: {
+        type: "boolean",
+        description:
+          "True when the caller is BANNED from this community — read-only, no write affordances. The community stays in this list rather than being removed.",
       },
       isMuted: {
         type: "boolean",
