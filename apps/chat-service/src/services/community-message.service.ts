@@ -677,6 +677,15 @@ export class CommunityMessageService {
   }
 
   /**
+   * Current room CHANGE high-water (`lastRevision`). Surfaced on the V2 history
+   * response so a cold-start client can set its per-room revision cursor from a
+   * plain history load (no separate `/changes` round-trip).
+   */
+  async getRoomRevision(roomId: string): Promise<number> {
+    return this.messageRepo.getRoomRevision(roomId);
+  }
+
+  /**
    * ZERO-LOSS CHANGES FEED (REST). Returns every message whose room CHANGE
    * `revision > sinceRevision`, current state, serialized like V2 history +
    * `revision`. Inserts AND mutations (edit/delete/reaction) regardless of how

@@ -128,25 +128,33 @@ export const communityTimelineQuerySchema = z
 
 /**
  * V2 query schema for the community message timeline
- * (`GET /api/v2/chat/community/rooms/:roomId/messages`). Replaces the V1
- * timestamp cursor with the gap-safe monotonic `sequenceNumber` keyset — the
- * exact contract private/group already expose (`before_seq`/`after_seq`), so
- * clients share one seq-paging path across every room type.
+ * (`GET /api/v2/chat/community/rooms/:roomId/messages`).
  *
- * - `before_seq`: older page — `sequenceNumber < before_seq`, newest-first.
- * - `after_seq` : newer page — `sequenceNumber > after_seq`, oldest-first.
- * - `around`    : jump-to-message window anchored on a messageId; the returned
- *   `olderCursor`/`newerCursor` are seq strings fed back as `before_seq`/`after_seq`.
+ * PRIMARY axis = an OPAQUE `cursor` on the gap-safe compound `(createdAt, id)`
+ * keyset (the same keyset V1 computes). The client treats `cursor` as opaque:
+ * omit it for the newest page, then echo `pagination.nextCursor` (a
+ * `"<ms>_<id>"` token) back verbatim to page OLDER. This works on ALL existing
+ * data with no backfill and always returns a real token (never `"0"`).
  *
- * Omit all three for the newest page. `before_seq`/`after_seq` are mutually
- * exclusive. No `*_ts` params — that is V1's (frozen) surface.
+ * - `cursor`     : older page — messages strictly older than the token, newest-first.
+ * - `before_ts`  : migration alias for `cursor` (accepts the same compound token).
+ * - `after_ts`   : newer placement page (forward paging).
+ * - `around`     : jump-to-message window (returns `<ms>_<id>` continuation cursors).
+ * - `before_seq`/`after_seq`: OPT-IN gap-safe `sequenceNumber` keyset. Ignored
+ *   until a seq backfill has run (`sequenceNumber > 0`); clients should prefer
+ *   the opaque `cursor` unless they know the room is backfilled.
+ *
+ * Omit everything for the newest page.
  */
 export const communityTimelineV2QuerySchema = z
   .object({
+    cursor: compoundTsCursor.optional(),
+    before_ts: compoundTsCursor.optional(),
+    after_ts: compoundTsCursor.optional(),
     before_seq: z.coerce.number().int().min(0).optional(),
     after_seq: z.coerce.number().int().min(0).optional(),
     around: z.string().min(1).max(100).optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(30),
+    limit: z.coerce.number().int().min(1).max(100).default(40),
   })
   .refine((q) => !(q.before_seq != null && q.after_seq != null), {
     message: "Provide either before_seq or after_seq, not both",

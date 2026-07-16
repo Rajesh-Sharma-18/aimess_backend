@@ -248,17 +248,23 @@ export class CommunityMessageController {
   });
 
   /**
-   * V2 — `GET /api/v2/chat/community/rooms/:roomId/messages`. Replaces V1's
-   * timestamp cursor with the gap-safe `sequenceNumber` keyset (the exact seq
-   * contract private/group already expose). Precedence: `around` (jump-to-message)
-   * → `before_seq`/`after_seq` (older/newer page) → newest page (no cursor).
-   * Response envelope is identical to V1 (same `buildTimelineResponse` /
-   * `buildAroundResponse` + `pinnedMessage`); only the cursor axis changed.
+   * V2 — `GET /api/v2/chat/community/rooms/:roomId/messages`.
+   *
+   * PRIMARY history axis = an OPAQUE `cursor` on the compound `(createdAt, id)`
+   * keyset (same keyset V1 computes). It works on ALL existing data with no
+   * backfill and always hands back a real `<ms>_<id>` `nextCursor` (never `"0"`)
+   * — fixing the "cursor ignored / infinite newest-page loop" the FE reported.
+   * The `sequenceNumber` keyset (`before_seq`/`after_seq`) stays as an OPT-IN
+   * gap-safe path for rooms whose seq has been backfilled.
+   *
+   * Precedence: `around` (jump-to-message, ts-anchored) → `before_seq`/`after_seq`
+   * (explicit seq opt-in) → opaque `cursor` / `before_ts` / `after_ts` (ts keyset,
+   * DEFAULT) → newest page. Response adds `pinnedMessage` + `roomRevision`.
    */
   getMessagesV2 = asyncHandler(async (req: Request, res: Response) => {
     const { userId } = req.auth;
     const roomId = req.params.roomId as string;
-    const limit = Number(req.query.limit) || 30;
+    const limit = Number(req.query.limit) || 40;
     const around = req.query.around as string | undefined;
 
     if (around) {
@@ -269,7 +275,7 @@ export class CommunityMessageController {
         hasMoreNewer,
         olderCursor,
         newerCursor,
-      } = await this.service.getMessagesAroundV2({
+      } = await this.service.getMessagesAround({
         roomId,
         userId,
         messageId: around,
@@ -281,12 +287,15 @@ export class CommunityMessageController {
         limit,
         { hasMoreOlder, hasMoreNewer, olderCursor, newerCursor }
       );
-      const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+      const [pinnedMessage, roomRevision] = await Promise.all([
+        this.pinService.getActivePinSummary(roomId),
+        this.service.getRoomRevision(roomId),
+      ]);
       res
         .status(HTTP_STATUS.OK)
         .json(
           new ApiResponse(
-            { ...paginated, pinnedMessage },
+            { ...paginated, pinnedMessage, roomRevision },
             items.length
               ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
               : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale)
@@ -295,22 +304,68 @@ export class CommunityMessageController {
       return;
     }
 
-    // Seq keyset: before_seq → older (sequenceNumber < seq, newest-first);
-    // after_seq → newer (> seq, oldest-first); neither → newest page (seq null).
+    // OPT-IN seq keyset — only when the client explicitly sends a seq cursor
+    // (requires a seq backfill; unbackfilled rooms have sequenceNumber 0 and
+    // should use the opaque `cursor` below instead).
     const beforeSeq =
       req.query.before_seq != null ? Number(req.query.before_seq) : undefined;
     const afterSeq =
       req.query.after_seq != null ? Number(req.query.after_seq) : undefined;
-    const direction = afterSeq != null ? "after" : "before";
-    const seq = afterSeq ?? beforeSeq ?? null;
 
-    const result = await this.service.getMessagesSeqV2({
-      roomId,
-      userId,
-      direction,
-      seq,
-      limit,
-    });
+    let result: {
+      items: unknown[];
+      hasMore: boolean;
+      nextCursor: string | null;
+      total: number;
+    };
+
+    if (beforeSeq != null || afterSeq != null) {
+      const direction = afterSeq != null ? "after" : "before";
+      const seq = afterSeq ?? beforeSeq ?? null;
+      result = await this.service.getMessagesSeqV2({
+        roomId,
+        userId,
+        direction,
+        seq,
+        limit,
+      });
+    } else {
+      // DEFAULT: opaque compound `(createdAt, id)` cursor. `cursor`/`before_ts`
+      // page OLDER (scroll-up); `after_ts` pages newer. Both carry the opaque
+      // `<ms>_<id>` token (a bare epoch-ms is also accepted for a coarse jump).
+      const rawOlder =
+        req.query.cursor != null
+          ? String(req.query.cursor)
+          : req.query.before_ts != null
+            ? String(req.query.before_ts)
+            : undefined;
+      const rawNewer =
+        req.query.after_ts != null ? String(req.query.after_ts) : undefined;
+      const raw = rawNewer ?? rawOlder;
+      const direction = rawNewer != null ? "after" : "before";
+
+      let ts: number | undefined;
+      let boundaryId: string | null = null;
+      if (raw != null && raw !== "") {
+        const sep = raw.indexOf("_");
+        ts = Number(sep === -1 ? raw : raw.slice(0, sep));
+        boundaryId = sep === -1 ? null : raw.slice(sep + 1);
+      }
+      const hasCursor = ts != null;
+
+      result = await this.service.getMessagesTimeline({
+        roomId,
+        userId,
+        direction,
+        ts: new Date(hasCursor ? ts! : Date.now()),
+        boundaryId,
+        // First page (no cursor) includes the newest message; a cursor page is
+        // exclusive so it never re-returns its own boundary row.
+        inclusive: !hasCursor,
+        limit,
+      });
+    }
+
     const paginated = buildTimelineResponse(
       result.items as unknown as Record<string, unknown>[],
       result.total,
@@ -318,13 +373,18 @@ export class CommunityMessageController {
       result.hasMore,
       result.nextCursor
     );
-    const pinnedMessage = await this.pinService.getActivePinSummary(roomId);
+    const [pinnedMessage, roomRevision] = await Promise.all([
+      this.pinService.getActivePinSummary(roomId),
+      this.service.getRoomRevision(roomId),
+    ]);
     const msg = paginated.data.length
       ? t("CHAT_COMMUNITY_MESSAGES_FETCHED", req.locale)
       : t("CHAT_NO_COMMUNITY_MESSAGES_FOUND", req.locale);
     res
       .status(HTTP_STATUS.OK)
-      .json(new ApiResponse({ ...paginated, pinnedMessage }, msg));
+      .json(
+        new ApiResponse({ ...paginated, pinnedMessage, roomRevision }, msg)
+      );
   });
 
   /**
