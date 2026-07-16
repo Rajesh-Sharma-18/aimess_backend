@@ -31,13 +31,16 @@ const COMMENT_RATE_WINDOW_SEC = 5; // …per this window
 const VIEWER_COUNT_DEBOUNCE_MS = 1000;
 
 const roomKey = (streamId: string): string => `stream:${streamId}`;
-// Session set: tracks unique watching userIds. SADD/SREM are idempotent per-user
-// so SCARD is always the accurate live viewer count — no separate INCR counter needed.
+// Presence hash: userId -> refcount of currently-open sockets for that user.
+// HINCRBY +1 on every socket join, HINCRBY -1 on leave, HDEL when the count
+// reaches 0. HLEN is the unique-viewer count. This shape (vs. a bare SET of
+// userIds) is what makes multi-tab / phone+web work: closing one tab only
+// drops the user from the count when it was the LAST tab.
 const sessionKey = (streamId: string): string =>
   `stream:session:users:${streamId}`;
 // Join-time hash: userId -> epoch ms of first join. HSETNX so a heartbeat/
 // rejoin refresh never overwrites the original join time. Read by
-// stream-service's getViewers() alongside the session set above.
+// stream-service's getViewers() alongside the presence hash above.
 const sessionJoinedKey = (streamId: string): string =>
   `stream:session:joined:${streamId}`;
 
@@ -155,14 +158,20 @@ export function registerStreamNamespace(
         if (s.data.userId !== bannedUserId) continue;
         s.emit("stream:banned", { streamId });
         void s.leave(room);
+        // Ensure the disconnect handler on the kicked socket doesn't
+        // decrement again — the HDEL below nukes the whole refcount.
+        const incremented = s.data.streamIncremented as Set<string> | undefined;
+        incremented?.delete(streamId);
       }
-      // Remove banned user from the session set so getViewers reflects the kick.
+      // Nuke the banned user's whole refcount (any/all tabs) so getViewers /
+      // viewer_count reflect the kick immediately, regardless of how many
+      // sockets they had open.
       try {
-        await redisPub.srem(sessionKey(streamId), bannedUserId);
+        await redisPub.hdel(sessionKey(streamId), bannedUserId);
         await redisPub.hdel(sessionJoinedKey(streamId), bannedUserId);
       } catch (err) {
         logger.warn(
-          `/stream ban session srem error for ${streamId}: ${String(err)}`
+          `/stream ban session hdel error for ${streamId}: ${String(err)}`
         );
       }
       // Close their durable viewer session too — best-effort.
@@ -173,11 +182,11 @@ export function registerStreamNamespace(
             `/stream ban recordViewerLeave failed for ${streamId}: ${String(err)}`
           )
         );
-      // Broadcast the corrected viewer count (SCARD is always accurate).
+      // Broadcast the corrected viewer count (HLEN is unique-user count).
       try {
         const viewerCount = Math.max(
           0,
-          await redisPub.scard(sessionKey(streamId))
+          await redisPub.hlen(sessionKey(streamId))
         );
         streamNs
           .to(room)
@@ -208,14 +217,60 @@ export function registerStreamNamespace(
       userId?: string;
     };
     if (!streamId || !targetUserId) return;
+    const canCommentNext = event === "stream:member_unmuted";
     try {
       const sockets = await streamNs.in(room).fetchSockets();
       for (const s of sockets) {
         if (s.data.userId !== targetUserId) continue;
         s.emit(event, data);
+        // Update the per-socket canComment cache so the react-path gate
+        // (which never round-trips to stream-service) can't be bypassed by a
+        // muted user until they leave and rejoin. Local sockets only —
+        // remote-socket mutations don't propagate, but each gateway instance
+        // receives the same pmessage independently and updates its own
+        // locals, so the invariant holds across the cluster.
+        const perms = s.data.streamCommentPermissions as
+          | Map<string, boolean>
+          | undefined;
+        if (perms && perms.has(streamId)) perms.set(streamId, canCommentNext);
       }
     } catch (err) {
       logger.warn(`/stream ${event} notify error for ${room}: ${String(err)}`);
+    }
+  };
+
+  // Update every viewer's per-socket canComment cache when the broadcaster
+  // toggles chat open/closed. Mirrors notifyMuteStatus's cache update — same
+  // "stream-service is authoritative on writes, gateway cache is refreshed
+  // in-flight so ephemeral react-path gates stay honest" pattern.
+  const applyCommentStatus = async (
+    room: string,
+    data: unknown
+  ): Promise<void> => {
+    const { streamId, commentStatus } = (data ?? {}) as {
+      streamId?: string;
+      commentStatus?: boolean;
+    };
+    if (!streamId || typeof commentStatus !== "boolean") return;
+    try {
+      const sockets = await streamNs.in(room).fetchSockets();
+      for (const s of sockets) {
+        const perms = s.data.streamCommentPermissions as
+          | Map<string, boolean>
+          | undefined;
+        // A viewer who was already blocked by mute stays blocked — chat
+        // reopening doesn't unmute them. Only flip if the cache says true→false
+        // (freeze applies to everyone) or if the cache is currently `true` and
+        // status becomes `true` (no-op). For the reopen case (false→true) we
+        // conservatively leave the cache alone: individual mute state is
+        // authoritative there and only a per-user unmute event lifts it.
+        if (!perms || !perms.has(streamId)) continue;
+        if (!commentStatus) perms.set(streamId, false);
+      }
+    } catch (err) {
+      logger.warn(
+        `/stream comment_status cache update error for ${room}: ${String(err)}`
+      );
     }
   };
 
@@ -242,6 +297,15 @@ export function registerStreamNamespace(
           parsed.event === "stream:member_unmuted"
         ) {
           void notifyMuteStatus(channel, parsed.event, parsed.data);
+          return;
+        }
+        // Chat freeze / unfreeze: fan out to the room AND update every local
+        // socket's canComment cache so the stream:react gate stops accepting
+        // reactions the instant the broadcaster freezes chat — without waiting
+        // for the viewer to rejoin.
+        if (parsed.event === "stream:comment_status") {
+          void applyCommentStatus(channel, parsed.data);
+          streamNs.to(channel).emit(parsed.event, parsed.data);
           return;
         }
         // Presign the senderAvatar object key before emitting live comments so
@@ -325,33 +389,75 @@ export function registerStreamNamespace(
       `/stream connected userId=${userId} recovered=${socket.recovered}`
     );
 
+    // Streams this specific socket has contributed +1 to. The decrement paths
+    // (leave / disconnect / kick) key off this set, not `socket.rooms`, so we
+    // never double-decrement a user who joined the same room from two tabs.
+    const streamIncremented = new Set<string>();
+    (socket.data as { streamIncremented?: Set<string> }).streamIncremented =
+      streamIncremented;
+
+    // Per-socket increment: bumps the user's refcount, keeps join-time
+    // hash + TTLs fresh, and remembers the streamId locally so the leave path
+    // can decrement exactly once. Returns the current HLEN, or null on error.
+    const incrementPresence = async (
+      streamId: string
+    ): Promise<number | null> => {
+      try {
+        await redisPub.hincrby(sessionKey(streamId), userId, 1);
+        await redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC);
+        await redisPub.hsetnx(
+          sessionJoinedKey(streamId),
+          userId,
+          String(Date.now())
+        );
+        await redisPub.expire(sessionJoinedKey(streamId), VIEWER_KEY_TTL_SEC);
+        streamIncremented.add(streamId);
+        return await redisPub.hlen(sessionKey(streamId));
+      } catch (err) {
+        logger.warn(
+          `/stream presence increment error for ${streamId}: ${String(err)}`
+        );
+        return null;
+      }
+    };
+
+    // Per-socket decrement: drops the user from the refcount, HDELs the entry
+    // (and the join-time hash) when this was the user's last open socket.
+    // No-op if this socket never incremented for `streamId`.
+    const decrementPresence = async (streamId: string): Promise<void> => {
+      if (!streamIncremented.delete(streamId)) return;
+      try {
+        const remaining = await redisPub.hincrby(
+          sessionKey(streamId),
+          userId,
+          -1
+        );
+        if (remaining <= 0) {
+          await redisPub.hdel(sessionKey(streamId), userId);
+          await redisPub.hdel(sessionJoinedKey(streamId), userId);
+        }
+      } catch (err) {
+        logger.warn(
+          `/stream presence decrement error for ${streamId}: ${String(err)}`
+        );
+      }
+    };
+
     // connectionStateRecovery: Socket.IO restored this socket into its previous
     // rooms after a brief network drop. The disconnecting handler already ran
-    // SREM, so re-add the userId to keep the live count correct without a
-    // full stream:join from the client.
+    // its decrement for the prior socket instance, so re-increment here to
+    // keep the live count correct without a full stream:join from the client.
     if (socket.recovered) {
       for (const room of socket.rooms) {
         if (room.startsWith("stream:") && !room.startsWith("stream:viewers:")) {
           const streamId = room.slice("stream:".length);
-          void redisPub
-            .sadd(sessionKey(streamId), userId)
-            .then(() =>
-              redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC)
-            )
-            .then(() => redisPub.scard(sessionKey(streamId)))
-            .then((count) => {
-              streamNs
-                .to(roomKey(streamId))
-                .emit("stream:viewer_count", {
-                  streamId,
-                  viewerCount: Math.max(0, count),
-                });
-            })
-            .catch((err: unknown) => {
-              logger.warn(
-                `/stream recovery Redis error for ${streamId}: ${String(err)}`
-              );
+          void incrementPresence(streamId).then((count) => {
+            if (count === null) return;
+            streamNs.to(roomKey(streamId)).emit("stream:viewer_count", {
+              streamId,
+              viewerCount: Math.max(0, count),
             });
+          });
         }
       }
     }
@@ -360,11 +466,18 @@ export function registerStreamNamespace(
     // timer means "an emit is already scheduled within the window" — we coalesce.
     const viewerCountTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-    // Per-socket cache of the join-time `canComment` gate (membership + mute +
+    // Per-socket cache of the `canComment` gate (membership + mute +
     // commentStatus), keyed by streamId. Reactions never round-trip to
     // stream-service, so this cache is what blocks a muted user from reacting;
     // comments are additionally enforced server-side at the gRPC write path.
+    // Stashed on socket.data so the pmessage-side notifyMuteStatus /
+    // applyCommentStatus helpers can mutate it when mute/comment_status events
+    // arrive mid-stream — otherwise the cache would stay stuck at the join-time
+    // value and a muted user could keep reacting until they rejoin.
     const streamCommentPermissions = new Map<string, boolean>();
+    (
+      socket.data as { streamCommentPermissions?: Map<string, boolean> }
+    ).streamCommentPermissions = streamCommentPermissions;
 
     // Read the live viewer count and broadcast it to the room, debounced to
     // ≤ 1 emit/sec per stream. The emit goes via the redis-adapter so every
@@ -374,7 +487,7 @@ export function registerStreamNamespace(
       const timer = setTimeout(() => {
         viewerCountTimers.delete(streamId);
         redisPub
-          .scard(sessionKey(streamId))
+          .hlen(sessionKey(streamId))
           .then((count) => {
             const viewerCount = Math.max(0, count);
             streamNs
@@ -445,30 +558,56 @@ export function registerStreamNamespace(
           void socket.join(roomKey(streamId));
           streamCommentPermissions.set(streamId, canComment);
 
-          // SADD is idempotent per userId — a rejoining user (whose old socket's
-          // leave hasn't fired yet) won't inflate the count. SCARD then gives the
-          // exact number of unique watchers regardless of join/leave race order.
+          // Telegram-style "newest session wins" — emit stream:session:superseded
+          // to any OTHER socket of the SAME user already viewing this stream, so
+          // the older tab/device closes its viewer while this new one plays.
+          // Broadcaster protection: skip when the joining user is the stream's
+          // creator. A broadcaster opening the viewer in a second tab of their
+          // OWN stream (or their broadcast socket ever landing in this room)
+          // must not be kicked. Non-broadcaster viewers get the full kick.
+          if (userId !== access.creatorId) {
+            try {
+              const peers = await streamNs.in(roomKey(streamId)).fetchSockets();
+              for (const peer of peers) {
+                if (peer.id === socket.id) continue;
+                if (peer.data.userId !== userId) continue;
+                peer.emit("stream:session:superseded", { streamId });
+                void peer.leave(roomKey(streamId));
+                // Clear the peer's own presence-tracking for this stream so its
+                // own eventual disconnect/leave doesn't double-decrement. Only
+                // works for local sockets — remote sockets self-heal via HDEL
+                // when their FE leave arrives.
+                const peerIncremented = peer.data.streamIncremented as
+                  | Set<string>
+                  | undefined;
+                peerIncremented?.delete(streamId);
+              }
+            } catch (err) {
+              logger.warn(
+                `/stream supersede kick error for ${streamId}: ${String(err)}`
+              );
+            }
+          }
+
+          // Per-socket refcount bump. If this same user is already watching
+          // from another tab/device, HLEN stays the same and no viewer_count
+          // shrink fires when THIS socket later leaves — only the last tab
+          // for the user drops them from the count.
           let viewerCount = 0;
-          try {
-            await redisPub.sadd(sessionKey(streamId), userId);
-            await redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC);
-            // HSETNX: only stamps the join time on the *first* join — a
-            // rejoin (reconnect) must not reset how long this viewer has
-            // actually been watching.
-            await redisPub.hsetnx(
-              sessionJoinedKey(streamId),
-              userId,
-              String(Date.now())
-            );
-            await redisPub.expire(
-              sessionJoinedKey(streamId),
-              VIEWER_KEY_TTL_SEC
-            );
-            viewerCount = await redisPub.scard(sessionKey(streamId));
-          } catch (err) {
-            logger.warn(
-              `/stream join session error for ${streamId}: ${String(err)}`
-            );
+          if (streamIncremented.has(streamId)) {
+            // stream:join re-emitted on the same socket (e.g. React
+            // strict-mode double-mount). Don't double-count — just report
+            // the current HLEN.
+            try {
+              viewerCount = await redisPub.hlen(sessionKey(streamId));
+            } catch (err) {
+              logger.warn(
+                `/stream join hlen error for ${streamId}: ${String(err)}`
+              );
+            }
+          } else {
+            const count = await incrementPresence(streamId);
+            if (count !== null) viewerCount = count;
           }
 
           // Durable viewer-session record (separate from the Redis presence set
@@ -563,24 +702,18 @@ export function registerStreamNamespace(
         }
         const { streamId } = r.data;
         void (async () => {
-          // Only SREM if this socket was actually in the room. If the user was
-          // banned, kickBannedUser already SREM'd them; a subsequent stream:leave
-          // from the unmounting Chat component is a no-op (SREM is idempotent).
-          const wasInRoom = socket.rooms.has(roomKey(streamId));
+          // Only decrement if THIS socket personally contributed a refcount
+          // (streamIncremented is our per-socket source of truth). A double
+          // leave, a leave-after-ban, or a leave without a prior join is a
+          // no-op — decrementPresence checks the tracking set first.
+          const hadIncrement = streamIncremented.has(streamId);
           void socket.leave(roomKey(streamId));
           streamCommentPermissions.delete(streamId);
-          if (wasInRoom) {
-            try {
-              await redisPub.srem(sessionKey(streamId), userId);
-              await redisPub.hdel(sessionJoinedKey(streamId), userId);
-            } catch (err) {
-              logger.warn(
-                `/stream leave session srem error for ${streamId}: ${String(err)}`
-              );
-            }
+          if (hadIncrement) {
+            await decrementPresence(streamId);
             emitViewerCount(streamId);
-            // Close the durable viewer session to match the Redis presence
-            // removal above — best-effort, never blocks the leave ack.
+            // Close the durable viewer session to match the presence
+            // decrement — best-effort, never blocks the leave ack.
             streamClient
               .recordViewerLeave({ streamId, userId })
               .catch((err: unknown) =>
@@ -787,22 +920,22 @@ export function registerStreamNamespace(
     );
 
     // Keep-alive: client emits every ~30 s while the tab is visible. We refresh
-    // the Redis session-set TTL so a silent reconnect (network blip that doesn't
-    // trigger a full socket reconnect) doesn't evict the viewer before they leave.
-    // Only refreshes if the socket is actually in the room — prevents phantom
-    // heartbeats from a mis-wired client re-emitting stale streamIds.
+    // TTLs on the presence + join-time hashes so a silent reconnect (network
+    // blip that doesn't trigger a full socket reconnect) doesn't evict the
+    // viewer before they leave. Only runs if this socket already contributed
+    // to the refcount — prevents a rogue client from re-inflating the count
+    // via a heartbeat it never earned via stream:join.
     socket.on("stream:heartbeat", (payload: unknown) => {
       const r = StreamHeartbeatSchema.safeParse(payload);
       if (!r.success) return;
       const { streamId } = r.data;
-      if (!socket.rooms.has(roomKey(streamId))) return;
+      if (!streamIncremented.has(streamId)) return;
       void redisPub
-        .sadd(sessionKey(streamId), userId)
-        .then(() => redisPub.expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC))
+        .expire(sessionKey(streamId), VIEWER_KEY_TTL_SEC)
         .then(() =>
-          // HSETNX again: a no-op if this viewer already has a join time
-          // (the common case) — just keeps the hash's own TTL from expiring
-          // out from under a long-running heartbeat.
+          // HSETNX: only stamps if the join time is missing (e.g. the
+          // sessionJoinedKey TTL expired under a very long-running heartbeat);
+          // never overwrites the real first-join time.
           redisPub.hsetnx(
             sessionJoinedKey(streamId),
             userId,
@@ -826,14 +959,11 @@ export function registerStreamNamespace(
     socket.on("disconnecting", (reason: string) => {
       logger.debug(`/stream disconnecting userId=${userId} reason=${reason}`);
 
-      // Decrement the viewer counter for every stream room this socket was in
-      // and broadcast the updated count so the room never shows a phantom viewer.
-      const streamRooms: string[] = [];
-      for (const room of socket.rooms) {
-        if (room.startsWith("stream:") && !room.startsWith("stream:viewers:")) {
-          streamRooms.push(room.slice("stream:".length));
-        }
-      }
+      // Decrement presence for every stream THIS socket personally
+      // contributed to (not socket.rooms — a same-user sibling tab is
+      // tracked by its own socket's streamIncremented, so we never
+      // stomp on it here).
+      const streamIds = [...streamIncremented];
 
       // Flush any pending debounce timers — the socket is gone, so a deferred
       // emit would only leak a timer.
@@ -843,16 +973,9 @@ export function registerStreamNamespace(
       viewerCountTimers.clear();
       streamCommentPermissions.clear();
 
-      for (const streamId of streamRooms) {
+      for (const streamId of streamIds) {
         void (async () => {
-          try {
-            await redisPub.srem(sessionKey(streamId), userId);
-            await redisPub.hdel(sessionJoinedKey(streamId), userId);
-          } catch (err) {
-            logger.warn(
-              `/stream disconnect session srem error for ${streamId}: ${String(err)}`
-            );
-          }
+          await decrementPresence(streamId);
           // Close the durable viewer session — covers crashes/network drops
           // that never fire an explicit stream:leave. Best-effort.
           streamClient
@@ -867,7 +990,7 @@ export function registerStreamNamespace(
           try {
             const viewerCount = Math.max(
               0,
-              await redisPub.scard(sessionKey(streamId))
+              await redisPub.hlen(sessionKey(streamId))
             );
             streamNs
               .to(roomKey(streamId))

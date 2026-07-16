@@ -302,6 +302,21 @@ export class LivestreamRepository {
   }
 
   /**
+   * Every non-terminal (PENDING/LIVE/RECONNECTING) stream in one community,
+   * regardless of creator. Backs the bulk force-end triggered when a community
+   * is deleted or closed/suspended — no stream in that community is legitimately
+   * allowed to keep running.
+   */
+  async findActiveByCommunity(communityId: string): Promise<Livestream[]> {
+    return this.prisma.livestream.findMany({
+      where: {
+        communityId,
+        status: { in: [...ACTIVE_STATUSES] },
+      },
+    });
+  }
+
+  /**
    * PENDING sweeper input: streams created before `cutoff` that never went
    * LIVE (abandoned setup, crashed client, failed publish). Left unswept these
    * permanently occupy the creator's one-active-stream-per-community slot.

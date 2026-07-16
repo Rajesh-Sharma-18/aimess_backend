@@ -5264,6 +5264,18 @@ export const communityService = {
     });
     publishCommunityDeletedForChatSafe(communityId);
 
+    // Best-effort: force-end every non-terminal stream in the deleted community.
+    // Without this, a broadcast running at delete time would keep publishing
+    // to SRS on a still-valid access token — the account-ban path is what
+    // handles per-user cleanup, but a community delete has no per-user event
+    // to hook. Scoped to this community; the streams' creators may still be
+    // legitimately live elsewhere. Never awaited — a stream-service outage
+    // must not fail (or delay) the delete.
+    void getStreamClient().forceEndStreamsByCommunity(
+      communityId,
+      "COMMUNITY_DELETED"
+    );
+
     // Real-time list eviction: fan out a personal `community:membership:removed`
     // to EVERY ex-member's `user:<id>` channel so the deleted community vanishes
     // from their list live, on every device — without depending on the async
@@ -5395,6 +5407,16 @@ export const communityService = {
       reason,
       memberIds,
     });
+
+    // Best-effort: force-end every non-terminal stream in the closed community.
+    // Close is reversible for members/messages/history, but a live broadcast
+    // in a suspended community would keep publishing on a still-valid token —
+    // same rationale as the delete path. Reopening the community doesn't
+    // resurrect a broadcast, matching how the media pipeline works anyway.
+    void getStreamClient().forceEndStreamsByCommunity(
+      communityId,
+      "COMMUNITY_CLOSED"
+    );
   },
 
   /**
@@ -7622,6 +7644,16 @@ export const communityService = {
       logger.info(
         `Community moderation status changed: community=${communityId} status=${String(target)} actor=${actorAdminId ?? "unknown"}`
       );
+      // Force-end every live stream in this community on suspension. Same
+      // rationale as the owner-triggered close/delete paths — a live broadcast
+      // in a suspended community would keep publishing on a still-valid token.
+      // Skipped on reopen (target=ACTIVE): reopening doesn't resurrect anything.
+      if (target === CommunityModerationStatus.SUSPENDED) {
+        void getStreamClient().forceEndStreamsByCommunity(
+          communityId,
+          "COMMUNITY_SUSPENDED"
+        );
+      }
     }
 
     return result;

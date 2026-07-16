@@ -644,6 +644,37 @@ function createStreamImpl(deps: GrpcDeps): grpc.UntypedServiceImplementation {
       })();
     },
 
+    // ForceEndStreamsByCommunity — best-effort bulk force-end, called by
+    // community-service (community deleted/closed) and backoffice-service
+    // (community suspended/bulk-closed). Never fails the caller.
+    forceEndStreamsByCommunity: (
+      call: grpc.ServerUnaryCall<unknown, unknown>,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            communityId?: string;
+            reason?: string;
+          };
+          const communityId = req.communityId ?? "";
+          if (!communityId) {
+            callback(null, { ok: true, endedCount: 0 });
+            return;
+          }
+          const { endedCount } =
+            await deps.livestreamService.forceEndStreamsByCommunity(
+              communityId,
+              req.reason ?? ""
+            );
+          callback(null, { ok: true, endedCount });
+        } catch (err) {
+          logger.warn(`gRPC forceEndStreamsByCommunity error: ${String(err)}`);
+          callback(null, { ok: false, endedCount: 0 });
+        }
+      })();
+    },
+
     // CheckCreatorHasActiveStream — community-service queries this to set
     // currentUserIsStreaming in API responses. Fail-open: errors return false.
     checkCreatorHasActiveStream: (
