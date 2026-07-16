@@ -25,6 +25,16 @@ export function createMediaUrlStrategy(
 ): MediaUrlStrategy {
   return {
     async resolveDownloadUrl(bucket: string, objectKey: string) {
+      // Callers are expected to filter out already-full URLs (see
+      // isHttpUrl checks in media-object.ts / chat-service's media-resolve.ts)
+      // before reaching here, but a raw http(s) value must never be
+      // re-prefixed with the CDN base — pass it through unchanged so a
+      // mis-routed external URL (e.g. Giphy/Tenor) can't become
+      // `<cdnBaseUrl>/https://...`.
+      if (/^https?:\/\//i.test(objectKey)) {
+        return { url: objectKey, expiresIn: null };
+      }
+
       if (opts.cdnBaseUrl) {
         return {
           url: `${opts.cdnBaseUrl.replace(/\/$/, "")}/${objectKey}`,
