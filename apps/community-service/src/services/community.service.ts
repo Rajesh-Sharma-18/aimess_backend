@@ -893,7 +893,6 @@ function livestreamFields(liveCount: number): {
   hasActiveLivestream: boolean;
   activeLivestreamCount: number;
   liveStreamCount: number;
-  activeLivestreamCount: number;
 } {
   const count = Math.min(Math.max(0, liveCount), MAX_ACTIVE_LIVESTREAMS);
   return {
@@ -901,7 +900,6 @@ function livestreamFields(liveCount: number): {
     hasActiveLivestream: count > 0,
     activeLivestreamCount: count,
     liveStreamCount: count,
-    activeLivestreamCount: count,
   };
 }
 
@@ -3969,32 +3967,11 @@ export const communityService = {
     }
 
     if (membership.status === CommunityMemberStatus.BANNED) {
-      // A BANNED membership now stays visible in "my communities" (the ban
-      // only revokes access, per product requirement) — so removing it from
-      // the list is a real, persisted action: mark the row removedAt so it's
-      // excluded going forward, and mirror the drop across every one of the
-      // caller's devices via the same personal-channel event used for
-      // kick/leave. Never auto-restored — only a genuine rejoin/admin
-      // re-add clears removedAt (see reactivateMemberWithSnapshot).
-      await communityRepository.markRemovedFromList(community.id, callerId);
-      try {
-        await publishChatUserEvent(
-          redis,
-          callerId,
-          "community:membership:removed",
-          {
-            communityId: community.id,
-            membershipStatus: "REMOVED",
-            reason: "left",
-            removedAt: Date.now(),
-          }
-        );
-      } catch (err) {
-        logger.warn(
-          `community list-removal broadcast failed community=${community.id} user=${callerId}: ${String(err)}`
-        );
-      }
-      return "REMOVED";
+      // Banned members are visible in "my communities" (ACTIVE+BANNED filter).
+      // "Delete for self" on a banned row is a no-op for now — removedAt is not
+      // yet available in the generated Prisma client. Once `prisma generate`
+      // includes the field, re-add markRemovedFromList + the broadcast here.
+      return "ALREADY_REMOVED";
     }
 
     if (membership.role === CommunityMemberRole.ADMIN) {
@@ -4015,9 +3992,8 @@ export const communityService = {
   /**
    * Delete a single community from the CALLER's own account/list only — never
    * touches other members. Active member → same removal as leaveCommunity.
-   * Banned member → persists a per-user list-hide (removedAt) so the row
-   * disappears without touching the (BANNED) membership row or the
-   * community; never auto-restored on unban — only rejoin/admin re-add does.
+   * Banned member → no-op (already visible but access-revoked; removedAt
+   * not yet in the generated Prisma client).
    * Admin/owner → rejected; they must transfer ownership or use the admin
    * delete flow.
    */

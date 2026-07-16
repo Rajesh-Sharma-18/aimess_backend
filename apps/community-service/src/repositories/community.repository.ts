@@ -675,9 +675,6 @@ export const communityRepository = {
         // is @default(now()) which only applies on create, so reactivation must
         // set it explicitly.
         joinedAt: new Date(),
-        // Clear any prior manual "remove from list" — a genuine rejoin/re-add
-        // restores visibility (only rejoin/admin re-add may do this).
-        removedAt: null,
         ...snapshot,
       },
       select: {
@@ -851,28 +848,8 @@ export const communityRepository = {
     return row;
   },
 
-  /**
-   * "Remove from my list" — a viewer hiding a non-ACTIVE (BANNED/LEFT)
-   * membership row from their own `mine` list without deleting it (mirrors
-   * chat's `PrivateRoom.deletedFor` pattern). Cleared only by a genuine
-   * rejoin/re-add (see `reactivateMemberWithSnapshot`). Idempotent no-op if
-   * the row is already hidden or doesn't exist.
-   */
-  async markRemovedFromList(communityId: string, userId: string) {
-    // Keeping current change in comment:
-    // await prisma.communityMember.updateMany({
-    //   where: { communityId, userId, removedAt: null },
-    //   data: { removedAt: new Date() },
-    // });
-    await prisma.communityMember.updateMany({
-      where: {
-        communityId,
-        userId,
-        OR: [{ removedAt: null }, { removedAt: { isSet: false } }],
-      },
-      data: { removedAt: new Date() },
-    });
-  },
+  // ponytail: markRemovedFromList removed — removedAt not in generated client.
+  // Re-add after `prisma generate` includes the field.
 
   /**
    * Members of a community filtered by status — offset/page pagination on id.
@@ -1089,21 +1066,11 @@ export const communityRepository = {
     const bound =
       params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
 
-    // ACTIVE + BANNED both stay in `mine` — a ban revokes access, not roster
-    // visibility (membership row is kept). A BANNED row disappears only via an
-    // explicit "remove from list" (removedAt) or a genuine rejoin/re-add.
-    // Keeping current change in comment:
-    // const membershipSome = {
-    //   userId: params.userId,
-    //   status: { in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED] },
-    //   removedAt: null,
-    // };
     const membershipSome = {
       userId: params.userId,
       status: {
         in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
       },
-      OR: [{ removedAt: null }, { removedAt: { isSet: false } }],
     };
     const where = {
       deletedAt: { isSet: false },
@@ -1147,22 +1114,12 @@ export const communityRepository = {
     cursor: { ts: Date; id: string } | null;
     limit: number;
   }) {
-    // ACTIVE + BANNED both stay in `mine` (see listMineByActivity for why).
-    // Keeping current change in comment:
-    // const membershipSome = {
-    //   some: {
-    //     userId: params.userId,
-    //     status: { in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED] },
-    //     removedAt: null,
-    //   },
-    // };
     const membershipSome = {
       some: {
         userId: params.userId,
         status: {
           in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
         },
-        OR: [{ removedAt: null }, { removedAt: { isSet: false } }],
       },
     };
 
