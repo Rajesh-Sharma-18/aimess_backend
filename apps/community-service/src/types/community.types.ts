@@ -283,6 +283,8 @@ export type CommunityListItem = {
   lastActivityAt: number;
   /** Unread community-chat messages for the caller (member-only); 0 otherwise. */
   unreadMessageCount: number;
+  /** Oldest unread message id, so the client can jump to it. Null iff unreadMessageCount === 0. */
+  firstUnreadMessageId: string | null;
   /** Last activity for this community (denormalized). */
   lastActivity: CommunityLastActivity;
   /** True when the caller has an active mute-setting row for this community. */
@@ -346,6 +348,12 @@ export type CommunityDiscoverItem = {
    * /communities/mine search mode (member-only); absent on the public alias.
    */
   unreadMessageCount?: number;
+  /**
+   * Oldest unread message id, so the client can jump to it. Null iff
+   * unreadMessageCount === 0. Only populated by the /communities/mine search
+   * mode; absent on the public discover alias.
+   */
+  firstUnreadMessageId?: string | null;
   /**
    * Last activity for this community. Only populated by the /communities/mine
    * search mode; absent on the public discover alias.

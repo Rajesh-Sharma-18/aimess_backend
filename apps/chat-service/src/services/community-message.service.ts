@@ -111,6 +111,8 @@ type CommunityMessageWire = Omit<
 export interface CommunityChatSummary {
   communityId: string;
   unreadMessageCount: number;
+  /** Oldest unread message id, so the client can jump to it. Null iff unreadMessageCount === 0. */
+  firstUnreadMessageId: string | null;
   /** false => the caller should render lastMessageActivity as null. */
   hasLastMessage: boolean;
   /**
@@ -631,7 +633,9 @@ export class CommunityMessageService {
               afterDate: readMap.get(roomId) ?? new Date(0),
             })),
           })
-        : Promise.resolve<Record<string, number>>({}),
+        : Promise.resolve<
+            Record<string, { count: number; firstUnreadMessageId: string }>
+          >({}),
       memberRoomIds.length
         ? this.messageRepo.findLatestPersonalByRooms({
             userId: params.userId,
@@ -666,13 +670,17 @@ export class CommunityMessageService {
         return {
           communityId,
           unreadMessageCount: 0,
+          firstUnreadMessageId: null,
           hasLastMessage: false,
           perUserResolved: false,
         };
       }
 
       const room = roomById.get(communityId);
-      const unreadMessageCount = unreadMap[communityId] ?? 0;
+      const unread = unreadMap[communityId];
+      const unreadMessageCount = unread?.count ?? 0;
+      const firstUnreadMessageId =
+        unreadMessageCount > 0 ? (unread?.firstUnreadMessageId ?? null) : null;
 
       // The viewer's own personal line (e.g. "You joined the community"). Carried
       // SEPARATELY from lastMessage so community-service can pick the newer of the
@@ -739,6 +747,7 @@ export class CommunityMessageService {
       return {
         communityId,
         unreadMessageCount,
+        firstUnreadMessageId,
         hasLastMessage,
         perUserResolved,
         ...(lastMessage ? { lastMessage } : {}),
