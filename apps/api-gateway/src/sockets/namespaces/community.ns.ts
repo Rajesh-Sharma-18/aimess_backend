@@ -390,23 +390,29 @@ export function registerCommunityNamespace(
           "community:stream:updated",
         ]);
 
-        void emitPersonalizedSender(
-          community,
-          channel,
-          parsed.event,
-          parsed.data,
-          personalizeFn
-        );
-
-        if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {
-          const typingRoom = `community-typing:${channel.slice("community:".length)}`;
+        // `community:member:removed` is special-cased below (excludes the
+        // removed/banned user's OWN sockets from the broadcast — see the block
+        // after this one) instead of going through the generic room broadcast,
+        // so its handling is deliberately skipped here.
+        if (parsed.event !== "community:member:removed") {
           void emitPersonalizedSender(
             community,
-            typingRoom,
+            channel,
             parsed.event,
             parsed.data,
             personalizeFn
           );
+
+          if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {
+            const typingRoom = `community-typing:${channel.slice("community:".length)}`;
+            void emitPersonalizedSender(
+              community,
+              typingRoom,
+              parsed.event,
+              parsed.data,
+              personalizeFn
+            );
+          }
         }
 
         // Evict-on-removal: when a member is removed (banned/kicked/left), force
@@ -415,6 +421,19 @@ export function registerCommunityNamespace(
         // alongside the community:join ban gate (which stops them on reconnect).
         // Also broadcast a typing:stop for the removed user so stale indicators
         // are cleared from all peers' UIs.
+        //
+        // The `community:member:removed` room broadcast itself is sent here
+        // (not via the generic path above) EXCLUDING the removed/banned user's
+        // own socket(s) — every other member gets it for their roster update,
+        // but the target must never see a "you were removed" room event on
+        // their own connection. This matters even for a ban, where the target
+        // is deliberately NOT actually removed from the community (restricted-
+        // access model — see `community:membership:restricted` on the personal
+        // channel): without this exclusion, a still-connected banned socket
+        // would receive this room-wide event carrying their own userId, which
+        // a client's generic "member removed" handler can easily (and
+        // incorrectly) treat as self-removal and evict the community from its
+        // local list — the exact bug this closes.
         if (parsed.event === "community:member:removed") {
           const removedData = parsed.data as {
             userId?: string;
@@ -423,42 +442,59 @@ export function registerCommunityNamespace(
           const removedUserId = removedData?.userId;
           const removedCommunityId =
             removedData?.communityId ?? channel.slice("community:".length);
-          if (removedUserId) {
-            void (async () => {
-              try {
-                const sockets = await community.in(channel).fetchSockets();
-                for (const s of sockets) {
-                  if (s.data.userId === removedUserId) {
-                    void s.leave(channel);
-                    // Also leave the lightweight typing room.
-                    void s.leave(`community-typing:${removedCommunityId}`);
-                    // Broadcast stop so peers clear any stale typing indicator.
-                    community
-                      .to(`community:${removedCommunityId}`)
-                      .to(`community-typing:${removedCommunityId}`)
-                      .emit("typing:stop", {
-                        eventId: randomUUID(),
-                        communityId: removedCommunityId,
-                        roomId: removedCommunityId,
-                        userDetails: s.data.userDetails ?? {
-                          userId: removedUserId,
-                          username: "",
-                          displayName: "",
-                          avatarUrl: null,
-                        },
-                        userId: removedUserId,
-                        senderName: "",
-                        timestamp: Date.now(),
-                      });
-                  }
-                }
-              } catch (evictErr) {
-                logger.warn(
-                  `/community evict-on-removed failed channel=${channel} user=${removedUserId}: ${String(evictErr)}`
-                );
+          const typingRoom = `community-typing:${removedCommunityId}`;
+          void (async () => {
+            try {
+              const [roomSockets, typingSockets] = await Promise.all([
+                community.in(channel).fetchSockets(),
+                community.in(typingRoom).fetchSockets(),
+              ]);
+              const isTarget = (s: { data: { userId?: string } }) =>
+                removedUserId != null && s.data.userId === removedUserId;
+
+              // Broadcast to everyone in each room EXCEPT the removed user's
+              // own sockets (defense-in-depth: even if removedUserId is
+              // somehow absent, this degrades to a normal full-room broadcast).
+              for (const s of roomSockets) {
+                if (!isTarget(s)) s.emit(parsed.event, parsed.data);
               }
-            })();
-          }
+              if (TYPING_ROOM_BROADCAST_EVENTS.has(parsed.event)) {
+                for (const s of typingSockets) {
+                  if (!isTarget(s)) s.emit(parsed.event, parsed.data);
+                }
+              }
+
+              if (!removedUserId) return;
+              for (const s of roomSockets) {
+                if (!isTarget(s)) continue;
+                void s.leave(channel);
+                // Also leave the lightweight typing room.
+                void s.leave(typingRoom);
+                // Broadcast stop so peers clear any stale typing indicator.
+                community
+                  .to(`community:${removedCommunityId}`)
+                  .to(typingRoom)
+                  .emit("typing:stop", {
+                    eventId: randomUUID(),
+                    communityId: removedCommunityId,
+                    roomId: removedCommunityId,
+                    userDetails: s.data.userDetails ?? {
+                      userId: removedUserId,
+                      username: "",
+                      displayName: "",
+                      avatarUrl: null,
+                    },
+                    userId: removedUserId,
+                    senderName: "",
+                    timestamp: Date.now(),
+                  });
+              }
+            } catch (evictErr) {
+              logger.warn(
+                `/community evict-on-removed failed channel=${channel} user=${removedUserId}: ${String(evictErr)}`
+              );
+            }
+          })();
         }
       } catch (err) {
         logger.warn(

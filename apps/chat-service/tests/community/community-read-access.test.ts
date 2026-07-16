@@ -865,6 +865,123 @@ describe("CommunityMessageService.getMessages access", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Restricted-access model: getConversation / listMedia allow a BANNED member
+// to keep reading their pre-ban history (capped at bannedAt), matching the
+// other read endpoints (getMessages/searchMessages/etc). A LEFT/non-member of
+// a PRIVATE community is still blocked.
+// ---------------------------------------------------------------------------
+describe("CommunityMessageService.getConversation / listMedia — banned read access", () => {
+  const BANNED_AT = new Date("2026-07-01T00:00:00.000Z");
+
+  function build(memberStatus: string | null, communityType: string | null) {
+    const messageRepo = {
+      listConversationMessages: jest.fn().mockResolvedValue([]),
+      countConversation: jest.fn().mockResolvedValue(0),
+      listMedia: jest.fn().mockResolvedValue([]),
+    };
+    const roomRepo = {
+      findRoomById: jest
+        .fn()
+        .mockResolvedValue({ id: ROOM_ID, status: "active", communityType }),
+    };
+    const memberRepo = {
+      findByRoomAndUser: jest.fn().mockResolvedValue(
+        memberStatus === null
+          ? null
+          : {
+              status: memberStatus,
+              role: "member",
+              bannedAt: memberStatus === "banned" ? BANNED_AT : null,
+            }
+      ),
+      advanceReadPointer: jest.fn().mockResolvedValue(undefined),
+    };
+    const cacheRepo = {};
+    const userSnapshotService = {};
+    const service = new CommunityMessageService(
+      messageRepo as never,
+      roomRepo as never,
+      memberRepo as never,
+      cacheRepo as never,
+      userSnapshotService as never
+    );
+    return { service, messageRepo, memberRepo };
+  }
+
+  it("getConversation allows a BANNED member, capping the page at their ban timestamp and skipping mark-as-read", async () => {
+    const { service, messageRepo, memberRepo } = build("banned", "PRIVATE");
+
+    await expect(
+      service.getConversation({
+        roomId: ROOM_ID,
+        userId: USER_ID,
+        pageNumber: 1,
+        limit: 30,
+        timestamp: BANNED_AT.getTime() + 60_000, // requested page is AFTER the ban
+      })
+    ).resolves.toEqual({ messages: [], total: 0 });
+
+    // The effective beforeMs is clamped down to the ban timestamp, not the
+    // later requested one — nothing sent after the ban is ever returned.
+    expect(messageRepo.listConversationMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ beforeMs: BANNED_AT.getTime() })
+    );
+    expect(messageRepo.countConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ beforeMs: BANNED_AT.getTime() })
+    );
+    // No read-state write for a non-active viewer.
+    expect(memberRepo.advanceReadPointer).not.toHaveBeenCalled();
+  });
+
+  it("getConversation still advances the read pointer for an ACTIVE member", async () => {
+    const { service, messageRepo, memberRepo } = build("active", "PRIVATE");
+    (messageRepo.listConversationMessages as jest.Mock).mockResolvedValue([
+      { id: "m1", createdAt: new Date() },
+    ]);
+
+    await service.getConversation({
+      roomId: ROOM_ID,
+      userId: USER_ID,
+      pageNumber: 1,
+      limit: 30,
+    });
+
+    expect(memberRepo.advanceReadPointer).toHaveBeenCalled();
+  });
+
+  it("getConversation blocks a non-member of a PRIVATE community", async () => {
+    const { service } = build(null, "PRIVATE");
+    await expect(
+      service.getConversation({
+        roomId: ROOM_ID,
+        userId: USER_ID,
+        pageNumber: 1,
+        limit: 30,
+      })
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("listMedia allows a BANNED member, passing their ban timestamp through as the read cutoff", async () => {
+    const { service, messageRepo } = build("banned", "PUBLIC");
+
+    await expect(
+      service.listMedia({ roomId: ROOM_ID, userId: USER_ID, limit: 20 })
+    ).resolves.toEqual([]);
+
+    expect(messageRepo.listMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ readCutoff: BANNED_AT })
+    );
+  });
+
+  it("listMedia blocks a non-member of a PRIVATE community", async () => {
+    const { service } = build(null, "PRIVATE");
+    await expect(
+      service.listMedia({ roomId: ROOM_ID, userId: USER_ID, limit: 20 })
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CommunitySystemMessageService — PERSONAL join message targeting
 // ---------------------------------------------------------------------------
 describe("CommunitySystemMessageService PERSONAL join message", () => {

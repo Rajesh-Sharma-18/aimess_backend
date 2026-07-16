@@ -489,7 +489,7 @@ export const communityRepository = {
   findMembership(communityId: string, userId: string) {
     return prisma.communityMember.findFirst({
       where: { communityId, userId },
-      select: { role: true, status: true },
+      select: { role: true, status: true, removedAt: true },
     });
   },
 
@@ -583,6 +583,9 @@ export const communityRepository = {
         bannedAt: true,
         bannedBy: true,
         banReason: true,
+        removedAt: true,
+        removedBy: true,
+        removedReason: true,
       },
     });
   },
@@ -783,7 +786,12 @@ export const communityRepository = {
       bannedBy: string | null;
       banReason: string | null;
     },
-    resetRole?: CommunityMemberRole
+    resetRole?: CommunityMemberRole,
+    removedMeta?: {
+      removedAt: Date | null;
+      removedBy: string | null;
+      removedReason: string | null;
+    }
   ) {
     const row = await prisma.communityMember.update({
       where: { communityId_userId: { communityId, userId } },
@@ -791,6 +799,7 @@ export const communityRepository = {
         status,
         ...(banMeta ?? {}),
         ...(resetRole ? { role: resetRole } : {}),
+        ...(removedMeta ?? {}),
       },
       select: {
         id: true,
@@ -804,6 +813,9 @@ export const communityRepository = {
         bannedAt: true,
         bannedBy: true,
         banReason: true,
+        removedAt: true,
+        removedBy: true,
+        removedReason: true,
       },
     });
     publishCommunityMemberSyncedForChatSafe({ communityId, userId, status });
@@ -1025,13 +1037,29 @@ export const communityRepository = {
     const bound =
       params.direction === "before" ? { lte: params.ts } : { gte: params.ts };
 
+    // Include BANNED alongside ACTIVE: a banned member's communities must stay
+    // visible in their sidebar list (restricted-access model — read-only, not
+    // removed). A KICKED member is status=LEFT with removedAt set (see
+    // kickMember) — same restricted-access treatment, so it's included too via
+    // the second OR branch. A genuine voluntary LEFT (removedAt null) and any
+    // other non-membership status are still excluded.
+    const memberVisibilityFilter = {
+      OR: [
+        {
+          status: {
+            in: [CommunityMemberStatus.ACTIVE, CommunityMemberStatus.BANNED],
+          },
+        },
+        { status: CommunityMemberStatus.LEFT, removedAt: { not: null } },
+      ],
+    };
     const where = {
       deletedAt: { isSet: false },
       lastActivityAt: bound,
       members: {
         some: {
           userId: params.userId,
-          status: CommunityMemberStatus.ACTIVE,
+          ...memberVisibilityFilter,
         },
       },
     };
@@ -1073,7 +1101,7 @@ export const communityRepository = {
           // nested relation read anyway).
           members: {
             where: { userId: params.userId },
-            select: { role: true },
+            select: { role: true, status: true, removedAt: true },
           },
         },
       }),
@@ -1083,7 +1111,7 @@ export const communityRepository = {
           members: {
             some: {
               userId: params.userId,
-              status: CommunityMemberStatus.ACTIVE,
+              ...memberVisibilityFilter,
             },
           },
         },
@@ -1333,6 +1361,23 @@ export const communityRepository = {
   async findBannedCommunityIds(userId: string): Promise<string[]> {
     const rows = await prisma.communityMember.findMany({
       where: { userId, status: CommunityMemberStatus.BANNED },
+      select: { communityId: true },
+    });
+    return rows.map((r) => r.communityId);
+  },
+
+  /**
+   * Community ids where the user was KICKED and hasn't dismissed it yet.
+   * Status is LEFT (same as a voluntary leave — see kickMember); `removedAt`
+   * set is what distinguishes an admin kick from a genuine voluntary leave.
+   */
+  async findKickedCommunityIds(userId: string): Promise<string[]> {
+    const rows = await prisma.communityMember.findMany({
+      where: {
+        userId,
+        status: CommunityMemberStatus.LEFT,
+        removedAt: { not: null },
+      },
       select: { communityId: true },
     });
     return rows.map((r) => r.communityId);

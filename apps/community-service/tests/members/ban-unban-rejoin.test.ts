@@ -122,18 +122,26 @@ describe("banMember — reuses the leave removal core (architecture requirement)
     );
   });
 
-  it("drops the community from the target's active list via community:membership:removed", async () => {
+  it("flips the target's own view to read-only via community:membership:restricted (community stays in their list — restricted-access model)", async () => {
     await communityService.banMember(CID, ADMIN, TARGET);
 
     expect(pubUserEvent).toHaveBeenCalledWith(
       expect.anything(),
       TARGET,
-      "community:membership:removed",
+      "community:membership:restricted",
       expect.objectContaining({
         communityId: CID,
-        membershipStatus: "REMOVED",
+        membershipStatus: "BANNED",
+        isBanned: true,
         reason: "banned",
       })
+    );
+    // Must NOT fire the list-eviction event — a banned community stays visible.
+    expect(pubUserEvent).not.toHaveBeenCalledWith(
+      expect.anything(),
+      TARGET,
+      "community:membership:removed",
+      expect.anything()
     );
   });
 
@@ -200,6 +208,21 @@ describe("unbanMember — lifts ban to LEFT, never restores ACTIVE membership", 
     await communityService.unbanMember(CID, ADMIN, TARGET);
 
     expect(pubSysMsg).not.toHaveBeenCalled();
+  });
+
+  it("drops the community from the target's list via community:membership:removed (LEFT — must rejoin to see it again)", async () => {
+    await communityService.unbanMember(CID, ADMIN, TARGET);
+
+    expect(pubUserEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      TARGET,
+      "community:membership:removed",
+      expect.objectContaining({
+        communityId: CID,
+        membershipStatus: "REMOVED",
+        reason: "unbanned",
+      })
+    );
   });
 
   it("rejects unbanning a member who is not currently BANNED", async () => {

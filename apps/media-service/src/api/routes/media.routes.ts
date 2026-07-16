@@ -25,10 +25,12 @@ export function createMediaRoutes(): IRouter {
     mediaController.confirmUpload
   );
 
+  // No rate limiter: download-url issuance must never fail a legitimate
+  // client with 429 (a chat/media-heavy view can fire many of these in a
+  // burst). Upload/confirm/scan-status keep mediaRateLimiter unchanged.
   router.post(
     "/download-url",
     authenticateAccessToken,
-    mediaRateLimiter,
     mediaController.getDownloadUrl
   );
 
