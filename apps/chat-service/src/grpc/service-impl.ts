@@ -2402,6 +2402,7 @@ export function createCommunityImpl(
             summaries: summaries.map((s) => ({
               communityId: s.communityId,
               unreadMessageCount: s.unreadMessageCount,
+              firstUnreadMessageId: s.firstUnreadMessageId ?? "",
               hasLastMessage: s.hasLastMessage,
               perUserResolved: s.perUserResolved,
               lastMessage: s.lastMessage

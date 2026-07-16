@@ -1393,6 +1393,8 @@ function toAuditLogData(log: {
  *  own personal line (e.g. "You joined the community"), if any. */
 type ChatEnrichment = {
   unreadMessageCount: number;
+  /** Oldest unread message id, so the client can jump to it. Null iff unreadMessageCount === 0. */
+  firstUnreadMessageId: string | null;
   /**
    * True => the viewer HID the community-wide shared last; `lastMessage` (or its
    * absence) is AUTHORITATIVE for this viewer — use it directly and CLEAR the
@@ -1439,6 +1441,7 @@ async function fetchChatEnrichment(
   for (const s of summaries) {
     map.set(s.communityId, {
       unreadMessageCount: s.unreadMessageCount ?? 0,
+      firstUnreadMessageId: s.firstUnreadMessageId ?? null,
       perUserResolved: Boolean(s.perUserResolved),
       lastMessage:
         s.hasLastMessage && s.lastMessage
@@ -1463,6 +1466,7 @@ async function fetchChatEnrichment(
 
 const EMPTY_CHAT_ENRICHMENT: ChatEnrichment = {
   unreadMessageCount: 0,
+  firstUnreadMessageId: null,
   perUserResolved: false,
 };
 
@@ -2447,6 +2451,7 @@ export const communityService = {
           isJoined: true,
           lastActivityAt,
           unreadMessageCount: chat.unreadMessageCount,
+          firstUnreadMessageId: chat.firstUnreadMessageId,
           lastActivity,
           ...muteFields(muteMap.get(row.id) ?? null),
           ...livestreamFields(liveCountMap.get(row.id) ?? 0),
@@ -2603,6 +2608,7 @@ export const communityService = {
       for (const item of communities) {
         const chat = chatMap.get(item.id) ?? EMPTY_CHAT_ENRICHMENT;
         item.unreadMessageCount = chat.unreadMessageCount;
+        item.firstUnreadMessageId = chat.firstUnreadMessageId;
       }
     }
 
