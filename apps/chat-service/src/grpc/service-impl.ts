@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import * as grpc from "@grpc/grpc-js";
 import { logger } from "@aimess/logger";
-import { isAppError } from "@aimess/errors";
+import { isAppError, ForbiddenError } from "@aimess/errors";
 import { publishUserSocketEvent } from "@aimess/redis";
 import { buildReactionActivityText } from "@aimess/constants";
 import { redis } from "../config/redis.js";
@@ -36,6 +36,7 @@ import type { GroupRoomRepository } from "../repositories/group-room.repository.
 import type { GroupMemberRepository } from "../repositories/group-member.repository.js";
 import type { PrivateRoomRepository } from "../repositories/private-room.repository.js";
 import type { RoomMemberRepository } from "../repositories/room-member.repository.js";
+import type { GeneralRoomRepository } from "../repositories/general-room.repository.js";
 import type { AdminGroupService } from "../services/admin-group.service.js";
 import type { CacheRepository } from "../repositories/cache.repository.js";
 import type { UserSnapshotService } from "../services/user-snapshot.service.js";
@@ -62,11 +63,7 @@ import {
 } from "../lib/media-resolve.js";
 import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
-import {
-  assertPrivateParticipant,
-  assertGroupMember,
-  assertCommunityMember,
-} from "../lib/access-guard.js";
+import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
 
 /**
@@ -132,6 +129,7 @@ export interface GrpcDeps {
   groupMemberRepo: GroupMemberRepository;
   privateRoomRepo: PrivateRoomRepository;
   roomMemberRepo: RoomMemberRepository;
+  generalRoomRepo: GeneralRoomRepository;
   adminGroupService: AdminGroupService;
   cacheRepo: CacheRepository;
   userSnapshotService: UserSnapshotService;
@@ -1722,13 +1720,17 @@ export function createMessagingImpl(
       })();
     },
 
-    // Authorize a media download against chat-resource membership. media-service
-    // calls this because an object key encodes the uploader, not the room the
-    // attachment belongs to. Routes the scope through the centralized access
-    // guards (which THROW on denial). A normal authz denial is NOT a gRPC error —
-    // it returns { allowed: false }; only the guard's throw distinguishes
-    // allowed vs. denied. Catch-all → allowed:false so a transient/internal
-    // failure can never accidentally grant access (fail-closed).
+    // Authorize a media download against chat-resource HISTORICAL membership.
+    // media-service calls this because an object key encodes the uploader, not
+    // the room the attachment belongs to. Deliberately looser than the guards
+    // used for message send/read: the requester only needs to have EVER been
+    // part of the resource, not be a CURRENTLY active participant/member — so
+    // an attachment stays downloadable after an unfriend/leave/kick/ban
+    // (Telegram/WhatsApp parity: history never breaks). A normal authz denial
+    // is NOT a gRPC error — it returns { allowed: false }; only a thrown/failed
+    // lookup distinguishes allowed vs. denied. Catch-all → allowed:false so a
+    // transient/internal failure can never accidentally grant access
+    // (fail-closed).
     checkMediaAccess: (
       call: grpc.ServerUnaryCall<unknown, unknown>,
       callback: grpc.sendUnaryData<unknown>
@@ -1746,32 +1748,51 @@ export function createMessagingImpl(
         try {
           switch (scope) {
             case "PRIVATE_CHAT":
+              // A private room's `participants` array is fixed at creation and
+              // is never pruned on unfriend/block, so this is already a
+              // historical check — reused as-is.
               await assertPrivateParticipant(
                 deps.privateRoomRepo,
                 resourceId,
                 userId
               );
               break;
-            case "GROUP_CHAT":
-              await assertGroupMember(deps.groupMemberRepo, resourceId, userId);
-              break;
-            case "COMMUNITY_CHAT":
-              await assertCommunityMember(
-                deps.roomMemberRepo,
+            case "GROUP_CHAT": {
+              const member = await deps.groupMemberRepo.findByRoomAndUser(
                 resourceId,
                 userId
               );
+              if (!member) throw new ForbiddenError("CHAT_NOT_A_MEMBER");
               break;
+            }
+            case "COMMUNITY_CHAT": {
+              const member = await deps.roomMemberRepo.findByRoomAndUser(
+                resourceId,
+                userId
+              );
+              if (member) break;
+              // No membership row at all (never joined) — mirror
+              // assertCommunityReadAccess: a PUBLIC community's media is as
+              // fetchable as its message history, which non-members can
+              // already read. Only a PRIVATE (or unsynced/null) community
+              // denies here, matching the read-access guard's fail-closed
+              // default.
+              const room = await deps.generalRoomRepo.findRoomById(resourceId);
+              if (room?.communityType !== "PUBLIC") {
+                throw new ForbiddenError("CHAT_NOT_A_MEMBER");
+              }
+              break;
+            }
             default:
               callback(null, { allowed: false });
               return;
           }
           callback(null, { allowed: true });
         } catch (err) {
-          // Guards throw ForbiddenError/NotFoundError on a normal denial — that
-          // is the expected "no" answer, not an RPC failure. Log at debug so an
-          // unexpected internal error is still traceable without alarming on the
-          // routine denials. Either way the answer is fail-closed: allowed:false.
+          // A denial (no historical membership row found) is the expected "no"
+          // answer, not an RPC failure. Log at debug so an unexpected internal
+          // error is still traceable without alarming on routine denials.
+          // Either way the answer is fail-closed: allowed:false.
           logger.debug(
             `checkMediaAccess denied (scope=${scope}, user=${userId}, resource=${resourceId}): ${String(err)}`
           );
