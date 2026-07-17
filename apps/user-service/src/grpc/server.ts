@@ -287,6 +287,62 @@ export function startUserGrpcServer(): grpc.Server {
       })();
     },
 
+    // Internal: resolve the *current* friendship state for a Notification
+    // Center row, viewer-relative. Notification rows are immutable, so the
+    // caller must re-derive status/direction/canAccept-etc at read time.
+    getFriendshipView: (
+      call: grpc.ServerUnaryCall<
+        { friendshipId: string; viewerId: string },
+        unknown
+      >,
+      callback: grpc.sendUnaryData<unknown>
+    ) => {
+      void (async () => {
+        try {
+          const req = call.request as {
+            friendshipId?: string;
+            viewerId?: string;
+          };
+          const friendshipId = req.friendshipId ?? "";
+          const viewerId = req.viewerId ?? "";
+          if (!friendshipId || !viewerId) {
+            callback(null, {
+              found: false,
+              status: "NONE",
+              direction: "",
+              canAccept: false,
+              canReject: false,
+              canCancel: false,
+            });
+            return;
+          }
+
+          const row = await friendshipRepository.findById(friendshipId);
+          let isBlocked = false;
+          if (row) {
+            const [aBlockedB, bBlockedA] = await Promise.all([
+              friendshipRepository.findBlock(row.requesterId, row.addresseeId),
+              friendshipRepository.findBlock(row.addresseeId, row.requesterId),
+            ]);
+            isBlocked = Boolean(aBlockedB || bBlockedA);
+          }
+
+          const view = buildFriendshipView(viewerId, row, isBlocked);
+          callback(null, {
+            found: row !== null,
+            status: view.status,
+            direction: view.direction ?? "",
+            canAccept: view.canAccept,
+            canReject: view.canReject,
+            canCancel: view.canCancel,
+          });
+        } catch (err) {
+          logger.error(`gRPC getFriendshipView error: ${String(err)}`);
+          callback({ code: grpc.status.INTERNAL, message: String(err) });
+        }
+      })();
+    },
+
     // Admin Panel ONLY (see the .proto doc) — platform-wide unfriend sweep.
     // Access control is backoffice-service's RBAC + audit log around this
     // call, NOT this handler; `confirm` here is only a blast-radius trip-wire.

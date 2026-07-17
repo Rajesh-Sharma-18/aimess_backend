@@ -65,6 +65,7 @@ import { isIdempotentReplay } from "../lib/idempotency.js";
 import { getAlbumMessages } from "../lib/album-messages.js";
 import { assertPrivateParticipant } from "../lib/access-guard.js";
 import { buildParticipantsKey } from "../lib/room-id.js";
+import { resolveNotificationFriendship } from "../lib/notification-friendship.enricher.js";
 
 /**
  * Resolve attachment object-keys inside a message `content` blob to full,
@@ -3443,44 +3444,54 @@ export function createNotificationImpl(
             req.userId
           );
 
-          const notifications = rows.map((n) => {
-            const payloadObj = (n.payload ?? {}) as {
-              title?: string;
-              body?: string;
-              data?: Record<string, string>;
-            };
-            const rawData = payloadObj.data ?? {};
-            const entity = (n.entity ?? {}) as { id?: string };
+          const notifications = await Promise.all(
+            rows.map(async (n) => {
+              const payloadObj = (n.payload ?? {}) as {
+                title?: string;
+                body?: string;
+                data?: Record<string, string>;
+              };
+              const rawData = payloadObj.data ?? {};
+              const entity = (n.entity ?? {}) as { id?: string };
 
-            let navParsed: unknown;
-            let actorParsed: unknown;
-            try {
-              if (rawData.navigation)
-                navParsed = JSON.parse(rawData.navigation);
-            } catch {
-              /* skip */
-            }
-            try {
-              if (rawData.actorSnapshot)
-                actorParsed = JSON.parse(rawData.actorSnapshot);
-            } catch {
-              /* skip */
-            }
+              let navParsed: unknown;
+              let actorParsed: unknown;
+              try {
+                if (rawData.navigation)
+                  navParsed = JSON.parse(rawData.navigation);
+              } catch {
+                /* skip */
+              }
+              try {
+                if (rawData.actorSnapshot)
+                  actorParsed = JSON.parse(rawData.actorSnapshot);
+              } catch {
+                /* skip */
+              }
 
-            const row: Record<string, unknown> = {
-              notificationId: n.id,
-              userId: n.userId,
-              type: n.type,
-              title: payloadObj.title ?? "",
-              body: payloadObj.body ?? "",
-              referenceId: entity.id ?? "",
-              isRead: n.isRead,
-              createdAt: n.createdAt.getTime(),
-            };
-            if (navParsed !== undefined) row.navigation = navParsed;
-            if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
-            return row;
-          });
+              const row: Record<string, unknown> = {
+                notificationId: n.id,
+                userId: n.userId,
+                type: n.type,
+                title: payloadObj.title ?? "",
+                body: payloadObj.body ?? "",
+                referenceId: entity.id ?? "",
+                isRead: n.isRead,
+                createdAt: n.createdAt.getTime(),
+              };
+              if (navParsed !== undefined) row.navigation = navParsed;
+              if (actorParsed !== undefined) row.actorSnapshot = actorParsed;
+
+              const friendship = await resolveNotificationFriendship(
+                req.userId as string,
+                n.type,
+                rawData.friendshipId
+              );
+              if (friendship) row.friendship = friendship;
+
+              return row;
+            })
+          );
 
           // Cursor pagination: full page → assume there is a next page, hand
           // back the oldest row's timestamp as the cursor (findByUserId pages

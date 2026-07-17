@@ -1,5 +1,5 @@
 import { logger } from "@aimess/logger";
-import { CommunityEvents } from "@aimess/shared-types";
+import { CommunityEvents, FriendshipEvents } from "@aimess/shared-types";
 
 import { createChatNotificationClient } from "../grpc/chat-notification.client.js";
 import { sendPush } from "../providers/firebase/sendPush.js";
@@ -25,6 +25,21 @@ const chatNotificationClient = createChatNotificationClient();
 const NOTIFY_SUPPRESSED_TYPES = new Set<string>([
   CommunityEvents.MEMBER_KICKED,
   CommunityEvents.DELETED,
+]);
+
+/**
+ * Notification Center allowlist — only these event types are persisted as an
+ * inbox row (and therefore ever surface from `GET /api/v1/chat/notifications`
+ * or the `notification:new`/`notification:count_update` socket events).
+ * Everything else (community messages, member joined/left/added/removed,
+ * role changes, mutes, reports, livestream, etc.) still gets FCM push same as
+ * before — this only gates the Notification Center write. Extensible: add a
+ * type here to enable it in the inbox without touching any producer.
+ */
+const INBOX_ALLOWED_TYPES = new Set<string>([
+  FriendshipEvents.FRIEND_REQUESTED,
+  FriendshipEvents.FRIEND_ACCEPTED,
+  CommunityEvents.MEMBER_BANNED,
 ]);
 
 export interface PushInput {
@@ -135,9 +150,10 @@ export async function pushToUser(input: PushInput): Promise<void> {
   }
 
   // Persist the inbox row (best-effort; circuit-breaker-wrapped). Skipped
-  // entirely for chat-activity pushes — the Notification Center is
-  // business-events-only.
-  if (!skipInbox) {
+  // for chat-activity pushes (skipInbox) and for any type not on the
+  // Notification Center allowlist — the Notification Center is
+  // important-events-only, everything else stays FCM+realtime-only.
+  if (!skipInbox && INBOX_ALLOWED_TYPES.has(type)) {
     try {
       await chatNotificationClient.createNotification({
         userId,

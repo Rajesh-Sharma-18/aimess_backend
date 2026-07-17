@@ -12,6 +12,11 @@ service UserService {
   rpc AdminSearchProfileIds (AdminSearchProfileIdsRequest) returns (AdminSearchProfileIdsResponse);
   rpc BulkGetUserSnapshots (BulkGetUserSnapshotsRequest) returns (BulkGetUserSnapshotsResponse);
   rpc CheckFriendships (CheckFriendshipsRequest) returns (CheckFriendshipsResponse);
+  // Internal: chat-service resolves the *current* friendship state for a
+  // Notification Center row (Notification is an immutable event log — the
+  // friendship it references can move on to ACCEPTED/REJECTED/CANCELLED/
+  // BLOCKED/UNFRIENDED after the row was written). Viewer-relative.
+  rpc GetFriendshipView (GetFriendshipViewRequest) returns (FriendshipViewRecord);
   // Internal: chat-service reads the callee's call-privacy setting to gate 1-to-1
   // calls (whoCanCallMe + allow-list). Callee-scoped, not per-caller.
   rpc GetCallPrivacy (GetCallPrivacyRequest) returns (GetCallPrivacyResponse);
@@ -118,6 +123,21 @@ message FriendshipInfo {
   string user_id = 1;
   string status = 2;    // FRIEND | PENDING | NONE | BLOCKED
   string direction = 3; // OUTGOING | INCOMING | "" (none)
+}
+
+message GetFriendshipViewRequest {
+  string friendship_id = 1;
+  string viewer_id     = 2;
+}
+
+// Full viewer-relative friendship view — see user-service's buildFriendshipView().
+message FriendshipViewRecord {
+  bool   found      = 1;
+  string status     = 2; // NONE|PENDING|ACCEPTED|REJECTED|CANCELLED|UNFRIENDED|BLOCKED
+  string direction  = 3; // OUTGOING|INCOMING|"" (none)
+  bool   can_accept = 4;
+  bool   can_reject = 5;
+  bool   can_cancel = 6;
 }
 
 message GetCallPrivacyRequest {

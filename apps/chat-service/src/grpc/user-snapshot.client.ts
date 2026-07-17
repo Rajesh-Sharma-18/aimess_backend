@@ -46,6 +46,32 @@ interface CheckFriendshipsResult {
   relationships: FriendshipInfoRecord[];
 }
 
+export type FriendshipViewStatus =
+  | "NONE"
+  | "PENDING"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "CANCELLED"
+  | "UNFRIENDED"
+  | "BLOCKED";
+
+export interface FriendshipView {
+  status: FriendshipViewStatus;
+  direction: "OUTGOING" | "INCOMING" | null;
+  canAccept: boolean;
+  canReject: boolean;
+  canCancel: boolean;
+}
+
+interface FriendshipViewRecord {
+  found: boolean;
+  status: string;
+  direction: string;
+  canAccept: boolean;
+  canReject: boolean;
+  canCancel: boolean;
+}
+
 const pkgDef = protoLoader.loadSync(PROTO_PATH, {
   keepCase: false,
   longs: String,
@@ -85,6 +111,18 @@ const checkFriendshipsBreaker: Breaker<
   (args: { callerId: string; candidateIds: string[] }) =>
     call<{ callerId: string; candidateIds: string[] }, CheckFriendshipsResult>(
       "checkFriendships",
+      args
+    )
+);
+
+const getFriendshipViewBreaker: Breaker<
+  { friendshipId: string; viewerId: string },
+  FriendshipViewRecord
+> = makeBreaker(
+  "user.getFriendshipView",
+  (args: { friendshipId: string; viewerId: string }) =>
+    call<{ friendshipId: string; viewerId: string }, FriendshipViewRecord>(
+      "getFriendshipView",
       args
     )
 );
@@ -135,6 +173,38 @@ export const userGrpcClient = {
       );
     } catch {
       return new Map();
+    }
+  },
+
+  /**
+   * Current friendship state for a Notification Center row, viewer-relative.
+   * Notification is an immutable event log — this is the dynamic lookup that
+   * resolves whether a FRIEND_REQUEST row is still actionable. Fail-open to
+   * null on transport failure so a friendship-service blip never 500s the
+   * notifications list; the caller falls back to omitting `friendship`.
+   */
+  async getFriendshipView(
+    friendshipId: string,
+    viewerId: string
+  ): Promise<FriendshipView | null> {
+    try {
+      const r = await getFriendshipViewBreaker.fire({
+        friendshipId,
+        viewerId,
+      });
+      if (!r.found) return null;
+      return {
+        status: (r.status || "NONE") as FriendshipViewStatus,
+        direction:
+          r.direction === "OUTGOING" || r.direction === "INCOMING"
+            ? r.direction
+            : null,
+        canAccept: r.canAccept,
+        canReject: r.canReject,
+        canCancel: r.canCancel,
+      };
+    } catch {
+      return null;
     }
   },
 };
